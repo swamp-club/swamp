@@ -380,17 +380,33 @@ Deno.test("splitServeOwnedRuns: a step of a CLI workflow run stays cancellable",
   assertEquals(serveOwned, []);
 });
 
-Deno.test("splitServeOwnedRuns: a serve-owned run whose serve is dead stays cancellable", () => {
+Deno.test("splitServeOwnedRuns: a serve-owned run whose serve is dead on this host stays cancellable", () => {
   const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-a" });
 
   const { cancellable, serveOwned } = splitServeOwnedRuns(
     [serveRun],
     [serveRun],
     (pid) => pid !== SERVE_PID,
+    "test-host",
   );
 
   assertEquals(cancellable, [serveRun]);
   assertEquals(serveOwned, []);
+});
+
+Deno.test("splitServeOwnedRuns: a serve-owned run from another host is skipped even when its pid is dead here", () => {
+  // The local process table says nothing about another host's serve.
+  const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-b" });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [serveRun],
+    [serveRun],
+    () => false,
+    "other-host",
+  );
+
+  assertEquals(cancellable, []);
+  assertEquals(serveOwned, [{ run: serveRun, instanceId: "serve-b" }]);
 });
 
 Deno.test("splitServeOwnedRuns: cancelling the cancellable runs never signals the serve process", async () => {

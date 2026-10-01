@@ -19,6 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
+import { hostname } from "node:os";
 import {
   createContext,
   type GlobalOptions,
@@ -175,19 +176,23 @@ function owningServeInstance(
  * Splits method runs into those cancel may stop and those a live
  * `swamp serve` owns. A serve-owned run's pid is the serve process, so
  * stopping it would shut down the whole server. A serve-owned run whose
- * owner is dead is cancellable: there is nothing left to signal, and cancel
- * only completes its row.
+ * owner is a dead process on this host is cancellable: there is nothing
+ * left to signal, and cancel only completes its row. A pid from another
+ * host says nothing about whether its serve is alive, so such a run is
+ * always treated as live.
  */
 export function splitServeOwnedRuns(
   runs: readonly ActiveRun[],
   runningRows: readonly ActiveRun[],
   isAlive: (pid: number) => boolean = isProcessAlive,
+  localHostname: string = hostname(),
 ): { cancellable: ActiveRun[]; serveOwned: ServeOwnedMethodRun[] } {
   const cancellable: ActiveRun[] = [];
   const serveOwned: ServeOwnedMethodRun[] = [];
   for (const run of runs) {
     const instanceId = owningServeInstance(run, runningRows);
-    if (instanceId !== undefined && isAlive(run.pid)) {
+    const ownerLive = run.hostname !== localHostname || isAlive(run.pid);
+    if (instanceId !== undefined && ownerLive) {
       serveOwned.push({ run, instanceId });
     } else {
       cancellable.push(run);
@@ -209,6 +214,7 @@ export function selectMethodRunToCancel(
   runs: readonly ActiveRun[],
   runningRows: readonly ActiveRun[],
   isAlive: (pid: number) => boolean = isProcessAlive,
+  localHostname: string = hostname(),
 ): MethodRunSelection {
   const newestFirst = [...runs].sort((a, b) =>
     b.startedAt.getTime() - a.startedAt.getTime()
@@ -217,6 +223,7 @@ export function selectMethodRunToCancel(
     newestFirst,
     runningRows,
     isAlive,
+    localHostname,
   );
   return { run: cancellable[0], skipped: serveOwned };
 }
