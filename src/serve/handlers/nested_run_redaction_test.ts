@@ -193,6 +193,26 @@ Deno.test("redactStreamEvent: keeps only the detached nested runs a superseding 
   assertEquals("detachedNestedRuns" in none, false);
 });
 
+Deno.test("redactStreamEvent: hides a nested step's failure that names a run the principal may not read", async () => {
+  const failed = (workflowId: string): SerializedEvent => ({
+    kind: "step_failed",
+    jobId: "main",
+    stepId: "call-child",
+    error:
+      'Approval of step "gate" in nested run child-run of workflow "secret-child" was rejected.',
+    nestedRun: { workflowId, workflowName: "secret-child" },
+  });
+  const event = failed("secret-id");
+  const hidden = await redactStreamEvent(event, canRead);
+  assertEquals(hidden.nestedRun, undefined);
+  assert(!String(hidden.error).includes("secret-child"));
+  assertEquals(hidden.stepId, "call-child");
+  assertEquals(event, failed("secret-id"));
+
+  const shown = failed("readable-id");
+  assertStrictEquals(await redactStreamEvent(shown, canRead), shown);
+});
+
 Deno.test("redactStreamEvent: passes an event without links through unchanged", async () => {
   const event: SerializedEvent = { kind: "step_started", jobId: "j" };
   assertStrictEquals(await redactStreamEvent(event, canRead), event);

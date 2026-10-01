@@ -585,11 +585,13 @@ export const workflowResumeCommand = withRemoteOptions(
     }
 
     // A nested run that finished leaves its parent waiting: name the next
-    // command (swamp-club#2736).
+    // command (swamp-club#2736). Best effort: the resume is already saved.
     if (run.parentRun !== undefined) {
-      const finished = await runRepo.findById(workflow.id, run.id);
+      const finished = await runRepo.findById(workflow.id, run.id)
+        .catch(() => null);
       const parent = finished && finished.status !== "suspended"
         ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
+          .catch(() => undefined)
         : undefined;
       if (parent) {
         cliCtx.logger

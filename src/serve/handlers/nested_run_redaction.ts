@@ -140,9 +140,11 @@ export async function redactRunViewLinks(
 /**
  * A run stream event as one client may see it: the links to other runs
  * whose workflow the principal may not read are removed, as from a run view
- * (swamp-club#2736). A buffered event is shared by every client attached to
- * the run, so an event that needs a change is copied first. A nested run's
- * own events, forwarded into its parent's stream, are left as they are.
+ * (swamp-club#2736), and a nested workflow step's failure that names a
+ * hidden nested run reports {@link HIDDEN_NESTED_STEP_ERROR} instead. A
+ * buffered event is shared by every client attached to the run, so an event
+ * that needs a change is copied first. A nested run's own events, forwarded
+ * into its parent's stream, are left as they are.
  */
 export async function redactStreamEvent(
   event: SerializedEvent,
@@ -158,6 +160,11 @@ export async function redactStreamEvent(
     if (detached) copy.detachedNestedRuns = detached;
     else delete copy.detachedNestedRuns;
     return copy;
+  }
+  if (event.kind === "step_failed" && isNamedWorkflow(event.nestedRun)) {
+    if (await canRead(event.nestedRun)) return event;
+    const { nestedRun: _hidden, ...rest } = event;
+    return { ...rest, error: HIDDEN_NESTED_STEP_ERROR };
   }
   if (!isRunView(event.run)) return event;
   const copy = structuredClone(event) as SerializedEvent & {
@@ -177,6 +184,12 @@ export async function redactStreamEvent(
 interface NestedRunEntry {
   workflowId: string;
   workflowName: string;
+}
+
+function isNamedWorkflow(value: unknown): value is NamedWorkflow {
+  return typeof value === "object" && value !== null &&
+    typeof (value as NamedWorkflow).workflowId === "string" &&
+    typeof (value as NamedWorkflow).workflowName === "string";
 }
 
 function isRunView(value: unknown): value is WorkflowRunView {

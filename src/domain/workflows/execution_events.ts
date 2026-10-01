@@ -131,6 +131,12 @@ export type WorkflowExecutionEvent =
     modelName?: string;
     methodName?: string;
     /**
+     * The nested workflow a nested workflow step's failure names in `error`,
+     * set when the step settles on its nested run (swamp-club#2736), so a
+     * server can hide the error from a caller who may not read it.
+     */
+    nestedRun?: { workflowId: string; workflowName: string };
+    /**
      * Data a failing model-method step persisted before it threw, so the
      * workflow summary can point at it. Set only at the model-method catch
      * site, and only when there is such data.

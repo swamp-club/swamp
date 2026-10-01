@@ -4947,6 +4947,15 @@ export class WorkflowExecutionService {
     Record<string, unknown> | undefined
   > {
     const link = stepRun.nestedRun;
+    // The errors below name the nested run; a malformed link's do not.
+    const nestedRun = link?.kind === "valid"
+      ? {
+        nestedRun: {
+          workflowId: link.ref.workflowId,
+          workflowName: link.ref.workflowName,
+        },
+      }
+      : {};
     const fail = (error: string): WorkflowExecutionEvent => {
       stepRun.fail(error);
       if (allowFailure) stepRun.markAllowedFailure();
@@ -4957,6 +4966,7 @@ export class WorkflowExecutionService {
         runId: run.id,
         error,
         allowedFailure: allowFailure || undefined,
+        ...nestedRun,
       };
     };
     if (!link) {
@@ -5041,6 +5051,7 @@ export class WorkflowExecutionService {
           stepId: stepName,
           runId: run.id,
           error,
+          ...nestedRun,
           allowedFailure: allowFailure || undefined,
         };
       } else {
@@ -5357,6 +5368,10 @@ export class WorkflowExecutionService {
             stepId: stepName,
             runId: run.id,
             error: stepRun.error ?? CANCELLED_STEP_ERROR,
+            nestedRun: {
+              workflowId: ref.workflowId,
+              workflowName: ref.workflowName,
+            },
           };
         }
         return undefined;

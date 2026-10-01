@@ -765,7 +765,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   resume streams, redacted per attached client, for the error of a step
   whose nested run is hidden, and for the refusals to approve, reject or
   resume a run waiting on a nested run, which then name no run. A nested
-  run's own events, forwarded into its parent's stream, are not redacted.
+  run's own events, forwarded into its parent's stream while the parent runs
+  it, are not redacted; they name the nested run, and its
+  `approval_requested` event names its workflow.
 - **Club heartbeat.** In OAuth mode serve registers with swamp-club at startup
   and sends a heartbeat hourly (`src/serve/club_heartbeat_service.ts`,
   `src/serve/oauth_client.ts`). This needs a resolved OAuth client id, a

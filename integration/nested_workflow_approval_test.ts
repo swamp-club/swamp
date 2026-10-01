@@ -360,10 +360,18 @@ Deno.test("nested approval: rejecting the child fails the parent's step as a rej
     );
     assertEquals(rejected.awaitingParent?.runId, parentRun.id);
 
-    await drain(h.service.resume(parent.name, parentRun.id));
+    const events = await drain(h.service.resume(parent.name, parentRun.id));
     const failed = await only(h.runRepo, parent);
     assertEquals(failed.status, "failed");
     assertEquals(failed.failedSteps()[0].approvalRejected, true);
+    // The step's failure names the child, and says which workflow it is, so
+    // serve can hide it from a caller who may not read that workflow.
+    const stepFailed = events.find((e) => e.kind === "step_failed");
+    assert(stepFailed?.kind === "step_failed");
+    assertEquals(stepFailed.nestedRun, {
+      workflowId: child.id,
+      workflowName: child.name,
+    });
 
     const error = await assertRejects(
       () => drain(h.service.resume(parent.name, parentRun.id)),

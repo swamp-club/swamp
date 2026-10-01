@@ -152,6 +152,8 @@ export type WorkflowRunEvent =
     stepId: string;
     error: string;
     allowedFailure?: boolean;
+    /** The nested workflow a nested workflow step's error names. */
+    nestedRun?: { workflowId: string; workflowName: string };
     /**
      * Populated only when the failing step is a model-method task. The
      * telemetry bridge uses these to synthesize a child entry for
