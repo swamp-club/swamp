@@ -242,19 +242,10 @@ function extractExtensionMethods(
   const arrayBody = extractBalancedBrackets(extensionBody, arrayStart);
   if (!arrayBody) return methods;
 
-  const methodPattern =
-    /(\w+)\s*:\s*\{[^}]*?description:\s*(?:"([^"]*?)"|'([^']*?)'|`([^`]*?)`)/gs;
-  let match;
-  while ((match = methodPattern.exec(arrayBody)) !== null) {
-    const name = match[1];
-    const description = match[2] ?? match[3] ?? match[4] ?? "";
-
-    const methodEntry = extractMethodEntry(arrayBody, name);
-    const args = methodEntry
-      ? extractMethodArguments(methodEntry, fullContent)
-      : [];
-
-    methods.push({ name, description, arguments: args });
+  for (const record of extractArrayObjectBodies(arrayBody)) {
+    for (const method of extractMethodsFromEntries(record, fullContent)) {
+      methods.push(method);
+    }
   }
 
   return methods;
@@ -519,24 +510,9 @@ function extractMethodsFromBlock(
   const methodsBlock = extractBalancedBraces(searchContent, methodsStart);
   if (!methodsBlock) return methods;
 
-  // Match individual method entries: methodName: { description: "..." }
-  const methodPattern =
-    /(\w+)\s*:\s*\{[^}]*?description:\s*(?:"([^"]*?)"|'([^']*?)'|`([^`]*?)`)/gs;
-  let match;
-  while ((match = methodPattern.exec(methodsBlock)) !== null) {
-    const name = match[1];
-    const description = match[2] ?? match[3] ?? match[4] ?? "";
-
-    // Try to extract arguments for this method
-    const methodEntry = extractMethodEntry(methodsBlock, name);
-    const args = methodEntry
-      ? extractMethodArguments(methodEntry, fullContent)
-      : [];
-
-    methods.push({ name, description, arguments: args });
-  }
-
-  return methods;
+  // Each top-level key whose value is an inline object is a method, whether
+  // the key is a bare identifier or a quoted string ("list-subscriptions").
+  return extractMethodsFromEntries(methodsBlock, fullContent);
 }
 
 /**
@@ -595,18 +571,158 @@ function findVariableObjectBody(
 }
 
 /**
- * Extracts the full text of a single method entry from the methods block.
+ * Builds one method per top-level object entry of a methods block. The
+ * description and arguments are read from the entry's own body, so values
+ * nested inside it (e.g. `checks: { ... }`) are never mistaken for the
+ * method's own.
  */
-function extractMethodEntry(
+function extractMethodsFromEntries(
   methodsBlock: string,
-  methodName: string,
-): string | null {
-  const pattern = new RegExp(`${methodName}\\s*:\\s*\\{`);
-  const match = methodsBlock.match(pattern);
-  if (!match || match.index === undefined) return null;
+  fullContent: string,
+): ExtractedMethod[] {
+  const methods: ExtractedMethod[] = [];
+  for (const entry of extractTopLevelEntries(methodsBlock)) {
+    if (entry.body === undefined) continue;
+    const description = extractTopLevelEntries(entry.body).find((e) =>
+      e.key === "description"
+    )?.value ?? "";
+    methods.push({
+      name: entry.key,
+      description,
+      arguments: extractMethodArguments(entry.body, fullContent),
+    });
+  }
+  return methods;
+}
 
-  const start = match.index + match[0].length;
-  return extractBalancedBraces(methodsBlock, start);
+/**
+ * Returns the bodies of the object literals that are direct elements of an
+ * array body, e.g. the records in `methods: [{ ... }, { ... }]`.
+ */
+function extractArrayObjectBodies(arrayBody: string): string[] {
+  const bodies: string[] = [];
+  let i = 0;
+  while (i < arrayBody.length) {
+    if (arrayBody[i] !== "{") {
+      i++;
+      continue;
+    }
+    const body = extractBalancedBraces(arrayBody, i + 1);
+    if (body === null) break;
+    bodies.push(body);
+    i += body.length + 2;
+  }
+  return bodies;
+}
+
+/**
+ * A top-level entry of an object literal body. `body` is set when the value
+ * is an inline object; `value` is set when the value starts with a string
+ * literal (the first literal, so `"a " + "b"` yields `a `).
+ */
+interface TopLevelEntry {
+  key: string;
+  body?: string;
+  value?: string;
+}
+
+const TOP_LEVEL_KEY =
+  /\s*(?:([A-Za-z_$][\w$]*)|"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)')\s*:/y;
+const LEADING_STRING_LITERAL =
+  /\s*(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/y;
+
+/**
+ * Walks the top-level entries of an object literal body. Only text at brace
+ * depth 0 is interpreted: keys (bare or quoted), the start of each value, and
+ * comments. Nested bodies are skipped by brace depth alone, the same
+ * assumption extractBalancedBraces makes, so regex literals or apostrophes
+ * inside method bodies cannot throw the walk off. Spreads, computed keys and
+ * shorthand entries are skipped.
+ */
+function extractTopLevelEntries(block: string): TopLevelEntry[] {
+  const entries: TopLevelEntry[] = [];
+  let i = 0;
+
+  // Advances past the rest of the current value to just after the next
+  // comma at depth 0. Parentheses and brackets are tracked here because, at
+  // depth 0 of the block, they can only be call arguments or arrays.
+  const skipValue = () => {
+    let nesting = 0;
+    while (i < block.length) {
+      const c = block[i];
+      if (c === "{") {
+        const body = extractBalancedBraces(block, i + 1);
+        if (body === null) {
+          i = block.length;
+          return;
+        }
+        i += body.length + 2;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        LEADING_STRING_LITERAL.lastIndex = i;
+        i = LEADING_STRING_LITERAL.test(block)
+          ? LEADING_STRING_LITERAL.lastIndex
+          : i + 1;
+        continue;
+      }
+      if (c === "(" || c === "[") nesting++;
+      else if (c === ")" || c === "]") nesting--;
+      else if (c === "," && nesting <= 0) {
+        i++;
+        return;
+      }
+      i++;
+    }
+  };
+
+  while (i < block.length) {
+    const c = block[i];
+    if (c === "," || /\s/.test(c)) {
+      i++;
+      continue;
+    }
+    if (block.startsWith("//", i)) {
+      const end = block.indexOf("\n", i);
+      i = end === -1 ? block.length : end + 1;
+      continue;
+    }
+    if (block.startsWith("/*", i)) {
+      const end = block.indexOf("*/", i + 2);
+      i = end === -1 ? block.length : end + 2;
+      continue;
+    }
+
+    TOP_LEVEL_KEY.lastIndex = i;
+    const keyMatch = TOP_LEVEL_KEY.exec(block);
+    if (!keyMatch) {
+      skipValue();
+      continue;
+    }
+    const key = keyMatch[1] ?? keyMatch[2] ?? keyMatch[3];
+    i = TOP_LEVEL_KEY.lastIndex;
+    while (i < block.length && /\s/.test(block[i])) i++;
+
+    if (block[i] === "{") {
+      const body = extractBalancedBraces(block, i + 1);
+      if (body === null) break;
+      entries.push({ key, body });
+      i += body.length + 2;
+      continue;
+    }
+
+    LEADING_STRING_LITERAL.lastIndex = i;
+    const literal = LEADING_STRING_LITERAL.exec(block);
+    if (literal) {
+      entries.push({ key, value: literal[1] ?? literal[2] ?? literal[3] });
+      i = LEADING_STRING_LITERAL.lastIndex;
+    } else {
+      entries.push({ key });
+    }
+    skipValue();
+  }
+
+  return entries;
 }
 
 /**
@@ -655,12 +771,13 @@ function extractMethodArguments(
 function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
   const args: ExtractedArgument[] = [];
 
-  // Find field starts: fieldName: z.type(
-  const fieldStartPattern = /(\w+)\s*:\s*z\.(\w+)\(/g;
+  // Find field starts: fieldName: z.type( or "field-name": z.type(
+  const fieldStartPattern =
+    /(?:(\w+)|"([^"\\\n]+)"|'([^'\\\n]+)')\s*:\s*z\.(\w+)\(/g;
   let startMatch;
   while ((startMatch = fieldStartPattern.exec(schemaBody)) !== null) {
-    const name = startMatch[1];
-    const baseType = startMatch[2];
+    const name = startMatch[1] ?? startMatch[2] ?? startMatch[3];
+    const baseType = startMatch[4];
     const afterParen = startMatch.index + startMatch[0].length;
 
     // Use balanced paren matching to find the end of z.type(...)
