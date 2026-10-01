@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -269,5 +269,34 @@ Deno.test("cancelModelMethodRuns: reports each run's own outcome when only some 
       outcomes.map((o) => [o.run.id, o.status]),
       [[finishing.id, "failed"], [stuck.id, "cancelled"]],
     );
+  });
+});
+
+Deno.test("cancelModelMethodRuns: still stops the other owners and completes their runs when one stop fails", async () => {
+  await withTracker(async (tracker) => {
+    const failing = methodRun(OWNER_PID);
+    const stopped = methodRun(OWNER_PID + 1);
+    tracker.register(failing);
+    tracker.register(stopped);
+
+    let otherFinished = false;
+    await assertRejects(
+      () =>
+        cancelModelMethodRuns([failing, stopped], undefined, {
+          tracker,
+          killProcess: async (pid) => {
+            if (pid === OWNER_PID) throw new Error("ps failed");
+            await Promise.resolve();
+            otherFinished = true;
+            return true;
+          },
+        }),
+      Error,
+      "ps failed",
+    );
+
+    assertEquals(otherFinished, true);
+    assertEquals(tracker.findById(stopped.id)?.status, "cancelled");
+    assertEquals(tracker.findById(failing.id)?.status, "running");
   });
 });

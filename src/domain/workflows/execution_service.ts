@@ -1830,7 +1830,13 @@ export class DefaultStepExecutor implements StepExecutor {
         });
       } catch (error) {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
-        if (runTracker) runTracker.complete(output.id, "failed");
+        // As for a standalone method run (`libswamp/models/run.ts`): a method
+        // the run's abort stopped was cancelled, not failed.
+        const aborted = ctx.signal.aborted ||
+          (error instanceof DOMException && error.name === "AbortError");
+        if (runTracker) {
+          runTracker.complete(output.id, aborted ? "cancelled" : "failed");
+        }
 
         await this.handleMethodFailure({
           task: narrowedTask,
@@ -1846,6 +1852,7 @@ export class DefaultStepExecutor implements StepExecutor {
           reportGlobalArgs,
           reportMethodArgs,
           error,
+          aborted,
           output,
           savedArtifacts,
         });
@@ -2274,6 +2281,8 @@ export class DefaultStepExecutor implements StepExecutor {
     reportGlobalArgs: Record<string, unknown>;
     reportMethodArgs: Record<string, unknown>;
     error: unknown;
+    /** Whether the run's abort stopped the method; it is then cancelled. */
+    aborted: boolean;
     output: ModelOutput;
     savedArtifacts: Array<{
       dataId: string;
@@ -2296,6 +2305,7 @@ export class DefaultStepExecutor implements StepExecutor {
       reportGlobalArgs,
       reportMethodArgs,
       error,
+      aborted,
       output,
       savedArtifacts,
     } = args;
@@ -2319,7 +2329,11 @@ export class DefaultStepExecutor implements StepExecutor {
 
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
-    output.markFailed({ message: errorMessage, stack: errorStack });
+    if (aborted) {
+      output.markCancelled("aborted");
+    } else {
+      output.markFailed({ message: errorMessage, stack: errorStack });
+    }
     await outputRepo.save(modelType, task.methodName, output);
 
     runLogger.debug("Method {method} failed: {error}", {

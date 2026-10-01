@@ -102,7 +102,8 @@ export interface MethodRunCancelOutcome {
  * cancelled. An owner that stopped in time completed its row itself, without
  * the reason, so the reason is recorded on it afterwards. Returns each run's
  * final status: a run its owner finished another way during the wait keeps
- * that status.
+ * that status. If stopping an owner fails, the other owners are still
+ * stopped and their runs completed, then the first failure is thrown.
  */
 export async function cancelModelMethodRuns(
   runs: readonly ActiveRun[],
@@ -120,17 +121,29 @@ export async function cancelModelMethodRuns(
     maxWaitMs: ownerStopGraceMs(pid, runningRows),
   }));
   if (stops.length > 0) onStopping?.(stops);
-  await Promise.all(
+  // Every stop is waited out, so none is left running when one fails.
+  const settled = await Promise.allSettled(
     stops.map(({ pid, maxWaitMs }) => killProcess(pid, { maxWaitMs })),
   );
+  const unstopped = new Set<number>();
+  const errors: unknown[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === "rejected") {
+      unstopped.add(stops[i].pid);
+      errors.push(result.reason);
+    }
+  });
 
-  return runs.map((run) => {
+  // A run whose owner could not be stopped is left running.
+  const outcomes = runs.filter((run) => !unstopped.has(run.pid)).map((run) => {
     tracker.complete(run.id, "cancelled", reason);
     if (reason !== undefined) tracker.recordCancelReason(run.id, reason);
     // Rows are purged only days after they complete, so the row is still
     // there; the fallback is the status just written.
     return { run, status: tracker.findById(run.id)?.status ?? "cancelled" };
   });
+  if (errors.length > 0) throw errors[0];
+  return outcomes;
 }
 
 /**

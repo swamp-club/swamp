@@ -16742,3 +16742,114 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
     assertEquals(runRepo.saved.at(-1)?.status, "cancelled");
   });
 });
+
+/**
+ * Runs one model_method step whose method body is `execute`, under the run
+ * signal `controller` owns, and reports the step's output and tracker rows.
+ */
+async function runModelStep(
+  controller: AbortController,
+  execute: () => Promise<Record<string, never>>,
+): Promise<{
+  outputs: import("../models/model_output.ts").ModelOutput[];
+  tracker: RecordingRunTracker;
+}> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+
+  let result: Awaited<ReturnType<typeof runModelStep>> | undefined;
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `@test-2910/step-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        execute: {
+          description: "runs the test's method body",
+          arguments: z.object({}),
+          execute,
+        },
+      },
+    });
+
+    const tracker = new RecordingRunTracker();
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const definition = Definition.create({
+        name: "method",
+        type: modelType.normalized,
+      });
+      await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+      const step = Step.create({
+        name: "step",
+        task: StepTask.model(definition.name, "execute"),
+      });
+      await assertRejects(() =>
+        new DefaultStepExecutor().execute(step, {
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: controller.signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(),
+          runTracker: tracker,
+        })
+      );
+      result = {
+        outputs: await new YamlOutputRepository(tempDir).findAll(modelType),
+        tracker,
+      };
+    } finally {
+      catalogStore.close();
+    }
+  });
+  assertExists(result);
+  return result;
+}
+
+Deno.test("DefaultStepExecutor: a method the run's abort stops is recorded cancelled, not failed (swamp-club#2910)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    // The cancel aborts the run while the method runs; the method then fails
+    // the way an interrupted process does.
+    controller.abort();
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs.length, 1);
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(tracker.completions, [{
+    runId: outputs[0].id,
+    status: "cancelled",
+  }]);
+});
+
+Deno.test("DefaultStepExecutor: a method that fails without an abort is still recorded failed", async () => {
+  const { outputs, tracker } = await runModelStep(
+    new AbortController(),
+    () => Promise.reject(new Error("boom")),
+  );
+
+  assertEquals(outputs.length, 1);
+  assertEquals(outputs[0].status, "failed");
+  assertEquals(tracker.completions, [{
+    runId: outputs[0].id,
+    status: "failed",
+  }]);
+});

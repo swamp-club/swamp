@@ -1619,6 +1619,10 @@ grace instead, so its cleanup steps can run. `--all` stops the owning
 processes together, each once. A run its owner finished another way during
 the wait keeps that status, and the command reports it as finished before the
 cancel took effect (`finished` in `--json`) rather than as cancelled.
+A step's method run that a cancel stops records `cancelled`, in its method-run
+output and its tracker row, as a standalone method run does; the step itself
+is still recorded failed (`DefaultStepExecutor`,
+`src/domain/workflows/execution_service.ts`).
 
 ### Post-Cancellation Cleanup
 
