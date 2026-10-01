@@ -546,3 +546,62 @@ Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads ever
     assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
   });
 });
+
+Deno.test("createInMemoryRemote: pins that an absolute mark is nested under the cache, so its file is never pushed", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "f", "1");
+    // join(cachePath, "/abs/...") nests the path, so the walk finds nothing.
+    await a.markDirty({ relPath: join(aCache, "f") });
+    assertEquals(await a.pushChanged(), 0);
+    assertEquals(remote.files().size, 0);
+  });
+});
+
+Deno.test("createInMemoryRemote: a peer's commit between prepare and commit is still pulled afterwards", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "x", "a");
+    await a.markDirty({ relPath: "x" });
+    const manifest = await a.preparePush();
+
+    await write(bCache, "y", "b");
+    await b.markDirty({ relPath: "y" });
+    await b.pushChanged();
+    await a.commitPush(manifest);
+
+    assertEquals(await a.pullChanged(), 1);
+    assertEquals(await read(aCache, "y"), "b");
+  });
+});
+
+Deno.test("createInMemoryRemote: concurrent pushes from two machines each pull the other's file", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "x", "a");
+    await a.markDirty({ relPath: "x" });
+    await write(bCache, "y", "b");
+    await b.markDirty({ relPath: "y" });
+    await Promise.all([a.pushChanged(), b.pushChanged()]);
+
+    await a.pullChanged();
+    await b.pullChanged();
+    assertEquals(await read(aCache, "y"), "b");
+    assertEquals(await read(bCache, "x"), "a");
+  });
+});
+
+Deno.test("createInMemoryRemote: a clean push returns 0 offline and leaves an injected failure queued", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    remote.offline(true);
+    assertEquals(await a.pushChanged(), 0);
+    remote.offline(false);
+
+    remote.failNext("push", new Error("later"), { afterUploads: true });
+    assertEquals(await a.pushChanged(), 0);
+    await write(aCache, "f", "1");
+    await a.markDirty({ relPath: "f" });
+    await assertRejects(() => a.pushChanged(), Error, "later");
+  });
+});

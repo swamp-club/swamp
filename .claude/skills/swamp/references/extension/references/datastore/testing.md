@@ -197,6 +197,9 @@ const { provider, isLockHeld } = createDatastoreTestContext();
 
 ### Shared remote across machines
 
+Experimental: the defaults track today's extension behaviour and will change
+during the datastore rework.
+
 `createInMemoryRemote()` holds remote content in memory; each
 `remote.connect(cacheDir)` is one simulated machine's sync service. Its defaults
 reproduce today's S3/GCS sync gaps (bare marks disable deletes, unmarked writes

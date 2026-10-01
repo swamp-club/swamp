@@ -166,6 +166,9 @@ Deno.test("lock acquire and release", async () => {
 
 ## `createInMemoryRemote`
 
+> **Experimental.** The defaults track today's extension behaviour and will
+> change during the datastore rework.
+
 An in-memory remote datastore shared by several simulated machines. Each
 `connect(cacheDir)` returns a sync service bound to that cache directory, with
 two-phase push. By default it behaves like `@swamp/s3-datastore` and
@@ -209,7 +212,9 @@ The remote also offers:
 - `ops()`: an ordered `{ instance, op, paths, deleted }` log;
 - `resetSidecar(cacheDir)`.
 
-Not modelled: namespaces, lazy hydration, the control plane and `previewPush`.
+Not modelled: namespaces, lazy hydration, the control plane, `previewPush`,
+Windows drive-letter joins, and the gap between `preparePush` deleting objects
+and `commitPush` publishing the index.
 
 ## `createRecordingSyncService`
 

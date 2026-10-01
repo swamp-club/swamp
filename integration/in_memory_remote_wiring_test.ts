@@ -76,7 +76,7 @@ const models = [{ modelType: modelType.normalized, modelId }];
 
 for (const twoPhaseSync of [true, false]) {
   Deno.test(
-    `in-memory remote wiring: a data save reaches a second repo over the ${
+    `registerTestDatastoreType: a data save reaches a second repo over the ${
       twoPhaseSync ? "two-phase" : "single-phase"
     } flush`,
     async () => {
@@ -101,22 +101,25 @@ for (const twoPhaseSync of [true, false]) {
             repoA,
           );
           const locksA = await acquireModelLocks(configA, models, repoA);
-          const data = Data.create({
-            name: "shared",
-            contentType: "text/plain",
-            lifetime: "infinite",
-            garbageCollection: 100,
-            tags: { type: "test" },
-            ownerDefinition: { ownerType: "manual", ownerRef: "test-user" },
-          });
-          await a.repoContext.unifiedDataRepo.save(
-            modelType,
-            modelId,
-            data,
-            new TextEncoder().encode("from machine a"),
-          );
-          await locksA.flush();
-          await flushDatastoreSync();
+          try {
+            const data = Data.create({
+              name: "shared",
+              contentType: "text/plain",
+              lifetime: "infinite",
+              garbageCollection: 100,
+              tags: { type: "test" },
+              ownerDefinition: { ownerType: "manual", ownerRef: "test-user" },
+            });
+            await a.repoContext.unifiedDataRepo.save(
+              modelType,
+              modelId,
+              data,
+              new TextEncoder().encode("from machine a"),
+            );
+          } finally {
+            await locksA.flush();
+            await flushDatastoreSync();
+          }
 
           const pushOps = remote.ops().filter((op) =>
             op.op === (twoPhaseSync ? "commit" : "push") &&
@@ -140,23 +143,26 @@ for (const twoPhaseSync of [true, false]) {
             repoB,
           );
           const locksB = await acquireModelLocks(configB, models, repoB);
-          for (const rel of pushed) {
-            const local = await Deno.readFile(
-              join(repoB, ".test-cache", ...rel.split("/")),
+          try {
+            for (const rel of pushed) {
+              const local = await Deno.readFile(
+                join(repoB, ".test-cache", ...rel.split("/")),
+              );
+              assertEquals(local, remote.files().get(rel));
+            }
+            const content = await b.repoContext.unifiedDataRepo.getContent(
+              modelType,
+              modelId,
+              "shared",
             );
-            assertEquals(local, remote.files().get(rel));
+            assertEquals(
+              content && new TextDecoder().decode(content),
+              "from machine a",
+            );
+          } finally {
+            await locksB.flush();
+            await flushDatastoreSync();
           }
-          const content = await b.repoContext.unifiedDataRepo.getContent(
-            modelType,
-            modelId,
-            "shared",
-          );
-          assertEquals(
-            content && new TextDecoder().decode(content),
-            "from machine a",
-          );
-          await locksB.flush();
-          await flushDatastoreSync();
         });
       } finally {
         dispose();

@@ -30,7 +30,9 @@
  * equivalent behaves the same.
  *
  * - A path mark records a cache-relative path. A bare mark, an empty path or
- *   a path that escapes the cache sets the bulk flag; once bulk is set, later
+ *   a path that climbs out of the cache with `..` sets the bulk flag. An
+ *   absolute path is nested under the cache, as `join(cachePath, relPath)`
+ *   does, so its real file is never pushed; once bulk is set, later
  *   path marks are dropped (S3SYNC:1748-1793). Past `dirtyPathsCap` paths the
  *   set overflows into bulk (S3SYNC:1775-1782).
  * - Dirty state lives in a per-cache "sidecar" that survives reconnects, like
@@ -65,8 +67,15 @@
  * Three behaviours that later phases are expected to change can be switched
  * through {@link InMemoryRemoteSemantics}.
  *
+ * Experimental: the defaults track today's extension behaviour and will
+ * change during the datastore rework.
+ *
  * Not modelled: namespaces, lazy hydration (`hydrateFile`), the control
- * plane, `previewPush`, and model-scoped pulls through `context`. The fake
+ * plane, `previewPush`, model-scoped pulls through `context`, and Windows
+ * drive-letter joins. Nor is the window between `preparePush` and
+ * `commitPush` in which the extensions have already deleted objects but not
+ * yet the index entries, so a peer pulling then drops those entries without
+ * downloading them; here a peer still sees the old content until commit. The fake
  * compares file bytes, whereas the backends compare size and mtime before
  * hashing (S3SYNC:4052-4094) and can skip a same-size, same-mtime rewrite.
  *
@@ -177,12 +186,12 @@ export interface InMemoryRemote {
 }
 
 const PLAN_SCOPED = Symbol("scoped");
-const PLAN_PRIOR = Symbol("prior");
+const PLAN_PRIOR_SEQ = Symbol("priorSeq");
 const PLAN_OVERFLOWED = Symbol("overflowed");
 
 interface InternalManifest extends InMemoryPushManifest {
   [PLAN_SCOPED]?: boolean;
-  [PLAN_PRIOR]?: { priorSeq: number | undefined; seqBefore: number };
+  [PLAN_PRIOR_SEQ]?: number;
   [PLAN_OVERFLOWED]?: boolean;
 }
 
@@ -243,7 +252,12 @@ function isInSubdirs(key: string, subdirs: readonly string[]): boolean {
   return subdirs.some((dir) => key === dir || isUnder(key, dir));
 }
 
-/** Converts a mark to a forward-slash cache-relative path, or undefined. */
+/**
+ * Converts a mark to a forward-slash cache-relative path, or undefined when
+ * it climbs out of the cache. Like the extensions' `join(cachePath, relPath)`,
+ * an absolute path is nested under the cache rather than treated as escaping,
+ * so the real file is never pushed.
+ */
 function toCacheRelative(relPath: string): string | undefined {
   const parts: string[] = [];
   for (const part of relPath.replaceAll("\\", "/").split("/")) {
@@ -255,7 +269,6 @@ function toCacheRelative(relPath: string): string | undefined {
     }
     parts.push(part);
   }
-  if (relPath.startsWith("/") || /^[A-Za-z]:/.test(relPath)) return undefined;
   return parts.join("/");
 }
 
@@ -480,35 +493,43 @@ export function createInMemoryRemote(
       return true;
     }
 
-    /** Marks the cache clean after a successful push (S3SYNC:3287-3316). */
-    async function settle(
-      priorSeq: number | undefined,
-      seqBefore: number,
-      plan: { scoped: boolean },
-      overflowed: boolean,
-    ): Promise<void> {
+    /**
+     * Marks the cache clean after a successful push, and arms the pull fast
+     * path only when nothing else landed since `baseSeq` and this cache is
+     * known to hold everything (S3SYNC:3287-3316, 3916-3929).
+     */
+    async function settle(arm: {
+      priorSeq: number | undefined;
+      baseSeq: number;
+      upToDate: boolean;
+      scoped: boolean;
+      overflowed: boolean;
+    }): Promise<void> {
       const sidecar = ensureSidecar();
       sidecar.dirtyPaths.clear();
       sidecar.bulk = false;
       sidecar.overflowed = false;
       sidecar.localDirty = false;
-      const reconciled = (plan.scoped || overflowed) && priorSeq === seqBefore;
-      sidecar.commitSeq = reconciled || await hasAllCommitted()
-        ? commitSeq
-        : undefined;
+      const reconciled = (arm.scoped || arm.overflowed) &&
+        arm.priorSeq === arm.baseSeq;
+      const armed = arm.upToDate &&
+        (reconciled || (!arm.scoped && await hasAllCommitted()));
+      sidecar.commitSeq = armed ? commitSeq : undefined;
     }
 
     async function pushChanged(
       _options?: DatastoreSyncOptions,
     ): Promise<number> {
-      const failure = checkReachable("push", instance);
       const sidecar = loadSidecar();
+      // The fast path reads only the local sidecar, so it succeeds offline
+      // and never reaches an injected failure (S3SYNC:1913-1922).
       if (sidecar && !sidecar.localDirty) {
         record({ instance, op: "push", paths: [], deleted: [] });
         return 0;
       }
+      const failure = checkReachable("push", instance);
       const priorSeq = sidecar?.commitSeq;
-      const seqBefore = commitSeq;
+      const baseSeq = commitSeq;
       const overflowed = sidecar?.overflowed ?? false;
       const plan = await planPush(sidecar);
       if (failure) {
@@ -524,8 +545,16 @@ export function createInMemoryRemote(
       }
       for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
       for (const rel of plan.deletes) objects.delete(rel);
+      // Another machine may have committed while this push read its files.
+      const upToDate = commitSeq === baseSeq;
       const deleted = publish(plan.uploads, plan.deletes);
-      await settle(priorSeq, seqBefore, plan, overflowed);
+      await settle({
+        priorSeq,
+        baseSeq,
+        upToDate,
+        scoped: plan.scoped,
+        overflowed,
+      });
       record({
         instance,
         op: "push",
@@ -538,12 +567,12 @@ export function createInMemoryRemote(
     async function preparePush(
       _options?: DatastoreSyncOptions,
     ): Promise<InMemoryPushManifest> {
-      checkReachable("prepare", instance);
       const sidecar = loadSidecar();
       if (sidecar && !sidecar.localDirty) {
         record({ instance, op: "prepare", paths: [], deleted: [] });
         return { uploads: new Map(), deletes: [] };
       }
+      checkReachable("prepare", instance);
       const plan = await planPush(sidecar);
       for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
       for (const rel of plan.deletes) objects.delete(rel);
@@ -557,7 +586,7 @@ export function createInMemoryRemote(
         uploads: plan.uploads,
         deletes: plan.deletes,
         [PLAN_SCOPED]: plan.scoped,
-        [PLAN_PRIOR]: { priorSeq: sidecar?.commitSeq, seqBefore: commitSeq },
+        [PLAN_PRIOR_SEQ]: sidecar?.commitSeq,
         [PLAN_OVERFLOWED]: sidecar?.overflowed ?? false,
       } as InMemoryPushManifest;
     }
@@ -568,15 +597,17 @@ export function createInMemoryRemote(
     ): Promise<number> {
       checkReachable("commit", instance);
       const internal = manifest as InternalManifest;
-      const prior = internal[PLAN_PRIOR] ??
-        { priorSeq: undefined, seqBefore: commitSeq };
+      // Commit compares the cache's last-seen sequence with the remote's at
+      // commit time, so a peer's commit after prepare blocks the arm.
+      const baseSeq = commitSeq;
       const deleted = publish(manifest.uploads, manifest.deletes);
-      await settle(
-        prior.priorSeq,
-        prior.seqBefore,
-        { scoped: internal[PLAN_SCOPED] ?? false },
-        internal[PLAN_OVERFLOWED] ?? false,
-      );
+      await settle({
+        priorSeq: internal[PLAN_PRIOR_SEQ],
+        baseSeq,
+        upToDate: true,
+        scoped: internal[PLAN_SCOPED] ?? false,
+        overflowed: internal[PLAN_OVERFLOWED] ?? false,
+      });
       record({
         instance,
         op: "commit",
