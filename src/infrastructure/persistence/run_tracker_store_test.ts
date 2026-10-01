@@ -960,3 +960,34 @@ Deno.test("RunTrackerStore: complete after reactivate records the final status",
     store.close();
   }
 });
+
+// ── findDeadProcessRuns tests ──────────────────────────────────────
+
+Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a fresh heartbeat and changes nothing", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    const row = (id: string, pid: number, host: string) =>
+      ActiveRun.fromData({
+        id,
+        runKind: "workflow",
+        modelType: null,
+        methodName: null,
+        workflowName: "wf",
+        pid,
+        hostname: host,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        status: "running",
+      });
+    store.register(row("dead-local", 2147483647, hostname()));
+    store.register(row("self", Deno.pid, hostname()));
+    store.register(row("dead-remote", 2147483647, "some-other-host"));
+
+    const dead = store.findDeadProcessRuns();
+
+    assertEquals(dead.map((r) => r.id), ["dead-local"]);
+    assertEquals(store.findById("dead-local")?.status, "running");
+  } finally {
+    store.close();
+  }
+});

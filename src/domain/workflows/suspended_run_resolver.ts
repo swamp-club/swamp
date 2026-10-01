@@ -134,6 +134,11 @@ export interface ResolveResumableRunOptions extends WorkflowLookupOptions {
    * Takes precedence over `fromStep`.
    */
   suspendedOnly?: boolean;
+  /**
+   * Whether a run recorded as `running` has lost its owning process, so the
+   * refusal can name `workflow recover` rather than say to wait for it.
+   */
+  ownerIsDead?: (run: WorkflowRun) => boolean;
 }
 
 /**
@@ -192,6 +197,13 @@ export async function resolveResumableRun(
     );
     if (!run) {
       throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    if (run.status === "running" && options.ownerIsDead?.(run)) {
+      throw new UserError(
+        `Run ${runId} is recorded as running, but its owning process` +
+          `${run.pid !== undefined ? ` (pid ${run.pid})` : ""} is gone.` +
+          ` Recover it with 'swamp workflow recover ${workflow.name} --run ${run.id}', then resume it.`,
+      );
     }
     if (options.fromStep) {
       if (run.status !== "failed") {

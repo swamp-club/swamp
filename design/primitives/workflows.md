@@ -1412,8 +1412,8 @@ The run's output is written to a workflow run log in the datastore at
 - `succeeded`: all jobs completed successfully
 - `failed`: at least one job failed or an error occurred
 - `cancelled`: cancelled by a user
-- `interrupted`: the owning process crashed. In-flight steps are `unknown` and
-  the run is recoverable (see [Recovery](#recovery) below)
+- `interrupted`: the owning process crashed or was killed. In-flight steps are
+  `unknown` and the run is recoverable (see [Recovery](#recovery) below)
 
 ### Cancellation
 
@@ -1441,11 +1441,21 @@ cancel may still complete on the server, and names the command to check.
 
 When the daemon restarts, `swamp serve` reaps orphaned runs that the previous
 process left in `running` state (`reapOrphanedWorkflowRuns` in
-`src/cli/commands/serve.ts`). Each is interrupted with
+`src/domain/workflows/orphaned_run_reaper.ts`, called at serve boot). Each is interrupted with
 `run.interrupt("server_crash")` (`src/domain/workflows/workflow_run.ts`). This
 marks in-flight steps as `unknown` and the run as `interrupted`, tagged
 with `interrupt_reason: server_crash`. Interrupted runs are recoverable; see
 [Recovery](#recovery) below.
+
+A local `workflow run` or `resume` that is force-exited (a second Ctrl-C
+calls `Deno.exit(130)`) saves nothing, so its record stays `running` under a
+dead pid. Local `swamp run doctor --fix` and `swamp workflow recover` interrupt
+such a run when this host's run tracker shows its owner is gone, tagged
+`interrupt_reason: owner_process_dead`; `swamp workflow resume` on it names
+`workflow recover` (`settleDeadOwnerRun` in
+`src/domain/workflows/orphaned_run_reaper.ts`; see
+[run-tracker](../enablers/run-tracker.md)). `recover --assess-only` shows the
+assessment for such a run without writing it.
 
 A `RunCancelRegistry` in the serve layer tracks AbortControllers for every
 execution path (scheduled, WebSocket ad-hoc, webhook). The cancel API checks
@@ -1715,14 +1725,16 @@ deliberately backgrounded keeps running.
 
 ### Recovery
 
-When a serve instance crashes during a run, the run is marked `interrupted` and
-its in-flight steps `unknown`. An `unknown` step was running at crash time, so
+When a serve instance crashes during a run, or a run's owning process dies, the
+run is marked `interrupted` and its in-flight steps `unknown`. An `unknown` step was running at crash time, so
 its outcome is unclear: it may have completed externally without Swamp
 recording the result.
 
-**Step-boundary checkpoints:** the run is saved each time a step reaches a
-terminal state (succeeded, failed, skipped), not only at topological level
-boundaries, so a crash mid-level keeps that level's completed steps.
+**Step-boundary checkpoints:** the run is saved each time a step starts and
+each time it reaches a terminal state (succeeded, failed, skipped), not only at
+topological level boundaries, so a crash mid-level keeps that level's completed
+steps, and a step that was running when the process died is recorded `running`
+and becomes `unknown`, never `pending`, when the run is interrupted.
 
 **Run plan identity:** at run start, the run plan records two fingerprints: one
 of the definition as loaded from disk (`definitionFingerprint`), and one of the

@@ -28,6 +28,7 @@ import {
   type ActiveRunStatus,
 } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import type { OwnerLiveness } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { isProcessDead } from "../runtime/process.ts";
 
 import { join } from "@std/path";
@@ -38,6 +39,14 @@ const RUN_TRACKER_DB_NAME = "run_tracker.db";
 
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
+
+/**
+ * How a CLI process judges a tracker row's owner: by this host's name, with
+ * a pid check against the local process table.
+ */
+export function localOwnerLiveness(): OwnerLiveness {
+  return { hostname: hostname(), isDead: isProcessDead };
+}
 const RETENTION_DAYS = 7;
 const SCHEMA_VERSION = 4;
 
@@ -368,9 +377,7 @@ export class RunTrackerStore implements RunTrackerRepository {
     const reaped: ActiveRun[] = [];
 
     for (const run of stale) {
-      const isLocal = instanceId && run.instanceId
-        ? run.instanceId === instanceId
-        : run.hostname === currentHostname;
+      const isLocal = run.isLocalTo(currentHostname, instanceId);
 
       const shouldReap = isLocal ? isProcessDead(run.pid) : true;
 
@@ -383,24 +390,24 @@ export class RunTrackerStore implements RunTrackerRepository {
     return reaped;
   }
 
-  reapDeadProcessRuns(instanceId?: string): ActiveRun[] {
+  /**
+   * Running rows owned by a process on this host that is no longer alive,
+   * whatever their heartbeat age. Rows owned by this process are excluded.
+   */
+  findDeadProcessRuns(instanceId?: string): ActiveRun[] {
     const currentHostname = hostname();
-    const running = this.findAllRunning();
-    const reaped: ActiveRun[] = [];
+    return this.findAllRunning().filter((run) =>
+      run.isLocalTo(currentHostname, instanceId) &&
+      run.pid !== Deno.pid &&
+      isProcessDead(run.pid)
+    );
+  }
 
-    for (const run of running) {
-      const isLocal = instanceId && run.instanceId
-        ? run.instanceId === instanceId
-        : run.hostname === currentHostname;
-
-      if (!isLocal) continue;
-      if (run.pid === Deno.pid) continue;
-      if (!isProcessDead(run.pid)) continue;
-
+  reapDeadProcessRuns(instanceId?: string): ActiveRun[] {
+    const reaped = this.findDeadProcessRuns(instanceId);
+    for (const run of reaped) {
       this.complete(run.id, "interrupted");
-      reaped.push(run);
     }
-
     return reaped;
   }
 

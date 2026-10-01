@@ -3060,7 +3060,8 @@ export class WorkflowExecutionService {
             });
           } else if (event.kind === "step_started") {
             // Saved so a run whose owner is killed mid-step still shows the
-            // step started (`workflow cancel` settles it from this record).
+            // step started: `workflow cancel` settles it from this record,
+            // and interrupting the run marks it unknown rather than pending.
             await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
@@ -3646,7 +3647,8 @@ export class WorkflowExecutionService {
             });
           } else if (event.kind === "step_started") {
             // Saved so a run whose owner is killed mid-step still shows the
-            // step started (`workflow cancel` settles it from this record).
+            // step started: `workflow cancel` settles it from this record,
+            // and interrupting the run marks it unknown rather than pending.
             await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;

@@ -26,14 +26,82 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   assessRecoveryForRun,
   findInterruptedRun,
 } from "../../domain/workflows/recovery_assessment.ts";
+import {
+  findDeadOwnerRuns,
+  settleDeadOwnerRun,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  localOwnerLiveness,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * The interrupted run to recover. A run still `running` whose owning
+ * process died without settling it (a force-exited `workflow run` or
+ * `resume`) is interrupted first, so it is found like any other. With
+ * `assessOnly` nothing is written: such a run is interrupted in memory only,
+ * to show what recovery would do.
+ */
+async function findRecoverableRun(
+  repoDir: string,
+  workflow: Workflow,
+  runRepo: WorkflowRunRepository,
+  runId: string | undefined,
+  assessOnly: boolean,
+): Promise<WorkflowRun | null> {
+  const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+  const liveness = localOwnerLiveness();
+  try {
+    const deadOwnerRuns = await findDeadOwnerRuns(
+      runRepo,
+      tracker,
+      workflow.id,
+      liveness,
+      runId,
+    );
+    if (!assessOnly) {
+      for (const run of deadOwnerRuns) {
+        await settleDeadOwnerRun(
+          runRepo,
+          tracker,
+          workflow.id,
+          run.id,
+          liveness,
+        );
+      }
+      return await findInterruptedRun(workflow, runRepo, runId);
+    }
+    for (const run of deadOwnerRuns) {
+      run.interrupt("owner_process_dead");
+    }
+    const interrupted = await findInterruptedRun(workflow, runRepo, runId);
+    const candidates = [
+      ...deadOwnerRuns,
+      ...(interrupted ? [interrupted] : []),
+    ];
+    return newestFirst(candidates)[0] ?? null;
+  } finally {
+    tracker.close();
+  }
+}
+
+function newestFirst(runs: WorkflowRun[]): WorkflowRun[] {
+  return [...runs].sort((a, b) =>
+    (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0)
+  );
+}
 
 export const workflowRecoverCommand = new Command()
   .name("recover")
@@ -79,9 +147,8 @@ export const workflowRecoverCommand = new Command()
         "recover",
       ]);
 
-      const repoDir = resolveRepoDir(options.repoDir);
-      const { repoContext } = await requireInitializedRepoUnlocked({
-        repoDir,
+      const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
@@ -94,10 +161,12 @@ export const workflowRecoverCommand = new Command()
         throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
 
-      const run = await findInterruptedRun(
+      const run = await findRecoverableRun(
+        repoDir,
         workflow,
         repoContext.workflowRunRepo,
         options.run as string | undefined,
+        !!options.assessOnly,
       );
       if (!run) {
         throw new UserError(

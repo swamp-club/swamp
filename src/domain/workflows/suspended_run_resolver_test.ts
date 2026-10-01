@@ -321,6 +321,45 @@ Deno.test("resolveResumableRun: --run refuses a run that is neither suspended no
   assertStringIncludes(error.message, "swamp workflow recover test-wf");
 });
 
+Deno.test("resolveResumableRun: --run names recover for a running run whose owner is gone", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = WorkflowRun.create(wf);
+  run.start(4242);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  for (const fromStep of [undefined, "s"]) {
+    const error = await assertRejects(
+      () =>
+        resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, {
+          fromStep,
+          ownerIsDead: (r) => r.id === run.id,
+        }),
+      Error,
+      "its owning process (pid 4242) is gone",
+    );
+    assertStringIncludes(
+      error.message,
+      `swamp workflow recover test-wf --run ${run.id}`,
+    );
+  }
+});
+
+Deno.test("resolveResumableRun: --run still says to wait for a running run whose owner is alive", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = WorkflowRun.create(wf);
+  run.start(4242);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, {
+        ownerIsDead: () => false,
+      }),
+    Error,
+    "is not suspended or failed (status: running). Wait for it to complete",
+  );
+});
+
 Deno.test("resolveResumableRun: refuses an ineligible failed run before resume starts", async () => {
   const wf = createWorkflow("test-wf");
   const run = createFailedRun(wf);

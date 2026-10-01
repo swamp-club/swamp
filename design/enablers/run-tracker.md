@@ -82,7 +82,25 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
    `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
    continuous reconciler and `run.doctor` also reconcile YAML workflow-run
-   records from dead remote instances whose heartbeats are gone.
+   records from dead remote instances whose heartbeats are gone. Local
+   `swamp run doctor` also counts a running row as stale as soon as its owner
+   is a dead process on this host (`findDeadProcessRuns`), without waiting
+   for the TTL, and with `--fix` reaps it through `reapDeadProcessRuns`.
+7. **Dead owner**: a process killed without running its cleanup (a second
+   Ctrl-C calls `Deno.exit(130)`) leaves its row `running` and its workflow
+   run record `running` under its pid. Local `swamp run doctor --fix` and
+   `swamp workflow recover` interrupt such a record, tagged
+   `interrupt_reason: owner_process_dead`, through `settleDeadOwnerRun`
+   (`src/domain/workflows/orphaned_run_reaper.ts`). Because they run while
+   other swamp processes may be live, they trust the row only when it is
+   `interrupted` (already reaped) or `running` on this host with a dead pid,
+   never a row the owner settled itself. They re-read the record and write it
+   only while it is still `running` under that pid. A record with no row is
+   left alone: it carries no hostname, so on a shared datastore its pid says
+   nothing about whether it is alive. A row reaped on the TTL alone, from
+   another host, still counts, as it does for the tracker.
+   `swamp workflow resume` on such a run names `workflow recover` instead of
+   saying to wait.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that
@@ -123,7 +141,8 @@ days are purged at startup. `swamp run gc` removes older records on demand:
 - `swamp run history --active`: running only
 - `swamp run history --all`: full tracked history
 - `swamp run doctor`: diagnose stale or orphaned runs
-- `swamp run doctor --fix`: reap stale runs
+- `swamp run doctor --fix`: reap stale runs, and interrupt workflow run records
+  their dead owner left `running`
 
 All support `--server` for a remote `swamp serve` instance and `--json`.
 

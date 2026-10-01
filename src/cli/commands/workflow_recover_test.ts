@@ -36,6 +36,10 @@ import {
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import { VERSION } from "./version.ts";
+import { hostname } from "node:os";
+import { ActiveRun } from "../../domain/models/active_run.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -498,5 +502,168 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
       UserError,
       "Workflow definition changed since the run started — start a new run with 'swamp workflow run greeting'",
     );
+  });
+});
+
+// Far above any real pid_max, so never a live process.
+const DEAD_PID = 2147483647;
+
+/**
+ * A run a force-exited `workflow run` left behind: recorded `running` under
+ * a dead pid, its step in flight, and its tracker row still `running`.
+ */
+function strandRun(
+  dir: string,
+  workflow: Workflow,
+  startedAt: string,
+): WorkflowRun {
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: "running",
+    startedAt,
+    pid: DEAD_PID,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt,
+      steps: [{ stepName: "deploy", status: "running", startedAt }],
+    }],
+    tags: {},
+  });
+  const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
+  try {
+    tracker.register(ActiveRun.createWorkflowRun({
+      id: run.id,
+      workflowName: workflow.name,
+      pid: DEAD_PID,
+      hostname: hostname(),
+    }));
+  } finally {
+    tracker.close();
+  }
+  return run;
+}
+
+function trackerStatus(dir: string, runId: string): string | undefined {
+  const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
+  try {
+    return tracker.findById(runId)?.status;
+  } finally {
+    tracker.close();
+  }
+}
+
+Deno.test("workflowRecoverCommand: --run recovers a run whose owning process died while it was running", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("stranded");
+    await repoContext.workflowRepo.save(workflow);
+    const run = strandRun(dir, workflow, "2026-09-20T10:00:00.000Z");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const findRun = () =>
+      repoContext.workflowRunRepo.findById(
+        workflow.id,
+        createWorkflowRunId(run.id),
+      );
+
+    // The in-flight step becomes unknown, so recovery asks before it runs
+    // the step again.
+    await assertRejects(
+      () => recover(["stranded", "--run", run.id, "--json", "--repo-dir", dir]),
+      UserError,
+      "Unguarded steps: deploy",
+    );
+    const interrupted = await findRun();
+    assertEquals(interrupted?.status, "interrupted");
+    assertEquals(interrupted?.tags["interrupt_reason"], "owner_process_dead");
+    assertEquals(trackerStatus(dir, run.id), "interrupted");
+
+    const result = lastJson(
+      await recover([
+        "stranded",
+        "--run",
+        run.id,
+        "--acknowledge-unknown",
+        "--json",
+        "--repo-dir",
+        dir,
+      ]),
+    );
+    assertEquals(result.recovered, true);
+    assertEquals((await findRun())?.status, "suspended");
+  });
+});
+
+Deno.test("workflowRecoverCommand: --assess-only previews a run whose owning process died without writing it", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("stranded");
+    await repoContext.workflowRepo.save(workflow);
+    const older = interruptedRun(workflow, "2026-09-19T10:00:00.000Z");
+    await repoContext.workflowRunRepo.save(workflow.id, older);
+    const run = strandRun(dir, workflow, "2026-09-20T10:00:00.000Z");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+
+    const assessment = lastJson(
+      await recover(["stranded", "--assess-only", "--json", "--repo-dir", dir]),
+    );
+
+    assertEquals(assessment.runId, run.id);
+    assertEquals(assessment.unguardedSteps, ["deploy"]);
+    const reloaded = await repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(run.id),
+    );
+    assertEquals(reloaded?.status, "running");
+    assertEquals(trackerStatus(dir, run.id), "running");
+  });
+});
+
+Deno.test("workflowRecoverCommand: leaves a running run whose owner is alive", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("live");
+    await repoContext.workflowRepo.save(workflow);
+    const startedAt = "2026-09-20T10:00:00.000Z";
+    const run = WorkflowRun.fromData({
+      id: crypto.randomUUID(),
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "running",
+      startedAt,
+      pid: Deno.pid,
+      jobs: [{
+        jobName: "main",
+        status: "running",
+        startedAt,
+        steps: [{ stepName: "deploy", status: "running", startedAt }],
+      }],
+      tags: {},
+    });
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
+    try {
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: run.id,
+        workflowName: workflow.name,
+        pid: Deno.pid,
+        hostname: hostname(),
+      }));
+    } finally {
+      tracker.close();
+    }
+
+    await assertRejects(
+      () => recover(["live", "--run", run.id, "--json", "--repo-dir", dir]),
+      UserError,
+      `Interrupted run ${run.id} not found`,
+    );
+    const reloaded = await repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(run.id),
+    );
+    assertEquals(reloaded?.status, "running");
   });
 });

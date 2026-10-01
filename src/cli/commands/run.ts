@@ -27,8 +27,15 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   DEFAULT_STALE_TTL_MS,
+  localOwnerLiveness,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
+import {
+  type OwnerLiveness,
+  runHasDeadOwner,
+  settleDeadOwnerRun,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
+import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import {
   createModelRunsOutput,
@@ -151,6 +158,79 @@ const runHistoryCommand = withRemoteOptions(
     }),
 );
 
+/** How far back `run doctor` looks for workflow runs left `running`. */
+const ORPHAN_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface LocalRunDiagnosis {
+  readonly totalTracked: number;
+  readonly active: ActiveRun[];
+  readonly stale: ActiveRun[];
+  readonly reaped: number;
+  readonly orphanedWorkflowRuns: number;
+  readonly orphanedReaped: number;
+}
+
+/**
+ * Local `swamp run doctor`. A tracker row is stale when its heartbeat
+ * expired or its owner is a dead process on this host. Workflow run records
+ * still `running` whose tracker row shows a dead owner are orphaned; with
+ * `fix`, the stale rows are reaped and the orphaned records interrupted so
+ * `swamp workflow recover` accepts them.
+ */
+export async function diagnoseLocalRuns(
+  tracker: RunTrackerStore,
+  runRepo: WorkflowRunRepository,
+  liveness: OwnerLiveness,
+  fix: boolean,
+): Promise<LocalRunDiagnosis> {
+  const allRuns = tracker.findAll();
+  const staleById = new Map(
+    tracker.findStaleRuns(DEFAULT_STALE_TTL_MS).map((r) => [r.id, r]),
+  );
+  for (const run of tracker.findDeadProcessRuns(liveness.instanceId)) {
+    staleById.set(run.id, run);
+  }
+  const stale = [...staleById.values()];
+  const active = allRuns.filter((r) =>
+    r.status === "running" && !staleById.has(r.id)
+  );
+
+  let reaped = 0;
+  if (fix && stale.length > 0) {
+    const reapedIds = new Set([
+      ...tracker.reapStaleRuns(DEFAULT_STALE_TTL_MS, liveness.instanceId),
+      ...tracker.reapDeadProcessRuns(liveness.instanceId),
+    ].map((r) => r.id));
+    reaped = reapedIds.size;
+  }
+
+  let orphanedWorkflowRuns = 0;
+  let orphanedReaped = 0;
+  const records = await runRepo.findGlobalByStatus(
+    "running",
+    new Date(Date.now() - ORPHAN_SCAN_WINDOW_MS),
+  );
+  for (const { run, workflowId } of records) {
+    if (!runHasDeadOwner(run, tracker, liveness)) continue;
+    orphanedWorkflowRuns++;
+    if (
+      fix &&
+      await settleDeadOwnerRun(runRepo, tracker, workflowId, run.id, liveness)
+    ) {
+      orphanedReaped++;
+    }
+  }
+
+  return {
+    totalTracked: allRuns.length,
+    active,
+    stale,
+    reaped,
+    orphanedWorkflowRuns,
+    orphanedReaped,
+  };
+}
+
 const runDoctorCommand = withRemoteOptions(
   new Command()
     .name("doctor")
@@ -210,7 +290,7 @@ const runDoctorCommand = withRemoteOptions(
         return;
       }
 
-      const { repoDir } = await requireInitializedRepoUnlocked({
+      const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
       });
@@ -218,26 +298,31 @@ const runDoctorCommand = withRemoteOptions(
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
 
       try {
-        const allRuns = tracker.findAll();
-        const running = allRuns.filter((r) => r.status === "running");
-        const stale = tracker.findStaleRuns(DEFAULT_STALE_TTL_MS);
-        const active = running.filter((r) => !r.isStale(DEFAULT_STALE_TTL_MS));
-
-        let reaped = 0;
-        if (options.fix && stale.length > 0) {
-          const reapedRuns = tracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
-          reaped = reapedRuns.length;
-        }
+        const result = await diagnoseLocalRuns(
+          tracker,
+          repoContext.workflowRunRepo,
+          localOwnerLiveness(),
+          !!options.fix,
+        );
 
         if (ctx.outputMode === "json") {
           writeDoctorRunsJson(
-            allRuns.length,
-            active,
-            stale,
-            reaped,
+            result.totalTracked,
+            result.active,
+            result.stale,
+            result.reaped,
+            result.orphanedWorkflowRuns,
+            result.orphanedReaped,
           );
         } else {
-          writeDoctorRunsLog(active, stale, reaped, !!options.fix);
+          writeDoctorRunsLog(
+            result.active,
+            result.stale,
+            result.reaped,
+            !!options.fix,
+            result.orphanedWorkflowRuns,
+            result.orphanedReaped,
+          );
         }
       } finally {
         tracker.close();
