@@ -1616,7 +1616,9 @@ save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,
 `src/cli/commands/model_cancel.ts`). A process that also owns a running
 workflow run, as a workflow step's method run does, gets the workflow cancel
 grace instead, so its cleanup steps can run. `--all` stops the owning
-processes together, each once.
+processes together, each once. A run its owner finished another way during
+the wait keeps that status, and the command reports it as finished before the
+cancel took effect (`finished` in `--json`) rather than as cancelled.
 
 ### Post-Cancellation Cleanup
 

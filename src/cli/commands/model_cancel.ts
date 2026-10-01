@@ -30,7 +30,10 @@ import {
   killProcessTree,
 } from "../../infrastructure/process/process_kill.ts";
 import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts";
-import type { ActiveRun } from "../../domain/models/active_run.ts";
+import type {
+  ActiveRun,
+  ActiveRunStatus,
+} from "../../domain/models/active_run.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
@@ -60,7 +63,7 @@ export interface OwnerStop {
 export interface CancelModelMethodRunsDeps {
   tracker: Pick<
     RunTrackerRepository,
-    "findAllRunning" | "complete" | "recordCancelReason"
+    "findAllRunning" | "findById" | "complete" | "recordCancelReason"
   >;
   killProcess?: (
     pid: number,
@@ -85,19 +88,28 @@ export function ownerStopGraceMs(
     : METHOD_OWNER_STOP_GRACE_MS;
 }
 
+/** How a method run ended once cancel was done with it. */
+export interface MethodRunCancelOutcome {
+  run: ActiveRun;
+  /** `cancelled`, or how the run finished before the cancel took effect. */
+  status: ActiveRunStatus;
+}
+
 /**
  * Cancels method runs: stops their owning processes together, each process
  * once, since the steps of one workflow share its process and a second
  * SIGTERM makes an owner exit at once. Then completes each tracker row as
  * cancelled. An owner that stopped in time completed its row itself, without
- * the reason, so the reason is recorded on it afterwards.
+ * the reason, so the reason is recorded on it afterwards. Returns each run's
+ * final status: a run its owner finished another way during the wait keeps
+ * that status.
  */
 export async function cancelModelMethodRuns(
   runs: readonly ActiveRun[],
   reason: string | undefined,
   { tracker, killProcess = killProcessTree, onStopping }:
     CancelModelMethodRunsDeps,
-): Promise<void> {
+): Promise<MethodRunCancelOutcome[]> {
   const runningRows = tracker.findAllRunning();
   const pids = new Set<number>();
   for (const run of runs) {
@@ -112,10 +124,13 @@ export async function cancelModelMethodRuns(
     stops.map(({ pid, maxWaitMs }) => killProcess(pid, { maxWaitMs })),
   );
 
-  for (const run of runs) {
+  return runs.map((run) => {
     tracker.complete(run.id, "cancelled", reason);
     if (reason !== undefined) tracker.recordCancelReason(run.id, reason);
-  }
+    // Rows are purged only days after they complete, so the row is still
+    // there; the fallback is the status just written.
+    return { run, status: tracker.findById(run.id)?.status ?? "cancelled" };
+  });
 }
 
 /**
@@ -175,14 +190,14 @@ export const modelCancelCommand = new Command()
 
         if (trackerRuns.length === 0) {
           if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify({ cancelled: [] }));
+            console.log(JSON.stringify({ cancelled: [], finished: [] }));
           } else {
             cliCtx.logger.info("No running model method runs to cancel.");
           }
           return;
         }
 
-        await cancelModelMethodRuns(trackerRuns, reason, {
+        const outcomes = await cancelModelMethodRuns(trackerRuns, reason, {
           tracker: runTracker,
           onStopping: (stops) => {
             const waiting = liveStops(stops);
@@ -196,22 +211,37 @@ export const modelCancelCommand = new Command()
               .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
           },
         });
-        const cancelled = trackerRuns.map((run) => ({
+        const fields = (run: ActiveRun) => ({
           id: run.id,
           type: run.modelType ?? "unknown",
           method: run.methodName ?? "unknown",
-        }));
+        });
+        const cancelled = outcomes.filter((o) => o.status === "cancelled")
+          .map(({ run }) => fields(run));
+        const finished = outcomes.filter((o) => o.status !== "cancelled")
+          .map(({ run, status }) => ({ ...fields(run), status }));
 
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
             cancelled,
+            finished,
             reason: reason ?? null,
           }));
         } else {
-          cliCtx.logger
-            .info`Cancelled ${cancelled.length} running model method run(s)`;
-          for (const c of cancelled) {
-            cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
+          if (cancelled.length > 0) {
+            cliCtx.logger
+              .info`Cancelled ${cancelled.length} running model method run(s)`;
+            for (const c of cancelled) {
+              cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
+            }
+          }
+          if (finished.length > 0) {
+            cliCtx.logger
+              .warn`${finished.length} method run(s) finished before the cancel took effect`;
+            for (const f of finished) {
+              cliCtx.logger
+                .warn`  ${f.type}/${f.method} (${f.id}): ${f.status}`;
+            }
           }
         }
         return;
@@ -242,7 +272,7 @@ export const modelCancelCommand = new Command()
         (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
       )[0];
 
-      await cancelModelMethodRuns([latest], reason, {
+      const [{ status }] = await cancelModelMethodRuns([latest], reason, {
         tracker: runTracker,
         onStopping: (stops) => {
           const waiting = liveStops(stops);
@@ -258,14 +288,19 @@ export const modelCancelCommand = new Command()
           modelName: definition.name,
           type: type.normalized,
           method: latest.methodName ?? "unknown",
-          status: "cancelled",
-          reason: reason ?? null,
+          status,
+          reason: status === "cancelled" ? reason ?? null : null,
         }));
-      } else {
+      } else if (status === "cancelled") {
         cliCtx.logger
           .info`Cancelled method run ${
           latest.methodName ?? "unknown"
         } for model ${definition.name} (${latest.id})`;
+      } else {
+        cliCtx.logger
+          .warn`Method run ${
+          latest.methodName ?? "unknown"
+        } for model ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
       }
     } finally {
       runTracker.close();

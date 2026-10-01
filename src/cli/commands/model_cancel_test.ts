@@ -212,7 +212,7 @@ Deno.test("cancelModelMethodRuns: records the reason on a run its owner cancelle
     const run = methodRun(OWNER_PID);
     tracker.register(run);
 
-    await cancelModelMethodRuns([run], "No longer needed", {
+    const outcomes = await cancelModelMethodRuns([run], "No longer needed", {
       tracker,
       // The owner handles SIGTERM by completing its own row, without a reason.
       killProcess: () => {
@@ -221,17 +221,18 @@ Deno.test("cancelModelMethodRuns: records the reason on a run its owner cancelle
       },
     });
 
+    assertEquals(outcomes.map((o) => o.status), ["cancelled"]);
     assertEquals(tracker.findById(run.id)?.status, "cancelled");
     assertEquals(readCancelReason(dbPath, run.id), "No longer needed");
   });
 });
 
-Deno.test("cancelModelMethodRuns: keeps the status of a run its owner finished otherwise", async () => {
+Deno.test("cancelModelMethodRuns: reports and keeps the status of a run its owner finished otherwise", async () => {
   await withTracker(async (tracker, dbPath) => {
     const run = methodRun(OWNER_PID);
     tracker.register(run);
 
-    await cancelModelMethodRuns([run], "No longer needed", {
+    const outcomes = await cancelModelMethodRuns([run], "No longer needed", {
       tracker,
       killProcess: () => {
         tracker.complete(run.id, "completed");
@@ -239,7 +240,34 @@ Deno.test("cancelModelMethodRuns: keeps the status of a run its owner finished o
       },
     });
 
+    assertEquals(outcomes.map((o) => o.status), ["completed"]);
     assertEquals(tracker.findById(run.id)?.status, "completed");
     assertEquals(readCancelReason(dbPath, run.id), null);
+  });
+});
+
+Deno.test("cancelModelMethodRuns: reports each run's own outcome when only some finished first", async () => {
+  await withTracker(async (tracker) => {
+    const finishing = methodRun(OWNER_PID);
+    const stuck = methodRun(OWNER_PID + 1);
+    tracker.register(finishing);
+    tracker.register(stuck);
+
+    const outcomes = await cancelModelMethodRuns(
+      [finishing, stuck],
+      undefined,
+      {
+        tracker,
+        killProcess: (pid) => {
+          if (pid === OWNER_PID) tracker.complete(finishing.id, "failed");
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    assertEquals(
+      outcomes.map((o) => [o.run.id, o.status]),
+      [[finishing.id, "failed"], [stuck.id, "cancelled"]],
+    );
   });
 });
