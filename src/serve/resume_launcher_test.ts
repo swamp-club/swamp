@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
+  autoResumeParentAfterChild,
   startDetachedResume,
 } from "./resume_launcher.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
@@ -225,7 +226,9 @@ Deno.test("startDetachedResume: registers the resume and unwinds the registratio
     workflowIdOrName: "gated",
     runId: run.id,
     principalId: "user:operator",
-    onTerminal: (t) => terminals.push(t),
+    onTerminal: (t) => {
+      terminals.push(t);
+    },
   });
 
   assertEquals(result.ok, true);
@@ -562,4 +565,346 @@ Deno.test("autoResumeAfterApproval: audits a launch refused because the workflow
   assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
   assertStringIncludes(audit[0].detail ?? "", "code=workflow_resume_failed");
   assertEquals(run.status, "suspended");
+});
+
+// --- Parent auto-resume after a nested run (swamp-club#2736) -----------------
+
+function nestedWorkflows(autoResume: boolean): {
+  parent: Workflow;
+  child: Workflow;
+} {
+  const child = Workflow.create({
+    name: "child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok") }),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "parent",
+    autoResume,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  return { parent, child };
+}
+
+/** A parent suspended on a child that has since succeeded. */
+function settledPair(parent: Workflow, child: Workflow): {
+  parentRun: WorkflowRun;
+  childRun: WorkflowRun;
+} {
+  const parentRun = WorkflowRun.create(parent);
+  parentRun.start();
+  const childRun = WorkflowRun.create(child);
+  childRun.recordParentRun({
+    workflowId: parent.id,
+    workflowName: parent.name,
+    runId: parentRun.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parent.name],
+  });
+  childRun.start();
+  childRun.getJob("child-job")!.getStep("gate")!.succeed();
+  childRun.getJob("child-job")!.succeed();
+  childRun.complete();
+  parentRun.getJob("main")!.start();
+  parentRun.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+    workflowId: child.id,
+    workflowName: child.name,
+    runId: childRun.id,
+  });
+  parentRun.suspend();
+  return { parentRun, childRun };
+}
+
+function nestedHarness(
+  workflows: Workflow[],
+  runs: WorkflowRun[],
+  authMode: "none" | "token" = "none",
+): Harness {
+  const registry = new RecordingRegistry();
+  const audit: Array<{ action: string; detail?: string }> = [];
+  const ctx = {
+    repoDir: "/nonexistent-swamp-repo",
+    activeRunRegistry: registry,
+    serveOptions: { autoResume: false } as MergedServeOptions,
+    authConfig: { mode: authMode },
+    auditEmitter: {
+      emit: (event: { action: string; detail?: string }) => {
+        audit.push({ action: event.action, detail: event.detail });
+      },
+    } as unknown as AuditEmitter,
+    repoContext: {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+        findById: (id: string) =>
+          Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+      },
+      workflowRunRepo: {
+        findById: (_workflowId: string, runId: string) =>
+          Promise.resolve(runs.find((r) => r.id === runId) ?? null),
+        findAllByWorkflowId: () => Promise.resolve(runs),
+      },
+    },
+  } as unknown as ConnectionContext;
+  return { ctx, registry, audit, lookedUp: [] };
+}
+
+const subject = { principal: { kind: "user" as const, id: "approver" } };
+
+Deno.test("autoResumeParentAfterChild: resumes the parent once its nested run finished", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx, registry, audit } = nestedHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+
+  const launched = await autoResumeParentAfterChild(
+    ctx,
+    { workflowId: child.id, runId: childRun.id },
+    subject,
+  );
+
+  assertEquals(launched, true);
+  assertEquals(registry.registered.map((r) => r.runId), [parentRun.id]);
+  assertEquals(audit.map((a) => a.action), ["workflow.auto_resume"]);
+});
+
+Deno.test("autoResumeParentAfterChild: skips and audits when the parent's policy is off or the subject may not approve it", async () => {
+  for (
+    const [autoResume, authMode, reason] of [
+      [false, "none", "policy"],
+      [true, "token", "not_authorized"],
+    ] as const
+  ) {
+    const { parent, child } = nestedWorkflows(autoResume);
+    const { parentRun, childRun } = settledPair(parent, child);
+    const { ctx, registry, audit } = nestedHarness(
+      [parent, child],
+      [parentRun, childRun],
+      authMode,
+    );
+    const launched = await autoResumeParentAfterChild(
+      ctx,
+      { workflowId: child.id, runId: childRun.id },
+      subject,
+    );
+    assertEquals(launched, false);
+    assertEquals(registry.registered.length, 0);
+    assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_skipped"]);
+    assertStringIncludes(audit[0].detail ?? "", `reason=${reason}`);
+  }
+});
+
+Deno.test("autoResumeParentAfterChild: leaves alone a parent another process may still drive, or one that no longer waits", async () => {
+  const { parent, child } = nestedWorkflows(true);
+
+  // A sibling step of the parent is still running.
+  const running = settledPair(parent, child);
+  const sibling = running.parentRun.getJob("main")!;
+  const extra = WorkflowRun.fromData({
+    ...running.parentRun.toData(),
+    jobs: [{
+      ...sibling.toData(),
+      steps: [...sibling.toData().steps, {
+        stepName: "sibling",
+        status: "running",
+      }],
+    }],
+  });
+  let h = nestedHarness([parent, child], [extra, running.childRun]);
+  assertEquals(
+    await autoResumeParentAfterChild(
+      h.ctx,
+      { workflowId: child.id, runId: running.childRun.id },
+      subject,
+    ),
+    false,
+  );
+  assertStringIncludes(h.audit[0].detail ?? "", "reason=parent_steps_running");
+
+  // The parent was cancelled since: nothing to resume, nothing audited.
+  const ended = settledPair(parent, child);
+  ended.parentRun.cancel("stop");
+  h = nestedHarness([parent, child], [ended.parentRun, ended.childRun]);
+  assertEquals(
+    await autoResumeParentAfterChild(
+      h.ctx,
+      { workflowId: child.id, runId: ended.childRun.id },
+      subject,
+    ),
+    false,
+  );
+  assertEquals(h.registry.registered.length, 0);
+  assertEquals(h.audit, []);
+});
+
+Deno.test("autoResumeParentAfterChild: waits for a parent this instance still drives, then resumes it", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx, registry } = nestedHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+  const driving = Promise.withResolvers<void>();
+  let awaited = false;
+  registry.register({
+    runId: parentRun.id,
+    kind: "workflow-run",
+    resourceName: parent.name,
+    buffer: {} as ActiveRun["buffer"],
+    controller: new AbortController(),
+    startedAt: new Date(),
+    get completion() {
+      awaited = true;
+      return driving.promise;
+    },
+    principalId: null,
+  });
+
+  const pending = autoResumeParentAfterChild(
+    ctx,
+    { workflowId: child.id, runId: childRun.id },
+    subject,
+  );
+  await waitFor(() => awaited, "the parent's driver awaited");
+  // Still driven here: nothing new is registered yet.
+  assertEquals(registry.registered.length, 1);
+  // The parent's driver finishes and leaves the registry.
+  registry.deregister(parentRun.id);
+  driving.resolve();
+
+  assertEquals(await pending, true);
+  assertEquals(registry.registered.length, 2);
+  assertEquals(registry.registered.at(-1)?.runId, parentRun.id);
+});
+
+Deno.test("autoResumeParentAfterChild: refuses to start anything once shutdown began", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx, registry, audit } = nestedHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+  registry.beginDraining();
+  assertEquals(
+    await autoResumeParentAfterChild(
+      ctx,
+      { workflowId: child.id, runId: childRun.id },
+      subject,
+    ),
+    false,
+  );
+  assertStringIncludes(audit[0].detail ?? "", "reason=shutting_down");
+});
+
+Deno.test("startDetachedResume: a nested refusal names a grandchild only when every named run is readable", async () => {
+  const secret = Workflow.create({
+    name: "secret-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok") }),
+        ],
+      }),
+    ],
+  });
+  const middle = Workflow.create({
+    name: "middle",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("secret-child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const root = Workflow.create({
+    name: "root",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("middle"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const link = (
+    parent: WorkflowRun,
+    parentWf: Workflow,
+    child: WorkflowRun,
+  ) => {
+    child.recordParentRun({
+      workflowId: parentWf.id,
+      workflowName: parentWf.name,
+      runId: parent.id,
+      jobName: "main",
+      stepName: "call-child",
+      nestingDepth: 1,
+      ancestorWorkflowNames: [parentWf.name],
+    });
+    parent.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+      workflowId: child.workflowId,
+      workflowName: child.workflowName,
+      runId: child.id,
+    });
+  };
+  const rootRun = WorkflowRun.create(root);
+  const middleRun = WorkflowRun.create(middle);
+  const secretRun = WorkflowRun.create(secret);
+  for (const run of [rootRun, middleRun, secretRun]) run.start();
+  secretRun.getJob("child-job")!.getStep("gate")!.waitForApproval("ok");
+  link(rootRun, root, middleRun);
+  link(middleRun, middle, secretRun);
+  for (const run of [rootRun, middleRun, secretRun]) run.suspend();
+  const { ctx, registry } = nestedHarness([root, middle, secret], [
+    rootRun,
+    middleRun,
+    secretRun,
+  ]);
+
+  const refuse = async (readable: (name: string) => boolean) => {
+    const result = await startDetachedResume(ctx, registry, {
+      workflowIdOrName: root.name,
+      runId: rootRun.id,
+      principalId: null,
+      canReadWorkflow: (w) => Promise.resolve(readable(w.workflowName)),
+    });
+    assertEquals(result.ok, false);
+    return result.ok ? "" : result.message;
+  };
+
+  const hidden = await refuse((name) => name !== "secret-child");
+  assertEquals(hidden.includes(secretRun.id), false);
+  assertEquals(hidden.includes("secret-child"), false);
+  const shown = await refuse(() => true);
+  assertStringIncludes(shown, secretRun.id);
+  assertEquals(registry.registered.length, 0);
 });

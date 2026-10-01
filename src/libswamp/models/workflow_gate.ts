@@ -108,6 +108,17 @@ export function createWorkflowGateService(
           stepName: completed.data.stepName,
           approved: false,
           decidedBy,
+          ...(completed.data.detachedNestedRuns
+            ? {
+              detachedNestedRuns: completed.data.detachedNestedRuns.map((
+                d,
+              ) => ({
+                workflowName: d.workflowName,
+                runId: d.runId,
+                cancelCommand: d.cancelCommand,
+              })),
+            }
+            : {}),
         };
       } catch (error) {
         return {

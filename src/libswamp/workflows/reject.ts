@@ -31,15 +31,31 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type AwaitingParentData,
+  awaitingParentOf,
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+  nestedWaitGateError,
+} from "./nested_runs.ts";
 
 export interface WorkflowRejectData {
   runId: string;
+  /** The id of the workflow the rejected run belongs to. */
+  workflowId: string;
   workflowName: string;
   stepName: string;
   approved: false;
   decidedBy: string;
   reason: string | null;
   runStatus: string;
+  /**
+   * Nested runs the rejected run's nested steps still waited on: left
+   * suspended on their own (swamp-club#2736).
+   */
+  detachedNestedRuns?: DetachedNestedRunData[];
+  /** The parent run still waiting on this nested run, to resume next. */
+  awaitingParent?: AwaitingParentData;
 }
 
 export type WorkflowRejectEvent =
@@ -129,7 +145,8 @@ export async function* workflowReject(
       let jobName: string | undefined;
       for (const job of run.jobs) {
         const s = job.getStep(input.stepName);
-        if (s && s.status === "waiting_approval") {
+        // A nested workflow step waiting on its child run is not a gate.
+        if (s && s.status === "waiting_approval" && !s.isNestedWait) {
           step = s;
           matchedJob = job;
           jobName = job.jobName;
@@ -139,9 +156,10 @@ export async function* workflowReject(
       if (!step || !matchedJob) {
         yield {
           kind: "error",
-          error: validationFailed(
-            `Step "${input.stepName}" is not awaiting approval in the suspended run`,
-          ),
+          error: nestedWaitGateError(run, input.stepName) ??
+            validationFailed(
+              `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+            ),
         };
         return;
       }
@@ -180,17 +198,28 @@ export async function* workflowReject(
       if (deps.runTracker) {
         deps.runTracker.complete(run.id, "failed");
       }
+      // The decision is saved: an unreadable linked run must not turn it
+      // into an error, so these reads are best effort.
+      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+        () => [],
+      );
+      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+        undefined
+      );
 
       yield {
         kind: "completed",
         data: {
           runId: run.id,
+          workflowId,
           workflowName,
           stepName: input.stepName,
           approved: false,
           decidedBy,
           reason: input.reason ?? null,
           runStatus: "failed",
+          ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+          ...(awaitingParent ? { awaitingParent } : {}),
         },
       };
     })(),

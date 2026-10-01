@@ -117,7 +117,14 @@ Table notes:
   tokens, enrollment tokens, workers, step leases, etc.) off the orchestrator
   (`src/domain/remote/remote_dispatch.ts`).
 - `--auto-resume` applies to workflows that declare no inputs and leave
-  `autoResume` unset (see "Manual Approval" in workflows.md).
+  `autoResume` unset (see "Manual Approval" in workflows.md). The same policy,
+  read from the parent's workflow, decides whether serve resumes a parent
+  once the nested run it waits on finishes ("Gates inside a nested workflow"
+  in workflows.md).
+- Once shutdown begins the active-run registry refuses every new run
+  (`ActiveRunRegistry.beginDraining`, called first by `runShutdownDrain`), so
+  a resume chained after another cannot start on an instance that is going
+  away.
 
 ### Deployment mode
 
@@ -747,7 +754,20 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `swamp workflow resume` command. Resume sends `workflow.resume`, then a
   `cancel` carrying the request id, which detaches the dashboard from the
   serve-driven run without cancelling it
-  (`packages/dashboard/src/client/stream.ts`).
+  (`packages/dashboard/src/client/stream.ts`). A run suspended on a nested
+  workflow run has no gate of its own: its detail page names the nested run it
+  waits on, and Resume appears once that run finished (`awaitingResume` is
+  derived from the nested runs). A nested run's approval row names its
+  parent. Fields that link a run to another run (`parentRun`, `nestedWaits`,
+  a step's `nestedRun`, detached nested runs on cancel and reject results)
+  are returned only when the caller may read the other run's workflow
+  (`src/serve/handlers/nested_run_redaction.ts`). The same holds for run and
+  resume streams, redacted per attached client, for the error of a step
+  whose nested run is hidden, and for the refusals to approve, reject or
+  resume a run waiting on a nested run, which then name no run. A nested
+  run's own events, forwarded into its parent's stream while the parent runs
+  it, are not redacted; they name the nested run, and its
+  `approval_requested` event names its workflow.
 - **Club heartbeat.** In OAuth mode serve registers with swamp-club at startup
   and sends a heartbeat hourly (`src/serve/club_heartbeat_service.ts`,
   `src/serve/oauth_client.ts`). This needs a resolved OAuth client id, a

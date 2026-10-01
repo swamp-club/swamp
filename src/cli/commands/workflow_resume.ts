@@ -55,6 +55,7 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
+  awaitingParentOf,
   consumeStream,
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
@@ -581,6 +582,21 @@ export const workflowResumeCommand = withRemoteOptions(
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();
+    }
+
+    // A nested run that finished leaves its parent waiting: name the next
+    // command (swamp-club#2736). Best effort: the resume is already saved.
+    if (run.parentRun !== undefined) {
+      const finished = await runRepo.findById(workflow.id, run.id)
+        .catch(() => null);
+      const parent = finished && finished.status !== "suspended"
+        ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
+          .catch(() => undefined)
+        : undefined;
+      if (parent) {
+        cliCtx.logger
+          .info`Parent run ${parent.runId} of workflow ${parent.workflowName} waits on this run. Resume it with ${parent.resumeCommand}`;
+      }
     }
 
     if (renderer.workflowFailed()) {

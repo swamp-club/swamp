@@ -31,11 +31,13 @@ import {
   authorizeOrReject,
   cancelActor,
   cancelReasonFor,
+  captureDecisionSubject,
   clientErrorDetails,
   closeConnectionsForPrincipal,
   closeSession,
   COMPRESSION_THRESHOLD_BYTES,
   type ConnectionContext,
+  decideSubjectAccess,
   emitRunCancelAudit,
   emitSystemAuditEvent,
   filterByResources,
@@ -1441,4 +1443,140 @@ Deno.test("isAccessModelType: a blank or separator-only typeArg fails the reques
   for (const typeArg of ["::", "/", " "]) {
     assertThrows(() => isAccessModelType(typeArg, undefined));
   }
+});
+
+// --- decideSubjectAccess (swamp-club#2736) ----------------------------------
+
+interface TokenRecordFields {
+  state?: "active" | "expired" | "revoked";
+  principalId?: string;
+  createdAt?: string;
+  expiresAt?: string;
+  groups?: string[];
+}
+
+/** A context whose repository answers one server token record. */
+function withTokenRecord(
+  ctx: ConnectionContext,
+  fields: TokenRecordFields | null,
+): ConnectionContext {
+  const record = fields === null ? null : {
+    name: "tok",
+    state: fields.state ?? "active",
+    principalId: fields.principalId ?? "user:adam",
+    principalEmail: "adam@example.com",
+    collectives: [],
+    groups: fields.groups ?? [],
+    createdAt: fields.createdAt ?? "2026-01-01T00:00:00.000Z",
+    expiresAt: fields.expiresAt ?? "2999-01-01T00:00:00.000Z",
+    vaultName: "v",
+    secretKey: "k",
+  };
+  ctx.repoContext = {
+    definitionRepo: {
+      findByName: () => Promise.resolve(record ? { id: "def-1" } : null),
+    },
+    unifiedDataRepo: {
+      getContent: () =>
+        Promise.resolve(
+          record ? new TextEncoder().encode(JSON.stringify(record)) : null,
+        ),
+    },
+  } as unknown as ConnectionContext["repoContext"];
+  return ctx;
+}
+
+function subjectOn(): ReturnType<typeof captureDecisionSubject> {
+  const socket = makeSocket();
+  setConnectionToken(socket, {
+    name: "tok",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    principalId: "user:adam",
+  });
+  return captureDecisionSubject(socket, makePrincipal("adam"));
+}
+
+const approveDeploy = makeGrant({
+  actions: ["approve"],
+  resource: { kind: "workflow", pattern: "deploy" },
+});
+
+Deno.test("decideSubjectAccess: allows a grant the captured token still holds", async () => {
+  const ctx = withTokenRecord(makeCtx([approveDeploy]), {});
+  assertEquals(
+    await decideSubjectAccess(ctx, subjectOn(), "approve", deployWorkflow),
+    true,
+  );
+  assertEquals(
+    await decideSubjectAccess(ctx, subjectOn(), "run", deployWorkflow),
+    false,
+  );
+});
+
+Deno.test("decideSubjectAccess: reads group memberships from the token record, not the socket", async () => {
+  const grant = makeGrant({
+    subject: { kind: "idp-group", name: "release" },
+    actions: ["approve"],
+    resource: { kind: "workflow", pattern: "deploy" },
+  });
+  const member = withTokenRecord(makeCtx([grant]), { groups: ["release"] });
+  assertEquals(
+    await decideSubjectAccess(member, subjectOn(), "approve", deployWorkflow),
+    true,
+  );
+  // Removed from the group since the subject was captured.
+  const removed = withTokenRecord(makeCtx([grant]), { groups: [] });
+  assertEquals(
+    await decideSubjectAccess(removed, subjectOn(), "approve", deployWorkflow),
+    false,
+  );
+});
+
+Deno.test("decideSubjectAccess: refuses a revoked, expired, rotated, foreign or missing token", async () => {
+  const cases: (TokenRecordFields | null)[] = [
+    { state: "revoked" },
+    { expiresAt: "2020-01-01T00:00:00.000Z" },
+    { createdAt: "2026-02-02T00:00:00.000Z" },
+    { principalId: "user:eve" },
+    null,
+  ];
+  for (const fields of cases) {
+    const ctx = withTokenRecord(makeCtx([approveDeploy]), fields);
+    assertEquals(
+      await decideSubjectAccess(ctx, subjectOn(), "approve", deployWorkflow),
+      false,
+      JSON.stringify(fields),
+    );
+  }
+});
+
+Deno.test("decideSubjectAccess: refuses a subject with no token or no principal, and allows everything with auth off", async () => {
+  const ctx = withTokenRecord(makeCtx([approveDeploy]), {});
+  assertEquals(
+    await decideSubjectAccess(
+      ctx,
+      { principal: makePrincipal("adam") },
+      "approve",
+      deployWorkflow,
+    ),
+    false,
+  );
+  assertEquals(
+    await decideSubjectAccess(
+      ctx,
+      { principal: null },
+      "approve",
+      deployWorkflow,
+    ),
+    false,
+  );
+  assertEquals(
+    await decideSubjectAccess(
+      makeCtx([], "none"),
+      { principal: null },
+      "approve",
+      deployWorkflow,
+    ),
+    true,
+  );
 });

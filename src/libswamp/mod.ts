@@ -89,6 +89,15 @@ export {
   type SupersedeResult,
   supersedeSuspendedRuns,
 } from "./workflows/supersede.ts";
+export {
+  type AwaitingParentData,
+  awaitingParentOf,
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+  type NestedWaitGateDetails,
+  nestedWaitGateOf,
+} from "./workflows/nested_runs.ts";
+export { NestedRunPendingError } from "../domain/workflows/nested_run_link.ts";
 export { inputsMatch } from "../domain/workflows/input_matching.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {

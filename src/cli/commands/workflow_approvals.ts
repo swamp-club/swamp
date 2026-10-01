@@ -119,6 +119,27 @@ export function renderApprovals(
           "  After approval: swamp workflow resume {workflowName} --run {runId}",
           { workflowName: item.workflowName, runId: item.runId },
         );
+        // A nested workflow's gate: its parent resumes after it
+        // (swamp-club#2736).
+        if (item.parentRun) {
+          if (item.parentWaiting === false) {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow} ({parentRunId}): the parent no longer waits on it",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          } else {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow}: once this run finishes, swamp workflow resume {parentWorkflow} --run {parentRunId}",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          }
+        }
       }
     }
   }

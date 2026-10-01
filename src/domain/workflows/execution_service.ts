@@ -41,6 +41,15 @@ import {
   type WorkflowRunData,
 } from "./workflow_run.ts";
 import {
+  MAX_WORKFLOW_NESTING_DEPTH,
+  type ParentRunRef,
+} from "./nested_run_ref.ts";
+import {
+  assertNestedWaitsSettled,
+  isFinishedRun,
+  NestedRunLink,
+} from "./nested_run_link.ts";
+import {
   checkSuspendedRunResume,
   planFailedRunResume,
   type ResumeReset,
@@ -645,11 +654,6 @@ export interface StepExecutor {
 }
 
 /**
- * Maximum nesting depth for workflow-calling-workflow execution.
- */
-const MAX_WORKFLOW_NESTING_DEPTH = 10;
-
-/**
  * Grace period for cleanup steps (always/completed dependents) after
  * cancellation. Cleanup steps run with a fresh signal bounded by this
  * timeout so they cannot hang indefinitely.
@@ -759,6 +763,48 @@ export function trackerStatusForRun(
     case "succeeded":
       return "completed";
   }
+}
+
+/**
+ * The suspended event for a run that suspended at a level checkpoint: its
+ * waiting approval gate, or else the nested workflow step waiting on a
+ * suspended child run (swamp-club#2736). Undefined when neither waits.
+ */
+function suspendedEventFor(
+  run: WorkflowRun,
+  workflow: Workflow,
+): WorkflowExecutionEvent | undefined {
+  const waiting = run.findWaitingApprovalStep();
+  if (waiting) {
+    const taskData = workflow.jobs
+      .find((j) => j.name === waiting.jobName)?.steps
+      .find((s) => s.name === waiting.stepName)?.task.data;
+    return {
+      kind: "suspended",
+      run,
+      jobId: waiting.jobName,
+      stepId: waiting.stepName,
+      prompt: taskData?.type === "manual_approval" ? taskData.prompt : "",
+      timeout: taskData?.type === "manual_approval"
+        ? taskData.timeout
+        : undefined,
+    };
+  }
+  const nested = run.findNestedWaits()[0];
+  if (!nested) return undefined;
+  return {
+    kind: "suspended",
+    run,
+    jobId: nested.jobName,
+    stepId: nested.stepName,
+    prompt: "",
+    nested: nested.link.kind === "valid"
+      ? {
+        workflowName: nested.link.ref.workflowName,
+        runId: nested.link.ref.runId,
+      }
+      : undefined,
+  };
 }
 
 /**
@@ -2370,6 +2416,11 @@ interface StepOptions {
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
   ancestorWorkflowIds?: Set<string>;
+  /**
+   * The serve instance driving the run, handed to nested runs so a child is
+   * owned as its parent is.
+   */
+  instanceId?: string;
   workflowTags?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   secretRedactor?: SecretRedactor;
@@ -2557,6 +2608,8 @@ export class WorkflowExecutionService {
       ancestorWorkflowIds?: Set<string>;
       /** The run whose nested workflow step starts this run. */
       parentRunId?: string;
+      /** The parent step that starts this run, recorded on the run. */
+      parentRun?: ParentRunRef;
       /**
        * The parent run's redactor and sensitive-value record, passed to a
        * nested run so values the parent resolved stay recorded and masked.
@@ -2781,6 +2834,9 @@ export class WorkflowExecutionService {
           options?.triggerSource,
         );
         run.attachSensitiveValues(sensitiveValues);
+        if (options?.parentRun) {
+          run.recordParentRun(options.parentRun);
+        }
         if (options?.inputs) {
           run.captureInputs(options.inputs);
         }
@@ -2906,6 +2962,7 @@ export class WorkflowExecutionService {
         lastEvaluated: options?.lastEvaluated,
         workflowNestingDepth: options?.workflowNestingDepth,
         ancestorWorkflowIds: options?.ancestorWorkflowIds,
+        instanceId: options?.instanceId,
         workflowTags: workflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: options?.initiatedBy,
@@ -3052,23 +3109,8 @@ export class WorkflowExecutionService {
       if (run.status === "suspended") {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
         if (this.runTracker) this.runTracker.complete(run.id, "suspended");
-        const waiting = run.findWaitingApprovalStep();
-        if (waiting) {
-          const wfStep = workflow.jobs
-            .find((j) => j.name === waiting.jobName)?.steps
-            .find((s) => s.name === waiting.stepName);
-          const taskData = wfStep?.task.data;
-          yield {
-            kind: "suspended" as const,
-            run,
-            jobId: waiting.jobName,
-            stepId: waiting.stepName,
-            prompt: taskData?.type === "manual_approval" ? taskData.prompt : "",
-            timeout: taskData?.type === "manual_approval"
-              ? taskData.timeout
-              : undefined,
-          };
-        }
+        const suspendedEvent = suspendedEventFor(run, workflow);
+        if (suspendedEvent) yield suspendedEvent;
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -3317,6 +3359,7 @@ export class WorkflowExecutionService {
             `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
         );
       }
+      await this.checkNestedWaitsSettled(existingRun);
     }
 
     // A value that does not match its declared type would otherwise fail
@@ -3494,9 +3537,19 @@ export class WorkflowExecutionService {
         })),
       };
 
+      // A nested run resumed on its own keeps its place in the nesting, so
+      // the depth limit and cycle detection hold across suspensions.
+      const parentLink = existingRun.parentRun?.kind === "valid"
+        ? existingRun.parentRun.ref
+        : undefined;
       const stepOpts: StepOptions = {
         authoredExpressions,
         authoredWorkflow: workflow,
+        workflowNestingDepth: parentLink?.nestingDepth,
+        ancestorWorkflowIds: parentLink
+          ? new Set(parentLink.ancestorWorkflowNames)
+          : undefined,
+        instanceId: options?.instanceId,
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
@@ -3645,23 +3698,11 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "suspended");
         }
-        const waiting = existingRun.findWaitingApprovalStep();
-        if (waiting) {
-          const wfStep = resolvedWorkflow.jobs
-            .find((j) => j.name === waiting.jobName)?.steps
-            .find((s) => s.name === waiting.stepName);
-          const taskData = wfStep?.task.data;
-          yield {
-            kind: "suspended" as const,
-            run: existingRun,
-            jobId: waiting.jobName,
-            stepId: waiting.stepName,
-            prompt: taskData?.type === "manual_approval" ? taskData.prompt : "",
-            timeout: taskData?.type === "manual_approval"
-              ? taskData.timeout
-              : undefined,
-          };
-        }
+        const suspendedEvent = suspendedEventFor(
+          existingRun,
+          resolvedWorkflow,
+        );
+        if (suspendedEvent) yield suspendedEvent;
         return;
       }
 
@@ -3827,6 +3868,20 @@ export class WorkflowExecutionService {
           const names = expanded ? expanded.map((e) => e.expandedName) : [];
           jobRun.replaceExpandedSteps(step.name, names);
           jobRun.registerForEachExpansion(step.name, names);
+          // An iteration that waited on a nested run but that the collection
+          // no longer produces is never walked again. The resume checked its
+          // child already finished, so it is skipped and its link kept for
+          // history (swamp-club#2736). No skip reason: the reason enum cannot
+          // grow without older binaries refusing the record.
+          for (const stepRun of jobRun.steps) {
+            if (
+              stepRun.isNestedWait &&
+              stepRun.forEachTemplate === step.name &&
+              !names.includes(stepRun.stepName)
+            ) {
+              stepRun.skip();
+            }
+          }
         }
       }
 
@@ -4220,9 +4275,15 @@ export class WorkflowExecutionService {
       throw new Error(`Step run not found: ${stepName}`);
     }
 
+    // A nested workflow step waiting on its child run already passed its
+    // trigger and guard when it started the child: re-entering, it reads the
+    // child's outcome, and a guard or dependsOn that changed since must not
+    // skip it and strand the child (swamp-club#2736).
+    const reenterNestedWait = stepRun.isNestedWait;
+
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
-    if (!this.shouldStepRun(step, jobRun)) {
+    if (!reenterNestedWait && !this.shouldStepRun(step, jobRun)) {
       if (options.cleanupStepLevel) {
         stepRun.skipUnstarted({ kind: "dependency" });
       } else {
@@ -4281,7 +4342,7 @@ export class WorkflowExecutionService {
     }
 
     // Evaluate guard expression — truthy means the step is already done
-    if (step.guard) {
+    if (step.guard && !reenterNestedWait) {
       const guardCel = extractCelExpression(step.guard);
       if (!guardCel) {
         stepSpan.end();
@@ -4380,8 +4441,8 @@ export class WorkflowExecutionService {
       }
     }
 
-    // Start step
-    stepRun.start();
+    // Start step. A re-entered nested wait keeps its start time.
+    if (!reenterNestedWait) stepRun.start();
 
     // This step's `steps.<name>.outputs`, taken from the full output before
     // it is stripped for the run record. Declared here so the finally below
@@ -4400,12 +4461,26 @@ export class WorkflowExecutionService {
 
       const task = step.task.data;
 
+      if (reenterNestedWait) {
+        liveOutputs = yield* this.settleNestedWait(
+          run,
+          job,
+          stepRun,
+          stepName,
+          stepExprContext,
+          options,
+          !!step.allowFailure,
+        );
+        return;
+      }
+
       // Handle manual approval tasks — suspend the workflow
       if (task.type === "manual_approval") {
         stepRun.waitForApproval(task.prompt);
         yield {
           kind: "approval_requested",
           runId: run.id,
+          workflowName: workflow.name,
           jobId: job.name,
           stepId: stepName,
           prompt: task.prompt,
@@ -4841,6 +4916,157 @@ export class WorkflowExecutionService {
   }
 
   /**
+   * Refuses, changing nothing, while a nested workflow step of the run waits
+   * on a child run that has not finished (swamp-club#2736).
+   */
+  private async checkNestedWaitsSettled(run: WorkflowRun): Promise<void> {
+    await assertNestedWaitsSettled(
+      { runRepo: this.runRepo, workflowRepo: this.workflowRepo },
+      run,
+    );
+  }
+
+  /**
+   * Settles a nested workflow step re-entered while it waits on its child
+   * run, from the child's outcome alone: the parent never drives the child
+   * (swamp-club#2736). A succeeded child's outputs are adopted; a child
+   * whose approval was rejected fails the step as a rejected approval; any
+   * other finished child, a missing one or a broken link fails the step; an
+   * unfinished child suspends the run on it again.
+   */
+  private async *settleNestedWait(
+    run: WorkflowRun,
+    job: Job,
+    stepRun: StepRun,
+    stepName: string,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+    allowFailure: boolean,
+  ): AsyncGenerator<
+    WorkflowExecutionEvent,
+    Record<string, unknown> | undefined
+  > {
+    const link = stepRun.nestedRun;
+    // The errors below name the nested run; a malformed link's do not.
+    const nestedRun = link?.kind === "valid"
+      ? {
+        nestedRun: {
+          workflowId: link.ref.workflowId,
+          workflowName: link.ref.workflowName,
+        },
+      }
+      : {};
+    const fail = (error: string): WorkflowExecutionEvent => {
+      stepRun.fail(error);
+      if (allowFailure) stepRun.markAllowedFailure();
+      return {
+        kind: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        runId: run.id,
+        error,
+        allowedFailure: allowFailure || undefined,
+        ...nestedRun,
+      };
+    };
+    if (!link) {
+      yield fail(`Step "${stepName}" lost the nested run it waited on.`);
+      return undefined;
+    }
+    const resolved = await new NestedRunLink({
+      runRepo: this.runRepo,
+      workflowRepo: this.workflowRepo,
+    }).resolveChild(run, { jobName: job.name, stepName, link });
+    if (resolved.kind !== "resolved") {
+      yield fail(`Cannot read the nested run: ${resolved.reason}.`);
+      return undefined;
+    }
+    const child = resolved.child;
+    const childLabel =
+      `nested run ${child.id} of workflow "${child.workflowName}"`;
+    if (resolved.backLinkDropped) {
+      getWorkflowRunLogger(run.workflowName, job.name, stepName, run.id)
+        .warn`Read ${childLabel} without its link to this run: an older swamp version saved it. Its trigger source, initiator and start time match this step`;
+    }
+
+    if (!isFinishedRun(child)) {
+      // Moved back to unfinished since the resume checked it (resumed or
+      // retried meanwhile): wait on it again.
+      stepRun.waitForNestedRun({
+        workflowId: child.workflowId,
+        workflowName: child.workflowName,
+        runId: child.id,
+      });
+      run.suspend(expressionContext?.inputs);
+      return undefined;
+    }
+
+    if (child.status === "succeeded") {
+      const outputs = await this.createStepOutputResolver(
+        options.sensitiveValues,
+      ).resolveChildOutputs(child);
+      // Provenance: who could change the child after the parent suspended is
+      // governed by the child workflow's own authorization, so record what
+      // its resume was given (key names only, never values).
+      const resumeInputs = [...child.resumeInputs];
+      if (resumeInputs.length > 0) {
+        getWorkflowRunLogger(run.workflowName, job.name, stepName, run.id)
+          .info`Adopted outputs of ${childLabel}, which was resumed with inputs ${resumeInputs}`;
+      }
+      stepRun.succeed({
+        type: "workflow",
+        workflow: child.workflowName,
+        workflowId: child.workflowId,
+        runId: child.id,
+        status: child.status,
+        ...(resumeInputs.length > 0 ? { childResumeInputs: resumeInputs } : {}),
+      });
+      yield {
+        kind: "step_completed",
+        jobId: job.name,
+        stepId: stepName,
+        runId: run.id,
+      };
+      return outputs;
+    }
+
+    if (child.status === "cancelled") {
+      yield fail(`The ${childLabel} was cancelled.`);
+      return undefined;
+    }
+
+    const rejected = child.failedSteps().find((s) => s.approvalRejected);
+    if (rejected) {
+      const decision = child.getJob(rejected.jobName)?.getStep(
+        rejected.stepName,
+      )?.approvalDecision;
+      const error =
+        `Approval of step "${rejected.stepName}" in ${childLabel} was rejected.`;
+      if (decision) {
+        stepRun.rejectNested(decision, error);
+        if (allowFailure) stepRun.markAllowedFailure();
+        yield {
+          kind: "step_failed",
+          jobId: job.name,
+          stepId: stepName,
+          runId: run.id,
+          error,
+          ...nestedRun,
+          allowedFailure: allowFailure || undefined,
+        };
+      } else {
+        yield fail(error);
+      }
+      return undefined;
+    }
+    const childStepError = child.jobs
+      .flatMap((j) => j.steps)
+      .find((s) => s.status === "failed" && !s.allowedFailure)?.error;
+    yield fail(childStepError ?? `The ${childLabel} failed.`);
+    return undefined;
+  }
+
+  /**
    * Handles a workflow task step, forwarding child workflow events
    * to the parent stream. Returns the child's outputs for the parent's
    * `steps.<name>.outputs` when the child succeeds.
@@ -5035,6 +5261,10 @@ export class WorkflowExecutionService {
     );
 
     let childRun: WorkflowRun | undefined;
+    // The child's suspended event is the parent step's outcome, as its
+    // completed event is: the parent suspends on it and emits its own
+    // (swamp-club#2736).
+    let childSuspended: WorkflowRun | undefined;
     const childEvents = childService.run(task.workflowIdOrName, {
       inputs: evaluatedInputs,
       authoredExpressions: inheritedExpressions,
@@ -5042,6 +5272,19 @@ export class WorkflowExecutionService {
       workflowNestingDepth: depth + 1,
       ancestorWorkflowIds: childAncestors,
       parentRunId: run.id,
+      parentRun: {
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        runId: run.id,
+        jobName: job.name,
+        stepName,
+        nestingDepth: depth + 1,
+        ancestorWorkflowNames: [...childAncestors],
+      },
+      // The child is owned as its parent is, so cancel routes it to the
+      // same place (a serve-owned child is never killed by pid from the CLI).
+      instanceId: options.instanceId,
+      initiatedBy: options.initiatedBy,
       signal: options.signal,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,
@@ -5060,6 +5303,8 @@ export class WorkflowExecutionService {
             // The child's terminal event is the parent step's outcome, never
             // the parent run's: the parent emits its own.
             childRun = event.run;
+          } else if (event.kind === "suspended") {
+            childSuspended = event.run;
           } else if (event.kind === "step_failed" && allowFailure) {
             // When the parent step allows failure, mark child step_failed
             // events as allowed so they don't set jobFailed in the parent
@@ -5101,6 +5346,43 @@ export class WorkflowExecutionService {
         allowedFailure: allowFailure || undefined,
       };
       return;
+    }
+
+    if (!childRun && childSuspended) {
+      const ref = {
+        workflowId: childSuspended.workflowId,
+        workflowName: childSuspended.workflowName,
+        runId: childSuspended.id,
+      };
+      // After an abort the job may already have settled this step, and the
+      // run is being cancelled: a suspension must not turn that around.
+      if (stepRun.status !== "running" || options.signal?.aborted) {
+        if (stepRun.status === "running") {
+          stepRun.waitForNestedRun(ref);
+          stepRun.detachNestedRun(
+            `Cancelled while nested run ${ref.runId} of workflow "${ref.workflowName}" suspended. The nested run was left suspended.`,
+          );
+          if (allowFailure) stepRun.markAllowedFailure();
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            runId: run.id,
+            error: stepRun.error ?? CANCELLED_STEP_ERROR,
+            allowedFailure: allowFailure || undefined,
+            nestedRun: {
+              workflowId: ref.workflowId,
+              workflowName: ref.workflowName,
+            },
+          };
+        }
+        return undefined;
+      }
+      stepRun.waitForNestedRun(ref);
+      // Return instead of throwing, as the manual_approval branch does, so
+      // merge() drains parallel siblings; the post-level save captures it.
+      run.suspend(expressionContext?.inputs);
+      return undefined;
     }
 
     if (
@@ -5700,6 +5982,10 @@ export class WorkflowExecutionService {
     if (!run || run.status !== "interrupted") {
       throw new UserError(`Run ${assessment.runId} is no longer interrupted`);
     }
+
+    // The resume below refuses while a nested run is unfinished; checked
+    // first so a refused recover leaves the run as it was.
+    await this.checkNestedWaitsSettled(run);
 
     // Reset unknown steps to pending for re-execution
     run.resetUnknownStepsForRecovery();

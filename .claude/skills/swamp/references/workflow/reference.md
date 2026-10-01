@@ -838,6 +838,10 @@ swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc1
 swamp workflow approvals  # list all pending approvals with run IDs
 ```
 
+A gate in a nested workflow suspends the parent too. Decide and resume the child
+run under the child's name, then resume the parent; see
+[references/nested-workflows.md](references/nested-workflows.md#approval-gates-in-a-child-workflow).
+
 Editing the workflow while a run is suspended can make its resume refuse (a step
 added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`

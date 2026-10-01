@@ -910,3 +910,22 @@ Deno.test("ActiveRunRegistry: addNestedRun ignores an unregistered parent (swamp
   registry.register(makeRun("missing"));
   assertEquals(registry.findForAttach("child"), undefined);
 });
+
+Deno.test("ActiveRunRegistry: register refuses once draining begins", () => {
+  const reg = new ActiveRunRegistry();
+  reg.register(makeRun("r1"));
+  reg.beginDraining();
+  assertEquals(reg.draining, true);
+  const error = assertThrows(
+    () => reg.register(makeRun("r2")),
+    RegistryCapacityError,
+  );
+  assertEquals(error.code, "draining");
+  assertEquals(reg.size, 1);
+});
+
+Deno.test("ActiveRunRegistry: drainAll begins draining", async () => {
+  const reg = new ActiveRunRegistry();
+  await reg.drainAll(5_000);
+  assertEquals(reg.draining, true);
+});

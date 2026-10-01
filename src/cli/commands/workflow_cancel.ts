@@ -54,6 +54,10 @@ import {
 } from "../remote_run.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
+import {
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+} from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -432,11 +436,19 @@ export const workflowCancelCommand = withRemoteOptions(
         cliCtx.logger
           .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
       }
+      // Nested runs the cancelled run waited on, left suspended
+      // (swamp-club#2736). An older serve reports none.
+      const remoteDetached = Array.isArray(body.detachedNestedRuns)
+        ? (body.detachedNestedRuns as DetachedNestedRunData[])
+        : [];
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           runId: body.executionId ?? runId,
           status: body.status,
           ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
+          ...(remoteDetached.length > 0
+            ? { detachedNestedRuns: remoteDetached }
+            : {}),
         }));
       } else {
         if (body.status === "cancelled") {
@@ -447,6 +459,10 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         if (recordedReason !== undefined) {
           cliCtx.logger.info`Reason: ${recordedReason}`;
+        }
+        for (const detached of remoteDetached) {
+          cliCtx.logger
+            .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
         }
       }
       return;
@@ -626,6 +642,11 @@ export const workflowCancelCommand = withRemoteOptions(
       throw new UserError(`Workflow run no longer exists: ${run.id}`);
     }
     const status = finalRun.status;
+    // Cancelling a parent leaves the nested runs it waited on suspended on
+    // their own (swamp-club#2736).
+    const detachedNestedRuns = status === "cancelled"
+      ? await detachedNestedRunsOf({ runRepo }, finalRun)
+      : [];
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
@@ -634,6 +655,7 @@ export const workflowCancelCommand = withRemoteOptions(
         previousStatus,
         status,
         ...(status === "cancelled" ? { reason } : {}),
+        ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
       }));
     } else {
       if (status === "cancelled") {
@@ -647,6 +669,10 @@ export const workflowCancelCommand = withRemoteOptions(
         .info`Status: ${previousStatus} -> ${status}`;
       if (options.reason && status === "cancelled") {
         cliCtx.logger.info`Reason: ${reason}`;
+      }
+      for (const detached of detachedNestedRuns) {
+        cliCtx.logger
+          .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
       }
     }
   },

@@ -2560,3 +2560,113 @@ Deno.test("WorkflowRun.toPersistedData: without a record the stored references a
   const reloaded = WorkflowRun.fromData(stored);
   assertEquals(reloaded.toPersistedData(), stored);
 });
+
+// --- Nested run links (swamp-club#2736) -------------------------------------
+
+const CHILD_REF = {
+  workflowId: "11111111-1111-4111-8111-111111111111",
+  workflowName: "child",
+  runId: "22222222-2222-4222-8222-222222222222",
+};
+
+function gateAndNestedRun(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "parent",
+      jobs: [
+        Job.create({
+          name: "a-nested",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "b-gate",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+  run.start();
+  run.getJob("a-nested")!.start();
+  run.getJob("a-nested")!.getStep("call-child")!.waitForNestedRun(CHILD_REF);
+  run.getJob("b-gate")!.start();
+  run.getJob("b-gate")!.getStep("gate")!.waitForApproval("Approve");
+  run.suspend();
+  return run;
+}
+
+Deno.test("WorkflowRun: a nested wait is not an approval gate and keeps the run from awaiting resume", () => {
+  const run = gateAndNestedRun();
+  assertEquals(run.findWaitingApprovalStep(), {
+    jobName: "b-gate",
+    stepName: "gate",
+  });
+  assertEquals(run.findNestedWaits().map((w) => w.stepName), ["call-child"]);
+  run.getJob("b-gate")!.getStep("gate")!.succeed();
+  assertEquals(run.findWaitingApprovalStep(), undefined);
+  assertEquals(run.isAwaitingResume(), false);
+  assertEquals(run.toData().awaitingResume, undefined);
+});
+
+Deno.test("WorkflowRun.complete: a reject detaches the nested wait, settles its job, and reports the rejected gate", () => {
+  const run = gateAndNestedRun();
+  const gateJob = run.getJob("b-gate")!;
+  gateJob.getStep("gate")!.fail("Approval rejected");
+  gateJob.fail();
+  run.complete();
+
+  assertEquals(run.status, "failed");
+  const step = run.getJob("a-nested")!.getStep("call-child")!;
+  assertEquals(step.status, "failed");
+  assertEquals(step.detachedNestedRun, true);
+  assertEquals(step.settledByAbort, true);
+  assertEquals(run.getJob("a-nested")!.status, "failed");
+  assertEquals(run.detachedNestedRuns(), [
+    { jobName: "a-nested", stepName: "call-child", child: CHILD_REF },
+  ]);
+  // The run failed because of the gate, not because it ended.
+  const data = run.toData();
+  assertEquals(data.failedStep, "gate");
+  assertEquals(data.failureReason, "Approval rejected");
+  // The detached step is reopened, link dropped, for a later --from.
+  run.reopenAbortedWork();
+  assertEquals(step.status, "pending");
+  assertEquals(step.nestedRun, undefined);
+  assertEquals(step.detachedNestedRun, false);
+});
+
+Deno.test("WorkflowRun.interrupt: keeps waiting on the nested run, since an interrupted run is recovered", () => {
+  const run = gateAndNestedRun();
+  run.interrupt("serve restarted");
+  assertEquals(run.findNestedWaits().length, 1);
+  assertEquals(run.detachedNestedRuns(), []);
+});
+
+Deno.test("WorkflowRun.parentRun: round-trips, and a malformed link is kept as written", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.recordParentRun({
+    workflowId: "33333333-3333-4333-8333-333333333333",
+    workflowName: "@acme/parent",
+    runId: "44444444-4444-4444-8444-444444444444",
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 2,
+    ancestorWorkflowNames: ["root", "@acme/parent"],
+  });
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.parentRun, run.parentRun);
+
+  const raw = { runId: "../../etc", nestingDepth: 99 };
+  const broken = WorkflowRun.fromData({ ...run.toData(), parentRun: raw });
+  assertEquals(broken.parentRun, { kind: "broken", raw });
+  assertEquals(broken.toData().parentRun, raw);
+});

@@ -114,6 +114,17 @@ export interface StepRunView {
    * new run.
    */
   failureKind?: "workflow_changed";
+  /**
+   * On a nested workflow step: the child run it started and, while
+   * `waiting_approval`, waits on (swamp-club#2736). `detached` when the run
+   * ended while the step still waited and left the child suspended.
+   */
+  nestedRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    detached?: true;
+  };
 }
 
 export interface JobRunView {
@@ -156,6 +167,29 @@ export interface WorkflowRunView {
   initiatedBy?: string;
   /** Optional metadata linking the run to external systems. */
   references?: Record<string, string>;
+  /** On a nested workflow's run: the parent run that started it. */
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+  };
+  /**
+   * The nested runs this run's steps wait on, with each run's status when it
+   * was read (swamp-club#2736).
+   */
+  nestedWaits?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    status?: string;
+  }[];
+  /**
+   * Derived: the run is suspended, no gate of its own waits, and every
+   * nested run it waits on has finished, so it can be resumed.
+   */
+  awaitingResume?: boolean;
 }
 
 export function extractFirstStepError(run: WorkflowRunView): string {

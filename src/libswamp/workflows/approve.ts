@@ -30,6 +30,12 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
+import {
+  type AwaitingParentData,
+  awaitingParentOf,
+  nestedWaitGateError,
+} from "./nested_runs.ts";
 
 export interface WorkflowApproveData {
   runId: string;
@@ -41,8 +47,14 @@ export interface WorkflowApproveData {
   /**
    * True when this approval decided the run's last pending gate, so the run
    * is suspended with nothing left awaiting approval and can be resumed.
+   * A nested workflow step counts as decided once its child run finished.
    */
   allGatesDecided: boolean;
+  /**
+   * The parent run waiting on this nested run: resume it once this run
+   * finishes (swamp-club#2736).
+   */
+  awaitingParent?: AwaitingParentData;
 }
 
 export type WorkflowApproveEvent =
@@ -126,7 +138,8 @@ export async function* workflowApprove(
       let jobName: string | undefined;
       for (const job of run.jobs) {
         const s = job.getStep(input.stepName);
-        if (s && s.status === "waiting_approval") {
+        // A nested workflow step waiting on its child run is not a gate.
+        if (s && s.status === "waiting_approval" && !s.isNestedWait) {
           step = s;
           jobName = job.jobName;
           break;
@@ -135,9 +148,10 @@ export async function* workflowApprove(
       if (!step || !jobName) {
         yield {
           kind: "error",
-          error: validationFailed(
-            `Step "${input.stepName}" is not awaiting approval in the suspended run`,
-          ),
+          error: nestedWaitGateError(run, input.stepName) ??
+            validationFailed(
+              `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+            ),
         };
         return;
       }
@@ -171,6 +185,16 @@ export async function* workflowApprove(
       });
       step.succeed();
       await deps.runRepo.save(createWorkflowId(run.workflowId), run);
+      // Whether a nested wait's child finished is derived from the child,
+      // never stored on this run.
+      // The decision is saved: an unreadable linked run must not turn it
+      // into an error, so these reads are best effort.
+      const allGatesDecided = run.status === "suspended" &&
+        run.findWaitingApprovalStep() === undefined &&
+        await new NestedRunLink(deps).childrenSettled(run).catch(() => false);
+      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+        undefined
+      );
 
       yield {
         kind: "completed",
@@ -181,7 +205,8 @@ export async function* workflowApprove(
           approved: true,
           decidedBy,
           reason: input.reason ?? null,
-          allGatesDecided: run.isAwaitingResume(),
+          allGatesDecided,
+          ...(awaitingParent ? { awaitingParent } : {}),
         },
       };
     })(),

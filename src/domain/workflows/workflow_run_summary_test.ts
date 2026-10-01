@@ -100,6 +100,9 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     "failureReason",
     "stepProgress",
     "awaitingResume",
+    "parentRun",
+    "waitingOnRun",
+    "waitsOnlyOnNestedRuns",
   ]);
   for (const key of Object.keys(summary)) {
     assert(allowedKeys.has(key), `unexpected key "${key}" on summary`);
@@ -284,4 +287,68 @@ Deno.test("parseWorkflowRunSummary: only a suspended run can be awaiting resume"
   });
 
   assertEquals(summary.awaitingResume, undefined);
+});
+
+Deno.test("parseWorkflowRunSummary: reads the nested run links (swamp-club#2736)", () => {
+  const parentRun = {
+    workflowId: "11111111-1111-4111-8111-111111111111",
+    workflowName: "parent",
+    runId: "22222222-2222-4222-8222-222222222222",
+    jobName: "main",
+    stepName: "run-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: ["parent"],
+  };
+  const child = {
+    workflowId: "33333333-3333-4333-8333-333333333333",
+    workflowName: "child",
+    runId: "44444444-4444-4444-8444-444444444444",
+  };
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "middle",
+    status: "suspended",
+    parentRun,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      steps: [{
+        stepName: "run-grandchild",
+        status: "waiting_approval",
+        nestedRun: child,
+      }],
+    }],
+  });
+  assertEquals(summary.parentRun, parentRun);
+  assertEquals(summary.waitingOnRun, [child]);
+  assertEquals(summary.waitsOnlyOnNestedRuns, true);
+  // A nested wait is not a decided gate: the run is not awaiting a resume
+  // until its child finishes, which is derived elsewhere.
+  assertEquals(summary.awaitingResume, undefined);
+});
+
+Deno.test("parseWorkflowRunSummary: a gate beside a nested wait, and malformed links, are not nested-only", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "parent",
+    status: "suspended",
+    parentRun: { runId: "../escape" },
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      steps: [
+        { stepName: "gate", status: "waiting_approval" },
+        {
+          stepName: "run-child",
+          status: "waiting_approval",
+          nestedRun: { runId: "not-a-uuid" },
+        },
+      ],
+    }],
+  });
+  assertEquals(summary.parentRun, undefined);
+  assertEquals(summary.waitingOnRun, undefined);
+  assertEquals(summary.waitsOnlyOnNestedRuns, undefined);
 });

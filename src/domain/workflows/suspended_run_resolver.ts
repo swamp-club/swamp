@@ -26,6 +26,7 @@ import type {
 import { createWorkflowRunId } from "./workflow_id.ts";
 import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
+import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
@@ -168,6 +169,10 @@ export async function resolveResumableRun(
       { byId: options.byId, expectedName: options.expectedName },
     );
     checkSuspendedRunResume(resolved.workflow, resolved.run);
+    await assertNestedWaitsSettled(
+      { runRepo, workflowRepo },
+      resolved.run,
+    );
     return resolved;
   }
 
@@ -199,6 +204,7 @@ export async function resolveResumableRun(
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
       checkSuspendedRunResume(workflow, run);
+      await assertNestedWaitsSettled({ runRepo, workflowRepo }, run);
     } else {
       throw new UserError(
         `Run ${runId} is not suspended or failed (status: ${run.status}).` +
@@ -252,6 +258,7 @@ function noRunsInStateMessage(
     latest.status,
     workflowName,
     latest.id,
+    { nestedWait: latest.findNestedWaits().length > 0 },
   );
   // A failed run's hint already names the run id, so it is not repeated
   // here; that keeps the message within serve's 512-character error limit.
@@ -267,7 +274,12 @@ export function nextActionForStatus(
   status: string,
   workflowName: string,
   runId: string,
+  options: { nestedWait?: boolean } = {},
 ): string {
+  if (status === "suspended" && options.nestedWait) {
+    // It has no gate of its own to approve (swamp-club#2736).
+    return ` It waits on a nested workflow run: finish that run, then resume this one with 'swamp workflow resume ${workflowName} --run ${runId}'.`;
+  }
   switch (status) {
     case "running":
       return ` Wait for it to complete, or check progress with 'swamp workflow history ${workflowName}'.`;

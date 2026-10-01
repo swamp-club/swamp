@@ -202,6 +202,7 @@ export {
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
+import { redactingFor } from "./handlers/nested_run_redaction.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
@@ -4063,6 +4064,10 @@ async function handleRunAttach(
     requestId,
     controller,
     payload.afterSeq ?? 0,
+    // A workflow run or resume streams links to other runs (swamp-club#2736).
+    run.kind === "method-run"
+      ? undefined
+      : redactingFor(ctx, socket, principal),
   );
 }
 

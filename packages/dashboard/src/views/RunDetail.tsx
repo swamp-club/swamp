@@ -72,6 +72,13 @@ interface WorkflowRun {
   id: string;
   workflowId: string;
   workflowName: string;
+  /** Nested runs this run's steps wait on (swamp-club#2736). */
+  nestedWaits?: {
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    status?: string;
+  }[];
   status: string;
   startedAt?: string;
   completedAt?: string;
@@ -148,6 +155,22 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
         </div>
       </div>
 
+      {run?.status === "suspended" && (run.nestedWaits?.length ?? 0) > 0 && (
+        <div
+          className="panel"
+          style={{ padding: "12px 18px", marginBottom: 14 }}
+        >
+          {run.nestedWaits!.map((wait) => (
+            <div key={wait.runId} style={{ fontSize: "0.82rem" }}>
+              Step <span className="mono">{wait.stepName}</span>{" "}
+              waits on nested workflow{" "}
+              <span className="mono">{wait.workflowName}</span> run{" "}
+              <span className="mono">{wait.runId.slice(0, 8)}</span>
+              {wait.status ? ` (${wait.status})` : ""}
+            </div>
+          ))}
+        </div>
+      )}
       {resumable && (
         <div
           className="panel"

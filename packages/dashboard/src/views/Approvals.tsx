@@ -32,6 +32,10 @@ interface ApprovalInfo {
   suspendedAt?: string;
   prompt?: string;
   inputs?: Readonly<Record<string, unknown>>;
+  /** On a nested workflow's run, the parent that started it. */
+  parentRun?: { workflowName: string; runId: string };
+  /** Whether that parent still waits on this run. */
+  parentWaiting?: boolean;
 }
 
 interface ApprovalsProps {
@@ -174,6 +178,19 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
                       }}
                     >
                       {a.prompt}
+                    </div>
+                  )}
+                  {a.parentRun && (
+                    <div
+                      style={{
+                        fontSize: "0.78rem",
+                        color: "var(--text-3)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {a.parentWaiting
+                        ? `Nested run of ${a.parentRun.workflowName}: resume the parent after this run finishes`
+                        : `Nested run of ${a.parentRun.workflowName}: the parent no longer waits on it`}
                     </div>
                   )}
                 </div>

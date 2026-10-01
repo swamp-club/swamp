@@ -527,6 +527,8 @@ export async function handleModelMethodRun(
     if (err instanceof RegistryCapacityError) {
       const clientMsg = err.code === "already_registered"
         ? "A run with this ID is already in progress"
+        : err.code === "draining"
+        ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
       sendError(socket, requestId, err.code, clientMsg);
     } else {

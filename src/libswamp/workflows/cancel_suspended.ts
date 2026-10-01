@@ -37,12 +37,21 @@ import {
   withGeneratorSpan,
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
+import {
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+} from "./nested_runs.ts";
 
 export interface WorkflowCancelSuspendedData {
   runId: string;
   workflowName: string;
   previousStatus: "suspended";
   status: "cancelled";
+  /**
+   * Nested runs the cancelled run's nested steps still waited on, left
+   * suspended on their own (swamp-club#2736).
+   */
+  detachedNestedRuns?: DetachedNestedRunData[];
 }
 
 export type WorkflowCancelSuspendedEvent =
@@ -205,6 +214,9 @@ export async function* workflowCancelSuspended(
       if (deps.runTracker) {
         deps.runTracker.complete(run.id, "cancelled", input.reason);
       }
+      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+        () => [],
+      );
 
       yield {
         kind: "completed",
@@ -213,6 +225,7 @@ export async function* workflowCancelSuspended(
           workflowName: target.name,
           previousStatus: "suspended",
           status: "cancelled",
+          ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
         },
       };
     })(),

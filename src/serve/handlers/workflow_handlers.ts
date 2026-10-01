@@ -35,6 +35,7 @@ import {
   createWorkflowHistoryLogsDeps,
   createWorkflowRejectDeps,
   createWorkflowValidateDeps,
+  type DetachedNestedRunData,
   mapWorkflowExecutionEvent,
   resolveRunReference,
   workflowApprovals,
@@ -52,6 +53,7 @@ import {
   workflowHistorySearch,
   type WorkflowHistorySearchDeps,
   workflowReject,
+  type WorkflowRejectData,
   type WorkflowRunEvent,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
@@ -100,6 +102,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
 import {
   type Principal,
   principalToString,
@@ -114,7 +117,19 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
+  type NamedWorkflow,
+  nestedGateRefusalForClient,
+  nestedPendingRefusalForClient,
+  nestedRunReadDecider,
+  readableNestedRuns,
+  redactingFor,
+  redactParentRun,
+  redactRunViewLinks,
+  redactStreamEvent,
+} from "./nested_run_redaction.ts";
+import {
   autoResumeAfterApproval,
+  autoResumeParentAfterChild,
   startDetachedResume,
 } from "../resume_launcher.ts";
 import {
@@ -133,6 +148,7 @@ import {
   authorizeOrReject,
   cancelActor,
   cancelReasonFor,
+  captureDecisionSubject,
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
@@ -163,6 +179,7 @@ import {
   writeServeConfigFile,
 } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/mod.ts";
+import type { WorkflowRunView } from "../../libswamp/mod.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
@@ -254,6 +271,11 @@ export async function handleWorkflowRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
+    // Events are redacted per client before they are sent (swamp-club#2736),
+    // which may wait: sends are chained so they keep the run's order, and
+    // drained before the request's own reply.
+    const redact = redactingFor(ctx, socket, principal);
+    let sending = Promise.resolve();
     try {
       await executeWorkflowWithLocks(
         ctx.repoDir,
@@ -301,14 +323,24 @@ export async function handleWorkflowRun(
           const serialized = serializeEvent(
             event as { kind: string; [key: string]: unknown },
           );
-          send(socket, { type: "event", id: requestId, event: serialized });
+          sending = sending.then(async () => {
+            const visible = redact ? await redact(serialized) : serialized;
+            if (socket.readyState !== WebSocket.OPEN) return;
+            send(socket, { type: "event", id: requestId, event: visible });
+          }).catch((error) => {
+            logger.warn("Failed to send a workflow run event: {error}", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         },
         ctx.syncService,
         ctx.runTracker,
         { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
       );
+      await sending;
       send(socket, { type: "done", id: requestId });
     } catch (error) {
+      await sending;
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
       } else if (error instanceof LockTimeoutError) {
@@ -362,6 +394,8 @@ export async function handleWorkflowRun(
     if (err instanceof RegistryCapacityError) {
       const clientMsg = err.code === "already_registered"
         ? "A run with this ID is already in progress"
+        : err.code === "draining"
+        ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
       sendError(socket, requestId, err.code, clientMsg);
     } else {
@@ -494,7 +528,14 @@ export async function handleWorkflowRun(
     });
   }
 
-  await subscribeUntilDetach(buffer, socket, requestId, controller);
+  await subscribeUntilDetach(
+    buffer,
+    socket,
+    requestId,
+    controller,
+    0,
+    redactingFor(ctx, socket, principal),
+  );
 }
 
 export async function handleWorkflowSearch(
@@ -631,7 +672,14 @@ export async function handleWorkflowApprovals(
     }
 
     const data = (result ?? {}) as {
-      approvals?: Array<{ workflowId: string; workflowName: string }>;
+      approvals?: Array<
+        {
+          workflowId: string;
+          workflowName: string;
+          parentRun?: NamedWorkflow;
+          parentWaiting?: boolean;
+        }
+      >;
     };
     if (data.approvals) {
       const canonical = canonicalResources(ctx);
@@ -643,6 +691,12 @@ export async function handleWorkflowApprovals(
         "read",
         ctx,
       );
+      // A nested run's row names its parent only to a reader of the
+      // parent's workflow (swamp-club#2736).
+      const canRead = nestedRunReadDecider(ctx, socket, principal);
+      for (const item of data.approvals) {
+        await redactParentRun(item, canRead);
+      }
     }
 
     send(socket, {
@@ -820,6 +874,10 @@ export async function handleWorkflowHistoryGet(
       );
       return;
     }
+    await redactRunViewLinks(
+      result as unknown as WorkflowRunView,
+      nestedRunReadDecider(ctx, socket, principal),
+    );
 
     send(socket, {
       type: "workflow.history.get",
@@ -1065,7 +1123,14 @@ export async function handleWorkflowRunSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowId: string; workflowName: string }>;
+      results?: Array<
+        {
+          workflowId: string;
+          workflowName: string;
+          parentRun?: NamedWorkflow;
+          nestedWaits?: Array<NamedWorkflow>;
+        }
+      >;
     };
     // Page after the authorization filter, never inside libswamp: slicing
     // first would let unreadable runs shorten a page and skew `total`.
@@ -1082,6 +1147,19 @@ export async function handleWorkflowRunSearch(
       payload?.offset,
       payload?.limit ?? WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
     );
+    // Links to other runs name only workflows the principal may read
+    // (swamp-club#2736); the derived awaitingResume flag stays.
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    for (const item of page) {
+      await redactParentRun(item, canRead);
+      const nestedWaits = await readableNestedRuns(
+        item.nestedWaits,
+        (w) => w.workflowId,
+        canRead,
+      );
+      if (nestedWaits) item.nestedWaits = nestedWaits;
+      else delete item.nestedWaits;
+    }
     data.results = page;
 
     send(socket, {
@@ -1205,8 +1283,15 @@ export async function handleWorkflowApprove(
         completed: (e) => {
           result = e.data;
         },
-        error: (e) => {
-          throw new Error(e.error.message);
+        error: async (e) => {
+          // A nested step's refusal names the nested run only to a reader
+          // of its workflow (swamp-club#2736).
+          throw new Error(
+            await nestedGateRefusalForClient(
+              e.error,
+              nestedRunReadDecider(ctx, socket, principal),
+            ) ?? e.error.message,
+          );
         },
       },
     );
@@ -1246,12 +1331,22 @@ export async function handleWorkflowApprove(
       ctx,
       result,
       principal ? principalToString(principal) : null,
+      captureDecisionSubject(socket, principal),
     );
   } catch (error) {
     logger.warn("Auto-resume after approval of run {runId} failed: {error}", {
       runId: result.runId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // The parent run is named only to a reader of its workflow
+  // (swamp-club#2736).
+  const canRead = nestedRunReadDecider(ctx, socket, principal);
+  if (
+    result.awaitingParent && !(await canRead(result.awaitingParent))
+  ) {
+    delete result.awaitingParent;
   }
 
   send(socket, {
@@ -1286,6 +1381,7 @@ export async function handleWorkflowReject(
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
   let release: (() => void) | undefined;
+  let rejected: WorkflowRejectData | undefined;
   try {
     const reserved = await reserveSuspendedRun(
       ctx,
@@ -1321,8 +1417,15 @@ export async function handleWorkflowReject(
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
         },
-        error: (e) => {
-          throw new Error(e.error.message);
+        error: async (e) => {
+          // A nested step's refusal names the nested run only to a reader
+          // of its workflow (swamp-club#2736).
+          throw new Error(
+            await nestedGateRefusalForClient(
+              e.error,
+              nestedRunReadDecider(ctx, socket, principal),
+            ) ?? e.error.message,
+          );
         },
       },
     );
@@ -1341,6 +1444,20 @@ export async function handleWorkflowReject(
       );
       return;
     }
+    rejected = result as unknown as WorkflowRejectData;
+    // Other runs are named only to a reader of their workflow
+    // (swamp-club#2736).
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    if (rejected.awaitingParent && !(await canRead(rejected.awaitingParent))) {
+      delete rejected.awaitingParent;
+    }
+    const detached = await readableNestedRuns(
+      rejected.detachedNestedRuns,
+      (d) => d.workflowId,
+      canRead,
+    );
+    if (detached) rejected.detachedNestedRuns = detached;
+    else delete rejected.detachedNestedRuns;
 
     send(socket, {
       type: "workflow.reject",
@@ -1353,6 +1470,26 @@ export async function handleWorkflowReject(
   } finally {
     release?.();
     await pushChangedToRemote(ctx);
+  }
+
+  // A rejected nested run has finished: its parent may continue. Launched
+  // once the decision is saved, pushed and released; it may wait on a parent
+  // this instance still drives, so the reply does not wait for it.
+  const rejectedRun = rejected;
+  if (rejectedRun) {
+    autoResumeParentAfterChild(
+      ctx,
+      { workflowId: rejectedRun.workflowId, runId: rejectedRun.runId },
+      captureDecisionSubject(socket, principal),
+    ).catch((error) => {
+      logger.warn(
+        "Auto-resume of the parent of run {runId} failed: {error}",
+        {
+          runId: rejectedRun.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    });
   }
 }
 
@@ -1443,11 +1580,22 @@ export async function handleWorkflowCancel(
       },
       (workflow) => mayCancel(workflow),
     );
-  const reply = (workflowName: string, status: string) =>
+  const reply = (
+    workflowName: string,
+    status: string,
+    detachedNestedRuns?: DetachedNestedRunData[],
+  ) =>
     send(socket, {
       type: "workflow.cancel",
       id: requestId,
-      payload: { data: { runId: payload.runId, workflowName, status } },
+      payload: {
+        data: {
+          runId: payload.runId,
+          workflowName,
+          status,
+          ...(detachedNestedRuns ? { detachedNestedRuns } : {}),
+        },
+      },
     });
 
   try {
@@ -1489,7 +1637,17 @@ export async function handleWorkflowCancel(
 
     switch (outcome.status) {
       case "cancelled":
-        reply(outcome.workflowName, "cancelled");
+        // Nested runs are named only to a reader of their workflow
+        // (swamp-club#2736).
+        reply(
+          outcome.workflowName,
+          "cancelled",
+          await readableNestedRuns(
+            outcome.detachedNestedRuns,
+            (d) => d.workflowId,
+            nestedRunReadDecider(ctx, socket, principal),
+          ),
+        );
         return;
       case "busy":
       case "not_suspended":
@@ -1637,12 +1795,16 @@ export async function handleWorkflowResume(
         }
       };
 
+      const canRead = nestedRunReadDecider(ctx, socket, principal);
       const run_ = async () => {
         try {
           for await (const event of resumeGenerator()) {
             if (socket.readyState !== WebSocket.OPEN) break;
-            const serialized = serializeEvent(
-              event as { kind: string; [key: string]: unknown },
+            const serialized = await redactStreamEvent(
+              serializeEvent(
+                event as { kind: string; [key: string]: unknown },
+              ),
+              canRead,
             );
             send(socket, { type: "event", id: requestId, event: serialized });
           }
@@ -1668,6 +1830,16 @@ export async function handleWorkflowResume(
       } else if (error instanceof LockTimeoutError) {
         const lt = lockTimeoutErrorForClient(error);
         sendError(socket, requestId, lt.code, lt.message, lt.details);
+      } else if (error instanceof NestedRunPendingError) {
+        sendError(
+          socket,
+          requestId,
+          "workflow_resume_failed",
+          await nestedPendingRefusalForClient(
+            error,
+            nestedRunReadDecider(ctx, socket, principal),
+          ),
+        );
       } else {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "workflow_resume_failed", message);
@@ -1708,13 +1880,22 @@ export async function handleWorkflowResume(
     traceparent: payload.traceparent,
     tracestate: payload.tracestate,
     principalId: principal ? principalToString(principal) : null,
+    subject: captureDecisionSubject(socket, principal),
+    canReadWorkflow: nestedRunReadDecider(ctx, socket, principal),
   });
   if (!launched.ok) {
     sendError(socket, requestId, launched.code, launched.message);
     return;
   }
 
-  await subscribeUntilDetach(launched.buffer, socket, requestId, controller);
+  await subscribeUntilDetach(
+    launched.buffer,
+    socket,
+    requestId,
+    controller,
+    0,
+    redactingFor(ctx, socket, principal),
+  );
 }
 
 export async function handleWorkflowCreate(

@@ -188,6 +188,7 @@ import {
   createModelDeleteDeps,
   createWorkerListDeps,
   createWorkerModelRunDeps,
+  type DetachedNestedRunData,
   modelDelete,
   modelMethodRun,
   normalizeFireTime,
@@ -424,6 +425,11 @@ export interface CancelResult {
   executionType: ExecutionType;
   executionId: string;
   message?: string;
+  /**
+   * Nested runs a cancelled suspended run waited on, left suspended on their
+   * own (swamp-club#2736).
+   */
+  detachedNestedRuns?: DetachedNestedRunData[];
 }
 
 export interface CancelDeps {
@@ -591,7 +597,14 @@ export async function cancelExecution(
     const suspended = await deps.cancelSuspended(executionId);
     switch (suspended.status) {
       case "cancelled":
-        return { status: "cancelled", executionType, executionId };
+        return {
+          status: "cancelled",
+          executionType,
+          executionId,
+          ...(suspended.detachedNestedRuns
+            ? { detachedNestedRuns: suspended.detachedNestedRuns }
+            : {}),
+        };
       case "active":
         // A resume registered the run after the registry miss above.
         found = deps.activeRunRegistry?.cancel(executionId, deps.reason) ??
@@ -724,6 +737,11 @@ export function cancelSuccessBody(
     executionType: result.executionType,
     executionId: result.executionId,
     ...(result.executionType === "workflow-run" ? { reason } : {}),
+    // The endpoint requires admin on every resource, so the nested runs need
+    // no further check.
+    ...(result.detachedNestedRuns
+      ? { detachedNestedRuns: result.detachedNestedRuns }
+      : {}),
   };
 }
 

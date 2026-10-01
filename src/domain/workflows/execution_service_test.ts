@@ -43,6 +43,7 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
+import { NestedRunPendingError } from "./nested_run_link.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -16124,5 +16125,411 @@ Deno.test("resume: saves the run while a started step is still running", async (
       release();
     }
     assertEquals(await resumed, "succeeded");
+  });
+});
+
+// --- Nested workflow suspension (swamp-club#2736) ---------------------------
+
+function nestedGateWorkflows(
+  childTail: Step[] = [
+    Step.create({
+      name: "after",
+      task: StepTask.model("test-model", "run"),
+      dependsOn: [{ step: "gate", condition: TriggerCondition.succeeded() }],
+    }),
+  ],
+): { parent: Workflow; child: Workflow } {
+  const child = Workflow.create({
+    name: "gated-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve the child"),
+          }),
+          ...childTail,
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "waiting-parent",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("gated-child"),
+          }),
+          Step.create({
+            name: "finish",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [
+              { step: "call-child", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+  return { parent, child };
+}
+
+async function setupNestedGate(
+  tempDir: string,
+  workflows: Workflow[],
+): Promise<{
+  service: WorkflowExecutionService;
+  runRepo: InMemoryWorkflowRunRepository;
+  executor: MockStepExecutor;
+}> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  for (const workflow of workflows) await workflowRepo.save(workflow);
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new MockStepExecutor();
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+  );
+  return { service, runRepo, executor };
+}
+
+async function decideChildGate(
+  runRepo: InMemoryWorkflowRunRepository,
+  child: Workflow,
+  approved: boolean,
+): Promise<WorkflowRun> {
+  const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+  const job = childRun.getJob("child-job")!;
+  const gate = job.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved,
+    decidedBy: "tester",
+    decidedAt: new Date().toISOString(),
+  });
+  if (approved) {
+    gate.succeed();
+  } else {
+    gate.fail("Approval rejected");
+    job.fail();
+    childRun.complete();
+  }
+  await runRepo.save(child.id, childRun);
+  return childRun;
+}
+
+async function drain(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<WorkflowExecutionEvent[]> {
+  const events: WorkflowExecutionEvent[] = [];
+  for await (const event of stream) events.push(event);
+  return events;
+}
+
+Deno.test("run(): a nested workflow suspended on approval suspends the parent with its own suspended event (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo, executor } = await setupNestedGate(
+      tempDir,
+      [parent, child],
+    );
+
+    const events = await drain(service.run(parent.name));
+
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    assertEquals(childRun.status, "suspended");
+    assertEquals(parentRun.status, "suspended");
+
+    // Exactly one terminal event, the parent's own, naming the nested run.
+    const terminal = events.filter((e) =>
+      e.kind === "suspended" || e.kind === "completed" ||
+      e.kind === "cancelled"
+    );
+    assertEquals(terminal.length, 1);
+    const suspended = terminal[0];
+    assert(suspended.kind === "suspended");
+    assertEquals(suspended.run.id, parentRun.id);
+    assertEquals(suspended.jobId, "main");
+    assertEquals(suspended.stepId, "call-child");
+    assertEquals(suspended.nested, {
+      workflowName: child.name,
+      runId: childRun.id,
+    });
+    assertEquals(events.some((e) => e.kind === "step_failed"), false);
+
+    // The child's gate is requested under the child's workflow and run.
+    const requested = events.find((e) => e.kind === "approval_requested");
+    assert(requested?.kind === "approval_requested");
+    assertEquals(requested.workflowName, child.name);
+    assertEquals(requested.runId, childRun.id);
+
+    // The parent step waits on the child, which links back to it.
+    const step = parentRun.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.status, "waiting_approval");
+    assertEquals(step.isNestedWait, true);
+    assertEquals(
+      step.nestedRun?.kind === "valid" && step.nestedRun.ref.runId,
+      childRun.id,
+    );
+    assertEquals(parentRun.findWaitingApprovalStep(), undefined);
+    assertEquals(parentRun.isAwaitingResume(), false);
+    const back = childRun.parentRun;
+    assert(back?.kind === "valid");
+    assertEquals(back.ref.runId, parentRun.id);
+    assertEquals(back.ref.stepName, "call-child");
+    assertEquals(back.ref.nestingDepth, 1);
+    assertEquals(back.ref.ancestorWorkflowNames, [parent.name]);
+    assertEquals(executor.executedSteps.includes("main/finish"), false);
+  });
+});
+
+Deno.test("resume(): refuses a parent whose nested run has not finished, changing nothing (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    const before = parentRun.toData();
+
+    const error = await assertRejects(
+      () => drain(service.resume(parent.name, parentRun.id)),
+      NestedRunPendingError,
+    );
+    assertStringIncludes(error.message, childRun.id);
+    assertStringIncludes(
+      error.message,
+      `swamp workflow approve ${child.name} gate --run ${childRun.id}`,
+    );
+    const after = await runRepo.findById(parent.id, parentRun.id);
+    assertEquals(after!.toData(), before);
+  });
+});
+
+Deno.test("resume(): once the nested run is approved and resumed, the parent adopts it and continues (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo, executor } = await setupNestedGate(
+      tempDir,
+      [parent, child],
+    );
+    await drain(service.run(parent.name));
+    const childRun = await decideChildGate(runRepo, child, true);
+    await drain(service.resume(child.name, childRun.id));
+    assertEquals(
+      (await runRepo.findById(child.id, childRun.id))!.status,
+      "succeeded",
+    );
+
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const events = await drain(service.resume(parent.name, parentRun.id));
+
+    const done = await runRepo.findById(parent.id, parentRun.id);
+    assertEquals(done!.status, "succeeded");
+    const step = done!.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.status, "succeeded");
+    assertEquals(
+      (step.output as { runId?: string }).runId,
+      childRun.id,
+    );
+    assertEquals(executor.executedSteps.includes("main/finish"), true);
+    // The parent read the child; it never started another one.
+    assertEquals((await runRepo.findAllByWorkflowId(child.id)).length, 1);
+    assertEquals(events.filter((e) => e.kind === "completed").length, 1);
+  });
+});
+
+Deno.test("resume(): a rejected nested approval fails the parent step as a rejected approval (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo, executor } = await setupNestedGate(
+      tempDir,
+      [parent, child],
+    );
+    await drain(service.run(parent.name));
+    await decideChildGate(runRepo, child, false);
+
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    await drain(service.resume(parent.name, parentRun.id));
+
+    const done = await runRepo.findById(parent.id, parentRun.id);
+    assertEquals(done!.status, "failed");
+    const step = done!.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.status, "failed");
+    assertEquals(step.approvalDecision?.approved, false);
+    assertEquals(done!.failedSteps()[0].approvalRejected, true);
+    assertEquals(executor.executedSteps.includes("main/finish"), false);
+  });
+});
+
+Deno.test("resume(): a re-entered nested step does not evaluate its guard again (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = nestedGateWorkflows().child;
+    const parent = Workflow.create({
+      name: "waiting-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("gated-child"),
+              // Truthy only once the nested run has finished: re-evaluated on
+              // re-entry, it would skip the step and strand the child.
+              guard: "${{ inputs.skip == true }}",
+            }),
+          ],
+        }),
+      ],
+      inputs: { properties: { skip: { type: "boolean", default: false } } },
+    });
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name, { inputs: { skip: false } }));
+    const childRun = await decideChildGate(runRepo, child, true);
+    await drain(service.resume(child.name, childRun.id));
+
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    await drain(
+      service.resume(parent.name, parentRun.id, { inputs: { skip: true } }),
+    );
+    const done = await runRepo.findById(parent.id, parentRun.id);
+    const step = done!.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.status, "succeeded");
+    assertEquals(step.skipReason, undefined);
+  });
+});
+
+Deno.test("run(): a nested run is owned and initiated as its parent (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(
+      service.run(parent.name, {
+        instanceId: "serve-instance-1",
+        initiatedBy: "user:operator",
+      }),
+    );
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.instanceId, "serve-instance-1");
+    assertEquals(childRun.initiatedBy, "user:operator");
+  });
+});
+
+Deno.test("run(): a nested workflow without a gate leaves no link on its parent step (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = Workflow.create({
+      name: "plain-child",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "work",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "plain-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("plain-child"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    assertEquals(parentRun.status, "succeeded");
+    const step = parentRun.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.nestedRun, undefined);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.parentRun?.kind, "valid");
+  });
+});
+
+Deno.test("resume(): a nested run resumed on its own keeps its ancestors, so a cycle is still refused (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    // After its gate the child calls the parent back: a cycle once the
+    // child knows its ancestors again.
+    const { parent, child } = nestedGateWorkflows([
+      Step.create({
+        name: "call-parent",
+        task: StepTask.workflow("waiting-parent"),
+        dependsOn: [{ step: "gate", condition: TriggerCondition.succeeded() }],
+      }),
+    ]);
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const childRun = await decideChildGate(runRepo, child, true);
+
+    const events = await drain(service.resume(child.name, childRun.id));
+
+    const failed = events.find((e) =>
+      e.kind === "step_failed" && e.stepId === "call-parent"
+    );
+    assert(failed?.kind === "step_failed");
+    assertStringIncludes(failed.error, "Workflow cycle detected");
+    // No second parent run was started.
+    assertEquals((await runRepo.findAllByWorkflowId(parent.id)).length, 1);
+  });
+});
+
+Deno.test("cancel: a parent cancelled while it waits detaches the nested run and leaves it suspended (swamp-club#2736)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+
+    parentRun.cancel("operator");
+    await runRepo.save(parent.id, parentRun);
+
+    const step = parentRun.getJob("main")!.getStep("call-child")!;
+    assertEquals(step.status, "failed");
+    assertEquals(step.detachedNestedRun, true);
+    assertEquals(
+      parentRun.detachedNestedRuns().map((d) => d.child.runId),
+      [childRun.id],
+    );
+    assertEquals(
+      (await runRepo.findById(child.id, childRun.id))!.status,
+      "suspended",
+    );
   });
 });

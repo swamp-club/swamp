@@ -97,6 +97,11 @@ export type WorkflowExecutionEvent =
   | {
     kind: "approval_requested";
     runId: string;
+    /**
+     * The workflow the gate belongs to. A nested workflow's gate reaches the
+     * parent's stream with the child's workflow and run (swamp-club#2736).
+     */
+    workflowName?: string;
     jobId: string;
     stepId: string;
     prompt: string;
@@ -125,6 +130,12 @@ export type WorkflowExecutionEvent =
      */
     modelName?: string;
     methodName?: string;
+    /**
+     * The nested workflow a nested workflow step's failure names in `error`,
+     * set when the step settles on its nested run (swamp-club#2736), so a
+     * server can hide the error from a caller who may not read it.
+     */
+    nestedRun?: { workflowId: string; workflowName: string };
     /**
      * Data a failing model-method step persisted before it threw, so the
      * workflow summary can point at it. Set only at the model-method catch
@@ -251,4 +262,10 @@ export type WorkflowExecutionEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    /**
+     * Set when the run suspended on a nested workflow step rather than a
+     * gate of its own: the child run the step waits on (swamp-club#2736).
+     * `jobId` and `stepId` are then the nested step.
+     */
+    nested?: { workflowName: string; runId: string };
   };

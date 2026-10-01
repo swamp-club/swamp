@@ -66,6 +66,16 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         : statusIcon(step.status);
       writeOutput(`    ${stepIcon} ${step.name}${stepDuration}`);
 
+      if (step.nestedRun && step.status === "waiting_approval") {
+        writeOutput(
+          `      -> waiting on nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName}`,
+        );
+      } else if (step.nestedRun?.detached) {
+        writeOutput(
+          `      -> nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName} was detached when the run ended`,
+        );
+      }
+
       if (step.error) {
         writeOutput(`      -> ${red(step.error)}`);
       }

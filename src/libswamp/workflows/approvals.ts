@@ -29,6 +29,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
 
 export interface PendingApproval {
   workflowId: string;
@@ -38,6 +39,21 @@ export interface PendingApproval {
   suspendedAt: string | undefined;
   prompt: string | undefined;
   inputs: Readonly<Record<string, unknown>>;
+  /**
+   * On a nested workflow's run, the parent step that started it
+   * (swamp-club#2736).
+   */
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+  };
+  /**
+   * With `parentRun`: whether the parent still waits on this run. False once
+   * the parent ended and left this run suspended on its own.
+   */
+  parentWaiting?: boolean;
 }
 
 export interface WorkflowApprovalsData {
@@ -86,6 +102,22 @@ export async function* workflowApprovals(
       const logger = getLogger(["swamp", "workflow", "approvals"]);
       const workflows = await deps.workflowRepo.findAll();
       const pending: PendingApproval[] = [];
+      // Many nested runs can share one parent: load each parent once.
+      const parents = new Map<string, Promise<WorkflowRun | null>>();
+      const nestedLink = new NestedRunLink({
+        workflowRepo: deps.workflowRepo,
+        runRepo: {
+          findById: (workflowId, runId) => {
+            const key = `${workflowId}/${runId}`.toLowerCase();
+            let found = parents.get(key);
+            if (!found) {
+              found = deps.runRepo.findById(workflowId, runId);
+              parents.set(key, found);
+            }
+            return found;
+          },
+        },
+      });
 
       for (const workflow of workflows) {
         const runs = deps.findSuspendedRuns
@@ -139,6 +171,14 @@ export async function* workflowApprovals(
               : undefined;
           }
 
+          const parentRun = run.parentRun?.kind === "valid"
+            ? {
+              workflowId: run.parentRun.ref.workflowId,
+              workflowName: run.parentRun.ref.workflowName,
+              runId: run.parentRun.ref.runId,
+              stepName: run.parentRun.ref.stepName,
+            }
+            : undefined;
           pending.push({
             workflowId: workflow.id,
             workflowName: workflow.name,
@@ -147,6 +187,15 @@ export async function* workflowApprovals(
             suspendedAt: step?.startedAt?.toISOString(),
             prompt,
             inputs: run.inputs,
+            ...(parentRun
+              ? {
+                parentRun,
+                // One unreadable parent must not fail the whole listing.
+                parentWaiting: await nestedLink.isAwaitedByParent(run).catch(
+                  () => false,
+                ),
+              }
+              : {}),
           });
         }
       }
