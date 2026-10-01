@@ -43,6 +43,7 @@ import {
 } from "./paths.ts";
 import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
 import {
+  createWorkflowId,
   createWorkflowRunId,
   type WorkflowId,
   type WorkflowRunId,
@@ -63,6 +64,11 @@ import {
   createWorkflowRunStarted,
 } from "../../domain/events/types.ts";
 import { getLogger } from "@logtape/logtape";
+import { z } from "zod";
+import {
+  NestedRunRefSchema,
+  ParentRunRefSchema,
+} from "../../domain/workflows/nested_run_ref.ts";
 
 const logger = getLogger(["swamp", "persistence", "workflow-run-index"]);
 
@@ -670,6 +676,28 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { deleted: number; bytesReclaimed: number; deletedRunIds: string[] }
   > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+    // A finished nested run is kept while its parent still exists and has not
+    // finished (interrupted counts as unfinished: it can be recovered), since
+    // the parent's resume reads the child's outcome (swamp-club#2736). A
+    // parent that no longer exists leaves the child collectible.
+    const parentStatuses = new Map<string, string | null>();
+    const keepForParent = async (data: unknown): Promise<boolean> => {
+      const link = ParentRunRefSchema.safeParse(
+        (data as { parentRun?: unknown }).parentRun,
+      );
+      if (!link.success) return false;
+      const key = link.data.runId.toLowerCase();
+      let status = parentStatuses.get(key);
+      if (status === undefined) {
+        const parent = await this.findById(
+          createWorkflowId(link.data.workflowId),
+          createWorkflowRunId(link.data.runId),
+        ).catch(() => null);
+        status = parent?.status ?? null;
+        parentStatuses.set(key, status);
+      }
+      return status !== null && !TERMINAL_STATUSES.has(status);
+    };
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
@@ -733,6 +761,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 continue;
               }
               if (!TERMINAL_STATUSES.has(data.status)) continue;
+              if (await keepForParent(data)) continue;
 
               const completedAt = data.completedAt
                 ? new Date(data.completedAt).getTime()
@@ -983,6 +1012,33 @@ function summaryToIndexEntry(
     failureReason: summary.failureReason,
     stepProgress: summary.stepProgress,
     awaitingResume: summary.awaitingResume,
+    parentRun: summary.parentRun,
+    waitingOnRun: summary.waitingOnRun,
+    waitsOnlyOnNestedRuns: summary.waitsOnlyOnNestedRuns,
+  };
+}
+
+/** Reads an index entry's nested workflow links, dropping malformed ones. */
+function indexEntryLinks(
+  entry: WorkflowRunIndexEntry,
+): Pick<
+  WorkflowRunSummary,
+  "parentRun" | "waitingOnRun" | "waitsOnlyOnNestedRuns"
+> {
+  const parentRun = entry.parentRun === undefined
+    ? undefined
+    : ParentRunRefSchema.safeParse(entry.parentRun);
+  const waitingOnRun = entry.waitingOnRun === undefined
+    ? undefined
+    : z.array(NestedRunRefSchema).safeParse(entry.waitingOnRun);
+  return {
+    parentRun: parentRun?.success ? parentRun.data : undefined,
+    waitingOnRun: waitingOnRun?.success && waitingOnRun.data.length > 0
+      ? waitingOnRun.data
+      : undefined,
+    waitsOnlyOnNestedRuns: entry.waitsOnlyOnNestedRuns === true
+      ? true
+      : undefined,
   };
 }
 
@@ -1004,6 +1060,7 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
       failureReason: entry.failureReason,
       stepProgress: entry.stepProgress,
       awaitingResume: entry.awaitingResume,
+      ...indexEntryLinks(entry),
     });
   }
   return summaries.sort((a, b) => {

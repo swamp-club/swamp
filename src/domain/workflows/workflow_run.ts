@@ -39,6 +39,14 @@ import type { Workflow } from "./workflow.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
+import {
+  type NestedRunRef,
+  type ParentRunRef,
+  parseNestedRunLink,
+  parseParentRunLink,
+  persistedLink,
+  type RunLink,
+} from "./nested_run_ref.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -162,6 +170,13 @@ export const StepRunSchema = z.object({
   resetByResume: z.boolean().optional(),
   failureKind: StepFailureKindSchema.optional(),
   settledByAbort: z.boolean().optional(),
+  // The child run a nested workflow step waits on (swamp-club#2736). Kept as
+  // read and validated in the domain (see parseNestedRunLink), so a malformed
+  // value never makes the run unloadable and is written back unchanged.
+  nestedRun: z.unknown().optional(),
+  // Set when the run ended while this step still waited on its child run,
+  // leaving the child suspended on its own.
+  detachedNestedRun: z.boolean().optional(),
 });
 
 /**
@@ -283,6 +298,9 @@ export const WorkflowRunSchema = z.object({
     evaluatedWorkflowId: z.string().optional(),
     definitionFingerprint: z.string().optional(),
   }).optional(),
+  // On a nested workflow's run: the parent step that started it
+  // (swamp-club#2736). Validated in the domain, as nestedRun is.
+  parentRun: z.unknown().optional(),
 });
 
 /**
@@ -316,6 +334,8 @@ export class StepRun {
     private _resetByResume: boolean = false,
     private _failureKind: StepFailureKind | undefined = undefined,
     private _settledByAbort: boolean = false,
+    private _nestedRun: RunLink<NestedRunRef> | undefined = undefined,
+    private _detachedNestedRun: boolean = false,
   ) {}
 
   /**
@@ -363,6 +383,8 @@ export class StepRun {
       validated.resetByResume ?? false,
       validated.failureKind,
       validated.settledByAbort ?? false,
+      parseNestedRunLink(validated.nestedRun),
+      validated.detachedNestedRun ?? false,
     );
   }
 
@@ -451,6 +473,30 @@ export class StepRun {
   }
 
   /**
+   * The child run this nested workflow step waits on, or waited on before it
+   * settled. A malformed link reads as `broken` and is never followed.
+   */
+  get nestedRun(): RunLink<NestedRunRef> | undefined {
+    return this._nestedRun;
+  }
+
+  /**
+   * True while the step waits on a suspended child run rather than on an
+   * approval gate of its own.
+   */
+  get isNestedWait(): boolean {
+    return this._status === "waiting_approval" &&
+      this._nestedRun !== undefined;
+  }
+
+  /**
+   * True when the run ended while this step still waited on its child run.
+   */
+  get detachedNestedRun(): boolean {
+    return this._detachedNestedRun;
+  }
+
+  /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
@@ -490,6 +536,8 @@ export class StepRun {
     this._resetByResume = false;
     this._failureKind = undefined;
     this._settledByAbort = false;
+    this._nestedRun = undefined;
+    this._detachedNestedRun = false;
   }
 
   /**
@@ -553,6 +601,36 @@ export class StepRun {
     if (prompt !== undefined) {
       this._approvalPrompt = prompt;
     }
+  }
+
+  /**
+   * Marks a nested workflow step as waiting on its suspended child run.
+   */
+  waitForNestedRun(ref: NestedRunRef): void {
+    this._status = "waiting_approval";
+    this._resetByResume = false;
+    this._nestedRun = { kind: "valid", ref: { ...ref } };
+  }
+
+  /**
+   * Fails a nested workflow step whose child run's approval was rejected,
+   * recording the child gate's decision so a retry refuses the step as a
+   * rejected approval.
+   */
+  rejectNested(decision: ApprovalDecisionData, error: string): void {
+    this._approvalDecision = { ...decision };
+    this.fail(error);
+  }
+
+  /**
+   * Fails a nested workflow step whose run ended while the step still waited
+   * on its child run. The child stays suspended on its own. Marked
+   * {@link settledByAbort}, so a resume of the run starts the step afresh.
+   */
+  detachNestedRun(error: string): void {
+    this.fail(error);
+    this._settledByAbort = true;
+    this._detachedNestedRun = true;
   }
 
   /**
@@ -647,6 +725,12 @@ export class StepRun {
     }
     if (this._settledByAbort) {
       data.settledByAbort = true;
+    }
+    if (this._nestedRun !== undefined) {
+      data.nestedRun = persistedLink(this._nestedRun);
+    }
+    if (this._detachedNestedRun) {
+      data.detachedNestedRun = true;
     }
     return data;
   }
@@ -1018,6 +1102,26 @@ export interface StepRunRef {
 }
 
 /**
+ * A nested workflow step that waits on its child run, as returned by
+ * {@link WorkflowRun.findNestedWaits}.
+ */
+export interface NestedWaitRef {
+  readonly jobName: string;
+  readonly stepName: string;
+  readonly link: RunLink<NestedRunRef>;
+}
+
+/**
+ * A child run a nested workflow step still waited on when its run ended, as
+ * returned by {@link WorkflowRun.detachedNestedRuns}.
+ */
+export interface DetachedNestedRunRef {
+  readonly jobName: string;
+  readonly stepName: string;
+  readonly child: NestedRunRef;
+}
+
+/**
  * The process driving a run: its pid, and the serve instance id when serve
  * drives it. A run with no instance id is owned by a local CLI process.
  */
@@ -1069,6 +1173,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       | undefined = undefined,
     private _writtenReferences: WrittenReference[] = [],
     private _sensitiveFormat: number | undefined = undefined,
+    private _parentRun: RunLink<ParentRunRef> | undefined = undefined,
   ) {}
 
   /**
@@ -1194,6 +1299,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.ownerBeforeResume,
       validated.writtenReferences ?? [],
       validated.sensitiveFormat,
+      parseParentRunLink(validated.parentRun),
     );
   }
 
@@ -1238,6 +1344,25 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get pid(): number | undefined {
     return this._pid;
+  }
+
+  /**
+   * On a nested workflow's run, the parent step that started it. A
+   * malformed link reads as `broken` and is never followed.
+   */
+  get parentRun(): RunLink<ParentRunRef> | undefined {
+    return this._parentRun;
+  }
+
+  /**
+   * Records the parent step that starts this run as a nested workflow.
+   * Called once, before the run starts.
+   */
+  recordParentRun(ref: ParentRunRef): void {
+    this._parentRun = {
+      kind: "valid",
+      ref: { ...ref, ancestorWorkflowNames: [...ref.ancestorWorkflowNames] },
+    };
   }
 
   get jobs(): ReadonlyArray<JobRun> {
@@ -1312,6 +1437,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._status === "cancelled" || this._status === "interrupted") {
       return;
     }
+    this.detachNestedWaits();
     const anyNonTerminal = this._jobs.some((j) =>
       j.status !== "succeeded" && j.status !== "skipped"
     );
@@ -1334,6 +1460,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     ) {
       return;
     }
+    this.detachNestedWaits();
     this._status = "cancelled";
     this._completedAt = new Date();
     if (reason) {
@@ -1665,17 +1792,92 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Finds the step that is currently waiting for approval.
+   * Finds the approval gate of this run that is waiting for a decision. A
+   * nested workflow step waiting on its child run is not a gate: see
+   * {@link findNestedWaits}.
    */
   findWaitingApprovalStep(): { jobName: string; stepName: string } | undefined {
     for (const job of this._jobs) {
       for (const step of job.steps) {
-        if (step.status === "waiting_approval") {
+        if (step.status === "waiting_approval" && !step.isNestedWait) {
           return { jobName: job.jobName, stepName: step.stepName };
         }
       }
     }
     return undefined;
+  }
+
+  /**
+   * Lists, in stored order, the nested workflow steps waiting on a suspended
+   * child run.
+   */
+  findNestedWaits(): NestedWaitRef[] {
+    const result: NestedWaitRef[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.isNestedWait && step.nestedRun !== undefined) {
+          result.push({
+            jobName: job.jobName,
+            stepName: step.stepName,
+            link: step.nestedRun,
+          });
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The child runs nested workflow steps still waited on when this run
+   * ended. Each child was left suspended on its own.
+   */
+  detachedNestedRuns(): DetachedNestedRunRef[] {
+    const result: DetachedNestedRunRef[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.detachedNestedRun && step.nestedRun?.kind === "valid") {
+          result.push({
+            jobName: job.jobName,
+            stepName: step.stepName,
+            child: step.nestedRun.ref,
+          });
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Settles every nested workflow step still waiting on its child run as
+   * the run ends, and fails a job left with nothing else to finish. Only
+   * this run changes: each child stays suspended on its own. Not called on
+   * interrupt, since an interrupted run is recovered and keeps waiting.
+   */
+  private detachNestedWaits(): void {
+    for (const job of this._jobs) {
+      let detached = false;
+      for (const step of job.steps) {
+        if (!step.isNestedWait) continue;
+        const child = step.nestedRun?.kind === "valid"
+          ? ` run ${step.nestedRun.ref.runId} of nested workflow "${step.nestedRun.ref.workflowName}"`
+          : " its nested workflow run";
+        step.detachNestedRun(
+          `Detached: the run ended while${child} was still suspended. The nested run was left as it was.`,
+        );
+        detached = true;
+      }
+      const unfinished = job.steps.some((step) =>
+        step.status === "pending" || step.status === "running" ||
+        step.status === "waiting_approval"
+      );
+      if (
+        detached && !unfinished &&
+        (job.status === "pending" || job.status === "running" ||
+          job.status === "waiting_approval")
+      ) {
+        job.fail();
+      }
+    }
   }
 
   /**
@@ -1758,17 +1960,23 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._runPlan !== undefined) {
       data.runPlan = { ...this._runPlan };
     }
+    if (this._parentRun !== undefined) {
+      data.parentRun = persistedLink(this._parentRun);
+    }
 
     return data;
   }
 
   /**
-   * True when the run is suspended and no step is still waiting for approval:
-   * every gate has been decided and the run needs a resume to continue.
+   * True when the run is suspended, no gate is still waiting for a decision
+   * and no step waits on a nested run: the run needs a resume to continue.
+   * Whether a nested wait's child has finished is derived from the child
+   * (see NestedRunLink), never stored here.
    */
   isAwaitingResume(): boolean {
     return this._status === "suspended" &&
-      this.findWaitingApprovalStep() === undefined;
+      this.findWaitingApprovalStep() === undefined &&
+      this.findNestedWaits().length === 0;
   }
 
   private computeFailureInfo(): {
@@ -1777,7 +1985,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
   } {
     for (const job of this._jobs) {
       for (const step of job.steps) {
-        if (step.status === "failed" && !step.allowedFailure) {
+        // A step detached when the run ended reports the run's end, not why
+        // it ended.
+        if (
+          step.status === "failed" && !step.allowedFailure &&
+          !step.detachedNestedRun
+        ) {
           return {
             failedStep: step.stepName,
             failureReason: step.error,

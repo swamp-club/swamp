@@ -259,6 +259,17 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               ),
             );
           }
+          for (const detached of e.detachedNestedRuns ?? []) {
+            writeOutput(
+              this.pipe.statusLine(
+                "system",
+                "Detached",
+                STATUS_COLORS.warn,
+                `nested run ${detached.runId} of workflow ${detached.workflowName} left suspended — cancel it with ${detached.cancelCommand}`,
+                formatTimestamp(),
+              ),
+            );
+          }
         };
         if (this.pipe) {
           emitSuperseded();
@@ -409,10 +420,15 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       approval_requested: (e) => {
         if (!this.pipe) return;
         const name = this.getJobDisplayName(e.jobId);
+        // A nested workflow's gate is decided on the nested run, under its
+        // own workflow (swamp-club#2736).
+        const gateWorkflow = e.workflowName ?? this.workflowName;
         writeOutput(
           this.pipe.waitingLine(
             name,
-            `approval required: "${e.prompt}"`,
+            gateWorkflow === this.workflowName
+              ? `approval required: "${e.prompt}"`
+              : `approval required in nested workflow ${gateWorkflow}: "${e.prompt}"`,
           ),
         );
         writeBlankLine();
@@ -421,7 +437,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
+            }  swamp workflow approve ${gateWorkflow} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
           ),
         );
         writeOutput(
@@ -429,7 +445,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             `${
               yellow("To reject:")
-            }   swamp workflow reject ${this.workflowName} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
+            }   swamp workflow reject ${gateWorkflow} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
           ),
         );
       },
@@ -717,6 +733,37 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         this.clearAllHeartbeats();
         if (!this.pipe) return;
         writeBlankLine();
+        if (e.nested) {
+          // Waiting on a nested run: its gate was shown when it was
+          // requested, under the nested workflow (swamp-club#2736).
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Suspended",
+              STATUS_COLORS.warn,
+              `workflow ${this.workflowName} — step ${e.stepId} waits on nested workflow ${e.nested.workflowName} run ${e.nested.runId}`,
+              formatTimestamp(),
+            ),
+          );
+          writeBlankLine();
+          writeOutput(
+            this.pipe.line(
+              "system",
+              `${
+                yellow("Nested run:")
+              }  approve and resume swamp workflow ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
+            ),
+          );
+          writeOutput(
+            this.pipe.line(
+              "system",
+              `${
+                dim("Once it finishes:")
+              }  swamp workflow resume ${this.workflowName} --run ${e.run.id}${this.commandTarget}`,
+            ),
+          );
+          return;
+        }
         writeOutput(
           this.pipe.statusLine(
             "system",
@@ -852,6 +899,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         unguardedConsole.error(JSON.stringify({
           event: "superseded_runs",
           cancelledRunIds: e.cancelledRunIds,
+          ...(e.detachedNestedRuns
+            ? { detachedNestedRuns: e.detachedNestedRuns }
+            : {}),
         }));
       },
       evaluating_workflow: () => {},
@@ -922,6 +972,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               prompt: e.prompt,
               timeout: e.timeout,
             },
+            // The nested run the step waits on, when the run suspended on a
+            // nested workflow rather than a gate of its own.
+            ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
           },
           null,
           2,

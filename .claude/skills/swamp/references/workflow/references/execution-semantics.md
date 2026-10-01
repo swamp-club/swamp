@@ -66,6 +66,10 @@ stays suspended and needs a manual resume, or, when the workflow changed shape,
 a cancel or a revert of the change. The dashboard lists approved-but-suspended
 runs with a Resume action and the equivalent CLI command.
 
+A gate inside a nested workflow suspends the child run and its parent. Approve
+and resume the child run first, then resume the parent; see
+[nested-workflows.md](nested-workflows.md#approval-gates-in-a-child-workflow).
+
 ### Retry the Failed Steps of a Failed Run
 
 `swamp workflow resume <workflow> --run <id>` on a failed run retries every

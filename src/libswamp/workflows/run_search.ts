@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type {
+  NestedRunRef,
+  ParentRunRef,
+} from "../../domain/workflows/nested_run_ref.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
@@ -43,10 +47,30 @@ export interface WorkflowRunSearchItem {
   failedStep?: string;
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
-  /** Suspended with every approval gate decided: it needs a resume. */
+  /**
+   * Suspended with every approval gate decided and every nested run it waits
+   * on finished: it needs a resume.
+   */
   awaitingResume?: boolean;
   /** The run's workflow declares inputs, so a resume may need `--input`. */
   workflowHasInputs?: boolean;
+  /** On a nested workflow's run: the parent step that started it. */
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+  };
+  /**
+   * The nested runs this run's steps wait on, with each one's status when
+   * it was found among the searched runs (swamp-club#2736).
+   */
+  nestedWaits?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    status?: string;
+  }[];
 }
 
 /**
@@ -86,6 +110,9 @@ export interface WorkflowRunSearchDeps {
       failureReason?: string;
       stepProgress?: { completed: number; total: number };
       awaitingResume?: boolean;
+      parentRun?: ParentRunRef;
+      waitingOnRun?: NestedRunRef[];
+      waitsOnlyOnNestedRuns?: boolean;
     }>
   >;
 }
@@ -146,6 +173,33 @@ export async function* workflowRunSearch(
         return bTime - aTime;
       });
 
+      // Every run is already in memory: a nested wait is resolved by joining
+      // on the child's summary, its parentRun the back-link check, with no
+      // further reads (swamp-club#2736).
+      const byId = new Map(allRuns.map((r) => [r.id.toLowerCase(), r]));
+      const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
+      const nestedWaitsOf = (run: (typeof allRuns)[number]) => {
+        if (!run.waitingOnRun) return undefined;
+        let allFinished = true;
+        const waits = run.waitingOnRun.map((ref) => {
+          const child = byId.get(ref.runId.toLowerCase());
+          const linked = child?.parentRun &&
+            child.parentRun.runId.toLowerCase() === run.id.toLowerCase();
+          if (linked && !FINISHED.has(child.status)) allFinished = false;
+          return {
+            workflowId: ref.workflowId,
+            workflowName: ref.workflowName,
+            runId: ref.runId,
+            ...(linked ? { status: child.status } : {}),
+          };
+        });
+        return {
+          waits,
+          resumable: run.status === "suspended" &&
+            run.waitsOnlyOnNestedRuns === true && allFinished,
+        };
+      };
+
       // Convert to search items
       let results: WorkflowRunSearchItem[] = allRuns.map((run) => {
         const startTime = run.startedAt?.getTime();
@@ -156,6 +210,7 @@ export async function* workflowRunSearch(
         const inputs = run.inputs && Object.keys(run.inputs).length > 0
           ? { ...run.inputs }
           : undefined;
+        const nested = nestedWaitsOf(run);
 
         return {
           runId: run.id,
@@ -172,10 +227,23 @@ export async function* workflowRunSearch(
           failedStep: run.failedStep,
           failureReason: run.failureReason,
           stepProgress: run.stepProgress,
-          awaitingResume: run.awaitingResume ? true : undefined,
+          awaitingResume: run.awaitingResume || nested?.resumable
+            ? true
+            : undefined,
           workflowHasInputs: workflowsWithInputs.has(run.workflowId)
             ? true
             : undefined,
+          ...(run.parentRun
+            ? {
+              parentRun: {
+                workflowId: run.parentRun.workflowId,
+                workflowName: run.parentRun.workflowName,
+                runId: run.parentRun.runId,
+                stepName: run.parentRun.stepName,
+              },
+            }
+            : {}),
+          ...(nested ? { nestedWaits: nested.waits } : {}),
         };
       });
 

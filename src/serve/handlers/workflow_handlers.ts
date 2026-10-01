@@ -35,6 +35,7 @@ import {
   createWorkflowHistoryLogsDeps,
   createWorkflowRejectDeps,
   createWorkflowValidateDeps,
+  type DetachedNestedRunData,
   mapWorkflowExecutionEvent,
   resolveRunReference,
   workflowApprovals,
@@ -52,6 +53,7 @@ import {
   workflowHistorySearch,
   type WorkflowHistorySearchDeps,
   workflowReject,
+  type WorkflowRejectData,
   type WorkflowRunEvent,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
@@ -114,7 +116,14 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
+  type NamedWorkflow,
+  nestedRunReadDecider,
+  readableNestedRuns,
+  redactParentRun,
+} from "./nested_run_redaction.ts";
+import {
   autoResumeAfterApproval,
+  autoResumeParentAfterChild,
   startDetachedResume,
 } from "../resume_launcher.ts";
 import {
@@ -133,6 +142,7 @@ import {
   authorizeOrReject,
   cancelActor,
   cancelReasonFor,
+  captureDecisionSubject,
   clientErrorDetails,
   type ConnectionContext,
   exceptionTypeForClient,
@@ -163,6 +173,7 @@ import {
   writeServeConfigFile,
 } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/mod.ts";
+import type { WorkflowRunView } from "../../libswamp/mod.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
@@ -362,6 +373,8 @@ export async function handleWorkflowRun(
     if (err instanceof RegistryCapacityError) {
       const clientMsg = err.code === "already_registered"
         ? "A run with this ID is already in progress"
+        : err.code === "draining"
+        ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
       sendError(socket, requestId, err.code, clientMsg);
     } else {
@@ -631,7 +644,14 @@ export async function handleWorkflowApprovals(
     }
 
     const data = (result ?? {}) as {
-      approvals?: Array<{ workflowId: string; workflowName: string }>;
+      approvals?: Array<
+        {
+          workflowId: string;
+          workflowName: string;
+          parentRun?: NamedWorkflow;
+          parentWaiting?: boolean;
+        }
+      >;
     };
     if (data.approvals) {
       const canonical = canonicalResources(ctx);
@@ -643,6 +663,12 @@ export async function handleWorkflowApprovals(
         "read",
         ctx,
       );
+      // A nested run's row names its parent only to a reader of the
+      // parent's workflow (swamp-club#2736).
+      const canRead = nestedRunReadDecider(ctx, socket, principal);
+      for (const item of data.approvals) {
+        await redactParentRun(item, canRead);
+      }
     }
 
     send(socket, {
@@ -820,6 +846,10 @@ export async function handleWorkflowHistoryGet(
       );
       return;
     }
+    await redactRunViewLinks(
+      result as unknown as WorkflowRunView,
+      nestedRunReadDecider(ctx, socket, principal),
+    );
 
     send(socket, {
       type: "workflow.history.get",
@@ -1065,7 +1095,14 @@ export async function handleWorkflowRunSearch(
     }
 
     const data = (result ?? {}) as {
-      results?: Array<{ workflowId: string; workflowName: string }>;
+      results?: Array<
+        {
+          workflowId: string;
+          workflowName: string;
+          parentRun?: NamedWorkflow;
+          nestedWaits?: Array<NamedWorkflow>;
+        }
+      >;
     };
     // Page after the authorization filter, never inside libswamp: slicing
     // first would let unreadable runs shorten a page and skew `total`.
@@ -1082,6 +1119,19 @@ export async function handleWorkflowRunSearch(
       payload?.offset,
       payload?.limit ?? WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
     );
+    // Links to other runs name only workflows the principal may read
+    // (swamp-club#2736); the derived awaitingResume flag stays.
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    for (const item of page) {
+      await redactParentRun(item, canRead);
+      const nestedWaits = await readableNestedRuns(
+        item.nestedWaits,
+        (w) => w.workflowId,
+        canRead,
+      );
+      if (nestedWaits) item.nestedWaits = nestedWaits;
+      else delete item.nestedWaits;
+    }
     data.results = page;
 
     send(socket, {
@@ -1246,12 +1296,22 @@ export async function handleWorkflowApprove(
       ctx,
       result,
       principal ? principalToString(principal) : null,
+      captureDecisionSubject(socket, principal),
     );
   } catch (error) {
     logger.warn("Auto-resume after approval of run {runId} failed: {error}", {
       runId: result.runId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // The parent run is named only to a reader of its workflow
+  // (swamp-club#2736).
+  const canRead = nestedRunReadDecider(ctx, socket, principal);
+  if (
+    result.awaitingParent && !(await canRead(result.awaitingParent))
+  ) {
+    delete result.awaitingParent;
   }
 
   send(socket, {
@@ -1286,6 +1346,7 @@ export async function handleWorkflowReject(
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
   let release: (() => void) | undefined;
+  let rejected: WorkflowRejectData | undefined;
   try {
     const reserved = await reserveSuspendedRun(
       ctx,
@@ -1341,6 +1402,20 @@ export async function handleWorkflowReject(
       );
       return;
     }
+    rejected = result as unknown as WorkflowRejectData;
+    // Other runs are named only to a reader of their workflow
+    // (swamp-club#2736).
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    if (rejected.awaitingParent && !(await canRead(rejected.awaitingParent))) {
+      delete rejected.awaitingParent;
+    }
+    const detached = await readableNestedRuns(
+      rejected.detachedNestedRuns,
+      (d) => d.workflowId,
+      canRead,
+    );
+    if (detached) rejected.detachedNestedRuns = detached;
+    else delete rejected.detachedNestedRuns;
 
     send(socket, {
       type: "workflow.reject",
@@ -1353,6 +1428,26 @@ export async function handleWorkflowReject(
   } finally {
     release?.();
     await pushChangedToRemote(ctx);
+  }
+
+  // A rejected nested run has finished: its parent may continue. Launched
+  // once the decision is saved, pushed and released; it may wait on a parent
+  // this instance still drives, so the reply does not wait for it.
+  const rejectedRun = rejected;
+  if (rejectedRun) {
+    autoResumeParentAfterChild(
+      ctx,
+      { workflowId: rejectedRun.workflowId, runId: rejectedRun.runId },
+      captureDecisionSubject(socket, principal),
+    ).catch((error) => {
+      logger.warn(
+        "Auto-resume of the parent of run {runId} failed: {error}",
+        {
+          runId: rejectedRun.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    });
   }
 }
 
@@ -1443,11 +1538,22 @@ export async function handleWorkflowCancel(
       },
       (workflow) => mayCancel(workflow),
     );
-  const reply = (workflowName: string, status: string) =>
+  const reply = (
+    workflowName: string,
+    status: string,
+    detachedNestedRuns?: DetachedNestedRunData[],
+  ) =>
     send(socket, {
       type: "workflow.cancel",
       id: requestId,
-      payload: { data: { runId: payload.runId, workflowName, status } },
+      payload: {
+        data: {
+          runId: payload.runId,
+          workflowName,
+          status,
+          ...(detachedNestedRuns ? { detachedNestedRuns } : {}),
+        },
+      },
     });
 
   try {
@@ -1489,7 +1595,17 @@ export async function handleWorkflowCancel(
 
     switch (outcome.status) {
       case "cancelled":
-        reply(outcome.workflowName, "cancelled");
+        // Nested runs are named only to a reader of their workflow
+        // (swamp-club#2736).
+        reply(
+          outcome.workflowName,
+          "cancelled",
+          await readableNestedRuns(
+            outcome.detachedNestedRuns,
+            (d) => d.workflowId,
+            nestedRunReadDecider(ctx, socket, principal),
+          ),
+        );
         return;
       case "busy":
       case "not_suspended":
@@ -1708,6 +1824,8 @@ export async function handleWorkflowResume(
     traceparent: payload.traceparent,
     tracestate: payload.tracestate,
     principalId: principal ? principalToString(principal) : null,
+    subject: captureDecisionSubject(socket, principal),
+    canReadWorkflow: nestedRunReadDecider(ctx, socket, principal),
   });
   if (!launched.ok) {
     sendError(socket, requestId, launched.code, launched.message);
@@ -2375,5 +2493,31 @@ export async function applyTriggerOverrides(
       "Failed to apply trigger overrides to running scheduler: {error}",
       { error: err instanceof Error ? err.message : String(err) },
     );
+  }
+}
+
+/**
+ * Removes, from a run view sent to a client, the links to other runs whose
+ * workflow the principal may not read (swamp-club#2736): the parent link,
+ * the nested runs it waits on and each step's nested run link.
+ */
+async function redactRunViewLinks(
+  view: WorkflowRunView,
+  canRead: (workflow: NamedWorkflow) => Promise<boolean>,
+): Promise<void> {
+  await redactParentRun(view, canRead);
+  const nestedWaits = await readableNestedRuns(
+    view.nestedWaits,
+    (w) => w.workflowId,
+    canRead,
+  );
+  if (nestedWaits) view.nestedWaits = nestedWaits;
+  else delete view.nestedWaits;
+  for (const job of view.jobs ?? []) {
+    for (const step of job.steps) {
+      if (step.nestedRun && !(await canRead(step.nestedRun))) {
+        delete step.nestedRun;
+      }
+    }
   }
 }

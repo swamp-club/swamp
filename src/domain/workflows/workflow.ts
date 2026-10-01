@@ -48,7 +48,7 @@ export function isFilenameSafeName(name: string): boolean {
   );
 }
 
-const workflowNameBase = z.string().min(1).refine(
+export const workflowNameBase = z.string().min(1).refine(
   (name) => {
     if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
       return false;

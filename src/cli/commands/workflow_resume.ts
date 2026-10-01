@@ -59,6 +59,7 @@ import {
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
+import { awaitingParentOf } from "../../libswamp/mod.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";
@@ -581,6 +582,19 @@ export const workflowResumeCommand = withRemoteOptions(
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();
+    }
+
+    // A nested run that finished leaves its parent waiting: name the next
+    // command (swamp-club#2736).
+    if (run.parentRun !== undefined) {
+      const finished = await runRepo.findById(workflow.id, run.id);
+      const parent = finished && finished.status !== "suspended"
+        ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
+        : undefined;
+      if (parent) {
+        cliCtx.logger
+          .info`Parent run ${parent.runId} of workflow ${parent.workflowName} waits on this run. Resume it with ${parent.resumeCommand}`;
+      }
     }
 
     if (renderer.workflowFailed()) {

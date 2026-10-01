@@ -21,9 +21,18 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { inputsMatch } from "../../domain/workflows/input_matching.ts";
+import {
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+} from "./nested_runs.ts";
 
 export interface SupersedeResult {
   cancelledRunIds: string[];
+  /**
+   * Nested runs the superseded runs were still waiting on, left suspended
+   * on their own (swamp-club#2736).
+   */
+  detachedNestedRuns: DetachedNestedRunData[];
 }
 
 export async function supersedeSuspendedRuns(
@@ -34,16 +43,23 @@ export async function supersedeSuspendedRuns(
 ): Promise<SupersedeResult> {
   const suspendedRuns = await findSuspendedRuns(workflowId);
   const cancelledRunIds: string[] = [];
+  const detachedNestedRuns: DetachedNestedRunData[] = [];
 
   for (const run of suspendedRuns) {
     if (run.status !== "suspended") continue;
     if (run.instanceId !== undefined) continue;
+    // A nested workflow's run belongs to the parent step that started it,
+    // not to a direct run of the same workflow.
+    if (run.parentRun !== undefined) continue;
     if (!inputsMatch(run.inputs, newInputs)) continue;
 
     run.cancel("Superseded by new run with matching inputs");
     await runRepo.save(workflowId, run);
     cancelledRunIds.push(run.id);
+    for (const detached of await detachedNestedRunsOf({ runRepo }, run)) {
+      detachedNestedRuns.push(detached);
+    }
   }
 
-  return { cancelledRunIds };
+  return { cancelledRunIds, detachedNestedRuns };
 }

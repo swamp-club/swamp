@@ -7,6 +7,7 @@
 - [Workflow Task Fields](#workflow-task-fields)
 - [Nested Workflow with forEach](#nested-workflow-with-foreach)
 - [Data Access in Sub-Workflows](#data-access-in-sub-workflows)
+- [Approval Gates in a Child Workflow](#approval-gates-in-a-child-workflow)
 - [Limitations](#limitations)
 
 Steps can invoke another workflow using `type: workflow`. The parent step waits
@@ -247,6 +248,29 @@ attributes:
 
 See [data-chaining.md](data-chaining.md) for more details on expression choice
 and data chaining patterns.
+
+## Approval Gates in a Child Workflow
+
+When a child workflow suspends at a `manual_approval` gate, the parent suspends
+too, on the step that runs the child. The child stays an ordinary suspended run:
+approve, reject, resume and cancel it under its own workflow name and run id.
+Then resume the parent, which reads the child's outcome:
+
+```
+swamp workflow approve <child> <gate> --run <child-run-id>
+swamp workflow resume  <child> --run <child-run-id>
+swamp workflow resume  <parent> --run <parent-run-id>
+```
+
+- Resuming the parent while the child is unfinished is refused, naming what the
+  child needs (approve, resume, recover or cancel).
+- A rejected child fails the parent's step as a rejected approval; a plain retry
+  of the parent then refuses, as for a gate of its own.
+- `swamp workflow approvals` lists the child's gate; its row names the parent.
+- Under `swamp serve`, the parent resumes on its own once the child finishes,
+  when the parent's auto-resume policy is on and the approver may approve it.
+- Cancelling or rejecting the parent leaves the child suspended and prints the
+  command that cancels it.
 
 ## Limitations
 

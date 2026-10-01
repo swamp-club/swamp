@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  type NestedRunRef,
+  NestedRunRefSchema,
+  type ParentRunRef,
+  ParentRunRefSchema,
+} from "./nested_run_ref.ts";
 
 /**
  * Lightweight read-model (query projection) of a workflow run.
@@ -47,6 +53,19 @@ export interface WorkflowRunSummary {
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
   awaitingResume?: boolean;
+  /** On a nested workflow's run, the parent step that started it. */
+  parentRun?: ParentRunRef;
+  /**
+   * The child runs this run's nested workflow steps wait on. A run waiting on
+   * any is not `awaitingResume`; whether it can resume is derived from the
+   * children.
+   */
+  waitingOnRun?: NestedRunRef[];
+  /**
+   * True when every waiting step waits on a nested run, so no gate of this
+   * run's own needs a decision: it can resume once those runs finish.
+   */
+  waitsOnlyOnNestedRuns?: boolean;
 }
 
 /**
@@ -109,6 +128,39 @@ function deriveAwaitingResume(
 }
 
 /**
+ * The child runs nested workflow steps wait on: steps still
+ * `waiting_approval` whose `nestedRun` link is valid. Only the link is read.
+ */
+function deriveWaitingOnRun(
+  data: unknown,
+): { waitingOnRun?: NestedRunRef[]; waitsOnlyOnNestedRuns?: true } {
+  const jobs = (data as { jobs?: unknown }).jobs;
+  if (!Array.isArray(jobs)) return {};
+  const result: NestedRunRef[] = [];
+  let gateWaits = false;
+  let nestedWaits = false;
+  for (const job of jobs) {
+    const steps = (job as { steps?: unknown } | null)?.steps;
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      const s = step as { status?: unknown; nestedRun?: unknown } | null;
+      if (s?.status !== "waiting_approval") continue;
+      if (s.nestedRun === undefined) {
+        gateWaits = true;
+        continue;
+      }
+      nestedWaits = true;
+      const link = NestedRunRefSchema.safeParse(s.nestedRun);
+      if (link.success) result.push(link.data);
+    }
+  }
+  return {
+    ...(result.length > 0 ? { waitingOnRun: result } : {}),
+    ...(nestedWaits && !gateWaits ? { waitsOnlyOnNestedRuns: true } : {}),
+  };
+}
+
+/**
  * Projects raw persisted run data onto a {@link WorkflowRunSummary}.
  *
  * This is the memory-safe read path: it never calls `WorkflowRun.fromData` and
@@ -127,6 +179,11 @@ function deriveAwaitingResume(
  */
 export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
   const v = WorkflowRunSummarySchema.parse(data);
+  // Links are validated leniently: a malformed one is left out, never fails
+  // the summary.
+  const parentRun = ParentRunRefSchema.safeParse(
+    (data as { parentRun?: unknown }).parentRun,
+  );
   const detached = JSON.parse(
     JSON.stringify({
       id: v.id,
@@ -140,6 +197,8 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
       failedStep: v.failedStep,
       failureReason: v.failureReason,
       stepProgress: v.stepProgress,
+      parentRun: parentRun.success ? parentRun.data : undefined,
+      ...deriveWaitingOnRun(data),
     }),
   ) as {
     id: string;
@@ -153,6 +212,9 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     failedStep?: string;
     failureReason?: string;
     stepProgress?: { completed: number; total: number };
+    parentRun?: ParentRunRef;
+    waitingOnRun?: NestedRunRef[];
+    waitsOnlyOnNestedRuns?: boolean;
   };
   return {
     id: detached.id,
@@ -169,5 +231,8 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     failureReason: detached.failureReason,
     stepProgress: detached.stepProgress,
     awaitingResume: v.awaitingResume ?? deriveAwaitingResume(data, v.status),
+    parentRun: detached.parentRun,
+    waitingOnRun: detached.waitingOnRun,
+    waitsOnlyOnNestedRuns: detached.waitsOnlyOnNestedRuns,
   };
 }

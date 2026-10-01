@@ -30,7 +30,8 @@ export type RegistryErrorCode =
   | "already_registered"
   | "reserved"
   | "global_cap"
-  | "principal_cap";
+  | "principal_cap"
+  | "draining";
 
 export class RegistryCapacityError extends Error {
   readonly code: RegistryErrorCode;
@@ -85,6 +86,8 @@ export class ActiveRunRegistry {
   readonly #reserved = new Set<string>();
   /** Nested child run id -> the registered run whose workflow started it. */
   readonly #nested = new Map<string, string>();
+  /** Set once shutdown begins: no run registers after it. */
+  #draining = false;
 
   constructor(options?: ActiveRunRegistryOptions) {
     this.#maxConcurrent = Math.max(1, options?.maxConcurrent ?? 100);
@@ -95,6 +98,12 @@ export class ActiveRunRegistry {
   }
 
   register(run: ActiveRun): void {
+    if (this.#draining) {
+      throw new RegistryCapacityError(
+        "draining",
+        `Serve is shutting down; run ${run.runId} was not started`,
+      );
+    }
     if (this.#runs.has(run.runId)) {
       throw new RegistryCapacityError(
         "already_registered",
@@ -242,7 +251,22 @@ export class ActiveRunRegistry {
     return this.#runs.size;
   }
 
+  /**
+   * Stops new registrations, so a run started after shutdown began (a
+   * chained auto-resume, for one) is refused rather than left running on a
+   * dead instance. Called at the start of every shutdown, drained or not.
+   */
+  beginDraining(): void {
+    this.#draining = true;
+  }
+
+  /** True once shutdown began. */
+  get draining(): boolean {
+    return this.#draining;
+  }
+
   async drainAll(timeoutMs = 30_000): Promise<void> {
+    this.beginDraining();
     const runs = [...this.#runs.values()];
     if (runs.length === 0) return;
 

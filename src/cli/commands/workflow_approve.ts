@@ -119,7 +119,11 @@ export const workflowApproveCommand = withRemoteOptions(
                   .info`Serve is resuming run ${e.data.runId} automatically`;
               } else {
                 cliCtx.logger
-                  .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+                  .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId}`;
+              }
+              if (e.data.awaitingParent) {
+                cliCtx.logger
+                  .info`Once it finishes, resume the parent run: ${e.data.awaitingParent.resumeCommand}`;
               }
             }
           },
@@ -158,7 +162,11 @@ export const workflowApproveCommand = withRemoteOptions(
             cliCtx.logger
               .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
             cliCtx.logger
-              .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+              .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId}`;
+            if (e.data.awaitingParent) {
+              cliCtx.logger
+                .info`Once it finishes, resume the parent run: ${e.data.awaitingParent.resumeCommand}`;
+            }
           }
         },
         error: (e) => {

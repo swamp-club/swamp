@@ -1325,3 +1325,87 @@ Deno.test("ConsoleWorkflowRunRenderer: verbose renders the frame of a report wit
   assertEquals(closing !== undefined, true);
   assertEquals(lines[headerIndex].length, closing!.length);
 });
+
+Deno.test("ConsoleWorkflowRunRenderer: a parent waiting on a nested run names the nested run's gate and the parent's resume (swamp-club#2736)", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "parent-run",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "approval_requested",
+      runId: "child-run",
+      workflowName: "child",
+      jobId: "main",
+      stepId: "gate",
+      prompt: "Approve the child",
+    },
+    {
+      kind: "suspended",
+      run: { ...makeRunView("succeeded"), id: "parent-run" },
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-run" },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    "swamp workflow approve child gate --run child-run",
+  );
+  assertStringIncludes(output, "waits on nested workflow child run child-run");
+  assertStringIncludes(output, "swamp workflow resume parent --run parent-run");
+  // Never the parent's name with the child's run id.
+  assertEquals(output.includes("approve parent gate"), false);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run (swamp-club#2736)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "parent",
+    });
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "parent-run",
+          workflowName: "parent",
+          jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+        },
+        {
+          kind: "suspended",
+          run: makeRunView("succeeded"),
+          jobId: "main",
+          stepId: "call-child",
+          prompt: "",
+          nested: { workflowName: "child", runId: "child-run" },
+        },
+      ]),
+      renderer.handlers(),
+    );
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.waitingOnNestedRun, {
+      workflowName: "child",
+      runId: "child-run",
+    });
+    assertEquals(parsed.approvalRequired.stepId, "call-child");
+  } finally {
+    console.log = originalLog;
+  }
+});

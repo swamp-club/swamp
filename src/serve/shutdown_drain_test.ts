@@ -65,8 +65,12 @@ class FakeRegistry implements DrainableRunRegistry {
     private runs: ActiveRun[],
     private readonly drainImpl: () => Promise<void> = () => Promise.resolve(),
   ) {}
+  draining = false;
   get size(): number {
     return this.runs.length;
+  }
+  beginDraining(): void {
+    this.draining = true;
   }
   drainAll(timeoutMs: number): Promise<void> {
     this.log.push(`registry.drainAll(${timeoutMs})`);
@@ -166,4 +170,20 @@ Deno.test("runShutdownDrain: with nothing configured returns no aborted runs", a
     abortGraceMs: 5_000,
   });
   assertEquals(aborted, []);
+});
+
+Deno.test("runShutdownDrain: refuses later registrations even when nothing is drained", async () => {
+  // A chained auto-resume can register after shutdown begins; the registry
+  // must stop accepting runs although no drain waited (swamp-club#2736).
+  for (const drainTimeoutMs of [0, 30_000]) {
+    const registry = new FakeRegistry([], []);
+    await runShutdownDrain({
+      webhookService: null,
+      scheduledExecution: null,
+      activeRunRegistry: registry,
+      drainTimeoutMs,
+      abortGraceMs: 5_000,
+    });
+    assertEquals(registry.draining, true);
+  }
 });

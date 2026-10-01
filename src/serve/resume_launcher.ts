@@ -44,10 +44,23 @@ import { type BufferTerminal, RunEventBuffer } from "./run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import {
   type ConnectionContext,
+  decideSubjectAccess,
+  type DecisionSubject,
   emitSystemAuditEvent,
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
+import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
+import {
+  isFinishedRun,
+  NestedRunLink,
+  NestedRunPendingError,
+} from "../domain/workflows/nested_run_link.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
+import { principalToString } from "../domain/access/principal.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -78,8 +91,25 @@ export interface DetachedResumeRequest {
   tracestate?: string;
   /** Principal charged against the registry's per-principal cap. */
   principalId: string | null;
-  /** Called once the run ends, with the same terminal pushed to the buffer. */
-  onTerminal?: (terminal: BufferTerminal) => void;
+  /**
+   * Who asked for the resume. When the run is a nested workflow's run, its
+   * parent is auto-resumed for this subject once it ends, if the parent's
+   * policy and the subject's access allow (swamp-club#2736).
+   */
+  subject?: DecisionSubject;
+  /**
+   * Whether the requester may read a workflow. A refusal naming nested runs
+   * names them only when every one is readable; otherwise it is generic.
+   * Without it, refusals are generic.
+   */
+  canReadWorkflow?: (
+    workflow: { workflowId: string; workflowName: string },
+  ) => Promise<boolean>;
+  /**
+   * Called once the run ends, with the same terminal pushed to the buffer,
+   * after the run left the registry. Awaited.
+   */
+  onTerminal?: (terminal: BufferTerminal) => void | Promise<void>;
 }
 
 export type DetachedResumeResult =
@@ -119,6 +149,21 @@ export async function startDetachedResume(
     workflowName = result.workflowName;
     workflowId = result.workflowId;
   } catch (error) {
+    if (error instanceof NestedRunPendingError) {
+      let readable = request.canReadWorkflow !== undefined;
+      for (const pending of error.pending) {
+        if (!readable) break;
+        readable = await request.canReadWorkflow!({
+          workflowId: pending.child.workflowId,
+          workflowName: pending.child.workflowName,
+        });
+      }
+      return {
+        ok: false,
+        code: "workflow_resume_failed",
+        message: readable ? error.message : error.genericMessage,
+      };
+    }
     return {
       ok: false,
       code: "workflow_resume_failed",
@@ -159,6 +204,8 @@ export async function startDetachedResume(
         ? "A run with this ID is already in progress"
         : err.code === "reserved"
         ? "Another operation on this run is in progress; try again"
+        : err.code === "draining"
+        ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
       return { ok: false, code: err.code, message: clientMsg };
     }
@@ -299,13 +346,32 @@ export async function startDetachedResume(
       }
       resolveCompletion();
       try {
-        request.onTerminal?.(terminal);
+        await request.onTerminal?.(terminal);
       } catch (callbackErr) {
         logger.warn("Resume terminal callback failed: {error}", {
           error: callbackErr instanceof Error
             ? callbackErr.message
             : String(callbackErr),
         });
+      }
+      if (request.subject && resolvedRun.parentRun !== undefined) {
+        try {
+          await autoResumeParentAfterChild(
+            ctx,
+            { workflowId, runId },
+            request.subject,
+          );
+        } catch (parentErr) {
+          logger.warn(
+            "Auto-resume of the parent of run {runId} failed: {error}",
+            {
+              runId,
+              error: parentErr instanceof Error
+                ? parentErr.message
+                : String(parentErr),
+            },
+          );
+        }
       }
     }
   })().catch((err) => {
@@ -350,6 +416,7 @@ export async function autoResumeAfterApproval(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
   principalId: string | null,
+  decisionSubject?: DecisionSubject,
 ): Promise<boolean> {
   const registry = ctx.activeRunRegistry;
   if (!registry || !outcome.allGatesDecided) return false;
@@ -368,6 +435,7 @@ export async function autoResumeAfterApproval(
     runId: outcome.runId,
     suspendedOnly: true,
     principalId,
+    subject: decisionSubject,
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;
       logger.warn(
@@ -404,5 +472,127 @@ export async function autoResumeAfterApproval(
   }
 
   emitSystemAuditEvent(ctx, "workflow.auto_resume", subject);
+  return true;
+}
+
+/**
+ * Resumes the parent of a nested workflow's run that has finished, when the
+ * parent still waits on it and nothing else (swamp-club#2736). Returns
+ * whether a resume was launched.
+ *
+ * A parent this instance still drives (draining its other steps, or just
+ * suspended again by a resume) is awaited first, so the wakeup is not lost.
+ * The parent is then read again and resumed only when it is suspended, has
+ * no step still running, no gate of its own waiting and every nested run it
+ * waits on finished, its workflow's auto-resume policy is on, and the
+ * subject still holds the approve grant on the parent workflow, decided
+ * against its current token record. That is the grant an approval's
+ * auto-resume relies on: the resume follows a decision rather than being a
+ * new run. A skip is audited; nothing is written.
+ */
+export async function autoResumeParentAfterChild(
+  ctx: ConnectionContext,
+  child: { workflowId: string; runId: string },
+  subject: DecisionSubject,
+): Promise<boolean> {
+  const registry = ctx.activeRunRegistry;
+  if (!registry) return false;
+  const workflowRepo = ctx.repoContext.workflowRepo;
+  const runRepo = ctx.repoContext.workflowRunRepo;
+  const link = new NestedRunLink({ runRepo, workflowRepo });
+
+  const finished = await runRepo.findById(
+    createWorkflowId(child.workflowId),
+    createWorkflowRunId(child.runId),
+  );
+  // Done is also reported for a run that suspended again at another gate.
+  if (!finished || !isFinishedRun(finished)) return false;
+  const parentLink = finished.parentRun;
+  if (parentLink?.kind !== "valid") return false;
+  const parentRef = parentLink.ref;
+  const detail =
+    `workflow=${parentRef.workflowName} run=${parentRef.runId} nestedRun=${finished.id}`;
+  const skip = (reason: string): false => {
+    logger.info(
+      "Auto-resume of parent run {runId} skipped: {reason}",
+      { runId: parentRef.runId, reason },
+    );
+    emitSystemAuditEvent(
+      ctx,
+      "workflow.auto_resume_skipped",
+      `${detail} reason=${reason}`,
+    );
+    return false;
+  };
+
+  const active = registry.get(parentRef.runId);
+  if (active) await active.completion;
+  if (registry.draining) return skip("shutting_down");
+
+  // A parent that no longer waits on this exact run (ended, retried, or
+  // never linked it) is left alone.
+  if (!(await link.isAwaitedByParent(finished))) return false;
+  const parent = await runRepo.findById(
+    createWorkflowId(parentRef.workflowId),
+    createWorkflowRunId(parentRef.runId),
+  );
+  if (!parent || parent.status !== "suspended") return false;
+  // Saved suspended while other steps still ran: another process may still
+  // drive it.
+  if (parent.jobs.some((j) => j.steps.some((s) => s.status === "running"))) {
+    return skip("parent_steps_running");
+  }
+  if (parent.findWaitingApprovalStep() !== undefined) return false;
+  if (!(await link.childrenSettled(parent))) return false;
+
+  const resolution = await resolveRecordedWorkflow(
+    workflowRepo,
+    parentRef.workflowId,
+    parentRef.workflowName,
+  );
+  if (resolution.status !== "found") return skip("parent_workflow_not_found");
+  const workflow = await workflowRepo.findById(
+    createWorkflowId(resolution.id),
+  );
+  if (!workflow || workflow.name !== resolution.name) {
+    return skip("parent_workflow_not_found");
+  }
+  if (!workflow.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)) {
+    return skip("policy");
+  }
+  if (
+    !(await decideSubjectAccess(ctx, subject, "approve", resolution.resource))
+  ) {
+    return skip("not_authorized");
+  }
+
+  const launched = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: resolution.id,
+    byId: true,
+    expectedName: resolution.name,
+    runId: parent.id,
+    suspendedOnly: true,
+    principalId: subject.principal
+      ? principalToString(subject.principal)
+      : null,
+    subject,
+    onTerminal: (terminal) => {
+      if (terminal.kind !== "error") return;
+      emitSystemAuditEvent(
+        ctx,
+        "workflow.auto_resume_failed",
+        `${detail} code=${terminal.code}`,
+      );
+    },
+  });
+  if (!launched.ok) {
+    emitSystemAuditEvent(
+      ctx,
+      "workflow.auto_resume_failed",
+      `${detail} code=${launched.code}`,
+    );
+    return false;
+  }
+  emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
   return true;
 }

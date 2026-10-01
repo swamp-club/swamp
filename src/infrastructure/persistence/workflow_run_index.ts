@@ -24,7 +24,7 @@ export const RUNS_INDEX_FILENAME = ".runs-index.json";
 
 // Bump when WorkflowRunIndexEntry gains or removes fields so that
 // old on-disk indices are rebuilt instead of serving stale data.
-export const INDEX_SCHEMA_VERSION = 3;
+export const INDEX_SCHEMA_VERSION = 4;
 
 export interface WorkflowRunIndexEntry {
   status: string;
@@ -40,6 +40,11 @@ export interface WorkflowRunIndexEntry {
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
   awaitingResume?: boolean;
+  // Nested workflow links (swamp-club#2736). Read back leniently: the index
+  // file is not trusted, so a malformed value is dropped.
+  parentRun?: unknown;
+  waitingOnRun?: unknown;
+  waitsOnlyOnNestedRuns?: boolean;
 }
 
 export type WorkflowRunIndex = Record<string, WorkflowRunIndexEntry>;

@@ -38,6 +38,7 @@ import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { readServerTokenRecord } from "../token_auth.ts";
 import {
   parsePrincipal,
   type Principal,
@@ -879,6 +880,78 @@ function decideAccess(
   }
 
   return { kind: "refused", principal, decision, groups };
+}
+
+/**
+ * Who acted on a request, kept so a later decision made with no socket (a
+ * chained auto-resume of a nested run's parent, swamp-club#2736) is taken for
+ * the same principal and credential.
+ */
+export interface DecisionSubject {
+  readonly principal: Principal | null;
+  /** The server token the session was opened with, when there was one. */
+  readonly token?: TokenSessionBinding;
+}
+
+/** Captures the subject behind a request on this socket. */
+export function captureDecisionSubject(
+  socket: WebSocket,
+  principal: Principal | null,
+): DecisionSubject {
+  const token = connectionTokens.get(socket);
+  return { principal, ...(token ? { token: { ...token } } : {}) };
+}
+
+/**
+ * Decides, with no socket, whether a captured subject may still `action` the
+ * resource. The memberships are re-read from the subject's server token
+ * record, as of the last membership refresh: the token must still be active,
+ * unexpired, the same mint (`createdAt`) and the same principal. With no
+ * token, a missing record or no policy it refuses. An explicit grant allows,
+ * an explicit deny refuses, and with neither the admin permission decides,
+ * as {@link decideAccess} does. Everything is allowed when authorization is
+ * off.
+ */
+export async function decideSubjectAccess(
+  ctx: ConnectionContext,
+  subject: DecisionSubject,
+  action: Action,
+  resource: AccessResource,
+): Promise<boolean> {
+  if (ctx.authConfig.mode === "none") return true;
+  const loader = ctx.policySnapshotLoader;
+  const principal = subject.principal;
+  const token = subject.token;
+  if (!loader || !principal || !token) return false;
+  let record;
+  try {
+    record = await readServerTokenRecord(ctx.repoContext, token.name);
+  } catch {
+    return false;
+  }
+  if (
+    record.state !== "active" ||
+    Date.parse(record.expiresAt) <= Date.now() ||
+    record.createdAt !== token.createdAt ||
+    record.principalId !== token.principalId ||
+    record.principalId !== principalToString(principal)
+  ) {
+    return false;
+  }
+  const subjectPrincipal: AccessPrincipal = {
+    principal,
+    collectives: record.collectives,
+    groups: record.groups,
+  };
+  const service = loader.decisionService;
+  const decision = service.decide(subjectPrincipal, action, resource);
+  if (decision) return decision.effect === "allow";
+  const adminDecision = service.decide(
+    subjectPrincipal,
+    "admin",
+    { kind: "access", name: "*", fields: {} },
+  );
+  return adminDecision !== null && adminDecision.effect === "allow";
 }
 
 export function authorizeOrReject(

@@ -379,7 +379,9 @@ through serve (dashboard or `swamp workflow approve --server`).
 A workflow's own `autoResume: true | false` always wins. A workflow that
 declares inputs is never covered by the server flag and must set
 `autoResume: true` itself, since it may need resume-time `--input`. The approve
-response reports `autoResumed: true` when serve resumed the run.
+response reports `autoResumed: true` when serve resumed the run. When a nested
+workflow's run finishes through serve, serve also resumes the parent waiting on
+it, under the parent's own policy, if the approver may approve the parent.
 
 ## When to Use What
 

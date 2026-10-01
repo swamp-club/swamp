@@ -40,6 +40,8 @@ export interface DrainableTriggerSource {
 /** The slice of `ActiveRunRegistry` the shutdown drain uses. */
 export interface DrainableRunRegistry {
   readonly size: number;
+  /** Refuses every later registration. */
+  beginDraining(): void;
   drainAll(timeoutMs: number): Promise<void>;
   list(): ReadonlyArray<ActiveRun>;
 }
@@ -65,6 +67,9 @@ export async function runShutdownDrain(
   deps: ShutdownDrainDeps,
 ): Promise<ReadonlyArray<ActiveRun>> {
   const { webhookService, scheduledExecution, activeRunRegistry } = deps;
+  // First, whatever the drain does next: a run registered from here on
+  // (a chained auto-resume, say) would never be drained or aborted.
+  activeRunRegistry?.beginDraining();
 
   const drains: Array<{ name: string; promise: Promise<void> }> = [];
   if (webhookService) {

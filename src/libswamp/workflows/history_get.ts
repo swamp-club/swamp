@@ -56,6 +56,53 @@ import {
   type RunReferenceDeps,
 } from "./run_reference.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  isFinishedRun,
+  NestedRunLink,
+  type NestedRunLinkDeps,
+} from "../../domain/workflows/nested_run_link.ts";
+
+/**
+ * The nested runs a run waits on, each with its status as read now, and
+ * whether the run can resume: suspended, no gate of its own waiting, and
+ * every nested run finished. A missing nested run or broken link does not
+ * hold the run back: its resume fails that step.
+ */
+export async function nestedWaitView(
+  deps: NestedRunLinkDeps,
+  run: WorkflowRun,
+): Promise<Pick<WorkflowRunView, "nestedWaits" | "awaitingResume">> {
+  const waits = run.findNestedWaits();
+  if (waits.length === 0) {
+    return run.isAwaitingResume() ? { awaitingResume: true } : {};
+  }
+  const link = new NestedRunLink(deps);
+  const nestedWaits: NonNullable<WorkflowRunView["nestedWaits"]> = [];
+  let allFinished = true;
+  for (const wait of waits) {
+    if (wait.link.kind !== "valid") continue;
+    const resolved = await link.resolveChild(run, wait);
+    const status = resolved.kind === "resolved"
+      ? resolved.child.status
+      : undefined;
+    if (resolved.kind === "resolved" && !isFinishedRun(resolved.child)) {
+      allFinished = false;
+    }
+    nestedWaits.push({
+      workflowId: wait.link.ref.workflowId,
+      workflowName: wait.link.ref.workflowName,
+      runId: wait.link.ref.runId,
+      stepName: wait.stepName,
+      ...(status ? { status } : {}),
+    });
+  }
+  const awaitingResume = run.status === "suspended" &&
+    run.findWaitingApprovalStep() === undefined && allFinished;
+  return {
+    ...(nestedWaits.length > 0 ? { nestedWaits } : {}),
+    ...(awaitingResume ? { awaitingResume } : {}),
+  };
+}
 export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
@@ -64,6 +111,11 @@ export type WorkflowHistoryGetEvent =
 /** Dependencies for the workflow history get operation. */
 export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
   getRunPath: (workflowId: WorkflowId, runId: string) => string;
+  /**
+   * Reads the nested runs a run's steps wait on, to derive whether it can
+   * resume (swamp-club#2736). Without it, nested waits are not resolved.
+   */
+  nestedLink?: NestedRunLinkDeps;
   /** Reads a run's step outputs back from the datastore. */
   resolveStepOutputs: (run: WorkflowRun) => Promise<RunStepOutputs>;
 }
@@ -105,6 +157,7 @@ export function createWorkflowHistoryGetDeps(
   );
   return {
     isPartialId,
+    nestedLink: { runRepo, workflowRepo },
     matchRunByPartialId: createRunMatcher(runRepo),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
@@ -205,6 +258,9 @@ export async function* workflowHistoryGet(
         ? await deps.resolveStepOutputs(run)
         : undefined;
       const data = toRunData(run, path, undefined, stepOutputs);
+      if (deps.nestedLink) {
+        Object.assign(data, await nestedWaitView(deps.nestedLink, run));
+      }
 
       yield { kind: "completed", data };
     })(),

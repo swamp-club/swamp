@@ -215,6 +215,80 @@ carries the derived `awaitingResume: true`, so the run index and
 `swamp workflow reject <workflow> <step> --run <id>` marks the step and the run
 as failed. No resume is needed.
 
+**Gates inside a nested workflow (swamp-club#2736).** A workflow step runs its
+child workflow as a run of its own. When the child suspends at a gate, the
+parent suspends too: `runWorkflowStep` keeps the child's `suspended` event out
+of the parent's stream, as it does the child's `completed` and `cancelled`,
+and parks the parent's step in `waiting_approval` with a `nestedRun` link to
+the child (`StepRun.waitForNestedRun`). The child records the step that
+started it as `parentRun`, with its nesting depth and the names of the
+workflows above it, so a resume of the child keeps the depth limit and cycle
+detection. A link is recorded only once a child suspends, so a nested
+workflow without gates is unaffected, and an interrupted one recovers as
+before. Both links are validated from both ends before they are followed
+(`NestedRunLink` in `src/domain/workflows/nested_run_link.ts`); a malformed
+link is kept as written and never followed. The parent emits its own
+`suspended` event, naming the step and, in `nested`, the child run. The
+child's `approval_requested` event still reaches the parent's stream, and
+carries the child's workflow name, so its approve hint names the child.
+
+The child stays an ordinary suspended run. It is approved, rejected, resumed
+and cancelled on its own run, with today's commands and authorization:
+
+1. `swamp workflow approve <child> <gate> --run <child-run>`, then
+   `swamp workflow resume <child> --run <child-run>`.
+2. `swamp workflow resume <parent> --run <parent-run>`.
+
+Nothing writes the parent while this happens. Whether the parent can resume is
+derived from the child. `findWaitingApprovalStep` reports gates only, and a
+nested wait keeps the persisted `awaitingResume` false. `workflow.run.search`,
+`workflow history get` and the dashboard derive it from the child runs instead
+(`nestedWaits`, and `awaitingResume` once every child finished). A parent
+resume, from any entry (CLI, serve, auto-resume, recover), first checks every
+nested wait and refuses, changing nothing, while a child has not finished
+(`NestedRunPendingError`, naming what settles each child: approve, resume,
+recover, or cancel). Once the children finished, the resume re-enters the
+nested step without evaluating its trigger or guard again and reads the
+child's outcome (`settleNestedWait`):
+
+- succeeded: the step adopts the child's outputs. The step output records the
+  key names of any inputs the child's resume was given, and the adoption is
+  logged. Who could resume or retry the child is governed by the child
+  workflow's own authorization; nesting it accepts that.
+- failed on a rejected gate: the step fails as a rejected approval, so a plain
+  retry of the parent refuses it, as it does a direct gate.
+- any other failure, cancelled, missing, or a broken link: the step fails.
+- running again (resumed or retried since the check): the parent suspends on
+  it again.
+
+Rejecting the child therefore needs a parent resume to take effect. In serve,
+once a child's resume or reject ends, the parent is resumed for the same
+caller (`autoResumeParentAfterChild` in `src/serve/resume_launcher.ts`) when
+the parent waits on that exact child and no other, has no gate of its own or
+step still running, its workflow's auto-resume policy is on, and the caller
+still holds the `approve` grant on the parent. That grant is decided again,
+with no socket, from the caller's server-token record as of the last
+membership refresh (`decideSubjectAccess` in `src/serve/handlers/shared.ts`).
+A parent this instance still drives is awaited first. Each skip is audited as
+`workflow.auto_resume_skipped`; no auto-resume starts once shutdown began.
+
+When a parent ends while a step still waits on a child (a reject of its own
+gate, a cancel, a supersede), only the parent changes: `WorkflowRun.cancel()`
+and `complete()` mark each such step failed with `detachedNestedRun`, and the
+child is left suspended. The command reports each detached child with the
+command that cancels it (the `--server` form when serve owns it), and
+`swamp workflow approvals` marks the child's row as no longer awaited.
+Cancelling the children with their parent is swamp-club#2867. Supersede skips
+runs that have a `parentRun`. Run cleanup keeps a finished child while its
+parent exists and has not finished (an interrupted parent still counts).
+A child inherits its parent's serve instance id and `initiatedBy`, so its
+cancel is routed as its parent's is, and its `run.initiatedBy` names the
+parent's initiator.
+
+Older binaries drop `nestedRun` and `parentRun` when they save a run, and see
+a nested wait as a gate: approving it there would succeed the step without the
+child's outputs.
+
 `swamp workflow approvals` lists suspended runs awaiting approval, one row per
 run, leaving out runs whose gate timed out. Each row names the first waiting
 gate (`findWaitingApprovalStep` in `src/domain/workflows/workflow_run.ts`) and
@@ -403,7 +477,9 @@ cancelled and superseded as the run of whoever started it. See
   restart, and retention can remove artifacts. Resume does not rebuild missing
   outputs or pin `data.latest()` to its old value.
 - **A retried nested workflow starts a new child run.** It does not resume the
-  earlier child.
+  earlier child. A step detached when its run ended (see "Gates inside a
+  nested workflow") is reopened by a plain retry or `--from`, which clears its
+  link and starts a fresh child; the old child stays as it was.
 - **One operator per run.** There is no ownership lock. Separate CLI processes
   or serve instances can race.
 - **Approvals are never reused silently.** Retry refuses a rejected approval. A
@@ -1373,6 +1449,10 @@ clients that track the child's id. A `--server` client reattaches by the run it
 started, skipping events that carry `parentRunId`. An older serve sends none
 and keys the run on its latest nested child, so the client follows that id
 there.
+
+A parent suspended on a nested run is not a running parent: cancelling it
+detaches the child rather than cancelling it (see "Gates inside a nested
+workflow" above).
 
 **Suspended runs.** A suspended run has no process driving it, so it is in
 none of those registries. When they all miss, the cancel API falls back to a

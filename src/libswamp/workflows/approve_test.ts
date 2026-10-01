@@ -215,3 +215,85 @@ Deno.test("workflowApprove: without byId a workflow named with the id wins", asy
     assertEquals(last.data.runId, impostorRun.id);
   }
 });
+
+// --- Nested waits (swamp-club#2736) ------------------------------------------
+
+/**
+ * A run with one gate beside a nested step waiting on a child run, and the
+ * child, which links back to it.
+ */
+function gateBesideNestedWait(childStatus: "suspended" | "succeeded"): {
+  workflow: Workflow;
+  run: WorkflowRun;
+  deps: WorkflowApproveDeps;
+} {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok") }),
+          Step.create({ name: "call-child", task: StepTask.workflow("child") }),
+        ],
+      }),
+    ],
+  });
+  const childWorkflow = makeWorkflow([], "child");
+  const run = suspendAtGates(workflow, ["gate"]);
+  const child = WorkflowRun.create(childWorkflow);
+  child.recordParentRun({
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    runId: run.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [workflow.name],
+  });
+  child.start();
+  if (childStatus === "succeeded") {
+    child.getJob("main")!.succeed();
+    child.complete();
+  } else {
+    child.suspend();
+  }
+  run.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  const deps: WorkflowApproveDeps = {
+    workflowRepo: {
+      findByName: (name: string) =>
+        Promise.resolve(name === workflow.name ? workflow : null),
+      findById: () => Promise.resolve(null),
+    } as unknown as WorkflowApproveDeps["workflowRepo"],
+    runRepo: {
+      findById: (_w: string, id: string) =>
+        Promise.resolve(id === child.id ? child : run),
+      findAllByWorkflowId: () => Promise.resolve([run]),
+      save: () => Promise.resolve(),
+    } as unknown as WorkflowApproveDeps["runRepo"],
+  };
+  return { workflow, run, deps };
+}
+
+Deno.test("workflowApprove: a nested step waiting on its child run is not a gate to approve", async () => {
+  const { deps } = gateBesideNestedWait("suspended");
+  const last = await approve(deps, "call-child");
+  assertEquals(last?.kind, "error");
+});
+
+Deno.test("workflowApprove: allGatesDecided waits for the nested run to finish, derived from the child", async () => {
+  const pending = await approve(gateBesideNestedWait("suspended").deps, "gate");
+  assertEquals(
+    pending?.kind === "completed" && pending.data.allGatesDecided,
+    false,
+  );
+  const settled = await approve(gateBesideNestedWait("succeeded").deps, "gate");
+  assertEquals(
+    settled?.kind === "completed" && settled.data.allGatesDecided,
+    true,
+  );
+});

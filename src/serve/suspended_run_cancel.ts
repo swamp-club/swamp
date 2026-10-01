@@ -33,6 +33,7 @@ import {
 } from "./handlers/shared.ts";
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
 import { withSyncGate } from "./sync_gate.ts";
+import type { DetachedNestedRunData } from "../libswamp/mod.ts";
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -41,7 +42,16 @@ export interface SuspendedRunCancelRequest {
 }
 
 export type SuspendedRunCancelResult =
-  | { status: "cancelled"; runId: string; workflowName: string }
+  | {
+    status: "cancelled";
+    runId: string;
+    workflowName: string;
+    /**
+     * Nested runs the cancelled run waited on, left suspended on their own
+     * (swamp-club#2736).
+     */
+    detachedNestedRuns?: DetachedNestedRunData[];
+  }
   /** A run is registered under the id: cancel it through the registry. */
   | { status: "active" }
   /** Another operation holds the id's reservation. */
@@ -146,6 +156,9 @@ async function cancelLocatedRunAndPush(
             status: "cancelled",
             runId: event.data.runId,
             workflowName: event.data.workflowName,
+            ...(event.data.detachedNestedRuns
+              ? { detachedNestedRuns: event.data.detachedNestedRuns }
+              : {}),
           };
         } else if (event.kind === "error") {
           failure = event.error;

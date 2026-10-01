@@ -97,6 +97,11 @@ export type WorkflowExecutionEvent =
   | {
     kind: "approval_requested";
     runId: string;
+    /**
+     * The workflow the gate belongs to. A nested workflow's gate reaches the
+     * parent's stream with the child's workflow and run (swamp-club#2736).
+     */
+    workflowName?: string;
     jobId: string;
     stepId: string;
     prompt: string;
@@ -251,4 +256,10 @@ export type WorkflowExecutionEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    /**
+     * Set when the run suspended on a nested workflow step rather than a
+     * gate of its own: the child run the step waits on (swamp-club#2736).
+     * `jobId` and `stepId` are then the nested step.
+     */
+    nested?: { workflowName: string; runId: string };
   };

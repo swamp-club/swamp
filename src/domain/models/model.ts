@@ -527,6 +527,16 @@ export interface WorkflowGateSuccess {
   stepName: string;
   approved: boolean;
   decidedBy: string;
+  /**
+   * On a reject that ended the run: nested workflow runs its steps still
+   * waited on, left suspended on their own. Cancelling them is a separate
+   * step.
+   */
+  detachedNestedRuns?: {
+    workflowName: string;
+    runId: string;
+    cancelCommand: string;
+  }[];
 }
 
 export interface WorkflowGateFailure {

@@ -292,3 +292,142 @@ Deno.test("WorkflowRun: reopening aborted work resets exactly the settled record
     ),
   );
 });
+
+// --- Nested run links (swamp-club#2736) -------------------------------------
+
+const arbUuid = fc.uuid();
+const arbValidNestedRef = fc.record({
+  workflowId: arbUuid,
+  workflowName: fc.constantFrom("child", "@acme/child", "deploy-child"),
+  runId: arbUuid,
+});
+// Anything a hand-edited or stale record may hold where a link belongs.
+const arbRawLink = fc.oneof(
+  arbValidNestedRef,
+  fc.record({ runId: fc.string(), workflowId: fc.string() }),
+  fc.string(),
+  fc.integer(),
+  fc.constant(null),
+  fc.array(fc.string(), { maxLength: 3 }),
+);
+
+function nestedStepRun(raw: unknown, status: "waiting_approval" | "failed") {
+  return JobRun.fromData({
+    jobName: "main",
+    status: "running",
+    steps: [{ stepName: "call-child", status, nestedRun: raw }],
+  }).getStep("call-child")!;
+}
+
+Deno.test("StepRun nestedRun: any persisted link survives repeated round-trips unchanged (property)", () => {
+  fc.assert(
+    fc.property(arbRawLink, (raw) => {
+      const once = nestedStepRun(raw, "waiting_approval").toData();
+      const twice = nestedStepRun(once.nestedRun, "waiting_approval")
+        .toData();
+      assertEquals(once.nestedRun, raw);
+      assertEquals(twice.nestedRun, raw);
+    }),
+  );
+});
+
+Deno.test("StepRun nestedRun: a malformed link reads broken and still waits on a nested run, never as a gate (property)", () => {
+  fc.assert(
+    fc.property(arbRawLink, (raw) => {
+      const step = nestedStepRun(raw, "waiting_approval");
+      assertEquals(step.isNestedWait, true);
+      assert(
+        step.nestedRun?.kind === "valid" || step.nestedRun?.kind === "broken",
+      );
+      const run = WorkflowRun.fromData({
+        id: "33333333-3333-4333-8333-333333333333",
+        workflowId: "44444444-4444-4444-8444-444444444444",
+        workflowName: "parent",
+        status: "suspended",
+        jobs: [{
+          jobName: "main",
+          status: "running",
+          steps: [{
+            stepName: "call-child",
+            status: "waiting_approval",
+            nestedRun: raw,
+          }],
+        }],
+      });
+      assertEquals(run.findWaitingApprovalStep(), undefined);
+      assertEquals(run.findNestedWaits().length, 1);
+    }),
+  );
+});
+
+const NESTED_TRANSITIONS: ReadonlyArray<
+  (run: WorkflowRun, step: StepRun) => void
+> = [
+  (_, s) =>
+    s.waitForNestedRun({
+      workflowId: "11111111-1111-4111-8111-111111111111",
+      workflowName: "child",
+      runId: "22222222-2222-4222-8222-222222222222",
+    }),
+  (_, s) => s.waitForApproval(),
+  (_, s) => s.succeed(),
+  (_, s) => s.fail("boom"),
+  (_, s) => s.resetToPending(),
+  (run) => run.suspend(),
+  (run) => run.cancel("stop"),
+  (run) => run.complete(),
+];
+
+Deno.test("WorkflowRun nested waits: a finished run never keeps a step waiting on a nested run, and resetToPending always drops the link (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.record({
+          op: fc.nat({ max: NESTED_TRANSITIONS.length - 1 }),
+          step: fc.constantFrom(...STEPS),
+        }),
+        { maxLength: 20 },
+      ),
+      (ops) => {
+        const run = WorkflowRun.create(
+          Workflow.create({
+            name: "nested-wf",
+            jobs: [
+              Job.create({
+                name: "main",
+                steps: STEPS.map((step) =>
+                  Step.create({ name: step, task: StepTask.workflow("child") })
+                ),
+              }),
+            ],
+          }),
+        );
+        run.start();
+        for (const { op, step } of ops) {
+          const stepRun = run.getJob("main")!.getStep(step)!;
+          const ended = run.status === "succeeded" ||
+            run.status === "failed" || run.status === "cancelled";
+          NESTED_TRANSITIONS[op](run, stepRun);
+          if (NESTED_TRANSITIONS[op] === NESTED_TRANSITIONS[4]) {
+            assertEquals(stepRun.nestedRun, undefined);
+          }
+          // Ending the run (cancel, complete) settles every nested wait.
+          if (op >= 6 && !ended && run.status !== "suspended") {
+            assertEquals(run.findNestedWaits(), []);
+          }
+          // A nested wait is never reported as an approval gate.
+          const gate = run.findWaitingApprovalStep();
+          if (gate) {
+            assert(!run.getJob("main")!.getStep(gate.stepName)!.isNestedWait);
+          }
+          if (run.findNestedWaits().length > 0) {
+            assertEquals(run.isAwaitingResume(), false);
+          }
+          // Round-trips keep every link and flag.
+          const restored = WorkflowRun.fromData(run.toData());
+          assertEquals(restored.toData(), run.toData());
+        }
+      },
+    ),
+  );
+});
