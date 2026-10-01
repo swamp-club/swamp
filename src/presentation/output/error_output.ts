@@ -22,6 +22,7 @@ import { bold, dim, red, yellow } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import type { OutputMode } from "./output.ts";
 
 const logger = getSwampLogger(["error"]);
@@ -65,6 +66,12 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
       ? "lock_timeout"
       : maybeCode;
   }
+  if (err instanceof AuthGateBlockedError) {
+    // Why the auth gate blocked, as data: `kind` plus any retry or age hint,
+    // so scripts and agents can branch without parsing the message.
+    data.reason = { ...err.reason };
+    data.temporary = err.temporary;
+  }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {
       kind: err.kind,
@@ -94,13 +101,19 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
  *   callers should retry with backoff. Matched in any case: datastore
  *   extensions throw `LOCK_TIMEOUT`, and core only translates the ones
  *   raised through a lock it wrapped.
- * - `1` for all other errors.
+ * - `75` for an auth gate block a later run can clear (swamp-club refusing,
+ *   unreachable or failing), so CI can retry it.
+ * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
   const code = (error as { code?: unknown })?.code;
   if (typeof code === "string" && code.toLowerCase() === "lock_timeout") {
     return 75;
   }
+  // A block a later run can clear (swamp-club refusing, unreachable or
+  // failing) is a temporary failure too; a missing or revoked credential is
+  // not.
+  if (error instanceof AuthGateBlockedError && error.temporary) return 75;
   return 1;
 }
 

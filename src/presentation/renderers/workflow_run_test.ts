@@ -26,7 +26,6 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
-import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function makeRunView(
   status: "succeeded" | "failed",
@@ -138,7 +137,6 @@ async function captureOutputAsync(
 Deno.test("ConsoleWorkflowRunRenderer: succeeded run shows Starting, pipe output, Completed", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events = simpleEvents(makeRunView("succeeded"));
   const lines = await captureOutputAsync(async () => {
@@ -156,7 +154,6 @@ Deno.test("ConsoleWorkflowRunRenderer: succeeded run shows Starting, pipe output
 Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const runView = makeRunView("failed");
   const events = simpleEvents(runView);
@@ -172,7 +169,6 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", asyn
 Deno.test("ConsoleWorkflowRunRenderer: failed run with a cert-store error shows the remedy hint", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const runView = makeRunView("failed");
   runView.jobs[0].steps[0].error =
@@ -190,7 +186,6 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run with a cert-store error shows 
 Deno.test("ConsoleWorkflowRunRenderer: failed run with an unrelated error shows no hint", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const lines = await captureOutputAsync(async () => {
     await consumeStream(
@@ -204,7 +199,6 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run with an unrelated error shows 
 Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events = simpleEvents(makeRunView("succeeded"));
   const lines = await captureOutputAsync(async () => {
@@ -219,7 +213,6 @@ Deno.test("ConsoleWorkflowRunRenderer: pipe-prefixed output uses job name", asyn
 Deno.test("ConsoleWorkflowRunRenderer: method_output uses same style for stdout and stderr", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -265,7 +258,6 @@ Deno.test("ConsoleWorkflowRunRenderer: method_output uses same style for stdout 
 Deno.test("ConsoleWorkflowRunRenderer: shows inline data artifacts", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events = simpleEvents(makeRunView("succeeded"));
   const lines = await captureOutputAsync(async () => {
@@ -293,34 +285,9 @@ Deno.test("ConsoleWorkflowRunRenderer: error event throws UserError", () => {
   );
 });
 
-Deno.test("ConsoleWorkflowRunRenderer: shows auth nudge when not authenticated", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-pipeline",
-    isAuthenticated: false,
-  });
-  const events = simpleEvents(makeRunView("succeeded"));
-  const lines = await captureOutputAsync(async () => {
-    await consumeStream(toStream(events), renderer.handlers());
-  });
-  assertStringIncludes(lines.join("\n"), AUTH_WARNING_MESSAGE);
-});
-
-Deno.test("ConsoleWorkflowRunRenderer: suppresses auth nudge when authenticated", async () => {
-  const renderer = createWorkflowRunRenderer("log", {
-    workflowName: "test-pipeline",
-    isAuthenticated: true,
-  });
-  const events = simpleEvents(makeRunView("succeeded"));
-  const lines = await captureOutputAsync(async () => {
-    await consumeStream(toStream(events), renderer.handlers());
-  });
-  assertEquals(lines.join("\n").includes(AUTH_WARNING_MESSAGE), false);
-});
-
 Deno.test("ConsoleWorkflowRunRenderer: quiet mode buffers output and discards on success", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
     quiet: true,
   });
   const events = simpleEvents(makeRunView("succeeded"));
@@ -335,7 +302,6 @@ Deno.test("ConsoleWorkflowRunRenderer: quiet mode buffers output and discards on
 Deno.test("ConsoleWorkflowRunRenderer: quiet mode replays buffer on step failure", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
     quiet: true,
   });
   const events: WorkflowRunEvent[] = [
@@ -506,7 +472,6 @@ Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", asy
 Deno.test("ConsoleWorkflowRunRenderer: forEach steps show [index] notation", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -573,7 +538,6 @@ function skippedLines(lines: string[]): string[] {
 Deno.test("ConsoleWorkflowRunRenderer: skipped plain steps name the step", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -616,7 +580,6 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped plain steps name the step", async
 Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expanded step", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -652,7 +615,6 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expan
 Deno.test("ConsoleWorkflowRunRenderer: templated forEach steps are labelled with the expanded name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const template = "deploy-${{ self.env }}";
   const events: WorkflowRunEvent[] = [
@@ -724,7 +686,6 @@ Deno.test("ConsoleWorkflowRunRenderer: templated forEach steps are labelled with
 Deno.test("ConsoleWorkflowRunRenderer: skipped templated forEach iterations are labelled with the expanded name", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -769,7 +730,6 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped templated forEach iterations are 
 Deno.test("ConsoleWorkflowRunRenderer: skipped job line names no step", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
@@ -988,25 +948,6 @@ Deno.test("JsonWorkflowRunRenderer: error event throws UserError", () => {
   );
 });
 
-Deno.test("JsonWorkflowRunRenderer: never shows auth nudge", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "test-pipeline",
-      isAuthenticated: false,
-    });
-    const events = simpleEvents(makeRunView("succeeded"));
-    await consumeStream(toStream(events), renderer.handlers());
-    const combined = logs.join("\n");
-    assertEquals(combined.includes(AUTH_WARNING_MESSAGE), false);
-  } finally {
-    console.log = originalLog;
-  }
-});
-
 Deno.test("JsonWorkflowRunRenderer: suspended includes stepId and prompt", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -1148,7 +1089,6 @@ async function renderFailedRun(
 ): Promise<string> {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
     commandTarget,
   });
   const lines = await captureOutputAsync(async () => {
@@ -1346,7 +1286,6 @@ async function renderWorkflowReport(
 ): Promise<string[]> {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
-    isAuthenticated: true,
     verbose,
   });
   const events = simpleEvents(makeRunView("succeeded"));

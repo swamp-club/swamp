@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { AUTH_ENFORCEMENT_DEADLINE } from "../../domain/auth/auth_nudge.ts";
 import type {
   EventHandlers,
   ExtensionInstallData,
@@ -244,12 +243,6 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
 }
 
 class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
-  private isAuthenticated: boolean;
-
-  constructor(isAuthenticated: boolean) {
-    this.isAuthenticated = isAuthenticated;
-  }
-
   handlers(): EventHandlers<RepoInitEvent> {
     return {
       initializing: () => {},
@@ -259,11 +252,6 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
           .filter((s): s is string => s !== undefined);
         if (steps.length === 0) {
           steps.push("Run `swamp --help` to see available commands");
-        }
-        if (!this.isAuthenticated) {
-          steps.push(
-            `Sign in to swamp-club.com (required from ${AUTH_ENFORCEMENT_DEADLINE}): swamp auth login`,
-          );
         }
         console.log(JSON.stringify({ ...e.data, nextSteps: steps }, null, 2));
       },
@@ -275,12 +263,6 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
 }
 
 class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
-  private isAuthenticated: boolean;
-
-  constructor(isAuthenticated: boolean) {
-    this.isAuthenticated = isAuthenticated;
-  }
-
   handlers(): EventHandlers<RepoUpgradeEvent> {
     const installRenderer = createExtensionInstallRenderer("log");
     const installHandlers = installRenderer.handlers();
@@ -390,11 +372,6 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
             writeOutput(`    ${file}`);
           }
         }
-        if (!this.isAuthenticated) {
-          writeOutput(
-            `  → Sign in to swamp-club.com (required from ${AUTH_ENFORCEMENT_DEADLINE}): swamp auth login`,
-          );
-        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -463,12 +440,10 @@ function dispatchInstallEvent(
 
 export function createRepoInitRenderer(
   mode: OutputMode,
-  opts?: { isAuthenticated?: boolean },
 ): Renderer<RepoInitEvent> {
-  const authed = opts?.isAuthenticated ?? false;
   switch (mode) {
     case "json":
-      return new JsonRepoInitRenderer(authed);
+      return new JsonRepoInitRenderer();
     case "log":
       return new LogRepoInitRenderer();
   }
@@ -476,13 +451,11 @@ export function createRepoInitRenderer(
 
 export function createRepoUpgradeRenderer(
   mode: OutputMode,
-  opts?: { isAuthenticated?: boolean },
 ): Renderer<RepoUpgradeEvent> {
-  const authed = opts?.isAuthenticated ?? false;
   switch (mode) {
     case "json":
       return new JsonRepoUpgradeRenderer();
     case "log":
-      return new LogRepoUpgradeRenderer(authed);
+      return new LogRepoUpgradeRenderer();
   }
 }

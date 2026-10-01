@@ -51,7 +51,6 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
-import { isAuthenticated } from "../auth_context.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -209,7 +208,6 @@ export const workflowResumeCommand = withRemoteOptions(
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
         workflowName: workflowIdOrName,
-        isAuthenticated: isAuthenticated(),
         quiet: cliCtx.verbosity === "quiet",
         verbose: cliCtx.verbosity === "verbose",
         commandTarget: formatCommandTarget({
@@ -458,7 +456,6 @@ export const workflowResumeCommand = withRemoteOptions(
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
       workflowName,
-      isAuthenticated: isAuthenticated(),
       quiet: cliCtx.verbosity === "quiet",
       verbose: cliCtx.verbosity === "verbose",
       commandTarget: formatCommandTarget({

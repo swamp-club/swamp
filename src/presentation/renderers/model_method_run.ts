@@ -28,7 +28,6 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
-import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim } from "@std/fmt/colors";
 import {
   type DataArtifact,
@@ -45,7 +44,6 @@ import {
 export interface ModelMethodRunRenderOpts {
   modelName: string;
   methodName: string;
-  isAuthenticated?: boolean;
   quiet?: boolean;
   /** Also frame reports whose markdown is empty. */
   verbose?: boolean;
@@ -60,7 +58,6 @@ const QUIET_BUFFER_LIMIT = 500;
 class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   private modelName: string;
   private methodName: string;
-  private isAuthenticated: boolean;
   private quiet: boolean;
   private verbose: boolean;
   private _failed = false;
@@ -69,7 +66,6 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   constructor(opts: ModelMethodRunRenderOpts) {
     this.modelName = opts.modelName;
     this.methodName = opts.methodName;
-    this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
     this.verbose = opts.verbose ?? false;
   }
@@ -210,10 +206,6 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
             methodArguments: e.run.methodArguments,
             modelName: e.run.modelName,
           });
-          if (!this.isAuthenticated) {
-            writeBlankLine();
-            writeOutput(dim(`⚠ ${AUTH_WARNING_MESSAGE}`));
-          }
         }
       },
       cancelled: (e) => {

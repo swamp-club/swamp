@@ -26,7 +26,6 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
-import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function makeRunView(
   status: "succeeded" | "failed",
@@ -132,7 +131,6 @@ Deno.test("ConsoleModelMethodRunRenderer: succeeded run shows Resolved, Executin
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
   });
   const events = fullEventStream(makeRunView("succeeded"));
   const lines = await captureOutputAsync(async () => {
@@ -153,7 +151,6 @@ Deno.test("ConsoleModelMethodRunRenderer: failed run shows Failed with log path"
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
   });
   const events: ModelMethodRunEvent[] = [
     { kind: "validating_inputs" },
@@ -179,7 +176,6 @@ Deno.test("ConsoleModelMethodRunRenderer: method_output writes both stdout and s
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
   });
   const events: ModelMethodRunEvent[] = [
     { kind: "validating_inputs" },
@@ -212,7 +208,6 @@ Deno.test("ConsoleModelMethodRunRenderer: shows inline data artifacts on success
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
   });
   const events = fullEventStream(makeRunView("succeeded"));
   const lines = await captureOutputAsync(async () => {
@@ -241,56 +236,10 @@ Deno.test("ConsoleModelMethodRunRenderer: error event throws UserError", () => {
   );
 });
 
-Deno.test("ConsoleModelMethodRunRenderer: shows auth nudge when not authenticated", async () => {
-  const renderer = createModelMethodRunRenderer("log", {
-    modelName: "test-model",
-    methodName: "run",
-    isAuthenticated: false,
-  });
-  const events = fullEventStream(makeRunView("succeeded"));
-  const lines = await captureOutputAsync(async () => {
-    await consumeStream(toStream(events), renderer.handlers());
-  });
-  const output = lines.join("\n");
-  assertStringIncludes(output, AUTH_WARNING_MESSAGE);
-});
-
-Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge when authenticated", async () => {
-  const renderer = createModelMethodRunRenderer("log", {
-    modelName: "test-model",
-    methodName: "run",
-    isAuthenticated: true,
-  });
-  const events = fullEventStream(makeRunView("succeeded"));
-  const lines = await captureOutputAsync(async () => {
-    await consumeStream(toStream(events), renderer.handlers());
-  });
-  const output = lines.join("\n");
-  assertEquals(output.includes(AUTH_WARNING_MESSAGE), false);
-});
-
-Deno.test("ConsoleModelMethodRunRenderer: suppresses auth nudge on failure", async () => {
-  const renderer = createModelMethodRunRenderer("log", {
-    modelName: "test-model",
-    methodName: "run",
-    isAuthenticated: false,
-  });
-  const events: ModelMethodRunEvent[] = [
-    { kind: "validating_inputs" },
-    { kind: "completed", run: makeRunView("failed") },
-  ];
-  const lines = await captureOutputAsync(async () => {
-    await consumeStream(toStream(events), renderer.handlers());
-  });
-  const output = lines.join("\n");
-  assertEquals(output.includes(AUTH_WARNING_MESSAGE), false);
-});
-
 Deno.test("ConsoleModelMethodRunRenderer: quiet mode buffers output and discards on success", async () => {
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
     quiet: true,
   });
   const events = fullEventStream(makeRunView("succeeded"));
@@ -306,7 +255,6 @@ Deno.test("ConsoleModelMethodRunRenderer: quiet mode replays buffer on failure",
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
     quiet: true,
   });
   const events: ModelMethodRunEvent[] = [
@@ -581,26 +529,6 @@ Deno.test("JsonModelMethodRunRenderer: auto_gc_completed does not write to stdou
   }
 });
 
-Deno.test("JsonModelMethodRunRenderer: never shows auth nudge", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createModelMethodRunRenderer("json", {
-      modelName: "test-model",
-      methodName: "run",
-      isAuthenticated: false,
-    });
-    const events = fullEventStream(makeRunView("succeeded"));
-    await consumeStream(toStream(events), renderer.handlers());
-    const combined = logs.join("\n");
-    assertEquals(combined.includes(AUTH_WARNING_MESSAGE), false);
-  } finally {
-    console.log = originalLog;
-  }
-});
-
 Deno.test("createModelMethodRunRenderer: factory returns correct type per mode", () => {
   const logRenderer = createModelMethodRunRenderer("log", {
     modelName: "m",
@@ -670,7 +598,6 @@ async function renderReports(
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
     methodName: "run",
-    isAuthenticated: true,
     verbose,
   });
   const lines = await captureOutputAsync(async () => {

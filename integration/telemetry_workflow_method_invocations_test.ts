@@ -32,6 +32,7 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
+import { writeGateCredential } from "./auth_gate_fixture.ts";
 
 interface CliRunResult {
   stdout: string;
@@ -171,6 +172,8 @@ Deno.test({
       // Isolate the user-global telemetry spool (and identity/auth) to a temp
       // config dir so the test never touches the developer's real ~/.config.
       const configDir = join(repoDir, "xdg");
+      // The auth gate needs a swamp-club credential in that config dir.
+      await writeGateCredential(join(configDir, "swamp"));
       const childEnvWith = (extra: Record<string, string> = {}) => ({
         ...baseChildEnv(),
         // `repo init --tool claude` installs bundled skills into the child's

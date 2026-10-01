@@ -305,3 +305,64 @@ Deno.test("createAuthLogoutDeps: an auth.json without serverUrl revokes against 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("createAuthLogoutDeps: deleting credentials also clears the cached proof and the gate's stamps", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "config");
+    await new AuthRepository({ configDir }).save({
+      serverUrl: "https://swamp-club.com",
+      apiKey: "swamp_login_key",
+      apiKeyId: "key-1",
+      username: "testuser",
+    });
+    const files = [
+      "auth_verified.json",
+      "auth_fail_open.json",
+      "auth_token_check.json",
+      "auth_refresh_attempt.json",
+    ];
+    for (const file of files) {
+      await Deno.writeTextFile(join(configDir, file), "{}");
+    }
+
+    await createAuthLogoutDeps({ repo: { configDir } }).deleteCredentials();
+
+    for (const file of ["auth.json", ...files]) {
+      const exists = await Deno.stat(join(configDir, file)).then(
+        () => true,
+        () => false,
+      );
+      assertEquals(exists, false, file);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("createAuthLogoutDeps: logout succeeds even when a gate stamp cannot be removed", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "config");
+    await new AuthRepository({ configDir }).save({
+      serverUrl: "https://swamp-club.com",
+      apiKey: "swamp_login_key",
+      apiKeyId: "key-1",
+      username: "testuser",
+    });
+    // A non-empty directory where a stamp file should be cannot be removed.
+    await Deno.mkdir(join(configDir, "auth_fail_open.json", "stuck"), {
+      recursive: true,
+    });
+
+    await createAuthLogoutDeps({ repo: { configDir } }).deleteCredentials();
+
+    const credentialsGone = await Deno.stat(join(configDir, "auth.json")).then(
+      () => false,
+      () => true,
+    );
+    assertEquals(credentialsGone, true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

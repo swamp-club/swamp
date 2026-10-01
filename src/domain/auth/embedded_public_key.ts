@@ -17,8 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Fallback Ed25519 public key for first-ever offline proof verification.
-// Updated by scripts/update_embedded_key.ts during key rotation.
-// When undefined, proof verification requires cached public keys from
-// a prior /api/whoami call.
-export const EMBEDDED_PUBLIC_KEY: string | undefined = undefined;
+// Fallback Ed25519 public key for verifying proofs when no cached key
+// matches, chiefly SWAMP_SIGNIN_TOKEN, which carries no public key. It is
+// swamp-club.com's production signing key (kid 6aab0d1b1c656c22adc781d5),
+// as returned in /api/whoami's publicKeys.
+//
+// On a planned rotation, replace it here in a release before the old key
+// leaves the whoami response (the grace period is 30 days). On an emergency
+// rotation, every proof signed with the old key stops verifying at once:
+// interactive users re-verify on their next run, and CI signin tokens need
+// a CLI release carrying the new key plus newly issued tokens.
+export const EMBEDDED_PUBLIC_KEY: string | undefined =
+  "rIXC70V_y64Se9pDjifRLMBWMhOmsa5z3mMCyCZXKns";

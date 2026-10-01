@@ -45,6 +45,8 @@ export interface AuthTokenCreateData {
   name: string;
   collective: string;
   scopes: string[];
+  /** The SWAMP_SIGNIN_TOKEN for `key`, when swamp-club issued one. */
+  signinToken?: string;
 }
 
 export type AuthTokenCreateEvent =
@@ -157,6 +159,7 @@ export async function* authTokenCreate(
         name: response.token.name,
         collective: input.collective,
         scopes: response.token.scopes,
+        ...(response.signinToken ? { signinToken: response.signinToken } : {}),
       },
     };
   } catch (error: unknown) {

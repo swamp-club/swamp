@@ -23,7 +23,9 @@ import {
   collectWorkerEnv,
   collectWorkerExtraArgs,
   validateCacheDir,
+  workerDaemonBaseEnv,
 } from "./worker_daemon.ts";
+import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 
 Deno.test("collectWorkerExtraArgs: includes data-plane-url when provided", () => {
@@ -141,4 +143,10 @@ Deno.test("validateCacheDir: rejects path that is a file, not a directory", asyn
   } finally {
     await Deno.remove(tmpFile).catch(() => {});
   }
+});
+
+Deno.test("workerDaemonBaseEnv: points the daemon at this user's config dir", () => {
+  const env = workerDaemonBaseEnv();
+  assertEquals(Object.keys(env), ["SWAMP_CONFIG_DIR"]);
+  assertEquals(env.SWAMP_CONFIG_DIR, resolve(getSwampConfigDir()));
 });

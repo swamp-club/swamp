@@ -185,3 +185,20 @@ Deno.test("invocationContextToData: datastoreType included when set", () => {
   assertEquals(data.datastoreType, "@swamp/gcs");
   assertEquals(data.externalVaultConfigured, true);
 });
+
+Deno.test("invocationContextToData: authMode round-trips and stays absent when unset", () => {
+  const base = {
+    agentSessionDetected: false,
+    isInteractive: true,
+    externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
+  };
+  for (const authMode of ["verified", "offline", "none"] as const) {
+    const data = invocationContextToData(
+      invocationContextFromData({ ...base, authMode }),
+    );
+    assertEquals(data.authMode, authMode);
+  }
+  const legacy = invocationContextToData(invocationContextFromData(base));
+  assertEquals("authMode" in legacy, false);
+});

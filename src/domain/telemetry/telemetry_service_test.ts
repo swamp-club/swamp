@@ -954,3 +954,37 @@ Deno.test("TelemetryService.flushEntry never sends an entry recorded for another
   // Left spooled for a run that resolves its own endpoint.
   assertEquals(repo.flushedEntries.length, 0);
 });
+
+Deno.test("TelemetryService.setAuthMode stamps later entries and forks", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0", {
+    agentSessionDetected: false,
+    isInteractive: false,
+    externalDatastoreConfigured: false,
+    externalVaultConfigured: false,
+  });
+  service.setAuthMode("offline");
+
+  const invocation = {
+    command: "model",
+    args: [],
+    optionKeys: [],
+    globalOptions: [],
+  };
+  await service.recordSuccess(invocation, new Date());
+  await service.forkForRun().recordSuccess(invocation, new Date());
+
+  assertEquals(repo.savedEntries[0].invocationContext?.authMode, "offline");
+  assertEquals(repo.savedEntries[1].invocationContext?.authMode, "offline");
+});
+
+Deno.test("TelemetryService.setAuthMode is a no-op without an invocationContext", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+  service.setAuthMode("verified");
+  await service.recordSuccess(
+    { command: "model", args: [], optionKeys: [], globalOptions: [] },
+    new Date(),
+  );
+  assertEquals(repo.savedEntries[0].invocationContext, undefined);
+});

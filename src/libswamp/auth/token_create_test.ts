@@ -253,3 +253,24 @@ Deno.test("authTokenCreate: passes correct input to createToken", async () => {
     scopes: ["extensions:push", "serve:*"],
   });
 });
+
+Deno.test("authTokenCreate: passes through the signin token swamp-club issued", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    createToken: () =>
+      Promise.resolve({ ...testTokenResponse, signinToken: "cHJvb2Y.c2ln" }),
+  });
+
+  const events = await collect<AuthTokenCreateEvent>(
+    authTokenCreate(ctx, deps, {
+      collective: "myorg",
+      scopes: ["extensions:push"],
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" ? completed.data.signinToken : undefined,
+    "cHJvb2Y.c2ln",
+  );
+});

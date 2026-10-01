@@ -210,6 +210,8 @@ export async function* whoami(
         response.verificationSignature,
         response.publicKeys,
       ).catch(() => {});
+      // A verified answer ends any fail-open window an outage started.
+      await verificationRepo.clearFailOpen().catch(() => {});
     }
 
     const collectives = getCollectives(response);

@@ -86,7 +86,7 @@ import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
-import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
+import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -499,7 +499,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             const renderer = createModelMethodRunRenderer(ctx.outputMode, {
               modelName: modelIdOrName,
               methodName,
-              isAuthenticated: isAuthenticated(),
               quiet: ctx.verbosity === "quiet",
               verbose: ctx.verbosity === "verbose",
             });
@@ -655,7 +654,6 @@ async function runMethodViaServer(
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: modelIdOrName,
         methodName,
-        isAuthenticated: isAuthenticated(),
         quiet: ctx.verbosity === "quiet",
         verbose: ctx.verbosity === "verbose",
       });

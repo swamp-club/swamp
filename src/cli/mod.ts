@@ -132,7 +132,6 @@ import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
 import {
-  isAuthenticated,
   isCollectiveToken,
   setAuthenticated,
   setAuthScopes,
@@ -177,6 +176,7 @@ import {
 import {
   getCollectives,
   SwampClubClient,
+  type WhoamiResponse,
 } from "../infrastructure/http/swamp_club_client.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -189,11 +189,12 @@ import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import {
-  renderAuthWarning,
-  renderFirstRunWarning,
-} from "../presentation/renderers/auth_nudge.ts";
-import { isFirstRunNudge } from "../domain/auth/auth_nudge.ts";
-import { AuthNudgeRepository } from "../infrastructure/persistence/auth_nudge_repository.ts";
+  authGateBlockedError,
+  type AuthGateOutcome,
+  createAuthGateDeps,
+  runAuthGate,
+} from "./auth_gate.ts";
+import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
@@ -1987,6 +1988,141 @@ function knownSensitiveValues(
   }
 }
 
+/**
+ * Records a failed invocation and flushes it at once — the process is about
+ * to exit, so nothing later would send it. Shared by the outer catch and the
+ * auth gate's early block, so a failure is recorded one way.
+ */
+async function recordAndFlushError(
+  telemetryCtx: TelemetryContext,
+  invocation: CommandInvocationData,
+  startTime: Date,
+  error: Error,
+  sensitiveValues: readonly string[],
+): Promise<void> {
+  await telemetryCtx.service.recordError(
+    invocation,
+    startTime,
+    error,
+    sensitiveValues,
+  );
+
+  // distinct_id is required by the sender (see success path). Skip the
+  // flush if neither userId nor repoId resolved.
+  const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
+  if (distinctId) {
+    const sender = new HttpTelemetrySender(
+      telemetryCtx.telemetryEndpoint,
+      USER_AGENT,
+    );
+    await telemetryCtx.service.flushTelemetry({
+      sender,
+      distinctId,
+      repoId: telemetryCtx.repoId,
+      authToken: telemetryCtx.authToken ?? undefined,
+      keepFlushed: telemetryCtx.keepFlushed,
+      signal: AbortSignal.timeout(2000),
+    });
+  }
+}
+
+/**
+ * Clears the per-invocation state runCli sets up. The outer finally calls it;
+ * so does the auth gate when it ends a run before that try is entered.
+ */
+function endInvocation(): void {
+  // runCli is the single setter and must be the single clearer.
+  clearActiveTelemetryService();
+  clearActiveTelemetryContext();
+  setApiKeyFileOverride(undefined);
+}
+
+/**
+ * The root command with its global types and options, and no invocation
+ * state. runInvocation adds the global action; the auth gate resolves which
+ * command a line runs against the same declarations, so its decision and
+ * Cliffy's parse can never disagree about an option's arity.
+ */
+export function createRootCommand(colorEnabled: boolean): AnyCommand {
+  return new Command()
+    .name("swamp")
+    .version(VERSION)
+    // Cliffy's help generator force-enables colour while it renders
+    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
+    // the version option it ignores the policy applyColorPolicy set — `NO_COLOR` only
+    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
+    // Handing it the decision is the one way help honours `--no-color` and a
+    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
+    // parent.
+    .help({ colors: colorEnabled })
+    .description("AI Native Automation CLI")
+    .globalType("model_name", new ModelNameType())
+    .globalType("model_type", new ModelTypeType())
+    .globalType("workflow_name", new WorkflowNameType())
+    .globalOption("--json", "Output in JSON format (non-interactive)")
+    .globalOption(
+      "--log",
+      "Show model and workflow run logs in terminal output",
+    )
+    .globalOption(
+      "--log-level <level:string>",
+      "Set log level (trace, debug, info, warning, error, fatal)",
+    )
+    .globalOption("-q, --quiet", "Suppress non-essential output")
+    .globalOption("-v, --verbose", "Show detailed output")
+    .globalOption("--no-telemetry", "Disable telemetry for this invocation")
+    .globalOption(
+      "--show-properties",
+      "Show structured properties in log output",
+    )
+    .globalOption("--no-color", "Disable colored output");
+}
+
+/**
+ * The command tree without the invocation's global action — enough to
+ * resolve a telemetry invocation for a run blocked before the real tree is
+ * built. registerCommands is kept free of invocation state for this.
+ */
+export function buildCommandTree(): AnyCommand {
+  const tree = createRootCommand(false);
+  registerCommands(tree);
+  return tree;
+}
+
+/**
+ * The whoami response the auth gate already fetched this run, or a fresh
+ * one. Saves a CI run (which checks its signin token live) a second call.
+ */
+async function gateWhoamiOr(
+  outcome: AuthGateOutcome | undefined,
+  serverUrl: string,
+  apiKey: string,
+): Promise<WhoamiResponse> {
+  if (outcome?.kind === "pass" && outcome.liveResponse) {
+    return outcome.liveResponse;
+  }
+  const client = new SwampClubClient(serverUrl, await loadIdentity());
+  return await client.whoami(apiKey, AbortSignal.timeout(10_000));
+}
+
+/**
+ * Runs the weekly proof refresh the gate scheduled, if any. Best effort and
+ * bounded by its own timeout: it never changes the run that already passed.
+ * It runs at teardown, so a long-running `serve` or `worker` refreshes only
+ * when it exits; they are re-gated on restart (design/surfaces/auth-gate.md,
+ * Non-goals).
+ */
+async function runGateRefresh(
+  outcome: AuthGateOutcome | undefined,
+): Promise<void> {
+  if (outcome?.kind !== "pass" || !outcome.refresh) return;
+  try {
+    await outcome.refresh();
+  } catch {
+    // Best effort — a failed refresh is retried on the next run.
+  }
+}
+
 export async function runCli(args: string[]): Promise<void> {
   // Rewrite `model @type method run` → `model method run @type` before
   // Cliffy parses the command tree. Must happen before any arg inspection.
@@ -2118,6 +2254,65 @@ async function runInvocation(
     setActiveTelemetryContext(telemetryCtx);
   }
 
+  // The auth gate (design/surfaces/auth-gate.md): every subcommand needs a
+  // swamp-club account. It runs before the repo marker, extension loaders and
+  // auto-resolver, so a blocked run loads no extensions; only telemetry
+  // setup has run. Which command a line runs, and whether Cliffy will answer
+  // it with help or version output, is resolved against the real command
+  // tree, never guessed. Hook mode (always `audit record`, always gated)
+  // skips building the tree, checks locally only and, when blocked, records
+  // nothing and exits 0 so an agent session is not broken.
+  const commandTree = hookMode ? undefined : buildCommandTree();
+  const gateTiming = commandTree ? authGateTiming(commandTree, args) : "gated";
+  let gateOutcome: AuthGateOutcome | undefined;
+  if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
+  if (gateTiming === "gated") {
+    // Ends the run before the outer try is entered: records the failure the
+    // same way the outer catch would (best effort), then clears per-run state.
+    const endGatedRun = async (error: Error): Promise<void> => {
+      try {
+        if (telemetryCtx && commandTree) {
+          telemetryCtx.service.setAuthMode("none");
+          const sensitive: string[] = [];
+          await recordAndFlushError(
+            telemetryCtx,
+            resolveTelemetryInvocation(commandTree, args, sensitive),
+            startTime,
+            error,
+            knownSensitiveValues(sensitive, repoDir),
+          );
+        }
+      } catch {
+        // Best effort — telemetry never changes how a run ends.
+      } finally {
+        bootstrapSpan.end();
+        endInvocation();
+      }
+    };
+    try {
+      gateOutcome = await runAuthGate(
+        createAuthGateDeps({ liveChecks: !hookMode }),
+      );
+    } catch (error) {
+      // A misconfigured key source or an unreadable auth.json. Hook mode
+      // treats it as a block; otherwise it is reported as itself.
+      if (!hookMode) {
+        await endGatedRun(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+      gateOutcome = { kind: "block", reason: { kind: "no_credential" } };
+    }
+    if (gateOutcome.kind === "block") {
+      const error = authGateBlockedError(gateOutcome.reason);
+      await endGatedRun(error);
+      if (hookMode) return;
+      throw error;
+    }
+    telemetryCtx?.service.setAuthMode(gateOutcome.authMode);
+  }
+
   // Read marker once for log level, extension loading, auto-resolver,
   // and serverAddress cache. Hook commands skip this — null marker gives
   // default "info" log level and no serverAddress fallback.
@@ -2212,10 +2407,11 @@ async function runInvocation(
           if (cachedScopes) {
             setAuthScopes(cachedScopes);
           } else {
-            const identity = await loadIdentity();
-            const client = new SwampClubClient(creds.serverUrl, identity);
-            const signal = AbortSignal.timeout(10_000);
-            const response = await client.whoami(creds.apiKey, signal);
+            const response = await gateWhoamiOr(
+              gateOutcome,
+              creds.serverUrl,
+              creds.apiKey,
+            );
             if (response.authenticated) {
               setAuthScopes(response.scopes);
               if (response.scopes) {
@@ -2227,10 +2423,11 @@ async function runInvocation(
             }
           }
         } else if (!creds.username) {
-          const identity = await loadIdentity();
-          const client = new SwampClubClient(creds.serverUrl, identity);
-          const signal = AbortSignal.timeout(10_000);
-          const response = await client.whoami(creds.apiKey, signal);
+          const response = await gateWhoamiOr(
+            gateOutcome,
+            creds.serverUrl,
+            creds.apiKey,
+          );
           if (response.authenticated && response.username) {
             const collectives = getCollectives(response) ?? [];
             await authRepo.saveIdentityCache(
@@ -2284,38 +2481,7 @@ async function runInvocation(
     );
   }
 
-  const cli = new Command()
-    .name("swamp")
-    .version(VERSION)
-    // Cliffy's help generator force-enables colour while it renders
-    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
-    // the version option it ignores the policy applied above — `NO_COLOR` only
-    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
-    // Handing it the decision is the one way help honours `--no-color` and a
-    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
-    // parent.
-    .help({ colors: colorEnabled })
-    .description("AI Native Automation CLI")
-    .globalType("model_name", new ModelNameType())
-    .globalType("model_type", new ModelTypeType())
-    .globalType("workflow_name", new WorkflowNameType())
-    .globalOption("--json", "Output in JSON format (non-interactive)")
-    .globalOption(
-      "--log",
-      "Show model and workflow run logs in terminal output",
-    )
-    .globalOption(
-      "--log-level <level:string>",
-      "Set log level (trace, debug, info, warning, error, fatal)",
-    )
-    .globalOption("-q, --quiet", "Suppress non-essential output")
-    .globalOption("-v, --verbose", "Show detailed output")
-    .globalOption("--no-telemetry", "Disable telemetry for this invocation")
-    .globalOption(
-      "--show-properties",
-      "Show structured properties in log output",
-    )
-    .globalOption("--no-color", "Disable colored output")
+  const cli = createRootCommand(colorEnabled)
     .globalAction(async function (options: GlobalOptions) {
       const outputMode = getOutputModeFromArgs(args);
       setConsoleGuardJsonMode(outputMode === "json");
@@ -2388,6 +2554,10 @@ async function runInvocation(
             .warn`Failed to load user ${warning.kind} ${warning.file}: ${warning.error}`;
         }
       }
+
+      if (gateOutcome?.kind === "pass" && gateOutcome.warning) {
+        logger.warn`${gateOutcome.warning}`;
+      }
     })
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction);
@@ -2422,6 +2592,7 @@ async function runInvocation(
     // Flush datastore sync (push to S3 + release lock)
     await withSpan("swamp.cli.teardown", {}, async () => {
       await flushDatastoreSync();
+      await runGateRefresh(gateOutcome);
 
       // Record successful invocation
       if (telemetryCtx) {
@@ -2562,44 +2733,6 @@ async function runInvocation(
           }
         }
       }
-
-      // Auth warning banner (shown on every unauthenticated command run).
-      // Skip for commands whose renderers already include their own inline
-      // warning to avoid showing it twice, and for auth commands (which
-      // handle authentication directly — showing "please log in" after a
-      // successful login is confusing).
-      //   - repo init/upgrade: src/presentation/renderers/repo_init.ts
-      //   - model method run: src/presentation/renderers/model_method_run.ts
-      //   - workflow run/resume: src/presentation/renderers/workflow_run.ts
-      //   - access grant/group: via model_method_run renderer
-      //   - auth *: authentication commands manage login state directly
-      {
-        const outputMode = getOutputModeFromArgs(args);
-        const skipWarning = (commandInfo.command === "repo" &&
-          (commandInfo.subcommand === "init" ||
-            commandInfo.subcommand === "upgrade")) ||
-          (commandInfo.command === "model" &&
-            commandInfo.subcommand === "method") ||
-          (commandInfo.command === "workflow" &&
-            (commandInfo.subcommand === "run" ||
-              commandInfo.subcommand === "resume")) ||
-          commandInfo.command === "access" ||
-          commandInfo.command === "auth";
-        if (outputMode === "log" && !isAuthenticated() && !skipWarning) {
-          try {
-            const nudgeRepo = new AuthNudgeRepository();
-            const nudgeState = await nudgeRepo.read();
-            if (isFirstRunNudge(nudgeState)) {
-              renderFirstRunWarning();
-            } else {
-              renderAuthWarning();
-            }
-            await nudgeRepo.markShown();
-          } catch {
-            // Best effort — never break the CLI for warning state
-          }
-        }
-      }
     });
   } catch (error) {
     // Release datastore lock even on failure (don't leave locks stuck).
@@ -2614,40 +2747,26 @@ async function runInvocation(
       // Best effort — don't shadow the original error.
     }
 
+    // The command already ran, so a proof due its weekly refresh still
+    // gets one.
+    if (!hookMode && !isDispatchRunnerCommand(commandInfo)) {
+      await runGateRefresh(gateOutcome);
+    }
+
     // Record error invocation and flush before re-throwing
     if (telemetryCtx && error instanceof Error) {
-      await telemetryCtx.service.recordError(
+      await recordAndFlushError(
+        telemetryCtx,
         telemetryInvocation,
         startTime,
         error,
         knownSensitiveValues(redactedValues, repoDir),
       );
-
-      // distinct_id is required by the sender (see success path). Skip the
-      // flush if neither userId nor repoId resolved.
-      const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-      if (distinctId) {
-        const sender = new HttpTelemetrySender(
-          telemetryCtx.telemetryEndpoint,
-          USER_AGENT,
-        );
-        await telemetryCtx.service.flushTelemetry({
-          sender,
-          distinctId,
-          repoId: telemetryCtx.repoId,
-          authToken: telemetryCtx.authToken ?? undefined,
-          keepFlushed: telemetryCtx.keepFlushed,
-          signal: AbortSignal.timeout(2000),
-        });
-      }
     }
     throw error;
   } finally {
     // Always clear the module-scoped service handle when the CLI
-    // invocation finishes — runCli is the single setter and must be the
-    // single clearer.
-    clearActiveTelemetryService();
-    clearActiveTelemetryContext();
-    setApiKeyFileOverride(undefined);
+    // invocation finishes.
+    endInvocation();
   }
 }

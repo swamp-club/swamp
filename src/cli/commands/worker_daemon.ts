@@ -31,6 +31,7 @@ import {
   renderWorkerDaemonStatus,
 } from "../../presentation/output/worker_daemon_output.ts";
 import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
+import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -68,6 +69,17 @@ export async function validateCacheDir(
     throw err;
   }
   return resolved;
+}
+
+/**
+ * The environment every worker daemon starts with, before its options. A
+ * system-mode service runs as another user with another HOME, so it is
+ * pointed at the enabling user's config dir — where the swamp-club
+ * credential and cached proof the auth gate needs live — as serve daemons
+ * already are. No secret is written into the service definition.
+ */
+export function workerDaemonBaseEnv(): Record<string, string> {
+  return { SWAMP_CONFIG_DIR: resolve(getSwampConfigDir()) };
 }
 
 export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
@@ -233,7 +245,10 @@ const daemonEnableCommand = new Command()
     });
     const scheduler = await createWorkerDaemonScheduler({ mode });
     const extraArgs = collectWorkerExtraArgs(options);
-    const env = collectWorkerEnv(resolvedOptions);
+    const env = {
+      ...workerDaemonBaseEnv(),
+      ...collectWorkerEnv(resolvedOptions),
+    };
 
     await scheduler.enable({
       binaryPath: Deno.execPath(),

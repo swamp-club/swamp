@@ -72,10 +72,9 @@ function captureLog(fn: () => void): string {
 function captureInitOutput(
   events: RepoInitEvent[],
   mode: "log" | "json",
-  opts?: { isAuthenticated?: boolean },
 ): string {
   return captureLog(() => {
-    const renderer = createRepoInitRenderer(mode, opts);
+    const renderer = createRepoInitRenderer(mode);
     const handlers = renderer.handlers();
     for (const event of events) {
       switch (event.kind) {
@@ -173,9 +172,10 @@ Deno.test(
 
     const parsed = JSON.parse(output);
     assertEquals(Array.isArray(parsed.nextSteps), true);
-    assertEquals(parsed.nextSteps.length, 2);
+    // Every command already requires an account, so init no longer
+    // prints a sign-in step of its own.
+    assertEquals(parsed.nextSteps.length, 1);
     assertStringIncludes(parsed.nextSteps[0], "/swamp-getting-started");
-    assertStringIncludes(parsed.nextSteps[1], "swamp auth login");
   },
 );
 
@@ -188,18 +188,16 @@ Deno.test(
     ], "json");
 
     const parsed = JSON.parse(output);
-    assertEquals(parsed.nextSteps.length, 2);
+    assertEquals(parsed.nextSteps.length, 1);
     assertStringIncludes(parsed.nextSteps[0], "swamp --help");
-    assertStringIncludes(parsed.nextSteps[1], "swamp auth login");
   },
 );
 
 function captureUpgradeLogOutput(
   events: RepoUpgradeEvent[],
-  opts?: { isAuthenticated?: boolean },
 ): string {
   return captureLog(() => {
-    const renderer = createRepoUpgradeRenderer("log", opts);
+    const renderer = createRepoUpgradeRenderer("log");
     const handlers = renderer.handlers();
     for (const event of events) {
       switch (event.kind) {

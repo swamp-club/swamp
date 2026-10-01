@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
+import { writeGateCredential } from "./auth_gate_fixture.ts";
 
 interface CliRunResult {
   stdout: string;
@@ -96,6 +97,8 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     // Isolate the user-global telemetry spool (and identity/auth) to a temp
     // config dir so the test never touches the developer's real ~/.config.
     const configDir = join(dir, "xdg");
+    // The auth gate needs a swamp-club credential in that config dir.
+    await writeGateCredential(join(configDir, "swamp"));
     const childEnvWith = (extra: Record<string, string> = {}) => ({
       ...baseChildEnv(),
       // `repo init --tool claude --tool cursor` installs bundled skills into
@@ -158,5 +161,7 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     // The child process inherits no tty by default — isInteractive must be
     // false in this test.
     assertEquals(ctx!.isInteractive, false);
+    // The fixture's proof verified locally, with no live check.
+    assertEquals(ctx!.authMode, "verified");
   });
 });

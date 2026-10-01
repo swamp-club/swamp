@@ -24,6 +24,7 @@
 import { dirname, fromFileUrl, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 
 /** Absolute path to the project root (parent of integration/). */
 const PROJECT_ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
@@ -136,40 +137,47 @@ export async function runCliCommand(
   cwd: string,
   stdin?: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-  const decoder = new TextDecoder();
+  // Every CLI child needs a swamp-club credential to pass the auth gate.
+  return await withGateCredentialEnv(async (env) => {
+    const decoder = new TextDecoder();
 
-  if (stdin !== undefined) {
-    const child = new Deno.Command(Deno.execPath(), {
+    if (stdin !== undefined) {
+      const child = new Deno.Command(Deno.execPath(), {
+        args: [...CLI_ARGS, ...args],
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "piped",
+        cwd,
+        env,
+        clearEnv: true,
+      }).spawn();
+
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(stdin));
+      await writer.close();
+
+      const { code, stdout, stderr } = await child.output();
+      return {
+        stdout: decoder.decode(stdout),
+        stderr: decoder.decode(stderr),
+        code,
+      };
+    }
+
+    const command = new Deno.Command(Deno.execPath(), {
       args: [...CLI_ARGS, ...args],
-      stdin: "piped",
       stdout: "piped",
       stderr: "piped",
       cwd,
-    }).spawn();
+      env,
+      clearEnv: true,
+    });
 
-    const writer = child.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(stdin));
-    await writer.close();
-
-    const { code, stdout, stderr } = await child.output();
+    const { code, stdout, stderr } = await command.output();
     return {
       stdout: decoder.decode(stdout),
       stderr: decoder.decode(stderr),
       code,
     };
-  }
-
-  const command = new Deno.Command(Deno.execPath(), {
-    args: [...CLI_ARGS, ...args],
-    stdout: "piped",
-    stderr: "piped",
-    cwd,
   });
-
-  const { code, stdout, stderr } = await command.output();
-  return {
-    stdout: decoder.decode(stdout),
-    stderr: decoder.decode(stderr),
-    code,
-  };
 }

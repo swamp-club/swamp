@@ -43,10 +43,24 @@ export function renderAuthTokenCreate(
     "",
     `  ${bold(data.key)}`,
     "",
-    yellow(
-      "This token is shown once and will not be displayed again — store it now.",
-    ),
   ];
+  if (data.signinToken) {
+    lines.push(
+      `${bold(cyan("Signin token:"))} ${
+        dim("(set as SWAMP_SIGNIN_TOKEN beside SWAMP_API_KEY in CI)")
+      }`,
+      "",
+      `  ${bold(data.signinToken)}`,
+      "",
+    );
+  }
+  lines.push(
+    yellow(
+      data.signinToken
+        ? "These are shown once and will not be displayed again — store them now."
+        : "This token is shown once and will not be displayed again — store it now.",
+    ),
+  );
   writeOutput(lines.join("\n"));
 }
 
