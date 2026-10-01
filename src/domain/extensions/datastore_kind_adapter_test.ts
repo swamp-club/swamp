@@ -220,3 +220,17 @@ Deno.test("datastoreKindAdapter.register: wraps a frozen provider with own metho
     datastoreTypeRegistry.invalidateType(type);
   }
 });
+
+Deno.test("datastoreKindAdapter.extractTypeFromSource: ignores a declaration inside a string fixture (swamp-club#2876)", () => {
+  assertEquals(
+    datastoreKindAdapter.extractTypeFromSource(
+      'const src = `export const datastore = { type: "@acme/thing" }`;',
+    ),
+    null,
+  );
+  const result = datastoreKindAdapter.extractTypeFromSource(
+    'const src = `export const datastore = { type: "@acme/thing" }`;\n' +
+      'export const datastore = { type: "@real/store" };',
+  );
+  assertEquals(result?.typeNormalized, "@real/store");
+});

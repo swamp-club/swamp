@@ -2869,3 +2869,206 @@ Deno.test("hasRowWithBundlePath: exact bundle path match", () => {
     );
   });
 });
+
+// -- swamp-club#2876: prune type claims read out of string fixtures -------
+
+/**
+ * Seeds `rows` the way a pre-fix loader's legacy upsert wrote them (no
+ * extension identity unless one is given), so the next open prunes.
+ */
+function seedRows(
+  dbPath: string,
+  rows: Array<{
+    sourcePath: string;
+    type: string;
+    state?: string;
+    kind?: "model" | "extension";
+    extensionName?: string;
+  }>,
+): void {
+  const store = new ExtensionCatalogStore(dbPath);
+  for (const row of rows) {
+    const values = {
+      type_normalized: row.type,
+      kind: row.kind ?? "model",
+      bundle_path: `${row.sourcePath}.js`,
+      source_path: row.sourcePath,
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+      state: row.state ?? "Indexed",
+    };
+    if (row.extensionName) {
+      store.upsertWithIdentity({
+        ...values,
+        extension_name: row.extensionName,
+        extension_version: "1.0.0",
+      });
+    } else {
+      store.upsert(values);
+    }
+  }
+  store.close();
+}
+
+function fixtureDir(dbPath: string): string {
+  const dir = join(dirname(dirname(dbPath)), "extensions", "tf");
+  ensureDirSync(dir);
+  return dir;
+}
+
+const FIXTURE_TEXT =
+  'const f = `export const model = { type: "@acme/thing" }`;\n';
+
+Deno.test("ExtensionCatalogStore: opening prunes duplicate claims whose sources declare the type only in fixtures", () => {
+  const dbPath = makeTempDbPath();
+  const dir = fixtureDir(dbPath);
+  const fixtureA = join(dir, "introspect_test.ts");
+  const fixtureB = join(dir, "factory_test.ts");
+  const real = join(dir, "factory.ts");
+  Deno.writeTextFileSync(fixtureA, FIXTURE_TEXT);
+  Deno.writeTextFileSync(
+    fixtureB,
+    '// export const model = { type: "@acme/thing" }\n',
+  );
+  Deno.writeTextFileSync(
+    real,
+    'export const model = { type: "@real/factory" };\n',
+  );
+  seedRows(dbPath, [
+    { sourcePath: fixtureA, type: "@acme/thing" },
+    { sourcePath: fixtureB, type: "@acme/thing" },
+    { sourcePath: real, type: "@real/factory" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(
+      store.findByKind("model").map((r) => r.type_normalized),
+      ["@real/factory"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the prune keeps a duplicate claim whose source declares it behind a regex with a backtick", () => {
+  const dbPath = makeTempDbPath();
+  const dir = fixtureDir(dbPath);
+  const fixture = join(dir, "fixture_test.ts");
+  const runner = join(dir, "runner.ts");
+  Deno.writeTextFileSync(fixture, FIXTURE_TEXT);
+  Deno.writeTextFileSync(
+    runner,
+    'const esc = (s: string) => s.replace(/[`$"\\\\]/g, "");\n' +
+      'export const model = { type: "@acme/thing" };\n',
+  );
+  seedRows(dbPath, [
+    { sourcePath: fixture, type: "@acme/thing" },
+    { sourcePath: runner, type: "@acme/thing" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    const rows = store.findByKind("model");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].source_path, canonicalizePath(runner));
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the prune leaves claims that conflict with nothing", () => {
+  const dbPath = makeTempDbPath();
+  const dir = fixtureDir(dbPath);
+  const fixture = join(dir, "lonely_test.ts");
+  Deno.writeTextFileSync(fixture, FIXTURE_TEXT);
+  seedRows(dbPath, [{ sourcePath: fixture, type: "@acme/thing" }]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.findByKind("model").length, 1);
+    assertEquals(store.pruneUndeclaredTypeClaims(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the prune leaves rows with an identity, extension rows, non-Indexed and unreadable rows", () => {
+  const dbPath = makeTempDbPath();
+  const dir = fixtureDir(dbPath);
+  const identified = join(dir, "identified_test.ts");
+  const extensionRow = join(dir, "extension_test.ts");
+  const failed = join(dir, "failed_test.ts");
+  const missing = join(dir, "gone_test.ts");
+  for (const path of [identified, extensionRow, failed]) {
+    Deno.writeTextFileSync(path, FIXTURE_TEXT);
+  }
+  seedRows(dbPath, [
+    { sourcePath: identified, type: "@acme/thing", extensionName: "@a/b" },
+    { sourcePath: extensionRow, type: "@acme/thing", kind: "extension" },
+    { sourcePath: failed, type: "@acme/thing", state: "BundleBuildFailed" },
+    { sourcePath: missing, type: "@acme/thing" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.findAll().length, 4);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the prune leaves pulled extension rows", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const pulledDir = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "ext",
+    "models",
+  );
+  ensureDirSync(pulledDir);
+  const a = join(pulledDir, "a_test.ts");
+  const b = join(pulledDir, "b_test.ts");
+  Deno.writeTextFileSync(a, FIXTURE_TEXT);
+  Deno.writeTextFileSync(b, FIXTURE_TEXT);
+  seedRows(dbPath, [
+    { sourcePath: a, type: "@acme/thing" },
+    { sourcePath: b, type: "@acme/thing" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.findByKind("model").length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: isKnownNoExport matches only the recorded kind and fingerprint", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    const path = join(
+      dirname(dirname(dbPath)),
+      "extensions",
+      "tf",
+      "a_test.ts",
+    );
+    assertEquals(store.isKnownNoExport("model", path, "fp1"), false);
+    store.recordNoExport("model", path, "fp1");
+    assertEquals(store.isKnownNoExport("model", path, "fp1"), true);
+    assertEquals(store.isKnownNoExport("model", path, "fp2"), false);
+    assertEquals(store.isKnownNoExport("vault", path, "fp1"), false);
+    // An unknown fingerprint never matches.
+    store.recordNoExport("model", path, "");
+    assertEquals(store.isKnownNoExport("model", path, ""), false);
+  } finally {
+    store.close();
+  }
+});

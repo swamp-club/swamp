@@ -23,6 +23,10 @@ import type { WebhookHandler } from "../webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  EXPORT_DECLARATION_PATTERNS,
+  sourceFromExportDeclaration,
+} from "./export_declaration.ts";
 import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
 
 const USER_WEBHOOK_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -47,7 +51,7 @@ export const webhookKindAdapter: KindAdapter = {
   bundleSubdir: SWAMP_SUBDIRS.webhookBundles,
   catalogKinds: ["webhook"],
   primaryExportKey: "webhook",
-  exportRegex: /export\s+const\s+webhook\s*[=:]/,
+  exportRegex: EXPORT_DECLARATION_PATTERNS.webhook,
   useResolver: true,
 
   validatePrimaryExport(exported: unknown): ValidationResult {
@@ -69,8 +73,12 @@ export const webhookKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    if (!/export\s+const\s+webhook\s*[=:]/.test(source)) return null;
-    const typeMatch = source.match(
+    const declaration = sourceFromExportDeclaration(
+      source,
+      EXPORT_DECLARATION_PATTERNS.webhook,
+    );
+    if (declaration === null) return null;
+    const typeMatch = declaration.match(
       /export\s+const\s+webhook\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;

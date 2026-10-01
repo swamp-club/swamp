@@ -29,6 +29,7 @@ import {
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { computeChecksum } from "../models/checksum.ts";
+import { declaresExport } from "./export_declaration.ts";
 import {
   type BundleResult,
   collectSeenSources,
@@ -1419,7 +1420,10 @@ export class ExtensionLoader {
         if (!extracted) {
           // A stale indexed row is refreshed by the next stale-file scan,
           // which imports the bundle; only warn when nothing indexed it.
-          if (!indexed) {
+          // A file whose export text is only inside a string or comment,
+          // such as a test fixture, is not an entry point
+          // (swamp-club#2876).
+          if (!indexed && declaresExport(source, this.adapter.exportRegex)) {
             emitTypeExtractionFailure(absolutePath, this.adapter.kind);
           }
           continue;
@@ -1490,6 +1494,19 @@ export class ExtensionLoader {
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
       return {};
+    }
+    // A source with no row is stale on every scan. When an import at this
+    // fingerprint already found no export (a test fixture whose export text
+    // is only inside a string), bundling and importing it again would find
+    // nothing, on every command (swamp-club#2876).
+    if (catalog.findBySourcePath(absolutePath) === undefined) {
+      const fingerprint = await computeSourceFingerprint(absolutePath, baseDir)
+        .catch(() => "");
+      if (
+        catalog.isKnownNoExport(this.adapter.kind, absolutePath, fingerprint)
+      ) {
+        return {};
+      }
     }
 
     const bundled = await this.bundleWithCache(
@@ -1653,6 +1670,15 @@ export class ExtensionLoader {
       return { extensionTarget: typeNormalized };
     }
 
+    // Only a bundle built from the current source speaks for this
+    // fingerprint; a cached one may predate an export added since.
+    if (!bundled.fromCache) {
+      catalog.recordNoExport(
+        this.adapter.kind,
+        absolutePath,
+        sourceFingerprint,
+      );
+    }
     return {};
   }
 
