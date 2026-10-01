@@ -147,3 +147,48 @@ Deno.test("EXPORT_DECLARATION_PATTERNS: model and extension share one pattern", 
     EXPORT_DECLARATION_PATTERNS.datastore.test("export const datastore: X = {"),
   );
 });
+
+Deno.test("findExportDeclaration: a backtick inside a regex literal does not hide a real declaration", () => {
+  const source = [
+    'function shellEscape(s: string) { return s.replace(/[`$"\\\\]/g, (c) => "\\\\" + c); }',
+    'export const model = { type: "@acme/runner", version: "2026.01.01.1" };',
+  ].join("\n");
+  assertEquals(
+    findExportDeclaration(source, MODEL),
+    source.indexOf("export const model"),
+  );
+});
+
+Deno.test("findExportDeclaration: a slash-star inside a regex literal does not open a comment", () => {
+  const source = [
+    "const onlySlashes = /^\\/*$/;",
+    "/** Documented model. */",
+    'export const model = { type: "@acme/runner" };',
+  ].join("\n");
+  assertEquals(
+    findExportDeclaration(source, MODEL),
+    source.indexOf("export const model"),
+  );
+});
+
+Deno.test("findExportDeclaration: a regex after return is a literal", () => {
+  const source = [
+    "function f() { return /`/.test(x); }",
+    'export const model = { type: "@acme/runner" };',
+  ].join("\n");
+  assertEquals(
+    findExportDeclaration(source, MODEL),
+    source.indexOf("export const model"),
+  );
+});
+
+Deno.test("findExportDeclaration: division is code, not a regex literal", () => {
+  const source = [
+    "const half = total / 2; const ratio = (a + b) / c / d;",
+    'export const model = { type: "@acme/runner" };',
+  ].join("\n");
+  assertEquals(
+    findExportDeclaration(source, MODEL),
+    source.indexOf("export const model"),
+  );
+});

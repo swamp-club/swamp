@@ -1495,16 +1495,18 @@ export class ExtensionLoader {
     if (!this.adapter.exportRegex.test(source)) {
       return {};
     }
-    // A source with no row is stale on every scan. When its export text is
-    // only inside a string or comment (a test fixture), bundling and
-    // importing it would find nothing on every command (swamp-club#2876).
-    // A source that already has a row is still rebundled when it changes,
-    // and the startup reconcile imports every source regardless.
-    if (
-      !declaresExport(source, this.adapter.exportRegex) &&
-      catalog.findBySourcePath(absolutePath) === undefined
-    ) {
-      return {};
+    // A source with no row is stale on every scan. When an import at this
+    // fingerprint already found no export (a test fixture whose export text
+    // is only inside a string), bundling and importing it again would find
+    // nothing, on every command (swamp-club#2876).
+    if (catalog.findBySourcePath(absolutePath) === undefined) {
+      const fingerprint = await computeSourceFingerprint(absolutePath, baseDir)
+        .catch(() => "");
+      if (
+        catalog.isKnownNoExport(this.adapter.kind, absolutePath, fingerprint)
+      ) {
+        return {};
+      }
     }
 
     const bundled = await this.bundleWithCache(
@@ -1668,6 +1670,15 @@ export class ExtensionLoader {
       return { extensionTarget: typeNormalized };
     }
 
+    // Only a bundle built from the current source speaks for this
+    // fingerprint; a cached one may predate an export added since.
+    if (!bundled.fromCache) {
+      catalog.recordNoExport(
+        this.adapter.kind,
+        absolutePath,
+        sourceFingerprint,
+      );
+    }
     return {};
   }
 

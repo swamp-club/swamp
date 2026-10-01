@@ -775,18 +775,31 @@ catalog rebuild.
 
 The static extractor only reads a declaration that sits in code. An
 `export const model = { type: ... }` inside a string, template literal or
-comment is test-fixture text, not a type claim. This matters for pulled and
-source-mounted directories, which walk `_test.ts` files on purpose so a model
-named `docker_image_test.ts` still loads. Before this rule, two fixtures naming
-one type produced two catalog rows with no extension identity. Every later
-catalog save, such as an unrelated `swamp extension pull`, then failed I-Repo-1
-(swamp-club#2876). A source without a catalog row whose only declaration is in
-such text is not bundled on the warm scan either, so fixture files do not cost
-a bundle and an import on every command. A real export the scanner misses is
-still indexed by the startup reconcile, which imports every source. A one-time
-migration on catalog open removes Indexed rows whose source no longer declares
-an export of the row's kind in code. It is gated by a `bundle_meta` marker, so
-rows an older binary writes later are not revisited.
+comment is test-fixture text, not a type claim. The scanner also recognises
+regex literals, so a backtick or `/*` inside one does not hide the code after
+it. This matters for pulled and source-mounted directories, which walk
+`_test.ts` files on purpose so a model named `docker_image_test.ts` still
+loads. Before this rule, two fixtures naming one type produced two catalog rows
+with no extension identity. Every later catalog save, such as an unrelated
+`swamp extension pull`, then failed I-Repo-1 (swamp-club#2876).
+
+The scanner only decides what the source-text index reads. It never stops a
+source from being imported. The warm scan treats every source without a row as
+stale and imports it. When that import finds no export, the catalog records the
+source's fingerprint as having none (`no-export:<kind>:<path>` in
+`bundle_meta`). Later scans skip it until the source changes, so a fixture
+costs one bundle and import per edit rather than per command. Only a bundle
+built from the current source is recorded. A cached bundle may predate an
+export added since.
+
+Opening the catalog heals rows a pre-fix binary left behind. It only considers
+rows already in the broken state: Indexed, outside a pulled extension, with no
+extension identity, and claiming a non-extension type that another live row
+also claims. It deletes those whose source declares no export of the row's kind
+in code. With no duplicate claims this is a single query, so it runs on every
+open. A real declaration the scanner misreads can only cost a row that was
+blocking every save, and the warm scan imports the source and writes the row
+back.
 
 The lookup also finds a row written under another spelling of the same file.
 Reaching the repo under a second spelling of its root (`/tmp/r` and

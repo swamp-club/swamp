@@ -40,6 +40,17 @@ const arbFixtureBody = fc
     `export const model = {\n  type: "${type}",\n};${noise}`
   );
 
+/**
+ * Code lines holding regex literals whose bodies look like the start of a
+ * template or comment, which a tokenizer without regex support misreads.
+ */
+const arbRegexLine = fc.constantFrom(
+  'const esc = (s: string) => s.replace(/[`$"\\\\]/g, "");\n',
+  "const slashes = /^\\/*$/;\n",
+  "function f(x: string) { return /`/.test(x); }\n",
+  "const half = total / 2;\n",
+);
+
 /** Wraps fixture text in each literal or comment form TypeScript has. */
 const arbWrapped = fc
   .tuple(
@@ -78,12 +89,15 @@ Deno.test("findExportDeclaration: never finds a declaration inside a literal or 
 
 Deno.test("findExportDeclaration: finds a real declaration at its raw offset after any fixtures", () => {
   fc.assert(
-    fc.property(fc.array(arbWrapped, { maxLength: 4 }), (parts) => {
-      const prefix = parts.join("");
-      const source =
-        `${prefix}export const model = {\n  type: "@real/model",\n};\n`;
-      assertEquals(findExportDeclaration(source, MODEL), prefix.length);
-    }),
+    fc.property(
+      fc.array(fc.oneof(arbWrapped, arbRegexLine), { maxLength: 6 }),
+      (parts) => {
+        const prefix = parts.join("");
+        const source =
+          `${prefix}export const model = {\n  type: "@real/model",\n};\n`;
+        assertEquals(findExportDeclaration(source, MODEL), prefix.length);
+      },
+    ),
   );
 });
 

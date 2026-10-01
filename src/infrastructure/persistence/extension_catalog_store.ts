@@ -70,8 +70,14 @@ const EXTENDS_TYPE_BACKFILL_MIGRATION_KEY =
 const DEDUP_NON_CANONICAL_MIGRATION_KEY =
   "migration_applied:dedup-non-canonical-source-paths-v1";
 
-const UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY =
-  "migration_applied:prune-undeclared-type-claims-v1";
+/**
+ * `bundle_meta` key prefix recording, per kind and source, the fingerprint
+ * at which importing the source found no export of that kind
+ * (swamp-club#2876). The warm scan treats every source without a row as
+ * stale, so without this a test fixture holding export text in a string
+ * would be bundled and imported on every command.
+ */
+const NO_EXPORT_KEY_PREFIX = "no-export:";
 
 /**
  * Per-kind `bundle_meta` key prefix recording that the loader has
@@ -400,8 +406,9 @@ export class ExtensionCatalogStore {
     // swamp-club#1065: heal ghost rows written with non-canonical Windows
     // paths by a pre-fix warm-path loader. Runs last; gated on its own marker.
     this.deduplicateNonCanonicalPaths();
-    // swamp-club#2876: drop type claims a pre-fix loader read out of string
-    // fixtures. Gated on its own marker.
+    // swamp-club#2876: drop conflicting type claims a pre-fix loader read
+    // out of string fixtures. Runs on every open; it reads no source unless
+    // the catalog already holds a duplicate claim.
     this.pruneUndeclaredTypeClaims();
   }
 
@@ -822,6 +829,9 @@ export class ExtensionCatalogStore {
       this.db.exec("DELETE FROM bundle_meta WHERE key LIKE 'populated:%'");
       this.db.exec(
         `DELETE FROM bundle_meta WHERE key LIKE '${TYPELESS_ROW_HEAL_KEY_PREFIX}%'`,
+      );
+      this.db.exec(
+        `DELETE FROM bundle_meta WHERE key LIKE '${NO_EXPORT_KEY_PREFIX}%'`,
       );
       this.markDataMigrationApplied();
       this.db.exec("COMMIT");
@@ -1431,27 +1441,46 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * One-time migration (swamp-club#2876): removes Indexed rows whose source
-   * no longer declares an export of the row's kind outside strings and
-   * comments. A pre-fix loader indexed type claims from source text such
-   * as a test fixture holding `export const model = { type: ... }` in a
-   * string, so two fixtures naming one type made every later save fail
-   * I-Repo-1. No module exports such a type, so no import-based path can
-   * write the row back; a real export the scanner misses is re-indexed by
-   * the next scan that imports it.
+   * Heals the I-Repo-1 state swamp-club#2876 left behind. A pre-fix loader
+   * indexed type claims from source text such as a test fixture holding
+   * `export const model = { type: ... }` in a string, writing rows with no
+   * extension identity. Two fixtures naming one type then made every later
+   * save fail I-Repo-1.
    *
-   * Reads are best-effort: a source that cannot be read keeps its row, for
-   * the ghost-row and orphan handling to settle. Only catalog rows are
-   * deleted. Gated by a bundle_meta marker so it runs at most once per
-   * catalog; rows an older binary writes afterwards are not revisited.
+   * Only rows already in that broken state are candidates: Indexed, outside
+   * a pulled extension, with no extension identity, and claiming a
+   * non-extension type another live row claims too. Of those, a row is
+   * deleted when its source declares no export of its kind in code. A real
+   * declaration the scanner misreads can only cost a row that was blocking
+   * every save, and the warm scan imports the source and writes it back.
+   *
+   * Reads are best-effort: a source that cannot be read keeps its row.
+   * Only catalog rows are deleted. With no duplicate claims this is a
+   * single query, so it runs on every open and also heals rows an older
+   * binary writes later.
    */
   pruneUndeclaredTypeClaims(): number {
-    if (this.isMigrationMarkerSet(UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY)) {
-      return 0;
-    }
+    const candidates = this.db.prepare(
+      `SELECT * FROM bundle_types
+        WHERE state = 'Indexed'
+          AND extension_name = ''
+          AND kind <> 'extension'
+          AND type_normalized <> ''
+          AND (kind, type_normalized) IN (
+            SELECT kind, type_normalized FROM bundle_types
+             WHERE state <> 'Tombstoned' AND type_normalized <> ''
+             GROUP BY kind, type_normalized
+            HAVING COUNT(*) > 1
+          )`,
+    ).all() as Record<string, unknown>[];
+    if (candidates.length === 0) return 0;
+
+    const repoRoot = canonicalizePath(inferRepoRootFromDbPath(this.dbPath));
     const undeclared: string[] = [];
-    for (const row of this.findAll()) {
-      if (row.state !== "Indexed" || row.type_normalized === "") continue;
+    for (const row of candidates.map((r) => this.mapRow(r))) {
+      if (isPulledExtensionPath(canonicalizePath(row.source_path), repoRoot)) {
+        continue;
+      }
       const pattern = EXPORT_DECLARATION_PATTERNS[row.kind as DeclarationKind];
       if (!pattern) continue;
       let source: string;
@@ -1462,33 +1491,50 @@ export class ExtensionCatalogStore {
       }
       if (!declaresExport(source, pattern)) undeclared.push(row.source_path);
     }
+    if (undeclared.length === 0) return 0;
+
     this.db.exec("BEGIN");
     try {
       for (const sourcePath of undeclared) {
         this.removeByRawSourcePath(sourcePath);
       }
-      this.db.prepare(
-        "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
-      ).run(UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    if (undeclared.length > 0) {
-      logger
-        .info`Removed ${undeclared.length} extension catalog ${
-        undeclared.length === 1 ? "entry" : "entries"
-      } for types named only in strings or comments`;
-    }
+    logger
+      .info`Removed ${undeclared.length} extension catalog ${
+      undeclared.length === 1 ? "entry" : "entries"
+    } for types named only in strings or comments`;
     return undeclared.length;
   }
 
-  private isMigrationMarkerSet(key: string): boolean {
+  /**
+   * True when importing `sourcePath` at `fingerprint` already found no
+   * export of `kind`, so bundling it again would find nothing.
+   */
+  isKnownNoExport(
+    kind: string,
+    sourcePath: string,
+    fingerprint: string,
+  ): boolean {
+    if (fingerprint === "") return false;
     const row = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
-    ).get(key) as { value: string } | undefined;
-    return row?.value === "true";
+    ).get(noExportKey(kind, sourcePath)) as { value: string } | undefined;
+    return row?.value === fingerprint;
+  }
+
+  /**
+   * Records that importing `sourcePath` at `fingerprint` found no export of
+   * `kind`. A changed source has a new fingerprint and is imported again.
+   */
+  recordNoExport(kind: string, sourcePath: string, fingerprint: string): void {
+    if (fingerprint === "") return;
+    this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, ?)",
+    ).run(noExportKey(kind, sourcePath), fingerprint);
   }
 
   private isDeduplicateNonCanonicalApplied(): boolean {
@@ -1887,6 +1933,11 @@ export function sourceDirsFingerprint(
  * `swampPath(repoDir, "_extension_catalog.db")`); if that layout ever
  * changes, this helper has to change with it.
  */
+/** The `bundle_meta` key for a source's no-export fingerprint. */
+function noExportKey(kind: string, sourcePath: string): string {
+  return `${NO_EXPORT_KEY_PREFIX}${kind}:${canonicalizePath(sourcePath)}`;
+}
+
 function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
 }

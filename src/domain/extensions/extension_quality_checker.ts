@@ -59,10 +59,14 @@ export interface QualityCheckResult {
 }
 
 /**
- * Strips comments and string/template literals from source code,
- * preserving newlines so line numbers remain stable. Handles multi-line
- * block comments, template literal interpolation (`${...}`), and nested
- * template literals correctly.
+ * Strips comments, string/template literals and regex literals from source
+ * code, preserving newlines so line numbers remain stable. Handles
+ * multi-line block comments, template literal interpolation (`${...}`), and
+ * nested template literals correctly. A `/` starts a regex literal where an
+ * operand is expected, so a backtick or `/*` inside a regex does not open a
+ * template or comment that blanks the code after it (swamp-club#2876). A
+ * regex literal cannot span a line, so a misread `/` affects at most the
+ * rest of its line.
  *
  * Returns a string of the same length and line count as the input, where
  * non-code regions are replaced with spaces, so an offset in the result
@@ -74,6 +78,17 @@ export function stripCommentsAndStrings(source: string): string {
   // Stack for tracking template literal nesting depth.
   // Each entry is a brace depth counter for the current `${}` expression.
   const templateStack: number[] = [];
+  // Whether a `/` here starts a regex literal rather than dividing: true
+  // where an operand is expected. `word` is the identifier being read, so a
+  // keyword such as `return` can allow one.
+  let regexAllowed = true;
+  let word = "";
+  // After a template literal body, the template either ended (an operand)
+  // or entered a `${` expression (where an operand is expected).
+  const afterTemplateBody = (depthBefore: number) => {
+    regexAllowed = templateStack.length > depthBefore;
+    word = "";
+  };
 
   while (i < source.length) {
     // Inside a template expression (`${...}`), track brace depth
@@ -87,13 +102,17 @@ export function stripCommentsAndStrings(source: string): string {
           i++;
           templateStack.pop();
           // Now skip template body until next `${` or closing backtick
+          const depthBefore = templateStack.length;
           i = skipTemplateBody(source, i, result, templateStack);
+          afterTemplateBody(depthBefore);
           continue;
         }
         // Nested brace inside the expression
         templateStack[templateStack.length - 1]--;
         result.push(" ");
         i++;
+        regexAllowed = false;
+        word = "";
         continue;
       }
 
@@ -101,6 +120,8 @@ export function stripCommentsAndStrings(source: string): string {
         templateStack[templateStack.length - 1]++;
         result.push(" ");
         i++;
+        regexAllowed = true;
+        word = "";
         continue;
       }
 
@@ -157,6 +178,8 @@ export function stripCommentsAndStrings(source: string): string {
         result.push(" ");
         i++;
       }
+      regexAllowed = false;
+      word = "";
       continue;
     }
 
@@ -178,6 +201,8 @@ export function stripCommentsAndStrings(source: string): string {
         result.push(" ");
         i++;
       }
+      regexAllowed = false;
+      word = "";
       continue;
     }
 
@@ -185,15 +210,81 @@ export function stripCommentsAndStrings(source: string): string {
     if (source[i] === "`") {
       result.push(" ");
       i++;
+      const depthBefore = templateStack.length;
       i = skipTemplateBody(source, i, result, templateStack);
+      afterTemplateBody(depthBefore);
       continue;
     }
 
-    result.push(source[i]);
+    // Regex literal
+    if (source[i] === "/" && regexAllowed) {
+      const end = regexLiteralEnd(source, i);
+      if (end !== -1) {
+        for (; i < end; i++) result.push(" ");
+        regexAllowed = false;
+        word = "";
+        continue;
+      }
+    }
+
+    const ch = source[i];
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      word += ch;
+      regexAllowed = REGEX_PRECEDING_KEYWORDS.has(word);
+    } else if (/\s/.test(ch)) {
+      word = "";
+    } else {
+      word = "";
+      regexAllowed = !")]}".includes(ch);
+    }
+    result.push(ch);
     i++;
   }
 
   return result.join("");
+}
+
+/** Keywords after which a `/` starts a regex literal rather than dividing. */
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "await",
+  "case",
+  "delete",
+  "do",
+  "else",
+  "in",
+  "instanceof",
+  "of",
+  "new",
+  "return",
+  "throw",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+/**
+ * The index just past the regex literal starting at `start`, or -1 when
+ * the line ends first (then the `/` was not a regex after all). A `/`
+ * inside a character class does not end the literal.
+ */
+function regexLiteralEnd(source: string, start: number): number {
+  let inClass = false;
+  for (let j = start + 1; j < source.length; j++) {
+    const c = source[j];
+    if (c === "\n" || c === "\r") return -1;
+    if (c === "\\") {
+      j++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+    } else if (c === "[") {
+      inClass = true;
+    } else if (c === "/") {
+      return j + 1;
+    }
+  }
+  return -1;
 }
 
 /**

@@ -27,7 +27,6 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
-import { DatabaseSync } from "node:sqlite";
 import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../src/domain/extensions/model_kind_adapter.ts";
 import { makeExtension } from "../src/domain/extensions/extension.ts";
@@ -51,8 +50,6 @@ const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
   getDenoEnv: () => Deno.env.toObject(),
 };
-
-const PRUNE_MARKER = "migration_applied:prune-undeclared-type-claims-v1";
 
 interface Layout {
   repoDir: string;
@@ -93,14 +90,17 @@ async function withLayout(fn: (layout: Layout) => Promise<void>) {
     join(sourceDir, "introspect_test.ts"),
     join(sourceDir, "factory_test.ts"),
   ];
+  // A real test file would call Deno.test at top level, which importing
+  // it from inside `deno test` rejects as a nested test; the compiled CLI
+  // imports it fine. The fixture keeps the string, which is what matters.
   await Deno.writeTextFile(
     fixtures[0],
     "const fixture = `export const model = {\n" +
       `  type: "${fixtureType}",\n` +
       "};`;\n" +
-      'Deno.test("extracts the type", () => {\n' +
+      "export function extractsTheType() {\n" +
       "  if (!fixture) throw new Error();\n" +
-      "});\n",
+      "}\n",
   );
   await Deno.writeTextFile(
     fixtures[1],
@@ -238,10 +238,13 @@ Deno.test("cold buildIndex indexes the real models of a source-mounted dir and n
   });
 });
 
-Deno.test("warm buildIndex does not rebundle fixture files that have no catalog row", async () => {
+Deno.test("warm buildIndex imports a row-less fixture once, then stops rebundling it", async () => {
   await withLayout(async (layout) => {
     const { catalog, repository } = await openRepository(layout);
     try {
+      // Cold pass, then a warm pass that imports each fixture, finds no
+      // export, and records that for the fixture's fingerprint.
+      await buildIndex(layout, repository);
       await buildIndex(layout, repository);
       for (const fixture of layout.fixtures) {
         await Deno.remove(fixtureBundlePath(layout, fixture)).catch(() => {});
@@ -253,10 +256,59 @@ Deno.test("warm buildIndex does not rebundle fixture files that have no catalog 
         assertEquals(
           await exists(fixtureBundlePath(layout, fixture)),
           false,
-          `${fixture} was bundled again on the warm pass`,
+          `${fixture} was bundled again on a later warm pass`,
         );
         assertEquals(catalog.findBySourcePath(fixture), undefined);
       }
+
+      // Editing a fixture changes its fingerprint, so it is imported again.
+      await Deno.writeTextFile(
+        layout.fixtures[0],
+        (await Deno.readTextFile(layout.fixtures[0])) + "// edited\n",
+      );
+      await buildIndex(layout, repository);
+      assertEquals(
+        await exists(fixtureBundlePath(layout, layout.fixtures[0])),
+        true,
+      );
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("warm buildIndex indexes a new model whose source has a regex literal holding a backtick", async () => {
+  await withLayout(async (layout) => {
+    const { catalog, repository } = await openRepository(layout);
+    try {
+      await buildIndex(layout, repository);
+      const runner = join(layout.sourceDir, "runner.ts");
+      const runnerType = `@real/runner-${crypto.randomUUID().slice(0, 8)}`;
+      await Deno.writeTextFile(
+        runner,
+        `import { z } from "npm:zod@4";
+function shellEscape(s: string) { return s.replace(/[\`$"\\\\]/g, (c) => "\\\\" + c); }
+export const model = {
+  type: "${runnerType}",
+  version: "2026.01.01.1",
+  globalArguments: z.object({}),
+  methods: {
+    run: {
+      description: shellEscape("run"),
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`,
+      );
+
+      await buildIndex(layout, repository);
+
+      assertEquals(
+        catalog.findBySourcePath(runner)?.type_normalized,
+        runnerType,
+      );
     } finally {
       catalog.close();
     }
@@ -266,7 +318,7 @@ Deno.test("warm buildIndex does not rebundle fixture files that have no catalog 
 Deno.test("opening a catalog holding fixture claims prunes them so an unrelated save succeeds", async () => {
   await withLayout(async (layout) => {
     // The state a pre-fix binary left: two identity-less rows claiming the
-    // fixture type, written after this catalog's prune had run.
+    // fixture type, written after this catalog was opened.
     const seeded = await openRepository(layout);
     try {
       for (const fixture of layout.fixtures) {
@@ -294,11 +346,6 @@ Deno.test("opening a catalog holding fixture claims prunes them so an unrelated 
     } finally {
       seeded.catalog.close();
     }
-
-    // A catalog last written by a pre-fix binary has no prune marker.
-    const raw = new DatabaseSync(layout.dbPath);
-    raw.prepare("DELETE FROM bundle_meta WHERE key = ?").run(PRUNE_MARKER);
-    raw.close();
 
     const reopened = await openRepository(layout);
     try {
