@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, join, relative, resolve } from "@std/path";
+import { dirname, isAbsolute, join, relative, resolve } from "@std/path";
 
 /**
  * Central constants for swamp data storage paths.
@@ -218,6 +218,31 @@ export function isManagedConfig(repoDir: string): boolean {
 export function getManagedConfigBase(repoDir: string): string | undefined {
   const val = managedConfigRegistry.get(resolve(repoDir));
   return val ? val.base : undefined;
+}
+
+/**
+ * Where {@link LockfileRepository} takes its advisory lock for the lockfile
+ * at `lockfilePath`.
+ *
+ * A lockfile inside a registered managed config base locks a sibling file
+ * named exactly `.lock`. Everyone who writes that lockfile shares the one
+ * lock: repos on a shared filesystem datastore, and worktrees sharing a
+ * datastore cache. In a datastore cache, a `<lockfile>.lock` could be
+ * uploaded by a push and block other checkouts' extension writes
+ * (swamp-club#2838); datastore sync excludes files named `.lock` in both
+ * directions, as it does the per-model `data/.../.lock` keys. Any other
+ * lockfile is in the repo and keeps `<lockfile>.lock`.
+ */
+export function lockfileAdvisoryLockPath(lockfilePath: string): string {
+  const target = resolve(lockfilePath);
+  for (const registration of managedConfigRegistry.values()) {
+    if (!registration) continue;
+    const rel = relative(resolve(registration.base), target);
+    if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) {
+      return join(dirname(lockfilePath), ".lock");
+    }
+  }
+  return `${lockfilePath}.lock`;
 }
 
 /**

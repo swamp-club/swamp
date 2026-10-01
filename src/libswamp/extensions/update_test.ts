@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert/equals";
+import { assertRejects } from "@std/assert/rejects";
 import { createLibSwampContext } from "../context.ts";
 import { result } from "../stream.ts";
 import { collect } from "../testing.ts";
@@ -30,6 +31,7 @@ import {
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
 
 /**
  * Builds a fixture UpstreamExtensionsMap from a shorthand
@@ -578,4 +580,35 @@ Deno.test("extensionUpdate: empty fallback lockfile still carries fallbackLockfi
   );
 
   assertEquals(completed.fallbackLockfile, true);
+});
+
+Deno.test("extensionUpdate: an update whose only failure is the lockfile publish counts as updated, then rejects (swamp-club#2838)", async () => {
+  const deps = makeDeps({
+    upstream: { "@ns/a": "2026.01.01.1" },
+    getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+    installExtension: () =>
+      Promise.reject(
+        new ManagedLockfileUnpublishedError(new Error("push refused")),
+      ),
+  });
+  const events: ExtensionUpdateEvent[] = [];
+
+  await assertRejects(
+    async () => {
+      for await (
+        const event of extensionUpdate(makeCtx(), deps, { checkOnly: false })
+      ) {
+        events.push(event);
+      }
+    },
+    ManagedLockfileUnpublishedError,
+    "push refused",
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.summary.failed, 0);
+    assertEquals(completed.data.extensions[0].status, "updated");
+  }
 });

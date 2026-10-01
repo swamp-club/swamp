@@ -21,8 +21,8 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
   clearLockfilePublishPending,
-  isLockfilePublishPending,
   markLockfilePublishPending,
+  readLockfilePublishPending,
 } from "./pending_lockfile_publish.ts";
 
 async function withRepoDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -39,11 +39,58 @@ async function withRepoDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("isLockfilePublishPending: false until a failed publish is recorded", async () => {
+const ENTRY = { version: "1.0.0", pulledAt: "2026-09-30T00:00:00.000Z" };
+
+Deno.test("readLockfilePublishPending: none until a failed publish is recorded", async () => {
   await withRepoDir(async (dir) => {
-    assertEquals(await isLockfilePublishPending(dir), false);
+    assertEquals(await readLockfilePublishPending(dir), { kind: "none" });
+    await markLockfilePublishPending(dir, {
+      upserts: { "@a/x": ENTRY },
+      removals: ["@a/y"],
+    });
+    assertEquals(await readLockfilePublishPending(dir), {
+      kind: "delta",
+      delta: { upserts: { "@a/x": ENTRY }, removals: ["@a/y"] },
+    });
+  });
+});
+
+Deno.test("readLockfilePublishPending: a record without a delta reads as unknown", async () => {
+  await withRepoDir(async (dir) => {
     await markLockfilePublishPending(dir);
-    assertEquals(await isLockfilePublishPending(dir), true);
+    assertEquals(await readLockfilePublishPending(dir), { kind: "unknown" });
+  });
+});
+
+Deno.test("readLockfilePublishPending: a malformed record reads as unknown", async () => {
+  await withRepoDir(async (dir) => {
+    const path = join(dir, ".swamp", "managed-config-lockfile-unpublished");
+    for (
+      const content of [
+        "2026-09-30T00:00:00.000Z",
+        "{}",
+        JSON.stringify({ version: 1, upserts: [], removals: [] }),
+        JSON.stringify({ version: 1, upserts: {}, removals: [1] }),
+        JSON.stringify({ version: 1, upserts: { x: {} }, removals: [] }),
+      ]
+    ) {
+      await Deno.writeTextFile(path, content);
+      assertEquals(await readLockfilePublishPending(dir), { kind: "unknown" });
+    }
+  });
+});
+
+Deno.test("markLockfilePublishPending: a later record replaces the earlier one", async () => {
+  await withRepoDir(async (dir) => {
+    await markLockfilePublishPending(dir);
+    await markLockfilePublishPending(dir, {
+      upserts: {},
+      removals: ["@a/x"],
+    });
+    assertEquals(await readLockfilePublishPending(dir), {
+      kind: "delta",
+      delta: { upserts: {}, removals: ["@a/x"] },
+    });
   });
 });
 
@@ -51,8 +98,7 @@ Deno.test("clearLockfilePublishPending: clears the record and tolerates a missin
   await withRepoDir(async (dir) => {
     await clearLockfilePublishPending(dir);
     await markLockfilePublishPending(dir);
-    await markLockfilePublishPending(dir);
     await clearLockfilePublishPending(dir);
-    assertEquals(await isLockfilePublishPending(dir), false);
+    assertEquals(await readLockfilePublishPending(dir), { kind: "none" });
   });
 });

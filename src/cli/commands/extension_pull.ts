@@ -36,10 +36,7 @@ import {
   resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -57,6 +54,7 @@ import {
   resolveServerUrl,
   validateExtensionName,
   warnLegacyExtensionLayout,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import {
   createExtensionPullRenderer,
@@ -287,7 +285,7 @@ export const extensionPullCommand = withRemoteOptions(
   // Refuses to record into a guessed managed config base, except for the
   // repo's own datastore extension (#445), which then lands in the in-repo
   // lockfile until the base resolves (swamp-club#2483).
-  const { lockfilePath, publish } = await resolveManagedLockfileForWrite(
+  const lockfileWrite = await resolveManagedLockfileForWrite(
     repoDir,
     marker,
     {
@@ -295,7 +293,7 @@ export const extensionPullCommand = withRemoteOptions(
       extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
     },
   );
-  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
+  const { lockfilePath } = lockfileWrite;
 
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
@@ -329,33 +327,30 @@ export const extensionPullCommand = withRemoteOptions(
       localManifestIdentity: readLocalManifestIdentity(repoDir),
     });
 
-    await pullExtension(ref, {
-      getExtension: deps.getExtension,
-      getLatestVersion: deps.getLatestVersion,
-      downloadArchive: deps.downloadArchive,
-      getChecksum: deps.getChecksum,
-      logger: ctx.logger,
-      lockfileRepository: deps.lockfileRepository,
-      skillsDirs,
-      repoDir,
-      force: options.yes ?? options.force ?? false,
-      outputMode: ctx.outputMode,
-      alreadyPulled: new Set(),
-      depth: 0,
-      channel,
-      denoRuntime,
-      repository,
-    });
+    // The lockfile change is made against the datastore's copy and
+    // published as it lands (swamp-club#2838).
+    await withManagedLockfileTransaction(
+      createManagedLockfileTransaction(repoDir, marker, lockfileWrite),
+      () =>
+        pullExtension(ref, {
+          getExtension: deps.getExtension,
+          getLatestVersion: deps.getLatestVersion,
+          downloadArchive: deps.downloadArchive,
+          getChecksum: deps.getChecksum,
+          logger: ctx.logger,
+          lockfileRepository: deps.lockfileRepository,
+          skillsDirs,
+          repoDir,
+          force: options.yes ?? options.force ?? false,
+          outputMode: ctx.outputMode,
+          alreadyPulled: new Set(),
+          depth: 0,
+          channel,
+          denoRuntime,
+          repository,
+        }),
+    );
   } finally {
     catalog.close();
-  }
-
-  if (publish) {
-    await pushManagedLockfileIfChangedDeferred(
-      repoDir,
-      marker,
-      lockfilePath,
-      lockfileHashBefore,
-    );
   }
 });

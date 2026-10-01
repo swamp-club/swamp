@@ -20,6 +20,7 @@
 import { dirname } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { lockfileAdvisoryLockPath } from "./paths.ts";
 import {
   readUpstreamExtensions,
   type UpstreamExtensionEntry,
@@ -28,6 +29,12 @@ import {
 
 const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
+
+/** The advisory lock file a write holds, and where it lives. */
+interface HeldLock {
+  file: Deno.FsFile;
+  path: string;
+}
 
 /** Options accepted by {@link LockfileRepository.writeEntry}. */
 export interface WriteEntryOptions {
@@ -237,15 +244,39 @@ export class LockfileRepository {
     }
   }
 
-  private async acquireLock(): Promise<Deno.FsFile> {
-    const lockPath = `${this.lockfilePath}.lock`;
+  /**
+   * Replaces every entry with `entries`, under the advisory lock. For
+   * replaying a checkout's pending change onto a lockfile just fetched from
+   * the datastore (swamp-club#2838); installs and removals use
+   * {@link writeEntry} and {@link removeEntry}.
+   */
+  async replaceAll(entries: UpstreamExtensionsMap): Promise<void> {
+    await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
+    const lockFile = await this.acquireLock();
+    try {
+      await atomicWriteTextFile(
+        this.lockfilePath,
+        JSON.stringify(entries, null, 2) + "\n",
+      );
+      this.cache = structuredClone(entries);
+    } finally {
+      await this.releaseLock(lockFile);
+    }
+  }
+
+  private async acquireLock(): Promise<HeldLock> {
+    const lockPath = lockfileAdvisoryLockPath(this.lockfilePath);
+    await Deno.mkdir(dirname(lockPath), { recursive: true });
     for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
       try {
-        return await Deno.open(lockPath, {
-          create: true,
-          createNew: true,
-          write: true,
-        });
+        return {
+          path: lockPath,
+          file: await Deno.open(lockPath, {
+            create: true,
+            createNew: true,
+            write: true,
+          }),
+        };
       } catch (error) {
         if (error instanceof Deno.errors.AlreadyExists) {
           if (attempt < LOCK_RETRY_COUNT - 1) {
@@ -268,10 +299,10 @@ export class LockfileRepository {
     );
   }
 
-  private async releaseLock(lockFile: Deno.FsFile): Promise<void> {
-    lockFile.close();
+  private async releaseLock(lock: HeldLock): Promise<void> {
+    lock.file.close();
     try {
-      await Deno.remove(`${this.lockfilePath}.lock`);
+      await Deno.remove(lock.path);
     } catch {
       // Best-effort cleanup; the lockfile may have been removed by a
       // concurrent process or never created in the unhappy case.

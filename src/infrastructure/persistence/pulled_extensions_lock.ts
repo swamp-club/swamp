@@ -76,10 +76,11 @@ interface Lease {
  * nested section that entered inline and was not awaited keeps running
  * after the outer section exits. Always await nested sections.
  *
- * **Lock order.** Datastore global lock (when held), then the
- * auto-resolve `.extension-install.lock`, then this lock, then the
- * lockfile's own `upstream_extensions.json.lock`. Never take an outer
- * lock while holding this one.
+ * **Lock order.** Datastore global lock (when held, including by a
+ * managed lockfile transaction), then the auto-resolve
+ * `.extension-install.lock`, then this lock, then the lockfile's own
+ * advisory lock (`lockfileAdvisoryLockPath`). Never take an outer lock
+ * while holding this one.
  */
 export class PulledExtensionsLock {
   readonly #queues = new Map<string, MutexQueue>();

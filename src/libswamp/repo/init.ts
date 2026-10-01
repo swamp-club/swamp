@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   type RepoInitResult,
@@ -356,6 +357,10 @@ export async function* repoUpgrade(
       // subtree and their legacy files swept. `extensionInstall` is
       // idempotent: on repos with no legacy layout and no missing
       // files, it's a no-op.
+      // A UserError from the install pass (e.g. its lockfile change was
+      // not published) is raised after the upgrade result is reported: the
+      // upgrade itself was applied (swamp-club#2838).
+      let installError: UserError | undefined;
       if (input.extensionInstallDeps) {
         try {
           for await (
@@ -364,19 +369,23 @@ export async function* repoUpgrade(
             yield { kind: "extensions", event };
           }
         } catch (error) {
-          // extensionInstall catches per-entry failures internally;
-          // anything that reaches us here is an infrastructure error
-          // (corrupt lockfile JSON, permission error, filesystem issue).
-          // Surface it the same way deps.upgrade() failures are
-          // surfaced: a clean error event so the renderer throws a
-          // UserError rather than a raw stack trace.
-          yield {
-            kind: "error",
-            error: validationFailed(
-              error instanceof Error ? error.message : String(error),
-            ),
-          };
-          return;
+          if (error instanceof UserError) {
+            installError = error;
+          } else {
+            // extensionInstall catches per-entry failures internally;
+            // anything that reaches us here is an infrastructure error
+            // (corrupt lockfile JSON, permission error, filesystem issue).
+            // Surface it the same way deps.upgrade() failures are
+            // surfaced: a clean error event so the renderer throws a
+            // UserError rather than a raw stack trace.
+            yield {
+              kind: "error",
+              error: validationFailed(
+                error instanceof Error ? error.message : String(error),
+              ),
+            };
+            return;
+          }
         }
       }
 
@@ -408,6 +417,7 @@ export async function* repoUpgrade(
       };
 
       yield { kind: "completed", data };
+      if (installError) throw installError;
     })(),
   );
 }

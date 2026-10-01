@@ -25,34 +25,58 @@ import {
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../domain/errors.ts";
-import { computeFileContentHashIfExists } from "../domain/extensions/extension_package_cache.ts";
-import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
-import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import {
-  clearLockfilePublishPending,
-  isLockfilePublishPending,
-  markLockfilePublishPending,
-} from "../infrastructure/persistence/pending_lockfile_publish.ts";
+  flushDatastoreSyncNamed,
+  getRegisteredLockKeys,
+  GLOBAL_LOCK_KEY,
+  registerDatastoreSyncNamed,
+  runBoundedSync,
+} from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
+import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  createDatastoreLockfileSync,
+  createRepoPendingLockfileStore,
+  type LockfileTransaction,
+  type ManagedLockfileLock,
+  ManagedLockfileTransaction,
+} from "../libswamp/mod.ts";
+import { createDatastoreLock } from "../infrastructure/persistence/datastore_global_lock.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
   buildMarkDirtyHook,
+  type ManagedLockfileWrite,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
- * published to the datastore under managedConfig. The local write is kept;
- * `swamp datastore sync --push` publishes it once the datastore is reachable.
+ * published to the datastore under managedConfig. The local write is kept.
+ * The message names the retry: `swamp datastore sync --push` for most
+ * config writes, `swamp extension install` for an extension lockfile
+ * change, where a plain push would publish a stale copy.
  */
 export class ManagedConfigUnpublishedError extends UserError {
-  constructor(cause: unknown) {
+  /**
+   * @param retryAdvice How to publish the change. An extension lockfile
+   *   change names `swamp extension install`, which fetches the datastore's
+   *   lockfile and replays the change onto it; a plain push would publish
+   *   the local copy over other checkouts' entries (swamp-club#2838).
+   * @param summary What happened, before the reason. The default describes
+   *   the current command's own change.
+   */
+  constructor(
+    cause: unknown,
+    retryAdvice = "Run 'swamp datastore sync --push' to publish it.",
+    summary = "The change is saved locally but was not published to the " +
+      "datastore",
+  ) {
     const reason = (cause instanceof Error ? cause.message : String(cause))
       .replace(/\.+$/, "");
     super(
-      "The change is saved locally but was not published to the datastore: " +
-        `${reason}. ` +
-        "Run 'swamp datastore sync --push' to publish it.",
+      `${summary}: ${reason}. ${retryAdvice}`,
       "managed_config_unpublished",
     );
     this.name = "ManagedConfigUnpublishedError";
@@ -227,54 +251,221 @@ export async function flushAfterManagedConfigMutation(
 }
 
 /**
- * Content hash of a lockfile before a command that may rewrite it, for
- * {@link pushManagedLockfileIfChangedDeferred}. An unreadable file reads as
- * missing, so the later comparison errs towards pushing.
+ * The shared extension lockfile could not be fetched from the datastore
+ * before an extension change, so the change was not made: making it on a
+ * stale lockfile would publish over other checkouts' entries
+ * (swamp-club#2838).
  */
-export async function snapshotLockfileHash(
-  lockfilePath: string,
-): Promise<string | null> {
-  return await computeFileContentHashIfExists(lockfilePath).catch(() => null);
+export class ManagedLockfileUnavailableError extends UserError {
+  constructor(cause: unknown) {
+    const reason = (cause instanceof Error ? cause.message : String(cause))
+      .replace(/\.+$/, "");
+    super(
+      "Could not fetch the extension lockfile from the datastore, so no " +
+        `extension was changed: ${reason}. ` +
+        "Check that the datastore is reachable and retry.",
+      "managed_lockfile_unavailable",
+    );
+    this.name = "ManagedLockfileUnavailableError";
+    this.cause = cause;
+  }
+}
+
+/** A lock already held by this process: acquiring and releasing it is a no-op. */
+const HELD_LOCK: ManagedLockfileLock = {
+  acquire: () => Promise.resolve(),
+  release: () => Promise.resolve(),
+};
+
+export interface ManagedLockfileTransactionDeps {
+  syncService: DatastoreSyncService;
+  datastoreConfig: DatastoreConfig;
+  repoDir: string;
+  lockfilePath: string;
+  /** The datastore global lock (see datastoreGlobalLockOptions). */
+  lock: ManagedLockfileLock;
 }
 
 /**
- * Pushes the tier lockfile when its content differs from `hashBefore`
- * (from {@link snapshotLockfileHash}). For commands that only sometimes
- * write the lockfile — the extension commands, repo upgrade, doctor repair —
- * so an untouched lockfile is never published and a no-op command never
- * fails on an unreachable datastore. A lockfile that cannot be read after
- * the command may hold an unpublished change, so it throws
- * {@link ManagedConfigUnpublishedError}.
- *
- * A failed publish is recorded locally, and while that record stands the
- * lockfile is published even when this command left it unchanged, so
- * re-running a command after a failed publish retries it instead of exiting
- * 0 with the change still unpublished. A successful publish clears it.
+ * Builds the transaction a CLI extension command makes its lockfile change
+ * in (see {@link createManagedLockfileTransaction}). A failed fetch throws
+ * {@link ManagedLockfileUnavailableError} before anything changes; a failed
+ * publish throws {@link ManagedConfigUnpublishedError} with the change
+ * recorded in the repo's `.swamp/` directory, for the next transaction to
+ * replay.
  */
-export async function pushManagedLockfileIfChangedDeferred(
+export function buildManagedLockfileTransaction(
+  deps: ManagedLockfileTransactionDeps,
+): ManagedLockfileTransaction {
+  const { syncService, datastoreConfig, repoDir, lockfilePath } = deps;
+  const cachePath = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.cachePath
+    : undefined;
+  if (!isCustomDatastoreConfig(datastoreConfig) || !cachePath) {
+    throw new ManagedLockfileUnavailableError(
+      `the ${datastoreConfig.type} datastore has no local cache`,
+    );
+  }
+  const sync = createDatastoreLockfileSync({
+    syncService,
+    namespace: datastoreConfig.namespace,
+    timeoutMs: resolveSyncTimeoutMs(datastoreConfig),
+    lockfilePath,
+    markDirty: buildMarkDirtyHook(syncService, cachePath, repoDir),
+  });
+  const logger = getSwampLogger(["cli", "managed-config"]);
+  return new ManagedLockfileTransaction({
+    lockfilePath,
+    lock: {
+      // A datastore that cannot be reached fails here, before anything is
+      // downloaded or changed. Errors that already explain themselves pass
+      // through: a lock another process holds (LockTimeoutError) or a
+      // datastore that is misconfigured.
+      acquire: async () => {
+        try {
+          await deps.lock.acquire();
+        } catch (error) {
+          if (error instanceof UserError) throw error;
+          throw new ManagedLockfileUnavailableError(error);
+        }
+      },
+      release: () => deps.lock.release(),
+    },
+    onWarning: (message, error) =>
+      error === undefined ? logger.warn(message) : logger.warn(
+        `${message}: {error}`,
+        { error: error instanceof Error ? error.message : String(error) },
+      ),
+    sync: {
+      hydrate: async () => {
+        try {
+          await sync.hydrate();
+        } catch (error) {
+          throw new ManagedLockfileUnavailableError(error);
+        }
+      },
+      publish: async (options) => {
+        try {
+          await sync.publish(options);
+        } catch (error) {
+          // Only an earlier command's change was being published: this
+          // command changed nothing, and must not read as if it had.
+          throw options.earlierChangeOnly
+            ? new ManagedConfigUnpublishedError(
+              error,
+              "Run 'swamp extension install' to publish the earlier change " +
+                "once the datastore accepts it, then run this command again.",
+              "An earlier extension lockfile change is still not published " +
+                "to the datastore, so this command did not change the " +
+                "lockfile",
+            )
+            : new ManagedConfigUnpublishedError(
+              error,
+              "Run 'swamp extension install' to publish it: it fetches the " +
+                "datastore's lockfile and replays the change onto it.",
+            );
+        }
+      },
+    },
+    pending: createRepoPendingLockfileStore(repoDir),
+  });
+}
+
+/**
+ * The transaction a CLI extension command runs its lockfile changes in, for
+ * `withManagedLockfileTransaction`. Undefined when the lockfile is not
+ * shared through a datastore: no managedConfig, a filesystem datastore, or
+ * the #445 exemption that records into the in-repo lockfile
+ * (`write.publish` false).
+ *
+ * The datastore is resolved on first use: the first change, or the first
+ * refresh (`extension install`, `update` and the `rm` preview refresh
+ * before reading the lockfile, so they contact the datastore even when
+ * they end up changing nothing). When this process already holds the
+ * datastore global lock (a command that runs under the sync coordinator),
+ * the transaction does not take it again; that check runs once, when the
+ * transaction is built, so a transaction must not outlive the command
+ * that built it.
+ */
+export function createManagedLockfileTransaction(
   repoDir: string,
   marker: RepoMarkerData | null,
-  lockfilePath: string,
-  hashBefore: string | null,
-  push: typeof pushManagedConfigPathsDeferred = pushManagedConfigPathsDeferred,
-): Promise<void> {
-  if (marker?.datastore?.managedConfig !== true) return;
-  try {
-    const hashAfter = await computeFileContentHashIfExists(lockfilePath);
-    if (
-      hashAfter === hashBefore && !await isLockfilePublishPending(repoDir)
-    ) {
-      return;
+  write: ManagedLockfileWrite,
+): LockfileTransaction | undefined {
+  if (!write.publish || !isExtensionBackedDatastore(marker)) return undefined;
+
+  return lazyLockfileTransaction(write.lockfilePath, async () => {
+    let resolved: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
+    try {
+      resolved = await requireInitializedRepoUnlocked({
+        repoDir,
+        outputMode: "log",
+      });
+    } catch (error) {
+      // Nothing has changed yet: say so, as a failed lock or fetch does.
+      if (error instanceof UserError) throw error;
+      throw new ManagedLockfileUnavailableError(error);
     }
-    await push(repoDir, marker, [lockfilePath]);
-  } catch (error) {
-    // Best effort: failing to record the retry must not replace the error
-    // that tells the user the change is unpublished.
-    await markLockfilePublishPending(repoDir).catch(() => {});
-    throw toUnpublishedError(error);
-  }
-  // Best effort: a stale record only costs one redundant publish later.
-  await clearLockfilePublishPending(repoDir).catch(() => {});
+    const { syncService, datastoreConfig, repoDir: resolvedRepoDir } = resolved;
+    if (!syncService) {
+      throw new ManagedLockfileUnavailableError(
+        `the ${datastoreConfig.type} datastore has no sync service`,
+      );
+    }
+    return buildManagedLockfileTransaction({
+      syncService,
+      datastoreConfig,
+      repoDir: resolvedRepoDir,
+      lockfilePath: write.lockfilePath,
+      lock: getRegisteredLockKeys().includes(GLOBAL_LOCK_KEY)
+        ? HELD_LOCK
+        : coordinatedGlobalLock(datastoreConfig),
+    });
+  });
+}
+
+/** Coordinator key under which a lockfile transaction holds the global lock. */
+const MANAGED_LOCKFILE_LOCK_KEY = "__managed_lockfile__";
+
+/**
+ * The datastore global lock, held through the sync coordinator so its
+ * SIGINT handler releases it: a Ctrl-C during a transaction, which can
+ * include dependency downloads, must not leave other checkouts waiting out
+ * the lock's TTL.
+ */
+function coordinatedGlobalLock(config: DatastoreConfig): ManagedLockfileLock {
+  return {
+    acquire: async () =>
+      await registerDatastoreSyncNamed(MANAGED_LOCKFILE_LOCK_KEY, {
+        lock: await createDatastoreLock(config),
+        label: config.type,
+        namespace: isCustomDatastoreConfig(config)
+          ? config.namespace
+          : undefined,
+      }),
+    release: () => flushDatastoreSyncNamed(MANAGED_LOCKFILE_LOCK_KEY),
+  };
+}
+
+/** A transaction built on its first use, so an unused one costs nothing. */
+function lazyLockfileTransaction(
+  lockfilePath: string,
+  build: () => Promise<LockfileTransaction>,
+): LockfileTransaction {
+  let built: Promise<LockfileTransaction> | undefined;
+  // A failed build is not kept: the next change, say the next extension
+  // in a restore loop, tries again rather than repeating one transient
+  // failure.
+  const transaction = () =>
+    built ??= build().catch((error) => {
+      built = undefined;
+      throw error;
+    });
+  return {
+    lockfilePath,
+    run: async (fn) => await (await transaction()).run(fn),
+    refresh: async () => await (await transaction()).refresh(),
+  };
 }
 
 export interface PullManagedConfigAtBootDeps {

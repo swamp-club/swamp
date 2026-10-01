@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { collect } from "../testing.ts";
@@ -31,6 +36,7 @@ import {
   type RepoUpgradeEvent,
 } from "./init.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { ManagedLockfileUnpublishedError } from "../extensions/managed_lockfile_transaction.ts";
 
 function makeInitDeps(
   overrides: Partial<RepoInitDeps> = {},
@@ -476,4 +482,70 @@ Deno.test("repoUpgrade: installSkipped is false when the install pass is not ski
   assertEquals(completed.data.installSkipped, false);
   assertEquals("installSkippedReason" in completed.data, false);
   assertEquals("untrustedCollectivesSkipped" in completed.data, false);
+});
+
+Deno.test("repoUpgrade: an unpublished lockfile change from the install pass is raised after the upgrade result (swamp-club#2838)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@test/missing": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@test/missing/models/m.ts"],
+        },
+      }),
+    );
+    const events: RepoUpgradeEvent[] = [];
+
+    await assertRejects(
+      async () => {
+        for await (
+          const event of repoUpgrade(
+            createLibSwampContext(),
+            makeUpgradeDeps(),
+            {
+              path: tmpDir,
+              version: "1.0.0",
+              extensionInstallDeps: {
+                lockfilePath,
+                repoDir: tmpDir,
+                refreshFromDatastore: false,
+                createInstallContext: async () => ({
+                  getExtension: () => Promise.resolve(null),
+                  downloadArchive: () => Promise.reject(new Error("unused")),
+                  getChecksum: () => Promise.resolve(null),
+                  lockfileRepository: await LockfileRepository.create(
+                    lockfilePath,
+                  ),
+                  skillsDirs: [join(tmpDir, ".swamp/pulled-extensions/skills")],
+                  repoDir: tmpDir,
+                  force: true,
+                  alreadyPulled: new Set<string>(),
+                  depth: 0,
+                }),
+                installExtensionFn: () =>
+                  Promise.reject(
+                    new ManagedLockfileUnpublishedError(
+                      new Error("push refused"),
+                    ),
+                  ),
+              },
+            },
+          )
+        ) {
+          events.push(event);
+        }
+      },
+      ManagedLockfileUnpublishedError,
+      "push refused",
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(events.filter((e) => e.kind === "error").length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });

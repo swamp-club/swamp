@@ -35,6 +35,7 @@ import {
 } from "./remove_extension_service.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
 
 /** Preview data returned before confirmation. */
 export interface ExtensionRmPreview {
@@ -146,6 +147,9 @@ export async function extensionRmPreview(
 ): Promise<ExtensionRmPreview> {
   ctx.logger.debug`Looking up extension: ${input.extensionName}`;
 
+  // Preview what the datastore's lockfile holds, not a stale cache: an
+  // extension another checkout installed is removable (swamp-club#2838).
+  await refreshManagedLockfile(deps.lockfileRepository);
   const upstreamData = deps.lockfileRepository.getAllEntries();
   const entry = upstreamData[input.extensionName];
 
@@ -199,7 +203,13 @@ export async function* extensionRm(
       // but the existing rm event shape uses notFound() for the
       // "not installed" case so renderers don't see a behaviour
       // change vs. pre-W2.
-      const entry = deps.lockfileRepository.getEntry(input.extensionName);
+      let entry = deps.lockfileRepository.getEntry(input.extensionName);
+      if (!entry) {
+        // Serve removes without a preview: an extension another checkout
+        // installed is only in the datastore's lockfile (swamp-club#2838).
+        await refreshManagedLockfile(deps.lockfileRepository);
+        entry = deps.lockfileRepository.getEntry(input.extensionName);
+      }
       if (!entry || !entry.files) {
         yield {
           kind: "error",

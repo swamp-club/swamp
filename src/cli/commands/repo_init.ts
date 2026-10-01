@@ -27,6 +27,7 @@ import {
   type ExtensionInstallDeps,
   repoInit,
   repoUpgrade,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -40,10 +41,7 @@ import {
 } from "../context.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 import { ManagedConfigUnresolvedError } from "../repo_context.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { isAuthenticated } from "../auth_context.ts";
@@ -206,10 +204,11 @@ export const repoUpgradeCommand = new Command()
     let extensionInstallDeps: ExtensionInstallDeps | undefined;
     let extensionInstallSkippedReason: string | undefined;
     try {
-      extensionInstallDeps = await createExtensionInstallDeps(
-        repoDir,
-        cliCtx.logger,
-      );
+      extensionInstallDeps = {
+        ...await createExtensionInstallDeps(repoDir, cliCtx.logger),
+        // An upgrade with nothing to restore must not need the datastore.
+        refreshFromDatastore: false,
+      };
     } catch (error) {
       const skippable = error instanceof ManagedConfigUnresolvedError ||
         (error instanceof UserError && error.code === "lock_timeout");
@@ -219,39 +218,38 @@ export const repoUpgradeCommand = new Command()
     // The untrusted-collectives check reads the same lockfile the install
     // pass would; when that is unresolved, the check is skipped.
     const lockfilePath = extensionInstallDeps?.lockfilePath ?? null;
-    const lockfileHashBefore = lockfilePath
-      ? await snapshotLockfileHash(lockfilePath)
-      : null;
+    // The install pass may migrate lockfile entries; they are made against
+    // the datastore's lockfile and published as they land, like the other
+    // extension writers (swamp-club#2838). The marker is read before the
+    // upgrade runs: the upgrade does not change managedConfig or the
+    // datastore type, which are all the transaction reads from it.
+    const lockfileTransaction = lockfilePath
+      ? createManagedLockfileTransaction(
+        repoDir,
+        await new RepoMarkerRepository().read(RepoPath.create(repoDir)),
+        { lockfilePath, publish: true },
+      )
+      : undefined;
 
     const renderer = createRepoUpgradeRenderer(cliCtx.outputMode, {
       isAuthenticated: isAuthenticated(),
     });
-    await consumeStream(
-      repoUpgrade(ctx, deps, {
-        path: pathArg ?? ".",
-        tools,
-        includeGitignore: options.includeGitignore as boolean | undefined,
-        version: VERSION,
-        extensionInstallDeps,
-        extensionInstallSkippedReason,
-        lockfilePath,
-      }),
-      renderer.handlers(),
+    await withManagedLockfileTransaction(
+      lockfileTransaction,
+      () =>
+        consumeStream(
+          repoUpgrade(ctx, deps, {
+            path: pathArg ?? ".",
+            tools,
+            includeGitignore: options.includeGitignore as boolean | undefined,
+            version: VERSION,
+            extensionInstallDeps,
+            extensionInstallSkippedReason,
+            lockfilePath,
+          }),
+          renderer.handlers(),
+        ),
     );
-
-    // The install pass may migrate lockfile entries; publish them like the
-    // other extension writers.
-    if (lockfilePath) {
-      const marker = await new RepoMarkerRepository().read(
-        RepoPath.create(repoDir),
-      );
-      await pushManagedLockfileIfChangedDeferred(
-        repoDir,
-        marker,
-        lockfilePath,
-        lockfileHashBefore,
-      );
-    }
 
     cliCtx.logger.debug("Repo upgrade command completed");
   });

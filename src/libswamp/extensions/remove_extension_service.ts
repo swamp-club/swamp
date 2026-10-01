@@ -37,6 +37,7 @@ import {
   recoverPulledExtensionStagingLocked,
 } from "./recover_staging.ts";
 import { UserError } from "../../domain/errors.ts";
+import { inManagedLockfileTransaction } from "./managed_lockfile_transaction.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
 /**
@@ -164,17 +165,25 @@ export class RemoveExtensionService {
    * before anything is removed (swamp-club#2723).
    */
   async execute(name: string): Promise<RemoveExtensionResult> {
-    return await pulledExtensionsLock.withLock(this.repoDir, async () => {
-      await this.lockfileRepository.refresh();
-      // Put right any install a crashed process left half done, so the
-      // files removed are the ones the lockfile describes.
-      const recovery = await recoverPulledExtensionStagingLocked(
-        this.repoDir,
-        { lockfilePaths: [this.lockfileRepository.lockfilePath] },
-      );
-      assertNoBlockingJournal(recovery, this.repoDir, name, "remove");
-      return await this.removeLocked(name);
-    });
+    // A managed lockfile's transaction fetches the shared lockfile under
+    // the datastore global lock first and publishes the removal after, so
+    // a removal from a stale cache cannot revert other checkouts' entries
+    // (swamp-club#2838).
+    return await inManagedLockfileTransaction(
+      this.lockfileRepository.lockfilePath,
+      () =>
+        pulledExtensionsLock.withLock(this.repoDir, async () => {
+          await this.lockfileRepository.refresh();
+          // Put right any install a crashed process left half done, so the
+          // files removed are the ones the lockfile describes.
+          const recovery = await recoverPulledExtensionStagingLocked(
+            this.repoDir,
+            { lockfilePaths: [this.lockfileRepository.lockfilePath] },
+          );
+          assertNoBlockingJournal(recovery, this.repoDir, name, "remove");
+          return await this.removeLocked(name);
+        }),
+    );
   }
 
   private async removeLocked(name: string): Promise<RemoveExtensionResult> {

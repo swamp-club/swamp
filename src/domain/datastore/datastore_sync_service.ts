@@ -192,7 +192,15 @@ export interface DatastoreSyncService {
    * count is unknown; core treats it as changed.
    */
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
-  /** Push changed files from the local cache to the remote datastore. */
+  /**
+   * Push changed files from the local cache to the remote datastore.
+   *
+   * **Return value.** Resolve to the number of files uploaded to or deleted
+   * from the remote. Resolve to `0` only when nothing was sent: core then
+   * treats a change it needed published (the managed extension lockfile)
+   * as not published, and keeps it for a retry. Resolve to `void` when the
+   * count is unknown; core treats it as sent.
+   */
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /** Advertise what this sync service supports. */
   capabilities?(): SyncCapabilities;

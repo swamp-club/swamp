@@ -31,8 +31,8 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
 import {
-  isLockfilePublishPending,
   markLockfilePublishPending,
+  readLockfilePublishPending,
 } from "../../infrastructure/persistence/pending_lockfile_publish.ts";
 import { join } from "@std/path";
 
@@ -227,7 +227,7 @@ Deno.test("createDatastoreSyncDeps: omits namespace when config has none", async
   assertEquals(push?.options?.namespace, undefined);
 });
 
-Deno.test("createDatastoreSyncDeps: a successful push or full sync clears a pending lockfile publish", async () => {
+Deno.test("createDatastoreSyncDeps: a successful push or full sync clears an unrecorded pending lockfile publish and keeps a recorded one", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp-sync-pending-" });
   try {
     await Deno.mkdir(join(dir, ".swamp"));
@@ -235,15 +235,23 @@ Deno.test("createDatastoreSyncDeps: a successful push or full sync clears a pend
 
     await markLockfilePublishPending(dir);
     await deps.pushSync();
-    assertEquals(await isLockfilePublishPending(dir), false);
+    assertEquals((await readLockfilePublishPending(dir)).kind, "none");
 
     await markLockfilePublishPending(dir);
     await deps.fullSync();
-    assertEquals(await isLockfilePublishPending(dir), false);
+    assertEquals((await readLockfilePublishPending(dir)).kind, "none");
 
     await markLockfilePublishPending(dir);
     await deps.pullSync();
-    assertEquals(await isLockfilePublishPending(dir), true);
+    assertEquals((await readLockfilePublishPending(dir)).kind, "unknown");
+
+    // A recorded change is the only copy of it: a push keeps it for the
+    // next extension write to replay (swamp-club#2838).
+    await markLockfilePublishPending(dir, { upserts: {}, removals: ["@a/x"] });
+    await deps.pushSync();
+    assertEquals((await readLockfilePublishPending(dir)).kind, "delta");
+    await deps.fullSync();
+    assertEquals((await readLockfilePublishPending(dir)).kind, "delta");
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

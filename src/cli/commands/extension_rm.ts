@@ -28,10 +28,7 @@ import {
   requireRepoMarker,
   resolveManagedLockfileForWrite,
 } from "../repo_context.ts";
-import {
-  pushManagedLockfileIfChangedDeferred,
-  snapshotLockfileHash,
-} from "../managed_config_sync.ts";
+import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
@@ -44,6 +41,7 @@ import {
   parseExtensionRef,
   validateExtensionName,
   warnLegacyExtensionLayout,
+  withManagedLockfileTransaction,
 } from "../../libswamp/mod.ts";
 import {
   createExtensionRmRenderer,
@@ -117,11 +115,11 @@ export const extensionRemoveCommand = withRemoteOptions(
   );
 
   // Refuses to change a guessed managed config base (swamp-club#2483).
-  const { lockfilePath } = await resolveManagedLockfileForWrite(
+  const lockfileWrite = await resolveManagedLockfileForWrite(
     repoDir,
     marker,
   );
-  const lockfileHashBefore = await snapshotLockfileHash(lockfilePath);
+  const { lockfilePath } = lockfileWrite;
 
   const tool = resolvePrimaryTool(marker);
   const skillsDirRelative = relative(
@@ -141,44 +139,47 @@ export const extensionRemoveCommand = withRemoteOptions(
   // swamp-club#201). Catalog must be closed when we're done.
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const deps = await createExtensionRmDeps(repoDir, lockfilePath);
+  // The preview reads, and the removal changes, the datastore's lockfile
+  // rather than a stale cache; the removal is published as it lands
+  // (swamp-club#2838). No lock is held across the prompt.
+  const lockfileTransaction = createManagedLockfileTransaction(
+    repoDir,
+    marker,
+    lockfileWrite,
+  );
   try {
-    const renderer = createExtensionRmRenderer(ctx.outputMode);
-    const input = { extensionName: ref.name };
+    await withManagedLockfileTransaction(lockfileTransaction, async () => {
+      const renderer = createExtensionRmRenderer(ctx.outputMode);
+      const input = { extensionName: ref.name };
 
-    // Preview: validates extension, returns preview data
-    const preview = await extensionRmPreview(libCtx, deps, input);
+      // Preview: validates extension, returns preview data
+      const preview = await extensionRmPreview(libCtx, deps, input);
 
-    // Dependency warning
-    if (preview.dependents.length > 0) {
-      renderer.renderDependencyWarning(preview.dependents);
-    }
-
-    // Confirmation prompt (log mode only, unless --force)
-    if (ctx.outputMode === "log" && !options.yes && !options.force) {
-      const confirmed = await promptConfirmation(
-        `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
-      );
-      if (!confirmed) {
-        renderExtensionRmCancelled(ctx.outputMode);
-        return;
+      // Dependency warning
+      if (preview.dependents.length > 0) {
+        renderer.renderDependencyWarning(preview.dependents);
       }
-    }
 
-    // Execute removal
-    await consumeStream(
-      extensionRm(libCtx, deps, input),
-      renderer.handlers(),
-    );
+      // Confirmation prompt (log mode only, unless --force)
+      if (ctx.outputMode === "log" && !options.yes && !options.force) {
+        const confirmed = await promptConfirmation(
+          `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
+        );
+        if (!confirmed) {
+          renderExtensionRmCancelled(ctx.outputMode);
+          return;
+        }
+      }
 
-    ctx.logger.debug("Extension remove command completed");
+      // Execute removal
+      await consumeStream(
+        extensionRm(libCtx, deps, input),
+        renderer.handlers(),
+      );
+
+      ctx.logger.debug("Extension remove command completed");
+    });
   } finally {
     deps.repository.close();
   }
-
-  await pushManagedLockfileIfChangedDeferred(
-    repoDir,
-    marker,
-    lockfilePath,
-    lockfileHashBefore,
-  );
 });

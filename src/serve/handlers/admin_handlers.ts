@@ -36,6 +36,7 @@ import {
   buildAggregateState,
   consumeStream,
   createAuditTimelineDeps,
+  createDatastoreLockfileSync,
   createDatastoreSetupDeps,
   createDatastoreStatusDeps,
   createDoctorSecretsDeps,
@@ -48,6 +49,7 @@ import {
   createInstallContext,
   createLibSwampContext,
   createModelDeleteDeps,
+  createRepoPendingLockfileStore,
   createVaultMigrateDeps,
   createWorkerListDeps,
   createWorkerModelRunDeps,
@@ -76,6 +78,8 @@ import {
   type ExtensionSearchDeps,
   extensionUpdate,
   LockfileRepository,
+  type LockfileTransaction,
+  ManagedLockfileTransaction,
   modelDelete,
   modelMethodRun,
   parseExtensionRef,
@@ -89,6 +93,7 @@ import {
   vaultMigrate,
   vaultMigratePreview,
   withDefaults,
+  withManagedLockfileTransaction,
   workerList,
   workerPrune,
   type WorkerPruneDeps,
@@ -107,6 +112,7 @@ import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
   type CustomDatastoreConfig,
   isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -145,6 +151,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
+import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import {
   transitionalInstalledNames,
   transitionalLocalLockfilePath,
@@ -213,33 +220,51 @@ function resolveManagedPathsFromContext(
 }
 
 /**
- * Marks each file an extension handler changed in the datastore cache, and
- * says whether there is anything to push. Under managedConfig the only such
- * file today is the config-tier lockfile: extension sources still go to the
- * repo-local pulled-extensions root (swamp-club#2612). Without managedConfig
- * nothing these handlers write is in the cache.
+ * The transaction an extension handler runs its lockfile changes in. Under
+ * managedConfig on an extension-backed datastore the lockfile is shared
+ * with other instances and checkouts: each change is made against the
+ * datastore's copy under the datastore global lock and published as it
+ * lands (swamp-club#2838). Extension sources stay in the repo-local
+ * pulled-extensions root (swamp-club#2612). Otherwise undefined, and the
+ * handler writes the lockfile directly.
  */
-async function markExtensionChanges(
+function extensionLockfileTransaction(
   ctx: ConnectionContext,
   marker:
     | import("../../infrastructure/persistence/repo_marker_repository.ts").RepoMarkerData
     | null,
-  paths: readonly string[],
-  logger: ReturnType<typeof getSwampLogger>,
-): Promise<boolean> {
-  if (!ctx.syncService || !marker?.datastore?.managedConfig) return false;
-  try {
-    // Per path, not bare: a bare markDirty() turns the push into a walk of
-    // the whole cache (swamp-club#2415).
-    for (const path of paths) {
-      await ctx.repoContext.markDirty?.(path);
-    }
-  } catch (error) {
-    logger.warn("Failed to mark extension changes dirty: {error}", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+  lockfilePath: string,
+): LockfileTransaction | undefined {
+  const { syncService, datastoreConfig } = ctx;
+  const markDirty = ctx.repoContext.markDirty;
+  if (!syncService || !markDirty || !isExtensionBackedDatastore(marker)) {
+    return undefined;
   }
-  return true;
+  const logger = getSwampLogger(["serve", "extension", "lockfile"]);
+  return new ManagedLockfileTransaction({
+    lockfilePath,
+    // Taken inside the handler's exclusive sync gate: the gate always comes
+    // before the global lock in serve (see sync_gate.ts).
+    lock: datastoreGlobalLock(datastoreConfig),
+    sync: createDatastoreLockfileSync({
+      syncService,
+      namespace: isCustomDatastoreConfig(datastoreConfig)
+        ? datastoreConfig.namespace
+        : undefined,
+      timeoutMs: resolveSyncTimeoutMs(datastoreConfig),
+      lockfilePath,
+      markDirty: (path) => markDirty(path),
+    }),
+    pending: createRepoPendingLockfileStore(ctx.repoDir),
+    // The change has applied on this instance, so the request succeeds; a
+    // failed publish stays pending and the next extension change retries it.
+    publishFailure: "defer",
+    onWarning: (message, error) =>
+      error === undefined ? logger.warn(message) : logger.warn(
+        `${message}: {error}`,
+        { error: error instanceof Error ? error.message : String(error) },
+      ),
+  });
 }
 
 export async function handleWorkerList(
@@ -721,20 +746,24 @@ export async function handleExtensionInstall(
     });
 
     let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      extensionInstall(libCtx, deps),
-      {
-        resolving: () => {},
-        installing: () => {},
-        migrating: () => {},
-        "orphans-pruned": () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
+    await withManagedLockfileTransaction(
+      extensionLockfileTransaction(ctx, marker, lockfilePath),
+      () =>
+        consumeStream(
+          extensionInstall(libCtx, deps),
+          {
+            resolving: () => {},
+            installing: () => {},
+            migrating: () => {},
+            "orphans-pruned": () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        ),
     );
 
     if (controller.signal.aborted) {
@@ -747,10 +776,6 @@ export async function handleExtensionInstall(
       id: requestId,
       payload: { data: result ?? {} },
     });
-
-    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
-      await pushChangedToRemote(ctx);
-    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_install_failed", message);
@@ -765,7 +790,6 @@ export async function handleExtensionPull(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const logger = getSwampLogger(["serve", "extension", "pull"]);
   if (
     !authorizeOrReject(
       socket,
@@ -829,25 +853,29 @@ export async function handleExtensionPull(
     };
 
     let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      extensionPull(libCtx, pullDeps, {
-        ref,
-        force: payload.force ?? false,
-        channel: payload.channel,
-      }),
-      {
-        installing: () => {
-          if (controller.signal.aborted) throw new Error("cancelled");
-        },
-        deprecated_warning: () => {},
-        "orphans-pruned": () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
+    await withManagedLockfileTransaction(
+      extensionLockfileTransaction(ctx, marker, lockfilePath),
+      () =>
+        consumeStream(
+          extensionPull(libCtx, pullDeps, {
+            ref,
+            force: payload.force ?? false,
+            channel: payload.channel,
+          }),
+          {
+            installing: () => {
+              if (controller.signal.aborted) throw new Error("cancelled");
+            },
+            deprecated_warning: () => {},
+            "orphans-pruned": () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        ),
     );
 
     if (controller.signal.aborted) {
@@ -860,10 +888,6 @@ export async function handleExtensionPull(
       id: requestId,
       payload: { data: result ?? {} },
     });
-
-    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
-      await pushChangedToRemote(ctx);
-    }
   } catch (error) {
     const raw = error instanceof Error
       ? error
@@ -885,7 +909,6 @@ export async function handleExtensionRm(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const logger = getSwampLogger(["serve", "extension", "rm"]);
   if (
     !authorizeOrReject(
       socket,
@@ -904,21 +927,26 @@ export async function handleExtensionRm(
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
 
-    deps = await createExtensionRmDeps(repoDir, lockfilePath);
+    const rmDeps = await createExtensionRmDeps(repoDir, lockfilePath);
+    deps = rmDeps;
     const libCtx = createLibSwampContext();
 
     let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      extensionRm(libCtx, deps, { extensionName: payload.extensionName }),
-      {
-        deleting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
+    await withManagedLockfileTransaction(
+      extensionLockfileTransaction(ctx, marker, lockfilePath),
+      () =>
+        consumeStream(
+          extensionRm(libCtx, rmDeps, { extensionName: payload.extensionName }),
+          {
+            deleting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        ),
     );
 
     if (controller.signal.aborted) {
@@ -931,10 +959,6 @@ export async function handleExtensionRm(
       id: requestId,
       payload: { data: result ?? {} },
     });
-
-    if (await markExtensionChanges(ctx, marker, [lockfilePath], logger)) {
-      await pushChangedToRemote(ctx);
-    }
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "extension_rm_failed", message);
@@ -1082,25 +1106,31 @@ export async function handleExtensionUpdate(
     });
 
     let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      extensionUpdate(libCtx, deps, {
-        extensionName: payload?.extensionName,
-        checkOnly: payload?.checkOnly ?? false,
-      }),
-      {
-        no_extensions: () => {},
-        extension_not_installed: () => {},
-        checking: () => {},
-        updating: () => {},
-        "orphans-pruned": () => {},
-        "shadowed-by-local": () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
+    await withManagedLockfileTransaction(
+      payload?.checkOnly
+        ? undefined
+        : extensionLockfileTransaction(ctx, marker, lockfilePath),
+      () =>
+        consumeStream(
+          extensionUpdate(libCtx, deps, {
+            extensionName: payload?.extensionName,
+            checkOnly: payload?.checkOnly ?? false,
+          }),
+          {
+            no_extensions: () => {},
+            extension_not_installed: () => {},
+            checking: () => {},
+            updating: () => {},
+            "orphans-pruned": () => {},
+            "shadowed-by-local": () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        ),
     );
 
     if (controller.signal.aborted) {
@@ -1113,13 +1143,6 @@ export async function handleExtensionUpdate(
       id: requestId,
       payload: { data: result ?? {} },
     });
-
-    if (
-      !payload?.checkOnly &&
-      await markExtensionChanges(ctx, marker, [lockfilePath], logger)
-    ) {
-      await pushChangedToRemote(ctx);
-    }
   } catch (error) {
     const raw = error instanceof Error
       ? error

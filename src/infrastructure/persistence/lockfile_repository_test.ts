@@ -22,7 +22,16 @@ import { join } from "@std/path";
 import { LockfileRepository } from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { UpstreamExtensionEntry } from "./upstream_extensions.ts";
+import {
+  lockfileAdvisoryLockPath,
+  registerManagedConfig,
+  resetManagedConfigRegistry,
+} from "./paths.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
+import {
+  readUpstreamExtensions,
+  type UpstreamExtensionEntry,
+} from "./upstream_extensions.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -430,4 +439,93 @@ Deno.test("LockfileRepository.restoreEntries: re-reads disk under the lock and r
     assertEquals(fresh.getEntry("@scope/sibling")?.version, "1.0.0");
     await assertRejects(() => Deno.lstat(`${path}.lock`), Deno.errors.NotFound);
   });
+});
+
+Deno.test("LockfileRepository.replaceAll: writes exactly the given entries and updates the cache", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+    await repo.writeEntry("@scope/old", "1.0.0", []);
+
+    const entries = {
+      "@scope/new": { version: "2.0.0", pulledAt: "2026-09-30T00:00:00.000Z" },
+    };
+    await repo.replaceAll(entries);
+
+    assertEquals(await readUpstreamExtensions(path), entries);
+    assertEquals(repo.getAllEntries(), entries);
+  });
+});
+
+Deno.test("LockfileRepository: a managed lockfile locks a sibling .lock file that sync never carries (swamp-club#2838)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const configBase = join(dir, "cache", "config");
+    const path = join(configBase, "upstream_extensions.json");
+    registerManagedConfig(repoDir, true, configBase);
+    try {
+      // A <lockfile>.lock another checkout uploaded is ignored: it no
+      // longer blocks writes.
+      await Deno.mkdir(configBase, { recursive: true });
+      await Deno.writeTextFile(`${path}.lock`, "");
+      const repo = await LockfileRepository.create(path);
+      await repo.writeEntry("@scope/foo", "1.0.0", []);
+      assertEquals(repo.getEntry("@scope/foo")?.version, "1.0.0");
+      await Deno.remove(`${path}.lock`);
+
+      // Writes contend on the sibling `.lock`, a name datastore sync
+      // excludes in both directions.
+      const lockPath = lockfileAdvisoryLockPath(path);
+      assertPathEquals(lockPath, join(configBase, ".lock"));
+      await Deno.writeTextFile(lockPath, "");
+      await assertRejects(
+        () => repo.writeEntry("@scope/bar", "1.0.0", []),
+        UserError,
+        "Could not acquire lock on upstream_extensions.json",
+      );
+      await Deno.remove(lockPath);
+
+      await repo.removeEntry("@scope/foo");
+      const leftovers: string[] = [];
+      for await (const entry of Deno.readDir(configBase)) {
+        leftovers.push(entry.name);
+      }
+      assertEquals(leftovers, ["upstream_extensions.json"]);
+    } finally {
+      resetManagedConfigRegistry();
+    }
+  });
+});
+
+Deno.test("LockfileRepository: repos sharing a filesystem datastore's lockfile contend on one lock", async () => {
+  await withTempDir(async (dir) => {
+    const shared = join(dir, "shared-datastore", "config");
+    const path = join(shared, "upstream_extensions.json");
+    registerManagedConfig(join(dir, "repo-a"), true, shared);
+    registerManagedConfig(join(dir, "repo-b"), true, shared);
+    try {
+      await Deno.mkdir(shared, { recursive: true });
+      // repo-a holds the lock; repo-b's write must wait on the same file.
+      await Deno.writeTextFile(lockfileAdvisoryLockPath(path), "");
+      const repoB = await LockfileRepository.create(path);
+      await assertRejects(
+        () => repoB.writeEntry("@scope/b", "1.0.0", []),
+        UserError,
+        "Could not acquire lock on upstream_extensions.json",
+      );
+      await Deno.remove(lockfileAdvisoryLockPath(path));
+    } finally {
+      resetManagedConfigRegistry();
+    }
+  });
+});
+
+Deno.test("lockfileAdvisoryLockPath: a lockfile outside every managed config base keeps <lockfile>.lock", () => {
+  const path = join(
+    Deno.cwd(),
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  assertEquals(lockfileAdvisoryLockPath(path), `${path}.lock`);
 });

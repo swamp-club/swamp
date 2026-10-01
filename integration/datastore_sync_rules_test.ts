@@ -231,10 +231,15 @@ Deno.test("serve code must not make bare markDirty() calls (swamp-club#2408, swa
   );
 });
 
-// CLI commands that write the extension lockfile publish exactly the paths
-// they changed. The bulk helpers call a bare markDirty(), which makes the
-// push walk the whole cache and skip deletion detection (swamp-club#2415,
-// swamp-club#2429). A new extension writer belongs in this list.
+// CLI commands that write the extension lockfile make the change inside a
+// managed lockfile transaction: under the datastore global lock it fetches
+// the shared lockfile first and publishes exactly the lockfile afterwards,
+// so a stale cache never overwrites other checkouts' entries
+// (swamp-club#2838). Publishing the lockfile after the command instead,
+// without the fetch, is the bug; so is a bulk push, whose bare markDirty()
+// makes the push walk the whole cache and skip deletion detection
+// (swamp-club#2415, swamp-club#2429). A new extension writer belongs in
+// this list.
 const EXTENSION_WRITER_FILES: readonly string[] = [
   "src/cli/commands/doctor_extensions.ts",
   "src/cli/commands/extension_install.ts",
@@ -245,12 +250,16 @@ const EXTENSION_WRITER_FILES: readonly string[] = [
   "src/cli/commands/repo_init.ts",
 ];
 const BULK_PUSH_HELPER_CALL = /\bpushManagedConfigChanges(?:Deferred)?\s*\(/;
-const PATH_PUSH_HELPER_CALL =
-  /\b(?:pushManagedConfigPaths(?:Deferred)?|pushManagedLockfileIfChangedDeferred)\s*\(/;
+const UNFETCHED_PUSH_HELPER_CALL = /\bpushManagedConfigPaths(?:Deferred)?\s*\(/;
+const TRANSACTION_CALLS = [
+  /\bcreateManagedLockfileTransaction\s*\(/,
+  /\bwithManagedLockfileTransaction\s*\(/,
+];
 
-Deno.test("extension writers publish by path, never through the bulk push helpers (swamp-club#2429)", async () => {
+Deno.test("extension writers change the lockfile inside a managed lockfile transaction (swamp-club#2429, swamp-club#2838)", async () => {
   const bulk: string[] = [];
-  const unpublished: string[] = [];
+  const unfetched: string[] = [];
+  const untransacted: string[] = [];
 
   for (const rel of EXTENSION_WRITER_FILES) {
     const code = (await Deno.readTextFile(join(ROOT, rel)))
@@ -258,7 +267,10 @@ Deno.test("extension writers publish by path, never through the bulk push helper
       .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
       .join("\n");
     if (BULK_PUSH_HELPER_CALL.test(code)) bulk.push(rel);
-    if (!PATH_PUSH_HELPER_CALL.test(code)) unpublished.push(rel);
+    if (UNFETCHED_PUSH_HELPER_CALL.test(code)) unfetched.push(rel);
+    if (!TRANSACTION_CALLS.every((call) => call.test(code))) {
+      untransacted.push(rel);
+    }
   }
 
   assertEquals(
@@ -266,16 +278,64 @@ Deno.test("extension writers publish by path, never through the bulk push helper
     [],
     "Extension writers must not call pushManagedConfigChanges or " +
       "pushManagedConfigChangesDeferred: their bare markDirty() turns the " +
-      "push into a full-cache walk that never detects deletions. Pass the " +
-      "files the command wrote to pushManagedConfigPathsDeferred, or use " +
-      "pushManagedLockfileIfChangedDeferred.",
+      "push into a full-cache walk that never detects deletions.",
   );
   assertEquals(
-    unpublished,
+    unfetched,
     [],
-    "These extension writers no longer publish the tier lockfile through " +
-      "a per-path helper. Publish it, or remove the file from " +
-      "EXTENSION_WRITER_FILES if it no longer writes the lockfile.",
+    "Extension writers must not publish the lockfile with " +
+      "pushManagedConfigPaths(Deferred): publishing without first fetching " +
+      "the datastore's lockfile under the global lock overwrites other " +
+      "checkouts' entries (swamp-club#2838). Run the change in " +
+      "withManagedLockfileTransaction(createManagedLockfileTransaction(...)).",
+  );
+  assertEquals(
+    untransacted,
+    [],
+    "These extension writers no longer run their lockfile change in " +
+      "withManagedLockfileTransaction(createManagedLockfileTransaction(...)). " +
+      "Wrap it, or remove the file from EXTENSION_WRITER_FILES if it no " +
+      "longer writes the lockfile.",
+  );
+});
+
+// Serve's extension handlers change the lockfile inside a managed lockfile
+// transaction too, and no longer push the lockfile after answering the
+// client (swamp-club#2838).
+const SERVE_EXTENSION_HANDLERS: readonly string[] = [
+  "handleExtensionInstall",
+  "handleExtensionPull",
+  "handleExtensionRm",
+  "handleExtensionUpdate",
+];
+
+Deno.test("serve extension handlers change the lockfile inside a managed lockfile transaction (swamp-club#2838)", async () => {
+  const content = await Deno.readTextFile(
+    join(ROOT, "src", "serve", "handlers", "admin_handlers.ts"),
+  );
+  const violations: string[] = [];
+  for (const name of SERVE_EXTENSION_HANDLERS) {
+    const start = content.indexOf(`export async function ${name}(`);
+    if (start === -1) {
+      violations.push(`${name}: not found`);
+      continue;
+    }
+    const next = content.indexOf("\nexport async function ", start + 1);
+    const body = content.slice(start, next === -1 ? undefined : next);
+    if (!body.includes("withManagedLockfileTransaction(")) {
+      violations.push(`${name}: no withManagedLockfileTransaction`);
+    }
+    if (body.includes("pushChangedToRemote(")) {
+      violations.push(`${name}: pushes after the change`);
+    }
+  }
+  assertEquals(
+    violations,
+    [],
+    "Serve extension handlers must run their change in " +
+      "withManagedLockfileTransaction(extensionLockfileTransaction(...)), " +
+      "which fetches and publishes the lockfile under the datastore global " +
+      "lock.\n\nViolations:\n" + violations.join("\n"),
   );
 });
 

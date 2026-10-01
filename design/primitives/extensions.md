@@ -1340,9 +1340,13 @@ Extensions with no lockfile entry have no pin and still resolve latest.
 
 ### Concurrency Safety
 
-All changes to `upstream_extensions.json` take an advisory lockfile
-(`upstream_extensions.json.lock`) with retries (10 attempts, 100ms backoff) and
-use atomic writes, so concurrent operations cannot corrupt it.
+All changes to `upstream_extensions.json` take an advisory lockfile with
+retries (10 attempts, 100ms backoff) and use atomic writes, so concurrent
+operations cannot corrupt it. The lock sits next to an in-repo lockfile
+(`upstream_extensions.json.lock`). For a managed lockfile it is a sibling file
+named exactly `.lock` (`lockfileAdvisoryLockPath`): datastore sync excludes
+that name, so a push never uploads it to other checkouts, and every repo or
+worktree writing the same lockfile shares it (swamp-club#2838).
 
 That lock covers a single entry write. The rest of an install or removal (the
 stage and swap of the extension's roots, the skills copy, orphan pruning, crash
@@ -1399,14 +1403,36 @@ enters a section afterwards has to take the lock.
 holding an inner one:
 
 1. the datastore global lock, when held (e.g. model validate, workflow
-   evaluate);
+   evaluate, or a managed lockfile transaction);
 2. `.swamp/.extension-install.lock` (auto-resolve, see
    [Auto-resolve safety](#auto-resolve-safety));
 3. `.swamp/pulled-extensions.lock`;
-4. `upstream_extensions.json.lock` (innermost).
+4. the lockfile's advisory lock (innermost).
 
-Work that needs the datastore global lock around an install (swamp-club#2495)
-takes it before the pulled-extensions lock, never inside apply.
+**Managed lockfile transactions.** On an extension-backed datastore with
+managedConfig the lockfile is shared through the datastore, which stores it
+last-writer-wins. Installs and removals then run their section inside a
+`ManagedLockfileTransaction` (`src/libswamp/extensions/managed_lockfile_transaction.ts`,
+swamp-club#2838). The command sets it up with `withManagedLockfileTransaction`.
+`installExtension` and `RemoveExtensionService` enter it through
+`inManagedLockfileTransaction`, after prepare and before the pulled-extensions
+lock, never inside apply. A transaction takes the global lock, fetches the
+shared lockfile, replays any change an earlier transaction failed to publish,
+runs the section, then records the change as a `LockfileDelta` and publishes the
+lockfile. Nested sections, such as dependency installs, join the outer
+transaction. A dependency that the fetched lockfile lists but that is missing
+from this checkout is installed at its pinned version, as a pending
+dependency of the parent, so a rollback restores the pinned entry it replaced.
+The files-present check applies only to a lockfile a transaction governs; an
+entry whose paths lie outside the repo (a pre-`.swamp` layout) still counts as
+installed. See [Datastores](../enablers/datastores.md) for the fetch and
+publish.
+
+A swamp from before swamp-club#2838 locks a managed lockfile through
+`upstream_extensions.json.lock`, not the sibling `.lock`, so an older and a
+newer swamp writing the same lockfile (a shared filesystem datastore, or
+worktrees sharing a cache) do not exclude each other. Upgrade every writer
+together.
 
 The auto-resolve lock stays separate. It covers inspecting, downloading,
 installing and loading, so a process that loses the race loads what the winner

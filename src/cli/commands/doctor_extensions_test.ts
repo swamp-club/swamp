@@ -17,12 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertStringIncludes,
+} from "@std/assert";
 import { join, resolve } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { rescanSkippedFor } from "./doctor_extensions.ts";
+import { rescanSkippedFor, runRepull } from "./doctor_extensions.ts";
+import { ManagedLockfileUnpublishedError } from "../../libswamp/mod.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -93,4 +98,38 @@ Deno.test("rescanSkippedFor: never skips on a filesystem datastore", () => {
     ),
     undefined,
   );
+});
+
+const unpublished = () =>
+  new ManagedLockfileUnpublishedError(new Error("push refused"));
+const silentLogger = { warn: () => {} };
+
+Deno.test("runRepull: a pull whose only failure is the publish counts as repaired and carries the error (swamp-club#2838)", async () => {
+  const outcome = await runRepull(
+    "@x/y",
+    () => Promise.resolve(() => Promise.reject(unpublished())),
+    silentLogger,
+  );
+  assertEquals(outcome.repaired, true);
+  assertInstanceOf(outcome.unpublished, ManagedLockfileUnpublishedError);
+});
+
+Deno.test("runRepull: a publish failure while reading the pin is not a repair", async () => {
+  const warnings: unknown[] = [];
+  const outcome = await runRepull(
+    "@x/y",
+    () => Promise.reject(unpublished()),
+    { warn: (...args: unknown[]) => void warnings.push(args) },
+  );
+  assertEquals(outcome, { repaired: false });
+  assertEquals(warnings.length, 1);
+});
+
+Deno.test("runRepull: any other pull failure is logged and not a repair", async () => {
+  const outcome = await runRepull(
+    "@x/y",
+    () => Promise.resolve(() => Promise.reject(new Error("download failed"))),
+    silentLogger,
+  );
+  assertEquals(outcome, { repaired: false });
 });

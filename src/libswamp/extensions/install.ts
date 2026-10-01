@@ -32,6 +32,10 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  ManagedLockfileUnpublishedError,
+  refreshManagedLockfile,
+} from "./managed_lockfile_transaction.ts";
+import {
   type ExtensionRef,
   type InstallContext,
   installExtension,
@@ -135,6 +139,15 @@ export interface ExtensionInstallDeps {
    * callers pass `.swamp/config/pulled-extensions`.
    */
   pulledExtensionsRoot?: string;
+  /**
+   * Whether to fetch the datastore's lockfile before choosing what to
+   * restore, under a managed lockfile transaction. Defaults to true:
+   * `extension install` restores what other checkouts installed. `repo
+   * upgrade`'s install pass sets it false, so an upgrade with nothing to
+   * restore never contacts the datastore; each entry it does install is
+   * still made against the datastore's lockfile (swamp-club#2838).
+   */
+  refreshFromDatastore?: boolean;
 }
 
 /**
@@ -168,8 +181,15 @@ export async function* extensionInstall(
       const lockfileRepository = await LockfileRepository.create(
         deps.lockfilePath,
       );
+      // Restore what the datastore's lockfile pins, not a stale cache
+      // (swamp-club#2838).
+      if (deps.refreshFromDatastore !== false) {
+        await refreshManagedLockfile(lockfileRepository);
+      }
       const upstream = lockfileRepository.getAllEntries();
       const entries: ExtensionInstallEntry[] = [];
+      // A publish that failed after an install landed (swamp-club#2838).
+      let unpublished: ManagedLockfileUnpublishedError | undefined;
       let installed = 0;
       let migrated = 0;
       let upToDate = 0;
@@ -280,7 +300,17 @@ export async function* extensionInstall(
           }
           const ref = parseExtensionRef(`${name}@${version}`);
           const install = deps.installExtensionFn ?? installExtension;
-          const result = await install(ref, installCtx);
+          let result: InstallResult | undefined;
+          try {
+            result = await install(ref, installCtx);
+          } catch (error) {
+            // Installed and recorded; only the datastore publish failed.
+            // Count it as done and raise the error after the report.
+            if (!(error instanceof ManagedLockfileUnpublishedError)) {
+              throw error;
+            }
+            unpublished ??= error;
+          }
 
           // For migrations, sweep the original legacy paths now that the
           // current-layout files are on disk. installExtension has already
@@ -329,6 +359,7 @@ export async function* extensionInstall(
         kind: "completed",
         data: { entries, installed, migrated, upToDate, failed },
       };
+      if (unpublished) throw unpublished;
     })(),
   );
 }
