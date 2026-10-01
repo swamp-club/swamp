@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   CANCELLED_STEP_ERROR,
   JobRun,
+  OWNER_STOPPED_STEP_ERROR,
   StepRun,
   StepSkipReasonSchema,
   STRANDED_STEP_ERROR,
@@ -1284,6 +1285,40 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
   assertEquals(run.jobs[0].steps[0].status, "succeeded");
 
   // jobB reset
+  assertEquals(run.jobs[1].status, "pending");
+  assertEquals(run.jobs[1].steps[0].status, "pending");
+});
+
+// failInFlightWork() tests
+
+Deno.test("WorkflowRun.failInFlightWork: fails running steps and jobs with the error", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+
+  run.failInFlightWork(OWNER_STOPPED_STEP_ERROR);
+
+  assertEquals(run.jobs[0].status, "failed");
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[1].status, "failed");
+  assertEquals(run.jobs[0].steps[1].error, OWNER_STOPPED_STEP_ERROR);
+  // The run's own status is the caller's to settle.
+  assertEquals(run.status, "running");
+});
+
+Deno.test("WorkflowRun.failInFlightWork: leaves pending and waiting work untouched", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].waitForApproval("Approve?");
+
+  run.failInFlightWork(OWNER_STOPPED_STEP_ERROR);
+
+  assertEquals(run.jobs[0].steps[0].status, "waiting_approval");
+  assertEquals(run.jobs[0].steps[1].status, "pending");
   assertEquals(run.jobs[1].status, "pending");
   assertEquals(run.jobs[1].steps[0].status, "pending");
 });

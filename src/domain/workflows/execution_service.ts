@@ -654,7 +654,7 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
  * cancellation. Cleanup steps run with a fresh signal bounded by this
  * timeout so they cannot hang indefinitely.
  */
-const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
+export const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
 
 /**
  * Waits, at most {@link CLEANUP_GRACE_TIMEOUT_MS}, for the nested workflow
@@ -3001,6 +3001,10 @@ export class WorkflowExecutionService {
               modelId: event.modelId,
               methodName: event.methodName,
             });
+          } else if (event.kind === "step_started") {
+            // Saved so a run whose owner is killed mid-step still shows the
+            // step started (`workflow cancel` settles it from this record).
+            await this.saveRun(workflow.id, run);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
@@ -3587,6 +3591,10 @@ export class WorkflowExecutionService {
               modelId: event.modelId,
               methodName: event.methodName,
             });
+          } else if (event.kind === "step_started") {
+            // Saved so a run whose owner is killed mid-step still shows the
+            // step started (`workflow cancel` settles it from this record).
+            await this.saveRun(workflow.id, existingRun);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");

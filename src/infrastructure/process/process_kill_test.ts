@@ -19,7 +19,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { isProcessAlive, killChildGroups } from "./process_kill.ts";
+import {
+  isProcessAlive,
+  killChildGroups,
+  killProcessTree,
+  withoutReusedPids,
+} from "./process_kill.ts";
 
 Deno.test({
   name: "killChildGroups: SIGKILLs the whole group a child leads",
@@ -82,4 +87,87 @@ Deno.test({
       await child.status;
     }
   },
+});
+
+Deno.test({
+  name:
+    "killProcessTree: kills a child the owner started while handling SIGTERM",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const pidFile = await Deno.makeTempFile({ prefix: "swamp-pid-" });
+    const readPid = async () =>
+      Number((await Deno.readTextFile(pidFile)).trim());
+    // Stands in for a run owner that starts a cleanup step on SIGTERM and
+    // outlives the wait. `$0` names it as a swamp process for the PID check.
+    const owner = new Deno.Command("sh", {
+      args: [
+        "-c",
+        `trap 'sleep 30 & echo $! > "${pidFile}"' TERM; echo ready > "${pidFile}"; while :; do sleep 0.1; done`,
+        "swamp-owner",
+      ],
+      stdout: "null",
+      stderr: "null",
+    }).spawn();
+    try {
+      await waitFor(
+        () =>
+          Deno.readTextFile(pidFile).then(
+            (text) => text.trim() === "ready",
+            () => false,
+          ),
+        "owner to trap SIGTERM",
+      );
+
+      assert(await killProcessTree(owner.pid, { maxWaitMs: 1000 }));
+
+      const status = await owner.status;
+      assertEquals(status.signal, "SIGKILL");
+      const cleanup = await readPid();
+      assert(cleanup > 0, "owner should have started its cleanup child");
+      await waitFor(
+        () => !isProcessAlive(cleanup),
+        "cleanup child to be SIGKILLed",
+      );
+    } finally {
+      try {
+        owner.kill("SIGKILL");
+      } catch { /* already gone */ }
+      await owner.status;
+      const pid = await readPid().catch(() => 0);
+      if (pid > 0) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch { /* already gone */ }
+      }
+      await Deno.remove(pidFile).catch(() => {});
+    }
+  },
+});
+
+Deno.test("withoutReusedPids: drops a pid that now belongs to another process", () => {
+  const before = new Map([[10, "Thu Oct  1 12:00:00 2026"], [
+    11,
+    "Thu Oct  1 12:00:01 2026",
+  ]]);
+  const after = new Map([[10, "Thu Oct  1 12:00:00 2026"], [
+    11,
+    "Thu Oct  1 12:00:40 2026",
+  ]]);
+  assertEquals(withoutReusedPids([10, 11], before, after), [10]);
+});
+
+Deno.test("withoutReusedPids: keeps a pid that no longer exists, for its process group", () => {
+  const before = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
+  assertEquals(withoutReusedPids([10], before, new Map()), [10]);
+});
+
+Deno.test("withoutReusedPids: drops a pid that was gone at the snapshot and is running now", () => {
+  const after = new Map([[10, "Thu Oct  1 12:00:40 2026"]]);
+  assertEquals(withoutReusedPids([10], new Map(), after), []);
+});
+
+Deno.test("withoutReusedPids: keeps every pid when start times are unavailable", () => {
+  const starts = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
+  assertEquals(withoutReusedPids([10, 11], undefined, starts), [10, 11]);
+  assertEquals(withoutReusedPids([10, 11], starts, undefined), [10, 11]);
 });

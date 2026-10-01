@@ -83,6 +83,54 @@ async function findChildPids(ppid: number): Promise<number[]> {
 }
 
 /**
+ * The start time `ps` reports for each of `pids` still running, keyed by pid.
+ * A pid that later reports a different start time belongs to another
+ * process. Returns undefined where start times cannot be read (Windows, or
+ * `ps` failing), and callers then trust the pids as before.
+ */
+async function processStartTimes(
+  pids: readonly number[],
+): Promise<Map<number, string> | undefined> {
+  if (Deno.build.os === "windows") return undefined;
+  const starts = new Map<number, string>();
+  if (pids.length === 0) return starts;
+  try {
+    const cmd = new Deno.Command("ps", {
+      args: ["-o", "pid=,lstart=", "-p", pids.join(",")],
+      stdout: "piped",
+      stderr: "null",
+    });
+    // ps exits non-zero when any pid is gone; the rest are still listed.
+    const output = await cmd.output();
+    for (const line of new TextDecoder().decode(output.stdout).split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (match) starts.set(Number(match[1]), match[2]);
+    }
+  } catch {
+    return undefined;
+  }
+  return starts;
+}
+
+/**
+ * Drops the pids that now belong to another process: those whose start time
+ * in `after` differs from the one in `before`. A pid missing from `after` no
+ * longer exists and is kept: while its process group lives on, the kernel
+ * does not hand the pid out again, so a group kill still reaches the group
+ * safely. Without start times on either side, every pid is kept.
+ */
+export function withoutReusedPids(
+  pids: readonly number[],
+  before: ReadonlyMap<number, string> | undefined,
+  after: ReadonlyMap<number, string> | undefined,
+): number[] {
+  if (before === undefined || after === undefined) return [...pids];
+  return pids.filter((pid) =>
+    !after.has(pid) || after.get(pid) === before.get(pid)
+  );
+}
+
+/**
  * Whether a signal can still reach `pid`. A negative `pid` probes the process
  * group `-pid`, which stays alive while any member remains.
  */
@@ -132,8 +180,10 @@ export async function killProcessTree(
     return false;
   }
 
-  // Snapshot children before killing parent (reparented after parent dies)
-  const children = await findChildPids(pid);
+  // Snapshot children before killing parent (reparented after parent dies),
+  // with their start times so a pid reused during the wait is left alone.
+  const snapshot = await findChildPids(pid);
+  const snapshotStarts = await processStartTimes(snapshot);
 
   try {
     Deno.kill(pid, "SIGTERM");
@@ -145,12 +195,27 @@ export async function killProcessTree(
     await new Promise((r) => setTimeout(r, 100));
   }
 
-  // Force kill parent if still alive
+  // Force kill parent if still alive. Snapshot its children again first:
+  // work it started while handling SIGTERM (a workflow's cleanup steps) is
+  // missing from the first snapshot and would outlive it.
+  let current: number[] = [];
   if (isProcessAlive(pid)) {
+    current = await findChildPids(pid);
     try {
       Deno.kill(pid, "SIGKILL");
     } catch { /* already gone */ }
   }
+
+  // A first-snapshot child that exited during the wait may have handed its
+  // pid to an unrelated process; that pid is left alone.
+  const children = [
+    ...current,
+    ...withoutReusedPids(
+      snapshot.filter((child) => !current.includes(child)),
+      snapshotStarts,
+      await processStartTimes(snapshot),
+    ),
+  ];
 
   // Force kill all children, and the process groups isolated shell steps
   // lead: swamp was SIGKILLed or exited, so its own escalation never ran.

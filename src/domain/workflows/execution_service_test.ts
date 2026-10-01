@@ -3940,17 +3940,19 @@ Deno.test("CONTRACT: run is persisted at start, after each level, and at complet
 
     await service.execute(workflow.name);
 
-    // Persistence contract for two-level workflow: 6 saves —
+    // Persistence contract for two-level workflow: 8 saves —
     //   1. After run.start() (status: running, before any level)
-    //   2. After step "compile" completes (per-step checkpoint)
-    //   3. After level 1 completes (level backstop)
-    //   4. After step "unit" completes (per-step checkpoint)
-    //   5. After level 2 completes (level backstop)
-    //   6. After run.complete() (status: succeeded)
+    //   2. After step "compile" starts (so a killed owner leaves it running)
+    //   3. After step "compile" completes (per-step checkpoint)
+    //   4. After level 1 completes (level backstop)
+    //   5. After step "unit" starts
+    //   6. After step "unit" completes (per-step checkpoint)
+    //   7. After level 2 completes (level backstop)
+    //   8. After run.complete() (status: succeeded)
     assertEquals(
       runRepo.saves.length,
-      6,
-      `expected 6 saves, got ${runRepo.saves.length}: ${
+      8,
+      `expected 8 saves, got ${runRepo.saves.length}: ${
         JSON.stringify(runRepo.saves)
       }`,
     );
@@ -15993,4 +15995,134 @@ Deno.test("DefaultStepExecutor: releases the step lock when the step fails befor
   assertEquals(lock?.flushes(), 1);
   assertEquals(outputs.length, 0);
   assertEquals(tracker.registrations.length, 0);
+});
+
+/** Keeps a copy of every saved run, as a killed owner leaves it on disk. */
+class SnapshottingWorkflowRunRepository extends InMemoryWorkflowRunRepository {
+  saved: WorkflowRunData[] = [];
+
+  override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    this.saved.push(structuredClone(run.toData()));
+    return super.save(workflowId, run);
+  }
+
+  /** The `job/step` status pairs in the last saved copy. */
+  lastSavedStatus(jobName: string, stepName: string): string[] {
+    const last = this.saved[this.saved.length - 1];
+    const job = last?.jobs.find((j) => j.jobName === jobName);
+    const step = job?.steps.find((s) => s.stepName === stepName);
+    return [job?.status ?? "missing", step?.status ?? "missing"];
+  }
+}
+
+/** A step executor that holds `step` until released. */
+function blockingExecutor(stepName: string): {
+  executor: StepExecutor;
+  release: () => void;
+} {
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => release = resolve);
+  return {
+    release: () => release(),
+    executor: {
+      async execute(step: Step): Promise<unknown> {
+        if (step.name === stepName) await released;
+        return { executed: true };
+      },
+    },
+  };
+}
+
+Deno.test("run: saves the run while a started step is still running", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SnapshottingWorkflowRunRepository();
+    const { executor, release } = blockingExecutor("step1");
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const finished = service.execute(workflow.name);
+    try {
+      await waitFor(
+        () =>
+          runRepo.lastSavedStatus("job1", "step1").join() === "running,running",
+        "the started step saved as running",
+      );
+    } finally {
+      release();
+    }
+    assertEquals((await finished).status, "succeeded");
+  });
+});
+
+Deno.test("resume: saves the run while a started step is still running", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SnapshottingWorkflowRunRepository();
+    const { executor, release } = blockingExecutor("s");
+    const workflow = Workflow.create({
+      name: "resume-saves-started-step",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+            Step.create({
+              name: "s",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    const resumed = (async () => {
+      let status: string | undefined;
+      for await (const event of service.resume(workflow.name, suspended.id)) {
+        if (event.kind === "completed") status = event.run.status;
+      }
+      return status;
+    })();
+    try {
+      await waitFor(
+        () => runRepo.lastSavedStatus("j", "s").join() === "running,running",
+        "the started step saved as running",
+      );
+    } finally {
+      release();
+    }
+    assertEquals(await resumed, "succeeded");
+  });
 });
