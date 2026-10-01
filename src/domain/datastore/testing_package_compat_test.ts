@@ -28,7 +28,10 @@
 import type { DatastoreProvider as CanonicalDatastoreProvider } from "./datastore_provider.ts";
 import type { DistributedLock as CanonicalDistributedLock } from "./distributed_lock.ts";
 import type { DatastoreVerifier as CanonicalDatastoreVerifier } from "./datastore_health.ts";
-import type { DatastoreSyncService as CanonicalDatastoreSyncService } from "./datastore_sync_service.ts";
+import type {
+  DatastoreSyncService as CanonicalDatastoreSyncService,
+  SyncCapabilities as CanonicalSyncCapabilities,
+} from "./datastore_sync_service.ts";
 
 import type {
   DatastoreProvider as TestingDatastoreProvider,
@@ -36,6 +39,7 @@ import type {
   DatastoreVerifier as TestingDatastoreVerifier,
   DistributedLock as TestingDistributedLock,
   LockInfo as TestingLockInfo,
+  SyncCapabilities as TestingSyncCapabilities,
 } from "../../../packages/testing/datastore_types.ts";
 
 // DistributedLock: verify method signatures match.
@@ -75,7 +79,33 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _markDirtyWithRelPath: ReturnType<
     CanonicalDatastoreSyncService["markDirty"]
   > = sync.markDirty({ relPath: "data/foo/v1/raw" });
-  void [_pull, _push, _markDirty, _markDirtyWithRelPath];
+  // The namespace and subdirs options and every capability flag line up
+  // with the canonical types.
+  const _scopedPull: ReturnType<CanonicalDatastoreSyncService["pullChanged"]> =
+    sync.pullChanged({ namespace: "ns", subdirs: ["config"] });
+  const _caps:
+    | ReturnType<
+      NonNullable<CanonicalDatastoreSyncService["capabilities"]>
+    >
+    | undefined = sync.capabilities?.();
+  const _testingCaps: TestingSyncCapabilities | undefined = (
+    {} as CanonicalDatastoreSyncService
+  ).capabilities?.();
+  void [
+    _pull,
+    _push,
+    _markDirty,
+    _markDirtyWithRelPath,
+    _scopedPull,
+    _caps,
+    _testingCaps,
+  ];
+}
+
+// SyncCapabilities: every canonical flag exists on the testing type.
+function _checkSyncCapabilitiesFields(caps: Required<TestingSyncCapabilities>) {
+  const _all: Required<CanonicalSyncCapabilities> = caps;
+  void [_all];
 }
 
 // DatastoreProvider: verify methods exist and return compatible types.
@@ -110,6 +140,7 @@ Deno.test("testing package datastore types: compile-time compatibility check", (
     _checkDistributedLockFields,
     _checkDatastoreVerifierFields,
     _checkDatastoreSyncServiceFields,
+    _checkSyncCapabilitiesFields,
     _checkDatastoreProviderFields,
     _checkLockInfoFields,
   ];

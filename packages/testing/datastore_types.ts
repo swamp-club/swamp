@@ -76,6 +76,16 @@ export interface SyncContext {
 export interface SyncCapabilities {
   scopedSync?: boolean;
   lazyHydration?: boolean;
+  /** Supports namespace-scoped sync via `DatastoreSyncOptions.namespace`. */
+  namespacedSync?: boolean;
+  /** Supports two-phase push: `preparePush` then `commitPush`. */
+  twoPhaseSync?: boolean;
+  /** Supports a dry-run `previewPush`. */
+  previewPush?: boolean;
+  /** Supports a control-plane store for small remote records. */
+  controlPlane?: boolean;
+  /** Honors `DatastoreSyncOptions.subdirs` on `pullChanged`. */
+  configRefresh?: boolean;
 }
 
 /** Options accepted by sync service methods. */
@@ -98,6 +108,17 @@ export interface DatastoreSyncOptions {
    * when `hydrationStrategy` is `"lazy"` on the initial pull.
    */
   metadataOnly?: boolean;
+  /**
+   * Namespace whose data subtree this sync operation targets. When unset,
+   * the extension syncs everything.
+   */
+  namespace?: string;
+  /**
+   * Restricts `pullChanged` to the listed datastore subdirectories.
+   * Extensions that advertise `configRefresh` should honor it; others may
+   * ignore it and pull everything.
+   */
+  subdirs?: readonly string[];
 }
 
 /** Interface for datastore synchronization services. */

@@ -162,6 +162,30 @@ export type {
   SyncServiceConformanceOptions,
 } from "./datastore_conformance.ts";
 
+export {
+  createInMemoryRemote,
+  LEGACY_EXTENSION_SEMANTICS,
+} from "./in_memory_remote.ts";
+
+export type {
+  ConnectOptions,
+  FailNextOptions,
+  InMemoryPushManifest,
+  InMemoryRemote,
+  InMemoryRemoteFailure,
+  InMemoryRemoteOpRecord,
+  InMemoryRemoteOptions,
+  InMemoryRemoteSemantics,
+  InMemorySyncService,
+} from "./in_memory_remote.ts";
+
+export { createRecordingSyncService } from "./recording_sync_service.ts";
+
+export type {
+  RecordedSyncEvent,
+  RecordingSyncService,
+} from "./recording_sync_service.ts";
+
 // --- Reports ---
 
 export { createReportTestContext } from "./report_test_context.ts";

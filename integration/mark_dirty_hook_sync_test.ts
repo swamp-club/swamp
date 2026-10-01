@@ -27,12 +27,9 @@ import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { isAbsolute, join } from "@std/path";
+import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
 import { Data } from "../src/domain/data/data.ts";
-import type {
-  DatastoreSyncOptions,
-  DatastoreSyncService,
-} from "../src/domain/datastore/datastore_sync_service.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import {
@@ -57,26 +54,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
       await Deno.remove(tempDir, { recursive: true });
     }
   }
-}
-
-function createRecordingSyncService(): {
-  service: DatastoreSyncService;
-  marks: Array<string | undefined>;
-} {
-  const marks: Array<string | undefined> = [];
-  const service: DatastoreSyncService = {
-    pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
-      return Promise.resolve(0);
-    },
-    pushChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
-      return Promise.resolve(0);
-    },
-    markDirty(options?: DatastoreSyncOptions): Promise<void> {
-      marks.push(options?.relPath);
-      return Promise.resolve();
-    },
-  };
-  return { service, marks };
 }
 
 function assertCacheRelative(marks: Array<string | undefined>): void {

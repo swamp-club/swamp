@@ -164,6 +164,65 @@ Deno.test("lock acquire and release", async () => {
 | `lockAcquireFails` | `false`                       | Make lock acquire reject         |
 | `withSyncService`  | `false`                       | Enable `createSyncService`       |
 
+## `createInMemoryRemote`
+
+An in-memory remote datastore shared by several simulated machines. Each
+`connect(cacheDir)` returns a sync service bound to that cache directory, with
+two-phase push. By default it behaves like `@swamp/s3-datastore` and
+`@swamp/gcs-datastore` today, gaps included:
+
+- a bare `markDirty()` makes the next push a full walk that deletes nothing;
+- a write that was never marked is never pushed;
+- pulls never delete local files and overwrite locally dirty ones;
+- a pull of a remote that moved drops a pending push.
+
+The source header cites the extension code behind each behaviour.
+
+```typescript
+import { createInMemoryRemote } from "@swamp-club/swamp-testing";
+
+Deno.test("a marked file reaches another machine", async () => {
+  const remote = createInMemoryRemote();
+  const alice = remote.connect(aliceCache, { instance: "alice" });
+  const bob = remote.connect(bobCache, { instance: "bob" });
+
+  await Deno.writeTextFile(`${aliceCache}/note`, "hi");
+  await alice.markDirty({ relPath: "note" });
+  await alice.pushChanged();
+  await bob.pullChanged();
+
+  assertEquals(await Deno.readTextFile(`${bobCache}/note`), "hi");
+});
+```
+
+| Option          | Default                      | Description                                                   |
+| --------------- | ---------------------------- | ------------------------------------------------------------- |
+| `semantics`     | `LEGACY_EXTENSION_SEMANTICS` | `pullDeletes`, `bulkDisablesDeletes`, `pullClearsPendingPush` |
+| `dirtyPathsCap` | `2000`                       | Marked paths kept before overflowing to bulk                  |
+| `capabilities`  | `{ twoPhaseSync: true }`     | What every connected service advertises                       |
+
+The remote also offers `files()` (committed content),
+`failNext(op, error?,
+{ afterUploads?, instance? })`, `offline(boolean)`,
+`ops()` (an ordered `{ instance, op, paths, deleted }` log) and
+`resetSidecar(cacheDir)`.
+
+Not modelled: namespaces, lazy hydration, the control plane and `previewPush`.
+
+## `createRecordingSyncService`
+
+A sync service that records calls and does nothing else. Pull and push resolve
+to 0.
+
+```typescript
+import { createRecordingSyncService } from "@swamp-club/swamp-testing";
+
+const { service, marks, events } = createRecordingSyncService();
+await service.markDirty({ relPath: "data/a" });
+await service.markDirty();
+assertEquals(marks, ["data/a", undefined]);
+```
+
 ## `createReportTestContext`
 
 Fake `ReportContext` for testing report `execute` functions. Supports all three
