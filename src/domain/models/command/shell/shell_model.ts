@@ -27,7 +27,10 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
-import { createSafeMethodEnv } from "../../../remote/environment_snapshot.ts";
+import {
+  createSafeMethodEnv,
+  NESTED_SWAMP_ENV_VARS,
+} from "../../../remote/environment_snapshot.ts";
 import { traceHeadersToEnv } from "../../execution_envelope.ts";
 import { selectShellStrategy } from "./shell_strategy.ts";
 
@@ -142,7 +145,7 @@ async function executeCommand(
     // This execution's own trace context overrides whatever the shared
     // process env holds; explicit user env still wins over both.
     const processEnv = {
-      ...createSafeMethodEnv(Deno.env.toObject()),
+      ...createSafeMethodEnv(Deno.env.toObject(), NESTED_SWAMP_ENV_VARS),
       ...traceHeadersToEnv(context.traceHeaders),
       ...shellEnv,
     };

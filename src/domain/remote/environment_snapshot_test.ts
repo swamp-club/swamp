@@ -23,6 +23,7 @@ import {
   createSafeMethodEnv,
   isDeniedEnvVar,
   isSwampEnvVar,
+  NESTED_SWAMP_ENV_VARS,
   overlayEnvironment,
   stripInheritedTraceContext,
   stripWorkerCredentials,
@@ -255,4 +256,26 @@ Deno.test("stripInheritedTraceContext: removes TRACEPARENT and TRACESTATE in any
     }),
     { OTEL_SERVICE_NAME: "worker", KEEP: "c" },
   );
+});
+
+Deno.test("createSafeMethodEnv: NESTED_SWAMP_ENV_VARS keeps the nested-swamp vars and no credential", () => {
+  const env = {
+    SWAMP_NESTED_GATE_PASS: "4242.e30.c2ln",
+    SWAMP_LOCK_HOLDER_PID: "4242",
+    SWAMP_API_KEY: "swamp_secret",
+    SWAMP_API_KEY_FILE: "/run/secrets/swamp",
+    SWAMP_SIGNIN_TOKEN: "e30.c2ln",
+    SWAMP_CLUB_URL: "https://swamp-club.test",
+    SWAMP_SERVER_TOKEN: "secret",
+    SWAMP_SERVER_TOKEN_FILE: "/run/secrets/server",
+    SWAMP_WORKER_TOKEN: "secret",
+    SWAMP_WORKER_TOKEN_FILE: "/run/secrets/worker",
+    SWAMP_ORCHESTRATOR_URL: "wss://orchestrator.test",
+    PATH: "/usr/bin",
+  };
+  assertEquals(createSafeMethodEnv(env, NESTED_SWAMP_ENV_VARS), {
+    SWAMP_NESTED_GATE_PASS: "4242.e30.c2ln",
+    SWAMP_LOCK_HOLDER_PID: "4242",
+    PATH: "/usr/bin",
+  });
 });

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { verifyProof } from "./proof_verifier.ts";
+import { verifyProof, verifyProofSignature } from "./proof_verifier.ts";
 import {
   base64urlEncode,
   canonicalJson,
@@ -287,4 +287,87 @@ Deno.test("verifyProof: a signin token with no cached keys is checked against th
     valid: false,
     reason: "signature verification failed",
   });
+});
+
+Deno.test("verifyProofSignature: accepts a signed proof without its API key", async () => {
+  const keys = await generateTestKeyPair();
+  const payload: ProofPayload = {
+    fpr: await computeProofFingerprint(TEST_API_KEY),
+    iat: Math.floor(Date.now() / 1000),
+    kid: keys.kid,
+    org: ["test-collective"],
+    scopes: [],
+    sub: "user-123",
+  };
+  const { proofJson, signatureB64 } = await signTestProof(
+    payload,
+    keys.privateKey,
+  );
+
+  const result = await verifyProofSignature(proofJson, signatureB64, [
+    { kid: keys.kid, key: keys.publicKeyB64 },
+  ]);
+  assertEquals(result, { valid: true, payload });
+});
+
+Deno.test("verifyProofSignature: rejects a signature from another key", async () => {
+  const keys = await generateTestKeyPair();
+  const otherKeys = await generateTestKeyPair();
+  const payload: ProofPayload = {
+    fpr: "any",
+    iat: Math.floor(Date.now() / 1000),
+    kid: keys.kid,
+    org: [],
+    scopes: [],
+    sub: "user-1",
+  };
+  const { proofJson } = await signTestProof(payload, keys.privateKey);
+  const { signatureB64: wrongSig } = await signTestProof(
+    payload,
+    otherKeys.privateKey,
+  );
+
+  const result = await verifyProofSignature(proofJson, wrongSig, [
+    { kid: keys.kid, key: keys.publicKeyB64 },
+  ]);
+  assertEquals(result, {
+    valid: false,
+    reason: "signature verification failed",
+  });
+});
+
+Deno.test("verifyProofSignature: rejects an expired proof unless ignoreExpiry is set", async () => {
+  const keys = await generateTestKeyPair();
+  const now = Math.floor(Date.now() / 1000);
+  const payload: ProofPayload = {
+    exp: now - 3600,
+    fpr: "any",
+    iat: now - 7200,
+    kid: keys.kid,
+    org: [],
+    scopes: [],
+    sub: "user-1",
+  };
+  const { proofJson, signatureB64 } = await signTestProof(
+    payload,
+    keys.privateKey,
+  );
+  const publicKeys = [{ kid: keys.kid, key: keys.publicKeyB64 }];
+
+  assertEquals(
+    await verifyProofSignature(proofJson, signatureB64, publicKeys, { now }),
+    { valid: false, reason: "proof expired" },
+  );
+  assertEquals(
+    await verifyProofSignature(proofJson, signatureB64, publicKeys, {
+      now,
+      ignoreExpiry: true,
+    }),
+    { valid: true, payload },
+  );
+});
+
+Deno.test("verifyProofSignature: rejects malformed proof JSON", async () => {
+  const result = await verifyProofSignature("not json", "sig", []);
+  assertEquals(result, { valid: false, reason: "malformed proof payload" });
 });

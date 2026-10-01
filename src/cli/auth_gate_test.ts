@@ -24,6 +24,7 @@ import {
   type AuthGateCredential,
   type AuthGateDeps,
   blockMessage,
+  type NestedGateDeps,
   runAuthGate,
   runProofRefresh,
 } from "./auth_gate.ts";
@@ -58,6 +59,7 @@ interface Harness {
     answer?: IdentityCheckResult;
     now?: number;
     canWrite?: boolean;
+    nested?: NestedGateDeps;
   }): AuthGateDeps;
 }
 
@@ -94,6 +96,7 @@ async function withHarness(
         },
         now: () => options.now ?? NOW,
         canWrite: options.canWrite,
+        nested: options.nested,
       }),
     });
   } finally {
@@ -567,5 +570,164 @@ Deno.test("runAuthGate: a process that does not own the config dir reads but nev
     assert(owned.kind === "pass");
     assertEquals(owned.authMode, "verified");
     assertEquals(owned.refresh, undefined);
+  });
+});
+
+const PARENT_PID = 4242;
+
+/** Nested deps that hand over `minted` from PARENT_PID. */
+function nestedFrom(
+  minted: MintedProof | null,
+  ancestor: NestedGateDeps["checkAncestor"] = () => ({ kind: "ok" }),
+): NestedGateDeps & { readonly checked: number[] } {
+  const checked: number[] = [];
+  return {
+    checked,
+    loadPass: () =>
+      minted
+        ? {
+          parentPid: PARENT_PID,
+          proof: minted.proof,
+          signature: minted.signature,
+        }
+        : null,
+    checkAncestor: (pid) => {
+      checked.push(pid);
+      return ancestor(pid);
+    },
+  };
+}
+
+/** Cache the test key's public key, the way an earlier whoami would. */
+async function cacheTestKey(h: Harness): Promise<void> {
+  await saveProof(
+    h,
+    await mintTestProof(h.key, "some_other_key", { iat: NOW - DAY }),
+  );
+}
+
+Deno.test("runAuthGate: no credential with a valid nested pass passes and hands it on", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const parentProof = await mintTestProof(h.key, "parent_key", {
+      iat: NOW - DAY,
+    });
+    const nested = nestedFrom(parentProof);
+    const outcome = await runAuthGate(h.deps({ credential: null, nested }));
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.authMode, "verified");
+    assertEquals(outcome.handoff, {
+      proof: parentProof.proof,
+      signature: parentProof.signature,
+    });
+    assertEquals(nested.checked, [PARENT_PID]);
+    assertEquals(h.calls.length, 0);
+  });
+});
+
+Deno.test("runAuthGate: a nested pass is accepted past its proof's exp", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const expired = await mintTestProof(h.key, "parent_key", {
+      iat: NOW - 30 * DAY,
+      exp: NOW - 16 * DAY,
+    });
+    const outcome = await runAuthGate(
+      h.deps({ credential: null, nested: nestedFrom(expired) }),
+    );
+    assertEquals(outcome.kind, "pass");
+  });
+});
+
+Deno.test("runAuthGate: a nested pass signed by an untrusted key blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const forged = await mintTestProof(
+      await generateTestSigningKey(h.key.publicKey.kid),
+      "parent_key",
+      { iat: NOW },
+    );
+    const nested = nestedFrom(forged);
+    const outcome = await runAuthGate(h.deps({ credential: null, nested }));
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
+    // The signature fails first; ancestry is never consulted.
+    assertEquals(nested.checked, []);
+  });
+});
+
+Deno.test("runAuthGate: a nested pass from a pid that is not a live swamp ancestor blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const parentProof = await mintTestProof(h.key, "parent_key", { iat: NOW });
+    const outcome = await runAuthGate(
+      h.deps({
+        credential: null,
+        nested: nestedFrom(
+          parentProof,
+          () => ({ kind: "failed", reason: "not an ancestor" }),
+        ),
+      }),
+    );
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
+  });
+});
+
+Deno.test("runAuthGate: a credential takes precedence over a nested pass", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const parentProof = await mintTestProof(h.key, "parent_key", { iat: NOW });
+    const nested = nestedFrom(parentProof);
+    // The run's own key has no proof, so it is checked live and the
+    // rejection blocks, whatever the inherited pass says.
+    const outcome = await runAuthGate(
+      h.deps({
+        nested,
+        answer: { outcome: { kind: "rejected", status: 401 } },
+      }),
+    );
+    assertEquals(outcome, { kind: "block", reason: { kind: "revoked" } });
+    assertEquals(nested.checked, []);
+  });
+});
+
+Deno.test("runAuthGate: a pass on a cached proof hands that proof on", async () => {
+  await withHarness(async (h) => {
+    const cached = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - DAY,
+      exp: NOW + DAY,
+    });
+    await saveProof(h, cached);
+    const outcome = await runAuthGate(h.deps());
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.handoff, {
+      proof: cached.proof,
+      signature: cached.signature,
+    });
+  });
+});
+
+Deno.test("runAuthGate: a live verification hands on the fresh proof", async () => {
+  await withHarness(async (h) => {
+    const fresh = await mintTestProof(h.key, API_KEY, {
+      iat: NOW,
+      exp: NOW + 14 * DAY,
+    });
+    const outcome = await runAuthGate(h.deps({ answer: verifiedWith(fresh) }));
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.handoff, {
+      proof: fresh.proof,
+      signature: fresh.signature,
+    });
+  });
+});
+
+Deno.test("runAuthGate: a fail-open pass with no proof hands nothing on", async () => {
+  await withHarness(async (h) => {
+    const outcome = await runAuthGate(
+      h.deps({ answer: { outcome: { kind: "server_error", status: 503 } } }),
+    );
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.authMode, "offline");
+    assertEquals(outcome.handoff, undefined);
   });
 });

@@ -192,8 +192,13 @@ import {
   authGateBlockedError,
   type AuthGateOutcome,
   createAuthGateDeps,
+  type GateHandoff,
   runAuthGate,
 } from "./auth_gate.ts";
+import {
+  formatNestedGatePass,
+  NESTED_GATE_PASS_ENV,
+} from "../domain/auth/nested_gate_pass.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -2106,6 +2111,25 @@ async function gateWhoamiOr(
 }
 
 /**
+ * Hand this run's pass down to any swamp it starts (design/surfaces/
+ * auth-gate.md, "Nested runs"), through the process env as
+ * SWAMP_LOCK_HOLDER_PID is. Each gated run re-asserts its own pass, and one
+ * that passed with no proof clears any it inherited, so a pass always names
+ * the nearest swamp ancestor. Fixed for the life of the process: the gate
+ * runs once.
+ */
+function publishNestedGatePass(handoff: GateHandoff | undefined): void {
+  if (handoff) {
+    Deno.env.set(
+      NESTED_GATE_PASS_ENV,
+      formatNestedGatePass({ parentPid: Deno.pid, ...handoff }),
+    );
+  } else {
+    Deno.env.delete(NESTED_GATE_PASS_ENV);
+  }
+}
+
+/**
  * Runs the weekly proof refresh the gate scheduled, if any. Best effort and
  * bounded by its own timeout: it never changes the run that already passed.
  * It runs at teardown, so a long-running `serve` or `worker` refreshes only
@@ -2311,6 +2335,7 @@ async function runInvocation(
       throw error;
     }
     telemetryCtx?.service.setAuthMode(gateOutcome.authMode);
+    publishNestedGatePass(gateOutcome.handoff);
   }
 
   // Read marker once for log level, extension loading, auto-resolver,

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   decideAfterCheck,
@@ -65,17 +65,64 @@ const arbSince = fc.option(
   { nil: undefined },
 );
 
-Deno.test("auth gate property: no credential always blocks", () => {
+const arbUnusableNestedPass = fc.option(
+  fc.oneof(
+    fc.constant({ kind: "absent" as const }),
+    fc.record({ kind: fc.constant("invalid" as const), reason: fc.string() }),
+  ),
+  { nil: undefined },
+);
+
+const arbNestedPass = fc.option(
+  fc.oneof(
+    fc.constant({ kind: "valid" as const }),
+    fc.constant({ kind: "absent" as const }),
+    fc.record({ kind: fc.constant("invalid" as const), reason: fc.string() }),
+  ),
+  { nil: undefined },
+);
+
+Deno.test("auth gate property: no credential without a valid nested pass always blocks", () => {
   fc.assert(
-    fc.property(arbProof, arbTime, arbSince, (proof, now, last) => {
-      const d = decideBeforeCheck({
-        credentialPresent: false,
-        proof,
-        lastTokenCheckAt: last,
-        now,
-      });
-      return d.kind === "block" && d.reason.kind === "no_credential";
-    }),
+    fc.property(
+      arbProof,
+      arbTime,
+      arbSince,
+      arbUnusableNestedPass,
+      (proof, now, last, nestedPass) => {
+        const d = decideBeforeCheck({
+          credentialPresent: false,
+          proof,
+          lastTokenCheckAt: last,
+          nestedPass,
+          now,
+        });
+        return d.kind === "block" && d.reason.kind === "no_credential";
+      },
+    ),
+  );
+});
+
+Deno.test("auth gate property: a nested pass never changes a run that has a credential", () => {
+  fc.assert(
+    fc.property(
+      arbProof,
+      arbTime,
+      arbSince,
+      arbNestedPass,
+      (proof, now, last, nestedPass) => {
+        const input = {
+          credentialPresent: true,
+          proof,
+          lastTokenCheckAt: last,
+          now,
+        };
+        assertEquals(
+          decideBeforeCheck({ ...input, nestedPass }),
+          decideBeforeCheck(input),
+        );
+      },
+    ),
   );
 });
 

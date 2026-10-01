@@ -171,7 +171,11 @@ async function main() {
       "--allow-run",
       "--allow-sys",
       "--allow-net",
-      "--allow-ffi", // libc getrlimit/setrlimit for fd-limit raising at serve startup
+      // libc getrlimit/setrlimit for fd-limit raising at serve startup, and
+      // libc/libproc for the auth gate's nested-run ancestry check
+      // (src/infrastructure/runtime/process_ancestry.ts). Without it every
+      // nested swamp in a shell step is blocked.
+      "--allow-ffi",
       "--include",
       ".claude/skills",
       "--include",

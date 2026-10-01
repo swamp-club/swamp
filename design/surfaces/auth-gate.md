@@ -11,9 +11,10 @@ down: a user who has proved who they are once keeps running.
 
 ## Rules
 
-1. **No credential blocks.** A credential is the API key in `auth.json` (from
-   `swamp auth login`) or a collective key from `--club-api-key-file`,
-   `SWAMP_API_KEY_FILE` or `SWAMP_API_KEY`.
+1. **No credential blocks, except in a nested run.** A credential is the API
+   key in `auth.json` (from `swamp auth login`) or a collective key from
+   `--club-api-key-file`, `SWAMP_API_KEY_FILE` or `SWAMP_API_KEY`. A swamp
+   started by another swamp that passed may pass on its pass instead (rule 6).
 2. **A valid proof passes with no network call.** A proof is a payload signed by
    swamp-club with Ed25519. It names the key it was issued for by fingerprint
    (`fpr`), and it may expire (`exp`). `/api/whoami` returns one with every
@@ -25,6 +26,10 @@ down: a user who has proved who they are once keeps running.
    proof, a 5xx from swamp-club lets the run continue as `offline` for 24 hours
    from the first one recorded. After that the gate blocks until a check
    succeeds.
+6. **A nested run inherits its ancestor's pass.** Without a credential of its
+   own, a swamp passes when it holds a pass whose proof swamp-club signed and
+   whose issuer is a live ancestor running the same executable. See
+   [Nested runs](#nested-runs).
 
 The policy is a pure domain service (`src/domain/auth/auth_gate_policy.ts`).
 The orchestrator does the I/O (`src/cli/auth_gate.ts`). It runs at the start
@@ -114,6 +119,51 @@ token therefore starts a fresh 24-hour window on every job while swamp-club
 returns 5xx. Only swamp-club can produce a 5xx, so a client cannot trigger
 this. CI should set the signin token.
 
+## Nested runs
+
+A workflow shell step that runs `swamp` starts a nested swamp. Method children
+inherit no `SWAMP_*` credential (swamp-club#2032,
+[remote execution](../enablers/remote-execution.md)), so in CI, where the key
+lives only in the environment, the nested swamp has no credential. Instead it
+inherits a pass.
+
+Every gated run that passes sets `SWAMP_NESTED_GATE_PASS` in its own
+environment to `<pid>.<base64url proof>.<signature>`: its own pid and the
+proof its pass rests on. That is the valid cached or signin-token proof, or
+the fresh one a verified whoami returned. A run that passed with no proof
+(offline, fail-open) clears any pass it inherited and hands nothing down.
+The shell model lets this one variable through to its children, next to
+`SWAMP_LOCK_HOLDER_PID`. The value is fixed for the life of the process,
+because the gate runs once.
+
+A swamp with no credential accepts the pass when both checks hold:
+
+- **swamp-club signed the proof.** The signature is checked against the keys
+  cached in `auth_verified.json`, then the embedded key, never a key the pass
+  supplies. The fingerprint is not checked, since the nested run has no key to
+  match. `exp` is not enforced: a long-running `serve` or `worker` runs on the
+  proof it started with, which expires after 14 days, and its children must not
+  be stricter than it is.
+- **The issuer is a live ancestor running this executable.** The gate walks
+  the live parent chain upward from its own process, reading `/proc` on Linux
+  and libproc on macOS (both through libc over FFI, because Deno reads
+  `/proc/<pid>` only with `--allow-all`). The issuer's executable must resolve
+  to the same file. On Linux, a binary replaced in place by `swamp update`
+  still matches by its install path. Windows is not supported, so the check
+  fails there.
+
+A pass that fails either check blocks with `no_credential`, the same as having
+no pass. A swamp that has its own credential ignores any pass it inherits and
+follows rules 1 to 5, live checks and revocation included.
+
+A nested run has no API key, so nested commands that call swamp-club, such as
+`extension push`, `issue` or `auth whoami`, fail as they did before the gate.
+Run them as their own step, or as the outer command. A swamp at another path
+than its parent (another installed version, or a parent run with
+`deno run dev`) fails the ancestry check unless it has its own credential.
+Revocation is inherited: a key revoked while a long-running parent runs keeps
+its children passing until the parent exits.
+
 ## Weekly refresh
 
 A file proof older than seven days is refreshed after the command finishes.
@@ -153,7 +203,7 @@ that the user's own runs cannot read.
 
 `invocationContext.authMode` records how a run got through:
 
-- `verified`: a valid proof, or a verified answer this run.
+- `verified`: a valid proof, a verified answer this run, or a nested pass.
 - `offline`: swamp-club could not be checked, and a proof or the fail-open
   window carried the run.
 - `none`: exempt or blocked.
@@ -172,8 +222,9 @@ carries the new key.
 - **Tamper resistance.** Public keys cached in `auth_verified.json` are taken
   from whoami and stored in a file the user can write. So are the token-check
   and fail-open stamps. A local user can forge them, just as they can patch the
-  source. The gate enforces an account requirement. It is not a security
-  boundary.
+  source. A nested pass is no stronger: it needs a proof swamp-club once issued
+  and a swamp ancestor, which a gate-exempt command can be made to provide. The
+  gate enforces an account requirement. It is not a security boundary.
 - **Re-checking long-running processes.** `serve` and `worker` pass the gate
   when they start and are checked again when they restart. A revoked collective
   key still fails their own swamp-club calls, such as heartbeat and

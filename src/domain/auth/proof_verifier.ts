@@ -22,6 +22,7 @@ import {
   base64urlDecode,
   computeProofFingerprint,
   parseProofPayload,
+  type ProofPayload,
   type PublicKeyEntry,
 } from "./verification_proof.ts";
 
@@ -51,6 +52,60 @@ export async function verifyProof(
     return { valid: false, reason: "fingerprint mismatch" };
   }
 
+  return await verifySignature(payload, proofJson, signatureB64, publicKeys);
+}
+
+export interface ProofSignatureOptions {
+  /** Unix seconds; defaults to the wall clock. */
+  readonly now?: number;
+  /** Accept a proof past its `exp`. */
+  readonly ignoreExpiry?: boolean;
+}
+
+export type ProofSignatureResult =
+  | { readonly valid: true; readonly payload: ProofPayload }
+  | { readonly valid: false; readonly reason: string };
+
+/**
+ * Verify that swamp-club signed a proof, without the API key it was issued
+ * for: the payload shape, its `exp` (unless `ignoreExpiry`) and the Ed25519
+ * signature. The fingerprint is not checked, so a valid result shows only
+ * that swamp-club issued the proof to an account, not that the caller holds
+ * its key. {@link verifyProof} adds that check.
+ */
+export async function verifyProofSignature(
+  proofJson: string,
+  signatureB64: string,
+  publicKeys: PublicKeyEntry[],
+  options: ProofSignatureOptions = {},
+): Promise<ProofSignatureResult> {
+  const payload = parseProofPayload(proofJson);
+  if (!payload) {
+    return { valid: false, reason: "malformed proof payload" };
+  }
+
+  const now = options.now ?? Math.floor(Date.now() / 1000);
+  if (
+    !options.ignoreExpiry && payload.exp !== undefined && payload.exp <= now
+  ) {
+    return { valid: false, reason: "proof expired" };
+  }
+
+  const result = await verifySignature(
+    payload,
+    proofJson,
+    signatureB64,
+    publicKeys,
+  );
+  return result.valid ? { valid: true, payload } : result;
+}
+
+async function verifySignature(
+  payload: ProofPayload,
+  proofJson: string,
+  signatureB64: string,
+  publicKeys: PublicKeyEntry[],
+): Promise<ProofVerificationResult> {
   const keysToTry = resolvePublicKeys(payload.kid, publicKeys);
   if (keysToTry.length === 0) {
     return { valid: false, reason: "no matching public key for kid" };
