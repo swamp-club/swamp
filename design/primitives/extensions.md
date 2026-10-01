@@ -1167,7 +1167,7 @@ minimal and avoid auto-granting future Deno permission categories:
 | `--allow-run`   | Subprocess spawning (`Deno.Command`)       |
 | `--allow-sys`   | System info (hostname, OS, memory)         |
 | `--allow-net`   | Network access (HTTP, TCP, UDP)            |
-| `--allow-ffi`   | Foreign function interface (libc `getrlimit`/`setrlimit` for fd-limit raising at serve startup) |
+| `--allow-ffi`   | Foreign function interface (libc `getrlimit`/`setrlimit` for fd-limit raising at serve startup; libc and libproc for the auth gate's nested-run ancestry check) |
 
 `scripts/compile.ts` has the authoritative flag list.
 

@@ -223,8 +223,8 @@ carries the new key.
   from whoami and stored in a file the user can write. So are the token-check
   and fail-open stamps. A local user can forge them, just as they can patch the
   source. A nested pass is no stronger: it needs a proof swamp-club once issued
-  and a swamp ancestor, which a gate-exempt command can be made to provide. The gate enforces an account requirement. It is not a security
-  boundary.
+  and a swamp ancestor, which a gate-exempt command can be made to provide. The
+  gate enforces an account requirement. It is not a security boundary.
 - **Re-checking long-running processes.** `serve` and `worker` pass the gate
   when they start and are checked again when they restart. A revoked collective
   key still fails their own swamp-club calls, such as heartbeat and

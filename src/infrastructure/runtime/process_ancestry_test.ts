@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import {
   executablePathOf,
   findAncestor,
@@ -91,11 +91,15 @@ Deno.test({
   },
 });
 
+// The two negative cases walk the whole chain to pid 1. On a host that hides
+// other users' processes (/proc mounted hidepid=2, a sandbox) the walk stops
+// early as `unknown`, which the gate treats exactly like `not_ancestor`.
+
 Deno.test({
   name: "findAncestor: this process is not its own ancestor",
   ignore: !inspectable,
   fn: () => {
-    assertEquals(findAncestor(Deno.pid), { kind: "not_ancestor" });
+    assertNotEquals(findAncestor(Deno.pid).kind, "ancestor");
   },
 });
 
@@ -104,7 +108,7 @@ Deno.test({
   ignore: !inspectable,
   fn: () => {
     // Above the Linux and macOS pid ceilings, so it cannot be running.
-    assertEquals(findAncestor(2 ** 30), { kind: "not_ancestor" });
+    assertNotEquals(findAncestor(2 ** 30).kind, "ancestor");
   },
 });
 
