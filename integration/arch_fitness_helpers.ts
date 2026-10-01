@@ -186,3 +186,98 @@ export function assertPinnedSet(
 
   throw new AssertionError(lines.join("\n"));
 }
+
+/**
+ * A declaration at column 0: a function (generators included), or a const,
+ * let or class. Serve's command handlers live inside
+ * `export const serveCommand = new Command()...`, so they share that owner.
+ */
+export const TOP_LEVEL_DECLARATION =
+  /^(?:export )?(?:async )?(?:function\s*\*?\s*|const |let |class )(\w+)/;
+
+/** Whether a line is a `//`, `/*` or ` *` comment line. */
+export function isCommentLine(line: string): boolean {
+  return /^\s*(\/\/|\/\*|\*)/.test(line);
+}
+
+/**
+ * The top-level declaration that contains each line: the most recent
+ * {@link TOP_LEVEL_DECLARATION} at or above it, or `<module>`.
+ */
+export function topLevelOwners(lines: readonly string[]): string[] {
+  let owner = "<module>";
+  return lines.map((line) => {
+    const declaration = line.match(TOP_LEVEL_DECLARATION);
+    if (declaration) owner = declaration[1];
+    return owner;
+  });
+}
+
+/** One `new <className>(...)` in a source file. */
+export interface ConstructorCall {
+  /** Zero-based line of the `new` keyword. */
+  line: number;
+  /** Top-level argument texts, trimmed. */
+  args: string[];
+}
+
+/**
+ * Every `new <className>(...)` in `code`, including ones that span lines or
+ * pass generic type arguments. Comment lines are blanked first, so line
+ * numbers still match the source.
+ */
+export function constructorCalls(
+  code: string,
+  className: string,
+): ConstructorCall[] {
+  const source = code
+    .split("\n")
+    .map((line) => isCommentLine(line) ? "" : line)
+    .join("\n");
+  const marker = new RegExp(
+    `\\bnew\\s+${className}\\s*(?:<[^()]*?>)?\\s*\\(`,
+    "g",
+  );
+  const calls: ConstructorCall[] = [];
+  for (const match of source.matchAll(marker)) {
+    const args: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (let i = match.index + match[0].length; i < source.length; i++) {
+      const ch = source[i];
+      if (depth === 0 && ch === ")") break;
+      if (depth === 0 && ch === ",") {
+        args.push(current.trim());
+        current = "";
+        continue;
+      }
+      if ("([{".includes(ch)) depth++;
+      if (")]}".includes(ch)) depth--;
+      current += ch;
+    }
+    if (current.trim() !== "") args.push(current.trim());
+    calls.push({
+      line: source.slice(0, match.index).split("\n").length - 1,
+      args,
+    });
+  }
+  return calls;
+}
+
+/** Top-level argument lists of every `new <className>(...)` in `code`. */
+export function constructorArgs(code: string, className: string): string[][] {
+  return constructorCalls(code, className).map((call) => call.args);
+}
+
+/**
+ * Turns one key per occurrence into a sorted pinned-list form: a key seen N
+ * times becomes `"<key> (xN)"`, so a second occurrence under an already
+ * pinned owner still changes the list.
+ */
+export function countedKeys(keys: readonly string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return [...counts]
+    .map(([key, n]) => n > 1 ? `${key} (x${n})` : key)
+    .sort();
+}

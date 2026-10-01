@@ -192,6 +192,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       step_name: data.ownerDefinition.stepName ?? "",
       source: data.ownerDefinition.source ?? "",
     });
+    this.catalogStore.recordLocalWrite();
   }
 
   private catalogRemove(
@@ -205,6 +206,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       modelId,
       dataName,
     );
+    this.catalogStore.recordLocalWrite();
   }
 
   async findAllGlobal(): Promise<
@@ -766,6 +768,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
     });
+    this.catalogStore.recordLocalWrite();
 
     return { type, modelId, dataName: data.name, version: newVersion };
   }
@@ -928,6 +931,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         dataName,
         version,
       );
+      this.catalogStore.recordLocalWrite();
 
       // Update latest marker if needed
       const versions = await this.listVersions(type, modelId, dataName);
@@ -1331,6 +1335,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
     });
+    this.catalogStore.recordLocalWrite();
 
     return {
       receipt: { type, modelId, dataName: data.name, version },
@@ -1385,6 +1390,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.dataName,
           receipt.version,
         );
+        this.catalogStore.recordLocalWrite();
       } catch (error) {
         logger
           .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
@@ -1840,6 +1846,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.name,
           versionsToRemove,
         );
+        this.catalogStore.recordLocalWrite();
 
         const currentVersions = await this.listVersions(
           type,
@@ -1965,6 +1972,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         dataName,
         toRemove,
       );
+      this.catalogStore.recordLocalWrite();
       logger
         .debug`Pruned ${toRemove.length} excess version(s) of ${dataName} (cap: ${cap}, prior: ${priorVersions.length})`;
     }

@@ -239,8 +239,13 @@ export class DataQueryService {
         }
         return this.buildRecordFromRow(row, includePath);
       }
-      // Catalog not populated — verify the data still exists to guard
-      // against stale rows left behind after invalidate().
+      // Catalog not populated, so the row may predate a pull or another
+      // repository's write. Prefer the version the on-disk latest marker
+      // names (swamp-club#2858).
+      const current = this.refreshFromLatestMarker(row);
+      if (current) return this.buildRecordFromRow(current, includePath);
+      // Verify the data still exists to guard against stale rows left
+      // behind after invalidate().
       if (await this.rowHasContent(row)) {
         return this.buildRecordFromRow(row, includePath);
       }
@@ -257,6 +262,35 @@ export class DataQueryService {
     // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
     return this.buildRecordFromRow(freshRow, includePath);
+  }
+
+  /**
+   * When the on-disk latest marker names a newer (or older) version than
+   * `row`, upserts that version into the catalog and returns its row.
+   * Returns null when the row is current, when the data is gone or
+   * tombstoned (the caller's content check handles that), or when the row
+   * belongs to another namespace, whose data is not in this repository's
+   * layout.
+   */
+  private refreshFromLatestMarker(row: CatalogRow): CatalogRow | null {
+    if (row.namespace !== this.dataRepo.namespace) return null;
+    const type = ModelType.create(row.type_normalized);
+    const latest = this.dataRepo.getLatestVersionSync(
+      type,
+      row.model_id,
+      row.data_name,
+    );
+    if (latest === null || latest === row.version) return null;
+    const data = this.dataRepo.findByNameSync(
+      type,
+      row.model_id,
+      row.data_name,
+      latest,
+    );
+    if (!data || data.isDeleted || data.isRenamed) return null;
+    const current = this.toCatalogRow(data, type, row.model_id, true);
+    this.catalogStore.upsertNewVersion(current);
+    return current;
   }
 
   /**
@@ -744,6 +778,8 @@ export class DataQueryService {
   }
 
   private async backfillAsync(): Promise<void> {
+    // Read before walking the disk; see CatalogStore.markPopulated.
+    const generation = this.catalogStore.generation();
     const allData = await this.dataRepo.findAllGlobal();
 
     // Group by model type so we can yield to the event loop between types,
@@ -814,10 +850,12 @@ export class DataQueryService {
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
-    this.catalogStore.markPopulated();
+    this.catalogStore.markPopulated(generation);
   }
 
   private backfillSync(): void {
+    // Read before walking the disk; see CatalogStore.markPopulated.
+    const generation = this.catalogStore.generation();
     const allData = this.dataRepo.findAllGlobalSync();
 
     const byType = new Map<
@@ -876,7 +914,7 @@ export class DataQueryService {
     computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
-    this.catalogStore.markPopulated();
+    this.catalogStore.markPopulated(generation);
   }
 
   private toCatalogRow(

@@ -222,15 +222,14 @@ export function buildMarkDirtyHook(
   repoDir: string,
 ): MarkDirtyHook {
   const repoSwampDir = swampPath(repoDir);
-  const outside = (rel: string) => rel.startsWith("..") || isAbsolute(rel);
   return (absPath?: string) => {
     if (absPath === undefined) {
       return syncService.markDirty();
     }
     let rel = relative(cacheRoot, absPath);
-    if (outside(rel)) {
+    if (escapesRoot(rel)) {
       rel = relative(repoSwampDir, absPath);
-      if (outside(rel)) return Promise.resolve();
+      if (escapesRoot(rel)) return Promise.resolve();
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
     return syncService.markDirty({ relPath });
@@ -246,12 +245,21 @@ function buildHydrateFileHook(
   const repoSwampDir = swampPath(repoDir);
   return (absPath: string) => {
     let rel = relative(cacheRoot, absPath);
-    if (rel.startsWith("..")) {
+    if (escapesRoot(rel)) {
       rel = relative(repoSwampDir, absPath);
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
     return syncService.hydrateFile!(relPath);
   };
+}
+
+/**
+ * Whether a `relative(root, path)` result points outside `root`: a `..`
+ * segment first, or an absolute path (cross-drive on Windows). A first
+ * segment that merely starts with two dots (`..hidden`) is inside the root.
+ */
+function escapesRoot(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${SEPARATOR}`) || isAbsolute(rel);
 }
 
 /**
