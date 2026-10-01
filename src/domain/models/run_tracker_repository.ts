@@ -36,6 +36,14 @@ export interface RunTrackerRepository {
   markSettled(runId: string, reason: string): void;
 
   /**
+   * Records `reason` on a row its owner already completed as cancelled
+   * without one, as when a cancelled owner saves its own outcome before the
+   * cancel command completes the row. Leaves a row that has a reason, or that
+   * ended any other way, alone.
+   */
+  recordCancelReason(runId: string, reason: string): void;
+
+  /**
    * Hands a run's row to the process resuming it: a suspended, failed, or
    * interrupted row becomes running with the resuming pid, hostname and serve
    * instance id (none for a local resume) and a fresh heartbeat. Running,

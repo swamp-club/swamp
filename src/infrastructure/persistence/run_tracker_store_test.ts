@@ -104,6 +104,71 @@ Deno.test("RunTrackerStore: complete changes status", () => {
   }
 });
 
+function readCancelReason(dbPath: string, runId: string): string | null {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const row = db.prepare(
+      "SELECT cancel_reason FROM active_runs WHERE id = ?",
+    ).get(runId) as { cancel_reason: string | null };
+    return row.cancel_reason;
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("RunTrackerStore: recordCancelReason sets the reason on a row its owner cancelled", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(makeRun({ id: "run-1" }));
+    store.complete("run-1", "cancelled");
+    store.complete("run-1", "cancelled", "no longer needed");
+    assertEquals(readCancelReason(dbPath, "run-1"), null);
+
+    store.recordCancelReason("run-1", "no longer needed");
+
+    assertEquals(readCancelReason(dbPath, "run-1"), "no longer needed");
+    assertEquals(store.findById("run-1")?.status, "cancelled");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: recordCancelReason keeps a reason already recorded", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(makeRun({ id: "run-1" }));
+    store.complete("run-1", "cancelled", "first");
+
+    store.recordCancelReason("run-1", "second");
+
+    assertEquals(readCancelReason(dbPath, "run-1"), "first");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: recordCancelReason leaves rows that did not end cancelled alone", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(makeRun({ id: "running" }));
+    store.register(makeRun({ id: "completed" }));
+    store.register(makeRun({ id: "failed" }));
+    store.complete("completed", "completed");
+    store.complete("failed", "failed");
+
+    for (const id of ["running", "completed", "failed"]) {
+      store.recordCancelReason(id, "too late");
+      assertEquals(readCancelReason(dbPath, id), null);
+    }
+    assertEquals(store.findById("running")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: findAllRunning returns only running runs", () => {
   const store = new RunTrackerStore(makeTempDbPath());
   try {
