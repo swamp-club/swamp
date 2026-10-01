@@ -1911,9 +1911,10 @@ function emptyTier(tierPath: string | undefined) {
 function registerHydratingType(
   hydrate: (relPath: string) => Promise<boolean>,
   extra: Partial<DatastoreProvider> = {},
-): { type: string; calls: string[] } {
+): { type: string; calls: string[]; signals: (AbortSignal | undefined)[] } {
   const type = `test-ext-hydrate-${crypto.randomUUID()}`;
   const calls: string[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
   const base = createStubProvider();
   datastoreTypeRegistry.register({
     type,
@@ -1924,15 +1925,16 @@ function registerHydratingType(
       ...base,
       createSyncService: (repoDir: string, cachePath: string) => ({
         ...base.createSyncService!(repoDir, cachePath),
-        hydrateFile: (relPath: string) => {
+        hydrateFile: (relPath: string, options?: DatastoreSyncOptions) => {
           calls.push(relPath);
+          signals.push(options?.signal);
           return hydrate(relPath);
         },
       }),
       ...extra,
     }),
   });
-  return { type, calls };
+  return { type, calls, signals };
 }
 
 Deno.test("datastoreSetupFilesystem: warns when the managed config tier is empty", async () => {
@@ -2124,7 +2126,9 @@ Deno.test("datastoreSetupExtension: no warning when the config tier cannot be re
 });
 
 Deno.test("datastoreSetupExtension: a hydrated sentinel suppresses the warning", async () => {
-  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  const { type, calls, signals } = registerHydratingType(() =>
+    Promise.resolve(true)
+  );
   try {
     const deps = makeDeps({
       inspectManagedConfigTier: emptyTier(
@@ -2141,6 +2145,7 @@ Deno.test("datastoreSetupExtension: a hydrated sentinel suppresses the warning",
     );
 
     assertEquals(calls, ["config/managed-config-migrated.json"]);
+    assertEquals(signals[0] instanceof AbortSignal, true);
     assertEquals(warningsOf(events).length, 0);
   } finally {
     datastoreTypeRegistry.invalidateType(type);
@@ -2160,7 +2165,12 @@ Deno.test("datastoreSetupExtension: hydrates the namespaced sentinel path", asyn
       datastoreSetupExtension(
         createLibSwampContext(),
         deps,
-        makeExtensionInput({ type, namespace: "infra", repoId: undefined }),
+        makeExtensionInput({
+          type,
+          namespace: "infra",
+          repoId: undefined,
+          hydrationStrategy: "lazy",
+        }),
       ),
     );
 
@@ -2183,7 +2193,7 @@ Deno.test("datastoreSetupExtension: warns when the sentinel is not on the remote
       datastoreSetupExtension(
         createLibSwampContext(),
         deps,
-        makeExtensionInput({ type }),
+        makeExtensionInput({ type, hydrationStrategy: "lazy" }),
       ),
     );
 
@@ -2209,7 +2219,7 @@ Deno.test("datastoreSetupExtension: a failed sentinel hydration still warns", as
       datastoreSetupExtension(
         createLibSwampContext(),
         deps,
-        makeExtensionInput({ type }),
+        makeExtensionInput({ type, hydrationStrategy: "lazy" }),
       ),
     );
 
@@ -2238,12 +2248,89 @@ Deno.test("datastoreSetupExtension: never hydrates a config tier outside the cac
       datastoreSetupExtension(
         createLibSwampContext(),
         deps,
+        makeExtensionInput({ type, hydrationStrategy: "lazy" }),
+      ),
+    );
+
+    assertEquals(calls, []);
+    assertEquals(warningsOf(events).length, 1);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: full hydration never fetches the sentinel", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
         makeExtensionInput({ type }),
       ),
     );
 
     assertEquals(calls, []);
     assertEquals(warningsOf(events).length, 1);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: a stalled sentinel fetch times out and warns", async () => {
+  // Never settles and ignores the signal: only the setup timeout ends it.
+  const { type, calls } = registerHydratingType(() => new Promise(() => {}));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({
+          type,
+          hydrationStrategy: "lazy",
+          syncTimeoutMsOverride: 10,
+        }),
+      ),
+    );
+
+    assertEquals(calls.length, 1);
+    assertEquals(warningsOf(events).length, 1);
+    assertEquals(events[events.length - 1].kind, "completed");
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: hydrates a tier under a cache child whose name starts with two dots", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "..ns", "config"),
+      ),
+    });
+
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type, hydrationStrategy: "lazy" }),
+      ),
+    );
+
+    assertEquals(calls, ["..ns/config/managed-config-migrated.json"]);
   } finally {
     datastoreTypeRegistry.invalidateType(type);
   }

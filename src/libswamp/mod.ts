@@ -1640,6 +1640,7 @@ export {
   datastoreSetupFilesystem,
   type DatastoreSetupFilesystemInput,
   type DatastoreSetupWarningData,
+  type ManagedConfigTierInspection,
   type ResolveConfigTierPath,
 } from "./datastores/setup.ts";
 export {

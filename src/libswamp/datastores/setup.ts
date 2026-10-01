@@ -680,15 +680,30 @@ export async function* datastoreSetupExtension(
 
       // Only after a complete transfer: a timeout-only commit may leave the
       // tier partly hydrated, which proves nothing about the remote.
+      // Under lazy hydration the sentinel may not be on disk yet; the
+      // fetch shares the setup timeout so a stalled remote cannot hang it.
       if (errors.length === 0) {
-        const hydrateFile = syncService?.hydrateFile?.bind(syncService);
+        const hydrateFile = input.hydrationStrategy === "lazy"
+          ? syncService?.hydrateFile?.bind(syncService)
+          : undefined;
         const warning = await emptyConfigTierWarning(
           ctx,
           deps,
           input.repoDir,
           hydrateFile
             ? (tierPath) =>
-              hydrateSentinel(ctx, hydrateFile, cachePath, tierPath)
+              hydrateSentinel(
+                ctx,
+                (relPath) =>
+                  runBoundedSync(
+                    input.type,
+                    "pull",
+                    timeoutMs,
+                    (signal) => hydrateFile(relPath, { signal }),
+                  ),
+                cachePath,
+                tierPath,
+              )
             : undefined,
         );
         if (warning) yield warning;
@@ -785,13 +800,12 @@ async function emptyConfigTierWarning(
     data: {
       code: "empty_config_tier",
       message:
-        `managedConfig is on, but the config tier at ${tier.tierPath} is ` +
-        `empty: it has no migration sentinel and no model, workflow or vault ` +
-        `definitions, so this repo will not find any definitions. If they ` +
-        `are in the repo's models/, workflows/ and vaults/ directories, run ` +
-        `'swamp datastore config migrate' to copy them into the tier. Setup ` +
-        `does not move definitions that were only in the previous ` +
-        `datastore's config tier; copy those into ${tier.tierPath}.`,
+        `managedConfig is on, but the config tier at ${tier.tierPath} has ` +
+        `no model, workflow or vault definitions, so this repo will not ` +
+        `find any. Run 'swamp datastore config migrate' to copy this repo's ` +
+        `models/, workflows/ and vaults/ into the tier. Setup does not move ` +
+        `definitions that were only in the previous datastore's config ` +
+        `tier; copy those in yourself.`,
       configTierPath: tier.tierPath,
     },
   };
@@ -800,7 +814,8 @@ async function emptyConfigTierWarning(
 /**
  * Fetches the migration sentinel of a lazily hydrated config tier into the
  * cache. Returns whether it was fetched. A tier outside the cache (an
- * excluded `config`) is never fetched, and a failed fetch counts as absent.
+ * excluded `config`) is never fetched, and a failed or timed-out fetch
+ * counts as absent.
  */
 async function hydrateSentinel(
   ctx: LibSwampContext,
@@ -809,7 +824,9 @@ async function hydrateSentinel(
   tierPath: string,
 ): Promise<boolean> {
   const rel = relative(cachePath, tierPath);
-  if (rel.startsWith("..") || isAbsolute(rel)) return false;
+  if (rel === ".." || rel.startsWith(`..${SEPARATOR}`) || isAbsolute(rel)) {
+    return false;
+  }
   const relPath = getMigrationSentinelPath(rel).split(SEPARATOR).join("/");
   try {
     return await hydrateFile(relPath);

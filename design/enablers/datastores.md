@@ -1786,7 +1786,8 @@ check when the tier cannot be resolved, and after an extension setup that only
 timed out, since a partial transfer proves nothing about the remote. Under lazy
 hydration the setup pull already brings `config/` down in full, so before
 warning, setup only asks the sync service's `hydrateFile` for the sentinel,
-and only when the tier lies inside the cache. `swamp serve`'s
+only when the tier lies inside the cache, and within the setup sync timeout
+(`runBoundedSync`), so a stalled remote cannot hang setup. `swamp serve`'s
 `datastore.setup.extension` handler does not forward setup warnings.
 
 ### Health Verification
