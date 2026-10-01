@@ -146,14 +146,16 @@ Deno.test({
 });
 
 Deno.test({
-  name: "startTimeOf: this process started within the last hour",
+  name: "startTimeOf: this process started no later than this module loaded",
   ignore: !inspectable,
   fn: () => {
     const startedAt = startTimeOf(Deno.pid);
     assert(startedAt !== undefined);
-    const now = Math.floor(Date.now() / 1000);
-    assert(startedAt <= now + 1, `${startedAt} is in the future`);
-    assert(startedAt > now - 3600, `${startedAt} is over an hour ago`);
+    // timeOrigin is when this module's realm started, never before the
+    // process did; a second of slack covers whole-second rounding.
+    const loadedAt = Math.floor(performance.timeOrigin / 1000);
+    assert(startedAt > 0);
+    assert(startedAt <= loadedAt + 1, `${startedAt} is after ${loadedAt}`);
   },
 });
 

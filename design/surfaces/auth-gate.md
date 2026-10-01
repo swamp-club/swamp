@@ -175,7 +175,14 @@ Run them as their own step, or as the outer command. A swamp at another path
 than its parent (another installed version, or a parent run with
 `deno run dev`) fails the ancestry check unless it has its own credential.
 Revocation is inherited: a key revoked while a long-running parent runs keeps
-its children passing until the parent exits.
+its children passing until the parent exits. The issuer must stay alive: a
+nested swamp that outlives it (a backgrounded `serve` started from a shell
+step, say) can no longer hand its pass on. A nested run verifies the proof
+against the keys cached in its own config dir, because `SWAMP_CONFIG_DIR`,
+`SWAMP_HOME` and `SWAMP_CLUB_URL` are stripped too. Under a parent configured
+through them, after a signing-key rotation or against a non-production
+swamp-club, it may find no key for the proof and block. On macOS a binary
+replaced in place may no longer match its running ancestor.
 
 ## Weekly refresh
 
