@@ -26,6 +26,7 @@
  * its own flush cadence, modelled on InstanceHeartbeatService.
  */
 
+import { runDetached } from "../infrastructure/tracing/mod.ts";
 import type {
   TelemetryFlushOutcome,
   TelemetryService,
@@ -109,9 +110,11 @@ export class DaemonTelemetryFlushService {
    */
   start(): void {
     if (this.#timer !== null || this.#stopped) return;
-    this.#timer = setInterval(() => {
-      void this.#tick();
-    }, this.#intervalMs);
+    this.#timer = runDetached(() =>
+      setInterval(() => {
+        void this.#tick();
+      }, this.#intervalMs)
+    );
     Deno.unrefTimer(this.#timer);
   }
 

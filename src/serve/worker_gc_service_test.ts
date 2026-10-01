@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type WorkerGcDeps,
@@ -26,6 +27,8 @@ import {
 } from "./worker_gc_service.ts";
 import type { BookkeepingReapResult } from "./bookkeeping_gc.ts";
 import { createSyncGate } from "./sync_gate.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 const EMPTY_RESULT = {
   workersDeleted: 0,
@@ -241,4 +244,27 @@ Deno.test("workerGcListPredicate: scopes worker state to the own namespace", () 
     workerGcListPredicate("team-a"),
     'modelType == "swamp/worker" && name == "state-main" && ns == "team-a"',
   );
+});
+
+Deno.test("WorkerGcService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const svc = new WorkerGcService(makeDeps({
+      intervalMs: 10,
+      runPrune: () => {
+        seen.push(trace.getActiveSpan());
+        return Promise.resolve(EMPTY_RESULT);
+      },
+    }));
+    await withSpan("swamp.cli", {}, async () => {
+      svc.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two GC cycles");
+      } finally {
+        await svc.dispose();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

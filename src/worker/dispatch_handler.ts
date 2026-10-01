@@ -34,6 +34,7 @@
 import { traceHeadersToEnv } from "../domain/models/execution_envelope.ts";
 import {
   overlayEnvironment,
+  stripInheritedTraceContext,
   stripWorkerCredentials,
 } from "../domain/remote/environment_snapshot.ts";
 import {
@@ -169,6 +170,54 @@ export function buildRunnerBootstrapParams(
   };
 }
 
+/**
+ * Builds a dispatch runner's environment: the shipped snapshot overlays the
+ * worker's own environment, inherited trace context is dropped, the
+ * dispatch's own W3C trace context goes on top, and worker control-plane
+ * credentials are removed.
+ *
+ * A runner therefore joins a trace only through its dispatch's trace headers.
+ * A `TRACEPARENT` the worker was started with, or one an orchestrator ships,
+ * would otherwise put every untraced dispatch into one long-lived trace.
+ */
+export function buildRunnerEnvironment(
+  workerEnv: Record<string, string>,
+  snapshot: Readonly<Record<string, string>>,
+  traceHeaders: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  // overlayEnvironment applies the snapshot denylist, which covers
+  // TRACEPARENT and TRACESTATE, so it drops any an orchestrator ships.
+  const env = stripInheritedTraceContext(
+    overlayEnvironment(workerEnv, snapshot),
+  );
+  // Set directly: traceHeadersToEnv yields only TRACEPARENT and TRACESTATE,
+  // which the denylisted overlay would drop.
+  return stripWorkerCredentials({
+    ...env,
+    ...traceHeadersToEnv(traceHeaders),
+  });
+}
+
+/**
+ * Spawn options for a dispatch runner. `clearEnv` makes `env` the runner's
+ * whole environment: Deno otherwise merges it over the worker's own, which
+ * would bring back everything {@link buildRunnerEnvironment} removed — the
+ * worker's credentials and its inherited trace context.
+ */
+export function runnerSpawnOptions(
+  args: string[],
+  env: Record<string, string>,
+): Deno.CommandOptions {
+  return {
+    args,
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+    env,
+    clearEnv: true,
+  };
+}
+
 async function handleDispatch(
   rawParams: unknown,
   ctx: RpcHandlerContext,
@@ -195,19 +244,11 @@ async function handleDispatch(
     stepName: params.step?.stepName,
   });
 
-  // Build the spawn environment: overlay the shipped snapshot onto the
-  // worker's own environment, then apply W3C trace context on top.
-  let spawnEnv = overlayEnvironment(
+  const spawnEnv = buildRunnerEnvironment(
     Deno.env.toObject(),
     params.environmentSnapshot,
+    execution.traceHeaders,
   );
-  if (execution.traceHeaders) {
-    spawnEnv = overlayEnvironment(
-      spawnEnv,
-      traceHeadersToEnv(execution.traceHeaders),
-    );
-  }
-  spawnEnv = stripWorkerCredentials(spawnEnv);
 
   const rawParams2 = rawParams as Record<string, unknown>;
   const dispatchCredential = rawParams2.dispatchCredential as
@@ -220,13 +261,10 @@ async function handleDispatch(
   );
 
   const runnerCmd = options.runnerCommand ?? deriveRunnerCommand();
-  const child = new Deno.Command(runnerCmd.cmd, {
-    args: runnerCmd.args,
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
-    env: spawnEnv,
-  }).spawn();
+  const child = new Deno.Command(
+    runnerCmd.cmd,
+    runnerSpawnOptions(runnerCmd.args, spawnEnv),
+  ).spawn();
 
   const childTransport = new StdioTransport(child.stdin);
   const childChannel = new RpcChannel(childTransport);

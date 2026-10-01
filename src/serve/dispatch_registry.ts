@@ -51,6 +51,12 @@ export interface ActiveDispatch {
   allowedSecrets?: VaultExtractionResult;
   /** Per-dispatch redactor populated with vault-derived secret values. */
   redactor?: SecretRedactor;
+  /**
+   * W3C trace headers of the span that dispatched this work. The data plane
+   * runs the dispatch's requests in this trace. Recorded by serve, so a
+   * worker's request can never choose the trace its work joins.
+   */
+  traceHeaders?: Readonly<Record<string, string>>;
 }
 
 export class DispatchRegistry {

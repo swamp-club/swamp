@@ -22,9 +22,11 @@ import { type Span, SpanKind, trace } from "@opentelemetry/api";
 import {
   bindGeneratorToSpan,
   getTracer,
+  runDetached,
   SpanStatusCode,
   withActiveSpan,
   withGeneratorSpan,
+  withRootSpan,
   withServerSpan,
   withSpan,
 } from "./tracer.ts";
@@ -338,6 +340,99 @@ Deno.test("withServerSpan: records a thrown error as ERROR and rethrows", async 
     assertEquals(span.status.message, "boom");
     assertEquals(span.events[0].name, "exception");
   });
+});
+
+// ── withRootSpan tests ──────────────────────────────────────────────
+
+Deno.test("withRootSpan: is a root span even inside an active parent span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withSpan("swamp.cli", {}, async () => {
+      await withRootSpan(
+        "swamp.serve.poll",
+        { "swamp.serve.poller": "x" },
+        () => Promise.resolve(),
+      );
+    });
+    const cli = findSpan(spans, "swamp.cli");
+    const poll = findSpan(spans, "swamp.serve.poll");
+    assertEquals(poll.parentSpanId, undefined);
+    assert(poll.spanContext().traceId !== cli.spanContext().traceId);
+    assertEquals(poll.kind, SpanKind.INTERNAL);
+    assertEquals(poll.attributes["swamp.serve.poller"], "x");
+    assertEquals(poll.status.code, SpanStatusCode.OK);
+  });
+});
+
+Deno.test("withRootSpan: is the active parent for spans started inside it, across awaits", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withRootSpan("swamp.serve.poll", {}, async () => {
+      await Promise.resolve();
+      await withSpan("child", {}, () => Promise.resolve());
+    });
+    assert(
+      isChildOf(findSpan(spans, "child"), findSpan(spans, "swamp.serve.poll")),
+    );
+  });
+});
+
+Deno.test("withRootSpan: records a thrown error as ERROR and rethrows", async () => {
+  await withCapturedSpans(async (spans) => {
+    await assertRejects(
+      () =>
+        withRootSpan(
+          "swamp.serve.poll",
+          {},
+          () => Promise.reject(new Error("boom")),
+        ),
+      Error,
+      "boom",
+    );
+    const span = findSpan(spans, "swamp.serve.poll");
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+    assertEquals(span.events[0].name, "exception");
+  });
+});
+
+// ── runDetached tests ───────────────────────────────────────────────
+
+Deno.test("runDetached: spans started inside begin their own trace", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withSpan("swamp.cli", {}, async () => {
+      await runDetached(() =>
+        withSpan("detached", {}, () => Promise.resolve())
+      );
+    });
+    const cli = findSpan(spans, "swamp.cli");
+    const detached = findSpan(spans, "detached");
+    assertEquals(detached.parentSpanId, undefined);
+    assert(detached.spanContext().traceId !== cli.spanContext().traceId);
+  });
+});
+
+Deno.test("runDetached: a timer armed inside fires with no active span", async () => {
+  await withCapturedSpans(async () => {
+    let seen: Span | undefined | null = null;
+    await withSpan("swamp.cli", {}, async () => {
+      await new Promise<void>((resolve) => {
+        runDetached(() =>
+          setTimeout(() => {
+            seen = trace.getActiveSpan();
+            resolve();
+          }, 0)
+        );
+      });
+    });
+    assertEquals(seen, undefined);
+  });
+});
+
+Deno.test("runDetached: returns the result and propagates rejections", async () => {
+  assertEquals(runDetached(() => 42), 42);
+  await assertRejects(
+    () => runDetached(() => Promise.reject(new Error("boom"))),
+    Error,
+    "boom",
+  );
 });
 
 // ── withActiveSpan tests ────────────────────────────────────────────

@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_STALE_TTL_MS,
@@ -26,6 +28,8 @@ import {
 } from "./instance_heartbeat.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -174,4 +178,34 @@ Deno.test("InstanceHeartbeatService.parseRecord: returns null for invalid data",
 Deno.test("InstanceHeartbeatService: default constants are reasonable", () => {
   assertEquals(DEFAULT_HEARTBEAT_INTERVAL_MS, 30_000);
   assertEquals(DEFAULT_STALE_TTL_MS, 90_000);
+});
+
+Deno.test("InstanceHeartbeatService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    let recording = false;
+    const store = createInMemoryStore();
+    const put = store.put;
+    store.put = (key, data) => {
+      if (recording) seen.push(trace.getActiveSpan());
+      return put(key, data);
+    };
+    const service = new InstanceHeartbeatService(store, "trace-test", {
+      intervalMs: 10,
+    });
+    await withSpan("swamp.cli", {}, async () => {
+      // start() awaits its first write under the caller's span; only the
+      // writes the interval makes afterwards are ticks.
+      await service.start();
+      recording = true;
+      try {
+        await waitFor(() => seen.length >= 2, "two heartbeat ticks");
+      } finally {
+        recording = false;
+        await service.stop();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

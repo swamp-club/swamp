@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
@@ -103,13 +104,15 @@ export class WebhookSink implements AuditSink {
     }
 
     const intervalMs = options.batchIntervalMs ?? DEFAULT_BATCH_INTERVAL_MS;
-    this.#timer = setInterval(() => {
-      this.flush().catch((error: unknown) => {
-        logger.warn("Periodic flush failed: {error}", {
-          error: error instanceof Error ? error.message : String(error),
+    this.#timer = runDetached(() =>
+      setInterval(() => {
+        this.flush().catch((error: unknown) => {
+          logger.warn("Periodic flush failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
-    }, intervalMs);
+      }, intervalMs)
+    );
     Deno.unrefTimer(this.#timer);
 
     if (options.signal) {

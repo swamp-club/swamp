@@ -28,35 +28,19 @@ import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
 import { runDispatchRunner } from "../../worker/exec_dispatch.ts";
+import { redirectConsoleToStderr } from "../dispatch_runner_stdio.ts";
 
 // Import models barrel so built-in models resolve from the runner's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
 import "../../domain/models/models.ts";
-
-/**
- * Redirect all console methods to stderr before any model code loads.
- * stdout carries RPC frames only — any non-frame output corrupts the
- * frame stream.
- */
-function redirectConsoleToStderr(): void {
-  const encoder = new TextEncoder();
-  const write = (line: string) => {
-    Deno.stderr.writeSync(encoder.encode(line + "\n"));
-  };
-  console.log = (...args: unknown[]) => write(args.map(String).join(" "));
-  console.info = (...args: unknown[]) => write(args.map(String).join(" "));
-  console.debug = (...args: unknown[]) => write(args.map(String).join(" "));
-  console.warn = (...args: unknown[]) =>
-    write("[WARN] " + args.map(String).join(" "));
-  console.error = (...args: unknown[]) =>
-    write("[ERROR] " + args.map(String).join(" "));
-}
 
 export const workerExecDispatchCommand = new Command()
   .name("exec-dispatch")
   .description("Execute a single dispatch in a child process (internal)")
   .hidden()
   .action(async () => {
+    // main.ts already redirected before tracing started; repeat it in case
+    // this command is reached another way.
     redirectConsoleToStderr();
     // Dispatches are remote and stdio carries RPC frames, so a step's
     // prompts cannot be answered here: always let a cancel reach every

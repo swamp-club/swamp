@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assert, assertEquals, assertGreater } from "@std/assert";
 import { AccessDataPoller } from "./access_data_poller.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
@@ -26,6 +26,13 @@ import type {
 } from "../domain/datastore/datastore_sync_service.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  assertPollCycleRoots,
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 interface MockSyncService extends DatastoreSyncService {
   pullCalls: DatastoreSyncOptions[];
@@ -418,4 +425,43 @@ Deno.test("AccessDataPoller: pull holds the sync gate, so it cannot interleave a
   ]);
   // gatedPull bounds the pull so a hung extension cannot hold the gate.
   assertEquals(typeof sync.pullCalls[0].signal, "object");
+});
+
+Deno.test("AccessDataPoller: each poll cycle is the root of its own trace", async () => {
+  const sync = createMockSyncService();
+  const pull = sync.pullChanged.bind(sync);
+  // Stands in for the datastore's own spans, which must nest under the cycle.
+  sync.pullChanged = (options) =>
+    withSpan("swamp.datastore.sync", {}, () => pull(options));
+
+  await withCapturedSpans(async (spans) => {
+    // Started under an active span, as serve starts it under swamp.cli.
+    await withSpan("swamp.cli", {}, async () => {
+      const loader = createMockPolicySnapshotLoader();
+      const { catalogInvalidate } = createCallbackTrackers();
+      const poller = new AccessDataPoller({
+        syncService: sync,
+        policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+        catalogInvalidate,
+        pollIntervalMs: 30,
+      });
+      poller.start();
+      await waitFor(
+        () => spans.filter((s) => s.name === "swamp.serve.poll").length >= 2,
+        "two poll cycles",
+      );
+      await poller.stop();
+    });
+
+    const cycles = assertPollCycleRoots(
+      spans,
+      "access_data",
+      findSpan(spans, "swamp.cli"),
+    );
+    const syncSpans = spans.filter((s) => s.name === "swamp.datastore.sync");
+    assert(syncSpans.length >= 2);
+    for (const syncSpan of syncSpans) {
+      assert(cycles.some((cycle) => isChildOf(syncSpan, cycle)));
+    }
+  });
 });

@@ -1029,6 +1029,18 @@ export function isHookCommand(
     commandInfo.subcommand === "record";
 }
 
+/**
+ * True for the dispatch runner (`swamp worker exec-dispatch`), a child the
+ * worker spawns per dispatch. It skips CLI teardown: a dispatch records no
+ * CLI telemetry and runs no update check, as when it ended with Deno.exit.
+ */
+export function isDispatchRunnerCommand(
+  commandInfo: CommandInvocationData,
+): boolean {
+  return commandInfo.command === "worker" &&
+    commandInfo.subcommand === "exec-dispatch";
+}
+
 /** A deferred warning message to emit after logging is initialized. */
 export interface DeferredWarning {
   kind:
@@ -2404,7 +2416,8 @@ async function runInvocation(
     // own try/catch handles all errors; skipping teardown prevents
     // infrastructure failures (telemetry flush, update checks) from
     // causing a non-zero exit that disrupts the user's coding session.
-    if (hookMode) return;
+    // The dispatch runner skips it too, and returns so swamp.cli ends.
+    if (hookMode || isDispatchRunnerCommand(commandInfo)) return;
 
     // Flush datastore sync (push to S3 + release lock)
     await withSpan("swamp.cli.teardown", {}, async () => {

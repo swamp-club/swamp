@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assert, assertEquals, assertGreater } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   normalizeFireTime,
@@ -1341,4 +1348,56 @@ Deno.test("ScheduledExecutionService: a nested workflow's started event does not
     started[0].kind === "schedule_started" && started[0].runId,
     "parent-1",
   );
+});
+
+Deno.test("ScheduledExecutionService: each fire is the root of its own trace", async () => {
+  const wf = createTestWorkflow("traced-wf", "* * * * * *");
+  // The active span when the dedup claim runs, recorded per fire.
+  const dedupActiveSpans: (Span | undefined)[] = [];
+
+  await withCapturedSpans(async (spans) => {
+    // Started under an active span, as serve starts it under swamp.cli.
+    await withSpan("swamp.cli", {}, async () => {
+      const service = new ScheduledExecutionService({
+        workflowRepo: createMockWorkflowRepo([wf]),
+        repoDir: "/tmp/nonexistent-test-repo",
+        cronFireDedup: () => {
+          dedupActiveSpans.push(trace.getActiveSpan());
+          return Promise.resolve(true);
+        },
+        executeWorkflow: (_input, _signal, onEvent) =>
+          // Stands in for the run's own spans, which nest under the fire.
+          withSpan("swamp.workflow.run", {}, () => {
+            onEvent({
+              kind: "started",
+              runId: crypto.randomUUID(),
+              workflowName: "traced-wf",
+              jobs: [],
+            });
+            return Promise.resolve();
+          }),
+      });
+      await service.start();
+      await waitFor(
+        () =>
+          spans.filter((s) => s.name === "swamp.scheduled.fire").length >= 2,
+        "two scheduled fires",
+      );
+      await service.stop();
+    });
+
+    const cli = findSpan(spans, "swamp.cli");
+    const fires = spans.filter((s) => s.name === "swamp.scheduled.fire");
+    const traceIds = new Set(fires.map((f) => f.spanContext().traceId));
+    assertEquals(traceIds.size, fires.length);
+    for (const fire of fires) {
+      assertEquals(fire.parentSpanId, undefined);
+      assert(fire.spanContext().traceId !== cli.spanContext().traceId);
+    }
+    for (const run of spans.filter((s) => s.name === "swamp.workflow.run")) {
+      assert(fires.some((fire) => isChildOf(run, fire)));
+    }
+    assert(dedupActiveSpans.length >= 2);
+    for (const active of dedupActiveSpans) assertEquals(active, undefined);
+  });
 });

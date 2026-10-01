@@ -26,6 +26,7 @@
  * revokes that never reach this instance's gateway.
  */
 
+import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   type EnrollmentBindingCutoffCause,
@@ -104,9 +105,11 @@ export class WorkerTokenRevalidationService {
 
   #scheduleNext(): void {
     if (this.#disposed) return;
-    this.#timer = setTimeout(() => {
-      this.#pending = this.#tick();
-    }, this.#deps.intervalMs);
+    this.#timer = runDetached(() =>
+      setTimeout(() => {
+        this.#pending = this.#tick();
+      }, this.#deps.intervalMs)
+    );
     Deno.unrefTimer(this.#timer);
   }
 

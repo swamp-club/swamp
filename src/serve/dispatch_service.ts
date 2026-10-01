@@ -507,6 +507,7 @@ export class DispatchService {
         request.methodArgs,
       ),
       redactor: this.#buildDispatchRedactor(request.secretValues),
+      traceHeaders: request.traceHeaders,
     });
 
     const params: DispatchParams = {

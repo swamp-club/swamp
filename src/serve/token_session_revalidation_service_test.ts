@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
@@ -28,6 +29,8 @@ import {
   TokenSessionRevalidationService,
   tokenSessionVerdict,
 } from "./token_session_revalidation_service.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
 const MINT_1 = "2026-01-01T00:00:00.000Z";
 const MINT_2 = "2026-02-02T00:00:00.000Z";
@@ -336,4 +339,28 @@ Deno.test("dispose: waits for a pass already running", async () => {
   await disposed;
 
   assertEquals(passFinished, true);
+});
+
+Deno.test("TokenSessionRevalidationService: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const h = harness([], () => Promise.resolve(token()), 10);
+    const service = new TokenSessionRevalidationService({
+      ...h.deps,
+      listTokenSessions: () => {
+        seen.push(trace.getActiveSpan());
+        return [];
+      },
+    });
+    await withSpan("swamp.cli", {}, async () => {
+      service.start();
+      try {
+        await waitFor(() => seen.length >= 2, "two revalidation passes");
+      } finally {
+        await service.dispose();
+      }
+    });
+    assert(seen.length >= 2);
+    for (const span of seen) assertEquals(span, undefined);
+  });
 });

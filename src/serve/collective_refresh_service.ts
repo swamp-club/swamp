@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OAuthUserInfo } from "./oauth_client.ts";
 
@@ -96,9 +97,11 @@ export class CollectiveRefreshService {
 
   #scheduleNext(): void {
     if (this.#disposed) return;
-    this.#timer = setTimeout(() => {
-      void this.#tick();
-    }, this.#deps.intervalMs);
+    this.#timer = runDetached(() =>
+      setTimeout(() => {
+        void this.#tick();
+      }, this.#deps.intervalMs)
+    );
   }
 
   async #tick(): Promise<void> {

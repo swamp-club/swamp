@@ -25,6 +25,7 @@
  */
 
 import { Cron } from "croner";
+import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 
 /**
@@ -58,17 +59,23 @@ export class WorkflowScheduler {
   register(workflowId: WorkflowId, cronExpression: string): void {
     this.unregister(workflowId);
 
-    const cron = new Cron(
-      cronExpression,
-      { paused: this.onFire === null },
-      () => {
-        const entry = this.entries.get(workflowId);
-        if (!entry) return;
-        const result = this.onFire?.(workflowId, canonicalFireTime(entry));
-        if (result instanceof Promise) {
-          result.catch(() => {});
-        }
-      },
+    // Croner arms the job's timer here, and every fire re-arms it from that
+    // timer, so the active trace context at registration reaches every fire.
+    // Arm it detached: a fire is its own unit of work, never part of the
+    // trace that registered it (for serve, the never-ending swamp.cli span).
+    const cron = runDetached(() =>
+      new Cron(
+        cronExpression,
+        { paused: this.onFire === null },
+        () => {
+          const entry = this.entries.get(workflowId);
+          if (!entry) return;
+          const result = this.onFire?.(workflowId, canonicalFireTime(entry));
+          if (result instanceof Promise) {
+            result.catch(() => {});
+          }
+        },
+      )
     );
 
     this.entries.set(workflowId, cron);

@@ -47,3 +47,6 @@ await initializeLogging({
 });
 
 await runDispatchRunner(Deno.stdin.readable, Deno.stdout.writable);
+// The runner returns once its result frame is flushed; the open stdin reader
+// would otherwise keep this process alive.
+Deno.exit(0);

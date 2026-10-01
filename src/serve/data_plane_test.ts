@@ -17,10 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
+import { withServerSpan } from "../infrastructure/tracing/mod.ts";
 import { join } from "@std/path";
 import { z } from "zod";
-import { DataPlane } from "./data_plane.ts";
+import { DataPlane, dataPlaneOperation } from "./data_plane.ts";
 import { type ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -744,4 +750,97 @@ Deno.test("DataPlane: tagOverrides on dispatch are applied to written resources"
     assertEquals(handle.tags.job, "my-job");
     assertEquals(handle.tags.step, "my-step");
   });
+});
+
+// ── trace context of data-plane work (swamp-club#2467) ──
+
+const DISPATCH_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+const DISPATCH_SPAN_ID = "b7ad6b7169203331";
+
+function writeRequest(headers?: HeadersInit): Request {
+  return request("/data/resource", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      specName: "result",
+      name: "result",
+      data: { value: "x" },
+    }),
+  });
+}
+
+Deno.test("DataPlane: a dispatch's write runs in the trace that dispatched it", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register({
+      ...activeDispatch(),
+      traceHeaders: {
+        traceparent: `00-${DISPATCH_TRACE_ID}-${DISPATCH_SPAN_ID}-01`,
+      },
+    });
+    await withCapturedSpans(async (spans) => {
+      // The request arrives inside its own root SERVER span, as
+      // traceHttpRequests wraps it; a worker-sent traceparent is ignored.
+      const response = await withServerSpan(
+        "POST /data/*",
+        {},
+        async () =>
+          (await h.plane.handle(writeRequest({
+            traceparent:
+              "00-11111111111111111111111111111111-2222222222222222-01",
+          })))!,
+      );
+      assertEquals(response.status, 200);
+
+      const span = findSpan(spans, "swamp.serve.data_plane");
+      assertEquals(span.spanContext().traceId, DISPATCH_TRACE_ID);
+      assertEquals(span.parentSpanId, DISPATCH_SPAN_ID);
+      assertEquals(
+        span.attributes["swamp.data_plane.operation"],
+        "write_resource",
+      );
+      assertEquals(span.attributes["http.response.status_code"], 200);
+    });
+  });
+});
+
+Deno.test("DataPlane: without dispatch trace headers the work nests under the request span", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await withCapturedSpans(async (spans) => {
+      await withServerSpan(
+        "POST /data/*",
+        {},
+        async () =>
+          (await h.plane.handle(writeRequest({
+            traceparent:
+              "00-11111111111111111111111111111111-2222222222222222-01",
+          })))!,
+      );
+
+      const span = findSpan(spans, "swamp.serve.data_plane");
+      assert(isChildOf(span, findSpan(spans, "POST /data/*")));
+    });
+  });
+});
+
+Deno.test("dataPlaneOperation: names operations from the route shape only", () => {
+  assertEquals(dataPlaneOperation("GET", ["bundle", "fp"]), "fetch_bundle");
+  assertEquals(
+    dataPlaneOperation("GET", ["data", "t", "m", "n", "1"]),
+    "read",
+  );
+  assertEquals(
+    dataPlaneOperation("POST", ["data", "resource"]),
+    "write_resource",
+  );
+  assertEquals(
+    dataPlaneOperation("DELETE", ["data", "resource"]),
+    "delete_resource",
+  );
+  assertEquals(dataPlaneOperation("POST", ["data", "writers"]), "open_writer");
+  assertEquals(
+    dataPlaneOperation("POST", ["data", "writers", "w-1", "finalize"]),
+    "writer_finalize",
+  );
+  assertEquals(dataPlaneOperation("PUT", ["data", "other"]), "unknown");
 });

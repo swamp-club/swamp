@@ -20,6 +20,9 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { type Span, trace } from "@opentelemetry/api";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   buildWebhookPayload,
   isSensitiveHeader,
@@ -1304,5 +1307,84 @@ Deno.test("WebhookService: a nested workflow's started event does not retarget t
   assertEquals(
     completed?.kind === "webhook_completed" && completed.runId,
     "parent-1",
+  );
+});
+
+// ── trace context of queued runs (swamp-club#2467) ──
+
+/** An executor that records the span active when each run starts. */
+function spanRecordingExecutor(seen: (Span | undefined)[]) {
+  return ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    _input: unknown,
+    _signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+  ) => {
+    seen.push(trace.getActiveSpan());
+    onEvent({ kind: "started", runId: `run-${seen.length}` });
+    onEvent({ kind: "completed", run: { status: "succeeded" } });
+    return Promise.resolve();
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+}
+
+Deno.test("WebhookService: queued runs do not inherit the span of the request that started the queue", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const { service } = await triggerService({
+      executeWorkflow: spanRecordingExecutor(seen),
+    });
+    // Each delivery arrives inside its own request span, as traceHttpRequests
+    // wraps it; the first one starts the queue processor.
+    for (const route of ["first", "second"]) {
+      await withSpan(`POST /hooks/gh ${route}`, {}, async () => {
+        await service.handleRequest(await signedDelivery("{}"));
+      });
+    }
+    await waitFor(() => seen.length === 2, "both runs executed");
+    await service.stop();
+
+    assertEquals(seen, [undefined, undefined]);
+  });
+});
+
+Deno.test("WebhookService: a replayed run does not inherit the span active at boot", async () => {
+  await withCapturedSpans(async () => {
+    const seen: (Span | undefined)[] = [];
+    const { service } = await triggerService({
+      executeWorkflow: spanRecordingExecutor(seen),
+    });
+    // Boot reconciliation replays inside serve's never-ending swamp.cli span.
+    await withSpan("swamp.cli", {}, () => {
+      service.enqueueForReplay({
+        pendingRunId: crypto.randomUUID(),
+        workflowIdOrName: "deploy",
+        route: "/hooks/gh",
+        payload: { body: null, headers: {}, route: "/hooks/gh" },
+      });
+      return Promise.resolve();
+    });
+    await waitFor(() => seen.length === 1, "replayed run executed");
+    await service.stop();
+
+    assertEquals(seen, [undefined]);
+  });
+});
+
+Deno.test("WebhookService: a delivery's traceparent still reaches the run", async () => {
+  const { service, calls } = await triggerService();
+  const traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  const request = await signedDelivery("{}");
+  request.headers.set("traceparent", traceparent);
+  await withSpan("POST /hooks/gh", {}, () => service.handleRequest(request));
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(
+    (calls[0].input as { traceparent?: string }).traceparent,
+    traceparent,
   );
 });

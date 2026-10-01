@@ -786,10 +786,14 @@ The snapshot **overlays** the worker's base environment rather than replacing
 it. A small fixed denylist of process-identity and host-runtime variables is
 never shipped. The worker host keeps its own `HOME`, `USER`, `USERNAME`,
 `USERPROFILE`, `LOGNAME`, `SHELL`, `PATH`, `PWD`, `TMPDIR`/`TEMP`/`TMP`,
-`HOSTNAME`, `TERM`, `XDG_*`, `DENO_*`, and swamp's own `SWAMP_*` runtime
-variables (matched case-insensitively;
+`HOSTNAME`, `TERM`, `XDG_*`, `DENO_*`, swamp's own `SWAMP_*` runtime
+variables, the orchestrator's OpenTelemetry settings (`OTEL_*`) and its W3C
+trace context (`TRACEPARENT`, `TRACESTATE`) (matched case-insensitively;
 `src/domain/remote/environment_snapshot.ts`). These describe where the process
-is running, which is what remote execution changes. Shipping the
+is running, which is what remote execution changes. A dispatch carries its
+trace context explicitly as `execution.traceHeaders`. The worker drops any
+`TRACEPARENT` or `TRACESTATE` it inherited itself before applying them, so an
+untraced dispatch starts its own trace. Shipping the
 orchestrator's `HOME` or `PATH` would silently break the worker's tool
 resolution, cache and config locations, and subprocess lookup. The denylist is
 fixed in code and versioned with the `protocolVersion`, so both sides agree on

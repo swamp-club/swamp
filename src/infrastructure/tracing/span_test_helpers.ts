@@ -102,6 +102,42 @@ export function isChildOf(child: ReadableSpan, parent: ReadableSpan): boolean {
 }
 
 /**
+ * Asserts the poll-cycle spans for `poller`: at least `min` of them, each the
+ * root of its own trace, outside the trace of `ambient` (the span that was
+ * active when the poller started). Returns them.
+ */
+export function assertPollCycleRoots(
+  spans: readonly ReadableSpan[],
+  poller: string,
+  ambient: ReadableSpan,
+  min = 2,
+): ReadableSpan[] {
+  const cycles = spans.filter((s) =>
+    s.name === "swamp.serve.poll" &&
+    s.attributes["swamp.serve.poller"] === poller
+  );
+  if (cycles.length < min) {
+    throw new Error(
+      `Expected at least ${min} ${poller} poll cycles, found ${cycles.length}`,
+    );
+  }
+  const traceIds = new Set<string>();
+  for (const cycle of cycles) {
+    if (cycle.parentSpanId !== undefined) {
+      throw new Error(`${poller} poll cycle has a parent span`);
+    }
+    if (cycle.spanContext().traceId === ambient.spanContext().traceId) {
+      throw new Error(`${poller} poll cycle joined the ambient trace`);
+    }
+    traceIds.add(cycle.spanContext().traceId);
+  }
+  if (traceIds.size !== cycles.length) {
+    throw new Error(`${poller} poll cycles share a trace`);
+  }
+  return cycles;
+}
+
+/**
  * Records every span the SDK starts and every span it ends, synchronously, so
  * a test can assert that no started span was left open.
  */

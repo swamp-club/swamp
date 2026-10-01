@@ -31,6 +31,7 @@ import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
+import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractFirstStepError,
@@ -832,9 +833,11 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    // Start processing the queue — only store when actually starting
+    // Start processing the queue — only store when actually starting.
+    // Detached: the processor runs every queued entry, so it must not carry
+    // this request's span into runs that other deliveries queued.
     if (!this.processing) {
-      this.processingPromise = this.processQueue().catch(
+      this.processingPromise = runDetached(() => this.processQueue()).catch(
         (error: unknown) => {
           logger.error("Webhook queue processing failed: {error}", {
             error: error instanceof Error ? error.message : String(error),
@@ -910,8 +913,9 @@ export class WebhookService {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
     this.runQueue.push({ ...entry, replayed: true });
+    // Detached: at boot this runs inside the never-ending swamp.cli span.
     if (!this.processing) {
-      this.processingPromise = this.processQueue().catch(
+      this.processingPromise = runDetached(() => this.processQueue()).catch(
         (error: unknown) => {
           logger.error("Webhook replay queue processing failed: {error}", {
             error: error instanceof Error ? error.message : String(error),

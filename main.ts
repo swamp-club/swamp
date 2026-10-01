@@ -37,10 +37,21 @@ import {
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
 import { VERSION } from "./src/cli/commands/version.ts";
+import {
+  isDispatchRunnerInvocation,
+  redirectConsoleToStderr,
+} from "./src/cli/dispatch_runner_stdio.ts";
 
 if (import.meta.main) {
   Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
+  // The dispatch runner's stdout is an RPC frame stream; nothing, including
+  // a console span exporter, may print there.
+  if (isDispatchRunnerInvocation(Deno.args)) redirectConsoleToStderr();
   const parentCtx = await initTracing();
+  // Set on the error path; the exit waits until telemetry has drained, so a
+  // failing command's spans and logs — its swamp.cli root included — are not
+  // cut off by Deno.exit.
+  let errorExitCode: number | undefined;
   try {
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));
   } catch (error) {
@@ -51,7 +62,7 @@ if (import.meta.main) {
       jsonMode: outputMode === "json",
     });
     renderError(error, outputMode);
-    Deno.exit(exitCodeForError(error));
+    errorExitCode = exitCodeForError(error);
   } finally {
     // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
     // exporter's in-flight sends so the last log records aren't cut by
@@ -63,9 +74,8 @@ if (import.meta.main) {
   // Explicit exit so fire-and-forget promises (background update check,
   // telemetry cleanup) can never keep the event loop alive after the CLI
   // finishes. Telemetry flush is awaited inside runCli before reaching here.
-  // The error path already calls Deno.exit(1) in the catch block above.
-  // Deno.exit() with no arg honors Deno.exitCode set by commands (e.g.
-  // exitCode=1 on workflow/method failure). Do NOT pass 0 — it overwrites
-  // the failure code.
-  Deno.exit();
+  // On the error path, exit with the error's code. Otherwise Deno.exit()
+  // with no arg honors Deno.exitCode set by commands (e.g. exitCode=1 on
+  // workflow/method failure). Do NOT pass 0 — it overwrites the failure code.
+  Deno.exit(errorExitCode);
 }

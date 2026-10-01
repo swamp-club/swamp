@@ -17,12 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
+import { withCapturedSpans } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { StoreSink } from "./store_sink.ts";
 
 await initializeLogging({});
@@ -316,4 +319,49 @@ Deno.test("StoreSink: write accepts more events than fit in a spread call", asyn
     lines += decoder.decode(data).trim().split("\n").length;
   }
   assertEquals(lines, count);
+});
+
+Deno.test("StoreSink: a tick runs with no active span when started under one", async () => {
+  await withCapturedSpans(async () => {
+    const flushSeen: (Span | undefined)[] = [];
+    const gcSeen: (Span | undefined)[] = [];
+    let recording = true;
+    const store = createMockStore();
+    const put = store.put.bind(store);
+    const list = store.list.bind(store);
+    store.put = (key, data) => {
+      if (recording) flushSeen.push(trace.getActiveSpan());
+      return put(key, data);
+    };
+    store.list = (prefix) => {
+      if (recording) gcSeen.push(trace.getActiveSpan());
+      return list(prefix);
+    };
+    await withSpan("swamp.cli", {}, async () => {
+      // The constructor arms both the flush and the GC timer under the
+      // caller's span.
+      const sink = new StoreSink({
+        stores: [{ store, retentionDays: 30 }],
+        batchSize: 100,
+        flushIntervalMs: 10,
+        gcIntervalMs: 10,
+      });
+      try {
+        // A periodic flush only writes when events are queued.
+        await sink.write([makeEvent("first")]);
+        await waitFor(() => flushSeen.length >= 1, "the first timed flush");
+        await sink.write([makeEvent("second")]);
+        await waitFor(() => flushSeen.length >= 2, "the second timed flush");
+        await waitFor(() => gcSeen.length >= 2, "two GC ticks");
+      } finally {
+        recording = false;
+        await sink.close();
+      }
+    });
+    assert(flushSeen.length >= 2);
+    assert(gcSeen.length >= 2);
+    for (const span of [...flushSeen, ...gcSeen]) {
+      assertEquals(span, undefined);
+    }
+  });
 });
