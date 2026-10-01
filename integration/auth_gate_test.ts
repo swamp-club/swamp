@@ -415,3 +415,24 @@ Deno.test("auth gate integration: a blocked run records one telemetry event and 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("auth gate integration: an unreadable auth.json is reported as itself, not as no account", async () => {
+  if (Deno.build.os === "windows") return;
+  await withWorld(async (w) => {
+    await w.login();
+    const authPath = join(w.configDir, "auth.json");
+    await Deno.chmod(authPath, 0o000);
+    try {
+      // Root can read a mode-000 file; the check only means something
+      // for an ordinary user.
+      const readable = await Deno.readTextFile(authPath).then(
+        () => true,
+        () => false,
+      );
+      if (readable) return;
+      await assertRejects(() => w.gate(), Deno.errors.PermissionDenied);
+    } finally {
+      await Deno.chmod(authPath, 0o600);
+    }
+  });
+});

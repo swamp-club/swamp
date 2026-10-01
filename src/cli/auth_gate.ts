@@ -39,6 +39,7 @@ import {
   type WhoamiResponse,
 } from "../infrastructure/http/swamp_club_client.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import { getSwampConfigDir } from "../infrastructure/persistence/paths.ts";
 import {
   AuthVerificationRepository,
   type ProofCandidate,
@@ -342,15 +343,22 @@ export function createAuthGateDeps(
 ): AuthGateDeps {
   return {
     loadCredential: async () => {
+      let hasConfigDir = true;
+      try {
+        getSwampConfigDir();
+      } catch {
+        hasConfigDir = false;
+      }
       let credentials;
       try {
         credentials = await new AuthRepository().load();
       } catch (error) {
-        // A misconfigured key source (a missing key file, both env vars set)
-        // is reported by name. Anything else is no config dir at all — no
-        // HOME — which holds no credential.
-        if (error instanceof UserError) throw error;
-        return null;
+        // With no config dir at all (no HOME) there is no stored credential,
+        // which is "no account". Anything else — a misconfigured key source,
+        // an auth.json the user cannot read — is reported as itself, so the
+        // message points at the real fix rather than at `auth login`.
+        if (!hasConfigDir && !(error instanceof UserError)) return null;
+        throw error;
       }
       return credentials?.apiKey
         ? { apiKey: credentials.apiKey, serverUrl: credentials.serverUrl }

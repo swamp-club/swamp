@@ -44,6 +44,12 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
       ["--log", "help", "workflow"],
       // A pasted command line after `help` is still only help.
       ["help", "vault", "put", "prod", "DB_PASSWORD=hunter2"],
+      ["completions", "zsh"],
+      ["completions", "bash"],
+      ["version"],
+      ["version", "--json"],
+      ["update"],
+      ["--log", "update"],
     ]
   ) {
     assertEquals(timing(args), "exempt", args.join(" "));
@@ -69,9 +75,6 @@ Deno.test("authGateTiming: help and version flags Cliffy answers are exempt", ()
 Deno.test("authGateTiming: every other subcommand is gated", () => {
   for (
     const args of [
-      ["version"],
-      ["update"],
-      ["completions", "zsh"],
       ["telemetry", "disable"],
       ["serve"],
       ["worker", "exec-dispatch"],
@@ -93,9 +96,7 @@ Deno.test("authGateTiming: a boolean global option never hides the command after
   for (
     const args of [
       ["--log", "init"],
-      ["--log", "version"],
       ["--log", "serve"],
-      ["--json", "--log", "update"],
       ["auth", "--log", "token", "list"],
       ["--show-properties", "doctor"],
     ]
@@ -111,8 +112,10 @@ Deno.test("authGateTiming: every top-level command behind every boolean root opt
     .flatMap((o) => o.flags)
     .filter((flag) => !["--help", "-h", "--version", "-V"].includes(flag));
   const commands = tree.getCommands(true).map((c) => c.getName())
-    // `auth` and `help` hold exempt commands; their own tests cover them.
-    .filter((name) => name !== "auth" && name !== "help");
+    // These hold exempt commands; their own tests cover them.
+    .filter((name) =>
+      !["auth", "help", "completions", "version", "update"].includes(name)
+    );
   assertEquals(booleanRootOptions.includes("--log"), true);
   for (const option of booleanRootOptions) {
     for (const command of commands) {
@@ -131,7 +134,7 @@ Deno.test("authGateTiming: a help token taken as an option's value does not exem
     "gated",
   );
   assertEquals(
-    timing(["--log-level", "--help", "version"]),
+    timing(["--log-level", "--help", "serve"]),
     "gated",
   );
 });

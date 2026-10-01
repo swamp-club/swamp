@@ -57,13 +57,16 @@ for verification.
 - **Exempt**: bare `swamp`, the bare `auth` group, and `auth login`,
   `auth logout` and `auth whoami`. These are the path to a credential. Also
   exempt is any line Cliffy will answer with help or version output
-  (`--help`, `-h`, `--version`, `-V`), because no command runs, and
-  `swamp help [command...]`. That is the structured form of `--help` that
-  agents read to learn the CLI. It only serializes the command tree, so
-  gating it would protect nothing.
-- **Gated**: everything else, including `version`, `update`,
-  `completions`, `serve` and `worker`. The gate runs right after telemetry
-  starts, before the repo marker, extension loaders or auto-resolver.
+  (`--help`, `-h`, `--version`, `-V`), because no command runs. Four commands
+  that touch no swamp feature are exempt with their subcommands:
+  - `help`: the structured `--help` agents read to learn the CLI.
+  - `completions`: shell rc files run it at every shell start.
+  - `version`: it matches `--version`.
+  - `update`: a blocked user, or a CI host after a signing-key rotation, must
+    be able to install the release that fixes it.
+- **Gated**: everything else, including `serve`, `worker`, `init` and
+  `doctor`. The gate runs right after telemetry starts, before the repo
+  marker, extension loaders or auto-resolver.
 
 The decision is made against the real command tree, the same declarations
 Cliffy parses (`createRootCommand` and `registerCommands` in
