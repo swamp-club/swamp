@@ -1758,6 +1758,9 @@ export class DefaultStepExecutor implements StepExecutor {
           pid: Deno.pid,
           hostname: hostname(),
           initiatedBy: ctx.initiatedBy,
+          // A step runs in the process that drives its workflow run, so the
+          // row carries that run's serve instance, if serve drives it.
+          instanceId: ctx.workflowRun?.instanceId,
         });
         runTracker.register(activeRun);
       }

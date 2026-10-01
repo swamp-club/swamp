@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { Logger } from "@logtape/logtape";
+import { hostname } from "node:os";
 import {
   createContext,
   type GlobalOptions,
@@ -146,6 +148,117 @@ export async function cancelModelMethodRuns(
   return outcomes;
 }
 
+/** A method run a live `swamp serve` owns, which cancel must not stop. */
+export interface ServeOwnedMethodRun {
+  run: ActiveRun;
+  /** The owning serve instance. */
+  instanceId: string;
+}
+
+/**
+ * The serve instance that owns `run`: its own instance id, or else the one
+ * on a serve-owned workflow row that shares its pid and host. The fallback
+ * covers step rows written by a serve binary that predates instance ids on
+ * method rows.
+ */
+function owningServeInstance(
+  run: ActiveRun,
+  runningRows: readonly ActiveRun[],
+): string | undefined {
+  if (run.isServeOwned) return run.instanceId;
+  return runningRows.find((r) =>
+    r.runKind === "workflow" && r.isServeOwned && r.pid === run.pid &&
+    r.hostname === run.hostname
+  )?.instanceId;
+}
+
+/**
+ * Splits method runs into those cancel may stop and those a live
+ * `swamp serve` owns. A serve-owned run's pid is the serve process, so
+ * stopping it would shut down the whole server. A serve-owned run whose
+ * owner is a dead process on this host is cancellable: there is nothing
+ * left to signal, and cancel only completes its row. A pid from another
+ * host says nothing about whether its serve is alive, so such a run is
+ * always treated as live.
+ */
+export function splitServeOwnedRuns(
+  runs: readonly ActiveRun[],
+  runningRows: readonly ActiveRun[],
+  isAlive: (pid: number) => boolean = isProcessAlive,
+  localHostname: string = hostname(),
+): { cancellable: ActiveRun[]; serveOwned: ServeOwnedMethodRun[] } {
+  const cancellable: ActiveRun[] = [];
+  const serveOwned: ServeOwnedMethodRun[] = [];
+  for (const run of runs) {
+    const instanceId = owningServeInstance(run, runningRows);
+    const ownerLive = run.hostname !== localHostname || isAlive(run.pid);
+    if (instanceId !== undefined && ownerLive) {
+      serveOwned.push({ run, instanceId });
+    } else {
+      cancellable.push(run);
+    }
+  }
+  return { cancellable, serveOwned };
+}
+
+/** Which of a model's method runs cancel stops, and which it skips. */
+export interface MethodRunSelection {
+  /** The latest run cancel may stop; undefined when serve owns them all. */
+  run: ActiveRun | undefined;
+  /** Runs a live `swamp serve` owns, newest first. */
+  skipped: ServeOwnedMethodRun[];
+}
+
+/** Selects the latest of a model's method runs that cancel may stop. */
+export function selectMethodRunToCancel(
+  runs: readonly ActiveRun[],
+  runningRows: readonly ActiveRun[],
+  isAlive: (pid: number) => boolean = isProcessAlive,
+  localHostname: string = hostname(),
+): MethodRunSelection {
+  const newestFirst = [...runs].sort((a, b) =>
+    b.startedAt.getTime() - a.startedAt.getTime()
+  );
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    newestFirst,
+    runningRows,
+    isAlive,
+    localHostname,
+  );
+  return { run: cancellable[0], skipped: serveOwned };
+}
+
+function methodRunFields(run: ActiveRun) {
+  return {
+    id: run.id,
+    type: run.modelType ?? "unknown",
+    method: run.methodName ?? "unknown",
+  };
+}
+
+function skippedFields({ run, instanceId }: ServeOwnedMethodRun) {
+  return { ...methodRunFields(run), instanceId };
+}
+
+/** How to cancel a serve-owned method run, which cancel will not stop. */
+const SERVE_CANCEL_GUIDANCE =
+  "for a workflow step, cancel its workflow run with swamp workflow cancel --run <workflow-run-id> --server <url>; " +
+  "for a direct method run, stop the client that started it";
+
+function warnServeOwnedSkipped(
+  logger: Logger,
+  skipped: readonly ServeOwnedMethodRun[],
+): void {
+  if (skipped.length === 0) return;
+  logger
+    .warn`Skipped ${skipped.length} method run(s) owned by a swamp serve instance, which cancel never stops`;
+  for (const s of skipped.map(skippedFields)) {
+    logger.warn`  ${s.type}/${s.method} (${s.id}) on instance ${s.instanceId}`;
+  }
+  // A plain message, so the guidance is not quoted as an interpolated value.
+  logger.warn(`To cancel one: ${SERVE_CANCEL_GUIDANCE}`);
+}
+
 /**
  * The owners in `stops` still running, and the longest cancel will wait on
  * them in seconds; undefined when none is running.
@@ -173,7 +286,10 @@ export const modelCancelCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("--all", "Cancel all running model method runs")
+  .option(
+    "--all",
+    "Cancel all running model method runs, skipping runs a live swamp serve owns",
+  )
   .option("--reason <reason:string>", "Reason for cancellation")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
@@ -197,25 +313,32 @@ export const modelCancelCommand = new Command()
       runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
 
       if (options.all) {
-        const trackerRuns = runTracker.findAllRunning().filter(
-          (r) => r.runKind === "model_method",
+        const runningRows = runTracker.findAllRunning();
+        const { cancellable, serveOwned } = splitServeOwnedRuns(
+          runningRows.filter((r) => r.runKind === "model_method"),
+          runningRows,
         );
+        const skipped = serveOwned.map(skippedFields);
 
-        if (trackerRuns.length === 0) {
+        if (cancellable.length === 0) {
           if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify({ cancelled: [], finished: [] }));
-          } else {
+            console.log(
+              JSON.stringify({ cancelled: [], finished: [], skipped }),
+            );
+          } else if (serveOwned.length === 0) {
             cliCtx.logger.info("No running model method runs to cancel.");
+          } else {
+            warnServeOwnedSkipped(cliCtx.logger, serveOwned);
           }
           return;
         }
 
-        const outcomes = await cancelModelMethodRuns(trackerRuns, reason, {
+        const outcomes = await cancelModelMethodRuns(cancellable, reason, {
           tracker: runTracker,
           onStopping: (stops) => {
             const waiting = liveStops(stops);
             if (!waiting || cliCtx.outputMode === "json") return;
-            const count = trackerRuns.filter((r) =>
+            const count = cancellable.filter((r) =>
               waiting.live.some(({ pid }) =>
                 pid === r.pid
               )
@@ -224,20 +347,16 @@ export const modelCancelCommand = new Command()
               .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
           },
         });
-        const fields = (run: ActiveRun) => ({
-          id: run.id,
-          type: run.modelType ?? "unknown",
-          method: run.methodName ?? "unknown",
-        });
         const cancelled = outcomes.filter((o) => o.status === "cancelled")
-          .map(({ run }) => fields(run));
+          .map(({ run }) => methodRunFields(run));
         const finished = outcomes.filter((o) => o.status !== "cancelled")
-          .map(({ run, status }) => ({ ...fields(run), status }));
+          .map(({ run, status }) => ({ ...methodRunFields(run), status }));
 
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
             cancelled,
             finished,
+            skipped,
             reason: reason ?? null,
           }));
         } else {
@@ -256,6 +375,7 @@ export const modelCancelCommand = new Command()
                 .warn`  ${f.type}/${f.method} (${f.id}): ${f.status}`;
             }
           }
+          warnServeOwnedSkipped(cliCtx.logger, serveOwned);
         }
         return;
       }
@@ -271,7 +391,8 @@ export const modelCancelCommand = new Command()
 
       const { definition, type } = resolved;
 
-      const trackerRuns = runTracker.findAllRunning().filter(
+      const runningRows = runTracker.findAllRunning();
+      const trackerRuns = runningRows.filter(
         (r) => r.modelType === type.normalized,
       );
 
@@ -281,9 +402,17 @@ export const modelCancelCommand = new Command()
         );
       }
 
-      const latest = trackerRuns.sort(
-        (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
-      )[0];
+      const { run: latest, skipped } = selectMethodRunToCancel(
+        trackerRuns,
+        runningRows,
+      );
+      if (latest === undefined) {
+        const [{ run, instanceId }] = skipped;
+        throw new UserError(
+          `Method run ${run.id} for model '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
+            `To cancel it: ${SERVE_CANCEL_GUIDANCE}.`,
+        );
+      }
 
       const [{ status }] = await cancelModelMethodRuns([latest], reason, {
         tracker: runTracker,
@@ -303,6 +432,7 @@ export const modelCancelCommand = new Command()
           method: latest.methodName ?? "unknown",
           status,
           reason: status === "cancelled" ? reason ?? null : null,
+          skipped: skipped.map(skippedFields),
         }));
       } else if (status === "cancelled") {
         cliCtx.logger
@@ -314,6 +444,9 @@ export const modelCancelCommand = new Command()
           .warn`Method run ${
           latest.methodName ?? "unknown"
         } for model ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
+      }
+      if (cliCtx.outputMode !== "json") {
+        warnServeOwnedSkipped(cliCtx.logger, skipped);
       }
     } finally {
       runTracker.close();

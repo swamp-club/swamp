@@ -86,6 +86,14 @@ export class ActiveRun {
   }
 
   /**
+   * Whether a `swamp serve` instance owns this run. Its pid is then the serve
+   * process itself, which a CLI cancel must never signal.
+   */
+  get isServeOwned(): boolean {
+    return this.instanceId !== undefined;
+  }
+
+  /**
    * Whether this run's owner is on the caller's host, so its pid can be
    * checked against the local process table. A serve instance id decides
    * when both sides have one; otherwise the hostname does.

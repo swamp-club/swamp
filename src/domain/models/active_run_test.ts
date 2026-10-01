@@ -280,3 +280,27 @@ Deno.test("ActiveRun.isStale: returns true for invalid heartbeatAt (NaN)", () =>
 
   assertEquals(run.isStale(90_000), true);
 });
+
+Deno.test("ActiveRun.isServeOwned: true when a serve instance owns the run", () => {
+  const run = ActiveRun.createModelMethodRun({
+    id: "test-id",
+    modelType: "@test/model",
+    methodName: "start",
+    pid: 1234,
+    hostname: "test-host",
+    instanceId: "serve-instance",
+  });
+
+  assertEquals(run.isServeOwned, true);
+});
+
+Deno.test("ActiveRun.isServeOwned: false for a run with no serve instance", () => {
+  const run = ActiveRun.createWorkflowRun({
+    id: "test-id",
+    workflowName: "test-workflow",
+    pid: 1234,
+    hostname: "test-host",
+  });
+
+  assertEquals(run.isServeOwned, false);
+});

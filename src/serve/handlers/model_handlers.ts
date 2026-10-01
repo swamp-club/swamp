@@ -395,6 +395,7 @@ export async function handleModelMethodRun(
             traceparent: payload.traceparent,
             tracestate: payload.tracestate,
             initiatedBy,
+            instanceId: ctx.instanceId,
           })
         ) {
           if (socket.readyState !== WebSocket.OPEN) break;
@@ -606,6 +607,7 @@ export async function handleModelMethodRun(
             traceparent: payload.traceparent,
             tracestate: payload.tracestate,
             initiatedBy,
+            instanceId: ctx.instanceId,
           })
         ) {
           const serialized = serializeEvent(

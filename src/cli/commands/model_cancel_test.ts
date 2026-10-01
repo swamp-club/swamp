@@ -29,6 +29,8 @@ import {
   METHOD_OWNER_STOP_GRACE_MS,
   modelCancelCommand,
   type OwnerStop,
+  selectMethodRunToCancel,
+  splitServeOwnedRuns,
 } from "./model_cancel.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 
@@ -299,4 +301,178 @@ Deno.test("cancelModelMethodRuns: still stops the other owners and completes the
     assertEquals(tracker.findById(stopped.id)?.status, "cancelled");
     assertEquals(tracker.findById(failing.id)?.status, "running");
   });
+});
+
+// A pid standing in for a running swamp serve process.
+const SERVE_PID = Deno.pid + 2;
+
+/** A running tracker row, as findAllRunning returns it. */
+function trackerRow(opts: {
+  runKind?: "model_method" | "workflow";
+  pid: number;
+  instanceId?: string;
+  startedAt?: string;
+}): ActiveRun {
+  const startedAt = opts.startedAt ?? new Date().toISOString();
+  const workflow = opts.runKind === "workflow";
+  return ActiveRun.fromData({
+    id: crypto.randomUUID(),
+    runKind: opts.runKind ?? "model_method",
+    modelType: workflow ? null : "command/shell",
+    methodName: workflow ? null : "execute",
+    workflowName: workflow ? "wf" : null,
+    pid: opts.pid,
+    hostname: "test-host",
+    startedAt,
+    heartbeatAt: startedAt,
+    status: "running",
+    instanceId: opts.instanceId,
+  });
+}
+
+const alive = () => true;
+
+Deno.test("splitServeOwnedRuns: a method run a live serve instance owns is skipped (swamp-club#2914)", () => {
+  const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-a" });
+  const localRun = trackerRow({ pid: OWNER_PID });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [serveRun, localRun],
+    [serveRun, localRun],
+    alive,
+  );
+
+  assertEquals(cancellable, [localRun]);
+  assertEquals(serveOwned, [{ run: serveRun, instanceId: "serve-a" }]);
+});
+
+Deno.test("splitServeOwnedRuns: a step row sharing its pid with a serve-owned workflow row is skipped", () => {
+  // A step row written by a serve binary that predates instance ids on
+  // method rows: only the workflow row names the serve instance.
+  const workflowRow = trackerRow({
+    runKind: "workflow",
+    pid: SERVE_PID,
+    instanceId: "serve-a",
+  });
+  const stepRow = trackerRow({ pid: SERVE_PID });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [stepRow],
+    [workflowRow, stepRow],
+    alive,
+  );
+
+  assertEquals(cancellable, []);
+  assertEquals(serveOwned, [{ run: stepRow, instanceId: "serve-a" }]);
+});
+
+Deno.test("splitServeOwnedRuns: a step of a CLI workflow run stays cancellable", () => {
+  const workflowRow = trackerRow({ runKind: "workflow", pid: OWNER_PID });
+  const stepRow = trackerRow({ pid: OWNER_PID });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [stepRow],
+    [workflowRow, stepRow],
+    alive,
+  );
+
+  assertEquals(cancellable, [stepRow]);
+  assertEquals(serveOwned, []);
+});
+
+Deno.test("splitServeOwnedRuns: a serve-owned run whose serve is dead on this host stays cancellable", () => {
+  const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-a" });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [serveRun],
+    [serveRun],
+    (pid) => pid !== SERVE_PID,
+    "test-host",
+  );
+
+  assertEquals(cancellable, [serveRun]);
+  assertEquals(serveOwned, []);
+});
+
+Deno.test("splitServeOwnedRuns: a serve-owned run from another host is skipped even when its pid is dead here", () => {
+  // The local process table says nothing about another host's serve.
+  const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-b" });
+
+  const { cancellable, serveOwned } = splitServeOwnedRuns(
+    [serveRun],
+    [serveRun],
+    () => false,
+    "other-host",
+  );
+
+  assertEquals(cancellable, []);
+  assertEquals(serveOwned, [{ run: serveRun, instanceId: "serve-b" }]);
+});
+
+Deno.test("splitServeOwnedRuns: cancelling the cancellable runs never signals the serve process", async () => {
+  await withTracker(async (tracker) => {
+    const serveRun = trackerRow({ pid: SERVE_PID, instanceId: "serve-a" });
+    const localRun = trackerRow({ pid: OWNER_PID });
+    tracker.register(serveRun);
+    tracker.register(localRun);
+    const calls: OwnerStop[] = [];
+
+    const { cancellable } = splitServeOwnedRuns(
+      tracker.findAllRunning(),
+      tracker.findAllRunning(),
+      alive,
+    );
+    await cancelModelMethodRuns(cancellable, undefined, {
+      tracker,
+      killProcess: recordingKill(calls),
+    });
+
+    assertEquals(calls.map((c) => c.pid), [OWNER_PID]);
+    assertEquals(tracker.findById(serveRun.id)?.status, "running");
+    assertEquals(tracker.findById(localRun.id)?.status, "cancelled");
+  });
+});
+
+Deno.test("selectMethodRunToCancel: picks the latest cancellable run over a newer serve-owned one", () => {
+  const olderLocal = trackerRow({
+    pid: OWNER_PID,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const newerLocal = trackerRow({
+    pid: OWNER_PID,
+    startedAt: "2026-01-01T00:01:00.000Z",
+  });
+  const newestServe = trackerRow({
+    pid: SERVE_PID,
+    instanceId: "serve-a",
+    startedAt: "2026-01-01T00:02:00.000Z",
+  });
+  const runs = [olderLocal, newestServe, newerLocal];
+
+  const { run, skipped } = selectMethodRunToCancel(runs, runs, alive);
+
+  assertEquals(run, newerLocal);
+  assertEquals(skipped, [{ run: newestServe, instanceId: "serve-a" }]);
+});
+
+Deno.test("selectMethodRunToCancel: selects nothing when serve owns every run, newest first", () => {
+  const older = trackerRow({
+    pid: SERVE_PID,
+    instanceId: "serve-a",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const newer = trackerRow({
+    pid: SERVE_PID,
+    instanceId: "serve-a",
+    startedAt: "2026-01-01T00:01:00.000Z",
+  });
+
+  const { run, skipped } = selectMethodRunToCancel(
+    [older, newer],
+    [older, newer],
+    alive,
+  );
+
+  assertEquals(run, undefined);
+  assertEquals(skipped.map((s) => s.run), [newer, older]);
 });
