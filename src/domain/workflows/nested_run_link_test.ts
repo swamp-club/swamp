@@ -327,6 +327,19 @@ Deno.test("nestedWaitHint: names the --server form for a serve-owned run", () =>
   assert(hint.includes("swamp workflow resume child --run r-1 --server <url>"));
 });
 
+Deno.test("nestedWaitHint: recover has no --server form, so a serve-owned run is recovered in the server's repository", () => {
+  const target = {
+    workflowId: "11111111-1111-4111-8111-111111111111",
+    workflowName: "child",
+    runId: "r-1",
+    serveOwned: true,
+  };
+  const hint = nestedWaitHint({ kind: "recover", target });
+  assert(hint.includes("'swamp workflow recover child --run r-1'"), hint);
+  assert(!hint.includes("--server"), hint);
+  assert(hint.includes("server's repository"), hint);
+});
+
 Deno.test("assertNestedWaitsSettled: refuses with every child named, and a generic message for callers that may not reveal them", async () => {
   const { parent, child, deps } = linkedPair();
   const error = await assertRejects(

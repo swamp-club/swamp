@@ -316,9 +316,11 @@ export function nestedWaitHint(action: NestedWaitAction): string {
         server(t)
       }'.`;
     case "recover":
-      return `Nested ${run} was interrupted: 'swamp workflow recover ${t.workflowName} --run ${t.runId}${
-        server(t)
-      }'.`;
+      // recover has no --server form: it rewrites the run file in place, so
+      // a serve-owned child is recovered from the server's repository.
+      return `Nested ${run} was interrupted: 'swamp workflow recover ${t.workflowName} --run ${t.runId}'${
+        t.serveOwned ? ", run in the server's repository" : ""
+      }.`;
     case "cancel":
       return `Nested ${run} can no longer be approved: the approval on step "${action.stepName}" timed out. ` +
         `Cancel it with 'swamp workflow cancel ${t.workflowName} --run ${t.runId}${
