@@ -28,7 +28,11 @@
  * the gate already trusts.
  */
 
-import { base64urlDecode, base64urlEncode } from "./verification_proof.ts";
+import {
+  base64urlDecode,
+  base64urlEncode,
+  type ProofPayload,
+} from "./verification_proof.ts";
 
 /** The environment variable that carries the pass to child processes. */
 export const NESTED_GATE_PASS_ENV = "SWAMP_NESTED_GATE_PASS";
@@ -78,4 +82,20 @@ export function parseNestedGatePass(value: string): NestedGatePass | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a signed proof may carry a nested run under an ancestor that
+ * started at `ancestorStartedAt` (Unix seconds): it must have an `exp`, and
+ * must still have been valid when that ancestor started, since that is when
+ * the ancestor was admitted on it. A long-running ancestor therefore keeps
+ * its children passing after the proof expires, while a leaked or old proof
+ * is useless under any process started after its expiry. A proof without an
+ * `exp` (a signin token) never qualifies; the gate never hands one down.
+ */
+export function admitsNestedRun(
+  payload: Pick<ProofPayload, "exp">,
+  ancestorStartedAt: number,
+): boolean {
+  return payload.exp !== undefined && payload.exp > ancestorStartedAt;
 }

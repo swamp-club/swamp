@@ -23,11 +23,18 @@ import {
   findAncestor,
   isSameExecutable,
   parentPidOf,
+  parseProcBootTime,
   parseProcStatParentPid,
+  parseProcStatStartTicks,
+  startTimeOf,
   stripDeletedSuffix,
 } from "./process_ancestry.ts";
 
 const inspectable = Deno.build.os === "linux" || Deno.build.os === "darwin";
+// The positive cases inspect the test runner's parent, which in a container
+// may be a root-owned init this user cannot read.
+const parentInspectable = inspectable &&
+  executablePathOf(Deno.ppid) !== undefined;
 
 Deno.test("parseProcStatParentPid: reads the field after the state", () => {
   assertEquals(parseProcStatParentPid("1234 (swamp) S 99 1234 1234 0"), 99);
@@ -41,6 +48,24 @@ Deno.test("parseProcStatParentPid: rejects malformed text", () => {
   assertEquals(parseProcStatParentPid("no name here"), undefined);
   assertEquals(parseProcStatParentPid("1 (x) S notanumber"), undefined);
   assertEquals(parseProcStatParentPid("1 (x)"), undefined);
+});
+
+Deno.test("parseProcStatStartTicks: reads field 22, past a tricky name", () => {
+  // Fields 3..22 after "(name)": state ppid pgrp session tty tpgid flags
+  // minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
+  // num_threads itrealvalue starttime
+  const stat = "9 (a) b (c)) S 1 9 9 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 1 0 " +
+    "123456 1000 50";
+  assertEquals(parseProcStatStartTicks(stat), 123456);
+  assertEquals(parseProcStatStartTicks("9 (x) S 1"), undefined);
+});
+
+Deno.test("parseProcBootTime: reads the btime line", () => {
+  assertEquals(
+    parseProcBootTime("cpu  1 2 3\nintr 5 6\nbtime 1759300000\nprocesses 9\n"),
+    1759300000,
+  );
+  assertEquals(parseProcBootTime("cpu 1 2 3\n"), undefined);
 });
 
 Deno.test("stripDeletedSuffix: strips the marker Linux adds to a replaced binary", () => {
@@ -81,7 +106,7 @@ Deno.test({
 
 Deno.test({
   name: "findAncestor: the parent is an ancestor, with its executable",
-  ignore: !inspectable,
+  ignore: !parentInspectable,
   fn: () => {
     const result = findAncestor(Deno.ppid);
     assertEquals(result.kind, "ancestor");
@@ -117,5 +142,32 @@ Deno.test({
   ignore: inspectable,
   fn: () => {
     assertEquals(findAncestor(Deno.ppid).kind, "unknown");
+  },
+});
+
+Deno.test({
+  name: "startTimeOf: this process started no later than this module loaded",
+  ignore: !inspectable,
+  fn: () => {
+    const startedAt = startTimeOf(Deno.pid);
+    assert(startedAt !== undefined);
+    // timeOrigin is when this module's realm started, never before the
+    // process did; a second of slack covers whole-second rounding.
+    const loadedAt = Math.floor(performance.timeOrigin / 1000);
+    assert(startedAt > 0);
+    assert(startedAt <= loadedAt + 1, `${startedAt} is after ${loadedAt}`);
+  },
+});
+
+Deno.test({
+  name: "findAncestor: reports the ancestor's start time, no later than ours",
+  ignore: !parentInspectable,
+  fn: () => {
+    const result = findAncestor(Deno.ppid);
+    assert(result.kind === "ancestor");
+    const own = startTimeOf(Deno.pid);
+    assert(own !== undefined);
+    assertEquals(result.startedAt, startTimeOf(Deno.ppid));
+    assert(result.startedAt <= own);
   },
 });

@@ -193,12 +193,10 @@ import {
   type AuthGateOutcome,
   createAuthGateDeps,
   type GateHandoff,
+  nestedGatePassValue,
   runAuthGate,
 } from "./auth_gate.ts";
-import {
-  formatNestedGatePass,
-  NESTED_GATE_PASS_ENV,
-} from "../domain/auth/nested_gate_pass.ts";
+import { NESTED_GATE_PASS_ENV } from "../domain/auth/nested_gate_pass.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -2113,17 +2111,14 @@ async function gateWhoamiOr(
 /**
  * Hand this run's pass down to any swamp it starts (design/surfaces/
  * auth-gate.md, "Nested runs"), through the process env as
- * SWAMP_LOCK_HOLDER_PID is. Each gated run re-asserts its own pass, and one
- * that passed with no proof clears any it inherited, so a pass always names
- * the nearest swamp ancestor. Fixed for the life of the process: the gate
- * runs once.
+ * SWAMP_LOCK_HOLDER_PID is (see `nestedGatePassValue`). A run with nothing
+ * to hand down clears any pass it inherited. Fixed for the life of the
+ * process: the gate runs once.
  */
 function publishNestedGatePass(handoff: GateHandoff | undefined): void {
-  if (handoff) {
-    Deno.env.set(
-      NESTED_GATE_PASS_ENV,
-      formatNestedGatePass({ parentPid: Deno.pid, ...handoff }),
-    );
+  const value = nestedGatePassValue(handoff, Deno.pid);
+  if (value) {
+    Deno.env.set(NESTED_GATE_PASS_ENV, value);
   } else {
     Deno.env.delete(NESTED_GATE_PASS_ENV);
   }

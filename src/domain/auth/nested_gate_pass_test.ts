@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  admitsNestedRun,
   formatNestedGatePass,
   type NestedGatePass,
   parseNestedGatePass,
@@ -66,4 +67,19 @@ Deno.test("parseNestedGatePass: rejects non-base64url parts", () => {
   assertEquals(parseNestedGatePass("42.e30.c2l+"), null);
   assertEquals(parseNestedGatePass("42..c2ln"), null);
   assertEquals(parseNestedGatePass(""), null);
+});
+
+Deno.test("admitsNestedRun: a proof still valid when the ancestor started admits it", () => {
+  assertEquals(admitsNestedRun({ exp: 2_000 }, 1_999), true);
+  // Expired since: the ancestor was admitted on it, so its children are too.
+  assertEquals(admitsNestedRun({ exp: 2_000 }, 1_000), true);
+});
+
+Deno.test("admitsNestedRun: a proof expired before the ancestor started does not", () => {
+  assertEquals(admitsNestedRun({ exp: 2_000 }, 2_000), false);
+  assertEquals(admitsNestedRun({ exp: 2_000 }, 3_000), false);
+});
+
+Deno.test("admitsNestedRun: a proof without exp (a signin token) never does", () => {
+  assertEquals(admitsNestedRun({}, 0), false);
 });

@@ -482,27 +482,33 @@ function nestedPassEnv(
   };
 }
 
-const anAncestor = (): AncestorCheck => ({ kind: "ok" });
+/** A live ancestor that started a minute ago. */
+const anAncestor = (): AncestorCheck => ({
+  kind: "ok",
+  startedAt: now() - 60,
+});
 
 Deno.test("auth gate integration: a nested run with no credential passes on its parent's pass", async () => {
   await withWorld(async (w) => {
     // The cached keys are the only ones trusted; the parent's own key is
     // not this run's business.
     await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
+    // A daemon admitted 20 days ago on a proof that has since expired.
     const parentProof = await w.mint({
-      iat: now() - 20 * DAY,
-      exp: now() - 6 * DAY,
+      iat: now() - 21 * DAY,
+      exp: now() - 7 * DAY,
       apiKey: "parent_key",
     });
     const outcome = await w.gateNested(
       nestedPassEnv(parentProof, 4242),
-      anAncestor,
+      () => ({ kind: "ok", startedAt: now() - 20 * DAY }),
     );
     assert(outcome.kind === "pass");
     assertEquals(outcome.authMode, "verified");
     assertEquals(outcome.handoff, {
       proof: parentProof.proof,
       signature: parentProof.signature,
+      issuerPid: 4242,
     });
     assertEquals(w.calls, 0);
   });
@@ -511,7 +517,11 @@ Deno.test("auth gate integration: a nested run with no credential passes on its 
 Deno.test("auth gate integration: a nested pass naming this process is not from an ancestor", async () => {
   await withWorld(async (w) => {
     await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
-    const parentProof = await w.mint({ iat: now(), apiKey: "parent_key" });
+    const parentProof = await w.mint({
+      iat: now(),
+      exp: now() + 14 * DAY,
+      apiKey: "parent_key",
+    });
     // The real ancestry check: a process is never its own ancestor, which is
     // what a pass hand-set in a plain shell (naming that shell) amounts to.
     const outcome = await w.gate(nestedPassEnv(parentProof, Deno.pid));
@@ -525,7 +535,7 @@ Deno.test("auth gate integration: a nested pass signed by an untrusted key block
     const forged = await mintTestProof(
       await generateTestSigningKey(w.key.publicKey.kid),
       "parent_key",
-      { iat: now() },
+      { iat: now(), exp: now() + 14 * DAY },
     );
     const outcome = await w.gateNested(nestedPassEnv(forged, 4242), anAncestor);
     assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
@@ -537,7 +547,11 @@ Deno.test("auth gate integration: a logged-in run ignores an inherited pass and 
     await w.login();
     const own = await w.mint({ iat: now() - DAY, exp: now() + DAY });
     await w.saveProof(own);
-    const parentProof = await w.mint({ iat: now(), apiKey: "parent_key" });
+    const parentProof = await w.mint({
+      iat: now(),
+      exp: now() + 14 * DAY,
+      apiKey: "parent_key",
+    });
     const outcome = await w.gateNested(
       nestedPassEnv(parentProof, 4242),
       () => ({ kind: "failed", reason: "must not be consulted" }),
