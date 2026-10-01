@@ -186,6 +186,24 @@ export interface InMemoryRemote {
   ops(): readonly InMemoryRemoteOpRecord[];
   /** Drops a cache's persisted dirty state, like a lost sidecar file. */
   resetSidecar(cacheDir: string): void;
+  /**
+   * What the next push from `cacheDir` would send, read without side
+   * effects: nothing is uploaded, no op is recorded, no injected failure is
+   * consumed, and it works while offline.
+   *
+   * `uploads` are the files that differ from the committed content and
+   * `deletes` the committed keys the push would remove, both sorted and
+   * computed exactly as `pushChanged` would plan them now. A cache whose
+   * sidecar is clean reports nothing, like the push fast path. `marked`
+   * holds the recorded path marks and `bulk` whether the next push is a
+   * full walk; while `bulk` is set the marks are ignored.
+   */
+  pendingPush(cacheDir: string): Promise<{
+    uploads: string[];
+    deletes: string[];
+    marked: string[];
+    bulk: boolean;
+  }>;
 }
 
 const PLAN_SCOPED = Symbol("scoped");
@@ -414,6 +432,63 @@ export function createInMemoryRemote(
     return deleted;
   }
 
+  /** Plans the push from `cacheDir` as `pushChanged` would, reading only. */
+  async function planPushFor(
+    cacheDir: string,
+    sidecar: Sidecar | undefined,
+  ): Promise<PushPlan> {
+    const uploads = new Map<string, Uint8Array>();
+    const deletes = new Set<string>();
+    const uploadIfChanged = async (rel: string) => {
+      const bytes = await readLocal(cacheDir, rel);
+      if (bytes && !sameBytes(bytes, committed.get(rel))) {
+        uploads.set(rel, bytes);
+      }
+    };
+
+    const scoped = sidecar !== undefined && !sidecar.bulk &&
+      sidecar.dirtyPaths.size > 0;
+    if (scoped) {
+      for (const rel of [...sidecar.dirtyPaths].sort()) {
+        if (isInternalCacheFile(rel)) continue;
+        const info = await statLocal(cacheDir, rel);
+        if (info?.isFile) {
+          await uploadIfChanged(rel);
+        } else if (info?.isDirectory) {
+          const local = await walkLocal(cacheDir, rel);
+          for (const file of local) await uploadIfChanged(file);
+          const present = new Set(local);
+          for (const remoteKey of committed.keys()) {
+            if (isUnder(remoteKey, rel) && !present.has(remoteKey)) {
+              deletes.add(remoteKey);
+            }
+          }
+        } else if (!info) {
+          for (const remoteKey of committed.keys()) {
+            if (remoteKey === rel || isUnder(remoteKey, rel)) {
+              deletes.add(remoteKey);
+            }
+          }
+        }
+      }
+      return { uploads, deletes: [...deletes].sort(), scoped };
+    }
+
+    // Full walk: a bulk mark, an empty set, or no sidecar yet.
+    const local = await walkLocal(cacheDir, "");
+    for (const file of local) await uploadIfChanged(file);
+    const deletesMissing = sidecar !== undefined &&
+      (sidecar.overflowed ||
+        (sidecar.bulk && !semantics.bulkDisablesDeletes));
+    if (deletesMissing) {
+      const present = new Set(local);
+      for (const remoteKey of committed.keys()) {
+        if (!present.has(remoteKey)) deletes.add(remoteKey);
+      }
+    }
+    return { uploads, deletes: [...deletes].sort(), scoped };
+  }
+
   function connect(
     cacheDir: string,
     connectOptions?: ConnectOptions,
@@ -438,58 +513,8 @@ export function createInMemoryRemote(
       return sidecar;
     };
 
-    async function planPush(sidecar: Sidecar | undefined): Promise<PushPlan> {
-      const uploads = new Map<string, Uint8Array>();
-      const deletes = new Set<string>();
-      const uploadIfChanged = async (rel: string) => {
-        const bytes = await readLocal(cacheDir, rel);
-        if (bytes && !sameBytes(bytes, committed.get(rel))) {
-          uploads.set(rel, bytes);
-        }
-      };
-
-      const scoped = sidecar !== undefined && !sidecar.bulk &&
-        sidecar.dirtyPaths.size > 0;
-      if (scoped) {
-        for (const rel of [...sidecar.dirtyPaths].sort()) {
-          if (isInternalCacheFile(rel)) continue;
-          const info = await statLocal(cacheDir, rel);
-          if (info?.isFile) {
-            await uploadIfChanged(rel);
-          } else if (info?.isDirectory) {
-            const local = await walkLocal(cacheDir, rel);
-            for (const file of local) await uploadIfChanged(file);
-            const present = new Set(local);
-            for (const remoteKey of committed.keys()) {
-              if (isUnder(remoteKey, rel) && !present.has(remoteKey)) {
-                deletes.add(remoteKey);
-              }
-            }
-          } else if (!info) {
-            for (const remoteKey of committed.keys()) {
-              if (remoteKey === rel || isUnder(remoteKey, rel)) {
-                deletes.add(remoteKey);
-              }
-            }
-          }
-        }
-        return { uploads, deletes: [...deletes].sort(), scoped };
-      }
-
-      // Full walk: a bulk mark, an empty set, or no sidecar yet.
-      const local = await walkLocal(cacheDir, "");
-      for (const file of local) await uploadIfChanged(file);
-      const deletesMissing = sidecar !== undefined &&
-        (sidecar.overflowed ||
-          (sidecar.bulk && !semantics.bulkDisablesDeletes));
-      if (deletesMissing) {
-        const present = new Set(local);
-        for (const remoteKey of committed.keys()) {
-          if (!present.has(remoteKey)) deletes.add(remoteKey);
-        }
-      }
-      return { uploads, deletes: [...deletes].sort(), scoped };
-    }
+    const planPush = (sidecar: Sidecar | undefined): Promise<PushPlan> =>
+      planPushFor(cacheDir, sidecar);
 
     /** Whether every key in `index` (default: the live remote) is local. */
     async function hasAll(index: Iterable<string>): Promise<boolean> {
@@ -757,6 +782,21 @@ export function createInMemoryRemote(
       })),
     resetSidecar(cacheDir) {
       sidecars.delete(sidecarKey(cacheDir));
+    },
+    async pendingPush(cacheDir) {
+      const sidecar = sidecars.get(sidecarKey(cacheDir));
+      const marked = [...(sidecar?.dirtyPaths ?? [])].sort();
+      const bulk = sidecar?.bulk ?? false;
+      if (sidecar && !sidecar.localDirty) {
+        return { uploads: [], deletes: [], marked, bulk };
+      }
+      const plan = await planPushFor(cacheDir, sidecar);
+      return {
+        uploads: [...plan.uploads.keys()].sort(),
+        deletes: plan.deletes,
+        marked,
+        bulk,
+      };
     },
   };
 }

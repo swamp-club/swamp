@@ -191,8 +191,6 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/http/swamp_club_client_test.ts",
   // Spawns a second deno process to prove cross-process catalog locking.
   "src/infrastructure/persistence/catalog_store_test.ts",
-  // Spawns a second deno process to prove cross-process sync coordination.
-  "src/infrastructure/persistence/datastore_sync_coordinator_test.ts",
   // git adapter test: the unit under test wraps the real git binary.
   "src/infrastructure/persistence/git_worktree_test.ts",
   // Process adapter test: terminating real process trees (groups, taskkill

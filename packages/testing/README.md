@@ -210,7 +210,12 @@ The remote also offers:
 - `failNext(op, error?, { afterUploads?, instance? })`;
 - `offline(boolean)`;
 - `ops()`: an ordered `{ instance, op, paths, deleted }` log;
-- `resetSidecar(cacheDir)`.
+- `resetSidecar(cacheDir)`;
+- `pendingPush(cacheDir)`: what the next push from that cache would send, as
+  `{ uploads, deletes, marked, bulk }`, read with no side effects (no upload, no
+  op recorded, no injected failure consumed, works offline). A clean cache
+  reports no uploads or deletes; `bulk` shows the next push is a full walk that
+  ignores `marked`.
 
 Not modelled: namespaces, lazy hydration, the control plane, `previewPush`,
 Windows drive-letter joins, and the gap between `preparePush` deleting objects
