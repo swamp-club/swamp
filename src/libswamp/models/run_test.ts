@@ -43,6 +43,7 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import type { ModelUpdated } from "../../domain/events/types.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import { generateDataId } from "../../domain/data/data_id.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
 await initializeLogging({});
 
@@ -1269,4 +1270,35 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
   assertEquals(key.includes(secret), false);
   assertEquals(executedBag?.resolveRaw(key), `echo ${secret}`);
   assertEquals(reported?.key, "echo ***");
+});
+
+Deno.test("modelMethodRun keeps an empty-markdown report in the completed run's reports", async () => {
+  const reportName = `@test/${crypto.randomUUID()}`;
+  reportRegistry.register(reportName, {
+    description: "Report with nothing to say",
+    scope: "method",
+    execute: () => Promise.resolve({ markdown: "", json: {} }),
+  });
+  try {
+    const definition = createTestDefinition("test-model", "run");
+    const modelDef = { ...createTestModelDef("run"), reports: [reportName] };
+    const events = await collect(
+      modelMethodRun(
+        createLibSwampContext(),
+        createTestDeps(definition, modelDef),
+        createTestInput("test-model", "run"),
+      ),
+    );
+
+    // Matches workflow run, whose JSON also keeps empty reports.
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected a completed event");
+    }
+    const report = completed.run.reports?.[reportName];
+    assertEquals(report?.success, true);
+    assertEquals(report?.markdown, "");
+  } finally {
+    reportRegistry.invalidateType(reportName);
+  }
 });

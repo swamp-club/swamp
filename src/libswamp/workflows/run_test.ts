@@ -1290,6 +1290,58 @@ Deno.test("workflowRun collects report_failed events from execution service", as
   }
 });
 
+Deno.test("workflowRun keeps an empty-markdown report in the completed run's reports", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+      jobs: [],
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    { kind: "report_started", reportName: "quiet-report", scope: "method" },
+    {
+      kind: "report_completed",
+      reportName: "quiet-report",
+      scope: "method",
+      markdown: "",
+      json: {},
+    },
+    {
+      kind: "step_completed",
+      jobId: "job1",
+      stepId: "step1",
+      runId: run.id,
+    },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
+  ]);
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  // Matches model method run, whose JSON also keeps empty reports.
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error("expected a completed event");
+  }
+  assertEquals(completed.run.reports, [{
+    name: "quiet-report",
+    scope: "method",
+    success: true,
+    markdown: "",
+    json: {},
+  }]);
+});
+
 // --- Cancellation tests ---
 
 Deno.test("workflowRun yields cancelled error when abort signal fires during execution", async () => {

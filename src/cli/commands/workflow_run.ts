@@ -522,6 +522,7 @@ export const workflowRunCommand = new Command()
             workflowName: workflowIdOrName,
             isAuthenticated: isAuthenticated(),
             quiet: ctx.verbosity === "quiet",
+            verbose: ctx.verbosity === "verbose",
             failOnSeverity,
             commandTarget: formatCommandTarget({
               repoDir: options.repoDir as string | undefined,
@@ -696,6 +697,7 @@ async function runWorkflowViaServer(
           workflowName: workflowIdOrName,
           isAuthenticated: isAuthenticated(),
           quiet: ctx.verbosity === "quiet",
+          verbose: ctx.verbosity === "verbose",
           commandTarget,
         });
       await consumeStream(

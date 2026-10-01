@@ -371,7 +371,10 @@ Both artifacts are written with:
 **Empty results are not persisted.** If `execute()` returns empty markdown
 (after trimming), nothing is saved and the previous version stays `latest`. This
 stops method-scoped reports that return nothing for methods they do not apply to
-from hiding real content behind 0-byte versions.
+from hiding real content behind 0-byte versions. Completion is still announced
+(`onReportCompleted` with no data handles), so JSON output and event consumers
+see the report ran. The log-mode `model method run` and `workflow run` output
+hides an empty report entirely, and frames it with an empty body under `-v`.
 
 Data handles are returned in the `ReportExecutionResult` and included in the
 final view.

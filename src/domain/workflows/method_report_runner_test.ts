@@ -611,3 +611,30 @@ Deno.test("runFor: vary suffix is appended to report artifact names", async () =
     assertEquals(refs[0].tags.varySuffix, "eu-1");
   });
 });
+
+Deno.test("runFor: an empty-markdown report emits report_completed but persists nothing", async () => {
+  const name = `@test/${crypto.randomUUID()}`;
+  await withReports([{
+    name,
+    report: makeReport(
+      "method",
+      () => Promise.resolve({ markdown: "", json: {} }),
+    ),
+  }], async () => {
+    const harness = makeHarness();
+    requireReports(harness, [name]);
+
+    const refs = await new MethodReportRunner().runFor(harness.args);
+
+    assertEquals(refs, []);
+    assertEquals(harness.saved, []);
+    const completed = harness.events.filter((e) =>
+      e.kind === "report_completed"
+    );
+    assertEquals(completed.length, 1);
+    assertEquals(completed[0].reportName, name);
+    if (completed[0].kind === "report_completed") {
+      assertEquals(completed[0].markdown, "");
+    }
+  });
+});

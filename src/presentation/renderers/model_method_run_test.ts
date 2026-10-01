@@ -641,3 +641,88 @@ Deno.test("ModelMethodRunRenderer: error event carries the cause's marked paths 
     assertEquals(errorPaths(error), [path]);
   }
 });
+
+function streamWithReports(
+  reports: Array<{ name: string; markdown: string }>,
+): ModelMethodRunEvent[] {
+  const events = fullEventStream(makeRunView("succeeded"));
+  const completed = events.pop()!;
+  for (const report of reports) {
+    events.push(
+      { kind: "report_started", reportName: report.name, scope: "method" },
+      {
+        kind: "report_completed",
+        reportName: report.name,
+        scope: "method",
+        markdown: report.markdown,
+        json: {},
+      },
+    );
+  }
+  events.push(completed);
+  return events;
+}
+
+async function renderReports(
+  reports: Array<{ name: string; markdown: string }>,
+  verbose = false,
+): Promise<string> {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+    isAuthenticated: true,
+    verbose,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(streamWithReports(reports)),
+      renderer.handlers(),
+    );
+  });
+  return lines.join("\n");
+}
+
+Deno.test("ConsoleModelMethodRunRenderer: report with empty markdown prints nothing", async () => {
+  const output = await renderReports([
+    { name: "@test/quiet-report", markdown: "" },
+  ]);
+  assertEquals(output.includes("── Report:"), false);
+  assertEquals(output.includes("@test/quiet-report"), false);
+  assertStringIncludes(output, "Completed");
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: report with whitespace-only markdown prints nothing", async () => {
+  const output = await renderReports([
+    { name: "@test/quiet-report", markdown: "  \n\n" },
+  ]);
+  assertEquals(output.includes("── Report:"), false);
+  assertEquals(output.includes("@test/quiet-report"), false);
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: report with markdown renders its frame", async () => {
+  const output = await renderReports([
+    { name: "@test/summary-report", markdown: "# Summary\n\nAll good." },
+  ]);
+  assertStringIncludes(output, "Report");
+  assertStringIncludes(output, "── Report: @test/summary-report ");
+  assertStringIncludes(output, "All good.");
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: mixed reports render only those with markdown", async () => {
+  const output = await renderReports([
+    { name: "@test/quiet-report", markdown: "" },
+    { name: "@test/summary-report", markdown: "All good." },
+  ]);
+  assertEquals(output.includes("@test/quiet-report"), false);
+  assertStringIncludes(output, "── Report: @test/summary-report ");
+  assertStringIncludes(output, "All good.");
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: verbose renders the frame of a report with empty markdown", async () => {
+  const output = await renderReports(
+    [{ name: "@test/quiet-report", markdown: "" }],
+    true,
+  );
+  assertStringIncludes(output, "Report");
+  assertStringIncludes(output, "── Report: @test/quiet-report ");
+});

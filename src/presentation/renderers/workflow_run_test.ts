@@ -1255,3 +1255,73 @@ Deno.test("WorkflowRunRenderer: error event carries the cause's marked paths (sw
     assertEquals(errorPaths(error), [path]);
   }
 });
+
+async function renderWorkflowReport(
+  markdown: string,
+  verbose = false,
+): Promise<string[]> {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    isAuthenticated: true,
+    verbose,
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const stepCompleted = events.findIndex((e) => e.kind === "step_completed");
+  events.splice(
+    stepCompleted,
+    0,
+    {
+      kind: "report_started",
+      reportName: "@test/summary-report",
+      scope: "method",
+      jobId: "extract",
+      stepId: "fetch",
+    },
+    {
+      kind: "report_completed",
+      reportName: "@test/summary-report",
+      scope: "method",
+      markdown,
+      json: {},
+      jobId: "extract",
+      stepId: "fetch",
+    },
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  return lines.join("\n").split("\n");
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: report with whitespace-only markdown prints nothing", async () => {
+  const lines = await renderWorkflowReport(" \n");
+  const output = lines.join("\n");
+  assertEquals(output.includes("@test/summary-report"), false);
+  assertEquals(output.includes("── Report:"), false);
+  assertStringIncludes(output, "Completed");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: report frame header and closing rule have the same width", async () => {
+  const lines = await renderWorkflowReport("# Summary\n\nAll good.");
+  const headerIndex = lines.findIndex((l) =>
+    l.startsWith("── Report: @test/summary-report ")
+  );
+  assertEquals(headerIndex >= 0, true);
+  const closing = lines.slice(headerIndex + 1).find((l) => /^─+$/.test(l));
+  assertEquals(closing !== undefined, true);
+  assertEquals(lines[headerIndex].length, closing!.length);
+  assertStringIncludes(lines.join("\n"), "All good.");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: verbose renders the frame of a report with empty markdown", async () => {
+  const lines = await renderWorkflowReport("", true);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Report @test/summary-report");
+  const headerIndex = lines.findIndex((l) =>
+    l.startsWith("── Report: @test/summary-report ")
+  );
+  assertEquals(headerIndex >= 0, true);
+  const closing = lines.slice(headerIndex + 1).find((l) => /^─+$/.test(l));
+  assertEquals(closing !== undefined, true);
+  assertEquals(lines[headerIndex].length, closing!.length);
+});
