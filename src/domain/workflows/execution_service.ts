@@ -3029,6 +3029,7 @@ export class WorkflowExecutionService {
           workflow,
           run,
           level,
+          startedJobs,
           anyJobFailed,
           options?.signal,
           levelSignal,
@@ -3617,6 +3618,7 @@ export class WorkflowExecutionService {
           resolvedWorkflow,
           existingRun,
           level,
+          startedJobs,
           anyJobFailed,
           options?.signal,
           levelSignal,
@@ -5288,7 +5290,9 @@ export class WorkflowExecutionService {
    * marked failed with its running steps — the signal aborted their execution
    * but the generators were abandoned before they could record the failure.
    * A job a resume inherited as running from a suspension is in flight only
-   * once this walk starts it, so it runs when its level is reached.
+   * once this walk starts it, so it runs when its level is reached; one the
+   * abort kept from starting was settled when its level finished
+   * (finishJobLevel).
    */
   private enterJobLevel(
     run: WorkflowRun,
@@ -5337,17 +5341,25 @@ export class WorkflowExecutionService {
    * its dependsOn is unmet, otherwise from its steps (settleNotStartedJob). A
    * suspended run keeps its pending jobs to resume.
    *
+   * A job a resume inherited as running (the job the run was suspended in,
+   * or one a failed run left running) that this walk never started, the abort
+   * having fired before the level or while the job was queued, is settled the
+   * same way, whether or not the abort interrupted the level: its pending
+   * steps as a never-started job's, then the job as a started job would end
+   * (settleNotResumedJob). Its approved work never ran, so a dependent gated
+   * on it must not see it still running.
+   *
    * When the signal aborts mid-level with parallel jobs, mergeWithConcurrency
    * may exit before job_completed events are consumed, so a failure is also
-   * derived from model state. A running job counts even when a resume
-   * inherited it from a suspension: the cancellation left its work
-   * unfinished, so later levels run in cleanup mode, which fails only the jobs
-   * this walk started (enterJobLevel).
+   * derived from model state, after the settling above: a job it ended failed
+   * or unknown sends later levels into cleanup mode, so an always or
+   * completed dependent runs only once the job is settled.
    */
   private finishJobLevel(
     workflow: Workflow,
     run: WorkflowRun,
     level: readonly string[],
+    started: ReadonlySet<string>,
     anyJobFailed: boolean,
     signal: AbortSignal | undefined,
     levelSignal: AbortSignal | undefined,
@@ -5367,6 +5379,17 @@ export class WorkflowExecutionService {
         } else {
           this.settleNotStartedJob(job, jobRun);
         }
+      }
+    }
+
+    if (signal?.aborted && run.status !== "suspended") {
+      for (const jobName of level) {
+        if (started.has(jobName)) continue;
+        const jobRun = run.getJob(jobName);
+        if (jobRun?.status !== "running") continue;
+        const job = workflow.getJob(jobName);
+        if (!job) continue;
+        this.settleNotResumedJob(job, jobRun);
       }
     }
 
@@ -5401,6 +5424,25 @@ export class WorkflowExecutionService {
    * outcome ({@link JobRun.settleNotStarted}).
    */
   private settleNotStartedJob(job: Job, jobRun: JobRun): void {
+    this.settleUnstartedSteps(job, jobRun);
+    jobRun.settleNotStarted();
+  }
+
+  /**
+   * Settles a job a resume inherited as running that its abort kept from
+   * starting: its pending steps as {@link settleNotStartedJob} does, then the
+   * job as a started job would end ({@link JobRun.settleNotResumed}).
+   */
+  private settleNotResumedJob(job: Job, jobRun: JobRun): void {
+    this.settleUnstartedSteps(job, jobRun);
+    jobRun.settleNotResumed();
+  }
+
+  /**
+   * Settles the job's pending steps in dependency order, each as
+   * {@link settleUnstartedStep} does.
+   */
+  private settleUnstartedSteps(job: Job, jobRun: JobRun): void {
     const sorted = this.sortService.sort(
       job.steps.map((step) => ({
         name: step.name,
@@ -5415,7 +5457,6 @@ export class WorkflowExecutionService {
         this.settleUnstartedStep(job.getStep(stepName), stepRun, jobRun);
       }
     }
-    jobRun.settleNotStarted();
   }
 
   /**

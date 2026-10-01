@@ -1525,10 +1525,18 @@ order:
   cancellation interrupts a level: later job levels run with the cleanup
   signal, and it settles never-started steps and jobs the same way
   (swamp-club#2550). A job that failed before the resume counts once the
-  resume reaches its level. A job the run was suspended in is unfinished work,
-  so it also starts cleanup mode, but cleanup fails only jobs the resume
-  started: one in a later level runs with the cleanup signal when its level is
-  reached, and one the cancellation kept from starting stays `running`.
+  resume reaches its level. A job the run was suspended in is unfinished work:
+  one in a later level runs with the cleanup signal when its level is reached.
+  One the cancellation kept from starting (the abort fired before its level,
+  or while it was queued behind `concurrency`) is settled when its level
+  ends, so it never stays `running` in the cancelled record (swamp-club#2597).
+  Its pending steps are settled as a never-started job's, then it ends as a
+  started job would: `failed` when a step failed, `unknown` while a guarded
+  step is undecided, otherwise `succeeded`. A `failed` or `unknown` job starts
+  cleanup mode, so an `always` or `completed` teardown on it runs only after
+  it is settled, never ahead of approved work still recorded as running. The
+  same holds for a job a failed run left `running` when a retry or `--from`
+  resume is cancelled before reaching it.
 - A resume of the run runs the work its abort settled, as it would have run
   the `pending` records. This holds for a plain resume, one after `workflow
   recover` or an approval, and a retry or `--from`. Each settled step is reset
@@ -1538,7 +1546,9 @@ order:
   cleanup skipped on its `dependsOn` never ran, so it counts as settled too
   and is evaluated again: a `succeeded`-gated dependent of a cancelled or
   undecided step runs once that step succeeds. Cleanup that already ran for
-  that work is not run again. A retry still needs every step finished, so a
+  that work is not run again: when cleanup suspends at a gate after settling
+  a job the resume never started, a later resume runs that job's approved
+  work after the cleanup's earlier steps already ran. A retry still needs every step finished, so a
   failed run with an undecided step is resumed with `--from`.
 - A step that already failed stays failed on resume. When resume walks its job
   again, the job ends `failed` unless that failure was allowed, so the run

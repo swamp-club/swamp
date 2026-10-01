@@ -929,6 +929,37 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Settles a job a resume inherited as `running` (from the suspension, or
+   * left running by a failed run) and never started because its abort kept
+   * the job from its level, once its pending steps are settled. It ends as a
+   * started job would: failed when a step failed without its failure being
+   * allowed; otherwise `unknown` while a step is unfinished (a guarded step
+   * left `pending`, or one still `running` or `waiting_approval`), since its
+   * outcome is ambiguous; otherwise succeeded. Like {@link settleNotStarted}, its
+   * settled steps are marked {@link StepRun.settledByAbort}, so a resume
+   * walks the job again. Any other job status is left alone.
+   */
+  settleNotResumed(): void {
+    if (this._status !== "running") return;
+    if (
+      this._steps.some((step) =>
+        step.status === "failed" && !step.allowedFailure
+      )
+    ) {
+      this.fail();
+    } else if (
+      this._steps.some((step) =>
+        step.status === "pending" || step.status === "running" ||
+        step.status === "waiting_approval"
+      )
+    ) {
+      this.markUnknown();
+    } else {
+      this.succeed();
+    }
+  }
+
+  /**
    * True when the run's abort left work in this job for a resume to run: a
    * step it settled without starting ({@link StepRun.settledByAbort}), or a
    * guarded step it left undecided (`pending`) in a job it ended `unknown`.

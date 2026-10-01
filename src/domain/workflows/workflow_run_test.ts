@@ -2212,6 +2212,85 @@ Deno.test("JobRun.settleNotStarted: keeps a job pending while a step is undecide
   assertEquals(job.status, "pending");
 });
 
+/** A job a resume inherited as running, its gate approved before the abort. */
+function inheritedJob(steps: string[]): JobRun {
+  const job = JobRun.pending("main", ["gate", ...steps]);
+  job.start();
+  job.getStep("gate")!.succeed();
+  return job;
+}
+
+Deno.test("JobRun.settleNotResumed: fails a job when a step failed", () => {
+  const job = inheritedJob(["post"]);
+  job.cancelPendingSteps(["post"]);
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "failed");
+  assertEquals(job.completedAt !== undefined, true);
+});
+
+Deno.test("JobRun.settleNotResumed: succeeds a job whose only failure was allowed", () => {
+  const job = inheritedJob(["post"]);
+  job.getStep("gate")!.fail("boom");
+  job.getStep("gate")!.markAllowedFailure();
+  job.getStep("post")!.skipUnstarted({ kind: "dependency" });
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "succeeded");
+});
+
+Deno.test("JobRun.settleNotResumed: succeeds a job when every unfinished step was skipped", () => {
+  const job = inheritedJob(["post"]);
+  job.getStep("post")!.skipUnstarted({ kind: "dependency" });
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "succeeded");
+});
+
+Deno.test("JobRun.settleNotResumed: marks a job unknown while a step is undecided", () => {
+  // A guarded step whose guard never ran stays pending: the job did not
+  // finish its work, but nothing in it failed.
+  const job = inheritedJob(["post"]);
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "unknown");
+  assertEquals(job.getStep("post")!.status, "pending");
+});
+
+Deno.test("JobRun.settleNotResumed: marks a job unknown while a step awaits approval", () => {
+  const job = inheritedJob(["second"]);
+  job.getStep("second")!.waitForApproval("again?");
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "unknown");
+});
+
+Deno.test("JobRun.settleNotResumed: leaves a job that is not running alone", () => {
+  for (
+    const settle of [
+      (_j: JobRun) => {},
+      (j: JobRun) => j.succeed(),
+      (j: JobRun) => j.fail(),
+      (j: JobRun) => j.skip(),
+      (j: JobRun) => j.markUnknown(),
+    ]
+  ) {
+    const job = JobRun.pending("j1", ["s1"]);
+    settle(job);
+    job.getStep("s1")!.fail("boom");
+    const before = job.toData();
+
+    job.settleNotResumed();
+
+    assertEquals(job.toData(), before);
+  }
+});
+
 Deno.test("StepRun: work an abort settles is marked, persisted, and cleared by a reset", () => {
   const cancelled = StepRun.pending("a");
   cancelled.cancelUnstarted();
