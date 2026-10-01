@@ -33,7 +33,11 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  OWNER_STOPPED_STEP_ERROR,
+  type WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
+import { CLEANUP_GRACE_TIMEOUT_MS } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type {
   WorkflowRepository,
@@ -141,33 +145,62 @@ export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
 }
 
+/**
+ * How long cancel waits for a run's owning process to exit after SIGTERM
+ * before it SIGKILLs it. The owner runs the cancelled run's always/completed
+ * cleanup steps under {@link CLEANUP_GRACE_TIMEOUT_MS}; the margin covers the
+ * step the abort interrupted (the shell executor's 3 s SIGTERM-to-SIGKILL
+ * grace and its 5 s pipe drain) and the owner's final save of the run. It does
+ * not budget a slow push to a remote datastore after cleanup, nor a second
+ * cleanup level; an owner still running then is killed, and the record it
+ * left is settled with {@link OWNER_STOPPED_STEP_ERROR}.
+ */
+export const OWNER_STOP_GRACE_MS = CLEANUP_GRACE_TIMEOUT_MS + 10_000;
+
+const STOP_GRACE_SECONDS = OWNER_STOP_GRACE_MS / 1000;
+
 export interface CancelLocalRunDeps {
   runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
-  killProcess?: (pid: number) => Promise<boolean>;
+  killProcess?: (
+    pid: number,
+    options: { maxWaitMs: number },
+  ) => Promise<boolean>;
+}
+
+/** The pid of the process to stop for `run`, if another process owns it. */
+function ownerPidToStop(run: WorkflowRun): number | undefined {
+  return run.pid && run.pid !== Deno.pid ? run.pid : undefined;
+}
+
+async function stopOwner(
+  pid: number,
+  killProcess: NonNullable<CancelLocalRunDeps["killProcess"]>,
+): Promise<void> {
+  await killProcess(pid, { maxWaitMs: OWNER_STOP_GRACE_MS });
 }
 
 /**
- * Cancels a locally-owned run. Stops the owning process first, then re-reads
- * the run: the owner saves its own final record while handling SIGTERM, and
- * saving the pre-kill snapshot would overwrite it. A run the owner already
- * finished keeps its record (a cancelled one gets this reason); a run that is
- * still active is cancelled. Returns the persisted run, or null when the
- * record no longer exists.
+ * Re-reads a run whose owner was stopped: the owner saves its own final
+ * record while handling SIGTERM, and saving the pre-kill snapshot would
+ * overwrite it. A run the owner already finished keeps its record (a
+ * cancelled one gets this reason); a run still running is cancelled, with the
+ * steps and jobs its owner left running failed. Returns the persisted run, or
+ * null when the record no longer exists.
  */
-export async function cancelLocalRun(
+async function settleCancelledRun(
   run: WorkflowRun,
   workflowId: WorkflowId,
   reason: string,
-  { runRepo, killProcess = killProcessTree }: CancelLocalRunDeps,
+  runRepo: CancelLocalRunDeps["runRepo"],
 ): Promise<WorkflowRun | null> {
-  if (run.pid && run.pid !== Deno.pid) {
-    await killProcess(run.pid);
-  }
   const current = await runRepo.findById(workflowId, run.id);
   if (!current) {
     return null;
   }
   if (!TERMINAL_STATUSES.has(current.status)) {
+    if (current.status === "running") {
+      current.failInFlightWork(OWNER_STOPPED_STEP_ERROR);
+    }
     current.cancel(reason);
   } else if (current.status === "cancelled") {
     current.recordCancelReason(reason);
@@ -176,6 +209,25 @@ export async function cancelLocalRun(
   }
   await runRepo.save(workflowId, current);
   return current;
+}
+
+/**
+ * Cancels a locally-owned run. Stops the owning process first, giving it
+ * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, then
+ * settles the record (see {@link settleCancelledRun}). Returns the persisted
+ * run, or null when the record no longer exists.
+ */
+export async function cancelLocalRun(
+  run: WorkflowRun,
+  workflowId: WorkflowId,
+  reason: string,
+  { runRepo, killProcess = killProcessTree }: CancelLocalRunDeps,
+): Promise<WorkflowRun | null> {
+  const pid = ownerPidToStop(run);
+  if (pid !== undefined) {
+    await stopOwner(pid, killProcess);
+  }
+  return await settleCancelledRun(run, workflowId, reason, runRepo);
 }
 
 export interface CancelAllResult {
@@ -192,18 +244,34 @@ export interface CancelAllResult {
 }
 
 /**
- * Cancels each locally-owned run with {@link cancelLocalRun} and sorts the
- * outcomes, so only runs that actually ended cancelled count as cancelled.
+ * Cancels locally-owned runs and sorts the outcomes, so only runs that
+ * actually ended cancelled count as cancelled. The owning processes are
+ * stopped together so their cleanup grace periods overlap, each process once:
+ * a nested workflow run shares its parent's process, and a second SIGTERM
+ * makes an owner exit at once, skipping its cleanup. Records are then settled
+ * in input order.
  */
 export async function cancelAllLocalRuns(
   runs: { run: WorkflowRun; workflowId: WorkflowId; workflowName: string }[],
   reason: string,
-  deps: CancelLocalRunDeps,
+  { runRepo, killProcess = killProcessTree }: CancelLocalRunDeps,
 ): Promise<CancelAllResult> {
+  const pids = new Set<number>();
+  for (const { run } of runs) {
+    const pid = ownerPidToStop(run);
+    if (pid !== undefined) pids.add(pid);
+  }
+  await Promise.all([...pids].map((pid) => stopOwner(pid, killProcess)));
+
   const result: CancelAllResult = { cancelled: [], finished: [], deleted: [] };
   for (const { run, workflowId, workflowName } of runs) {
     const previousStatus = run.status;
-    const finalRun = await cancelLocalRun(run, workflowId, reason, deps);
+    const finalRun = await settleCancelledRun(
+      run,
+      workflowId,
+      reason,
+      runRepo,
+    );
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {
@@ -411,6 +479,14 @@ export const workflowCancelCommand = withRemoteOptions(
       const localRuns = activeRuns.filter(({ run }) => !isServeOwnedRun(run));
       const serveRuns = activeRuns.filter(({ run }) => isServeOwnedRun(run));
 
+      const stopping = localRuns.filter(({ run }) =>
+        ownerPidToStop(run) !== undefined
+      ).length;
+      if (stopping > 0 && cliCtx.outputMode !== "json") {
+        cliCtx.logger
+          .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+      }
+
       const { cancelled, finished, deleted } = await cancelAllLocalRuns(
         localRuns,
         reason,
@@ -524,6 +600,13 @@ export const workflowCancelCommand = withRemoteOptions(
         `Run ${run.id} belongs to a serve instance and cannot be cancelled locally. ` +
           `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
       );
+    }
+
+    if (
+      ownerPidToStop(run) !== undefined && cliCtx.outputMode !== "json"
+    ) {
+      cliCtx.logger
+        .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
     }
 
     const previousStatus = run.status;

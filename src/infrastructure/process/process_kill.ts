@@ -145,8 +145,13 @@ export async function killProcessTree(
     await new Promise((r) => setTimeout(r, 100));
   }
 
-  // Force kill parent if still alive
+  // Force kill parent if still alive. Snapshot its children again first:
+  // work it started while handling SIGTERM (a workflow's cleanup steps) is
+  // missing from the first snapshot and would outlive it.
   if (isProcessAlive(pid)) {
+    for (const child of await findChildPids(pid)) {
+      if (!children.includes(child)) children.push(child);
+    }
     try {
       Deno.kill(pid, "SIGKILL");
     } catch { /* already gone */ }

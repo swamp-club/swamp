@@ -127,6 +127,14 @@ export const STRANDED_STEP_ERROR =
 export const CANCELLED_STEP_ERROR = "cancelled";
 
 /**
+ * The error a step fails with when the process running it stopped before the
+ * step finished, and a cancel settled the record it left. See
+ * {@link WorkflowRun.failInFlightWork}.
+ */
+export const OWNER_STOPPED_STEP_ERROR =
+  "cancelled: the process running this step stopped before the step finished";
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
@@ -1332,6 +1340,25 @@ export class WorkflowRun implements TriggerEvaluationContext {
       this._tags["cancel_reason"] = reason;
     }
     this.releaseOwnership();
+  }
+
+  /**
+   * Fails the steps and jobs still recorded running. For a record whose
+   * owning process stopped without saving its own outcome, so the work it
+   * had started reads as cut off rather than in flight or never started.
+   * Pending, waiting and finished work is left as it is.
+   */
+  failInFlightWork(error: string): void {
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "running") {
+          step.fail(error);
+        }
+      }
+      if (job.status === "running") {
+        job.fail();
+      }
+    }
   }
 
   /**
