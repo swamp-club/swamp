@@ -23,7 +23,8 @@
  * verifies locally, and — when the gate asked — what swamp-club said.
  *
  * The rules (design/surfaces/auth-gate.md):
- *   - No credential always blocks.
+ *   - No credential blocks, unless a valid nested pass shows this run was
+ *     started by a live swamp that passed the gate itself.
  *   - A valid proof passes with no network call. A signin-token proof (CI)
  *     is checked live at most once an hour, because a revoked key cannot
  *     delete the environment variable that carries it.
@@ -52,6 +53,16 @@ export type LocalProofVerdict =
   }
   | { readonly kind: "missing" }
   | { readonly kind: "expired"; readonly issuedAt: number }
+  | { readonly kind: "invalid"; readonly reason: string };
+
+/**
+ * What the gate made of a nested pass (see `nested_gate_pass.ts`). `valid`
+ * means swamp-club signed its proof and the process that issued it is a
+ * live ancestor running the same executable.
+ */
+export type NestedPassVerdict =
+  | { readonly kind: "valid" }
+  | { readonly kind: "absent" }
   | { readonly kind: "invalid"; readonly reason: string };
 
 /** What a live `/api/whoami` call said, classified by who said it. */
@@ -151,12 +162,19 @@ export interface BeforeCheckInput {
   readonly proof: LocalProofVerdict;
   /** When the signin token last verified live, if remembered. */
   readonly lastTokenCheckAt?: number;
+  /** Considered only without a credential: one always takes precedence. */
+  readonly nestedPass?: NestedPassVerdict;
   readonly now: number;
 }
 
 /** Decide what the gate can settle without talking to swamp-club. */
 export function decideBeforeCheck(input: BeforeCheckInput): StartupDecision {
   if (!input.credentialPresent) {
+    // A nested run inherits its ancestor's pass, which rested on a signed
+    // proof checked with no network call, so it reports the same mode.
+    if (input.nestedPass?.kind === "valid") {
+      return { kind: "pass", authMode: "verified" };
+    }
     return { kind: "block", reason: { kind: "no_credential" } };
   }
   const { proof } = input;

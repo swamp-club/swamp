@@ -25,10 +25,15 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
+  type AncestorCheck,
   type AuthGateOutcome,
   createAuthGateDeps,
   runAuthGate,
 } from "../src/cli/auth_gate.ts";
+import {
+  formatNestedGatePass,
+  NESTED_GATE_PASS_ENV,
+} from "../src/domain/auth/nested_gate_pass.ts";
 import { AuthVerificationRepository } from "../src/infrastructure/persistence/auth_verification_repository.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
@@ -57,6 +62,11 @@ interface World {
     MintedProof
   >;
   gate(env?: Record<string, string | undefined>): Promise<AuthGateOutcome>;
+  /** The gate with its ancestry check answered by `check`. */
+  gateNested(
+    env: Record<string, string | undefined>,
+    check: (pid: number) => AncestorCheck,
+  ): Promise<AuthGateOutcome>;
 }
 
 function now(): number {
@@ -116,8 +126,26 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
           SWAMP_API_KEY_FILE: undefined,
           SWAMP_SIGNIN_TOKEN: undefined,
           SWAMP_CLUB_URL: undefined,
+          [NESTED_GATE_PASS_ENV]: undefined,
           ...env,
         }, () => runAuthGate(createAuthGateDeps({ liveChecks: true }))),
+      gateNested: (env, check) =>
+        withMockedEnv({
+          SWAMP_CONFIG_DIR: configDir,
+          SWAMP_HOME: undefined,
+          SWAMP_API_KEY: undefined,
+          SWAMP_API_KEY_FILE: undefined,
+          SWAMP_SIGNIN_TOKEN: undefined,
+          SWAMP_CLUB_URL: undefined,
+          [NESTED_GATE_PASS_ENV]: undefined,
+          ...env,
+        }, () => {
+          const deps = createAuthGateDeps({ liveChecks: true });
+          return runAuthGate({
+            ...deps,
+            nested: { ...deps.nested!, checkAncestor: check },
+          });
+        }),
     });
   } finally {
     ac.abort();
@@ -384,6 +412,7 @@ Deno.test("auth gate integration: a blocked run records one telemetry event and 
       SWAMP_API_KEY: undefined,
       SWAMP_API_KEY_FILE: undefined,
       SWAMP_SIGNIN_TOKEN: undefined,
+      [NESTED_GATE_PASS_ENV]: undefined,
       SWAMP_TELEMETRY_ENDPOINT: "http://127.0.0.1:1",
       SWAMP_NO_TELEMETRY: undefined,
       DO_NOT_TRACK: undefined,
@@ -436,5 +465,87 @@ Deno.test("auth gate integration: an unreadable auth.json is reported as itself,
     } finally {
       await Deno.chmod(authPath, 0o600);
     }
+  });
+});
+
+/** A nested pass for `minted`, as a parent swamp would publish it. */
+function nestedPassEnv(
+  minted: MintedProof,
+  parentPid: number,
+): Record<string, string> {
+  return {
+    [NESTED_GATE_PASS_ENV]: formatNestedGatePass({
+      parentPid,
+      proof: minted.proof,
+      signature: minted.signature,
+    }),
+  };
+}
+
+const anAncestor = (): AncestorCheck => ({ kind: "ok" });
+
+Deno.test("auth gate integration: a nested run with no credential passes on its parent's pass", async () => {
+  await withWorld(async (w) => {
+    // The cached keys are the only ones trusted; the parent's own key is
+    // not this run's business.
+    await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
+    const parentProof = await w.mint({
+      iat: now() - 20 * DAY,
+      exp: now() - 6 * DAY,
+      apiKey: "parent_key",
+    });
+    const outcome = await w.gateNested(
+      nestedPassEnv(parentProof, 4242),
+      anAncestor,
+    );
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.authMode, "verified");
+    assertEquals(outcome.handoff, {
+      proof: parentProof.proof,
+      signature: parentProof.signature,
+    });
+    assertEquals(w.calls, 0);
+  });
+});
+
+Deno.test("auth gate integration: a nested pass naming this process is not from an ancestor", async () => {
+  await withWorld(async (w) => {
+    await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
+    const parentProof = await w.mint({ iat: now(), apiKey: "parent_key" });
+    // The real ancestry check: a process is never its own ancestor, which is
+    // what a pass hand-set in a plain shell (naming that shell) amounts to.
+    const outcome = await w.gate(nestedPassEnv(parentProof, Deno.pid));
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
+  });
+});
+
+Deno.test("auth gate integration: a nested pass signed by an untrusted key blocks", async () => {
+  await withWorld(async (w) => {
+    await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
+    const forged = await mintTestProof(
+      await generateTestSigningKey(w.key.publicKey.kid),
+      "parent_key",
+      { iat: now() },
+    );
+    const outcome = await w.gateNested(nestedPassEnv(forged, 4242), anAncestor);
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
+  });
+});
+
+Deno.test("auth gate integration: a logged-in run ignores an inherited pass and hands on its own", async () => {
+  await withWorld(async (w) => {
+    await w.login();
+    const own = await w.mint({ iat: now() - DAY, exp: now() + DAY });
+    await w.saveProof(own);
+    const parentProof = await w.mint({ iat: now(), apiKey: "parent_key" });
+    const outcome = await w.gateNested(
+      nestedPassEnv(parentProof, 4242),
+      () => ({ kind: "failed", reason: "must not be consulted" }),
+    );
+    assert(outcome.kind === "pass");
+    assertEquals(outcome.handoff, {
+      proof: own.proof,
+      signature: own.signature,
+    });
   });
 });

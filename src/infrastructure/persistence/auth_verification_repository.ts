@@ -43,6 +43,9 @@ export interface AuthVerificationRepositoryOptions {
   getSigninToken?: () => string | undefined;
 }
 
+/** The CI signin token: a proof for the collective key, from the token page. */
+export const SIGNIN_TOKEN_ENV = "SWAMP_SIGNIN_TOKEN";
+
 export class AuthVerificationRepository {
   private readonly configDirOverride: string | undefined;
   private readonly getSigninToken: () => string | undefined;
@@ -50,7 +53,7 @@ export class AuthVerificationRepository {
   constructor(options?: AuthVerificationRepositoryOptions) {
     this.configDirOverride = options?.configDir;
     this.getSigninToken = options?.getSigninToken ??
-      (() => Deno.env.get("SWAMP_SIGNIN_TOKEN"));
+      (() => Deno.env.get(SIGNIN_TOKEN_ENV));
   }
 
   /**

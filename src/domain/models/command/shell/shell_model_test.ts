@@ -712,6 +712,38 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
+  "shellModel.methods.execute passes the nested-swamp vars but no credential",
+  async () => {
+    await withMockedEnv(
+      {
+        SWAMP_NESTED_GATE_PASS: "4242.e30.c2ln",
+        SWAMP_LOCK_HOLDER_PID: "4242",
+        SWAMP_API_KEY: "test.leaked-key",
+        SWAMP_API_KEY_FILE: "/test/leaked-key-file",
+        SWAMP_SIGNIN_TOKEN: "test.leaked-token",
+      },
+      async () => {
+        const args: ShellInputAttributes = {
+          run:
+            "echo PASS=$SWAMP_NESTED_GATE_PASS LOCK=$SWAMP_LOCK_HOLDER_PID " +
+            "KEY=$SWAMP_API_KEY$SWAMP_API_KEY_FILE$SWAMP_SIGNIN_TOKEN",
+        };
+
+        const { context, getResults } = createTestContext();
+        await shellModel.methods.execute.execute(args, context);
+
+        const logContent = getOutputLogContent(getResults());
+        assertEquals(
+          logContent.trimEnd().endsWith("PASS=4242.e30.c2ln LOCK=4242 KEY="),
+          true,
+        );
+        assertEquals(logContent.includes("leaked"), false);
+      },
+    );
+  },
+);
+
+posixOnlyTest(
   "shellModel.methods.execute preserves PATH in child env",
   async () => {
     const args: ShellInputAttributes = { run: "echo PATH=$PATH" };

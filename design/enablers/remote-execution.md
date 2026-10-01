@@ -831,13 +831,30 @@ re-inherit the parent's `SWAMP_*` vars behind the filter. A per-variable
 allowlist on `createSafeMethodEnv` lets a method pass specific vars through
 when a child needs them.
 
+The shell model passes `NESTED_SWAMP_ENV_VARS`: the two variables a nested
+`swamp` in a shell step needs from the swamp that started it. Neither is a
+credential.
+
+- `SWAMP_NESTED_GATE_PASS` lets the nested swamp pass the auth gate without a
+  key ([auth gate](../surfaces/auth-gate.md#nested-runs)). It carries a signed
+  proof and the parent's pid. The proof cannot call swamp-club, and the gate
+  accepts it only from a live ancestor. It does expose the proof's identity
+  metadata (`sub`, `org`) to the child.
+- `SWAMP_LOCK_HOLDER_PID` lets the nested swamp skip the per-model locks its
+  parent holds ([datastores](datastores.md), "Parent-Process Lock
+  Awareness").
+
+`SWAMP_API_KEY`, `SWAMP_API_KEY_FILE`, `SWAMP_SIGNIN_TOKEN` and every other
+`SWAMP_*` variable stay stripped. `integration/nested_swamp_env_rules_test.ts`
+fails if a credential joins the list.
+
 The three boundaries form a defense-in-depth chain:
 
 | Boundary                 | Mechanism                             | What is stripped                                                     |
 | ------------------------ | ------------------------------------- | -------------------------------------------------------------------- |
 | orchestrator → worker    | `captureEnvironmentSnapshot` denylist | `HOME`, `PATH`, `SWAMP_*`, `DENO_*`, `XDG_*`, …                      |
 | worker → dispatch runner | `stripWorkerCredentials`              | `SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL` |
-| method → child process   | `createSafeMethodEnv` + `clearEnv`    | all `SWAMP_*` variables                                              |
+| method → child process   | `createSafeMethodEnv` + `clearEnv`    | all `SWAMP_*` variables except `NESTED_SWAMP_ENV_VARS`               |
 
 A worker accepts up to `capacity` concurrent dispatches (`--concurrency N` on
 `worker connect`, default 1). When all slots are full, a further dispatch is

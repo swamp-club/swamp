@@ -26,10 +26,19 @@ import {
   decideBeforeCheck,
   type GateEffects,
   type LocalProofVerdict,
+  type NestedPassVerdict,
   refreshEffects,
   shouldRefresh,
 } from "../domain/auth/auth_gate_policy.ts";
-import { verifyProof } from "../domain/auth/proof_verifier.ts";
+import {
+  verifyProof,
+  verifyProofSignature,
+} from "../domain/auth/proof_verifier.ts";
+import {
+  NESTED_GATE_PASS_ENV,
+  type NestedGatePass,
+  parseNestedGatePass,
+} from "../domain/auth/nested_gate_pass.ts";
 import {
   computeProofFingerprint,
   parseProofPayload,
@@ -45,6 +54,10 @@ import {
   AuthVerificationRepository,
   type ProofCandidate,
 } from "../infrastructure/persistence/auth_verification_repository.ts";
+import {
+  findAncestor,
+  isSameExecutable,
+} from "../infrastructure/runtime/process_ancestry.ts";
 import { loadIdentity } from "./load_identity.ts";
 
 /** How long the gate waits for swamp-club when there is no valid proof. */
@@ -55,6 +68,25 @@ export const SHORT_CHECK_TIMEOUT_MS = 3_000;
 export interface AuthGateCredential {
   readonly apiKey: string;
   readonly serverUrl: string;
+}
+
+/** Whether a nested pass's issuer is a live ancestor of this process. */
+export type AncestorCheck =
+  | { readonly kind: "ok" }
+  | { readonly kind: "failed"; readonly reason: string };
+
+/** What the gate needs to accept a nested pass (design: "Nested runs"). */
+export interface NestedGateDeps {
+  /** The pass inherited from a parent swamp, if any. */
+  loadPass(): NestedGatePass | null;
+  /** Whether `pid` is a live ancestor running this process's executable. */
+  checkAncestor(pid: number): AncestorCheck;
+}
+
+/** The signed proof a pass rests on, handed down to nested runs. */
+export interface GateHandoff {
+  readonly proof: string;
+  readonly signature: string;
 }
 
 export interface AuthGateDeps {
@@ -74,6 +106,8 @@ export interface AuthGateDeps {
    * cannot read back. Defaults to true.
    */
   readonly canWrite?: boolean;
+  /** Omitted, no nested pass is ever accepted. */
+  readonly nested?: NestedGateDeps;
 }
 
 export type AuthGateOutcome =
@@ -86,6 +120,11 @@ export type AuthGateOutcome =
     readonly warning?: string;
     /** The weekly refresh, present when the file proof is due one. */
     readonly refresh?: () => Promise<void>;
+    /**
+     * The proof this pass rests on, for nested runs to inherit. Absent when
+     * the run passed with no proof at all (offline, fail-open).
+     */
+    readonly handoff?: GateHandoff;
   }
   | { readonly kind: "block"; readonly reason: BlockReason };
 
@@ -93,6 +132,8 @@ interface ProofAssessment {
   readonly verdict: LocalProofVerdict;
   /** The fingerprint the valid signin-token proof was issued for. */
   readonly tokenFpr?: string;
+  /** The valid proof itself, when there is one. */
+  readonly validProof?: GateHandoff;
   /** True when the file proof belongs to the active key (or is unreadable). */
   readonly fileProofIsActiveKeys: boolean;
 }
@@ -128,6 +169,10 @@ async function assessProofs(
       return {
         verdict: { kind: "valid", source, issuedAt: payload.iat },
         tokenFpr: source === "signin_token" ? payload.fpr : undefined,
+        validProof: {
+          proof: verification.proof,
+          signature: verification.signature,
+        },
         fileProofIsActiveKeys: source === "file"
           ? true
           : fileMatches(candidates, activeFpr),
@@ -223,12 +268,21 @@ export async function runAuthGate(
   const repo = deps.verificationRepo;
 
   if (!credential) {
+    const nested = await assessNestedPass(deps, now);
     const decision = decideBeforeCheck({
       credentialPresent: false,
       proof: { kind: "missing" },
+      nestedPass: nested.verdict,
       now,
     });
-    // The policy always blocks a run with no credential.
+    if (decision.kind === "pass" && nested.handoff) {
+      return {
+        kind: "pass",
+        authMode: decision.authMode,
+        handoff: nested.handoff,
+      };
+    }
+    // Without a credential the policy passes only on a valid nested pass.
     return {
       kind: "block",
       reason: decision.kind === "block"
@@ -262,7 +316,12 @@ export async function runAuthGate(
     : undefined;
   if (before.kind === "block") return { kind: "block", reason: before.reason };
   if (before.kind === "pass") {
-    return { kind: "pass", authMode: before.authMode, refresh };
+    return {
+      kind: "pass",
+      authMode: before.authMode,
+      refresh,
+      handoff: assessment.validProof,
+    };
   }
 
   const timeoutMs = before.timeout === "blocking"
@@ -288,15 +347,70 @@ export async function runAuthGate(
   if (decision.kind === "block") {
     return { kind: "block", reason: decision.reason };
   }
+  const liveResponse = result.outcome.kind === "verified"
+    ? result.response
+    : undefined;
   return {
     kind: "pass",
     authMode: decision.authMode,
-    liveResponse: result.outcome.kind === "verified"
-      ? result.response
-      : undefined,
+    liveResponse,
+    handoff: liveProof(liveResponse) ?? assessment.validProof,
     warning: decision.authMode === "offline"
       ? offlineWarning(result.outcome.kind, verdict.kind === "valid")
       : undefined,
+  };
+}
+
+/** The fresh proof a verified whoami answer carried, if any. */
+function liveProof(response?: WhoamiResponse): GateHandoff | undefined {
+  return response?.verificationProof && response.verificationSignature
+    ? {
+      proof: response.verificationProof,
+      signature: response.verificationSignature,
+    }
+    : undefined;
+}
+
+interface NestedAssessment {
+  readonly verdict: NestedPassVerdict;
+  readonly handoff?: GateHandoff;
+}
+
+/**
+ * Check a pass inherited from a parent swamp: swamp-club signed its proof
+ * (checked against the keys the gate already trusts, never a key the pass
+ * supplies) and the pid that issued it is a live ancestor running this same
+ * executable. `exp` is not enforced: the ancestor was admitted on this proof
+ * and runs on it for its whole life, and the ancestry check already stops
+ * the proof being reused anywhere else.
+ */
+async function assessNestedPass(
+  deps: AuthGateDeps,
+  now: number,
+): Promise<NestedAssessment> {
+  const pass = deps.nested?.loadPass();
+  if (!deps.nested || !pass) return { verdict: { kind: "absent" } };
+
+  const candidates = await deps.verificationRepo.loadCandidates();
+  const cachedKeys =
+    candidates.find((c) => c.source === "file")?.verification.publicKeys ?? [];
+  const signature = await verifyProofSignature(
+    pass.proof,
+    pass.signature,
+    cachedKeys,
+    { now, ignoreExpiry: true },
+  );
+  if (!signature.valid) {
+    return { verdict: { kind: "invalid", reason: signature.reason } };
+  }
+
+  const ancestor = deps.nested.checkAncestor(pass.parentPid);
+  if (ancestor.kind === "failed") {
+    return { verdict: { kind: "invalid", reason: ancestor.reason } };
+  }
+  return {
+    verdict: { kind: "valid" },
+    handoff: { proof: pass.proof, signature: pass.signature },
   };
 }
 
@@ -389,6 +503,27 @@ export function createAuthGateDeps(
     },
     now: () => Math.floor(Date.now() / 1000),
     canWrite: ownsConfigDir(),
+    nested: {
+      loadPass: () => {
+        const value = Deno.env.get(NESTED_GATE_PASS_ENV);
+        return value ? parseNestedGatePass(value) : null;
+      },
+      checkAncestor: (pid) => {
+        const ancestor = findAncestor(pid);
+        if (ancestor.kind === "not_ancestor") {
+          return { kind: "failed", reason: `pid ${pid} is not an ancestor` };
+        }
+        if (ancestor.kind === "unknown") {
+          return { kind: "failed", reason: ancestor.reason };
+        }
+        return isSameExecutable(ancestor.executablePath, Deno.execPath())
+          ? { kind: "ok" }
+          : {
+            kind: "failed",
+            reason: `pid ${pid} runs a different executable`,
+          };
+      },
+    },
   };
 }
 

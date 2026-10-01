@@ -53,6 +53,49 @@ Deno.test("decideBeforeCheck: no credential blocks", () => {
   );
 });
 
+Deno.test("decideBeforeCheck: no credential with a valid nested pass passes verified", () => {
+  assertEquals(
+    decideBeforeCheck({
+      credentialPresent: false,
+      proof: missing,
+      nestedPass: { kind: "valid" },
+      now: NOW,
+    }),
+    { kind: "pass", authMode: "verified" },
+  );
+});
+
+Deno.test("decideBeforeCheck: no credential with an absent or invalid nested pass blocks", () => {
+  for (
+    const nestedPass of [
+      { kind: "absent" as const },
+      { kind: "invalid" as const, reason: "not an ancestor" },
+    ]
+  ) {
+    assertEquals(
+      decideBeforeCheck({
+        credentialPresent: false,
+        proof: missing,
+        nestedPass,
+        now: NOW,
+      }),
+      { kind: "block", reason: { kind: "no_credential" } },
+    );
+  }
+});
+
+Deno.test("decideBeforeCheck: a credential takes precedence over a valid nested pass", () => {
+  assertEquals(
+    decideBeforeCheck({
+      credentialPresent: true,
+      proof: missing,
+      nestedPass: { kind: "valid" },
+      now: NOW,
+    }),
+    { kind: "check", timeout: "blocking" },
+  );
+});
+
 Deno.test("decideBeforeCheck: a valid file proof passes with no live check", () => {
   assertEquals(
     decideBeforeCheck({ credentialPresent: true, proof: fileProof, now: NOW }),

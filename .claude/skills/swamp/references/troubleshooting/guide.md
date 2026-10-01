@@ -80,6 +80,11 @@ swamp-club.com account. The message names the cause:
   and retry.
 - **A serve or worker daemon blocks**: log in as the user who enabled it and
   re-run `swamp serve daemon enable` or `swamp worker daemon enable`.
+- **`swamp` inside a workflow shell step**: it passes the gate on its parent's
+  pass but gets no API key, so nested commands that call swamp-club
+  (`extension push`/`pull`, `issue`, `auth whoami`) fail there. Run them as the
+  outer command instead. On Windows, or from a different swamp binary than the
+  parent, the nested call needs its own login.
 
 Do not work around the block; there is no flag to skip it.
 
