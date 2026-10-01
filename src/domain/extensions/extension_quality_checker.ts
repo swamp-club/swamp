@@ -64,8 +64,9 @@ export interface QualityCheckResult {
  * block comments, template literal interpolation (`${...}`), and nested
  * template literals correctly.
  *
- * Returns a string with the same number of lines as the input, where
- * non-code regions are replaced with spaces (preserving line structure).
+ * Returns a string of the same length and line count as the input, where
+ * non-code regions are replaced with spaces, so an offset in the result
+ * indexes the same character in the source.
  */
 export function stripCommentsAndStrings(source: string): string {
   const result: string[] = [];
@@ -109,6 +110,7 @@ export function stripCommentsAndStrings(source: string): string {
 
     // Single-line comment
     if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "/") {
+      result.push(" ", " ");
       i += 2;
       while (i < source.length && source[i] !== "\n") {
         result.push(" ");

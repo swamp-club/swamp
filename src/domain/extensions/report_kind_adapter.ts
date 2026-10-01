@@ -23,6 +23,10 @@ import type { ReportResult } from "../reports/report.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  EXPORT_DECLARATION_PATTERNS,
+  sourceFromExportDeclaration,
+} from "./export_declaration.ts";
 import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
 
 const USER_REPORT_NAME_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
@@ -48,7 +52,7 @@ export const reportKindAdapter: KindAdapter = {
   bundleSubdir: SWAMP_SUBDIRS.reportBundles,
   catalogKinds: ["report"],
   primaryExportKey: "report",
-  exportRegex: /export\s+const\s+report\s*[=:]/,
+  exportRegex: EXPORT_DECLARATION_PATTERNS.report,
   useResolver: true,
 
   validatePrimaryExport(exported: unknown): ValidationResult {
@@ -70,8 +74,12 @@ export const reportKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    if (!/export\s+const\s+report\s*[=:]/.test(source)) return null;
-    const nameMatch = source.match(
+    const declaration = sourceFromExportDeclaration(
+      source,
+      EXPORT_DECLARATION_PATTERNS.report,
+    );
+    if (declaration === null) return null;
+    const nameMatch = declaration.match(
       /export\s+const\s+report\b[\s\S]*?=\s*\{[\s\S]*?name\s*:\s*["']([^"']+)["']/,
     );
     if (!nameMatch) return null;

@@ -29,6 +29,7 @@ import {
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { computeChecksum } from "../models/checksum.ts";
+import { declaresExport } from "./export_declaration.ts";
 import {
   type BundleResult,
   collectSeenSources,
@@ -1419,7 +1420,10 @@ export class ExtensionLoader {
         if (!extracted) {
           // A stale indexed row is refreshed by the next stale-file scan,
           // which imports the bundle; only warn when nothing indexed it.
-          if (!indexed) {
+          // A file whose export text is only inside a string or comment,
+          // such as a test fixture, is not an entry point
+          // (swamp-club#2876).
+          if (!indexed && declaresExport(source, this.adapter.exportRegex)) {
             emitTypeExtractionFailure(absolutePath, this.adapter.kind);
           }
           continue;
@@ -1489,6 +1493,17 @@ export class ExtensionLoader {
   > {
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
+      return {};
+    }
+    // A source with no row is stale on every scan. When its export text is
+    // only inside a string or comment (a test fixture), bundling and
+    // importing it would find nothing on every command (swamp-club#2876).
+    // A source that already has a row is still rebundled when it changes,
+    // and the startup reconcile imports every source regardless.
+    if (
+      !declaresExport(source, this.adapter.exportRegex) &&
+      catalog.findBySourcePath(absolutePath) === undefined
+    ) {
       return {};
     }
 

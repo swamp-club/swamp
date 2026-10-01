@@ -773,6 +773,21 @@ exports the static extractor cannot read, such as
 `export const extension = withOptions(definition)`, from warning on every
 catalog rebuild.
 
+The static extractor only reads a declaration that sits in code. An
+`export const model = { type: ... }` inside a string, template literal or
+comment is test-fixture text, not a type claim. This matters for pulled and
+source-mounted directories, which walk `_test.ts` files on purpose so a model
+named `docker_image_test.ts` still loads. Before this rule, two fixtures naming
+one type produced two catalog rows with no extension identity. Every later
+catalog save, such as an unrelated `swamp extension pull`, then failed I-Repo-1
+(swamp-club#2876). A source without a catalog row whose only declaration is in
+such text is not bundled on the warm scan either, so fixture files do not cost
+a bundle and an import on every command. A real export the scanner misses is
+still indexed by the startup reconcile, which imports every source. A one-time
+migration on catalog open removes Indexed rows whose source no longer declares
+an export of the row's kind in code. It is gated by a `bundle_meta` marker, so
+rows an older binary writes later are not revisited.
+
 The lookup also finds a row written under another spelling of the same file.
 Reaching the repo under a second spelling of its root (`/tmp/r` and
 `/private/tmp/r` on macOS) changes the source-dirs fingerprint and forces a

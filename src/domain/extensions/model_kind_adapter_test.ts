@@ -1129,3 +1129,28 @@ Deno.test("formatValidationError: arguments on method includes method name", () 
   assertStringIncludes(result, "'arguments'");
   assertStringIncludes(result, "'deploy'");
 });
+
+Deno.test("extractTypeFromSource: model declared only in a template fixture returns null (swamp-club#2876)", () => {
+  const source = [
+    "const fixture = `export const model = {",
+    '  type: "@acme/thing",',
+    '  version: "1",',
+    "};`;",
+    'Deno.test("extracts the type", () => {});',
+  ].join("\n");
+  assertEquals(modelKindAdapter.extractTypeFromSource(source), null);
+});
+
+Deno.test("extractTypeFromSource: reads the real model after a string fixture", () => {
+  const source = [
+    "const fixture = \"export const model = { type: '@acme/thing', version: '9' }\";",
+    "export const model = {",
+    '  type: "@test/greeter",',
+    '  version: "2026.01.01.0",',
+    "};",
+  ].join("\n");
+  const result = modelKindAdapter.extractTypeFromSource(source);
+  assertEquals(result?.typeNormalized, "@test/greeter");
+  assertEquals(result?.version, "2026.01.01.0");
+  assertEquals(result?.kind, "model");
+});

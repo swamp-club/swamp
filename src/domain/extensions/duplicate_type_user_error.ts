@@ -44,6 +44,18 @@ export interface DuplicateTypeOccupant {
   readonly canonicalPath: string;
 }
 
+/**
+ * How an occupant is named in a message. A catalog row written without an
+ * extension identity, such as one indexed from a source-mounted file, has
+ * no name to show, so it is described rather than rendered as a bare `@`
+ * (swamp-club#2876).
+ */
+export function describeTypeClaimant(occupant: DuplicateTypeOccupant): string {
+  return occupant.extensionName === ""
+    ? "a source outside any installed extension"
+    : `${occupant.extensionName}@${occupant.extensionVersion}`;
+}
+
 /** One extension of an install that collided, and its version before. */
 export interface InstallChange {
   readonly name: string;
@@ -133,14 +145,16 @@ export class DuplicateTypeUserError extends UserError {
     const recovery = ghostRow
       ? "Ghost catalog entry detected (source deleted outside swamp). " +
         "Run `swamp doctor extensions` to reclassify and retry."
+      : args.existing.extensionName === ""
+      ? "Change or remove the type declaration in that source first if " +
+        "you intended to replace it."
       : `Run \`swamp extension rm ${args.existing.extensionName}\` first if ` +
         `you intended to replace it.`;
     const claimed =
       `Type "${args.typeNormalized}" (kind=${args.kind}) is already claimed by ` +
-      `${args.existing.extensionName}@${args.existing.extensionVersion} ` +
+      `${describeTypeClaimant(args.existing)} ` +
       `at ${args.existing.canonicalPath}.`;
-    const conflicting =
-      `${args.conflicting.extensionName}@${args.conflicting.extensionVersion} ` +
+    const conflicting = `${describeTypeClaimant(args.conflicting)} ` +
       `at ${args.conflicting.canonicalPath}`;
     super(
       rollback.status === "kept"
@@ -194,6 +208,9 @@ function keptAdvice(
   const other = ghostRow
     ? "run `swamp doctor extensions` to reclassify the ghost catalog " +
       "entry that holds the type"
+    : existingName === ""
+    ? "change or remove the type declaration in the source that already " +
+      "holds the type"
     : `run \`swamp extension rm ${existingName}\` to keep the new version ` +
       `instead`;
   if (kept.length === 0) {

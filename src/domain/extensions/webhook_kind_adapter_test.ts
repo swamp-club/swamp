@@ -80,3 +80,17 @@ Deno.test("webhookKindAdapter.extractTypeFromSource: reads type from export cons
     null,
   );
 });
+
+Deno.test("webhookKindAdapter.extractTypeFromSource: ignores a declaration inside a comment (swamp-club#2876)", () => {
+  assertEquals(
+    webhookKindAdapter.extractTypeFromSource(
+      '// export const webhook = { type: "@acme/thing" }',
+    ),
+    null,
+  );
+  const result = webhookKindAdapter.extractTypeFromSource(
+    '// export const webhook = { type: "@acme/thing" }\n' +
+      'export const webhook = { type: "@real/hook" };',
+  );
+  assertEquals(result?.typeNormalized, "@real/hook");
+});

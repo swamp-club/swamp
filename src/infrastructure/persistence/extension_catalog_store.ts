@@ -25,6 +25,11 @@ import { canonicalizePath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
 import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
+import {
+  type DeclarationKind,
+  declaresExport,
+  EXPORT_DECLARATION_PATTERNS,
+} from "../../domain/extensions/export_declaration.ts";
 
 const logger = getLogger(["swamp", "persistence", "extension-catalog"]);
 
@@ -64,6 +69,9 @@ const EXTENDS_TYPE_BACKFILL_MIGRATION_KEY =
 
 const DEDUP_NON_CANONICAL_MIGRATION_KEY =
   "migration_applied:dedup-non-canonical-source-paths-v1";
+
+const UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY =
+  "migration_applied:prune-undeclared-type-claims-v1";
 
 /**
  * Per-kind `bundle_meta` key prefix recording that the loader has
@@ -392,6 +400,9 @@ export class ExtensionCatalogStore {
     // swamp-club#1065: heal ghost rows written with non-canonical Windows
     // paths by a pre-fix warm-path loader. Runs last; gated on its own marker.
     this.deduplicateNonCanonicalPaths();
+    // swamp-club#2876: drop type claims a pre-fix loader read out of string
+    // fixtures. Gated on its own marker.
+    this.pruneUndeclaredTypeClaims();
   }
 
   /**
@@ -1417,6 +1428,67 @@ export class ExtensionCatalogStore {
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
     ).run(DEDUP_NON_CANONICAL_MIGRATION_KEY);
     return removed;
+  }
+
+  /**
+   * One-time migration (swamp-club#2876): removes Indexed rows whose source
+   * no longer declares an export of the row's kind outside strings and
+   * comments. A pre-fix loader indexed type claims from source text such
+   * as a test fixture holding `export const model = { type: ... }` in a
+   * string, so two fixtures naming one type made every later save fail
+   * I-Repo-1. No module exports such a type, so no import-based path can
+   * write the row back; a real export the scanner misses is re-indexed by
+   * the next scan that imports it.
+   *
+   * Reads are best-effort: a source that cannot be read keeps its row, for
+   * the ghost-row and orphan handling to settle. Only catalog rows are
+   * deleted. Gated by a bundle_meta marker so it runs at most once per
+   * catalog; rows an older binary writes afterwards are not revisited.
+   */
+  pruneUndeclaredTypeClaims(): number {
+    if (this.isMigrationMarkerSet(UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY)) {
+      return 0;
+    }
+    const undeclared: string[] = [];
+    for (const row of this.findAll()) {
+      if (row.state !== "Indexed" || row.type_normalized === "") continue;
+      const pattern = EXPORT_DECLARATION_PATTERNS[row.kind as DeclarationKind];
+      if (!pattern) continue;
+      let source: string;
+      try {
+        source = Deno.readTextFileSync(row.source_path);
+      } catch {
+        continue;
+      }
+      if (!declaresExport(source, pattern)) undeclared.push(row.source_path);
+    }
+    this.db.exec("BEGIN");
+    try {
+      for (const sourcePath of undeclared) {
+        this.removeByRawSourcePath(sourcePath);
+      }
+      this.db.prepare(
+        "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+      ).run(UNDECLARED_TYPE_CLAIMS_MIGRATION_KEY);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    if (undeclared.length > 0) {
+      logger
+        .info`Removed ${undeclared.length} extension catalog ${
+        undeclared.length === 1 ? "entry" : "entries"
+      } for types named only in strings or comments`;
+    }
+    return undeclared.length;
+  }
+
+  private isMigrationMarkerSet(key: string): boolean {
+    const row = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = ?",
+    ).get(key) as { value: string } | undefined;
+    return row?.value === "true";
   }
 
   private isDeduplicateNonCanonicalApplied(): boolean {

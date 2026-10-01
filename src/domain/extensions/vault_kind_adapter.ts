@@ -23,6 +23,10 @@ import type { VaultProvider } from "../vaults/vault_provider.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  EXPORT_DECLARATION_PATTERNS,
+  sourceFromExportDeclaration,
+} from "./export_declaration.ts";
 import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
 
 const USER_VAULT_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -47,7 +51,7 @@ export const vaultKindAdapter: KindAdapter = {
   bundleSubdir: SWAMP_SUBDIRS.vaultBundles,
   catalogKinds: ["vault"],
   primaryExportKey: "vault",
-  exportRegex: /export\s+const\s+vault\s*[=:]/,
+  exportRegex: EXPORT_DECLARATION_PATTERNS.vault,
   useResolver: true,
 
   validatePrimaryExport(exported: unknown): ValidationResult {
@@ -69,8 +73,12 @@ export const vaultKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    if (!/export\s+const\s+vault\s*[=:]/.test(source)) return null;
-    const typeMatch = source.match(
+    const declaration = sourceFromExportDeclaration(
+      source,
+      EXPORT_DECLARATION_PATTERNS.vault,
+    );
+    if (declaration === null) return null;
+    const typeMatch = declaration.match(
       /export\s+const\s+vault\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;

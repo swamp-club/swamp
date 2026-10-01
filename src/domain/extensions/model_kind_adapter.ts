@@ -55,6 +55,11 @@ import type {
   RegistrationContext,
   ValidationResult,
 } from "./kind_adapter.ts";
+import {
+  declaresExport,
+  EXPORT_DECLARATION_PATTERNS,
+  sourceFromExportDeclaration,
+} from "./export_declaration.ts";
 import { emitExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { parseExtensionManifest } from "./extension_manifest.ts";
 import {
@@ -780,7 +785,7 @@ export const modelKindAdapter: KindAdapter = {
   catalogKinds: ["model", "extension"],
   primaryExportKey: "model",
   secondaryExportKey: "extension",
-  exportRegex: /export\s+const\s+(model|extension)\s*[=:]/,
+  exportRegex: EXPORT_DECLARATION_PATTERNS.model,
   useResolver: true,
 
   validatePrimaryExport(exported: unknown): ValidationResult {
@@ -806,17 +811,24 @@ export const modelKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    const modelMatch = /export\s+const\s+model\s*[=:]/.test(source);
-    const extensionMatch = /export\s+const\s+extension\s*[=:]/.test(source);
-    if (!modelMatch && !extensionMatch) return null;
+    const declaration = sourceFromExportDeclaration(
+      source,
+      EXPORT_DECLARATION_PATTERNS.model,
+    );
+    if (declaration === null) return null;
+    const modelMatch = declaresExport(source, /export\s+const\s+model\s*[=:]/);
+    const extensionMatch = declaresExport(
+      source,
+      /export\s+const\s+extension\s*[=:]/,
+    );
 
-    const typeMatch = source.match(
+    const typeMatch = declaration.match(
       /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;
 
     const typeNormalized = ModelType.create(typeMatch[1]).normalized;
-    const versionMatch = source.match(
+    const versionMatch = declaration.match(
       /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
     );
 

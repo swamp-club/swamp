@@ -24,6 +24,10 @@ import { withCoreLockErrors } from "../datastore/distributed_lock.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  EXPORT_DECLARATION_PATTERNS,
+  sourceFromExportDeclaration,
+} from "./export_declaration.ts";
 import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
 
 const USER_DATASTORE_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -79,7 +83,7 @@ export const datastoreKindAdapter: KindAdapter = {
   bundleSubdir: SWAMP_SUBDIRS.datastoreBundles,
   catalogKinds: ["datastore"],
   primaryExportKey: "datastore",
-  exportRegex: /export\s+const\s+datastore\s*[=:]/,
+  exportRegex: EXPORT_DECLARATION_PATTERNS.datastore,
   useResolver: false,
 
   validatePrimaryExport(exported: unknown): ValidationResult {
@@ -101,8 +105,12 @@ export const datastoreKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    if (!/export\s+const\s+datastore\s*[=:]/.test(source)) return null;
-    const typeMatch = source.match(
+    const declaration = sourceFromExportDeclaration(
+      source,
+      EXPORT_DECLARATION_PATTERNS.datastore,
+    );
+    if (declaration === null) return null;
+    const typeMatch = declaration.match(
       /export\s+const\s+datastore\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
     );
     if (!typeMatch) return null;

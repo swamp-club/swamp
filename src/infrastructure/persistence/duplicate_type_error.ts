@@ -19,6 +19,7 @@
 
 import type { ExtensionKind } from "./extension_catalog_store.ts";
 import { markErrorPaths } from "../../domain/errors.ts";
+import { describeTypeClaimant } from "../../domain/extensions/duplicate_type_user_error.ts";
 
 /**
  * Carries enough information to point a user at both Sources sharing
@@ -67,9 +68,9 @@ export class DuplicateTypeError extends Error {
   }) {
     super(
       `I-Repo-1 violation: type "${args.typeNormalized}" (kind=${args.kind}) ` +
-        `claimed by both ${args.firstSource.extensionName}@${args.firstSource.extensionVersion} ` +
+        `claimed by both ${describeTypeClaimant(args.firstSource)} ` +
         `at ${args.firstSource.canonicalPath} ` +
-        `and ${args.secondSource.extensionName}@${args.secondSource.extensionVersion} ` +
+        `and ${describeTypeClaimant(args.secondSource)} ` +
         `at ${args.secondSource.canonicalPath}. ROLLBACK applied.`,
     );
     this.name = "DuplicateTypeError";

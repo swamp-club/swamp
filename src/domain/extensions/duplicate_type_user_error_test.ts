@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { errorPaths, UserError } from "../errors.ts";
 import {
+  describeTypeClaimant,
   DuplicateTypeUserError,
   type InstallRollbackOutcome,
 } from "./duplicate_type_user_error.ts";
@@ -263,4 +264,64 @@ Deno.test("DuplicateTypeUserError: marks both canonical paths (swamp-club#2830)"
     EXISTING.canonicalPath,
     CONFLICTING.canonicalPath,
   ]);
+});
+
+// -- swamp-club#2876: occupants with no extension identity ---------------
+
+const UNATTRIBUTED = {
+  extensionName: "",
+  extensionVersion: "",
+  canonicalPath: "/repo/extensions/tf/introspect_test.ts",
+};
+
+Deno.test("describeTypeClaimant: names an attributed occupant by name@version", () => {
+  assertEquals(describeTypeClaimant(EXISTING), "@scopeA/aa@1.0.0");
+});
+
+Deno.test("describeTypeClaimant: describes an occupant with no identity instead of a bare @", () => {
+  assertEquals(
+    describeTypeClaimant(UNATTRIBUTED),
+    "a source outside any installed extension",
+  );
+});
+
+Deno.test("DuplicateTypeUserError: an unattributed occupant gets no empty extension rm advice", () => {
+  const err = new DuplicateTypeUserError({
+    kind: "model",
+    typeNormalized: "@acme/thing",
+    existing: UNATTRIBUTED,
+    conflicting: { ...UNATTRIBUTED, canonicalPath: "/repo/extensions/tf/b.ts" },
+  });
+  assertStringIncludes(
+    err.message,
+    "already claimed by a source outside any installed extension at " +
+      UNATTRIBUTED.canonicalPath,
+  );
+  assertStringIncludes(
+    err.message,
+    "Cannot install a source outside any installed extension at /repo/extensions/tf/b.ts",
+  );
+  assertStringIncludes(
+    err.message,
+    "Change or remove the type declaration in that source first",
+  );
+  assert(!err.message.includes("swamp extension rm"));
+  assert(!err.message.includes(" @ at "));
+  // The JSON fields keep their shape.
+  assertEquals(err.existing.extensionName, "");
+});
+
+Deno.test("DuplicateTypeUserError: a kept install with an unattributed occupant advises editing the source", () => {
+  const err = new DuplicateTypeUserError({
+    kind: "model",
+    typeNormalized: "@acme/thing",
+    existing: UNATTRIBUTED,
+    conflicting: CONFLICTING,
+    rollback: { status: "kept", kept: [] },
+  });
+  assertStringIncludes(
+    err.message,
+    "change or remove the type declaration in the source that already holds the type",
+  );
+  assert(!err.message.includes("swamp extension rm"));
 });

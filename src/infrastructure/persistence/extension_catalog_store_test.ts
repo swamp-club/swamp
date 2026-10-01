@@ -2869,3 +2869,128 @@ Deno.test("hasRowWithBundlePath: exact bundle path match", () => {
     );
   });
 });
+
+// -- swamp-club#2876: prune type claims read out of string fixtures -------
+
+/**
+ * Seeds `rows` into a catalog at `dbPath`, then clears the prune marker so
+ * the next open runs the migration as it would on a pre-fix catalog.
+ */
+function seedPreFixCatalog(
+  dbPath: string,
+  rows: Array<{ sourcePath: string; type: string; state?: string }>,
+): void {
+  const store = new ExtensionCatalogStore(dbPath);
+  for (const row of rows) {
+    store.upsert({
+      type_normalized: row.type,
+      kind: "model",
+      bundle_path: `${row.sourcePath}.js`,
+      source_path: row.sourcePath,
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+      state: row.state ?? "Indexed",
+    });
+  }
+  store.close();
+  const raw = new DatabaseSync(dbPath);
+  raw.prepare("DELETE FROM bundle_meta WHERE key = ?").run(
+    "migration_applied:prune-undeclared-type-claims-v1",
+  );
+  raw.close();
+}
+
+Deno.test("ExtensionCatalogStore: opening prunes rows whose source declares the type only in a string fixture", () => {
+  const dbPath = makeTempDbPath();
+  const dir = join(dirname(dirname(dbPath)), "extensions", "tf");
+  ensureDirSync(dir);
+  const fixtureA = join(dir, "introspect_test.ts");
+  const fixtureB = join(dir, "factory_test.ts");
+  const real = join(dir, "factory.ts");
+  const missing = join(dir, "gone.ts");
+  Deno.writeTextFileSync(
+    fixtureA,
+    'const f = `export const model = { type: "@acme/thing" }`;\n',
+  );
+  Deno.writeTextFileSync(
+    fixtureB,
+    '// export const model = { type: "@acme/thing" }\n',
+  );
+  Deno.writeTextFileSync(
+    real,
+    'export const model = { type: "@real/factory" };\n',
+  );
+  seedPreFixCatalog(dbPath, [
+    { sourcePath: fixtureA, type: "@acme/thing" },
+    { sourcePath: fixtureB, type: "@acme/thing" },
+    { sourcePath: real, type: "@real/factory" },
+    { sourcePath: missing, type: "@real/gone" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    const remaining = store.findByKind("model").map((r) => r.type_normalized)
+      .sort();
+    // The unreadable source keeps its row for ghost-row handling.
+    assertEquals(remaining, ["@real/factory", "@real/gone"]);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the undeclared-claim prune runs once per catalog", () => {
+  const dbPath = makeTempDbPath();
+  const dir = join(dirname(dirname(dbPath)), "extensions", "tf");
+  ensureDirSync(dir);
+  const fixture = join(dir, "fixture_test.ts");
+  Deno.writeTextFileSync(
+    fixture,
+    "const f = \"export const model = { type: '@acme/thing' }\";\n",
+  );
+
+  // A catalog opened after the fix has the marker already, so a row an
+  // older binary writes later is left alone.
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    store.upsert({
+      type_normalized: "@acme/thing",
+      kind: "model",
+      bundle_path: `${fixture}.js`,
+      source_path: fixture,
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+    });
+    assertEquals(store.pruneUndeclaredTypeClaims(), 0);
+    assertEquals(store.findByKind("model").length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: the undeclared-claim prune leaves non-Indexed and typeless rows", () => {
+  const dbPath = makeTempDbPath();
+  const dir = join(dirname(dirname(dbPath)), "extensions", "tf");
+  ensureDirSync(dir);
+  const failed = join(dir, "failed_test.ts");
+  const typeless = join(dir, "typeless_test.ts");
+  for (const path of [failed, typeless]) {
+    Deno.writeTextFileSync(path, "export function helper() {}\n");
+  }
+  seedPreFixCatalog(dbPath, [
+    { sourcePath: failed, type: "@acme/failed", state: "BundleBuildFailed" },
+    { sourcePath: typeless, type: "" },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.findByKind("model").length, 2);
+  } finally {
+    store.close();
+  }
+});
