@@ -1628,8 +1628,9 @@ executes, a workflow step or a direct method run, carries serve's instance id
 on its tracker row and serve's pid, so stopping its owner would shut down the
 whole server. While that serve is alive, `--all` skips such runs and lists them
 (`skipped` in `--json`, always present), and the named form cancels the latest
-run serve does not own, or refuses when serve owns them all; cancel those
-through the server. A step row sharing its pid and host with a serve-owned
+run serve does not own, listing the rest under `skipped` too, or refuses when
+serve owns them all. Cancel a serve-owned step through its workflow run on the
+server; a direct method run stops only from the client that started it. A step row sharing its pid and host with a serve-owned
 workflow row counts as serve-owned too, for rows an older serve wrote without
 an instance id. A serve-owned run whose serve is dead is cancelled normally;
 there is no process left to signal (`splitServeOwnedRuns`,

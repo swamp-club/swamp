@@ -233,16 +233,23 @@ function skippedFields({ run, instanceId }: ServeOwnedMethodRun) {
   return { ...methodRunFields(run), instanceId };
 }
 
+/** How to cancel a serve-owned method run, which cancel will not stop. */
+const SERVE_CANCEL_GUIDANCE =
+  "for a workflow step, cancel its workflow run with swamp workflow cancel --run <workflow-run-id> --server <url>; " +
+  "for a direct method run, stop the client that started it";
+
 function warnServeOwnedSkipped(
   logger: Logger,
   skipped: readonly ServeOwnedMethodRun[],
 ): void {
   if (skipped.length === 0) return;
   logger
-    .warn`Skipped ${skipped.length} method run(s) owned by a swamp serve instance; cancel them through that server`;
+    .warn`Skipped ${skipped.length} method run(s) owned by a swamp serve instance, which cancel never stops`;
   for (const s of skipped.map(skippedFields)) {
     logger.warn`  ${s.type}/${s.method} (${s.id}) on instance ${s.instanceId}`;
   }
+  // A plain message, so the guidance is not quoted as an interpolated value.
+  logger.warn(`To cancel one: ${SERVE_CANCEL_GUIDANCE}`);
 }
 
 /**
@@ -272,7 +279,10 @@ export const modelCancelCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("--all", "Cancel all running model method runs")
+  .option(
+    "--all",
+    "Cancel all running model method runs, skipping runs a live swamp serve owns",
+  )
   .option("--reason <reason:string>", "Reason for cancellation")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
@@ -393,8 +403,7 @@ export const modelCancelCommand = new Command()
         const [{ run, instanceId }] = skipped;
         throw new UserError(
           `Method run ${run.id} for model '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
-            `Cancel it through that server: for a workflow step, swamp workflow cancel --run <run-id> --server <url>; ` +
-            `for a direct method run, stop the client that started it.`,
+            `To cancel it: ${SERVE_CANCEL_GUIDANCE}.`,
         );
       }
 
@@ -416,6 +425,7 @@ export const modelCancelCommand = new Command()
           method: latest.methodName ?? "unknown",
           status,
           reason: status === "cancelled" ? reason ?? null : null,
+          skipped: skipped.map(skippedFields),
         }));
       } else if (status === "cancelled") {
         cliCtx.logger
