@@ -76,7 +76,10 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    `heartbeat_at = now`, `status = 'running'`.
 2. **Heartbeat**: every 30s, `UPDATE heartbeat_at = now WHERE id = ?`.
 3. **Complete**: on success, failure, cancel or suspend, UPDATE status, guarded
-   by `AND status IN ('running', 'suspended')` against TOCTOU races.
+   by `AND status IN ('running', 'suspended')` against TOCTOU races. A
+   cancelled owner completes its own row without a reason, so
+   `swamp model cancel` then records its `--reason` with `recordCancelReason`,
+   which only fills the reason on a `cancelled` row that has none.
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
    runs become `interrupted`, not `failed`, so they are eligible for checkpoint

@@ -329,6 +329,13 @@ export class RunTrackerStore implements RunTrackerRepository {
     `).run(reason, runId);
   }
 
+  recordCancelReason(runId: string, reason: string): void {
+    this.db.prepare(`
+      UPDATE active_runs SET cancel_reason = ?
+      WHERE id = ? AND status = 'cancelled' AND cancel_reason IS NULL
+    `).run(reason, runId);
+  }
+
   reactivate(
     runId: string,
     pid: number,

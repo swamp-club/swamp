@@ -152,9 +152,10 @@ const PIPE_DRAIN_GRACE_MS = 5000;
 /**
  * Grace between SIGTERM and SIGKILL. Kept under the 5 s serve allows aborted
  * runs to settle (`runShutdownDrain` with `abortGraceMs: 5_000`), so a step
- * that ignores SIGTERM still records its own cancellation.
+ * that ignores SIGTERM still records its own cancellation. `swamp model
+ * cancel` budgets its wait for the owning process on it.
  */
-const KILL_GRACE_MS = 3000;
+export const KILL_GRACE_MS = 3000;
 const GROUP_POLL_MS = 50;
 
 /** How an aborted or timed-out process is terminated. */

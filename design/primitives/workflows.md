@@ -1609,7 +1609,14 @@ A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 
 Model method runs cancel the same way, with
-`swamp model cancel <model> [--all] [--reason <reason>]`.
+`swamp model cancel <model> [--all] [--reason <reason>]`. The command SIGTERMs
+the process that owns the method run and waits up to 10 s for it to exit
+before SIGKILL: the 3 s grace the shell step gets, plus time for the owner to
+save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,
+`src/cli/commands/model_cancel.ts`). A process that also owns a running
+workflow run, as a workflow step's method run does, gets the workflow cancel
+grace instead, so its cleanup steps can run. `--all` stops the owning
+processes together, each once.
 
 ### Post-Cancellation Cleanup
 

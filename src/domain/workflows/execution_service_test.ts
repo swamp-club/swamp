@@ -8071,6 +8071,8 @@ class RecordingRunTracker implements RunTrackerRepository {
 
   markSettled(_runId: string, _reason: string): void {}
 
+  recordCancelReason(_runId: string, _reason: string): void {}
+
   readonly reactivations: {
     runId: string;
     pid: number;

@@ -25,7 +25,15 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { killProcessTree } from "../../infrastructure/process/process_kill.ts";
+import {
+  isProcessAlive,
+  killProcessTree,
+} from "../../infrastructure/process/process_kill.ts";
+import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts";
+import type { ActiveRun } from "../../domain/models/active_run.ts";
+import { maxOf } from "../../domain/array_extrema.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -34,6 +42,94 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * How long cancel waits for a method run's owning process to exit after
+ * SIGTERM before it SIGKILLs it. The owner aborts the method, whose shell step
+ * gets {@link KILL_GRACE_MS} between SIGTERM and SIGKILL, and then saves the
+ * cancelled output, releases its locks and syncs; the margin covers that.
+ */
+export const METHOD_OWNER_STOP_GRACE_MS = KILL_GRACE_MS + 7_000;
+
+/** A process cancel stops, and how long it waits before SIGKILL. */
+export interface OwnerStop {
+  pid: number;
+  maxWaitMs: number;
+}
+
+export interface CancelModelMethodRunsDeps {
+  tracker: Pick<
+    RunTrackerRepository,
+    "findAllRunning" | "complete" | "recordCancelReason"
+  >;
+  killProcess?: (
+    pid: number,
+    options: { maxWaitMs: number },
+  ) => Promise<boolean>;
+  /** Called with the owners about to be stopped, before waiting on them. */
+  onStopping?: (stops: readonly OwnerStop[]) => void;
+}
+
+/**
+ * The grace for stopping `pid`. A process that also owns a running workflow
+ * run runs that run's cleanup steps when it is cancelled, so it gets the
+ * workflow cancel grace; any other owner gets
+ * {@link METHOD_OWNER_STOP_GRACE_MS}.
+ */
+export function ownerStopGraceMs(
+  pid: number,
+  runningRows: readonly ActiveRun[],
+): number {
+  return runningRows.some((r) => r.runKind === "workflow" && r.pid === pid)
+    ? OWNER_STOP_GRACE_MS
+    : METHOD_OWNER_STOP_GRACE_MS;
+}
+
+/**
+ * Cancels method runs: stops their owning processes together, each process
+ * once, since the steps of one workflow share its process and a second
+ * SIGTERM makes an owner exit at once. Then completes each tracker row as
+ * cancelled. An owner that stopped in time completed its row itself, without
+ * the reason, so the reason is recorded on it afterwards.
+ */
+export async function cancelModelMethodRuns(
+  runs: readonly ActiveRun[],
+  reason: string | undefined,
+  { tracker, killProcess = killProcessTree, onStopping }:
+    CancelModelMethodRunsDeps,
+): Promise<void> {
+  const runningRows = tracker.findAllRunning();
+  const pids = new Set<number>();
+  for (const run of runs) {
+    if (run.pid !== Deno.pid) pids.add(run.pid);
+  }
+  const stops = [...pids].map((pid) => ({
+    pid,
+    maxWaitMs: ownerStopGraceMs(pid, runningRows),
+  }));
+  if (stops.length > 0) onStopping?.(stops);
+  await Promise.all(
+    stops.map(({ pid, maxWaitMs }) => killProcess(pid, { maxWaitMs })),
+  );
+
+  for (const run of runs) {
+    tracker.complete(run.id, "cancelled", reason);
+    if (reason !== undefined) tracker.recordCancelReason(run.id, reason);
+  }
+}
+
+/**
+ * The owners in `stops` still running, and the longest cancel will wait on
+ * them in seconds; undefined when none is running.
+ */
+function liveStops(
+  stops: readonly OwnerStop[],
+): { live: OwnerStop[]; seconds: number } | undefined {
+  const live = stops.filter(({ pid }) => isProcessAlive(pid));
+  const longest = maxOf(live.map((s) => s.maxWaitMs));
+  if (longest === undefined) return undefined;
+  return { live, seconds: longest / 1000 };
+}
 
 export const modelCancelCommand = new Command()
   .name("cancel")
@@ -86,18 +182,25 @@ export const modelCancelCommand = new Command()
           return;
         }
 
-        const cancelled: { id: string; type: string; method: string }[] = [];
-        for (const run of trackerRuns) {
-          if (run.pid !== Deno.pid) {
-            await killProcessTree(run.pid);
-          }
-          runTracker.complete(run.id, "cancelled", reason);
-          cancelled.push({
-            id: run.id,
-            type: run.modelType ?? "unknown",
-            method: run.methodName ?? "unknown",
-          });
-        }
+        await cancelModelMethodRuns(trackerRuns, reason, {
+          tracker: runTracker,
+          onStopping: (stops) => {
+            const waiting = liveStops(stops);
+            if (!waiting || cliCtx.outputMode === "json") return;
+            const count = trackerRuns.filter((r) =>
+              waiting.live.some(({ pid }) =>
+                pid === r.pid
+              )
+            ).length;
+            cliCtx.logger
+              .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
+          },
+        });
+        const cancelled = trackerRuns.map((run) => ({
+          id: run.id,
+          type: run.modelType ?? "unknown",
+          method: run.methodName ?? "unknown",
+        }));
 
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
@@ -139,10 +242,15 @@ export const modelCancelCommand = new Command()
         (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
       )[0];
 
-      if (latest.pid !== Deno.pid) {
-        await killProcessTree(latest.pid);
-      }
-      runTracker.complete(latest.id, "cancelled", reason);
+      await cancelModelMethodRuns([latest], reason, {
+        tracker: runTracker,
+        onStopping: (stops) => {
+          const waiting = liveStops(stops);
+          if (!waiting || cliCtx.outputMode === "json") return;
+          cliCtx.logger
+            .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
+        },
+      });
 
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
