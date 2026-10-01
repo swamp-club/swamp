@@ -81,6 +81,7 @@ const CEL_RESERVED = new Set([
   "double",
   "int",
   "list",
+  "null_type",
   "string",
   "uint",
   // cel-js binds these names itself; they resolve to built-in namespace
