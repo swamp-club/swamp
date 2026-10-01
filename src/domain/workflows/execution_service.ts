@@ -50,6 +50,15 @@ import {
   NestedRunLink,
 } from "./nested_run_link.ts";
 import {
+  cancelAndSettle,
+  failAbandonedSteps,
+  settleNotResumedJob,
+  settleNotStartedJob,
+  settleUnstartedStep,
+  shouldJobRun,
+  shouldStepRun,
+} from "./abort_settlement.ts";
+import {
   checkSuspendedRunResume,
   planFailedRunResume,
   type ResumeReset,
@@ -700,23 +709,6 @@ async function* trackNestedRun<T, R>(
     nestedRuns?.delete(settled);
     settle();
   }
-}
-
-/**
- * Fails the job's steps still `running` with {@link CANCELLED_STEP_ERROR} and
- * reports whether there were any. A level of several steps does not wait for
- * them once the abort fires, so their generators end without recording an
- * outcome.
- */
-function failAbandonedSteps(jobRun: JobRun): boolean {
-  let failed = false;
-  for (const step of jobRun.steps) {
-    if (step.status === "running") {
-      step.fail(CANCELLED_STEP_ERROR);
-      failed = true;
-    }
-  }
-  return failed;
 }
 
 /**
@@ -2666,6 +2658,9 @@ export class WorkflowExecutionService {
     const tracer = getTracer();
 
     let workflowRun: WorkflowRun | undefined;
+    // The evaluated workflow the walk settles against, set with workflowRun
+    // so a cancel from the catch below settles the same way.
+    let settleWorkflow: Workflow | undefined;
     let workflowAffinityKey: string | undefined;
     let workflowLogHandle: string | undefined;
     let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
@@ -2850,6 +2845,7 @@ export class WorkflowExecutionService {
           run.setReferences(options.references);
         }
         workflowRun = run;
+        settleWorkflow = workflow;
         if (workflow.affinity) {
           workflowAffinityKey = run.id;
         }
@@ -3121,9 +3117,7 @@ export class WorkflowExecutionService {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
         await awaitNestedRuns(nestedRuns);
         if (this.runTracker) this.runTracker.complete(run.id, "cancelled");
-        run.cancel(
-          abortReason(options.signal),
-        );
+        cancelAndSettle(run, workflow, abortReason(options.signal));
         await this.saveRun(workflow.id, run);
         yield { kind: "cancelled" as const, run };
         runSpan.setStatus({ code: SpanStatusCode.OK });
@@ -3195,7 +3189,9 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "cancelled");
         }
-        workflowRun.cancel(
+        cancelAndSettle(
+          workflowRun,
+          settleWorkflow,
           abortReason(options.signal),
         );
         await this.saveRun(
@@ -3713,7 +3709,9 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
-        existingRun.cancel(
+        cancelAndSettle(
+          existingRun,
+          resolvedWorkflow,
           abortReason(options.signal),
         );
         await this.saveRun(workflow.id, existingRun);
@@ -3760,7 +3758,9 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
-        existingRun.cancel(
+        cancelAndSettle(
+          existingRun,
+          resolvedWorkflow,
           abortReason(options.signal),
         );
         await this.saveRun(workflow.id, existingRun);
@@ -3832,7 +3832,7 @@ export class WorkflowExecutionService {
       }
 
       // Check if job's trigger condition is met
-      const shouldRun = this.shouldJobRun(job, run);
+      const shouldRun = shouldJobRun(job, run);
       if (!shouldRun) {
         if (options.cleanupJobLevel) {
           jobRun.skipNotStarted();
@@ -4044,7 +4044,7 @@ export class WorkflowExecutionService {
             }
             const stepRun = jobRun.getStep(stepName);
             if (stepRun?.status !== "pending") continue;
-            this.settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+            settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
           }
         }
 
@@ -4285,7 +4285,7 @@ export class WorkflowExecutionService {
 
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
-    if (!reenterNestedWait && !this.shouldStepRun(step, jobRun)) {
+    if (!reenterNestedWait && !shouldStepRun(step, jobRun)) {
       if (options.cleanupStepLevel) {
         stepRun.skipUnstarted({ kind: "dependency" });
       } else {
@@ -5666,10 +5666,10 @@ export class WorkflowExecutionService {
         if (jobRun?.status !== "pending") continue;
         const job = workflow.getJob(jobName);
         if (!job) continue;
-        if (!this.shouldJobRun(job, run)) {
+        if (!shouldJobRun(job, run)) {
           jobRun.skipNotStarted();
         } else {
-          this.settleNotStartedJob(job, jobRun);
+          settleNotStartedJob(job, jobRun);
         }
       }
     }
@@ -5681,7 +5681,7 @@ export class WorkflowExecutionService {
         if (jobRun?.status !== "running") continue;
         const job = workflow.getJob(jobName);
         if (!job) continue;
-        this.settleNotResumedJob(job, jobRun);
+        settleNotResumedJob(job, jobRun);
       }
     }
 
@@ -5692,99 +5692,6 @@ export class WorkflowExecutionService {
       );
     }
     return anyJobFailed;
-  }
-
-  private shouldJobRun(job: Job, run: WorkflowRun): boolean {
-    // If no dependencies, always run
-    if (job.dependsOn.length === 0) {
-      return true;
-    }
-
-    // Check all dependency conditions
-    for (const dep of job.dependsOn) {
-      if (!dep.condition.evaluate(run, dep.job)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Settles a job the run's abort left unstarted: its steps in dependency
-   * order, each as {@link settleUnstartedStep} does, then the job from their
-   * outcome ({@link JobRun.settleNotStarted}).
-   */
-  private settleNotStartedJob(job: Job, jobRun: JobRun): void {
-    this.settleUnstartedSteps(job, jobRun);
-    jobRun.settleNotStarted();
-  }
-
-  /**
-   * Settles a job a resume inherited as running that its abort kept from
-   * starting: its pending steps as {@link settleNotStartedJob} does, then the
-   * job from its steps' outcome ({@link JobRun.settleNotResumed}).
-   */
-  private settleNotResumedJob(job: Job, jobRun: JobRun): void {
-    this.settleUnstartedSteps(job, jobRun);
-    jobRun.settleNotResumed();
-  }
-
-  /**
-   * Settles the job's pending steps in dependency order, each as
-   * {@link settleUnstartedStep} does.
-   */
-  private settleUnstartedSteps(job: Job, jobRun: JobRun): void {
-    const sorted = this.sortService.sort(
-      job.steps.map((step) => ({
-        name: step.name,
-        weight: step.weight,
-        dependencies: step.getDependencyNames(),
-      })),
-    );
-    for (const level of sorted.levels) {
-      for (const stepName of level) {
-        const stepRun = jobRun.getStep(stepName);
-        if (stepRun?.status !== "pending") continue;
-        this.settleUnstartedStep(job.getStep(stepName), stepRun, jobRun);
-      }
-    }
-  }
-
-  /**
-   * Settles a step the run's abort left unstarted as runStep would have on
-   * reaching it: skipped when its dependsOn is unmet, otherwise failed as
-   * cancelled like an in-flight step. Either way it is marked
-   * `settledByAbort`, so a resume runs it. A step with a guard stays pending:
-   * its guard never decided whether the step's work was already done, so
-   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
-   */
-  private settleUnstartedStep(
-    step: Step | undefined,
-    stepRun: StepRun,
-    jobRun: JobRun,
-  ): void {
-    if (step && !this.shouldStepRun(step, jobRun)) {
-      stepRun.skipUnstarted({ kind: "dependency" });
-    } else if (!step?.guard) {
-      jobRun.cancelPendingSteps([stepRun.stepName]);
-    }
-  }
-
-  private shouldStepRun(step: Step, jobRun: JobRun): boolean {
-    // If no dependencies, always run
-    if (step.dependsOn.length === 0) {
-      return true;
-    }
-
-    // Check all dependency conditions
-    for (const dep of step.dependsOn) {
-      if (!dep.condition.evaluate(jobRun, dep.step)) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   private async lookupWorkflow(idOrName: string): Promise<Workflow | null> {

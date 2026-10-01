@@ -137,7 +137,7 @@ export const CANCELLED_STEP_ERROR = "cancelled";
 /**
  * The error a step fails with when the process running it stopped before the
  * step finished, and a cancel settled the record it left. See
- * {@link WorkflowRun.failInFlightWork}.
+ * `cancelAndSettle` in abort_settlement.ts.
  */
 export const OWNER_STOPPED_STEP_ERROR =
   "cancelled: the process running this step stopped before the step finished";
@@ -584,6 +584,18 @@ export class StepRun {
   }
 
   /**
+   * Fails a manual approval the run's cancellation left undecided
+   * (`waiting_approval`) with {@link CANCELLED_STEP_ERROR}, marked
+   * {@link settledByAbort} like a step the abort settled without starting.
+   * Any other status is left alone.
+   */
+  cancelUndecidedApproval(): void {
+    if (this._status !== "waiting_approval") return;
+    this.fail(CANCELLED_STEP_ERROR);
+    this._settledByAbort = true;
+  }
+
+  /**
    * Marks the step as running.
    */
   start(): void {
@@ -892,6 +904,14 @@ export class JobRun implements TriggerEvaluationContext {
     expandedNames: readonly string[],
   ): void {
     this._forEachMappings.set(templateName, expandedNames);
+  }
+
+  /**
+   * True when {@link registerForEachExpansion} recorded a mapping for the
+   * template. A run loaded from storage has none until one is registered.
+   */
+  hasForEachExpansion(templateName: string): boolean {
+    return this._forEachMappings.has(templateName);
   }
 
   resetToPending(): void {
@@ -1447,17 +1467,26 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Marks the workflow run as cancelled with an optional reason.
+   * True while the run can still be cancelled: it is pending, running or
+   * suspended. A finished run (succeeded, failed, cancelled or interrupted)
+   * keeps its record.
+   */
+  get isCancellable(): boolean {
+    return this._status === "pending" || this._status === "running" ||
+      this._status === "suspended";
+  }
+
+  /**
+   * Marks the workflow run as cancelled with an optional reason. Changes only
+   * the run's status: its jobs and steps are settled by `cancelAndSettle`
+   * (abort_settlement.ts), the only production caller.
    *
-   * Deliberately no-ops on terminal states (succeeded, failed, cancelled)
-   * so that late cancellation signals don't corrupt an already-finalized run.
+   * Deliberately no-ops unless {@link isCancellable}, so that late
+   * cancellation signals don't corrupt an already-finalized run.
    * This differs from ModelOutput.markCancelled which throws on terminal states.
    */
-  cancel(reason?: string): void {
-    if (
-      this._status === "succeeded" || this._status === "failed" ||
-      this._status === "cancelled" || this._status === "interrupted"
-    ) {
+  endAsCancelled(reason?: string): void {
+    if (!this.isCancellable) {
       return;
     }
     this.detachNestedWaits();
@@ -1470,28 +1499,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Fails the steps and jobs still recorded running. For a record whose
-   * owning process stopped without saving its own outcome, so the work it
-   * had started reads as cut off rather than in flight or never started.
-   * Pending, waiting and finished work is left as it is.
-   */
-  failInFlightWork(error: string): void {
-    for (const job of this._jobs) {
-      for (const step of job.steps) {
-        if (step.status === "running") {
-          step.fail(error);
-        }
-      }
-      if (job.status === "running") {
-        job.fail();
-      }
-    }
-  }
-
-  /**
    * Records why an already-cancelled run was cancelled. Only sets the
    * cancel_reason tag; no-ops unless the run is cancelled, so it never
-   * changes a run's status. An empty reason is ignored, as in cancel().
+   * changes a run's status. An empty reason is ignored, as in
+   * endAsCancelled().
    */
   recordCancelReason(reason: string): void {
     if (this._status !== "cancelled" || !reason) {
@@ -1881,7 +1892,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * this run changes: each child stays suspended on its own. Not called on
    * interrupt, since an interrupted run is recovered and keeps waiting.
    */
-  private detachNestedWaits(): void {
+  detachNestedWaits(): void {
     for (const job of this._jobs) {
       let detached = false;
       for (const step of job.steps) {

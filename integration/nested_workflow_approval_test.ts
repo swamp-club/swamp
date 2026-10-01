@@ -396,6 +396,7 @@ Deno.test("nested approval: cancelling the waiting parent leaves the child suspe
           h.workflowRepo,
           h.runRepo,
           () => true,
+          () => Promise.resolve(null),
         ),
         { runId: parentRun.id, reason: "operator" },
       ),
@@ -426,9 +427,12 @@ Deno.test("nested approval: a direct run of the child workflow never supersedes 
     await drain(h.service.run(parent.name));
     const childRun = await only(h.runRepo, child);
     const { cancelledRunIds } = await supersedeSuspendedRuns(
-      child.id,
+      child,
       {},
-      (id) => h.runRepo.findAllByWorkflowId(id),
+      {
+        findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
+        findEvaluatedWorkflow: () => Promise.resolve(null),
+      },
       h.runRepo,
     );
     assertEquals(cancelledRunIds, []);

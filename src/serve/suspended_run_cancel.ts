@@ -34,6 +34,8 @@ import {
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import type { DetachedNestedRunData } from "../libswamp/mod.ts";
+import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -98,6 +100,13 @@ export async function cancelSuspendedRunAndPush(
     ctx.repoContext.workflowRepo,
     ctx.repoContext.workflowRunRepo,
     authorize,
+    // Read only when the run has a snapshot, from the datastore-resolved
+    // path the run wrote it to.
+    (runId) =>
+      new YamlEvaluatedWorkflowRepository(
+        ctx.repoDir,
+        ctx.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+      ).findByRunId(runId),
     ctx.runTracker,
   );
   const located = await locateSuspendedRunToCancel(deps, {

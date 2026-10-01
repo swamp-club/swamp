@@ -200,9 +200,13 @@ Deno.test("workflow cancel: the record shows a cleanup step running while it run
       await reader.save(workflow.id, WorkflowRun.fromData(leftBehind));
       const settled = await cancelLocalRun(
         WorkflowRun.fromData({ ...leftBehind, pid: Deno.pid + 1 }),
-        workflow.id,
+        workflow,
         "Cancelled by user",
-        { runRepo: reader, killProcess: () => Promise.resolve(true) },
+        {
+          runRepo: reader,
+          findEvaluatedWorkflow: () => Promise.resolve(null),
+          killProcess: () => Promise.resolve(true),
+        },
       );
 
       assertEquals(settled?.status, "cancelled");

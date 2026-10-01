@@ -884,7 +884,7 @@ const workflowRows: Row[] = [
 function makeTerminalRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.cancel("test");
+  run.endAsCancelled("test");
   return run;
 }
 

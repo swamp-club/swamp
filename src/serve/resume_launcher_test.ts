@@ -743,7 +743,7 @@ Deno.test("autoResumeParentAfterChild: leaves alone a parent another process may
 
   // The parent was cancelled since: nothing to resume, nothing audited.
   const ended = settledPair(parent, child);
-  ended.parentRun.cancel("stop");
+  ended.parentRun.endAsCancelled("stop");
   h = nestedHarness([parent, child], [ended.parentRun, ended.childRun]);
   assertEquals(
     await autoResumeParentAfterChild(

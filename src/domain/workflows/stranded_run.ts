@@ -19,11 +19,19 @@
 
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import type { WorkflowRunRepository } from "./repositories.ts";
-import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
+import type { WorkflowRunId } from "./workflow_id.ts";
+import type { Workflow } from "./workflow.ts";
+import {
+  cancelAndSettle,
+  type EvaluatedWorkflowLookup,
+  resolveSettlementWorkflow,
+} from "./abort_settlement.ts";
 
 /**
  * Cancels a run that an aborted execution left `running` with nothing
- * driving it, and completes its tracker row as `cancelled`.
+ * driving it, settling its unfinished jobs and steps against the run's
+ * evaluated snapshot, or else `workflow`, and completes its tracker row as
+ * `cancelled`.
  *
  * The run is reloaded from the repository, so a terminal status the
  * execution already saved is never overwritten: a missing run, or one in
@@ -35,14 +43,19 @@ import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 export async function cancelStrandedRun(
   runRepo: WorkflowRunRepository,
   runTracker: RunTrackerRepository,
-  workflowId: WorkflowId,
+  workflow: Workflow,
   runId: WorkflowRunId,
   reason: string,
+  findEvaluatedWorkflow: EvaluatedWorkflowLookup,
 ): Promise<boolean> {
-  const run = await runRepo.findById(workflowId, runId);
+  const run = await runRepo.findById(workflow.id, runId);
   if (!run || run.status !== "running") return false;
-  run.cancel(reason);
-  await runRepo.save(workflowId, run);
+  cancelAndSettle(
+    run,
+    await resolveSettlementWorkflow(run, workflow, findEvaluatedWorkflow),
+    reason,
+  );
+  await runRepo.save(workflow.id, run);
   runTracker.complete(run.id, "cancelled");
   return true;
 }

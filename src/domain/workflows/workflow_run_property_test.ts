@@ -374,7 +374,7 @@ const NESTED_TRANSITIONS: ReadonlyArray<
   (_, s) => s.fail("boom"),
   (_, s) => s.resetToPending(),
   (run) => run.suspend(),
-  (run) => run.cancel("stop"),
+  (run) => run.endAsCancelled("stop"),
   (run) => run.complete(),
 ];
 

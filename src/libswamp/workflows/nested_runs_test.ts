@@ -86,7 +86,7 @@ function cancelledParent(
     runId: child.id,
   });
   parent.suspend();
-  parent.cancel("Cancelled by user");
+  parent.endAsCancelled("Cancelled by user");
   return { parent, child, runRepo: { findById: () => lookup(child) } };
 }
 
