@@ -203,7 +203,7 @@ export function writeDoctorRunsLog(
     lines.push(
       bold(
         red(
-          `${orphanedWorkflowRuns} orphaned workflow run(s) from dead instances:`,
+          `${orphanedWorkflowRuns} orphaned workflow run(s) whose owner is gone:`,
         ),
       ),
     );
@@ -227,7 +227,9 @@ export function writeDoctorRunsJson(
   orphanedWorkflowRuns?: number,
   orphanedReaped?: number,
 ): void {
-  const mapRun = (r: ActiveRun) => ({
+  // A run is stale because doctor listed it as stale: an expired heartbeat,
+  // or an owner process that is gone while its heartbeat is still fresh.
+  const mapRun = (stale: boolean) => (r: ActiveRun) => ({
     id: r.id,
     runKind: r.runKind,
     modelType: r.modelType,
@@ -238,7 +240,7 @@ export function writeDoctorRunsJson(
     status: r.status,
     startedAt: r.startedAt.toISOString(),
     heartbeatAt: r.heartbeatAt.toISOString(),
-    stale: r.isStale(STALE_TTL_MS),
+    stale,
   });
   console.log(JSON.stringify({
     totalTracked,
@@ -248,8 +250,8 @@ export function writeDoctorRunsJson(
     ...(orphanedWorkflowRuns !== undefined
       ? { orphanedWorkflowRuns, orphanedReaped: orphanedReaped ?? 0 }
       : {}),
-    activeRuns: activeRuns.map(mapRun),
-    staleRuns: staleRuns.map(mapRun),
+    activeRuns: activeRuns.map(mapRun(false)),
+    staleRuns: staleRuns.map(mapRun(true)),
   }));
 }
 

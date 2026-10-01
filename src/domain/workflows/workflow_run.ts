@@ -1524,6 +1524,34 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Interrupts a `running` run whose owning process died, as read back from
+   * storage. A step's start is saved before it runs, but a record written
+   * by a swamp that did not save step starts (or a kill that beat the save)
+   * shows the step that was in flight as `pending`. So in a job left
+   * `running` with no step recorded `running`, every `pending` step is
+   * marked unknown as well: recovery then asks before re-running it rather
+   * than assuming it never started.
+   */
+  interruptOrphaned(reason: string): void {
+    if (this._status === "running") {
+      for (const job of this._jobs) {
+        if (
+          job.status !== "running" ||
+          job.steps.some((step) => step.status === "running")
+        ) {
+          continue;
+        }
+        for (const step of job.steps) {
+          if (step.status === "pending") {
+            step.markUnknown(`interrupted: ${reason} (start not recorded)`);
+          }
+        }
+      }
+    }
+    this.interrupt(reason);
+  }
+
+  /**
    * Returns the names of all steps currently in `unknown` status.
    */
   unknownSteps(): string[] {

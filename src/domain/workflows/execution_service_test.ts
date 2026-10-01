@@ -8069,6 +8069,8 @@ class RecordingRunTracker implements RunTrackerRepository {
     this.completions.push({ runId, status });
   }
 
+  markSettled(_runId: string, _reason: string): void {}
+
   readonly reactivations: {
     runId: string;
     pid: number;
@@ -16531,5 +16533,156 @@ Deno.test("cancel: a parent cancelled while it waits detaches the nested run and
       (await runRepo.findById(child.id, childRun.id))!.status,
       "suspended",
     );
+  });
+});
+
+// --- step start is persisted ---
+
+/** Keeps a copy of each saved step status, as a file-backed repo would. */
+class SnapshotRunRepository extends InMemoryWorkflowRunRepository {
+  readonly snapshots: Map<string, string>[] = [];
+
+  override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    const statuses = new Map<string, string>();
+    for (const job of run.jobs) {
+      for (const step of job.steps) {
+        statuses.set(`${job.jobName}/${step.stepName}`, step.status);
+      }
+    }
+    this.snapshots.push(statuses);
+    return super.save(workflowId, run);
+  }
+
+  savedAs(jobName: string, stepName: string, status: string): boolean {
+    return this.snapshots.some((s) =>
+      s.get(`${jobName}/${stepName}`) === status
+    );
+  }
+}
+
+/**
+ * Holds each step until a save shows it running, so the step only finishes
+ * once its start is on disk.
+ */
+class AwaitStartSavedExecutor implements StepExecutor {
+  readonly seenRunning: string[] = [];
+
+  constructor(private readonly runRepo: SnapshotRunRepository) {}
+
+  async execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    await waitFor(
+      () => this.runRepo.savedAs(ctx.jobName, ctx.stepName, "running"),
+      `${ctx.jobName}/${ctx.stepName} saved as running`,
+    );
+    this.seenRunning.push(`${ctx.jobName}/${ctx.stepName}`);
+    return { executed: true };
+  }
+}
+
+/** Two parallel jobs and a forEach step, optionally behind an approval gate. */
+function startPersistenceWorkflow(gated: boolean): Workflow {
+  const dependsOn = gated
+    ? [{ job: "gate", condition: TriggerCondition.succeeded() }]
+    : [];
+  return Workflow.create({
+    name: "start-persistence",
+    jobs: [
+      ...(gated
+        ? [Job.create({
+          name: "gate",
+          steps: [
+            Step.create({
+              name: "approval",
+              task: StepTask.manualApproval("Go?"),
+            }),
+          ],
+        })]
+        : []),
+      Job.create({
+        name: "a",
+        dependsOn,
+        steps: [
+          Step.create({ name: "a-work", task: StepTask.model("m", "run") }),
+        ],
+      }),
+      Job.create({
+        name: "b",
+        dependsOn,
+        steps: [
+          Step.create({
+            name: "b-each",
+            task: StepTask.model("m", "run"),
+            forEach: { item: "env", in: '${{ ["dev", "qa"] }}' },
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function assertStartsSaved(
+  executor: AwaitStartSavedExecutor,
+  run: WorkflowRun | undefined,
+): void {
+  assertEquals(run?.status, "succeeded");
+  // The plain step and both forEach iterations each waited for their own
+  // start to be saved.
+  assertEquals(executor.seenRunning.length, 3);
+  assertEquals(
+    executor.seenRunning.filter((s) => s.startsWith("b/")).length,
+    2,
+  );
+}
+
+Deno.test("execute: saves each step as running when it starts", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SnapshotRunRepository();
+    const executor = new AwaitStartSavedExecutor(runRepo);
+    const workflow = startPersistenceWorkflow(false);
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertStartsSaved(executor, run);
+  });
+});
+
+Deno.test("resume: saves each step as running when it starts", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SnapshotRunRepository();
+    const executor = new AwaitStartSavedExecutor(runRepo);
+    const workflow = startPersistenceWorkflow(true);
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    toApprove!.getJob("gate")!.getStep("approval")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    let run: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, suspended.id)) {
+      if (event.kind === "completed") run = event.run;
+    }
+
+    assertStartsSaved(executor, run);
   });
 });

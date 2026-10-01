@@ -81,7 +81,7 @@ import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts";
 import { isServeOwnedRun } from "../src/cli/commands/workflow_cancel.ts";
 import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
-import { reapOrphanedWorkflowRuns } from "../src/cli/commands/serve.ts";
+import { reapOrphanedWorkflowRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import { isProcessDead } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";

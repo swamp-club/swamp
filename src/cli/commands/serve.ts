@@ -394,8 +394,7 @@ import {
   isProcessDead,
   tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { reapOrphanedWorkflowRuns } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
@@ -1319,121 +1318,6 @@ export function resolveServeStartupSettings(
     maxRunDurationMs,
     grantReloadMode,
   };
-}
-
-export interface ReapResult {
-  readonly reaped: number;
-  readonly skipped: number;
-}
-
-export async function reapOrphanedWorkflowRuns(
-  runs: { run: WorkflowRun; workflowId: WorkflowId }[],
-  save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
-  trackerLookup: (runId: string) => { status: string } | null,
-  isDeadFn: (pid: number) => boolean = isProcessDead,
-  localInstanceId?: string,
-  heartbeatLookup?: (instanceId: string) => Promise<boolean>,
-): Promise<ReapResult> {
-  let reaped = 0;
-  let skipped = 0;
-
-  for (const { run, workflowId } of runs) {
-    if (run.status !== "running") continue;
-
-    const tracked = trackerLookup(run.id);
-    if (tracked) {
-      if (tracked.status === "running") {
-        logger.info(
-          "Skipping workflow run {runId} (workflow: {workflowName}) — tracker reports still running",
-          { runId: run.id, workflowName: run.workflowName },
-        );
-        skipped++;
-        continue;
-      }
-      logger.warn(
-        "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
-        {
-          runId: run.id,
-          workflowName: run.workflowName,
-          reason: "tracker confirmed stale",
-        },
-      );
-      run.interrupt("server_crash");
-      await save(workflowId, run);
-      reaped++;
-      continue;
-    }
-
-    // Not in tracker — check instanceId before falling back to PID check.
-    // A run with a foreign instanceId belongs to another instance and must
-    // not be PID-checked against the local process table.
-    if (
-      localInstanceId && run.instanceId &&
-      run.instanceId !== localInstanceId
-    ) {
-      if (heartbeatLookup) {
-        const hasHeartbeat = await heartbeatLookup(run.instanceId);
-        if (hasHeartbeat) {
-          logger.info(
-            "Skipping workflow run {runId} (workflow: {workflowName}) — remote instance {instanceId} still has a heartbeat",
-            {
-              runId: run.id,
-              workflowName: run.workflowName,
-              instanceId: run.instanceId,
-            },
-          );
-          skipped++;
-          continue;
-        }
-        logger.warn(
-          "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
-          {
-            runId: run.id,
-            workflowName: run.workflowName,
-            reason: "remote instance dead (no heartbeat)",
-          },
-        );
-        run.interrupt("server_crash");
-        await save(workflowId, run);
-        reaped++;
-        continue;
-      }
-      logger.info(
-        "Skipping workflow run {runId} (workflow: {workflowName}) — belongs to remote instance {instanceId}",
-        {
-          runId: run.id,
-          workflowName: run.workflowName,
-          instanceId: run.instanceId,
-        },
-      );
-      skipped++;
-      continue;
-    }
-
-    // Legacy run or same-instance run — fall back to PID check
-    const pid = run.pid;
-    if (pid !== undefined && !isDeadFn(pid)) {
-      logger.info(
-        "Skipping workflow run {runId} (workflow: {workflowName}) — owning process {pid} is still alive (no tracker record)",
-        { runId: run.id, workflowName: run.workflowName, pid },
-      );
-      skipped++;
-      continue;
-    }
-
-    const reason = pid === undefined
-      ? "daemon restarted (no PID recorded, no tracker record)"
-      : "daemon restarted (owning process dead, no tracker record)";
-    logger.warn(
-      "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
-      { runId: run.id, workflowName: run.workflowName, reason },
-    );
-    run.interrupt("server_crash");
-    await save(workflowId, run);
-    reaped++;
-  }
-
-  return { reaped, skipped };
 }
 
 const daemonEnableCommand = new Command()
@@ -3928,7 +3812,10 @@ export const serveCommand = new Command()
     );
     const reapResult = await reapOrphanedWorkflowRuns(
       recentRuns,
-      (wid, r) => repoContext.workflowRunRepo.save(wid, r),
+      async (wid, r) => {
+        await repoContext.workflowRunRepo.save(wid, r);
+        runTracker.markSettled(r.id, "server_crash");
+      },
       (runId) => {
         const tracked = runTracker.findById(runId);
         return tracked ? { status: tracked.status } : null;

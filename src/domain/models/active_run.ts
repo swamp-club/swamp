@@ -85,6 +85,17 @@ export class ActiveRun {
     return this._heartbeatAt;
   }
 
+  /**
+   * Whether this run's owner is on the caller's host, so its pid can be
+   * checked against the local process table. A serve instance id decides
+   * when both sides have one; otherwise the hostname does.
+   */
+  isLocalTo(hostname: string, instanceId?: string): boolean {
+    return instanceId && this.instanceId
+      ? this.instanceId === instanceId
+      : this.hostname === hostname;
+  }
+
   static createModelMethodRun(opts: {
     id: string;
     modelType: string;

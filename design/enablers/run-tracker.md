@@ -63,7 +63,10 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 
 (`src/infrastructure/persistence/run_tracker_store.ts`.) The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
-days are purged at startup. `swamp run gc` removes older records on demand:
+days are purged at startup, except a workflow row reaped `interrupted` with no
+reason (`cancel_reason` null): its run record may still say `running`, and the
+row is the evidence that settles it (see Dead owner below). Once the record is
+settled, `markSettled` stores a reason and the row is purged as usual. `swamp run gc` removes older records on demand:
 30-day default, `--older-than`, `--dry-run`, `--server`
 (`src/cli/commands/run_gc.ts`, protocol `run.gc`).
 
@@ -82,7 +85,34 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
    `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
    continuous reconciler and `run.doctor` also reconcile YAML workflow-run
-   records from dead remote instances whose heartbeats are gone.
+   records from dead remote instances whose heartbeats are gone. Local
+   `swamp run doctor` also counts a running row as stale as soon as its owner
+   is a dead process on this host (`findDeadProcessRuns`), without waiting
+   for the TTL, and with `--fix` reaps it through `reapDeadProcessRuns`.
+7. **Dead owner**: a process killed without running its cleanup (a second
+   Ctrl-C calls `Deno.exit(130)`) leaves its row `running` and its workflow
+   run record `running` under its pid. Local `swamp run doctor --fix` and
+   `swamp workflow recover` interrupt such a record, tagged
+   `interrupt_reason: owner_process_dead`, through `settleDeadOwnerRun`
+   (`src/domain/workflows/orphaned_run_reaper.ts`). Because they run while
+   other swamp processes may be live, they trust only a row owned on this
+   host that is `running` or `interrupted` and whose pid is dead, never a row
+   the owner settled itself. The pid is checked for an `interrupted` row too:
+   a serve instance reaps another instance's row on heartbeat age alone, even
+   on the same host, so a stalled but live owner can be marked `interrupted`.
+   A row from another host never counts; that host's own `run doctor` settles
+   its runs. They re-read the
+   record and write it only while it is still `running` under that pid. A
+   record with no row is left alone: it carries no hostname, so on a shared
+   datastore its pid says nothing about whether it is alive.
+   `swamp workflow resume` on such a run, named with `--run` or the latest
+   run, names `workflow recover` instead of saying to wait. Every path that
+   interrupts a record after its owner died (`settleDeadOwnerRun`, the serve
+   boot reaper, the `run.doctor` handler) then calls `markSettled` on the
+   row, only after the record is saved. `run doctor` scans recent records
+   (7 days) and finds older ones through their workflow row, by workflow
+   name, so no run is stranded by age; with `--fix` it also marks settled an
+   `interrupted` row whose record is no longer `running`.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that
@@ -123,7 +153,8 @@ days are purged at startup. `swamp run gc` removes older records on demand:
 - `swamp run history --active`: running only
 - `swamp run history --all`: full tracked history
 - `swamp run doctor`: diagnose stale or orphaned runs
-- `swamp run doctor --fix`: reap stale runs
+- `swamp run doctor --fix`: reap stale runs, and interrupt workflow run records
+  their dead owner left `running`
 
 All support `--server` for a remote `swamp serve` instance and `--json`.
 

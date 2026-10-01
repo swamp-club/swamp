@@ -51,17 +51,17 @@ found), see [references/version-check.md](references/version-check.md).
 
 ## Symptom → tier index
 
-| Symptom                                           | Start at                               |
-| ------------------------------------------------- | -------------------------------------- |
-| Extension or binary misbehaves unexpectedly       | Before you start → version-drift check |
-| "This used to work" / suspected regression        | Before you start → version-drift check |
-| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`     |
-| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`      |
-| "Is anything running right now?"                  | Tier 1 → `swamp run history --active`  |
-| Command errored — message is clear                | Tier 2 → read it, fix the named issue  |
-| Command errored — message is vague                | Tier 2 → re-run with `--json`          |
-| Model method or workflow run failed               | Tier 2 → inspect generated reports     |
-| Workflow / method / sync is slow                  | Tier 3 → enable tracing                |
-| Need to understand internal behavior              | Tier 4 → fetch source                  |
+| Symptom                                           | Start at                                                         |
+| ------------------------------------------------- | ---------------------------------------------------------------- |
+| Extension or binary misbehaves unexpectedly       | Before you start → version-drift check                           |
+| "This used to work" / suspected regression        | Before you start → version-drift check                           |
+| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`                               |
+| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
+| "Is anything running right now?"                  | Tier 1 → `swamp run history --active`                            |
+| Command errored — message is clear                | Tier 2 → read it, fix the named issue                            |
+| Command errored — message is vague                | Tier 2 → re-run with `--json`                                    |
+| Model method or workflow run failed               | Tier 2 → inspect generated reports                               |
+| Workflow / method / sync is slow                  | Tier 3 → enable tracing                                          |
+| Need to understand internal behavior              | Tier 4 → fetch source                                            |
 
 For detailed walkthroughs of each tier, see [reference.md](reference.md).

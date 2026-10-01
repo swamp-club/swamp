@@ -27,6 +27,15 @@ export interface RunTrackerRepository {
   complete(runId: string, status: ActiveRunStatus, reason?: string): void;
 
   /**
+   * Records that the run record behind an `interrupted` workflow row has
+   * been settled, so retention may purge the row. Until then the row is
+   * kept: it is the only evidence that the run's owner died, and `workflow
+   * recover` and `run doctor` need it to settle a record still `running`.
+   * No-op unless the row is `interrupted` and not yet settled.
+   */
+  markSettled(runId: string, reason: string): void;
+
+  /**
    * Hands a run's row to the process resuming it: a suspended, failed, or
    * interrupted row becomes running with the resuming pid, hostname and serve
    * instance id (none for a local resume) and a fresh heartbeat. Running,

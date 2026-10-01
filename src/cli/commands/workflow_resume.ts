@@ -34,6 +34,7 @@ import { UserError } from "../../domain/errors.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
+import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
@@ -45,7 +46,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import {
+  localOwnerLiveness,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
@@ -295,13 +299,19 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
+    const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    const liveness = localOwnerLiveness();
     const { run, workflow, workflowName } = await resolveResumableRun(
       workflowRepo,
       runRepo,
       workflowIdOrName,
       options.run,
-      { fromStep },
-    );
+      {
+        fromStep,
+        ownerIsDead: (candidate) =>
+          runHasDeadOwner(candidate, tracker, liveness),
+      },
+    ).finally(() => tracker.close());
 
     if (run.status === "suspended") {
       const waiting = run.findWaitingApprovalStep();
