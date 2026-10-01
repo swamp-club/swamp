@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import {
   getMigrationSentinelPath,
+  isConfigTierPopulated,
   migrateConfigToDatastore,
 } from "./managed_config_migration.ts";
 
@@ -427,5 +428,45 @@ Deno.test("migrateConfigToDatastore: leaves install staging out of the pulled-ex
       copied = false;
     }
     assertEquals(copied, false);
+  });
+});
+
+Deno.test("isConfigTierPopulated: false when the config root does not exist", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await isConfigTierPopulated(join(dir, "config")), false);
+  });
+});
+
+Deno.test("isConfigTierPopulated: true when only the migration sentinel exists", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(getMigrationSentinelPath(dir), "{}");
+    assertEquals(await isConfigTierPopulated(dir), true);
+  });
+});
+
+for (const subdir of ["models", "workflows", "vaults"]) {
+  Deno.test(`isConfigTierPopulated: true when only ${subdir}/ has an entry`, async () => {
+    await withTempDir(async (dir) => {
+      await ensureDir(join(dir, subdir));
+      await Deno.writeTextFile(join(dir, subdir, "def.yaml"), "x: 1\n");
+      assertEquals(await isConfigTierPopulated(dir), true);
+    });
+  });
+}
+
+Deno.test("isConfigTierPopulated: false when the definition dirs are empty", async () => {
+  await withTempDir(async (dir) => {
+    for (const subdir of ["models", "workflows", "vaults"]) {
+      await ensureDir(join(dir, subdir));
+    }
+    assertEquals(await isConfigTierPopulated(dir), false);
+  });
+});
+
+Deno.test("isConfigTierPopulated: false when the tier holds only instance-local state", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "pulled-extensions", "ext"));
+    await Deno.writeTextFile(join(dir, "upstream_extensions.json"), "{}");
+    assertEquals(await isConfigTierPopulated(dir), false);
   });
 });
