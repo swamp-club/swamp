@@ -300,6 +300,8 @@ export interface ModelMethodRunInput {
   tracestate?: string;
   /** Identity of the user who initiated this run (e.g. "user:paul"). */
   initiatedBy?: string;
+  /** The `swamp serve` instance running this method run, when serve runs it. */
+  instanceId?: string;
 }
 
 /**
@@ -883,6 +885,7 @@ export async function* modelMethodRun(
               pid: Deno.pid,
               hostname: hostname(),
               initiatedBy: input.initiatedBy,
+              instanceId: input.instanceId,
             });
             deps.runTracker.register(activeRun);
           }

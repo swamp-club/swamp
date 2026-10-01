@@ -16745,11 +16745,13 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
 
 /**
  * Runs one model_method step whose method body is `execute`, under the run
- * signal `controller` owns, and reports the step's output and tracker rows.
+ * signal `controller` owns and, when given, as a step of `workflowRun`, and
+ * reports the step's output and tracker rows.
  */
 async function runModelStep(
   controller: AbortController,
   execute: () => Promise<Record<string, never>>,
+  workflowRun?: WorkflowRun,
 ): Promise<{
   outputs: import("../models/model_output.ts").ModelOutput[];
   tracker: RecordingRunTracker;
@@ -16809,6 +16811,7 @@ async function runModelStep(
           catalogStore,
           authoredExpressions: new Set(),
           runTracker: tracker,
+          workflowRun,
         })
       );
       result = {
@@ -16852,4 +16855,32 @@ Deno.test("DefaultStepExecutor: a method that fails without an abort is still re
     runId: outputs[0].id,
     status: "failed",
   }]);
+});
+
+Deno.test("DefaultStepExecutor: a step of a serve-driven run registers its method row with serve's instance id (swamp-club#2914)", async () => {
+  const workflowRun = WorkflowRun.create(createSimpleWorkflow());
+  workflowRun.start(Deno.pid, "serve-instance");
+
+  const { outputs, tracker } = await runModelStep(
+    new AbortController(),
+    () => Promise.reject(new Error("boom")),
+    workflowRun,
+  );
+
+  assertEquals(tracker.registrations.map((r) => [r.id, r.instanceId]), [
+    [outputs[0].id, "serve-instance"],
+  ]);
+});
+
+Deno.test("DefaultStepExecutor: a step of a local run registers its method row with no instance id", async () => {
+  const workflowRun = WorkflowRun.create(createSimpleWorkflow());
+  workflowRun.start(Deno.pid);
+
+  const { tracker } = await runModelStep(
+    new AbortController(),
+    () => Promise.reject(new Error("boom")),
+    workflowRun,
+  );
+
+  assertEquals(tracker.registrations.map((r) => r.instanceId), [undefined]);
 });

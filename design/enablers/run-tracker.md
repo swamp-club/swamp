@@ -144,6 +144,11 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
   through `modelMethodRun()` in `run.ts`, which registers with the tracker.
 - **Workflow-triggered model method runs** register via
   `DefaultStepExecutor.executeModelMethod()` in `execution_service.ts`.
+- A method run serve executes, a workflow step or a direct method run, records
+  serve's instance id in `instance_id`, as serve's workflow rows do, so
+  `swamp model cancel` can tell its pid is the serve process. A later serve
+  boot treats those rows as another instance's: it reaps them on heartbeat age
+  (90s), not as soon as their pid is dead.
 - **Workflow runs** register in `WorkflowExecutionService.run()` for the whole
   workflow.
 - Suspend/approve/resume/reject are tracked: suspended → running → completed,

@@ -1623,6 +1623,17 @@ A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
 is still recorded failed (`DefaultStepExecutor`,
 `src/domain/workflows/execution_service.ts`).
+`swamp model cancel` never signals a `swamp serve` process. A method run serve
+executes, a workflow step or a direct method run, carries serve's instance id
+on its tracker row and serve's pid, so stopping its owner would shut down the
+whole server. While that serve is alive, `--all` skips such runs and lists them
+(`skipped` in `--json`, always present), and the named form cancels the latest
+run serve does not own, or refuses when serve owns them all; cancel those
+through the server. A step row sharing its pid and host with a serve-owned
+workflow row counts as serve-owned too, for rows an older serve wrote without
+an instance id. A serve-owned run whose serve is dead is cancelled normally;
+there is no process left to signal (`splitServeOwnedRuns`,
+`src/cli/commands/model_cancel.ts`).
 
 ### Post-Cancellation Cleanup
 

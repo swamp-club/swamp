@@ -44,6 +44,8 @@ import type { ModelUpdated } from "../../domain/events/types.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import { generateDataId } from "../../domain/data/data_id.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import type { ActiveRun } from "../../domain/models/active_run.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 
 await initializeLogging({});
 
@@ -314,6 +316,56 @@ Deno.test("modelMethodRun happy path yields model_resolved, evaluating, executin
     assertEquals(completed.run.status, "succeeded");
     assertEquals(completed.run.modelType, "test/model");
   }
+});
+
+/** A tracker that records the rows a run registers. */
+function createRecordingTracker(registrations: ActiveRun[]) {
+  return {
+    register: (run: ActiveRun) => {
+      registrations.push(run);
+    },
+    heartbeat: () => {},
+    complete: () => {},
+  } as unknown as RunTrackerRepository;
+}
+
+Deno.test("modelMethodRun: registers its tracker row with the serve instance running it (swamp-club#2914)", async () => {
+  const registrations: ActiveRun[] = [];
+  const deps = {
+    ...createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    ),
+    runTracker: createRecordingTracker(registrations),
+  };
+  await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      instanceId: "serve-instance",
+    }),
+  );
+
+  assertEquals(registrations.map((r) => r.instanceId), ["serve-instance"]);
+});
+
+Deno.test("modelMethodRun: registers its tracker row with no instance id outside serve", async () => {
+  const registrations: ActiveRun[] = [];
+  const deps = {
+    ...createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    ),
+    runTracker: createRecordingTracker(registrations),
+  };
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  assertEquals(registrations.map((r) => r.instanceId), [undefined]);
 });
 
 // deno-lint-ignore no-explicit-any
