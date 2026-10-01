@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join, resolve, SEPARATOR } from "@std/path";
+import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import {
   classifyInRepoConfig,
   type DatastoreConfigData,
@@ -35,6 +35,10 @@ import {
   verifyMigration,
 } from "../../domain/datastore/datastore_migration_service.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import {
+  getMigrationSentinelPath,
+  isConfigTierPopulated,
+} from "../../domain/datastore/managed_config_migration.ts";
 import { createNamespace } from "../../domain/data/namespace.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -77,10 +81,30 @@ export interface DatastoreSetupData {
   destinationPath?: string;
 }
 
-export interface DatastoreSetupWarningData {
-  message: string;
-  existingNamespaces: string[];
-}
+/** A warning raised during datastore setup, keyed by `code`. */
+export type DatastoreSetupWarningData =
+  | {
+    code: "existing_namespaces";
+    message: string;
+    existingNamespaces: string[];
+  }
+  | {
+    /**
+     * managedConfig is on but the new datastore's config tier holds no
+     * config (swamp-club#2845).
+     */
+    code: "empty_config_tier";
+    message: string;
+    configTierPath: string;
+  };
+
+/**
+ * The config tier of the datastore `.swamp.yaml` names. `tierPath` is
+ * undefined when that datastore cannot be resolved.
+ */
+export type ManagedConfigTierInspection =
+  | { managed: false }
+  | { managed: true; tierPath: string | undefined; populated: boolean };
 
 export type DatastoreSetupEvent =
   | { kind: "validating" }
@@ -151,6 +175,14 @@ export interface DatastoreSetupDeps {
    * the repo uses before setup switches it (swamp-club#2837).
    */
   resolveInRepoConfigRole: (repoDir: string) => Promise<InRepoConfigRole>;
+  /**
+   * Inspects the config tier of the datastore `.swamp.yaml` names. Setup
+   * calls it after rewriting `.swamp.yaml`, so it sees the new datastore
+   * (swamp-club#2845).
+   */
+  inspectManagedConfigTier: (
+    repoDir: string,
+  ) => Promise<ManagedConfigTierInspection>;
   updateRepoConfig: (
     repoDir: string,
     datastoreConfig: Record<string, unknown>,
@@ -298,6 +330,11 @@ export async function* datastoreSetupFilesystem(
         );
       }
 
+      if (errors.length === 0) {
+        const warning = await emptyConfigTierWarning(ctx, deps, input.repoDir);
+        if (warning) yield warning;
+      }
+
       yield {
         kind: "completed",
         data: {
@@ -422,6 +459,7 @@ export async function* datastoreSetupExtension(
             yield {
               kind: "warning",
               data: {
+                code: "existing_namespaces",
                 message:
                   `This datastore contains existing namespaces: ${
                     remoteNamespaces.join(", ")
@@ -640,6 +678,22 @@ export async function* datastoreSetupExtension(
         await deps.updateRepoConfig(input.repoDir, persistedConfig);
       }
 
+      // Only after a complete transfer: a timeout-only commit may leave the
+      // tier partly hydrated, which proves nothing about the remote.
+      if (errors.length === 0) {
+        const hydrateFile = syncService?.hydrateFile?.bind(syncService);
+        const warning = await emptyConfigTierWarning(
+          ctx,
+          deps,
+          input.repoDir,
+          hydrateFile
+            ? (tierPath) =>
+              hydrateSentinel(ctx, hydrateFile, cachePath, tierPath)
+            : undefined,
+        );
+        if (warning) yield warning;
+      }
+
       // Register namespace manifest after config is persisted.
       // provider.registerNamespace handles conflict detection internally.
       if ((errors.length === 0 || onlyTimeouts) && ns && input.repoId) {
@@ -692,6 +746,79 @@ export async function* datastoreSetupExtension(
       };
     })(),
   );
+}
+
+/**
+ * The warning for a managedConfig repo whose datastore config tier holds no
+ * config, or undefined when there is nothing to warn about. `hydrateSentinel`
+ * gives a lazily hydrated tier one chance to fetch the migration sentinel
+ * before the tier counts as empty (swamp-club#2845). The check is advisory:
+ * setup has already committed `.swamp.yaml`, so a failed inspection is
+ * logged and skipped rather than failing setup.
+ */
+async function emptyConfigTierWarning(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  repoDir: string,
+  hydrateSentinel?: (tierPath: string) => Promise<boolean>,
+): Promise<DatastoreSetupEvent | undefined> {
+  let tier: ManagedConfigTierInspection;
+  try {
+    tier = await deps.inspectManagedConfigTier(repoDir);
+  } catch (error) {
+    ctx.logger.debug`Could not inspect the config tier: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return undefined;
+  }
+  if (!tier.managed || tier.populated) return undefined;
+  if (tier.tierPath === undefined) {
+    ctx.logger
+      .debug`Could not resolve the config tier; skipping the empty tier check`;
+    return undefined;
+  }
+  if (hydrateSentinel && await hydrateSentinel(tier.tierPath)) {
+    return undefined;
+  }
+  return {
+    kind: "warning",
+    data: {
+      code: "empty_config_tier",
+      message:
+        `managedConfig is on, but the config tier at ${tier.tierPath} is ` +
+        `empty: it has no migration sentinel and no model, workflow or vault ` +
+        `definitions, so this repo will not find any definitions. If they ` +
+        `are in the repo's models/, workflows/ and vaults/ directories, run ` +
+        `'swamp datastore config migrate' to copy them into the tier. Setup ` +
+        `does not move definitions that were only in the previous ` +
+        `datastore's config tier; copy those into ${tier.tierPath}.`,
+      configTierPath: tier.tierPath,
+    },
+  };
+}
+
+/**
+ * Fetches the migration sentinel of a lazily hydrated config tier into the
+ * cache. Returns whether it was fetched. A tier outside the cache (an
+ * excluded `config`) is never fetched, and a failed fetch counts as absent.
+ */
+async function hydrateSentinel(
+  ctx: LibSwampContext,
+  hydrateFile: (relPath: string) => Promise<boolean>,
+  cachePath: string,
+  tierPath: string,
+): Promise<boolean> {
+  const rel = relative(cachePath, tierPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) return false;
+  const relPath = getMigrationSentinelPath(rel).split(SEPARATOR).join("/");
+  try {
+    return await hydrateFile(relPath);
+  } catch (error) {
+    ctx.logger.debug`Could not hydrate the migration sentinel: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return false;
+  }
 }
 
 const TOP_LEVEL_DIRS = ["models", "workflows", "vaults"] as const;
@@ -822,6 +949,21 @@ export function createDatastoreSetupDeps(
         tierPath,
         swampPath(repoDir, "config"),
       );
+    },
+    inspectManagedConfigTier: async (repoDir: string) => {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      if (!marker || marker.datastore?.managedConfig !== true) {
+        return { managed: false };
+      }
+      const tierPath = await resolveConfigTierPath(repoDir, marker);
+      return {
+        managed: true,
+        tierPath,
+        populated: tierPath !== undefined &&
+          await isConfigTierPopulated(tierPath),
+      };
     },
     collapseEnvVars,
   };

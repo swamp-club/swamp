@@ -142,6 +142,43 @@ export function getMigrationSentinelPath(configRoot: string): string {
   return join(configRoot, MIGRATION_SENTINEL);
 }
 
+/** Config tier subdirectories that hold definitions. */
+const DEFINITION_SUBDIRS = ["models", "workflows", "vaults"] as const;
+
+/**
+ * Whether a config tier holds config: the migration sentinel, or any model,
+ * workflow or vault definition. The sentinel alone is not enough, because
+ * managedConfig can be switched on in `.swamp.yaml` by hand and definitions
+ * then created directly in a tier that was never migrated (swamp-club#2845).
+ * A missing `configRoot` is an empty tier.
+ */
+export async function isConfigTierPopulated(
+  configRoot: string,
+): Promise<boolean> {
+  try {
+    if ((await Deno.stat(join(configRoot, MIGRATION_SENTINEL))).isFile) {
+      return true;
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  for (const subdir of DEFINITION_SUBDIRS) {
+    try {
+      for await (const _ of Deno.readDir(join(configRoot, subdir))) {
+        return true;
+      }
+    } catch (error) {
+      if (
+        !(error instanceof Deno.errors.NotFound) &&
+        !(error instanceof Deno.errors.NotADirectory)
+      ) {
+        throw error;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Copies the pulled-extensions root entry by entry, leaving out install
  * staging: an interrupted install's journal names paths under the root

@@ -1770,6 +1770,25 @@ startup uses):
 The filesystem branch applies these skips only when it migrates from `.swamp`.
 An outgoing extension cache's `config` is the real tier and migrates as usual.
 
+After a setup that fully succeeded, setup checks that the new datastore's config
+tier holds config (swamp-club#2845). `inspectManagedConfigTier` re-reads the
+rewritten `.swamp.yaml` and, when managedConfig is on, resolves the tier with
+`resolveConfigTierPath`. `isConfigTierPopulated`
+(`src/domain/datastore/managed_config_migration.ts`) counts the tier as
+populated when it holds the migration sentinel or any entry in `models/`,
+`workflows/` or `vaults/`. The sentinel alone is not enough, because the
+`.swamp.yaml` flag alone turns managedConfig on and definitions can then be
+created in a tier that was never migrated. An empty tier gets an
+`empty_config_tier` warning that names the tier path and
+`swamp datastore config migrate`; in JSON output it is an entry in `warnings`
+with that `code`, beside the `existing_namespaces` warning. Setup skips the
+check when the tier cannot be resolved, and after an extension setup that only
+timed out, since a partial transfer proves nothing about the remote. Under lazy
+hydration the setup pull already brings `config/` down in full, so before
+warning, setup only asks the sync service's `hydrateFile` for the sentinel,
+and only when the tier lies inside the cache. `swamp serve`'s
+`datastore.setup.extension` handler does not forward setup warnings.
+
 ### Health Verification
 
 The per-command entry points only do a light accessibility check
@@ -2060,6 +2079,8 @@ Recommended init container sequence for a stateless pod:
    config into the datastore tier and pushes; later boots the sentinel skips the
    copy. Either way it sets `managedConfig: true` in `.swamp.yaml` if missing,
    so a repo joining an already-migrated datastore is configured too.
+   On a first boot against an empty remote, step 2 warns that the config tier is
+   empty (`empty_config_tier`); this step populates it.
 5. **`swamp extension install`**: restore pulled extensions whose source files
    are missing from the repo's pulled root. It records into the config-tier
    lockfile and pushes the lockfile; sources are not pushed.

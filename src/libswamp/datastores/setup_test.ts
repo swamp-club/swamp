@@ -68,6 +68,7 @@ function makeDeps(
     cleanupSourceDirs: () => Promise.resolve(),
     updateRepoConfig: () => Promise.resolve(),
     resolveInRepoConfigRole: () => Promise.resolve("unmanaged"),
+    inspectManagedConfigTier: () => Promise.resolve({ managed: false }),
     collapseEnvVars: (path: string) => path,
     ...overrides,
   };
@@ -1885,5 +1886,471 @@ Deno.test("datastoreSetupFilesystem: leaves an instance-local config dir behind"
       false,
     );
     assertEquals(await pathExists(join(datastorePath, "data", "a.json")), true);
+  });
+});
+
+// ============================================================================
+// Empty config tier warning (swamp-club#2845)
+// ============================================================================
+
+type WarningEvent = Extract<DatastoreSetupEvent, { kind: "warning" }>;
+
+function warningsOf(events: DatastoreSetupEvent[]): WarningEvent[] {
+  return events.filter((e): e is WarningEvent => e.kind === "warning");
+}
+
+function emptyTier(tierPath: string | undefined) {
+  return () =>
+    Promise.resolve({ managed: true as const, tierPath, populated: false });
+}
+
+/**
+ * Registers an extension type, under a per-run name, whose sync service
+ * implements hydrateFile. Returns the type name and the recorded calls.
+ */
+function registerHydratingType(
+  hydrate: (relPath: string) => Promise<boolean>,
+  extra: Partial<DatastoreProvider> = {},
+): { type: string; calls: string[] } {
+  const type = `test-ext-hydrate-${crypto.randomUUID()}`;
+  const calls: string[] = [];
+  const base = createStubProvider();
+  datastoreTypeRegistry.register({
+    type,
+    name: "Hydrate Test",
+    description: "Test lazy hydration of the migration sentinel",
+    isBuiltIn: false,
+    createProvider: () => ({
+      ...base,
+      createSyncService: (repoDir: string, cachePath: string) => ({
+        ...base.createSyncService!(repoDir, cachePath),
+        hydrateFile: (relPath: string) => {
+          calls.push(relPath);
+          return hydrate(relPath);
+        },
+      }),
+      ...extra,
+    }),
+  });
+  return { type, calls };
+}
+
+Deno.test("datastoreSetupFilesystem: warns when the managed config tier is empty", async () => {
+  const deps = makeDeps({
+    inspectManagedConfigTier: emptyTier("/tmp/store/config"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  const warnings = warningsOf(events);
+  assertEquals(warnings.length, 1);
+  assertEquals(events[events.length - 1].kind, "completed");
+  const data = warnings[0].data;
+  assertEquals(data.code, "empty_config_tier");
+  if (data.code !== "empty_config_tier") return;
+  assertEquals(data.configTierPath, "/tmp/store/config");
+  assertStringIncludes(data.message, "/tmp/store/config");
+  assertStringIncludes(data.message, "swamp datastore config migrate");
+});
+
+Deno.test("datastoreSetupFilesystem: no warning when the managed config tier is populated", async () => {
+  const deps = makeDeps({
+    inspectManagedConfigTier: () =>
+      Promise.resolve({
+        managed: true,
+        tierPath: "/tmp/store/config",
+        populated: true,
+      }),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupFilesystem: no warning when the config tier cannot be resolved", async () => {
+  const deps = makeDeps({ inspectManagedConfigTier: emptyTier(undefined) });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupFilesystem: no warning without managedConfig", async () => {
+  let inspected = 0;
+  const deps = makeDeps({
+    inspectManagedConfigTier: () => {
+      inspected++;
+      return Promise.resolve({ managed: false });
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(inspected, 1);
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupFilesystem: a failed config tier inspection does not fail setup", async () => {
+  const deps = makeDeps({
+    inspectManagedConfigTier: () =>
+      Promise.reject(new Deno.errors.PermissionDenied("denied")),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors, []);
+});
+
+Deno.test("datastoreSetupFilesystem: migration errors skip the config tier check", async () => {
+  let inspected = 0;
+  const deps = makeDeps({
+    migrateData: () =>
+      Promise.resolve({
+        filesCopied: 1,
+        bytesCopied: 1,
+        directoriesMigrated: ["data"],
+        errors: ["Failed to migrate data: permission denied"],
+      }),
+    inspectManagedConfigTier: () => {
+      inspected++;
+      return emptyTier("/tmp/store/config")();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(inspected, 0);
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupExtension: warns when the managed config tier is empty", async () => {
+  ensureTestExtensionType("test-ext-empty-tier");
+  const deps = makeDeps({
+    inspectManagedConfigTier: emptyTier("/tmp/repo/.custom-cache/config"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-empty-tier" }),
+    ),
+  );
+
+  const warnings = warningsOf(events);
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].data.code, "empty_config_tier");
+  assertEquals(events[events.length - 1].kind, "completed");
+});
+
+Deno.test("datastoreSetupExtension: no warning when the managed config tier is populated", async () => {
+  ensureTestExtensionType("test-ext-populated-tier");
+  const deps = makeDeps({
+    inspectManagedConfigTier: () =>
+      Promise.resolve({
+        managed: true,
+        tierPath: "/tmp/repo/.custom-cache/config",
+        populated: true,
+      }),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-populated-tier" }),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupExtension: no warning when the config tier cannot be resolved", async () => {
+  ensureTestExtensionType("test-ext-unresolved-tier");
+  const deps = makeDeps({ inspectManagedConfigTier: emptyTier(undefined) });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-unresolved-tier" }),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupExtension: a hydrated sentinel suppresses the warning", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type, hydrationStrategy: "lazy" }),
+      ),
+    );
+
+    assertEquals(calls, ["config/managed-config-migrated.json"]);
+    assertEquals(warningsOf(events).length, 0);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: hydrates the namespaced sentinel path", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "infra", "config"),
+      ),
+    });
+
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type, namespace: "infra", repoId: undefined }),
+      ),
+    );
+
+    assertEquals(calls, ["infra/config/managed-config-migrated.json"]);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: warns when the sentinel is not on the remote", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(false));
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type }),
+      ),
+    );
+
+    assertEquals(calls.length, 1);
+    assertEquals(warningsOf(events).length, 1);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: a failed sentinel hydration still warns", async () => {
+  const { type } = registerHydratingType(() =>
+    Promise.reject(new Error("AccessDenied"))
+  );
+  try {
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".custom-cache", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type }),
+      ),
+    );
+
+    assertEquals(warningsOf(events).length, 1);
+    const completed = events[events.length - 1] as Extract<
+      DatastoreSetupEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.errors, []);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: never hydrates a config tier outside the cache", async () => {
+  const { type, calls } = registerHydratingType(() => Promise.resolve(true));
+  try {
+    // An excluded config subdir resolves to the repo's own .swamp/config.
+    const deps = makeDeps({
+      inspectManagedConfigTier: emptyTier(
+        join("/tmp/repo", ".swamp", "config"),
+      ),
+    });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type }),
+      ),
+    );
+
+    assertEquals(calls, []);
+    assertEquals(warningsOf(events).length, 1);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("datastoreSetupExtension: a timeout-only commit skips the config tier check", async () => {
+  ensureTestExtensionType("test-ext-tier-push-timeout", {
+    pushResult: () =>
+      Promise.reject(new SyncTimeoutError("test", "push", 1000)),
+  });
+  let inspected = 0;
+  const deps = makeDeps({
+    inspectManagedConfigTier: () => {
+      inspected++;
+      return emptyTier("/tmp/store/config")();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-tier-push-timeout" }),
+    ),
+  );
+
+  assertEquals(inspected, 0);
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("datastoreSetupExtension: the existing namespaces warning carries its code", async () => {
+  const type = `test-ext-ns-warning-${crypto.randomUUID()}`;
+  datastoreTypeRegistry.register({
+    type,
+    name: "NS Warning Test",
+    description: "Test the existing namespaces warning",
+    isBuiltIn: false,
+    createProvider: () => ({
+      ...createStubProvider(),
+      listNamespaces: () => Promise.resolve(["other"]),
+    }),
+  });
+  try {
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        makeDeps(),
+        makeExtensionInput({ type }),
+      ),
+    );
+
+    const warnings = warningsOf(events);
+    assertEquals(warnings.length, 1);
+    const data = warnings[0].data;
+    assertEquals(data.code, "existing_namespaces");
+    if (data.code !== "existing_namespaces") return;
+    assertEquals(data.existingNamespaces, ["other"]);
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("createDatastoreSetupDeps.inspectManagedConfigTier: reads the tier .swamp.yaml names", async () => {
+  await withSetupTempDir(async (repoDir) => {
+    const tierPath = join(repoDir, "store", "config");
+    let resolverCalls = 0;
+    const deps = createDatastoreSetupDeps(repoDir, () => {
+      resolverCalls++;
+      return Promise.resolve(tierPath);
+    });
+
+    await writeMarker(repoDir, { type: "filesystem", path: "/x" });
+    assertEquals(await deps.inspectManagedConfigTier(repoDir), {
+      managed: false,
+    });
+    assertEquals(resolverCalls, 0);
+
+    await writeMarker(repoDir, {
+      type: "filesystem",
+      path: join(repoDir, "store"),
+      managedConfig: true,
+    });
+    assertEquals(await deps.inspectManagedConfigTier(repoDir), {
+      managed: true,
+      tierPath,
+      populated: false,
+    });
+
+    await writeTestFile(join(tierPath, "models", "m.yaml"), "m");
+    assertEquals(await deps.inspectManagedConfigTier(repoDir), {
+      managed: true,
+      tierPath,
+      populated: true,
+    });
+
+    await Deno.remove(join(tierPath, "models"), { recursive: true });
+    await writeTestFile(join(tierPath, "managed-config-migrated.json"), "{}");
+    assertEquals(await deps.inspectManagedConfigTier(repoDir), {
+      managed: true,
+      tierPath,
+      populated: true,
+    });
+
+    assertEquals(
+      await createDatastoreSetupDeps(repoDir, noTier)
+        .inspectManagedConfigTier(repoDir),
+      { managed: true, tierPath: undefined, populated: false },
+    );
   });
 });

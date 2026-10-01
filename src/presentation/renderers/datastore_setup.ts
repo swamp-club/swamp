@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DatastoreSetupEvent, EventHandlers } from "../../libswamp/mod.ts";
+import type {
+  DatastoreSetupEvent,
+  DatastoreSetupWarningData,
+  EventHandlers,
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -111,7 +115,7 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
 }
 
 class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
-  #warnings: Array<{ message: string; existingNamespaces: string[] }> = [];
+  #warnings: DatastoreSetupWarningData[] = [];
 
   handlers(): EventHandlers<DatastoreSetupEvent> {
     return {
