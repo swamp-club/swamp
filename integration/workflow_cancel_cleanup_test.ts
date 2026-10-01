@@ -178,12 +178,16 @@ Deno.test("workflow cancel: the record shows a cleanup step running while it run
       // What an owner SIGKILLed now leaves behind, read as cancel reads it.
       const reader = new YamlWorkflowRunRepository(repoDir);
       const id = createWorkflowRunId(runId!);
-      let midCleanup: WorkflowRun | null = null;
-      await waitFor(async () => {
-        midCleanup = await reader.findById(workflow.id, id);
-        return statuses(midCleanup)["teardown/t"] === "running";
-      }, "the cleanup step saved as running");
+      await waitFor(
+        async () =>
+          statuses(await reader.findById(workflow.id, id))["teardown/t"] ===
+            "running",
+        "the cleanup step saved as running",
+      );
+      // `t` holds until released, so this read sees the same record.
+      const midCleanup = await reader.findById(workflow.id, id);
       assertEquals(statuses(midCleanup)["teardown"], "running");
+      assertEquals(statuses(midCleanup)["teardown/t"], "running");
       const leftBehind = midCleanup!.toData();
 
       executor.release();

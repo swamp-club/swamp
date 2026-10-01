@@ -43,7 +43,10 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
-import { killProcessTree } from "../../infrastructure/process/process_kill.ts";
+import {
+  isProcessAlive,
+  killProcessTree,
+} from "../../infrastructure/process/process_kill.ts";
 import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -170,6 +173,12 @@ export interface CancelLocalRunDeps {
 /** The pid of the process to stop for `run`, if another process owns it. */
 function ownerPidToStop(run: WorkflowRun): number | undefined {
   return run.pid && run.pid !== Deno.pid ? run.pid : undefined;
+}
+
+/** Whether cancel will wait on a live process to stop for `run`. */
+function waitsOnOwner(run: WorkflowRun): boolean {
+  const pid = ownerPidToStop(run);
+  return pid !== undefined && isProcessAlive(pid);
 }
 
 async function stopOwner(
@@ -479,9 +488,8 @@ export const workflowCancelCommand = withRemoteOptions(
       const localRuns = activeRuns.filter(({ run }) => !isServeOwnedRun(run));
       const serveRuns = activeRuns.filter(({ run }) => isServeOwnedRun(run));
 
-      const stopping = localRuns.filter(({ run }) =>
-        ownerPidToStop(run) !== undefined
-      ).length;
+      const stopping = localRuns.filter(({ run }) => waitsOnOwner(run))
+        .length;
       if (stopping > 0 && cliCtx.outputMode !== "json") {
         cliCtx.logger
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
@@ -602,9 +610,7 @@ export const workflowCancelCommand = withRemoteOptions(
       );
     }
 
-    if (
-      ownerPidToStop(run) !== undefined && cliCtx.outputMode !== "json"
-    ) {
+    if (waitsOnOwner(run) && cliCtx.outputMode !== "json") {
       cliCtx.logger
         .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
     }

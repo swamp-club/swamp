@@ -23,6 +23,7 @@ import {
   isProcessAlive,
   killChildGroups,
   killProcessTree,
+  withoutReusedPids,
 } from "./process_kill.ts";
 
 Deno.test({
@@ -141,4 +142,32 @@ Deno.test({
       await Deno.remove(pidFile).catch(() => {});
     }
   },
+});
+
+Deno.test("withoutReusedPids: drops a pid that now belongs to another process", () => {
+  const before = new Map([[10, "Thu Oct  1 12:00:00 2026"], [
+    11,
+    "Thu Oct  1 12:00:01 2026",
+  ]]);
+  const after = new Map([[10, "Thu Oct  1 12:00:00 2026"], [
+    11,
+    "Thu Oct  1 12:00:40 2026",
+  ]]);
+  assertEquals(withoutReusedPids([10, 11], before, after), [10]);
+});
+
+Deno.test("withoutReusedPids: keeps a pid that no longer exists, for its process group", () => {
+  const before = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
+  assertEquals(withoutReusedPids([10], before, new Map()), [10]);
+});
+
+Deno.test("withoutReusedPids: drops a pid that was gone at the snapshot and is running now", () => {
+  const after = new Map([[10, "Thu Oct  1 12:00:40 2026"]]);
+  assertEquals(withoutReusedPids([10], new Map(), after), []);
+});
+
+Deno.test("withoutReusedPids: keeps every pid when start times are unavailable", () => {
+  const starts = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
+  assertEquals(withoutReusedPids([10, 11], undefined, starts), [10, 11]);
+  assertEquals(withoutReusedPids([10, 11], starts, undefined), [10, 11]);
 });
