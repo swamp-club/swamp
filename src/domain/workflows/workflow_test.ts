@@ -24,6 +24,7 @@ import {
   Workflow,
   workflowDeclaresInputs,
   type WorkflowInput,
+  workflowNameViolation,
   WorkflowObjectSchema,
 } from "./workflow.ts";
 import { Job, JobObjectSchema } from "./job.ts";
@@ -1298,5 +1299,29 @@ Deno.test("Workflow.shouldAutoResume: explicit setting wins, server default only
       c.expected,
       JSON.stringify(c),
     );
+  }
+});
+
+Deno.test("workflowNameViolation: accepts names Workflow.create accepts", () => {
+  for (const name of ["deploy-pipeline", "a1", "@acme/deploy_pipeline"]) {
+    assertEquals(workflowNameViolation(name), undefined, name);
+    Workflow.create({ name });
+  }
+  assertEquals(workflowNameViolation("a".repeat(64)), undefined);
+});
+
+Deno.test("workflowNameViolation: returns the rule a name breaks", () => {
+  const lowercaseRule =
+    "Workflow name must be lowercase alphanumeric with hyphens (e.g. 'deploy-pipeline'). Must start with a letter or number.";
+  assertEquals(workflowNameViolation("WfUpper"), lowercaseRule);
+  assertEquals(workflowNameViolation("snake_case"), lowercaseRule);
+  assertEquals(
+    workflowNameViolation("a".repeat(65)),
+    "Workflow name must be at most 64 characters.",
+  );
+  assertStringIncludes(workflowNameViolation("..") ?? "", "path traversal");
+  assertEquals(typeof workflowNameViolation(""), "string");
+  for (const name of ["WfUpper", "snake_case", "a".repeat(65), "..", ""]) {
+    assertThrows(() => Workflow.create({ name }));
   }
 });

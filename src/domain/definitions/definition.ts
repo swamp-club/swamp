@@ -203,6 +203,16 @@ const definitionNameStrict = definitionNameBase
     },
   );
 
+/**
+ * Returns the first naming rule a new definition name breaks, or `undefined`
+ * when `Definition.create` would accept it. Lets callers reject user input
+ * with a validation error before the factory throws.
+ */
+export function definitionNameViolation(name: string): string | undefined {
+  const result = definitionNameStrict.safeParse(name);
+  return result.success ? undefined : result.error.issues[0]?.message;
+}
+
 const DefinitionObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -91,4 +91,40 @@ Deno.test("workflowCreate: yields error when name already exists", async () => {
   >;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "already_exists");
+});
+
+Deno.test("workflowCreate: yields validation error for an invalid name without saving", async () => {
+  const cases = [
+    { name: "WfUpper", rule: "must be lowercase alphanumeric" },
+    { name: "a".repeat(65), rule: "must be at most 64 characters" },
+  ];
+  for (const { name, rule } of cases) {
+    const calls: string[] = [];
+    const deps = makeDeps({
+      findByName: () => {
+        calls.push("findByName");
+        return Promise.resolve(null);
+      },
+      save: () => {
+        calls.push("save");
+        return Promise.resolve();
+      },
+    });
+
+    const events = await collect<WorkflowCreateEvent>(
+      workflowCreate(createLibSwampContext(), deps, { name }),
+    );
+
+    assertEquals(events.length, 2, name);
+    assertEquals(events[0], { kind: "creating" });
+    const last = events[1] as Extract<
+      WorkflowCreateEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error", name);
+    assertEquals(last.error.code, "validation_failed", name);
+    assertStringIncludes(last.error.message, `Invalid workflow name: ${name}.`);
+    assertStringIncludes(last.error.message, rule);
+    assertEquals(calls, [], name);
+  }
 });

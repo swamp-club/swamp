@@ -557,3 +557,44 @@ Deno.test("modelCreate: accepts a vault.get expression for a CONSTRAINED sensiti
   >;
   assertEquals(completed.kind, "completed");
 });
+
+Deno.test("modelCreate: yields validation error for an invalid name without resolving or saving", async () => {
+  const cases = [
+    { name: "shUpper", rule: "must be lowercase alphanumeric" },
+    { name: "a".repeat(65), rule: "must be at most 64 characters" },
+    { name: "../escape", rule: "path traversal" },
+  ];
+  for (const { name, rule } of cases) {
+    const calls: string[] = [];
+    const deps = makeDeps({
+      resolveModelType: () => {
+        calls.push("resolveModelType");
+        return Promise.resolve(undefined);
+      },
+      findByNameGlobal: () => {
+        calls.push("findByNameGlobal");
+        return Promise.resolve(false);
+      },
+      createAndSave: () => {
+        calls.push("createAndSave");
+        return Promise.reject(new Error("must not be called"));
+      },
+    });
+
+    const events = await collect<ModelCreateEvent>(
+      modelCreate(createLibSwampContext(), deps, {
+        typeArg: "aws/s3-bucket",
+        name,
+      }),
+    );
+
+    assertEquals(events.length, 2, name);
+    assertEquals(events[0], { kind: "creating" });
+    const last = events[1] as Extract<ModelCreateEvent, { kind: "error" }>;
+    assertEquals(last.kind, "error", name);
+    assertEquals(last.error.code, "validation_failed", name);
+    assertStringIncludes(last.error.message, `Invalid model name: ${name}.`);
+    assertStringIncludes(last.error.message, rule);
+    assertEquals(calls, [], name);
+  }
+});
