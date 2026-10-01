@@ -2680,3 +2680,93 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
   }
   catalog.close();
 });
+
+// ============================================================================
+// Freshness of an unpopulated catalog (swamp-club#2858)
+// ============================================================================
+
+Deno.test("getLatestRecord: an unpopulated row behind the on-disk latest marker returns the marker's version", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1; another writer (a pull, or a repository sharing
+    // the datastore) has since written v2 and moved the latest marker.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(
+      catalog.findLatestRow("ingest", "my-data")?.version,
+      2,
+      "the refreshed version becomes the catalog's latest row",
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: a row from another namespace is never refreshed from this repository's layout", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-foreign-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    catalog.upsertNewVersion(makeRow({ namespace: "infra", version: 1 }));
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data", "infra");
+    assertEquals(record?.version, 1);
+    assertEquals(record?.namespace, "infra");
+    assertEquals(
+      catalog.findLatestRow("ingest", "my-data", "")?.version,
+      undefined,
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("DataQueryService: a backfill that started before an invalidate does not mark the catalog populated", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-backfill-race-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    // ensurePopulated reads the generation synchronously, then walks the disk
+    // asynchronously; the invalidate lands in between.
+    const backfill = service.ensurePopulated();
+    catalog.invalidate();
+    await backfill;
+    assertEquals(catalog.isPopulated(), false);
+
+    await service.ensurePopulated();
+    assertEquals(catalog.isPopulated(), true);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});

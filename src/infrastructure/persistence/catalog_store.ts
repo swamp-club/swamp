@@ -21,6 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
+import type { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
 
 const logger = getLogger(["swamp", "persistence", "catalog"]);
 
@@ -89,13 +90,25 @@ export const CATALOG_SCHEMA_VERSION = "4";
  */
 type SqlValue = null | number | bigint | string | Uint8Array;
 
+/** Options for {@link CatalogStore}. */
+export interface CatalogStoreOptions {
+  /**
+   * Set when the datastore is a filesystem directory shared with other
+   * repositories: their writes then invalidate this catalog
+   * (swamp-club#2858).
+   */
+  writeTracker?: SharedDatastoreWriteTracker;
+}
+
 export class CatalogStore {
   private db: DatabaseSync;
   private readonly dbPath: string;
+  private readonly writeTracker?: SharedDatastoreWriteTracker;
   private closed = false;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: CatalogStoreOptions = {}) {
     this.dbPath = dbPath;
+    this.writeTracker = options.writeTracker;
     this.db = this.openConnection(dbPath);
     this.initializeWithRetry();
   }
@@ -642,35 +655,87 @@ export class CatalogStore {
 
   /**
    * Returns true if the catalog has been fully populated (backfill complete).
+   *
+   * On a shared filesystem datastore, another repository's write since the
+   * last check invalidates the catalog first.
    */
   isPopulated(): boolean {
-    const stmt = this.db.prepare(
-      "SELECT value FROM catalog_meta WHERE key = 'populated'",
-    );
-    const row = stmt.get() as { value: string } | undefined;
-    return row?.value === "true";
+    this.invalidateOnForeignWrites();
+    return this.readMeta("populated") === "true";
   }
 
   /**
    * Marks the catalog as fully populated.
+   *
+   * With `ifGeneration`, does nothing when the catalog was invalidated since
+   * that generation was read: a backfill that walked the disk before the
+   * invalidation must not mark the catalog fresh.
    */
-  markPopulated(): void {
-    const stmt = this.db.prepare(
-      "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true')",
-    );
-    stmt.run();
+  markPopulated(ifGeneration?: number): void {
+    if (ifGeneration !== undefined && ifGeneration !== this.generation()) {
+      return;
+    }
+    this.writeMeta("populated", "true");
   }
 
   /**
    * Clears the populated flag so the next query triggers a full backfill.
    * Used after remote datastore sync to ensure the catalog reflects
-   * freshly-pulled data.
+   * freshly-pulled data. Advances {@link generation}.
    */
   invalidate(): void {
     const stmt = this.db.prepare(
       "DELETE FROM catalog_meta WHERE key = 'populated'",
     );
     stmt.run();
+    this.writeMeta("generation", String(this.generation() + 1));
+  }
+
+  /** Counts invalidations; see {@link markPopulated}. */
+  generation(): number {
+    return Number(this.readMeta("generation") ?? "0");
+  }
+
+  /**
+   * Tells catalogs sharing this filesystem datastore that this repository
+   * changed data on disk. Call after the write; a no-op without a tracker.
+   */
+  recordLocalWrite(): void {
+    this.writeTracker?.recordWrite(this.writerId());
+  }
+
+  private invalidateOnForeignWrites(): void {
+    if (!this.writeTracker) return;
+    const seen = this.writeTracker.foreignTokens(this.writerId());
+    if (seen === (this.readMeta("foreign_writers") ?? "{}")) return;
+    this.invalidate();
+    this.writeMeta("foreign_writers", seen);
+  }
+
+  /**
+   * A random id for this catalog's token. Not derived from the path, so two
+   * machines with the same repository path never share one.
+   */
+  private writerId(): string {
+    let id = this.readMeta("writer_id");
+    if (!id) {
+      id = crypto.randomUUID();
+      this.writeMeta("writer_id", id);
+    }
+    return id;
+  }
+
+  private readMeta(key: string): string | undefined {
+    const row = this.db.prepare(
+      "SELECT value FROM catalog_meta WHERE key = ?",
+    ).get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  private writeMeta(key: string, value: string): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES (?, ?)",
+    ).run(key, value);
   }
 
   /**

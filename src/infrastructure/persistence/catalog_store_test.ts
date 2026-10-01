@@ -26,6 +26,7 @@ import {
   ITERATE_PAGE_SIZE,
 } from "./catalog_store.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
 
 function makeTempDbPath(): string {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-test-" });
@@ -1407,4 +1408,76 @@ Deno.test("enforceUniqueLatest: does not demote foreign namespace rows with same
   assertEquals(foreignLatest?.version, 3);
 
   store.close();
+});
+
+// ============================================================================
+// Generation and shared-datastore freshness (swamp-club#2858)
+// ============================================================================
+
+Deno.test("CatalogStore: invalidate advances the generation", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  try {
+    const before = store.generation();
+    store.invalidate();
+    assertEquals(store.generation(), before + 1);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore: markPopulated with a stale generation leaves the catalog unpopulated", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  try {
+    const generation = store.generation();
+    store.invalidate();
+    store.markPopulated(generation);
+    assertEquals(store.isPopulated(), false);
+    store.markPopulated(store.generation());
+    assertEquals(store.isPopulated(), true);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore: another writer's token invalidates once; this catalog's own writes do not", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-shared-test-" });
+  const writers = join(dir, "shared", ".catalog-writers");
+  const a = new CatalogStore(join(dir, "a", "_catalog.db"), {
+    writeTracker: new SharedDatastoreWriteTracker(writers),
+  });
+  const b = new CatalogStore(join(dir, "b", "_catalog.db"), {
+    writeTracker: new SharedDatastoreWriteTracker(writers),
+  });
+  try {
+    b.markPopulated();
+    b.recordLocalWrite();
+    assertEquals(b.isPopulated(), true, "own write keeps the catalog");
+
+    a.recordLocalWrite();
+    assertEquals(b.isPopulated(), false, "a foreign write invalidates");
+    b.markPopulated();
+    assertEquals(b.isPopulated(), true, "the same token does not again");
+  } finally {
+    a.close();
+    b.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("CatalogStore: without a tracker, recordLocalWrite writes nothing", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+  try {
+    store.markPopulated();
+    store.recordLocalWrite();
+    assertEquals(store.isPopulated(), true);
+    assertEquals(
+      [...Deno.readDirSync(dirname(dbPath))].map((e) => e.name).filter((n) =>
+        n.includes("catalog-writers")
+      ),
+      [],
+    );
+  } finally {
+    store.close();
+  }
 });

@@ -75,8 +75,12 @@ import type {
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore, ITERATE_PAGE_SIZE } from "./catalog_store.ts";
+import {
+  CATALOG_WRITERS_DIR,
+  SharedDatastoreWriteTracker,
+} from "./shared_datastore_write_tracker.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 
 // =============================================================================
 // Catalog Store Factory
@@ -143,7 +147,28 @@ export function createCatalogStore(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
 ): CatalogStore {
-  return new CatalogStore(catalogDbPath(repoDir, datastoreResolver));
+  return new CatalogStore(catalogDbPath(repoDir, datastoreResolver), {
+    writeTracker: sharedDatastoreWriteTracker(datastoreResolver),
+  });
+}
+
+/**
+ * A write tracker for a filesystem datastore whose data lives outside the
+ * repo's own `.swamp/`, where other repositories may write too
+ * (swamp-club#2858). Repo-local and extension datastores get none: the
+ * extensions' pull path already invalidates the catalog.
+ */
+function sharedDatastoreWriteTracker(
+  datastoreResolver?: DatastorePathResolver,
+): SharedDatastoreWriteTracker | undefined {
+  if (datastoreResolver?.config().type !== "filesystem") return undefined;
+  const dataDir = resolve(datastoreResolver.resolvePath(SWAMP_SUBDIRS.data));
+  if (dataDir === resolve(datastoreResolver.localPath(SWAMP_SUBDIRS.data))) {
+    return undefined;
+  }
+  return new SharedDatastoreWriteTracker(
+    join(dirname(dataDir), CATALOG_WRITERS_DIR),
+  );
 }
 
 /**

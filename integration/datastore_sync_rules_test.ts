@@ -20,7 +20,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs/walk";
-import { assertPinnedSet } from "./arch_fitness_helpers.ts";
+import {
+  assertPinnedSet,
+  constructorArgs,
+  TOP_LEVEL_DECLARATION,
+} from "./arch_fitness_helpers.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 const PERSISTENCE_DIR = join(
@@ -183,11 +187,6 @@ Deno.test("serve startup pullChanged must include auto-definitions subdir", asyn
 
 // `.markDirty()` or `.markDirty?.()` with no arguments, on any receiver.
 const BARE_MARK_DIRTY_CALL = /\.markDirty(?:\?\.)?\(\s*\)/;
-// A declaration at column 0: a function (generators included), or a
-// const, let or class. Serve's command handlers live inside
-// `export const serveCommand = new Command()...`.
-const TOP_LEVEL_DECLARATION =
-  /^(?:export )?(?:async )?(?:function\s*\*?\s*|const |let |class )(\w+)/;
 
 async function* bareMarkDirtyScanFiles(): AsyncGenerator<string> {
   for await (
@@ -391,41 +390,6 @@ Deno.test("commands that take model locks and cancel on Ctrl-C must suppress the
       "status for its run after an abort, then pin it here.",
   );
 });
-
-/**
- * Top-level argument lists of every `new <className>(...)` in `code`, with
- * `//` and block-comment lines removed first.
- */
-function constructorArgs(code: string, className: string): string[][] {
-  const source = code
-    .split("\n")
-    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
-    .join("\n");
-  const marker = `new ${className}(`;
-  const calls: string[][] = [];
-  let from = source.indexOf(marker);
-  while (from !== -1) {
-    const args: string[] = [];
-    let depth = 0;
-    let current = "";
-    for (let i = from + marker.length; i < source.length; i++) {
-      const ch = source[i];
-      if (depth === 0 && ch === ")") break;
-      if (depth === 0 && ch === ",") {
-        args.push(current.trim());
-        current = "";
-        continue;
-      }
-      if ("([{".includes(ch)) depth++;
-      if (")]}".includes(ch)) depth--;
-      current += ch;
-    }
-    if (current.trim() !== "") args.push(current.trim());
-    calls.push(args);
-    from = source.indexOf(marker, from + marker.length);
-  }
-  return calls;
-}
 
 // Outputs, evaluated definitions and evaluated workflows are datastore-tier.
 // A repository built with only repoDir (or an undefined base dir) writes to

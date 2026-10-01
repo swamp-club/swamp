@@ -149,6 +149,21 @@ export interface ServeCtxOptions {
    * path (registered, cancellable, attachable) instead of the inline one.
    */
   detached?: boolean;
+  /** The repo's shared sync service, as serve hands it to every handler. */
+  syncService?: ConnectionContext["syncService"];
+  /** Serve's sync gate; `connection.ts` wraps gated handlers in it. */
+  syncGate?: ConnectionContext["syncGate"];
+  /** Serve's run tracker. */
+  runTracker?: ConnectionContext["runTracker"];
+  /** The managed definitions directory, set under `managedConfig`. */
+  managedDefinitionsDir?: ConnectionContext["managedDefinitionsDir"];
+  /** The repo's vaults directory. */
+  vaultsDir?: ConnectionContext["vaultsDir"];
+  /**
+   * A specific active run registry, for a test that must see runs it
+   * registered itself. Takes precedence over `detached`.
+   */
+  activeRunRegistry?: ConnectionContext["activeRunRegistry"];
 }
 
 /**
@@ -179,6 +194,16 @@ export function createServeCtx(
     authConfig,
     serveOptions: {} as MergedServeOptions,
     ...(options.detached ? { activeRunRegistry: new ActiveRunRegistry() } : {}),
+    ...(options.activeRunRegistry
+      ? { activeRunRegistry: options.activeRunRegistry }
+      : {}),
+    ...(options.syncService ? { syncService: options.syncService } : {}),
+    ...(options.syncGate ? { syncGate: options.syncGate } : {}),
+    ...(options.runTracker ? { runTracker: options.runTracker } : {}),
+    ...(options.managedDefinitionsDir
+      ? { managedDefinitionsDir: options.managedDefinitionsDir }
+      : {}),
+    ...(options.vaultsDir ? { vaultsDir: options.vaultsDir } : {}),
     ...(grants
       ? {
         policySnapshotLoader: {

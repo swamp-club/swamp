@@ -3454,3 +3454,35 @@ Deno.test("buildMarkDirtyHook: forwards an absent path as a bare call", async ()
 
   assertEquals(marks, [undefined]);
 });
+
+Deno.test("buildMarkDirtyHook: marks a first segment that only starts with two dots", async () => {
+  // A name such as `..hidden` sits inside the root. Before the escape check
+  // compared whole segments, the hook dropped these marks.
+  const base = resolve("mark-dirty-hook");
+  const cacheRoot = join(base, "cache");
+  const repoDir = join(base, "repo");
+  const { service, marks } = createRecordingSyncService();
+  const hook = buildMarkDirtyHook(service, cacheRoot, repoDir);
+
+  await hook(join(cacheRoot, "..hidden", "file"));
+  await hook(join(cacheRoot, "...", "file"));
+  await hook(join(repoDir, ".swamp", "..cache-like", "file"));
+
+  assertEquals(marks, ["..hidden/file", ".../file", "..cache-like/file"]);
+});
+
+Deno.test("buildMarkDirtyHook: sends nothing for a sibling whose name extends the root's", async () => {
+  const base = resolve("mark-dirty-hook");
+  const { service, marks } = createRecordingSyncService();
+  const hook = buildMarkDirtyHook(
+    service,
+    join(base, "cache"),
+    join(base, "repo"),
+  );
+
+  await hook(join(base, "cache-other", "file"));
+  await hook(join(base, "cache..x", "file"));
+  await hook(join(base, "repo", ".swamp-other", "file"));
+
+  assertEquals(marks, []);
+});

@@ -327,7 +327,9 @@ Two things are not namespaced:
   via the `catalogDbPath` helper, not `resolvePath`. On a shared datastore each
   repo has its own catalog, so one repo's backfill never overwrites another's
   rows. The `namespace` column separates the repo's own rows from foreign rows
-  pulled in a later phase.
+  pulled in a later phase. Because each catalog only sees its own repo's
+  writes, see "Catalog freshness" below for how catalogs on a shared
+  filesystem datastore notice each other's.
 - **Secrets and vault bundles** are written through `swampPath`/`localPath`
   (`.swamp/secrets`, `.swamp/vault-bundles`), never `resolvePath`. The namespace
   prefix cannot reach them, so vaults are always repo-local.
@@ -536,6 +538,27 @@ sync contract: the number of local cache files written or removed, `0` only
 when nothing changed, and `void` when unknown (treated as changed). The S3 and
 GCS extensions return the downloaded count, and neither removes local files
 during a pull.
+
+**Catalog freshness.** An invalidated catalog keeps its rows, because a full
+backfill is additive (swamp-club#1581), so three rules keep reads current:
+
+- `CatalogStore.invalidate()` advances a `generation` counter in
+  `catalog_meta`. A backfill reads the generation before walking the disk and
+  marks the catalog populated only if it is unchanged, so a backfill that
+  overlapped an invalidation cannot mark stale rows fresh.
+- While the catalog is unpopulated, `DataQueryService.getLatestRecord` compares
+  a known row with the on-disk `latest` marker and, if the marker names another
+  version, upserts that version and returns it. Without this, a row whose
+  content still exists after a pull kept answering with the old version.
+  Foreign-namespace rows are never refreshed this way.
+- A filesystem datastore has no sync service, so nothing invalidates after a
+  peer writes. When its data lives outside the repo's `.swamp/` (a shared
+  directory), `createCatalogStore` attaches a `SharedDatastoreWriteTracker`.
+  Each catalog rewrites its own token in `.catalog-writers/` at the datastore
+  tier root after every data write, and `isPopulated()` invalidates when
+  another writer's token changed (swamp-club#2858). The tokens are plain files,
+  not SQLite, because WAL is unsafe on network filesystems. A backfill never
+  writes a token, so two catalogs cannot invalidate each other in a loop.
 
 ### Namespace-Scoped Sync
 
