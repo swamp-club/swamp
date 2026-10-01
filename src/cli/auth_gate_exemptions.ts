@@ -17,22 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { CommandInvocationData } from "../domain/telemetry/command_invocation.ts";
+import type { AnyCommand } from "./cli_schema.ts";
+import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
 
 /**
- * When the auth gate runs for an invocation.
+ * Whether the auth gate runs for an invocation: `exempt` or `gated`.
  *
- *   - `exempt`: never gated. Bare `swamp` (prints help, runs nothing), the
- *     bare `auth` group, and `auth login`, `auth logout` and `auth whoami`,
- *     which are the path to a credential and the way to diagnose one.
- *   - `deferred`: a help or version flag appears on the line. Cliffy answers
- *     `--help`/`--version` while parsing and exits before any action, so the
- *     gate runs from the global action instead: if Cliffy showed help it
- *     never runs, and if the token was really an option's value it does.
- *     Deciding from the raw token alone would let `--input --help` skip it.
- *   - `startup`: everything else, gated before any startup work.
+ * Exempt are bare `swamp` (prints help), the bare `auth` group, `auth login`,
+ * `auth logout` and `auth whoami` (the path to a credential), and any line
+ * Cliffy will answer with help or version output instead of running a
+ * command. Everything else is gated.
+ *
+ * The decision is made against the real command tree — the same declarations
+ * Cliffy parses — never a guess from token positions. A guess once took
+ * `swamp --log init` for bare `swamp`, because it did not know `--log` takes
+ * no value, and let `init` run unauthenticated.
  */
-export type AuthGateTiming = "exempt" | "deferred" | "startup";
+export type AuthGateTiming = "exempt" | "gated";
 
 const EXEMPT_AUTH_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "login",
@@ -48,18 +49,84 @@ const HELP_OR_VERSION_FLAGS: ReadonlySet<string> = new Set([
 ]);
 
 export function authGateTiming(
-  commandInfo: CommandInvocationData,
+  tree: AnyCommand,
   args: readonly string[],
 ): AuthGateTiming {
-  if (commandInfo.command === "") return "exempt";
-  if (commandInfo.command === "auth") {
-    if (commandInfo.subcommand === undefined) return "exempt";
-    if (EXEMPT_AUTH_SUBCOMMANDS.has(commandInfo.subcommand)) return "exempt";
+  const resolved = resolveTelemetryInvocation(tree, [...args], []);
+  const path = resolved.commandPath ?? [];
+  // `args` holds the command words after the subcommand plus positionals, so
+  // with a path of zero or one word it holds positionals only.
+  const noPositionals = resolved.args.length === 0;
+
+  if (path.length === 0 && noPositionals) return "exempt";
+  if (path[0] === "auth") {
+    if (path.length === 1 && noPositionals) return "exempt";
+    if (path.length >= 2 && EXEMPT_AUTH_SUBCOMMANDS.has(path[1])) {
+      return "exempt";
+    }
   }
-  for (const arg of args) {
+  if (answersWithHelpOrVersion(tree, path, args)) return "exempt";
+  return "gated";
+}
+
+/** The commands from the root to the resolved leaf. */
+function commandChain(tree: AnyCommand, path: readonly string[]): AnyCommand[] {
+  const chain = [tree];
+  let current: AnyCommand | undefined = tree;
+  for (const name of path) {
+    current = current?.getCommand(name, true);
+    if (!current) break;
+    chain.push(current);
+  }
+  return chain;
+}
+
+function declares(chain: readonly AnyCommand[], key: string): boolean {
+  const name = key.replace(/^--?/, "");
+  return chain.some((command) =>
+    command.getOption(name, true) !== undefined ||
+    (name.startsWith("no-") &&
+      command.getOption(name.slice(3), true) !== undefined)
+  );
+}
+
+function takesValue(chain: readonly AnyCommand[], key: string): boolean {
+  const name = key.replace(/^--?/, "");
+  return chain.some((command) => {
+    const option = command.getOption(name, true) ??
+      (name.startsWith("no-")
+        ? command.getOption(name.slice(3), true)
+        : undefined);
+    return (option?.args ?? []).length > 0;
+  });
+}
+
+/**
+ * True when a help or version flag on the line is one Cliffy will act on.
+ * It errs toward gating: a token that follows any option taking a value
+ * (required or optional) may be that value, and a name some command on the
+ * path declares as its own option is that option, not help.
+ */
+function answersWithHelpOrVersion(
+  tree: AnyCommand,
+  path: readonly string[],
+  args: readonly string[],
+): boolean {
+  const chain = commandChain(tree, path);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     // Everything after `--` is a literal argument, never a flag.
-    if (arg === "--") break;
-    if (HELP_OR_VERSION_FLAGS.has(arg)) return "deferred";
+    if (arg === "--") return false;
+    if (!HELP_OR_VERSION_FLAGS.has(arg)) continue;
+    if (declares(chain, arg)) continue;
+    const previous = args[i - 1];
+    if (
+      previous !== undefined && previous.startsWith("-") &&
+      !previous.includes("=") && takesValue(chain, previous)
+    ) {
+      continue;
+    }
+    return true;
   }
-  return "startup";
+  return false;
 }

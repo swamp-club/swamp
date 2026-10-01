@@ -2038,12 +2038,53 @@ function endInvocation(): void {
 }
 
 /**
+ * The root command with its global types and options, and no invocation
+ * state. runInvocation adds the global action; the auth gate resolves which
+ * command a line runs against the same declarations, so its decision and
+ * Cliffy's parse can never disagree about an option's arity.
+ */
+export function createRootCommand(colorEnabled: boolean): AnyCommand {
+  return new Command()
+    .name("swamp")
+    .version(VERSION)
+    // Cliffy's help generator force-enables colour while it renders
+    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
+    // the version option it ignores the policy applyColorPolicy set — `NO_COLOR` only
+    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
+    // Handing it the decision is the one way help honours `--no-color` and a
+    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
+    // parent.
+    .help({ colors: colorEnabled })
+    .description("AI Native Automation CLI")
+    .globalType("model_name", new ModelNameType())
+    .globalType("model_type", new ModelTypeType())
+    .globalType("workflow_name", new WorkflowNameType())
+    .globalOption("--json", "Output in JSON format (non-interactive)")
+    .globalOption(
+      "--log",
+      "Show model and workflow run logs in terminal output",
+    )
+    .globalOption(
+      "--log-level <level:string>",
+      "Set log level (trace, debug, info, warning, error, fatal)",
+    )
+    .globalOption("-q, --quiet", "Suppress non-essential output")
+    .globalOption("-v, --verbose", "Show detailed output")
+    .globalOption("--no-telemetry", "Disable telemetry for this invocation")
+    .globalOption(
+      "--show-properties",
+      "Show structured properties in log output",
+    )
+    .globalOption("--no-color", "Disable colored output");
+}
+
+/**
  * The command tree without the invocation's global action — enough to
  * resolve a telemetry invocation for a run blocked before the real tree is
  * built. registerCommands is kept free of invocation state for this.
  */
-function buildCommandTree(): AnyCommand {
-  const tree = new Command().name("swamp").version(VERSION);
+export function buildCommandTree(): AnyCommand {
+  const tree = createRootCommand(false);
   registerCommands(tree);
   return tree;
 }
@@ -2067,6 +2108,9 @@ async function gateWhoamiOr(
 /**
  * Runs the weekly proof refresh the gate scheduled, if any. Best effort and
  * bounded by its own timeout: it never changes the run that already passed.
+ * It runs at teardown, so a long-running `serve` or `worker` refreshes only
+ * when it exits; they are re-gated on restart (design/surfaces/auth-gate.md,
+ * Non-goals).
  */
 async function runGateRefresh(
   outcome: AuthGateOutcome | undefined,
@@ -2212,14 +2256,16 @@ async function runInvocation(
 
   // The auth gate (design/surfaces/auth-gate.md): every subcommand needs a
   // swamp-club account. It runs before any other startup work, so a blocked
-  // run loads no extensions and touches no repo state. Runs with a help or
-  // version flag defer it to the global action, which Cliffy skips when it
-  // really answers the flag. Hook mode checks locally only and, when
-  // blocked, records nothing and exits 0 so an agent session is not broken.
-  const gateTiming = authGateTiming(commandInfo, args);
+  // run loads no extensions and touches no repo state. Which command a line
+  // runs, and whether Cliffy will answer it with help or version output, is
+  // resolved against the real command tree, never guessed. Hook mode checks
+  // locally only and, when blocked, records nothing and exits 0 so an agent
+  // session is not broken.
+  const commandTree = buildCommandTree();
+  const gateTiming = authGateTiming(commandTree, args);
   let gateOutcome: AuthGateOutcome | undefined;
   if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
-  if (gateTiming === "startup") {
+  if (gateTiming === "gated") {
     try {
       gateOutcome = await runAuthGate(
         createAuthGateDeps({ liveChecks: !hookMode }),
@@ -2240,7 +2286,7 @@ async function runInvocation(
           const sensitive: string[] = [];
           await recordAndFlushError(
             telemetryCtx,
-            resolveTelemetryInvocation(buildCommandTree(), args, sensitive),
+            resolveTelemetryInvocation(commandTree, args, sensitive),
             startTime,
             error,
             knownSensitiveValues(sensitive, repoDir),
@@ -2426,38 +2472,7 @@ async function runInvocation(
     );
   }
 
-  const cli = new Command()
-    .name("swamp")
-    .version(VERSION)
-    // Cliffy's help generator force-enables colour while it renders
-    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
-    // the version option it ignores the policy applied above — `NO_COLOR` only
-    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
-    // Handing it the decision is the one way help honours `--no-color` and a
-    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
-    // parent.
-    .help({ colors: colorEnabled })
-    .description("AI Native Automation CLI")
-    .globalType("model_name", new ModelNameType())
-    .globalType("model_type", new ModelTypeType())
-    .globalType("workflow_name", new WorkflowNameType())
-    .globalOption("--json", "Output in JSON format (non-interactive)")
-    .globalOption(
-      "--log",
-      "Show model and workflow run logs in terminal output",
-    )
-    .globalOption(
-      "--log-level <level:string>",
-      "Set log level (trace, debug, info, warning, error, fatal)",
-    )
-    .globalOption("-q, --quiet", "Suppress non-essential output")
-    .globalOption("-v, --verbose", "Show detailed output")
-    .globalOption("--no-telemetry", "Disable telemetry for this invocation")
-    .globalOption(
-      "--show-properties",
-      "Show structured properties in log output",
-    )
-    .globalOption("--no-color", "Disable colored output")
+  const cli = createRootCommand(colorEnabled)
     .globalAction(async function (options: GlobalOptions) {
       const outputMode = getOutputModeFromArgs(args);
       setConsoleGuardJsonMode(outputMode === "json");
@@ -2531,18 +2546,6 @@ async function runInvocation(
         }
       }
 
-      // A help or version flag deferred the auth gate to here: Cliffy has
-      // parsed, and did not answer the flag itself, so this run executes.
-      if (gateTiming === "deferred") {
-        gateOutcome = await runAuthGate(
-          createAuthGateDeps({ liveChecks: true }),
-        );
-        if (gateOutcome.kind === "block") {
-          telemetryCtx?.service.setAuthMode("none");
-          throw new AuthGateBlockedError(gateOutcome.reason);
-        }
-        telemetryCtx?.service.setAuthMode(gateOutcome.authMode);
-      }
       if (gateOutcome?.kind === "pass" && gateOutcome.warning) {
         logger.warn`${gateOutcome.warning}`;
       }

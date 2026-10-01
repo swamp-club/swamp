@@ -19,10 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
-import { extractCommandInfo } from "./telemetry_integration.ts";
+import { buildCommandTree } from "./mod.ts";
+
+const tree = buildCommandTree();
 
 function timing(args: string[]) {
-  return authGateTiming(extractCommandInfo(args), args);
+  return authGateTiming(tree, args);
 }
 
 Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
@@ -30,10 +32,7 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
     const args of [
       [],
       ["--json"],
-      ["--help"],
-      ["-h"],
-      ["--version"],
-      ["-V"],
+      ["--log"],
       ["auth"],
       ["auth", "login"],
       ["auth", "logout", "--json"],
@@ -45,7 +44,23 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
   }
 });
 
-Deno.test("authGateTiming: every other subcommand is gated at startup", () => {
+Deno.test("authGateTiming: help and version flags Cliffy answers are exempt", () => {
+  for (
+    const args of [
+      ["--help"],
+      ["-h"],
+      ["--version"],
+      ["-V"],
+      ["model", "--help"],
+      ["model", "method", "run", "-h"],
+      ["--json", "serve", "--help"],
+    ]
+  ) {
+    assertEquals(timing(args), "exempt", args.join(" "));
+  }
+});
+
+Deno.test("authGateTiming: every other subcommand is gated", () => {
   for (
     const args of [
       ["version"],
@@ -53,7 +68,6 @@ Deno.test("authGateTiming: every other subcommand is gated at startup", () => {
       ["update"],
       ["completions", "zsh"],
       ["telemetry", "disable"],
-      ["config", "show"],
       ["serve"],
       ["worker", "exec-dispatch"],
       ["audit", "record", "--from-hook"],
@@ -61,35 +75,71 @@ Deno.test("authGateTiming: every other subcommand is gated at startup", () => {
       ["auth", "token", "list"],
       ["model", "method", "run", "m", "go"],
       ["modle"],
+      ["auth", "nonsense"],
     ]
   ) {
-    assertEquals(timing(args), "startup", args.join(" "));
+    assertEquals(timing(args), "gated", args.join(" "));
   }
 });
 
-Deno.test("authGateTiming: help and version flags defer the gate to Cliffy's global action", () => {
+Deno.test("authGateTiming: a boolean global option never hides the command after it", () => {
+  // Regression: a positional guess once read `swamp --log init` as bare
+  // `swamp`, because it did not know `--log` takes no value.
   for (
     const args of [
-      ["model", "--help"],
-      ["model", "method", "run", "-h"],
-      ["--json", "serve", "--help"],
-      ["model", "method", "run", "m", "go", "--input", "--help"],
+      ["--log", "init"],
+      ["--log", "version"],
+      ["--log", "serve"],
+      ["--json", "--log", "update"],
+      ["auth", "--log", "token", "list"],
+      ["--show-properties", "doctor"],
     ]
   ) {
-    assertEquals(timing(args), "deferred", args.join(" "));
+    assertEquals(timing(args), "gated", args.join(" "));
   }
+});
+
+Deno.test("authGateTiming: every top-level command behind every boolean root option is gated", () => {
+  const booleanRootOptions = tree.getGlobalOptions(true)
+    .concat(tree.getOptions(true))
+    .filter((o) => (o.args ?? []).length === 0)
+    .flatMap((o) => o.flags)
+    .filter((flag) => !["--help", "-h", "--version", "-V"].includes(flag));
+  const commands = tree.getCommands(true).map((c) => c.getName())
+    .filter((name) => name !== "auth");
+  assertEquals(booleanRootOptions.includes("--log"), true);
+  for (const option of booleanRootOptions) {
+    for (const command of commands) {
+      assertEquals(
+        timing([option, command]),
+        "gated",
+        `${option} ${command}`,
+      );
+    }
+  }
+});
+
+Deno.test("authGateTiming: a help token taken as an option's value does not exempt", () => {
+  assertEquals(
+    timing(["model", "method", "run", "m", "go", "--input", "--help"]),
+    "gated",
+  );
+  assertEquals(
+    timing(["--log-level", "--help", "version"]),
+    "gated",
+  );
 });
 
 Deno.test("authGateTiming: a help token after -- is a literal argument", () => {
   assertEquals(
     timing(["model", "method", "run", "m", "go", "--", "--help"]),
-    "startup",
+    "gated",
   );
 });
 
 Deno.test("authGateTiming: a value that merely contains --help is not a flag", () => {
   assertEquals(
     timing(["model", "method", "run", "m", "go", "--input=--help"]),
-    "startup",
+    "gated",
   );
 });

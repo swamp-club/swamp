@@ -53,17 +53,21 @@ for verification.
 ## When the gate runs
 
 - **Exempt**: bare `swamp`, the bare `auth` group, and `auth login`,
-  `auth logout` and `auth whoami`. These are the path to a credential.
-- **Deferred**: a run with `--help`, `-h`, `--version` or `-V` on the line.
-  Cliffy answers those flags while parsing and exits before any action. The
-  gate runs from the global action instead, so it is skipped exactly when
-  Cliffy showed help. A token that was really an option's value, as in
-  `--input --help`, still reaches the gate.
-- **At startup**: everything else, including `help`, `version`, `update`,
+  `auth logout` and `auth whoami`. These are the path to a credential. Also
+  exempt is any line Cliffy will answer with help or version output
+  (`--help`, `-h`, `--version`, `-V`), because no command runs.
+- **Gated**: everything else, including `help`, `version`, `update`,
   `completions`, `serve` and `worker`. The gate runs right after telemetry
   starts, before the repo marker, extension loaders or auto-resolver.
 
-`src/cli/auth_gate_exemptions.ts` holds the rule.
+The decision is made against the real command tree, the same declarations
+Cliffy parses (`createRootCommand` and `registerCommands` in
+`src/cli/mod.ts`). Guessing from token positions once read `swamp --log init`
+as bare `swamp`, because the guess did not know `--log` takes no value, and let
+`init` run without an account. A help or version token counts only when no
+command on the path declares that name, and the token before it is not an
+option that takes a value. So `--input --help` is still gated. When in doubt
+the rule gates. `src/cli/auth_gate_exemptions.ts` holds it.
 
 A blocked run throws `AuthGateBlockedError` (code `auth_gate_blocked`). It
 records one telemetry event with `authMode: none` and exits 1. In hook mode
