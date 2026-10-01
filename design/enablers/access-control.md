@@ -150,7 +150,11 @@ stored as `swamp/grant` model instances with state `active` or `revoked`.
 Operators can declare grants in YAML files in the repository's `grants/`
 directory, and in one additional directory set with `--grants-dir`. A
 `--grants-dir` that is the repository `grants/` directory itself is read once,
-from `grants/`, so each file keeps a single source. Each file contains:
+from `grants/`, so each file keeps a single source. A relative `--grants-dir`
+or `--grants-file` resolves against the repository directory, whether it comes
+from the flag, `SWAMP_GRANTS_DIR`/`SWAMP_GRANTS_FILE` or `.swamp/serve.yaml`, so
+the same configuration loads the same grants wherever serve is started. Each
+file contains:
 
 ```yaml
 grants:

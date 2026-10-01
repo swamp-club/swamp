@@ -18,13 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join, relative, SEPARATOR } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { ensureDir } from "@std/fs";
 import {
   collectErrors,
   parseGrantFile,
   readGrantFiles,
   resolveExternalGrantsDir,
+  resolveExternalGrantsFile,
 } from "./grant_file.ts";
 
 Deno.test("parseGrantFile: parses valid grant file", () => {
@@ -723,10 +724,7 @@ grants:
 
 Deno.test("resolveExternalGrantsDir: returns undefined when no grants-dir is configured", async () => {
   await withTempDir(async (dir) => {
-    assertEquals(
-      await resolveExternalGrantsDir(join(dir, "grants"), undefined),
-      undefined,
-    );
+    assertEquals(await resolveExternalGrantsDir(dir, undefined), undefined);
   });
 });
 
@@ -735,28 +733,16 @@ Deno.test("resolveExternalGrantsDir: drops a grants-dir that is the repository g
     const grantsDir = join(dir, "grants");
     await ensureDir(grantsDir);
 
+    assertEquals(await resolveExternalGrantsDir(dir, grantsDir), undefined);
     assertEquals(
-      await resolveExternalGrantsDir(grantsDir, grantsDir),
+      await resolveExternalGrantsDir(dir, grantsDir + SEPARATOR),
       undefined,
     );
     assertEquals(
-      await resolveExternalGrantsDir(grantsDir, grantsDir + SEPARATOR),
+      await resolveExternalGrantsDir(dir, join(dir, "sub", "..", "grants")),
       undefined,
     );
-    assertEquals(
-      await resolveExternalGrantsDir(
-        grantsDir,
-        join(dir, "sub", "..", "grants"),
-      ),
-      undefined,
-    );
-    assertEquals(
-      await resolveExternalGrantsDir(
-        grantsDir,
-        relative(Deno.cwd(), grantsDir),
-      ),
-      undefined,
-    );
+    assertEquals(await resolveExternalGrantsDir(dir, "grants"), undefined);
   });
 });
 
@@ -767,21 +753,32 @@ Deno.test("resolveExternalGrantsDir: drops a symlink to the repository grants di
     const link = join(dir, "grants-link");
     await Deno.symlink(grantsDir, link, { type: "dir" });
 
-    assertEquals(await resolveExternalGrantsDir(grantsDir, link), undefined);
+    assertEquals(await resolveExternalGrantsDir(dir, link), undefined);
   });
 });
 
 Deno.test("resolveExternalGrantsDir: keeps a different directory, resolved to an absolute path", async () => {
   await withTempDir(async (dir) => {
-    const grantsDir = join(dir, "grants");
     const otherDir = join(dir, "other");
-    await ensureDir(grantsDir);
+    await ensureDir(join(dir, "grants"));
     await ensureDir(otherDir);
 
-    assertEquals(await resolveExternalGrantsDir(grantsDir, otherDir), otherDir);
+    assertEquals(await resolveExternalGrantsDir(dir, otherDir), otherDir);
+  });
+});
+
+Deno.test("resolveExternalGrantsDir: resolves a relative grants-dir against the repository, not the working directory", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await ensureDir(join(repoDir, "extra-grants"));
+
     assertEquals(
-      await resolveExternalGrantsDir(grantsDir, relative(Deno.cwd(), otherDir)),
-      otherDir,
+      await resolveExternalGrantsDir(repoDir, "extra-grants"),
+      join(repoDir, "extra-grants"),
+    );
+    assertEquals(
+      await resolveExternalGrantsDir(repoDir, join("..", "shared")),
+      join(dir, "shared"),
     );
   });
 });
@@ -791,19 +788,31 @@ Deno.test("resolveExternalGrantsDir: keeps grants-dir when the repository has no
     const otherDir = join(dir, "other");
     await ensureDir(otherDir);
 
-    assertEquals(
-      await resolveExternalGrantsDir(join(dir, "grants"), otherDir),
-      otherDir,
-    );
+    assertEquals(await resolveExternalGrantsDir(dir, otherDir), otherDir);
   });
 });
 
-Deno.test("resolveExternalGrantsDir: keeps a grants-dir that does not exist", async () => {
-  await withTempDir(async (dir) => {
-    const grantsDir = join(dir, "grants");
-    await ensureDir(grantsDir);
-    const missing = join(dir, "missing");
+// An absolute base that is never the working directory.
+const REPO_DIR = resolve(SEPARATOR, "srv", "repo");
 
-    assertEquals(await resolveExternalGrantsDir(grantsDir, missing), missing);
-  });
+Deno.test("resolveExternalGrantsFile: returns undefined when no grants-file is configured", () => {
+  assertEquals(resolveExternalGrantsFile(REPO_DIR, undefined), undefined);
+  assertEquals(resolveExternalGrantsFile(REPO_DIR, ""), undefined);
+});
+
+Deno.test("resolveExternalGrantsFile: resolves a relative grants-file against the repository, not the working directory", () => {
+  assertEquals(
+    resolveExternalGrantsFile(REPO_DIR, "team.yaml"),
+    join(REPO_DIR, "team.yaml"),
+  );
+  assertEquals(
+    resolveExternalGrantsFile(REPO_DIR, join("..", "team.yaml")),
+    resolve(SEPARATOR, "srv", "team.yaml"),
+  );
+});
+
+Deno.test("resolveExternalGrantsFile: keeps an absolute grants-file unchanged", () => {
+  const file = resolve(SEPARATOR, "etc", "swamp", "team.yaml");
+
+  assertEquals(resolveExternalGrantsFile(REPO_DIR, file), file);
 });

@@ -329,6 +329,7 @@ import {
   parseGrantFile,
   readGrantFiles,
   resolveExternalGrantsDir,
+  resolveExternalGrantsFile,
 } from "../../domain/access/grant_file.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
@@ -1449,11 +1450,11 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup; its grants are stored with source file:grants-file",
+    "Path to an external grants YAML file loaded at startup (a relative path resolves against the repository); its grants are stored with source file:grants-file",
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory; their grants are stored with source file:grants-dir/<filename>",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (a relative path resolves against the repository); their grants are stored with source file:grants-dir/<filename>",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -2082,11 +2083,11 @@ export const serveCommand = new Command()
   )
   .option(
     "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup; its grants are stored with source file:grants-file (env: SWAMP_GRANTS_FILE)",
+    "Path to an external grants YAML file loaded at startup (a relative path resolves against the repository); its grants are stored with source file:grants-file (env: SWAMP_GRANTS_FILE)",
   )
   .option(
     "--grants-dir <path:string>",
-    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory; their grants are stored with source file:grants-dir/<filename> (env: SWAMP_GRANTS_DIR)",
+    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (a relative path resolves against the repository); their grants are stored with source file:grants-dir/<filename> (env: SWAMP_GRANTS_DIR)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -3478,11 +3479,10 @@ export const serveCommand = new Command()
       validEntries.set(filename, result.entries);
     }
 
-    const externalGrantsFilePath = merged.grantsFile
-      ? (isAbsolute(merged.grantsFile)
-        ? merged.grantsFile
-        : resolve(merged.grantsFile))
-      : undefined;
+    const externalGrantsFilePath = resolveExternalGrantsFile(
+      resolvedRepoDir,
+      merged.grantsFile,
+    );
     if (externalGrantsFilePath) {
       let content: string;
       try {
@@ -3533,7 +3533,7 @@ export const serveCommand = new Command()
     }
 
     const externalGrantsDirPath = await resolveExternalGrantsDir(
-      grantsDir,
+      resolvedRepoDir,
       merged.grantsDir,
     );
     if (merged.grantsDir && !externalGrantsDirPath) {

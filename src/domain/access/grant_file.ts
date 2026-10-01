@@ -269,16 +269,27 @@ export async function readGrantFiles(
   return results;
 }
 
+// A relative grants-file or grants-dir resolves against the repository
+// directory, whether it came from a flag, an env var or serve.yaml, so the
+// same configuration loads the same grants wherever serve was started from.
+export function resolveExternalGrantsFile(
+  repoDir: string,
+  configuredGrantsFile: string | undefined,
+): string | undefined {
+  if (!configuredGrantsFile) return undefined;
+  return resolve(repoDir, configuredGrantsFile);
+}
+
 // The repository grants directory is always read, so a grants-dir that is the
 // same directory is dropped: reading it again would reconcile each file under
 // two sources, `file:<name>` and `file:<full path>`.
 export async function resolveExternalGrantsDir(
-  repoGrantsDir: string,
+  repoDir: string,
   configuredGrantsDir: string | undefined,
 ): Promise<string | undefined> {
   if (!configuredGrantsDir) return undefined;
-  const externalGrantsDir = resolve(configuredGrantsDir);
-  if (await isSameDirectory(repoGrantsDir, externalGrantsDir)) {
+  const externalGrantsDir = resolve(repoDir, configuredGrantsDir);
+  if (await isSameDirectory(join(repoDir, "grants"), externalGrantsDir)) {
     return undefined;
   }
   return externalGrantsDir;
