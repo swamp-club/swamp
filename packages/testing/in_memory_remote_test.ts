@@ -633,3 +633,84 @@ Deno.test("createInMemoryRemote: pins that a peer's commit during a bulk two-pha
     assertEquals(await read(aCache, "y"), undefined);
   });
 });
+
+Deno.test("pendingPush: reports the next push's uploads, deletes and marks without side effects", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "gone", "g");
+    await write(aCache, "same", "s");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "same" });
+    await a.pushChanged();
+    assertEquals(await remote.pendingPush(aCache), {
+      uploads: [],
+      deletes: [],
+      marked: [],
+      bulk: false,
+    });
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    await a.markDirty({ relPath: "same" });
+    const opCount = remote.ops().length;
+    remote.failNext("push", new Error("still queued"));
+    remote.offline(true);
+    const pending = await remote.pendingPush(aCache);
+    remote.offline(false);
+
+    assertEquals(pending, {
+      uploads: ["new"],
+      deletes: ["gone"],
+      marked: ["gone", "new", "same"],
+      bulk: false,
+    });
+    assertEquals(remote.ops().length, opCount, "no op recorded");
+    assertEquals([...remote.files().keys()].sort(), ["gone", "same"]);
+    // The injected failure was not consumed, and the plan matches the push.
+    await assertRejects(() => a.pushChanged(), Error, "still queued");
+    await a.pushChanged();
+    assertEquals(remote.ops().at(-1)?.paths, pending.uploads);
+    assertEquals(remote.ops().at(-1)?.deleted, pending.deletes);
+  });
+});
+
+Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails past its uploads", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    remote.failNext("push", undefined, { afterUploads: true });
+    await assertRejects(() => a.pushChanged());
+
+    assertEquals(await remote.pendingPush(aCache), {
+      uploads: ["new"],
+      deletes: [],
+      marked: ["gone", "new"],
+      bulk: true,
+    });
+  });
+});
+
+Deno.test("pendingPush: a cache with no sidecar plans a full walk that deletes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const cache = join(dir, "c");
+    await write(cache, "x", "1");
+    await write(cache, ".datastore-index.json", "{}");
+    assertEquals(await remote.pendingPush(cache), {
+      uploads: ["x"],
+      deletes: [],
+      marked: [],
+      bulk: false,
+    });
+    assertEquals(remote.ops(), []);
+  });
+});

@@ -153,6 +153,7 @@ export {
   assertLockConformance,
   assertLockTimeoutConformance,
   assertSyncServiceConformance,
+  assertSyncServiceRoundTripConformance,
   assertVerifierConformance,
 } from "./datastore_conformance.ts";
 
@@ -160,6 +161,11 @@ export type {
   DatastoreExport,
   DatastoreExportConformanceOptions,
   SyncServiceConformanceOptions,
+  SyncServiceRoundTripFactory,
+  SyncServiceRoundTripFixture,
+  SyncServiceRoundTripInstance,
+  SyncServiceRoundTripOptions,
+  SyncServiceRoundTripResult,
 } from "./datastore_conformance.ts";
 
 export {

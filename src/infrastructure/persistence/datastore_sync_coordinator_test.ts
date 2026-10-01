@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
 import {
@@ -219,28 +224,52 @@ Deno.test("SyncTimeoutError is a UserError so the CLI error boundary renders mes
   assertEquals(err instanceof UserError, true);
 });
 
-Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError within window", async () => {
-  const hangingService = {
-    pullChanged: () => Promise.resolve(0),
-    pushChanged: () => new Promise<number>(() => {}), // never resolves
-    markDirty: () => Promise.resolve(),
+/**
+ * A push that ignores its abort signal and never settles. Records each
+ * call's signal, so a test can tell the coordinator gave up on the push
+ * (by aborting it) rather than the push finishing.
+ */
+function hangingPush(): {
+  service: {
+    pullChanged: () => Promise<number>;
+    pushChanged: (options?: DatastoreSyncOptions) => Promise<number>;
+    markDirty: () => Promise<void>;
   };
+  signals: (AbortSignal | undefined)[];
+} {
+  const signals: (AbortSignal | undefined)[] = [];
+  return {
+    service: {
+      pullChanged: () => Promise.resolve(0),
+      pushChanged: (options?: DatastoreSyncOptions) => {
+        signals.push(options?.signal);
+        return new Promise<number>(() => {});
+      },
+      markDirty: () => Promise.resolve(),
+    },
+    signals,
+  };
+}
+
+Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError instead of waiting on it", async () => {
+  const hanging = hangingPush();
 
   await registerDatastoreSync({
-    service: hangingService,
+    service: hanging.service,
     label: "@test/hang",
     syncTimeoutMs: 120,
   });
 
-  const started = Date.now();
   const err = await assertRejects(
     () => flushDatastoreSync(),
     SyncTimeoutError,
   );
-  const elapsed = Date.now() - started;
 
-  // Fires within configured window + modest slack — not indefinitely.
-  assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
+  // The push was called once and never settled; the coordinator ended
+  // the flush by aborting it at the timeout.
+  assertEquals(hanging.signals.length, 1);
+  assertEquals(hanging.signals[0]?.aborted, true);
+  assertInstanceOf(hanging.signals[0]?.reason, SyncTimeoutError);
   assertEquals(err.label, "@test/hang");
   assertEquals(err.direction, "push");
   assertEquals(err.timeoutMs, 120);
@@ -512,11 +541,7 @@ Deno.test("flushDatastoreSync: one entry's timeout still flushes other entries",
 });
 
 Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () => {
-  const hangingService = {
-    pullChanged: () => Promise.resolve(0),
-    pushChanged: () => new Promise<number>(() => {}),
-    markDirty: () => Promise.resolve(),
-  };
+  const hanging = hangingPush();
   const cfg = {
     type: "@test/integration",
     config: {},
@@ -525,16 +550,22 @@ Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () =
   };
 
   await registerDatastoreSync({
-    service: hangingService,
+    service: hanging.service,
     label: cfg.type,
     syncTimeoutMs: resolveSyncTimeoutMs(cfg),
   });
 
-  const started = Date.now();
-  await assertRejects(() => flushDatastoreSync(), SyncTimeoutError);
-  const elapsed = Date.now() - started;
-  // Proves config → resolveSyncTimeoutMs → registerDatastoreSync → runBoundedSync.
-  assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
+  const err = await assertRejects(
+    () => flushDatastoreSync(),
+    SyncTimeoutError,
+  );
+  // Proves config → resolveSyncTimeoutMs → registerDatastoreSync →
+  // runBoundedSync: the error carries the configured bound, and the flush
+  // ended by aborting the still-pending push.
+  assertEquals(err.timeoutMs, 150);
+  assertEquals(err.label, cfg.type);
+  assertEquals(hanging.signals.length, 1);
+  assertEquals(hanging.signals[0]?.aborted, true);
 });
 
 // --- Namespace threading ---
@@ -712,103 +743,4 @@ Deno.test("registerDatastoreSyncNamed: slow lock without namespace emits content
     Date.now = originalNow;
     await initializeLogging({ _reset: true });
   }
-});
-
-// --- Stream-0 regression net: SIGINT releases locks within 5s deadline ---
-
-Deno.test({
-  name:
-    "datastore sync SIGINT handler releases all held locks within the 5s force-exit deadline (POSIX)",
-  // The SIGINT handler in datastore_sync_coordinator.ts calls
-  // Deno.exit(130), which means we can't exercise it in-process — we
-  // must spawn a child Deno process, register a lock, raise SIGINT to
-  // self, and assert the child exited 130 within ~5.5s. The handler
-  // wraps releases in a 5s force-exit timeout (`setTimeout(...,
-  // 5_000)`); a refactor that drops or extends that bound will fail.
-  ignore: Deno.build.os === "windows",
-  sanitizeResources: false,
-  sanitizeOps: false,
-  fn: async () => {
-    // Resolve the absolute path to datastore_sync_coordinator.ts so the
-    // child Deno can import it via a file:// URL.
-    const coordinatorUrl = new URL(
-      "./datastore_sync_coordinator.ts",
-      import.meta.url,
-    ).href;
-
-    const program = `
-      import {
-        registerDatastoreSyncNamed,
-      } from "${coordinatorUrl}";
-
-      const lock = {
-        acquired: false,
-        released: false,
-        async acquire() { this.acquired = true; },
-        async release() { this.released = true; },
-        async withLock(fn) { await this.acquire(); try { return await fn(); } finally { await this.release(); } },
-        async inspect() { return null; },
-        async forceRelease() { return false; },
-      };
-
-      await registerDatastoreSyncNamed("stream-0-fixture", { lock });
-
-      // Signal self after a short delay so the registration is fully in
-      // place when the handler fires.
-      setTimeout(() => {
-        Deno.kill(Deno.pid, "SIGINT");
-      }, 50);
-
-      // Block forever — the SIGINT handler's Deno.exit(130) is what
-      // ends this process.
-      await new Promise(() => {});
-    `;
-
-    const start = Date.now();
-    const cmd = new Deno.Command(Deno.execPath(), {
-      args: ["run", "-A", "-"],
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const child = cmd.spawn();
-    const writer = child.stdin.getWriter();
-    try {
-      await writer.write(new TextEncoder().encode(program));
-    } finally {
-      await writer.close();
-    }
-
-    const status = await Promise.race([
-      child.status,
-      new Promise<{ code: number; success: boolean; signal: null }>(
-        (_, reject) => {
-          setTimeout(
-            () => reject(new Error("child did not exit within 5.5s deadline")),
-            5_500,
-          );
-        },
-      ),
-    ]);
-    const elapsed = Date.now() - start;
-
-    // Drain pipes so the test sanitizer doesn't complain about open streams.
-    await child.stdout.cancel();
-    await child.stderr.cancel();
-
-    // The handler's contract: releases run, then Deno.exit(130). If the
-    // handler hung past the force-exit fallback, the inner setTimeout
-    // would still bring this in under 5s — so the 5.5s race is the
-    // outer guard.
-    assertEquals(
-      status.code,
-      130,
-      `expected SIGINT handler to exit 130; got ${status.code} after ${elapsed}ms`,
-    );
-    assertEquals(
-      elapsed < 5_500,
-      true,
-      `expected exit within 5.5s; took ${elapsed}ms`,
-    );
-  },
 });

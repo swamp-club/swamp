@@ -210,7 +210,12 @@ The remote also offers:
 - `failNext(op, error?, { afterUploads?, instance? })`;
 - `offline(boolean)`;
 - `ops()`: an ordered `{ instance, op, paths, deleted }` log;
-- `resetSidecar(cacheDir)`.
+- `resetSidecar(cacheDir)`;
+- `pendingPush(cacheDir)`: what the next push from that cache would send, as
+  `{ uploads, deletes, marked, bulk }`, read with no side effects (no upload, no
+  op recorded, no injected failure consumed, works offline). A clean cache
+  reports no uploads or deletes; `bulk` shows the next push is a full walk that
+  ignores `marked`.
 
 Not modelled: namespaces, lazy hydration, the control plane, `previewPush`,
 Windows drive-letter joins, and the gap between `preparePush` deleting objects
@@ -229,6 +234,102 @@ await service.markDirty({ relPath: "data/a" });
 await service.markDirty();
 assertEquals(marks, ["data/a", undefined]);
 ```
+
+## Datastore conformance suites
+
+Plain async functions that reject with an assertion error when an implementation
+breaks the contract; call them from your own `Deno.test`.
+
+| Suite                                   | Checks                                                   |
+| --------------------------------------- | -------------------------------------------------------- |
+| `assertDatastoreExportConformance`      | The `datastore` export's shape and config schema         |
+| `assertLockConformance`                 | Acquire, release, `withLock`, inspect and force-release  |
+| `assertLockTimeoutConformance`          | A contended acquire times out with a `LOCK_TIMEOUT` code |
+| `assertVerifierConformance`             | The health check result shape                            |
+| `assertSyncServiceConformance`          | The sync service's methods and `capabilities()` shape    |
+| `assertSyncServiceRoundTripConformance` | Sync behaviour between two caches on one backend         |
+
+### `assertSyncServiceRoundTripConformance`
+
+Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
+and two-phase push. The factory returns two services bound to two different
+cache directories on **one** fresh backend, plus a cleanup. The suite calls it
+once per case (eight fixtures), pulls on both caches, then runs:
+
+| Case                  | Asserts                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `round-trip`          | A path-marked file pushed by `first` pulls on `second` with identical bytes        |
+| `push-deletes`        | A marked path that is absent on disk deletes the remote file                       |
+| `pull-deletes`        | A pull removes a local file the remote deleted                                     |
+| `bulk-mark`           | A bare `markDirty()` pushes every changed file                                     |
+| `failed-push-retry`   | A failed push leaves the path dirty, and the next push uploads it                  |
+| `two-phase`           | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears |
+| `pull-nothing-new`    | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone        |
+| `forward-slash-paths` | A forward-slash `relPath` lands at the native path                                 |
+
+The suite marks before it writes or deletes, as swamp core does. Counts may
+resolve to `void` everywhere.
+
+Some cases are skipped rather than failed, and returned in `result.skipped` with
+a reason:
+
+- `pull-deletes` unless `expectPullDeletes: true`, because S3 and GCS pulls
+  never delete local files;
+- `failed-push-retry` when the fixture has no `failNextPush`, a hook that makes
+  the next `first.service.pushChanged()` fail with a transport error;
+- `two-phase` when the service has no `preparePush` and `commitPush`.
+
+A failing case rejects with an error that names it, such as
+`sync round-trip case "push-deletes" failed: ...`.
+
+Adopting it in an S3-style extension:
+
+```typescript
+import { assert } from "@std/assert";
+import { assertSyncServiceRoundTripConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("s3 sync service round-trips", async () => {
+  const result = await assertSyncServiceRoundTripConformance(async () => {
+    const bucket = await createTestBucket(); // a fresh, empty bucket
+    const firstCache = await Deno.makeTempDir();
+    const secondCache = await Deno.makeTempDir();
+    return {
+      first: {
+        service: new S3CacheSyncService(bucket, firstCache),
+        cacheDir: firstCache,
+      },
+      second: {
+        service: new S3CacheSyncService(bucket, secondCache),
+        cacheDir: secondCache,
+      },
+      failNextPush: () => bucket.failNextPut(),
+      cleanup: async () => {
+        await bucket.destroy();
+        await Deno.remove(firstCache, { recursive: true });
+        await Deno.remove(secondCache, { recursive: true });
+      },
+    };
+  });
+  for (const name of ["round-trip", "push-deletes", "failed-push-retry"]) {
+    assert(result.passed.includes(name), `${name} did not run`);
+  }
+  for (const { name, reason } of result.skipped) {
+    console.log(`skipped ${name}: ${reason}`);
+  }
+});
+```
+
+| Option              | Default | Description                                     |
+| ------------------- | ------- | ----------------------------------------------- |
+| `expectPullDeletes` | `false` | Run `pull-deletes`; a pull must remove the file |
+
+The result is `{ passed: string[]; skipped: { name, reason }[] }`.
+
+Experimental: like `createInMemoryRemote`, its defaults (such as skipping
+`pull-deletes`) follow what the S3 and GCS datastore extensions do today and may
+change as those extensions change. New cases may be added, and some may skip, so
+assert on the cases you rely on and log the skips rather than pinning the exact
+skipped list.
 
 ## `createReportTestContext`
 

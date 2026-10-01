@@ -60,6 +60,57 @@ Deno.test("verifier contract", async () => {
 Validates: verify() returns a result with healthy (boolean), message (string),
 latencyMs (non-negative number), datastoreType (string).
 
+## Sync Service Round-Trip Conformance
+
+Hold a sync service to the `markDirty` contract, delete propagation and
+two-phase push. The factory returns two services on two different cache
+directories over one fresh, empty backend; the suite calls it once per case:
+
+```typescript
+import { assert } from "@std/assert";
+import { assertSyncServiceRoundTripConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("sync service round-trips", async () => {
+  const result = await assertSyncServiceRoundTripConformance(async () => {
+    const bucket = await createTestBucket();
+    const firstCache = await Deno.makeTempDir();
+    const secondCache = await Deno.makeTempDir();
+    return {
+      first: { service: syncFor(bucket, firstCache), cacheDir: firstCache },
+      second: { service: syncFor(bucket, secondCache), cacheDir: secondCache },
+      failNextPush: () => bucket.failNextPut(), // optional transport failure
+      cleanup: async () => {
+        await bucket.destroy();
+        await Deno.remove(firstCache, { recursive: true });
+        await Deno.remove(secondCache, { recursive: true });
+      },
+    };
+  });
+  for (const name of ["round-trip", "push-deletes", "failed-push-retry"]) {
+    assert(result.passed.includes(name), `${name} did not run`);
+  }
+  for (const { name, reason } of result.skipped) {
+    console.log(`skipped ${name}: ${reason}`);
+  }
+});
+```
+
+Cases: `round-trip`, `push-deletes`, `pull-deletes`, `bulk-mark`,
+`failed-push-retry`, `two-phase`, `pull-nothing-new`, `forward-slash-paths`. A
+failing case rejects naming the case. Skips come back in `result.skipped` with a
+reason rather than failing:
+
+- `pull-deletes` unless `{ expectPullDeletes: true }` — S3/GCS pulls never
+  delete local files;
+- `failed-push-retry` without `failNextPush`;
+- `two-phase` without `preparePush`/`commitPush`.
+
+Experimental: like `createInMemoryRemote`, its defaults (such as skipping
+`pull-deletes`) follow what the S3 and GCS datastore extensions do today and may
+change as those extensions change. New cases may be added, and some may skip, so
+assert on the cases you rely on and log the skips rather than pinning the exact
+skipped list.
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary.
@@ -230,6 +281,7 @@ Import directly from the testing package source:
 import {
   assertDatastoreExportConformance,
   assertLockConformance,
+  assertSyncServiceRoundTripConformance,
   withMockedCommand,
 } from "../../packages/testing/mod.ts";
 ```

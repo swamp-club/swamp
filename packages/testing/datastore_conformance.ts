@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // deno-lint-ignore-file no-import-prefix
-import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
+import {
+  assertEquals,
+  assertExists,
+  AssertionError,
+  assertRejects,
+} from "jsr:@std/assert@1.0.19";
+import { dirname, join, resolve } from "@std/path";
 import type {
   DatastoreProvider,
   DatastoreSyncService,
@@ -553,4 +559,612 @@ export async function assertSyncServiceConformance(
       );
     }
   }
+}
+
+/** One sync service bound to its own cache directory. */
+export interface SyncServiceRoundTripInstance {
+  /** The sync service under test. */
+  service: DatastoreSyncService;
+  /** The cache directory the service syncs, which the suite writes into. */
+  cacheDir: string;
+}
+
+/**
+ * Two sync services on one shared backend, as two machines would see it.
+ * The cache directories must differ.
+ */
+export interface SyncServiceRoundTripFixture {
+  /** The instance that writes, marks and pushes. */
+  first: SyncServiceRoundTripInstance;
+  /** The instance that pulls what `first` pushed. */
+  second: SyncServiceRoundTripInstance;
+  /**
+   * Makes the next `first.service.pushChanged()` fail with a transport
+   * error. Without it the failed-push case is skipped.
+   */
+  failNextPush?: () => void;
+  /** Releases the backend and the cache directories. */
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * Creates a fresh fixture on an empty backend. The suite calls it once per
+ * case, so each case starts from a clean backend and clean caches.
+ */
+export type SyncServiceRoundTripFactory = () => Promise<
+  SyncServiceRoundTripFixture
+>;
+
+/** Options for {@link assertSyncServiceRoundTripConformance}. */
+export interface SyncServiceRoundTripOptions {
+  /**
+   * Whether a pull removes a local file the remote dropped. Default false,
+   * which skips the pull-deletes case: the S3 and GCS datastores never
+   * delete local files on pull.
+   */
+  expectPullDeletes?: boolean;
+}
+
+/** What {@link assertSyncServiceRoundTripConformance} ran. */
+export interface SyncServiceRoundTripResult {
+  /** Names of the cases that ran and passed. */
+  passed: string[];
+  /** Cases that did not run, each with the reason. */
+  skipped: { name: string; reason: string }[];
+}
+
+/** The two-phase push methods, which `DatastoreSyncService` leaves optional. */
+interface TwoPhasePush {
+  preparePush(): Promise<unknown>;
+  commitPush(manifest: unknown): Promise<number | void>;
+}
+
+function twoPhasePush(service: DatastoreSyncService): TwoPhasePush | undefined {
+  const candidate = service as DatastoreSyncService & {
+    preparePush?: unknown;
+    commitPush?: unknown;
+  };
+  if (
+    typeof candidate.preparePush !== "function" ||
+    typeof candidate.commitPush !== "function"
+  ) {
+    return undefined;
+  }
+  const prepare = candidate.preparePush as () => Promise<unknown>;
+  const commit = candidate.commitPush as (
+    manifest: unknown,
+  ) => Promise<number | void>;
+  return {
+    preparePush: () => prepare.call(service),
+    commitPush: (manifest) => commit.call(service, manifest),
+  };
+}
+
+/** Content with a NUL and high bytes, unique to one run. */
+function sampleBytes(label: string): Uint8Array {
+  const text = new TextEncoder().encode(`${label}:${crypto.randomUUID()}\n`);
+  return new Uint8Array([0x00, 0xff, 0x7f, ...text, 0x0a, 0x00]);
+}
+
+function localPath(cacheDir: string, relPath: string): string {
+  return join(cacheDir, ...relPath.split("/"));
+}
+
+async function writeLocal(
+  cacheDir: string,
+  relPath: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const path = localPath(cacheDir, relPath);
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeFile(path, bytes);
+}
+
+async function readLocalFile(
+  cacheDir: string,
+  relPath: string,
+): Promise<Uint8Array | undefined> {
+  try {
+    return await Deno.readFile(localPath(cacheDir, relPath));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/** Marks, then writes, in the order swamp core does (markDirty rule 1). */
+async function markAndWrite(
+  instance: SyncServiceRoundTripInstance,
+  relPath: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  await instance.service.markDirty({ relPath });
+  await writeLocal(instance.cacheDir, relPath, bytes);
+}
+
+/** Marks, then deletes, in the order swamp core does (markDirty rule 1). */
+async function markAndDelete(
+  instance: SyncServiceRoundTripInstance,
+  relPath: string,
+): Promise<void> {
+  await instance.service.markDirty({ relPath });
+  await Deno.remove(localPath(instance.cacheDir, relPath));
+}
+
+function assertCount(value: number | void, what: string): void {
+  if (value !== undefined) {
+    assertEquals(typeof value, "number", `${what} must return number or void`);
+  }
+}
+
+/** A changed result is a positive count, or void for "unknown". */
+function assertChanged(value: number | void, what: string): void {
+  assertCount(value, what);
+  if (value !== undefined) {
+    assertEquals(
+      value > 0,
+      true,
+      `${what} returned 0 after changing files; resolve to 0 only when nothing changed`,
+    );
+  }
+}
+
+/** An unchanged result is 0, or void for "unknown". */
+function assertUnchanged(value: number | void, what: string): void {
+  assertCount(value, what);
+  if (value !== undefined) {
+    assertEquals(
+      value,
+      0,
+      `${what} must return 0 or void when nothing changed`,
+    );
+  }
+}
+
+async function assertHasBytes(
+  instance: SyncServiceRoundTripInstance,
+  relPath: string,
+  expected: Uint8Array,
+  message: string,
+): Promise<void> {
+  const actual = await readLocalFile(instance.cacheDir, relPath);
+  assertExists(actual, `${message}: ${relPath} is missing`);
+  assertEquals(actual, expected, `${message}: ${relPath} differs`);
+}
+
+async function assertAbsent(
+  instance: SyncServiceRoundTripInstance,
+  relPath: string,
+  message: string,
+): Promise<void> {
+  const actual = await readLocalFile(instance.cacheDir, relPath);
+  assertEquals(actual, undefined, `${message}: ${relPath} still exists`);
+}
+
+/** Pulls on both instances so each starts from a synced cache. */
+async function warmUp(fixture: SyncServiceRoundTripFixture): Promise<void> {
+  assertCount(await fixture.first.service.pullChanged(), "first pullChanged()");
+  assertCount(
+    await fixture.second.service.pullChanged(),
+    "second pullChanged()",
+  );
+}
+
+const ROOT = "data/conformance";
+
+interface RoundTripCase {
+  name: string;
+  /**
+   * Returns a skip reason from the options alone, checked before the
+   * factory runs so a skipped case never builds a backend.
+   */
+  skipForOptions?: (options: SyncServiceRoundTripOptions) => string | undefined;
+  /** Returns a skip reason that depends on the fixture. */
+  skip?: (fixture: SyncServiceRoundTripFixture) => string | undefined;
+  run: (fixture: SyncServiceRoundTripFixture) => Promise<void>;
+}
+
+const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
+  {
+    name: "round-trip",
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/round-trip/raw`;
+      const bytes = sampleBytes("round-trip");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        rel,
+        bytes,
+        "a path-marked file pushed by first must pull on second",
+      );
+    },
+  },
+  {
+    name: "push-deletes",
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/push-deletes/raw`;
+      await markAndWrite(first, rel, sampleBytes("push-deletes"));
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      await markAndDelete(first, rel);
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a deleted path",
+      );
+      // second never pulled the file, so it only appears if the remote
+      // still holds it.
+      assertCount(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        rel,
+        "a marked path absent on disk must delete the remote file (markDirty rule 2)",
+      );
+    },
+  },
+  {
+    name: "pull-deletes",
+    skipForOptions: (options) =>
+      options.expectPullDeletes
+        ? undefined
+        : "S3/GCS pulls never delete local files; set expectPullDeletes to run it",
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/pull-deletes/raw`;
+      const bytes = sampleBytes("pull-deletes");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(second, rel, bytes, "second must pull the file");
+      await markAndDelete(first, rel);
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a deleted path",
+      );
+      assertChanged(
+        await second.service.pullChanged(),
+        "second pullChanged() after a remote delete",
+      );
+      await assertAbsent(
+        second,
+        rel,
+        "a pull must remove a local file the remote deleted",
+      );
+    },
+  },
+  {
+    name: "bulk-mark",
+    run: async ({ first, second }) => {
+      const one = `${ROOT}/bulk-mark/one/raw`;
+      const two = `${ROOT}/bulk-mark/two/raw`;
+      const oneBytes = sampleBytes("bulk-one");
+      const twoBytes = sampleBytes("bulk-two");
+      await first.service.markDirty();
+      await writeLocal(first.cacheDir, one, oneBytes);
+      await writeLocal(first.cacheDir, two, twoBytes);
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() after a bare mark",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      const message =
+        "a bare markDirty() must push every changed file (markDirty rule 3)";
+      await assertHasBytes(second, one, oneBytes, message);
+      await assertHasBytes(second, two, twoBytes, message);
+    },
+  },
+  {
+    name: "failed-push-retry",
+    skip: (fixture) =>
+      fixture.failNextPush
+        ? undefined
+        : "the factory has no failNextPush hook to inject a transport failure",
+    run: async ({ first, second, failNextPush }) => {
+      const rel = `${ROOT}/failed-push-retry/raw`;
+      const bytes = sampleBytes("failed-push-retry");
+      await markAndWrite(first, rel, bytes);
+      failNextPush!();
+      await assertRejects(
+        async () => {
+          await first.service.pushChanged();
+        },
+        Error,
+        undefined,
+        "pushChanged() must reject when the transport fails",
+      );
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() retried after a failure",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        rel,
+        bytes,
+        "a failed push must leave the path dirty so the next push uploads it",
+      );
+    },
+  },
+  {
+    name: "two-phase",
+    skip: (fixture) =>
+      twoPhasePush(fixture.first.service)
+        ? undefined
+        : "the sync service has no preparePush/commitPush",
+    run: async ({ first, second }) => {
+      const twoPhase = twoPhasePush(first.service)!;
+
+      // preparePush publishes nothing and keeps the path dirty.
+      const kept = `${ROOT}/two-phase/kept/raw`;
+      const keptBytes = sampleBytes("two-phase-kept");
+      await markAndWrite(first, kept, keptBytes);
+      await twoPhase.preparePush();
+      assertCount(await second.service.pullChanged(), "second pullChanged()");
+      await assertAbsent(
+        second,
+        kept,
+        "preparePush must not publish to the remote index",
+      );
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() after an uncommitted preparePush",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        kept,
+        keptBytes,
+        "preparePush must keep the path dirty so a later push uploads it",
+      );
+
+      // commitPush publishes the manifest and clears dirty state.
+      const committed = `${ROOT}/two-phase/committed/raw`;
+      const committedBytes = sampleBytes("two-phase-committed");
+      await markAndWrite(first, committed, committedBytes);
+      const manifest = await twoPhase.preparePush();
+      assertChanged(
+        await twoPhase.commitPush(manifest),
+        "first commitPush()",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        committed,
+        committedBytes,
+        "commitPush must publish the prepared manifest",
+      );
+      // A peer overwrites the file. If commitPush left first dirty, first's
+      // next push would upload its stale copy over the peer's.
+      const peerBytes = sampleBytes("two-phase-peer");
+      await markAndWrite(second, committed, peerBytes);
+      assertChanged(await second.service.pushChanged(), "second pushChanged()");
+      assertCount(
+        await first.service.pushChanged(),
+        "first pushChanged() after commitPush",
+      );
+      assertCount(await first.service.pullChanged(), "first pullChanged()");
+      await assertHasBytes(
+        first,
+        committed,
+        peerBytes,
+        "commitPush must clear dirty state so the next push sends nothing",
+      );
+
+      // Committing what a clean cache prepares changes nothing.
+      const empty = await twoPhase.preparePush();
+      assertUnchanged(
+        await twoPhase.commitPush(empty),
+        "commitPush() of a manifest prepared from a clean cache",
+      );
+      assertUnchanged(
+        await second.service.pullChanged(),
+        "second pullChanged() after an empty commit",
+      );
+      await assertHasBytes(
+        second,
+        committed,
+        peerBytes,
+        "an empty commit must not change the remote",
+      );
+    },
+  },
+  {
+    name: "pull-nothing-new",
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/pull-nothing-new/raw`;
+      const bytes = sampleBytes("pull-nothing-new");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      // An old, fixed mtime shows any rewrite, even within one clock tick.
+      const mtime = new Date("2001-01-01T00:00:00Z");
+      for (const instance of [first, second]) {
+        await Deno.utime(localPath(instance.cacheDir, rel), mtime, mtime);
+      }
+      for (
+        const [label, instance] of [["second", second], [
+          "first",
+          first,
+        ]] as const
+      ) {
+        assertUnchanged(
+          await instance.service.pullChanged(),
+          `${label} pullChanged() with nothing new`,
+        );
+        const message =
+          `${label} pullChanged() with nothing new must not touch local files`;
+        await assertHasBytes(instance, rel, bytes, message);
+        const info = await Deno.stat(localPath(instance.cacheDir, rel));
+        assertEquals(
+          info.mtime?.getTime(),
+          mtime.getTime(),
+          `${message}: ${rel} was rewritten`,
+        );
+      }
+    },
+  },
+  {
+    name: "forward-slash-paths",
+    run: async ({ first, second }) => {
+      const rel = `${ROOT}/forward-slash-paths/a/b/c/raw.yaml`;
+      const bytes = sampleBytes("forward-slash-paths");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        rel,
+        bytes,
+        "a forward-slash relPath must map to native separators on every OS (markDirty rule 5)",
+      );
+    },
+  },
+];
+
+/**
+ * Asserts that a DatastoreSyncService moves files between two caches on one
+ * backend the way swamp core relies on, following the `markDirty` contract.
+ *
+ * Each case calls `factory` for a fresh backend, pulls on both instances,
+ * then runs:
+ *
+ * - `round-trip`: a path-marked file pushed by `first` pulls on `second`
+ *   with identical bytes.
+ * - `push-deletes`: a marked path that is absent on disk deletes the remote
+ *   file.
+ * - `pull-deletes`: a pull removes a local file the remote deleted. Skipped
+ *   unless `expectPullDeletes` is set.
+ * - `bulk-mark`: a bare `markDirty()` pushes every changed file.
+ * - `failed-push-retry`: a push that fails leaves the path dirty and the next
+ *   push uploads it. Skipped when the fixture has no `failNextPush`.
+ * - `two-phase`: `preparePush` publishes nothing and keeps the path dirty;
+ *   `commitPush` publishes and clears dirty state; committing what a clean
+ *   cache prepares changes nothing. Skipped without `preparePush` and
+ *   `commitPush`.
+ * - `pull-nothing-new`: a pull with nothing new returns 0 or void and leaves
+ *   local bytes and mtimes alone.
+ * - `forward-slash-paths`: a forward-slash `relPath` lands at the native path.
+ *
+ * Counts may be void ("unknown") everywhere. A failing case rejects with an
+ * error naming it; skipped cases are returned so callers can assert on them.
+ *
+ * Experimental: like `createInMemoryRemote`, the defaults (such as skipping
+ * `pull-deletes`) follow what the S3 and GCS datastore extensions do today
+ * and may change as those extensions change. New cases may be added, and some
+ * may skip, so assert on the cases you rely on rather than on the exact
+ * skipped list.
+ *
+ * ```typescript
+ * import { assert } from "@std/assert";
+ * import { assertSyncServiceRoundTripConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 sync service round-trips", async () => {
+ *   const result = await assertSyncServiceRoundTripConformance(async () => {
+ *     const bucket = await createTestBucket();
+ *     const firstCache = await Deno.makeTempDir();
+ *     const secondCache = await Deno.makeTempDir();
+ *     return {
+ *       first: { service: syncFor(bucket, firstCache), cacheDir: firstCache },
+ *       second: { service: syncFor(bucket, secondCache), cacheDir: secondCache },
+ *       failNextPush: () => bucket.failNextPut(),
+ *       cleanup: async () => {
+ *         await bucket.destroy();
+ *         await Deno.remove(firstCache, { recursive: true });
+ *         await Deno.remove(secondCache, { recursive: true });
+ *       },
+ *     };
+ *   });
+ *   for (const name of ["round-trip", "push-deletes", "failed-push-retry"]) {
+ *     assert(result.passed.includes(name), `${name} did not run`);
+ *   }
+ *   for (const { name, reason } of result.skipped) {
+ *     console.log(`skipped ${name}: ${reason}`);
+ *   }
+ * });
+ * ```
+ *
+ * @experimental
+ */
+export async function assertSyncServiceRoundTripConformance(
+  factory: SyncServiceRoundTripFactory,
+  options?: SyncServiceRoundTripOptions,
+): Promise<SyncServiceRoundTripResult> {
+  const resolved: SyncServiceRoundTripOptions = {
+    expectPullDeletes: options?.expectPullDeletes ?? false,
+  };
+  const result: SyncServiceRoundTripResult = { passed: [], skipped: [] };
+  for (const testCase of ROUND_TRIP_CASES) {
+    const optionReason = testCase.skipForOptions?.(resolved);
+    if (optionReason !== undefined) {
+      result.skipped.push({ name: testCase.name, reason: optionReason });
+      continue;
+    }
+    await runRoundTripCase(testCase, factory, result);
+  }
+  return result;
+}
+
+/** Resolves symlinks so two spellings of one directory compare equal. */
+async function canonicalDir(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    // Not created yet, or unreadable: compare the lexical path instead.
+    return resolve(path);
+  }
+}
+
+async function runRoundTripCase(
+  testCase: RoundTripCase,
+  factory: SyncServiceRoundTripFactory,
+  result: SyncServiceRoundTripResult,
+): Promise<void> {
+  let fixture: SyncServiceRoundTripFixture | undefined;
+  let caseError: AssertionError | undefined;
+  try {
+    fixture = await factory();
+    const firstDir = await canonicalDir(fixture.first.cacheDir);
+    if (firstDir === await canonicalDir(fixture.second.cacheDir)) {
+      throw new AssertionError(
+        `first.cacheDir and second.cacheDir must be different directories, but both resolve to ${firstDir}`,
+      );
+    }
+    const reason = testCase.skip?.(fixture);
+    if (reason !== undefined) {
+      result.skipped.push({ name: testCase.name, reason });
+    } else {
+      await warmUp(fixture);
+      await testCase.run(fixture);
+      result.passed.push(testCase.name);
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    caseError = new AssertionError(
+      `sync round-trip case "${testCase.name}" failed: ${detail}`,
+      { cause: error },
+    );
+  }
+  if (fixture !== undefined) {
+    try {
+      await fixture.cleanup();
+    } catch (cleanupError) {
+      if (caseError === undefined) {
+        const cleanupDetail = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        throw new AssertionError(
+          `sync round-trip case "${testCase.name}" failed: cleanup failed: ${cleanupDetail}`,
+          { cause: cleanupError },
+        );
+      }
+      // Keep the case failure primary; a cleanup error must not hide it.
+      const cleanupDetail = cleanupError instanceof Error
+        ? cleanupError.message
+        : String(cleanupError);
+      throw new AssertionError(
+        `${caseError.message} (cleanup also failed: ${cleanupDetail})`,
+        { cause: new AggregateError([caseError, cleanupError]) },
+      );
+    }
+  }
+  if (caseError !== undefined) throw caseError;
 }
