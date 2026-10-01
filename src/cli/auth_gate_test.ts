@@ -574,11 +574,16 @@ Deno.test("runAuthGate: a process that does not own the config dir reads but nev
 });
 
 const PARENT_PID = 4242;
+/** When the parent swamp in these tests started. */
+const PARENT_STARTED_AT = NOW - 60;
 
 /** Nested deps that hand over `minted` from PARENT_PID. */
 function nestedFrom(
   minted: MintedProof | null,
-  ancestor: NestedGateDeps["checkAncestor"] = () => ({ kind: "ok" }),
+  ancestor: NestedGateDeps["checkAncestor"] = () => ({
+    kind: "ok",
+    startedAt: PARENT_STARTED_AT,
+  }),
 ): NestedGateDeps & { readonly checked: number[] } {
   const checked: number[] = [];
   return {
@@ -611,6 +616,7 @@ Deno.test("runAuthGate: no credential with a valid nested pass passes and hands 
     await cacheTestKey(h);
     const parentProof = await mintTestProof(h.key, "parent_key", {
       iat: NOW - DAY,
+      exp: NOW + 13 * DAY,
     });
     const nested = nestedFrom(parentProof);
     const outcome = await runAuthGate(h.deps({ credential: null, nested }));
@@ -625,17 +631,50 @@ Deno.test("runAuthGate: no credential with a valid nested pass passes and hands 
   });
 });
 
-Deno.test("runAuthGate: a nested pass is accepted past its proof's exp", async () => {
+Deno.test("runAuthGate: a nested pass is accepted past its exp under an ancestor started before it", async () => {
   await withHarness(async (h) => {
     await cacheTestKey(h);
+    // A daemon admitted 30 days ago on a proof that has since expired.
     const expired = await mintTestProof(h.key, "parent_key", {
-      iat: NOW - 30 * DAY,
-      exp: NOW - 16 * DAY,
+      iat: NOW - 31 * DAY,
+      exp: NOW - 17 * DAY,
     });
     const outcome = await runAuthGate(
-      h.deps({ credential: null, nested: nestedFrom(expired) }),
+      h.deps({
+        credential: null,
+        nested: nestedFrom(
+          expired,
+          () => ({ kind: "ok", startedAt: NOW - 30 * DAY }),
+        ),
+      }),
     );
     assertEquals(outcome.kind, "pass");
+  });
+});
+
+Deno.test("runAuthGate: a nested pass whose proof expired before its ancestor started blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    // A leaked old proof, named by a process started after it expired.
+    const old = await mintTestProof(h.key, "parent_key", {
+      iat: NOW - 31 * DAY,
+      exp: NOW - 17 * DAY,
+    });
+    const outcome = await runAuthGate(
+      h.deps({ credential: null, nested: nestedFrom(old) }),
+    );
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
+  });
+});
+
+Deno.test("runAuthGate: a nested pass without exp (a signin token) blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const token = await mintTestProof(h.key, "parent_key", { iat: NOW - DAY });
+    const outcome = await runAuthGate(
+      h.deps({ credential: null, nested: nestedFrom(token) }),
+    );
+    assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
   });
 });
 
@@ -645,7 +684,7 @@ Deno.test("runAuthGate: a nested pass signed by an untrusted key blocks", async 
     const forged = await mintTestProof(
       await generateTestSigningKey(h.key.publicKey.kid),
       "parent_key",
-      { iat: NOW },
+      { iat: NOW, exp: NOW + 14 * DAY },
     );
     const nested = nestedFrom(forged);
     const outcome = await runAuthGate(h.deps({ credential: null, nested }));
@@ -658,7 +697,10 @@ Deno.test("runAuthGate: a nested pass signed by an untrusted key blocks", async 
 Deno.test("runAuthGate: a nested pass from a pid that is not a live swamp ancestor blocks", async () => {
   await withHarness(async (h) => {
     await cacheTestKey(h);
-    const parentProof = await mintTestProof(h.key, "parent_key", { iat: NOW });
+    const parentProof = await mintTestProof(h.key, "parent_key", {
+      iat: NOW,
+      exp: NOW + 14 * DAY,
+    });
     const outcome = await runAuthGate(
       h.deps({
         credential: null,
@@ -730,4 +772,49 @@ Deno.test("runAuthGate: a fail-open pass with no proof hands nothing on", async 
     assertEquals(outcome.authMode, "offline");
     assertEquals(outcome.handoff, undefined);
   });
+});
+
+Deno.test("runAuthGate: a pass on a signin token hands down the file proof, never the token", async () => {
+  let token: MintedProof | undefined;
+  await withHarness(
+    async (h) => {
+      const cached = await mintTestProof(h.key, API_KEY, {
+        iat: NOW - DAY,
+        exp: NOW + 13 * DAY,
+      });
+      await saveProof(h, cached);
+      await h.repo.recordTokenCheck(
+        JSON.parse(token!.proof).fpr,
+        NOW - 60,
+      );
+      const outcome = await runAuthGate(h.deps());
+      assert(outcome.kind === "pass");
+      assertEquals(h.calls.length, 0);
+      assertEquals(outcome.handoff, {
+        proof: cached.proof,
+        signature: cached.signature,
+      });
+    },
+    async (key) => {
+      token = await mintTestProof(key, API_KEY, { iat: NOW - 90 * DAY });
+      return toSigninToken(token);
+    },
+  );
+});
+
+Deno.test("runAuthGate: a pass on a signin token alone hands nothing down", async () => {
+  await withHarness(
+    async (h) => {
+      // Only the signing key is cached; the file proof is for another key.
+      await cacheTestKey(h);
+      const outcome = await runAuthGate(
+        h.deps({ answer: { outcome: { kind: "unreachable", reason: "dns" } } }),
+      );
+      assert(outcome.kind === "pass");
+      assertEquals(outcome.authMode, "offline");
+      assertEquals(outcome.handoff, undefined);
+    },
+    async (key) =>
+      toSigninToken(await mintTestProof(key, API_KEY, { iat: NOW - 90 * DAY })),
+  );
 });

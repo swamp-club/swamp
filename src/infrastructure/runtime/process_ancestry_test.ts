@@ -23,7 +23,10 @@ import {
   findAncestor,
   isSameExecutable,
   parentPidOf,
+  parseProcBootTime,
   parseProcStatParentPid,
+  parseProcStatStartTicks,
+  startTimeOf,
   stripDeletedSuffix,
 } from "./process_ancestry.ts";
 
@@ -41,6 +44,24 @@ Deno.test("parseProcStatParentPid: rejects malformed text", () => {
   assertEquals(parseProcStatParentPid("no name here"), undefined);
   assertEquals(parseProcStatParentPid("1 (x) S notanumber"), undefined);
   assertEquals(parseProcStatParentPid("1 (x)"), undefined);
+});
+
+Deno.test("parseProcStatStartTicks: reads field 22, past a tricky name", () => {
+  // Fields 3..22 after "(name)": state ppid pgrp session tty tpgid flags
+  // minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
+  // num_threads itrealvalue starttime
+  const stat = "9 (a) b (c)) S 1 9 9 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 1 0 " +
+    "123456 1000 50";
+  assertEquals(parseProcStatStartTicks(stat), 123456);
+  assertEquals(parseProcStatStartTicks("9 (x) S 1"), undefined);
+});
+
+Deno.test("parseProcBootTime: reads the btime line", () => {
+  assertEquals(
+    parseProcBootTime("cpu  1 2 3\nintr 5 6\nbtime 1759300000\nprocesses 9\n"),
+    1759300000,
+  );
+  assertEquals(parseProcBootTime("cpu 1 2 3\n"), undefined);
 });
 
 Deno.test("stripDeletedSuffix: strips the marker Linux adds to a replaced binary", () => {
@@ -117,5 +138,30 @@ Deno.test({
   ignore: inspectable,
   fn: () => {
     assertEquals(findAncestor(Deno.ppid).kind, "unknown");
+  },
+});
+
+Deno.test({
+  name: "startTimeOf: this process started within the last hour",
+  ignore: !inspectable,
+  fn: () => {
+    const startedAt = startTimeOf(Deno.pid);
+    assert(startedAt !== undefined);
+    const now = Math.floor(Date.now() / 1000);
+    assert(startedAt <= now + 1, `${startedAt} is in the future`);
+    assert(startedAt > now - 3600, `${startedAt} is over an hour ago`);
+  },
+});
+
+Deno.test({
+  name: "findAncestor: reports the ancestor's start time, no later than ours",
+  ignore: !inspectable,
+  fn: () => {
+    const result = findAncestor(Deno.ppid);
+    assert(result.kind === "ancestor");
+    const own = startTimeOf(Deno.pid);
+    assert(own !== undefined);
+    assertEquals(result.startedAt, startTimeOf(Deno.ppid));
+    assert(result.startedAt <= own);
   },
 });

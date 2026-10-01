@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  admitsNestedRun,
   formatNestedGatePass,
   parseNestedGatePass,
 } from "./nested_gate_pass.ts";
@@ -46,5 +47,35 @@ Deno.test("nested gate pass: parse never throws on arbitrary input", () => {
         assertEquals(parseNestedGatePass(formatNestedGatePass(parsed)), parsed);
       }
     }),
+  );
+});
+
+Deno.test("nested gate pass: admission is exactly exp after the ancestor's start", () => {
+  fc.assert(
+    fc.property(
+      fc.option(fc.integer({ min: 0, max: 2 ** 40 }), { nil: undefined }),
+      fc.integer({ min: 0, max: 2 ** 40 }),
+      (exp, startedAt) => {
+        assertEquals(
+          admitsNestedRun({ exp }, startedAt),
+          exp !== undefined && exp > startedAt,
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("nested gate pass: an ancestor started later never admits more", () => {
+  fc.assert(
+    fc.property(
+      fc.option(fc.integer({ min: 0, max: 2 ** 40 }), { nil: undefined }),
+      fc.integer({ min: 0, max: 2 ** 40 }),
+      fc.nat({ max: 2 ** 30 }),
+      (exp, startedAt, later) => {
+        if (admitsNestedRun({ exp }, startedAt + later)) {
+          assertEquals(admitsNestedRun({ exp }, startedAt), true);
+        }
+      },
+    ),
   );
 });

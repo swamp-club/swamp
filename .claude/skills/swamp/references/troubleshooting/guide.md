@@ -83,8 +83,9 @@ swamp-club.com account. The message names the cause:
 - **`swamp` inside a workflow shell step**: it passes the gate on its parent's
   pass but gets no API key, so nested commands that call swamp-club
   (`extension push`/`pull`, `issue`, `auth whoami`) fail there. Run them as the
-  outer command instead. On Windows, or from a different swamp binary than the
-  parent, the nested call needs its own login.
+  outer command instead. On Windows, from a different swamp binary than the
+  parent, or when the outer run passed offline on its signin token alone, the
+  nested call needs its own login.
 
 Do not work around the block; there is no flag to skip it.
 

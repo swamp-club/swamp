@@ -837,9 +837,10 @@ credential.
 
 - `SWAMP_NESTED_GATE_PASS` lets the nested swamp pass the auth gate without a
   key ([auth gate](../surfaces/auth-gate.md#nested-runs)). It carries a signed
-  proof and the parent's pid. The proof cannot call swamp-club, and the gate
-  accepts it only from a live ancestor. It does expose the proof's identity
-  metadata (`sub`, `org`) to the child.
+  proof (a whoami or cached proof, never the `SWAMP_SIGNIN_TOKEN` one) and the
+  parent's pid. The proof cannot call swamp-club, and the gate accepts it only
+  from a live ancestor started before the proof expired. It does expose the
+  proof's identity metadata (`sub`, `org`, `fpr`) to the child.
 - `SWAMP_LOCK_HOLDER_PID` lets the nested swamp skip the per-model locks its
   parent holds ([datastores](datastores.md), "Parent-Process Lock
   Awareness").

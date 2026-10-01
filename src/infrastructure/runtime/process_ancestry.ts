@@ -34,7 +34,12 @@
 const MAX_DEPTH = 64;
 
 export type AncestryResult =
-  | { readonly kind: "ancestor"; readonly executablePath: string }
+  | {
+    readonly kind: "ancestor";
+    readonly executablePath: string;
+    /** When the ancestor started, in Unix seconds. */
+    readonly startedAt: number;
+  }
   | { readonly kind: "not_ancestor" }
   | { readonly kind: "unknown"; readonly reason: string };
 
@@ -57,9 +62,14 @@ export function findAncestor(pid: number): AncestryResult {
       }
       if (parent === pid) {
         const executablePath = executablePathOf(pid);
-        return executablePath === undefined
-          ? { kind: "unknown", reason: `no executable for pid ${pid}` }
-          : { kind: "ancestor", executablePath };
+        if (executablePath === undefined) {
+          return { kind: "unknown", reason: `no executable for pid ${pid}` };
+        }
+        const startedAt = startTimeOf(pid);
+        if (startedAt === undefined) {
+          return { kind: "unknown", reason: `no start time for pid ${pid}` };
+        }
+        return { kind: "ancestor", executablePath, startedAt };
       }
       // pid 0 is the kernel (or no parent); pid 1 has no parent to walk to.
       if (parent <= 1) return { kind: "not_ancestor" };
@@ -106,17 +116,58 @@ export function executablePathOf(pid: number): string | undefined {
 }
 
 /**
- * The parent pid from the text of /proc/<pid>/stat, or undefined when it is
- * malformed. The command name sits in parentheses and may itself contain
- * spaces and parentheses, so the fields are read after its last `)`.
+ * When `pid` started, in Unix seconds (whole seconds), or undefined when it
+ * cannot be read.
  */
-export function parseProcStatParentPid(stat: string): number | undefined {
+export function startTimeOf(pid: number): number | undefined {
+  switch (Deno.build.os) {
+    case "linux":
+      return withLibc((lib) => linuxStartTime(lib, pid));
+    case "darwin":
+      return withLibproc((lib) => darwinStartTime(lib, pid));
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The fields of /proc/<pid>/stat that follow the command name, starting with
+ * field 3 (state). The name sits in parentheses and may itself contain spaces
+ * and parentheses, so the fields are read after its last `)`.
+ */
+function procStatFieldsAfterName(stat: string): string[] | undefined {
   const end = stat.lastIndexOf(")");
   if (end === -1) return undefined;
-  // After the name: " <state> <ppid> ..."
-  const fields = stat.slice(end + 1).trim().split(/\s+/);
-  const ppid = Number(fields[1]);
-  return Number.isSafeInteger(ppid) && ppid >= 0 ? ppid : undefined;
+  return stat.slice(end + 1).trim().split(/\s+/);
+}
+
+/** Field `n` (1-based, as proc(5) numbers them) of /proc/<pid>/stat. */
+function procStatField(stat: string, n: number): number | undefined {
+  const fields = procStatFieldsAfterName(stat);
+  if (!fields) return undefined;
+  const value = Number(fields[n - 3]);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** The parent pid (field 4) from the text of /proc/<pid>/stat. */
+export function parseProcStatParentPid(stat: string): number | undefined {
+  return procStatField(stat, 4);
+}
+
+/**
+ * The start time (field 22) from the text of /proc/<pid>/stat, in clock
+ * ticks after boot.
+ */
+export function parseProcStatStartTicks(stat: string): number | undefined {
+  return procStatField(stat, 22);
+}
+
+/** The boot time (`btime`, Unix seconds) from the text of /proc/stat. */
+export function parseProcBootTime(stat: string): number | undefined {
+  const match = /^btime\s+(\d+)\s*$/m.exec(stat);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : undefined;
 }
 
 const DELETED_SUFFIX = " (deleted)";
@@ -138,6 +189,8 @@ function isInspectable(): boolean {
 
 // libc (Linux), for reading /proc past Deno's --allow-all requirement.
 const O_RDONLY = 0;
+/** Linux x86_64 and aarch64; keeps the fd out of any child spawned mid-read. */
+const O_CLOEXEC = 0o2000000;
 /** Comfortably more than any /proc/<pid>/stat line. */
 const PROC_STAT_MAXSIZE = 4096;
 /** PATH_MAX. */
@@ -148,7 +201,13 @@ const LIBC_SYMBOLS = {
   read: { parameters: ["i32", "buffer", "usize"], result: "isize" },
   close: { parameters: ["i32"], result: "i32" },
   readlink: { parameters: ["buffer", "buffer", "usize"], result: "isize" },
+  sysconf: { parameters: ["i32"], result: "i64" },
 } as const;
+
+/** _SC_CLK_TCK in glibc's <bits/confname.h>. */
+const SC_CLK_TCK = 2;
+/** Ample for /proc/stat, whose interrupt line grows with the hardware. */
+const PROC_FILE_MAXSIZE = 1024 * 1024;
 
 type Libc = Deno.DynamicLibrary<typeof LIBC_SYMBOLS>;
 
@@ -172,21 +231,46 @@ function cString(value: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(`${value}\0`);
 }
 
-function linuxParentPid(lib: Libc, pid: number): number | undefined {
-  const fd = lib.symbols.open(cString(`/proc/${pid}/stat`), O_RDONLY);
+/** Read a whole /proc file, or undefined when it cannot be opened or read. */
+function readProcFile(
+  lib: Libc,
+  path: string,
+  maxSize: number,
+): string | undefined {
+  const fd = lib.symbols.open(cString(path), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return undefined;
   try {
-    const buffer = new Uint8Array(PROC_STAT_MAXSIZE);
-    const length = Number(
-      lib.symbols.read(fd, buffer, BigInt(PROC_STAT_MAXSIZE)),
-    );
-    if (length <= 0) return undefined;
-    return parseProcStatParentPid(
-      new TextDecoder().decode(buffer.subarray(0, length)),
-    );
+    const buffer = new Uint8Array(maxSize);
+    let length = 0;
+    while (length < maxSize) {
+      const read = Number(
+        lib.symbols.read(fd, buffer.subarray(length), BigInt(maxSize - length)),
+      );
+      if (read < 0) return undefined;
+      if (read === 0) break;
+      length += read;
+    }
+    return new TextDecoder().decode(buffer.subarray(0, length));
   } finally {
     lib.symbols.close(fd);
   }
+}
+
+function linuxParentPid(lib: Libc, pid: number): number | undefined {
+  const stat = readProcFile(lib, `/proc/${pid}/stat`, PROC_STAT_MAXSIZE);
+  return stat === undefined ? undefined : parseProcStatParentPid(stat);
+}
+
+function linuxStartTime(lib: Libc, pid: number): number | undefined {
+  const stat = readProcFile(lib, `/proc/${pid}/stat`, PROC_STAT_MAXSIZE);
+  const ticks = stat === undefined ? undefined : parseProcStatStartTicks(stat);
+  const system = readProcFile(lib, "/proc/stat", PROC_FILE_MAXSIZE);
+  const bootTime = system === undefined ? undefined : parseProcBootTime(system);
+  const ticksPerSecond = Number(lib.symbols.sysconf(SC_CLK_TCK));
+  if (ticks === undefined || bootTime === undefined || ticksPerSecond <= 0) {
+    return undefined;
+  }
+  return bootTime + Math.floor(ticks / ticksPerSecond);
 }
 
 function linuxExecutablePath(lib: Libc, pid: number): string | undefined {
@@ -215,6 +299,15 @@ const PROC_BSDSHORTINFO_SIZE = 64;
 const PBSI_PID_OFFSET = 0;
 /** offsetof(struct proc_bsdshortinfo, pbsi_ppid). */
 const PBSI_PPID_OFFSET = 4;
+// The full BSD info flavor carries the start time. Unlike the short one it
+// answers only for this user's processes, which a swamp ancestor is.
+const PROC_PIDTBSDINFO = 3;
+/** sizeof(struct proc_bsdinfo). */
+const PROC_BSDINFO_SIZE = 136;
+/** offsetof(struct proc_bsdinfo, pbi_pid). */
+const PBI_PID_OFFSET = 12;
+/** offsetof(struct proc_bsdinfo, pbi_start_tvsec). */
+const PBI_START_TVSEC_OFFSET = 120;
 /** PROC_PIDPATHINFO_MAXSIZE: 4 * MAXPATHLEN. */
 const PROC_PIDPATH_MAXSIZE = 4096;
 
@@ -258,6 +351,22 @@ function darwinParentPid(lib: Libproc, pid: number): number | undefined {
   // A struct that does not echo the pid back was not filled as expected.
   if (view.getUint32(PBSI_PID_OFFSET, true) !== pid) return undefined;
   return view.getUint32(PBSI_PPID_OFFSET, true);
+}
+
+function darwinStartTime(lib: Libproc, pid: number): number | undefined {
+  const info = new Uint8Array(PROC_BSDINFO_SIZE);
+  const written = lib.symbols.proc_pidinfo(
+    pid,
+    PROC_PIDTBSDINFO,
+    0n,
+    info,
+    PROC_BSDINFO_SIZE,
+  );
+  if (written !== PROC_BSDINFO_SIZE) return undefined;
+  const view = new DataView(info.buffer);
+  if (view.getUint32(PBI_PID_OFFSET, true) !== pid) return undefined;
+  const seconds = Number(view.getBigUint64(PBI_START_TVSEC_OFFSET, true));
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 function darwinExecutablePath(lib: Libproc, pid: number): string | undefined {

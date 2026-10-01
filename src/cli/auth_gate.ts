@@ -35,6 +35,7 @@ import {
   verifyProofSignature,
 } from "../domain/auth/proof_verifier.ts";
 import {
+  admitsNestedRun,
   NESTED_GATE_PASS_ENV,
   type NestedGatePass,
   parseNestedGatePass,
@@ -72,7 +73,11 @@ export interface AuthGateCredential {
 
 /** Whether a nested pass's issuer is a live ancestor of this process. */
 export type AncestorCheck =
-  | { readonly kind: "ok" }
+  | {
+    readonly kind: "ok";
+    /** When the ancestor started, in Unix seconds. */
+    readonly startedAt: number;
+  }
   | { readonly kind: "failed"; readonly reason: string };
 
 /** What the gate needs to accept a nested pass (design: "Nested runs"). */
@@ -121,8 +126,10 @@ export type AuthGateOutcome =
     /** The weekly refresh, present when the file proof is due one. */
     readonly refresh?: () => Promise<void>;
     /**
-     * The proof this pass rests on, for nested runs to inherit. Absent when
-     * the run passed with no proof at all (offline, fail-open).
+     * The proof nested runs inherit: a fresh whoami proof, else the valid
+     * file proof, else the proof this run itself inherited. Never a
+     * signin-token proof. Absent when there is no such proof, for example a
+     * run that passed offline on its signin token alone.
      */
     readonly handoff?: GateHandoff;
   }
@@ -132,8 +139,11 @@ interface ProofAssessment {
   readonly verdict: LocalProofVerdict;
   /** The fingerprint the valid signin-token proof was issued for. */
   readonly tokenFpr?: string;
-  /** The valid proof itself, when there is one. */
-  readonly validProof?: GateHandoff;
+  /**
+   * The proof a nested run may inherit: the valid file proof, never a
+   * signin-token proof (see {@link validFileProof}).
+   */
+  readonly handoffProof?: GateHandoff;
   /** True when the file proof belongs to the active key (or is unreadable). */
   readonly fileProofIsActiveKeys: boolean;
 }
@@ -169,10 +179,9 @@ async function assessProofs(
       return {
         verdict: { kind: "valid", source, issuedAt: payload.iat },
         tokenFpr: source === "signin_token" ? payload.fpr : undefined,
-        validProof: {
-          proof: verification.proof,
-          signature: verification.signature,
-        },
+        handoffProof: source === "file"
+          ? { proof: verification.proof, signature: verification.signature }
+          : await validFileProof(candidates, apiKey, now),
         fileProofIsActiveKeys: source === "file"
           ? true
           : fileMatches(candidates, activeFpr),
@@ -193,6 +202,23 @@ async function assessProofs(
       ? { kind: "invalid", reason: invalidReason }
       : { kind: "missing" });
   return { verdict, fileProofIsActiveKeys };
+}
+
+/**
+ * The file proof when it verifies for the active key. A run that passed on
+ * its signin token hands this down instead: the token is a CI secret that
+ * method children must never see (swamp-club#2032), under any name.
+ */
+async function validFileProof(
+  candidates: readonly ProofCandidate[],
+  apiKey: string,
+  now: number,
+): Promise<GateHandoff | undefined> {
+  const file = candidates.find((c) => c.source === "file");
+  if (!file) return undefined;
+  const { proof, signature, publicKeys } = file.verification;
+  const result = await verifyProof(proof, signature, publicKeys, apiKey, now);
+  return result.valid ? { proof, signature } : undefined;
 }
 
 function fileMatches(
@@ -320,7 +346,7 @@ export async function runAuthGate(
       kind: "pass",
       authMode: before.authMode,
       refresh,
-      handoff: assessment.validProof,
+      handoff: assessment.handoffProof,
     };
   }
 
@@ -354,7 +380,7 @@ export async function runAuthGate(
     kind: "pass",
     authMode: decision.authMode,
     liveResponse,
-    handoff: liveProof(liveResponse) ?? assessment.validProof,
+    handoff: liveProof(liveResponse) ?? assessment.handoffProof,
     warning: decision.authMode === "offline"
       ? offlineWarning(result.outcome.kind, verdict.kind === "valid")
       : undefined,
@@ -380,9 +406,10 @@ interface NestedAssessment {
  * Check a pass inherited from a parent swamp: swamp-club signed its proof
  * (checked against the keys the gate already trusts, never a key the pass
  * supplies) and the pid that issued it is a live ancestor running this same
- * executable. `exp` is not enforced: the ancestor was admitted on this proof
- * and runs on it for its whole life, and the ancestry check already stops
- * the proof being reused anywhere else.
+ * executable. `exp` is judged at the ancestor's start, not now: the ancestor
+ * was admitted on this proof and runs on it for its whole life, so its
+ * children may too, but a proof that had expired before the ancestor started
+ * (or has no `exp` at all) admits nothing.
  */
 async function assessNestedPass(
   deps: AuthGateDeps,
@@ -407,6 +434,14 @@ async function assessNestedPass(
   const ancestor = deps.nested.checkAncestor(pass.parentPid);
   if (ancestor.kind === "failed") {
     return { verdict: { kind: "invalid", reason: ancestor.reason } };
+  }
+  if (!admitsNestedRun(signature.payload, ancestor.startedAt)) {
+    return {
+      verdict: {
+        kind: "invalid",
+        reason: "proof has no exp, or expired before its issuer started",
+      },
+    };
   }
   return {
     verdict: { kind: "valid" },
@@ -517,7 +552,7 @@ export function createAuthGateDeps(
           return { kind: "failed", reason: ancestor.reason };
         }
         return isSameExecutable(ancestor.executablePath, Deno.execPath())
-          ? { kind: "ok" }
+          ? { kind: "ok", startedAt: ancestor.startedAt }
           : {
             kind: "failed",
             reason: `pid ${pid} runs a different executable`,
