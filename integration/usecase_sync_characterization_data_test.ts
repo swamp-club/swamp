@@ -98,6 +98,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data gc",
+    // collectGarbage removes versions in parallel batches, so it marks them
+    // in filesystem order.
+    parallelMarks: true,
     seed: async (repos) => {
       const model = await saveModel(repos.serveRepo, "m1");
       await saveVersions(repos, model, "state", 3);

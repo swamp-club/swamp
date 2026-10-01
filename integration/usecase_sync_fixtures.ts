@@ -482,6 +482,12 @@ export interface UseCaseRow<S = void> {
   noSettle?: boolean;
   /** The CLI is expected to refuse: its error message is observed. */
   refuses?: boolean;
+  /**
+   * The use case marks paths from parallel writes, so the order of each run
+   * of consecutive path marks is filesystem timing, not behaviour: compare
+   * those runs sorted. Their position among other ops stays pinned.
+   */
+  parallelMarks?: boolean;
   seed?: (repos: RowRepos, composition: Composition) => Promise<S>;
   cli: ((repos: RowRepos, seed: S) => CliInvocation) | null;
   serve: ((repos: RowRepos, seed: S) => ServeInvocation) | null;
@@ -540,7 +546,23 @@ export async function runRow<S>(
     }
     await row.verify?.(repos, seed, composition);
   });
+  if (row.parallelMarks) sortPathMarkRuns(observation!.ops);
   return observation!;
+}
+
+/** Sorts each run of consecutive path marks in place. */
+function sortPathMarkRuns(ops: string[]): void {
+  const isPathMark = (op: string) => op.startsWith("markDirty ");
+  for (let start = 0; start < ops.length;) {
+    if (!isPathMark(ops[start])) {
+      start++;
+      continue;
+    }
+    let end = start;
+    while (end < ops.length && isPathMark(ops[end])) end++;
+    ops.splice(start, end - start, ...ops.slice(start, end).sort());
+    start = end;
+  }
 }
 
 /**

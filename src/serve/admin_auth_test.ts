@@ -42,6 +42,15 @@ function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
   };
 }
 
+/**
+ * A client address unique to this run. The rate limiter is module state that
+ * keys a malformed token by client address, so tests sharing one address
+ * exhaust it across `deno test --repeats`.
+ */
+function freshClientAddr(): string {
+  return `client-${crypto.randomUUID()}`;
+}
+
 Deno.test("authenticateAdmin: no-auth mode returns anonymous principal", async () => {
   const deps = makeDeps({ authMode: "none" });
   const req = new Request("http://localhost/api/v1/health");
@@ -79,7 +88,7 @@ Deno.test("authenticateAdmin: returns 401 with invalid token", async () => {
   const req = new Request("http://localhost/api/v1/health", {
     headers: { authorization: "Bearer not-a-valid-token" },
   });
-  const result = await authenticateAdmin(req, "127.0.0.1", deps);
+  const result = await authenticateAdmin(req, freshClientAddr(), deps);
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(result.response.status, 401);
@@ -91,7 +100,7 @@ Deno.test("authenticateAdmin: trustProxy passes x-forwarded-for through auth flo
   const req = new Request("http://localhost/api/v1/health", {
     headers: {
       authorization: "Bearer not-a-valid-token",
-      "x-forwarded-for": "10.0.0.1, 192.168.1.1",
+      "x-forwarded-for": `${freshClientAddr()}, 192.168.1.1`,
     },
   });
   const result = await authenticateAdmin(req, "127.0.0.1", deps);
@@ -136,7 +145,7 @@ Deno.test("authenticateToken: returns 401 with an invalid token", async () => {
   const req = new Request("http://localhost/api/v1/health/stream", {
     headers: { authorization: `Bearer not-${crypto.randomUUID()}` },
   });
-  const result = await authenticateToken(req, "127.0.0.1", deps);
+  const result = await authenticateToken(req, freshClientAddr(), deps);
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.response.status, 401);
 });
