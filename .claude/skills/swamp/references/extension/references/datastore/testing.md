@@ -195,6 +195,33 @@ const { provider, isLockHeld } = createDatastoreTestContext();
 | `lockAcquireFails` | `false`                       | Make lock acquire reject         |
 | `withSyncService`  | `false`                       | Enable `createSyncService`       |
 
+### Shared remote across machines
+
+Experimental: the defaults track today's extension behaviour and will change
+during the datastore rework.
+
+`createInMemoryRemote()` holds remote content in memory; each
+`remote.connect(cacheDir)` is one simulated machine's sync service. Its defaults
+reproduce today's S3/GCS sync gaps (bare marks disable deletes, unmarked writes
+are never pushed, pulls never delete locally), so do not expect it to be
+friendlier than production. Switch a gap off through `semantics`.
+
+```typescript
+import { createInMemoryRemote } from "@swamp-club/swamp-testing";
+
+const remote = createInMemoryRemote();
+const a = remote.connect(aCache, { instance: "a" });
+const b = remote.connect(bCache, { instance: "b" });
+await a.markDirty({ relPath: "note" }); // after writing aCache/note
+await a.pushChanged();
+await b.pullChanged(); // bCache/note now exists
+remote.failNext("push"); // also "pull" | "prepare" | "commit"; remote.offline(true)
+remote.ops(); // ordered { instance, op, paths, deleted }
+```
+
+To assert only which paths core marks, use `createRecordingSyncService()`, which
+returns `{ service, marks, events }` and does nothing else.
+
 ## In-Repo Extensions
 
 Import directly from the testing package source:
