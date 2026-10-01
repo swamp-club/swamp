@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  Workflow,
+  workflowNameViolation,
+} from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
@@ -26,7 +29,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { alreadyExists } from "../errors.ts";
+import { alreadyExists, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -94,6 +97,17 @@ export async function* workflowCreate(
       yield { kind: "creating" };
 
       ctx.logger.debug`Creating workflow: name=${input.name}`;
+
+      const nameViolation = workflowNameViolation(input.name);
+      if (nameViolation) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Invalid workflow name: ${input.name}. ${nameViolation}`,
+          ),
+        };
+        return;
+      }
 
       // Check name uniqueness
       const existing = await deps.findByName(input.name);

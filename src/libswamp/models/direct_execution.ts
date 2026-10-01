@@ -23,7 +23,10 @@ import {
   vaultReferenceText,
 } from "../../domain/secrets/mod.ts";
 import type { z } from "zod";
-import { Definition } from "../../domain/definitions/definition.ts";
+import {
+  Definition,
+  definitionNameViolation,
+} from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import {
@@ -444,6 +447,18 @@ export async function resolveOrCreateDefinition(
       vouched,
       persistedGlobal,
     );
+  }
+
+  // Only a new definition must meet the naming rule; an existing one whose
+  // name predates it was adopted above and stays runnable.
+  const nameViolation = definitionNameViolation(definitionName);
+  if (nameViolation) {
+    return {
+      ok: false,
+      error: validationFailed(
+        `Invalid model name: ${definitionName}. ${nameViolation}`,
+      ),
+    };
   }
 
   // Validate provided global arguments but don't require missing ones.

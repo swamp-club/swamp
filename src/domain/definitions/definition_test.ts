@@ -22,6 +22,7 @@ import {
   createDefinitionId,
   Definition,
   type DefinitionData,
+  definitionNameViolation,
   isFilenameSafeDefinitionName,
 } from "./definition.ts";
 
@@ -760,4 +761,28 @@ Deno.test("Definition.withUpgradedGlobalArguments: preserves description", () =>
   );
   assertEquals(upgraded.description, "Preserved across upgrades");
   assertEquals(upgraded.globalArguments.new, "value");
+});
+
+Deno.test("definitionNameViolation: accepts names Definition.create accepts", () => {
+  for (const name of ["my-server", "prod_vpc", "a1", "@acme/my-server"]) {
+    assertEquals(definitionNameViolation(name), undefined, name);
+    Definition.create({ name });
+  }
+  assertEquals(definitionNameViolation("a".repeat(64)), undefined);
+});
+
+Deno.test("definitionNameViolation: returns the rule a name breaks", () => {
+  const lowercaseRule =
+    "Definition name must be lowercase alphanumeric with hyphens or underscores (e.g. 'my-server'). Must start with a letter or number.";
+  assertEquals(definitionNameViolation("shUpper"), lowercaseRule);
+  assertEquals(definitionNameViolation("-leading"), lowercaseRule);
+  assertEquals(
+    definitionNameViolation("a".repeat(65)),
+    "Definition name must be at most 64 characters.",
+  );
+  assertStringIncludes(definitionNameViolation("..") ?? "", "path traversal");
+  assertEquals(typeof definitionNameViolation(""), "string");
+  for (const name of ["shUpper", "-leading", "a".repeat(65), "..", ""]) {
+    assertThrows(() => Definition.create({ name }));
+  }
 });

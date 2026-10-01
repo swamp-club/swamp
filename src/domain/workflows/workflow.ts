@@ -80,6 +80,18 @@ const workflowNameStrict = workflowNameBase
     },
   );
 
+/**
+ * Returns the first naming rule a new workflow name breaks, or `undefined`
+ * when `Workflow.create` would accept it. Mirrors `Workflow.create`: scoped
+ * `@collective/name` names get the base rules only. Lets callers reject user
+ * input with a validation error before the factory throws.
+ */
+export function workflowNameViolation(name: string): string | undefined {
+  const schema = name.includes("/") ? workflowNameBase : workflowNameStrict;
+  const result = schema.safeParse(name);
+  return result.success ? undefined : result.error.issues[0]?.message;
+}
+
 export const WorkflowObjectSchema = z.object({
   id: z.string().uuid(),
   name: workflowNameBase,

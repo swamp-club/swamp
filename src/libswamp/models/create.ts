@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Definition } from "../../domain/definitions/definition.ts";
+import {
+  Definition,
+  definitionNameViolation,
+} from "../../domain/definitions/definition.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -139,6 +142,19 @@ export async function* modelCreate(
 
       ctx.logger
         .debug`Creating model: type=${input.typeArg}, name=${input.name}`;
+
+      // Validate the name before type resolution, which can auto-install an
+      // extension, so a create that would fail does no network work.
+      const nameViolation = definitionNameViolation(input.name);
+      if (nameViolation) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Invalid model name: ${input.name}. ${nameViolation}`,
+          ),
+        };
+        return;
+      }
 
       // Validate and resolve the model type
       const modelType = ModelType.create(input.typeArg);

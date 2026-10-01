@@ -933,6 +933,85 @@ Deno.test("resolveOrCreateDefinition: explicit globalArgs object is not mutated 
 
 // ── autoDefinitionLockKey ──────────────────────────────────────────────
 
+Deno.test("resolveOrCreateDefinition: refuses to auto-create a definition with an invalid name", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "ShUpper",
+    "run",
+    { region: "us-east-1", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.code, "validation_failed");
+    assertStringIncludes(result.error.message, "Invalid model name: ShUpper.");
+    assertStringIncludes(
+      result.error.message,
+      "must be lowercase alphanumeric",
+    );
+  }
+  assertEquals(saved, false);
+});
+
+Deno.test("resolveOrCreateDefinition: adopts an existing definition whose legacy name predates the naming rule", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const legacyDef = Definition.fromData({
+    id: crypto.randomUUID(),
+    name: "LegacyModel",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    version: 1,
+    tags: {},
+    globalArguments: { region: "us-east-1" },
+    methods: {},
+    inputs: undefined,
+  });
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: legacyDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => Promise.resolve(),
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "LegacyModel",
+    "run",
+    { region: "us-east-1", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, false);
+    assertEquals(result.definition.name, "LegacyModel");
+  }
+});
+
 Deno.test("autoDefinitionLockKey: simple name", () => {
   assertEquals(
     autoDefinitionLockKey("my-model"),
