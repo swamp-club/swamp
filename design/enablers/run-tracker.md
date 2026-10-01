@@ -92,13 +92,14 @@ days are purged at startup. `swamp run gc` removes older records on demand:
    `swamp workflow recover` interrupt such a record, tagged
    `interrupt_reason: owner_process_dead`, through `settleDeadOwnerRun`
    (`src/domain/workflows/orphaned_run_reaper.ts`). Because they run while
-   other swamp processes may be live, they trust the row only when it is
-   `interrupted` (already reaped) or `running` on this host with a dead pid,
-   never a row the owner settled itself. They re-read the record and write it
-   only while it is still `running` under that pid. A record with no row is
-   left alone: it carries no hostname, so on a shared datastore its pid says
-   nothing about whether it is alive. A row reaped on the TTL alone, from
-   another host, still counts, as it does for the tracker.
+   other swamp processes may be live, they trust only a row owned on this
+   host that is `interrupted` (a local row is reaped only once its pid is
+   dead) or `running` with a dead pid, never a row the owner settled itself.
+   A row from another host is reaped on its heartbeat age alone, so it never
+   counts; that host's own `run doctor` settles its runs. They re-read the
+   record and write it only while it is still `running` under that pid. A
+   record with no row is left alone: it carries no hostname, so on a shared
+   datastore its pid says nothing about whether it is alive.
    `swamp workflow resume` on such a run names `workflow recover` instead of
    saying to wait.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.

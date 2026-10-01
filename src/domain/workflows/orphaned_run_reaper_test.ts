@@ -464,6 +464,14 @@ Deno.test("trackerShowsDeadOwner: only an interrupted row or a local running row
     trackerShowsDeadOwner(trackerRow(id, { hostname: "other-host" }), check),
     false,
   );
+  // Another host's row is reaped on heartbeat age alone, never a pid check.
+  assertEquals(
+    trackerShowsDeadOwner(
+      trackerRow(id, { hostname: "other-host", status: "interrupted" }),
+      check,
+    ),
+    false,
+  );
   for (
     const status of [
       "completed",
