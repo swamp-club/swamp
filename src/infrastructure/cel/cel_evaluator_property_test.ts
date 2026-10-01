@@ -83,6 +83,12 @@ const CEL_RESERVED = new Set([
   "list",
   "string",
   "uint",
+  // cel-js binds these names itself; they resolve to built-in namespace
+  // objects and shadow a context variable of the same name (fast-check found
+  // `cel`: expected "0a", got "{}a")
+  "cel",
+  "google",
+  "optional",
 ]);
 
 const arbIdent = fc
