@@ -31,6 +31,7 @@ import {
 } from "./cel_evaluator.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
+import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 
 Deno.test("createExtensionCelEnvironment: arithmetic overloads work for double/int mixes", () => {
   const env = createExtensionCelEnvironment();
@@ -1776,4 +1777,78 @@ Deno.test("CelEvaluator: literal() text is not rewritten as a hyphenated model r
 Deno.test("createExtensionCelEnvironment: does NOT pre-register literal()", () => {
   const env = createExtensionCelEnvironment();
   assertThrows(() => env.evaluate("literal('x')"), Error);
+});
+
+// Constants cel-js 7.6.1 registers ahead of context variables: the type
+// keywords plus the cel, google and optional namespaces (swamp-club#2851).
+const CEL_JS_CONSTANTS = [
+  "bool",
+  "bytes",
+  "cel",
+  "double",
+  "google",
+  "int",
+  "list",
+  "map",
+  "null_type",
+  "optional",
+  "string",
+  "type",
+  "uint",
+];
+
+Deno.test("CelEvaluator.evaluate: cel-js constants shadow a context variable of the same name", () => {
+  const evaluator = new CelEvaluator();
+  for (const name of CEL_JS_CONSTANTS) {
+    const sentinel = `sentinel-${name}`;
+    let resolved: unknown;
+    try {
+      resolved = evaluator.evaluate(name, { [name]: sentinel });
+    } catch {
+      resolved = undefined;
+    }
+    assertEquals(
+      resolved === sentinel,
+      false,
+      `${name} resolved to the context value; cel-js no longer shadows it`,
+    );
+  }
+});
+
+// The declared keys of T, without the string or number index signature.
+type DeclaredKeys<T> = keyof {
+  [K in keyof T as string extends K ? never : number extends K ? never : K]:
+    T[K];
+};
+
+Deno.test("CelEvaluator.evaluate: every top-level ExpressionContext key resolves to its context value", () => {
+  // Typed against ExpressionContext's declared keys (its index signature
+  // stripped) so a new field fails type checking until it is listed here.
+  // deferredExpressions is internal bookkeeping rather than a CEL-visible
+  // name, but is probed so the list stays exhaustive.
+  const keys: Record<DeclaredKeys<ExpressionContext>, true> = {
+    deferredExpressions: true,
+    model: true,
+    self: true,
+    inputs: true,
+    workflow: true,
+    vault: true,
+    env: true,
+    data: true,
+    workers: true,
+    file: true,
+    workflowRunId: true,
+    run: true,
+    steps: true,
+    webhook: true,
+  };
+  const evaluator = new CelEvaluator();
+  for (const key of Object.keys(keys)) {
+    const sentinel = `sentinel-${key}`;
+    assertEquals(
+      evaluator.evaluate(key, { [key]: sentinel }),
+      sentinel,
+      `${key} is shadowed by a cel-js constant`,
+    );
+  }
 });

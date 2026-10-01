@@ -2619,3 +2619,64 @@ Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", (
   service.checkSpecNameAmbiguity("main", "shared", undefined, EXCLUDED);
   catalog.close();
 });
+
+// The declared keys of T, without any string or number index signature.
+type DeclaredKeys<T> = keyof {
+  [K in keyof T as string extends K ? never : number extends K ? never : K]:
+    T[K];
+};
+
+Deno.test("DataQueryService: every DataRecord field resolves to the row's value in a select", () => {
+  // Typed against DataRecord so a new field fails type checking until it is
+  // listed here, and a field named after a cel-js constant (cel, type, int,
+  // ...) fails the probe instead of silently resolving to the built-in
+  // (swamp-club#2851). namespace is a CEL reserved word, so it is probed
+  // through its ns alias.
+  const fields: Record<DeclaredKeys<DataRecord>, string> = {
+    id: "id",
+    name: "name",
+    version: "version",
+    isLatest: "isLatest",
+    createdAt: "createdAt",
+    namespace: "ns",
+    attributes: "attributes",
+    tags: "tags",
+    modelName: "modelName",
+    modelId: "modelId",
+    modelType: "modelType",
+    specName: "specName",
+    dataType: "dataType",
+    contentType: "contentType",
+    lifetime: "lifetime",
+    ownerType: "ownerType",
+    streaming: "streaming",
+    size: "size",
+    content: "content",
+    path: "path",
+    ownerRef: "ownerRef",
+    workflowRunId: "workflowRunId",
+    workflowName: "workflowName",
+    jobName: "jobName",
+    stepName: "stepName",
+    source: "source",
+  };
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow());
+
+  const [record] = service.querySync("true", {
+    loadAttributes: true,
+  }) as DataRecord[];
+  for (const [field, identifier] of Object.entries(fields)) {
+    const [projected] = service.querySync("true", { select: identifier });
+    // content of a JSON row is exposed as its parsed attributes.
+    const expected = field === "content"
+      ? record.attributes
+      : record[field as keyof DataRecord];
+    assertEquals(
+      projected,
+      expected,
+      `${identifier} does not resolve to the row's ${field}`,
+    );
+  }
+  catalog.close();
+});

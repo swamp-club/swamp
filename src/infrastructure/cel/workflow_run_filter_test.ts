@@ -234,3 +234,43 @@ Deno.test("evaluateWorkflowRunFilter: missing input key returns false instead of
     false,
   );
 });
+
+Deno.test("evaluateWorkflowRunFilter: every WorkflowRunFilterContext field resolves to the run's value", () => {
+  const run: Required<WorkflowRunFilterContext> = {
+    workflowName: "verify-build",
+    status: "failed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    duration: 60.5,
+    inputs: { commit: "abc" },
+    tags: { env: "ci" },
+    instanceId: "instance-1",
+    triggerSource: "manual",
+    failedStep: "lint",
+    failureReason: "exit 1",
+  };
+  // Typed against WorkflowRunFilterContext so a new field fails type
+  // checking until it is listed here, and a field named after a cel-js
+  // constant (cel, type, int, ...) fails instead of silently resolving to
+  // the built-in (swamp-club#2851).
+  const predicates: Record<keyof WorkflowRunFilterContext, string> = {
+    workflowName: 'workflowName == "verify-build"',
+    status: 'status == "failed"',
+    startedAt: 'startedAt == "2026-01-01T00:00:00.000Z"',
+    completedAt: 'completedAt == "2026-01-01T00:01:00.000Z"',
+    duration: "duration == 60.5",
+    inputs: 'inputs.commit == "abc"',
+    tags: 'tags.env == "ci"',
+    instanceId: 'instanceId == "instance-1"',
+    triggerSource: 'triggerSource == "manual"',
+    failedStep: 'failedStep == "lint"',
+    failureReason: 'failureReason == "exit 1"',
+  };
+  for (const [field, predicate] of Object.entries(predicates)) {
+    assertEquals(
+      evaluateWorkflowRunFilter(predicate, run),
+      true,
+      `${field} does not resolve to the run's value`,
+    );
+  }
+});
