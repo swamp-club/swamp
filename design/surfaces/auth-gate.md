@@ -55,8 +55,11 @@ for verification.
 - **Exempt**: bare `swamp`, the bare `auth` group, and `auth login`,
   `auth logout` and `auth whoami`. These are the path to a credential. Also
   exempt is any line Cliffy will answer with help or version output
-  (`--help`, `-h`, `--version`, `-V`), because no command runs.
-- **Gated**: everything else, including `help`, `version`, `update`,
+  (`--help`, `-h`, `--version`, `-V`), because no command runs, and
+  `swamp help [command...]`. That is the structured form of `--help` that
+  agents read to learn the CLI. It only serializes the command tree, so
+  gating it would protect nothing.
+- **Gated**: everything else, including `version`, `update`,
   `completions`, `serve` and `worker`. The gate runs right after telemetry
   starts, before the repo marker, extension loaders or auto-resolver.
 
@@ -95,10 +98,17 @@ other failure runs on the token as `offline`.
 When both a signin token and a file proof exist, the gate uses whichever was
 issued for the active key. A stale exported token never hides a valid login.
 
+An ephemeral runner keeps no `auth_fail_open.json`. A CI job without a signin
+token therefore starts a fresh 24-hour window on every job while swamp-club
+returns 5xx. Only swamp-club can produce a 5xx, so a client cannot trigger
+this. CI should set the signin token.
+
 ## Weekly refresh
 
 A file proof older than seven days is refreshed after the command finishes.
-The refresh uses a 3-second timeout and is awaited before exit. It never
+The refresh uses a 3-second timeout and is awaited before exit. At most one
+attempt is made an hour (`auth_refresh_attempt.json`), so an offline user does
+not wait at every exit. It never
 changes the current run. A verified answer saves the new proof. A rejection
 deletes it, so the next command blocks. Any failure keeps it for the next run.
 Proofs expire after 14 days, which leaves a week of margin if swamp-club is
@@ -111,8 +121,9 @@ down when a refresh is due.
 | `auth_verified.json`    | The proof and the public keys from the last whoami  | a rejection, `auth logout`    |
 | `auth_fail_open.json`   | When the current 24-hour fail-open window started  | a verified answer, logout     |
 | `auth_token_check.json` | The fingerprint and time of the last token check   | a rejection, logout           |
+| `auth_refresh_attempt.json` | When the weekly refresh was last attempted   | logout                        |
 
-All three are written mode 0600. Writes are best effort: a read-only config dir
+All four are written mode 0600. Writes are best effort: a read-only config dir
 never fails a run the gate already passed. A future or unparsable time is read
 as absent, so editing a file cannot widen a window.
 

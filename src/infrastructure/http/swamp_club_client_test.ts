@@ -1514,3 +1514,32 @@ Deno.test("SwampClubClient.verifyIdentity: a timeout is unreachable", async () =
     await mock.shutdown();
   }
 });
+
+Deno.test("SwampClubClient.verifyIdentity: a 200 that is not swamp-club's answer is refused, never rejected", async () => {
+  for (
+    const body of ["{}", "[]", '"ok"', "1", "null", '{"authenticated":"yes"}']
+  ) {
+    assertEquals(
+      (await verifyAgainst(() =>
+        new Response(body, { headers: { "content-type": "application/json" } })
+      )).outcome,
+      { kind: "refused", status: 200 },
+      body,
+    );
+  }
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a body cut off by the timeout is unreachable", async () => {
+  const mock = startMockServer(() => {
+    // Headers now, a body that never finishes.
+    const stream = new ReadableStream({ start() {} });
+    return new Response(stream, { status: 200 });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.verifyIdentity("k", AbortSignal.timeout(200));
+    assertEquals(result.outcome, { kind: "unreachable", reason: "timeout" });
+  } finally {
+    await mock.shutdown();
+  }
+});

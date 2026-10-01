@@ -129,6 +129,8 @@ export const TOKEN_CHECK_TTL_SECONDS = HOUR;
 export const FAIL_OPEN_WINDOW_SECONDS = DAY;
 /** Age at which a file proof is refreshed in the background. */
 export const REFRESH_AFTER_SECONDS = 7 * DAY;
+/** How long a failed refresh waits before the next attempt. */
+export const REFRESH_RETRY_SECONDS = HOUR;
 
 /**
  * True when `since` is a usable past time. A future or non-finite time —
@@ -270,10 +272,20 @@ export function decideAfterCheck(input: AfterCheckInput): AfterCheckResult {
   }
 }
 
-/** True when a file proof is old enough for the weekly background refresh. */
-export function shouldRefresh(proof: LocalProofVerdict, now: number): boolean {
-  return proof.kind === "valid" && proof.source === "file" &&
-    now - proof.issuedAt > REFRESH_AFTER_SECONDS;
+/**
+ * True when a file proof is old enough for the weekly background refresh and
+ * no attempt was made in the last hour. The refresh runs at exit with a
+ * timeout, so without the hour an offline user would wait at every exit.
+ */
+export function shouldRefresh(
+  proof: LocalProofVerdict,
+  now: number,
+  lastAttemptAt?: number,
+): boolean {
+  if (proof.kind !== "valid" || proof.source !== "file") return false;
+  if (now - proof.issuedAt <= REFRESH_AFTER_SECONDS) return false;
+  return !(isPastTime(lastAttemptAt, now) &&
+    now - lastAttemptAt < REFRESH_RETRY_SECONDS);
 }
 
 /**

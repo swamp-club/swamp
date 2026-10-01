@@ -67,9 +67,9 @@ found), see [references/version-check.md](references/version-check.md).
 
 ### Account required (`auth_gate_blocked`)
 
-Every subcommand except `auth login`, `auth logout`, `auth whoami` and the
-`--help`/`--version` flags needs a swamp-club.com account. The message names the
-cause:
+Every subcommand except `auth login`, `auth logout`, `auth whoami`, `swamp help`
+and the `--help`/`--version` flags needs a swamp-club.com account. The message
+names the cause:
 
 - **No account**: the user runs `swamp auth login` (browser sign-in they finish
   themselves). In CI, set `SWAMP_API_KEY` and `SWAMP_SIGNIN_TOKEN` from a

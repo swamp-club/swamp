@@ -478,3 +478,45 @@ Deno.test("AuthGateBlockedError: carries the reason, the code and the design's m
     "Retry in 30s",
   );
 });
+
+Deno.test("runAuthGate: a refresh attempt suppresses the next for an hour", async () => {
+  await withHarness(async (h) => {
+    await saveProof(
+      h,
+      await mintTestProof(h.key, API_KEY, {
+        iat: NOW - 8 * DAY,
+        exp: NOW + DAY,
+      }),
+    );
+    const offline: IdentityCheckResult = {
+      outcome: { kind: "unreachable", reason: "timeout" },
+    };
+    const first = await runAuthGate(h.deps({ answer: offline }));
+    assert(first.kind === "pass" && first.refresh);
+    await first.refresh();
+    assertEquals(h.calls.length, 1);
+
+    const soon = await runAuthGate(h.deps({ now: NOW + 60 * 59 }));
+    assert(soon.kind === "pass");
+    assertEquals(soon.refresh, undefined, "no second attempt within the hour");
+
+    const later = await runAuthGate(h.deps({ now: NOW + 60 * 60 }));
+    assert(later.kind === "pass");
+    assert(later.refresh, "tries again after an hour");
+  });
+});
+
+Deno.test("blockMessage: waits read in sensible units and days are pluralised", () => {
+  assertStringIncludes(
+    blockMessage({ kind: "refused", retryAfterSeconds: 3600 }),
+    "Retry in 60 minutes",
+  );
+  assertStringIncludes(
+    blockMessage({ kind: "refused", retryAfterSeconds: 3 * 3600 }),
+    "Retry in 3 hours",
+  );
+  assertStringIncludes(
+    blockMessage({ kind: "unreachable_unverified", daysSinceVerification: 1 }),
+    "in 1 day.",
+  );
+});

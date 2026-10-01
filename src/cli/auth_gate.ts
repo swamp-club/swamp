@@ -244,7 +244,7 @@ export async function runAuthGate(
     lastTokenCheckAt,
     now,
   });
-  const refresh = shouldRefresh(verdict, now)
+  const refresh = shouldRefresh(verdict, now, await repo.readRefreshAttempt())
     ? () => runProofRefresh(deps)
     : undefined;
   if (before.kind === "block") return { kind: "block", reason: before.reason };
@@ -313,6 +313,14 @@ export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
     credential.apiKey,
     deps.now(),
   );
+  const now = deps.now();
+  // Recorded before the call, so a refresh that never answers still waits an
+  // hour before the next attempt.
+  try {
+    await deps.verificationRepo.recordRefreshAttempt(now);
+  } catch {
+    // Best effort — without the stamp the next run simply tries again.
+  }
   const result = await deps.verifyIdentity(
     credential,
     AbortSignal.timeout(SHORT_CHECK_TIMEOUT_MS),
@@ -320,7 +328,7 @@ export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
   await applyEffects(refreshEffects(result.outcome), deps, {
     response: result.response,
     fileProofIsActiveKeys: assessment.fileProofIsActiveKeys,
-    now: deps.now(),
+    now,
   });
 }
 
@@ -363,6 +371,17 @@ export function createAuthGateDeps(
   };
 }
 
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
+
+/** A Retry-After wait in the largest whole unit: 45s, 2 minutes, 1 hour. */
+function formatWait(seconds: number): string {
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 2 * 3600) return plural(Math.ceil(seconds / 60), "minute");
+  return plural(Math.ceil(seconds / 3600), "hour");
+}
+
 const LOGIN_HINT = "Run `swamp auth login` to sign in again.";
 
 /** The message a blocked run exits with, per the design's user experience. */
@@ -392,7 +411,7 @@ export function blockMessage(reason: BlockReason): string {
       ].join("\n");
     case "refused": {
       const wait = reason.retryAfterSeconds !== undefined
-        ? ` Retry in ${reason.retryAfterSeconds}s.`
+        ? ` Retry in ${formatWait(reason.retryAfterSeconds)}.`
         : " Try again shortly.";
       return [
         "Could not verify your identity: swamp-club.com refused the check.",
@@ -404,7 +423,9 @@ export function blockMessage(reason: BlockReason): string {
     case "unreachable_unverified":
       return reason.daysSinceVerification !== undefined
         ? [
-          `Your identity hasn't been verified in ${reason.daysSinceVerification} days.`,
+          `Your identity hasn't been verified in ${
+            plural(reason.daysSinceVerification, "day")
+          }.`,
           "",
           "  swamp needs to check in with swamp-club.com periodically.",
           "  Please check your network connection and try again.",

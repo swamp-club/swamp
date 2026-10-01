@@ -349,6 +349,8 @@ Deno.test("auth gate integration: the weekly refresh saves a fresh proof and dro
     assertEquals(cached.proof, fresh.proof);
 
     await w.saveProof(old);
+    // An hour later: the last attempt no longer holds the next one back.
+    await Deno.remove(join(w.configDir, "auth_refresh_attempt.json"));
     w.answer(() => Response.json({ authenticated: false }, { status: 401 }));
     const again = await w.gate();
     assert(again.kind === "pass" && again.refresh);

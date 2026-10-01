@@ -30,6 +30,7 @@ import { base64urlDecode } from "../../domain/auth/verification_proof.ts";
 const VERIFICATION_FILE = "auth_verified.json";
 const FAIL_OPEN_FILE = "auth_fail_open.json";
 const TOKEN_CHECK_FILE = "auth_token_check.json";
+const REFRESH_ATTEMPT_FILE = "auth_refresh_attempt.json";
 
 /** A proof the gate may verify, and where it came from. */
 export interface ProofCandidate {
@@ -204,11 +205,24 @@ export class AuthVerificationRepository {
     await this.remove(TOKEN_CHECK_FILE);
   }
 
-  /** Forget everything the gate keeps: the proof and both stamps. */
+  /** When the weekly refresh was last attempted (Unix seconds), if known. */
+  async readRefreshAttempt(): Promise<number | undefined> {
+    const data = await this.readJson(REFRESH_ATTEMPT_FILE);
+    return typeof data?.at === "number" && Number.isFinite(data.at)
+      ? data.at
+      : undefined;
+  }
+
+  async recordRefreshAttempt(now: number): Promise<void> {
+    await this.writeJson(REFRESH_ATTEMPT_FILE, { at: now });
+  }
+
+  /** Forget everything the gate keeps: the proof and every stamp. */
   async clearAll(): Promise<void> {
     await this.remove(VERIFICATION_FILE);
     await this.remove(FAIL_OPEN_FILE);
     await this.remove(TOKEN_CHECK_FILE);
+    await this.remove(REFRESH_ATTEMPT_FILE);
   }
 
   private async readJson(

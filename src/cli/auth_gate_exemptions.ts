@@ -24,9 +24,10 @@ import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
  * Whether the auth gate runs for an invocation: `exempt` or `gated`.
  *
  * Exempt are bare `swamp` (prints help), the bare `auth` group, `auth login`,
- * `auth logout` and `auth whoami` (the path to a credential), and any line
- * Cliffy will answer with help or version output instead of running a
- * command. Everything else is gated.
+ * `auth logout` and `auth whoami` (the path to a credential), `swamp help`
+ * (the structured `--help` agents read to learn the CLI; it only serializes
+ * the command tree), and any line Cliffy will answer with help or version
+ * output instead of running a command. Everything else is gated.
  *
  * The decision is made against the real command tree — the same declarations
  * Cliffy parses — never a guess from token positions. A guess once took
@@ -59,6 +60,7 @@ export function authGateTiming(
   const noPositionals = resolved.args.length === 0;
 
   if (path.length === 0 && noPositionals) return "exempt";
+  if (path[0] === "help") return "exempt";
   if (path[0] === "auth") {
     if (path.length === 1 && noPositionals) return "exempt";
     if (path.length >= 2 && EXEMPT_AUTH_SUBCOMMANDS.has(path[1])) {

@@ -2255,14 +2255,15 @@ async function runInvocation(
   }
 
   // The auth gate (design/surfaces/auth-gate.md): every subcommand needs a
-  // swamp-club account. It runs before any other startup work, so a blocked
-  // run loads no extensions and touches no repo state. Which command a line
-  // runs, and whether Cliffy will answer it with help or version output, is
-  // resolved against the real command tree, never guessed. Hook mode checks
-  // locally only and, when blocked, records nothing and exits 0 so an agent
-  // session is not broken.
-  const commandTree = buildCommandTree();
-  const gateTiming = authGateTiming(commandTree, args);
+  // swamp-club account. It runs before the repo marker, extension loaders and
+  // auto-resolver, so a blocked run loads no extensions; only telemetry
+  // setup has run. Which command a line runs, and whether Cliffy will answer
+  // it with help or version output, is resolved against the real command
+  // tree, never guessed. Hook mode (always `audit record`, always gated)
+  // skips building the tree, checks locally only and, when blocked, records
+  // nothing and exits 0 so an agent session is not broken.
+  const commandTree = hookMode ? undefined : buildCommandTree();
+  const gateTiming = commandTree ? authGateTiming(commandTree, args) : "gated";
   let gateOutcome: AuthGateOutcome | undefined;
   if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
   if (gateTiming === "gated") {
@@ -2281,7 +2282,7 @@ async function runInvocation(
     if (gateOutcome.kind === "block") {
       const error = new AuthGateBlockedError(gateOutcome.reason);
       try {
-        if (telemetryCtx && !hookMode) {
+        if (telemetryCtx && commandTree) {
           telemetryCtx.service.setAuthMode("none");
           const sensitive: string[] = [];
           await recordAndFlushError(

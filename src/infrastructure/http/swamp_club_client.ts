@@ -397,18 +397,24 @@ export class SwampClubClient {
     }
 
     const status = res.status;
+    // The signal also bounds reading the body. A body cut off by it is a
+    // slow link, not a refusal.
+    const refusedUnlessTimedOut = (): IdentityCheckResult =>
+      signal.aborted
+        ? { outcome: { kind: "unreachable", reason: "timeout" } }
+        : { outcome: { kind: "refused", status } };
     if (status === 401) {
       // swamp-club's whoami answers an unknown key with exactly
       // `{ "authenticated": false }`. A gateway can send its own 401 (or
       // strip x-api-key) while the key is fine, so only that body counts.
       return await isWhoamiRejection(res)
         ? { outcome: { kind: "rejected", status } }
-        : { outcome: { kind: "refused", status } };
+        : refusedUnlessTimedOut();
     }
     if (status === 403) {
       return await isSwampClubError(res)
         ? { outcome: { kind: "rejected", status } }
-        : { outcome: { kind: "refused", status } };
+        : refusedUnlessTimedOut();
     }
     if (status === 429) {
       const retryAfterSeconds = parseRetryAfter(res.headers.get("retry-after"));
@@ -426,16 +432,27 @@ export class SwampClubClient {
       return { outcome: { kind: "refused", status } };
     }
 
-    let response: WhoamiResponse;
+    let body: unknown;
     try {
-      response = await res.json();
+      body = await res.json();
     } catch {
-      // A 200 that is not whoami JSON is a captive portal or a broken
-      // proxy, not a verification.
+      // A 200 that is not JSON is a captive portal or a broken proxy, not a
+      // verification.
+      return refusedUnlessTimedOut();
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return { outcome: { kind: "refused", status } };
     }
-    if (!response.authenticated) {
+    const response = body as WhoamiResponse;
+    // Only swamp-club's own answer counts either way: `authenticated: true`
+    // verifies and `authenticated: false` rejects. Any other object (a
+    // proxy's `200 {}`) says nothing about the key, so it must never delete a
+    // good proof.
+    if (response.authenticated === false) {
       return { outcome: { kind: "rejected", status } };
+    }
+    if (response.authenticated !== true) {
+      return { outcome: { kind: "refused", status } };
     }
     const freshProof = Boolean(
       response.verificationProof && response.verificationSignature &&

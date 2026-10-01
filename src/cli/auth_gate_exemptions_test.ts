@@ -38,6 +38,12 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
       ["auth", "logout", "--json"],
       ["auth", "whoami"],
       ["--json", "auth", "whoami"],
+      ["help"],
+      ["help", "model"],
+      ["help", "model", "method", "run"],
+      ["--log", "help", "workflow"],
+      // A pasted command line after `help` is still only help.
+      ["help", "vault", "put", "prod", "DB_PASSWORD=hunter2"],
     ]
   ) {
     assertEquals(timing(args), "exempt", args.join(" "));
@@ -64,7 +70,6 @@ Deno.test("authGateTiming: every other subcommand is gated", () => {
   for (
     const args of [
       ["version"],
-      ["help", "model"],
       ["update"],
       ["completions", "zsh"],
       ["telemetry", "disable"],
@@ -106,7 +111,8 @@ Deno.test("authGateTiming: every top-level command behind every boolean root opt
     .flatMap((o) => o.flags)
     .filter((flag) => !["--help", "-h", "--version", "-V"].includes(flag));
   const commands = tree.getCommands(true).map((c) => c.getName())
-    .filter((name) => name !== "auth");
+    // `auth` and `help` hold exempt commands; their own tests cover them.
+    .filter((name) => name !== "auth" && name !== "help");
   assertEquals(booleanRootOptions.includes("--log"), true);
   for (const option of booleanRootOptions) {
     for (const command of commands) {

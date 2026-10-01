@@ -320,6 +320,7 @@ Deno.test("createAuthLogoutDeps: deleting credentials also clears the cached pro
       "auth_verified.json",
       "auth_fail_open.json",
       "auth_token_check.json",
+      "auth_refresh_attempt.json",
     ];
     for (const file of files) {
       await Deno.writeTextFile(join(configDir, file), "{}");

@@ -25,6 +25,7 @@ import {
   type LocalProofVerdict,
   NO_EFFECTS,
   REFRESH_AFTER_SECONDS,
+  REFRESH_RETRY_SECONDS,
   refreshEffects,
   shouldRefresh,
   TOKEN_CHECK_TTL_SECONDS,
@@ -295,4 +296,16 @@ Deno.test("refreshEffects: saves on verified, deletes on rejection, keeps otherw
     refreshEffects({ kind: "unreachable", reason: "timeout" }),
     NO_EFFECTS,
   );
+});
+
+Deno.test("shouldRefresh: waits an hour after an attempt, ignoring future stamps", () => {
+  const old: LocalProofVerdict = {
+    kind: "valid",
+    source: "file",
+    issuedAt: NOW - REFRESH_AFTER_SECONDS - 1,
+  };
+  assertEquals(shouldRefresh(old, NOW, NOW - REFRESH_RETRY_SECONDS + 1), false);
+  assertEquals(shouldRefresh(old, NOW, NOW - REFRESH_RETRY_SECONDS), true);
+  assertEquals(shouldRefresh(old, NOW, NOW + DAY), true);
+  assertEquals(shouldRefresh(old, NOW, undefined), true);
 });
