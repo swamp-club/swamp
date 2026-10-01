@@ -201,11 +201,13 @@ Deno.test("a marked file reaches another machine", async () => {
 | `dirtyPathsCap` | `2000`                       | Marked paths kept before overflowing to bulk                  |
 | `capabilities`  | `{ twoPhaseSync: true }`     | What every connected service advertises                       |
 
-The remote also offers `files()` (committed content),
-`failNext(op, error?,
-{ afterUploads?, instance? })`, `offline(boolean)`,
-`ops()` (an ordered `{ instance, op, paths, deleted }` log) and
-`resetSidecar(cacheDir)`.
+The remote also offers:
+
+- `files()`: the committed content;
+- `failNext(op, error?, { afterUploads?, instance? })`;
+- `offline(boolean)`;
+- `ops()`: an ordered `{ instance, op, paths, deleted }` log;
+- `resetSidecar(cacheDir)`.
 
 Not modelled: namespaces, lazy hydration, the control plane and `previewPush`.
 

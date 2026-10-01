@@ -531,3 +531,18 @@ Deno.test("createInMemoryRemote: afterUploads still fails operations other than 
     await assertRejects(() => a.pullChanged(), Error, "pull down");
   });
 });
+
+Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads everything and deletes nothing (S3SYNC:3057-3060)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "." });
+    assertEquals(await a.pushChanged(), 1);
+    assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
+  });
+});

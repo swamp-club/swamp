@@ -41,7 +41,9 @@
  * - A scoped push uploads each marked file that differs, walks each marked
  *   directory deleting remote entries under it that are gone locally, and
  *   deletes the remote key (and `key/`) of a marked path that is absent
- *   (S3SYNC:3023-3094). A bulk push uploads everything and deletes nothing
+ *   (S3SYNC:3023-3094). A mark of `.` becomes the cache root: its walk
+ *   uploads everything but deletes nothing, because the delete prefix is
+ *   `/` (S3SYNC:3057-3060). A bulk push uploads everything and deletes nothing
  *   unless the set overflowed (S3SYNC:3095-3165).
  * - Uploads go through `pushFile`, which sets the bulk flag
  *   (S3SYNC:2822). A push that fails after its uploads therefore leaves bulk
@@ -232,8 +234,9 @@ function sameBytes(a: Uint8Array, b: Uint8Array | undefined): boolean {
   return true;
 }
 
+/** Matches the extensions' `dir + "/"` prefix test, so `""` matches nothing. */
 function isUnder(key: string, dir: string): boolean {
-  return dir === "" || key.startsWith(dir + "/");
+  return key.startsWith(dir + "/");
 }
 
 function isInSubdirs(key: string, subdirs: readonly string[]): boolean {

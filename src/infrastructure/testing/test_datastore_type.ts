@@ -23,6 +23,9 @@
  * `requireInitializedRepo` builds its repositories, `markDirty` hook and
  * flush paths against the fake exactly as it would against S3 or GCS.
  *
+ * Test-only: production code must never import this module or
+ * `@swamp-club/swamp-testing`.
+ *
  * @module
  */
 
