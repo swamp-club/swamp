@@ -462,7 +462,7 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         for (const detached of remoteDetached) {
           cliCtx.logger
-            .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left suspended. Cancel it with ${detached.cancelCommand}`;
+            .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
         }
       }
       return;
@@ -672,7 +672,7 @@ export const workflowCancelCommand = withRemoteOptions(
       }
       for (const detached of detachedNestedRuns) {
         cliCtx.logger
-          .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left suspended. Cancel it with ${detached.cancelCommand}`;
+          .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
       }
     }
   },

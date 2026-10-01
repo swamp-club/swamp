@@ -29,7 +29,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
-import { WorkflowRun } from "./workflow_run.ts";
+import { WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
 
 class Runs {
   readonly byId = new Map<string, WorkflowRun>();
@@ -155,6 +155,78 @@ Deno.test("NestedRunLink.resolveChild: refuses a child that links back to anothe
   const [wait] = parent.findNestedWaits();
   const resolved = await new NestedRunLink(deps).resolveChild(parent, wait);
   assertEquals(resolved.kind, "broken");
+});
+
+/**
+ * A parent suspended on a child that an older binary saved: the child's
+ * parentRun dropped, every other field kept, then `childFields` applied.
+ */
+function droppedBackLinkPair(
+  childFields: Partial<WorkflowRunData> = {},
+): {
+  parent: WorkflowRun;
+  child: WorkflowRun;
+  deps: ReturnType<typeof linkedPair>["deps"];
+} {
+  const childWorkflow = gatedChildWorkflow();
+  const parent = WorkflowRun.create(parentWorkflow, undefined, "user:alice");
+  parent.start();
+  const step = parent.getJob("main")!.getStep("call-child")!;
+  step.start();
+  const child = WorkflowRun.create(childWorkflow, undefined, "user:alice");
+  child.recordParentRun({
+    workflowId: parentWorkflow.id,
+    workflowName: parentWorkflow.name,
+    runId: parent.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parentWorkflow.name],
+  });
+  child.start();
+  child.suspend();
+  step.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  parent.suspend();
+  const { parentRun: _dropped, ...kept } = child.toData();
+  const saved = WorkflowRun.fromData({ ...kept, ...childFields });
+  const runs = new Runs();
+  runs.add(parent, saved);
+  return {
+    parent,
+    child: saved,
+    deps: {
+      runRepo: runs,
+      workflowRepo: new Workflows(parentWorkflow, childWorkflow),
+    },
+  };
+}
+
+Deno.test("NestedRunLink.resolveChild: accepts a child an older binary saved without its back-link when the fields it kept agree", async () => {
+  const { parent, child, deps } = droppedBackLinkPair();
+  assertEquals(child.parentRun, undefined);
+  const [wait] = parent.findNestedWaits();
+  const resolved = await new NestedRunLink(deps).resolveChild(parent, wait);
+  assert(resolved.kind === "resolved");
+  assertEquals(resolved.child.id, child.id);
+  assertEquals(resolved.backLinkDropped, true);
+});
+
+Deno.test("NestedRunLink.resolveChild: refuses a child without a back-link whose initiator, trigger source or start disagrees", async () => {
+  const disagreements: Partial<WorkflowRunData>[] = [
+    { initiatedBy: "user:mallory" },
+    { triggerSource: "manual" },
+    { startedAt: "2020-01-01T00:00:00.000Z" },
+  ];
+  for (const fields of disagreements) {
+    const { parent, deps } = droppedBackLinkPair(fields);
+    const [wait] = parent.findNestedWaits();
+    const resolved = await new NestedRunLink(deps).resolveChild(parent, wait);
+    assertEquals(resolved.kind, "broken", JSON.stringify(fields));
+  }
 });
 
 Deno.test("NestedRunLink.resolveChild: a malformed link is broken and never read", async () => {

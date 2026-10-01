@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  isFinishedRun,
   NestedRunLink,
   type NestedRunLinkDeps,
 } from "../../domain/workflows/nested_run_link.ts";
@@ -29,7 +30,7 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 
 /**
  * A nested workflow run its parent stopped waiting on when the parent ended
- * (swamp-club#2736). The child was left suspended; cancelling it is a
+ * (swamp-club#2736). The child was left unfinished; cancelling it is a
  * separate step.
  */
 export interface DetachedNestedRunData {
@@ -52,13 +53,17 @@ export interface AwaitingParentData {
   resumeCommand: string;
 }
 
-function serverSuffix(run: { instanceId?: string } | null): string {
+function serverSuffix(
+  run: { instanceId?: string } | null | undefined,
+): string {
   return run?.instanceId !== undefined ? " --server <url>" : "";
 }
 
 /**
- * The child runs the ended run's nested steps were still waiting on, each
- * with the command that cancels it.
+ * The child runs the ended run's nested steps were still waiting on and that
+ * have not finished, each with the command that cancels it. A child that
+ * already finished, or no longer exists, needs no cancel and is left out; one
+ * that cannot be read is reported, since it may still be unfinished.
  */
 export async function detachedNestedRunsOf(
   deps: Pick<NestedRunLinkDeps, "runRepo">,
@@ -69,7 +74,8 @@ export async function detachedNestedRunsOf(
     const child = await deps.runRepo.findById(
       createWorkflowId(detached.child.workflowId),
       createWorkflowRunId(detached.child.runId),
-    ).catch(() => null);
+    ).catch(() => undefined);
+    if (child === null || (child && isFinishedRun(child))) continue;
     result.push({
       workflowId: detached.child.workflowId,
       workflowName: detached.child.workflowName,

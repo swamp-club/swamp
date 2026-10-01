@@ -223,14 +223,21 @@ and parks the parent's step in `waiting_approval` with a `nestedRun` link to
 the child (`StepRun.waitForNestedRun`). The child records the step that
 started it as `parentRun`, with its nesting depth and the names of the
 workflows above it, so a resume of the child keeps the depth limit and cycle
-detection. A link is recorded only once a child suspends, so a nested
-workflow without gates is unaffected, and an interrupted one recovers as
+detection. Every child records `parentRun` when it starts; the parent's step
+records `nestedRun` only once its child suspends, so the parent of a nested
+workflow without gates is unchanged, and an interrupted parent recovers as
 before. Both links are validated from both ends before they are followed
 (`NestedRunLink` in `src/domain/workflows/nested_run_link.ts`); a malformed
 link is kept as written and never followed. The parent emits its own
 `suspended` event, naming the step and, in `nested`, the child run. The
 child's `approval_requested` event still reaches the parent's stream, and
-carries the child's workflow name, so its approve hint names the child.
+carries the child's workflow name, so its approve hint names the child. In
+`--json` output the suspended document's `approvalRequired` names the gate to
+decide with its `workflowName` and `runId`: the gate the child, or a run below
+it, requested in the same stream. When the stream carried none (a resume that
+found the child suspended again), it names the waiting step of the parent.
+`waitingOnNestedRun` names the child the step waits on. A direct gate's
+`approvalRequired` names its own run the same way.
 
 The child stays an ordinary suspended run. It is approved, rejected, resumed
 and cancelled on its own run, with today's commands and authorization:
@@ -244,10 +251,13 @@ derived from the child. `findWaitingApprovalStep` reports gates only, and a
 nested wait keeps the persisted `awaitingResume` false. `workflow.run.search`,
 `workflow history get` and the dashboard derive it from the child runs instead
 (`nestedWaits`, and `awaitingResume` once every child finished). A parent
-resume, from any entry (CLI, serve, auto-resume, recover), first checks every
-nested wait and refuses, changing nothing, while a child has not finished
+resume, from any entry (CLI, serve, auto-resume, and serve's recover, which
+resumes), first checks every nested wait and refuses, changing nothing, while a
+child has not finished
 (`NestedRunPendingError`, naming what settles each child: approve, resume,
-recover, or cancel). Once the children finished, the resume re-enters the
+recover, or cancel). `swamp workflow recover` never resumes: it resets an
+interrupted parent to suspended, and the resume that follows is refused until
+the children finished. Once the children finished, the resume re-enters the
 nested step without evaluating its trigger or guard again and reads the
 child's outcome (`settleNestedWait`):
 
@@ -275,9 +285,14 @@ A parent this instance still drives is awaited first. Each skip is audited as
 When a parent ends while a step still waits on a child (a reject of its own
 gate, a cancel, a supersede), only the parent changes: `WorkflowRun.cancel()`
 and `complete()` mark each such step failed with `detachedNestedRun`, and the
-child is left suspended. The command reports each detached child with the
-command that cancels it (the `--server` form when serve owns it), and
-`swamp workflow approvals` marks the child's row as no longer awaited.
+child is left as it was. The step's error names the child but not its state,
+which may have changed since the parent last read it. The command reports each
+detached child that has not finished with the command that cancels it (the
+`--server` form when serve owns it; `detachedNestedRunsOf` in
+`src/libswamp/workflows/nested_runs.ts`). A child that already finished, or no
+longer exists, needs no cancel and is not reported; one that cannot be read is
+reported. `swamp workflow approvals` marks the child's row as no longer
+awaited.
 Cancelling the children with their parent is swamp-club#2867. Supersede skips
 runs that have a `parentRun`. Run cleanup keeps a finished child while its
 parent exists and has not finished (an interrupted parent still counts).
@@ -287,7 +302,14 @@ parent's initiator.
 
 Older binaries drop `nestedRun` and `parentRun` when they save a run, and see
 a nested wait as a gate: approving it there would succeed the step without the
-child's outputs.
+child's outputs. An older binary that approves or resumes the child saves it
+without `parentRun`. `NestedRunLink.resolveChild` still accepts a child with no
+`parentRun` at all when the fields such a save keeps agree with the waiting
+step: no trigger source of its own, the parent's `initiatedBy`, and a start no
+earlier than the step's. The parent's resume logs that it read the child this
+way. A malformed or mismatched `parentRun` is never accepted. Serve does not
+auto-resume a parent from such a child, since the child no longer names it:
+resume the parent yourself.
 
 `swamp workflow approvals` lists suspended runs awaiting approval, one row per
 run, leaving out runs whose gate timed out. Each row names the first waiting

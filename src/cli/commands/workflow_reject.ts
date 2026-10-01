@@ -175,7 +175,7 @@ function logNestedRunFollowUps(
 ): void {
   for (const detached of data.detachedNestedRuns ?? []) {
     logger
-      .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left suspended. Cancel it with ${detached.cancelCommand}`;
+      .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
   }
   if (data.awaitingParent) {
     logger

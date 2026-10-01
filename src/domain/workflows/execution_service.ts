@@ -4974,6 +4974,10 @@ export class WorkflowExecutionService {
     const child = resolved.child;
     const childLabel =
       `nested run ${child.id} of workflow "${child.workflowName}"`;
+    if (resolved.backLinkDropped) {
+      getWorkflowRunLogger(run.workflowName, job.name, stepName, run.id)
+        .warn`Read ${childLabel} without its link to this run: an older swamp version saved it. Its trigger source, initiator and start time match this step`;
+    }
 
     if (!isFinishedRun(child)) {
       // Moved back to unfinished since the resume checked it (resumed or

@@ -1858,11 +1858,13 @@ export class WorkflowRun implements TriggerEvaluationContext {
       let detached = false;
       for (const step of job.steps) {
         if (!step.isNestedWait) continue;
+        // The child's own state is not read here: it may have finished
+        // since this run last looked at it.
         const child = step.nestedRun?.kind === "valid"
-          ? ` run ${step.nestedRun.ref.runId} of nested workflow "${step.nestedRun.ref.workflowName}"`
-          : " its nested workflow run";
+          ? `run ${step.nestedRun.ref.runId} of nested workflow "${step.nestedRun.ref.workflowName}"`
+          : "its nested workflow run";
         step.detachNestedRun(
-          `Detached: the run ended while${child} was still suspended. The nested run was left as it was.`,
+          `Detached: the run ended while this step waited on ${child}. The nested run was left as it was.`,
         );
         detached = true;
       }

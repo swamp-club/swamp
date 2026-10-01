@@ -27,6 +27,7 @@
  */
 
 import { join } from "@std/path";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   assert,
   assertEquals,
@@ -44,7 +45,10 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
-import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { NestedRunPendingError } from "../src/domain/workflows/nested_run_link.ts";
 import { UserError } from "../src/domain/errors.ts";
@@ -292,6 +296,45 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
     );
     // No second child was ever started.
     assertEquals((await h.runRepo.findAllByWorkflowId(child.id)).length, 1);
+  });
+});
+
+Deno.test("nested approval: a child an older binary saved without its back-link is still adopted by the parent", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    await completed<WorkflowApproveData>(
+      workflowApprove(
+        createLibSwampContext(),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo),
+        { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
+      ),
+    );
+    await drain(h.service.resume(child.name, childRun.id));
+
+    // An older binary keeps the fields it knows and drops parentRun when it
+    // saves the child.
+    const childPath = h.runRepo.getPath(
+      createWorkflowId(child.id),
+      createWorkflowRunId(childRun.id),
+    );
+    const saved = parseYaml(await Deno.readTextFile(childPath)) as Record<
+      string,
+      unknown
+    >;
+    assert(saved.parentRun !== undefined);
+    delete saved.parentRun;
+    await Deno.writeTextFile(childPath, stringifyYaml(saved));
+
+    await drain(h.service.resume(parent.name, parentRun.id));
+    assertEquals((await only(h.runRepo, parent)).status, "succeeded");
+    assertEquals(
+      h.executor.executed.includes(`${parent.name}/after-nested`),
+      true,
+    );
   });
 });
 

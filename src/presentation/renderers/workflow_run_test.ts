@@ -1039,9 +1039,93 @@ Deno.test("JsonWorkflowRunRenderer: suspended includes stepId and prompt", async
     assertEquals(parsed.approvalRequired.stepId, "apply");
     assertEquals(parsed.approvalRequired.jobId, "deploy");
     assertEquals(parsed.approvalRequired.prompt, "Review the plan");
+    assertEquals(parsed.approvalRequired.workflowName, "test-pipeline");
+    assertEquals(parsed.approvalRequired.runId, "run-1");
   } finally {
     console.log = originalLog;
   }
+});
+
+/**
+ * Renders a run that suspends on a nested run after `gates`, and returns the
+ * suspended document.
+ */
+async function renderNestedSuspension(
+  gates: WorkflowRunEvent[],
+  nested: { workflowName: string; runId: string },
+): Promise<Record<string, Record<string, unknown>>> {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    await consumeStream(
+      toStream([
+        ...gates,
+        {
+          kind: "suspended",
+          run: makeRunView("succeeded"),
+          jobId: "main",
+          stepId: "call-child",
+          prompt: "",
+          nested,
+        },
+      ]),
+      renderer.handlers(),
+    );
+    assertEquals(logs.length, 1);
+    return JSON.parse(logs[0]);
+  } finally {
+    console.log = originalLog;
+  }
+}
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run's gate in approvalRequired", async () => {
+  const parsed = await renderNestedSuspension([{
+    kind: "approval_requested",
+    runId: "child-1",
+    workflowName: "child",
+    jobId: "child-job",
+    stepId: "gate",
+    prompt: "Approve the child?",
+  }], { workflowName: "child", runId: "child-1" });
+  assertEquals(parsed.approvalRequired, {
+    workflowName: "child",
+    runId: "child-1",
+    stepId: "gate",
+    jobId: "child-job",
+    prompt: "Approve the child?",
+  });
+  assertEquals(parsed.waitingOnNestedRun, {
+    workflowName: "child",
+    runId: "child-1",
+  });
+});
+
+Deno.test("JsonWorkflowRunRenderer: a suspension two levels deep names the innermost gate", async () => {
+  const parsed = await renderNestedSuspension([{
+    kind: "approval_requested",
+    runId: "leaf-1",
+    workflowName: "leaf",
+    jobId: "leaf-job",
+    stepId: "gate",
+    prompt: "Approve the leaf?",
+  }], { workflowName: "middle", runId: "middle-1" });
+  assertEquals(parsed.approvalRequired.workflowName, "leaf");
+  assertEquals(parsed.approvalRequired.runId, "leaf-1");
+  assertEquals(parsed.approvalRequired.stepId, "gate");
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension with no gate in the stream names the waiting step", async () => {
+  const parsed = await renderNestedSuspension([], {
+    workflowName: "child",
+    runId: "child-1",
+  });
+  assertEquals(parsed.approvalRequired.workflowName, "test-pipeline");
+  assertEquals(parsed.approvalRequired.runId, "run-1");
+  assertEquals(parsed.approvalRequired.stepId, "call-child");
 });
 
 Deno.test("createWorkflowRunRenderer: factory returns correct type per mode", () => {

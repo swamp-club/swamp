@@ -269,8 +269,15 @@ swamp workflow resume  <parent> --run <parent-run-id>
 - `swamp workflow approvals` lists the child's gate; its row names the parent.
 - Under `swamp serve`, the parent resumes on its own once the child finishes,
   when the parent's auto-resume policy is on and the approver may approve it.
-- Cancelling or rejecting the parent leaves the child suspended and prints the
-  command that cancels it.
+- In `--json` output, the suspended document's `approvalRequired` names the gate
+  to decide (`workflowName`, `runId`, `stepId`), and `waitingOnNestedRun` names
+  the child the parent waits on.
+- Cancelling or rejecting the parent leaves the child as it was. While the child
+  is unfinished, the output includes the command that cancels it.
+- With mixed swamp versions, approve the child's gate rather than the parent's
+  waiting step: an older version approving the parent's step skips the child's
+  outputs. A child an older version approved or resumed is still adopted, but
+  serve does not resume its parent automatically: resume the parent yourself.
 
 ## Limitations
 

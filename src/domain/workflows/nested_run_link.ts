@@ -33,9 +33,18 @@ export interface NestedRunLinkDeps {
   workflowRepo: Pick<WorkflowRepository, "findById">;
 }
 
-/** A child run as a parent's nested wait resolves it. */
+/**
+ * A child run as a parent's nested wait resolves it. `backLinkDropped` is set
+ * when the child carries no parentRun at all and was accepted on the record
+ * fields an older binary keeps when it saves the run (see
+ * {@link NestedRunLink.resolveChild}).
+ */
 export type ChildResolution =
-  | { readonly kind: "resolved"; readonly child: WorkflowRun }
+  | {
+    readonly kind: "resolved";
+    readonly child: WorkflowRun;
+    readonly backLinkDropped?: true;
+  }
   | { readonly kind: "missing"; readonly reason: string }
   | { readonly kind: "broken"; readonly reason: string };
 
@@ -90,6 +99,26 @@ export function isFinishedRun(run: WorkflowRun): boolean {
   return FINISHED.has(run.status);
 }
 
+/**
+ * True when a child with no parentRun agrees with the step waiting on it on
+ * every field an older binary keeps when it saves the child: a nested run
+ * has no trigger source of its own, inherits its parent's initiator, and
+ * starts once the step that runs it has started.
+ */
+function startedByWaitingStep(
+  parent: WorkflowRun,
+  wait: NestedWaitRef,
+  child: WorkflowRun,
+): boolean {
+  const stepStartedAt = parent.getJob(wait.jobName)?.getStep(wait.stepName)
+    ?.startedAt;
+  const childStartedAt = child.startedAt;
+  return child.triggerSource === undefined &&
+    child.initiatedBy === parent.initiatedBy &&
+    stepStartedAt !== undefined && childStartedAt !== undefined &&
+    childStartedAt.getTime() >= stepStartedAt.getTime();
+}
+
 function targetOf(run: WorkflowRun): NestedRunTarget {
   return {
     workflowId: run.workflowId,
@@ -112,6 +141,13 @@ export class NestedRunLink {
    * Loads the child a nested wait links and checks it links back: the
    * child's id and workflow must be the ones linked, and its parentRun must
    * name this parent run and step.
+   *
+   * An older binary drops parentRun when it saves the child (an approve or
+   * resume of the child from a version without nested gates). A child with
+   * no parentRun at all is still accepted when the fields such a save keeps
+   * agree with this parent: no trigger source of its own, the parent's
+   * initiator, and a start no earlier than the waiting step's. A malformed
+   * or mismatched parentRun is never accepted.
    */
   async resolveChild(
     parent: WorkflowRun,
@@ -136,21 +172,26 @@ export class NestedRunLink {
       };
     }
     const back = child.parentRun;
-    const linksBack = sameRunId(child.id, ref.runId) &&
-      sameRunId(child.workflowId, ref.workflowId) &&
+    const sameChild = sameRunId(child.id, ref.runId) &&
+      sameRunId(child.workflowId, ref.workflowId);
+    const linksBack = sameChild &&
       back?.kind === "valid" &&
       sameRunId(back.ref.runId, parent.id) &&
       sameRunId(back.ref.workflowId, parent.workflowId) &&
       back.ref.jobName === wait.jobName &&
       back.ref.stepName === wait.stepName;
-    if (!linksBack) {
-      return {
-        kind: "broken",
-        reason:
-          `nested run ${ref.runId} does not link back to step "${wait.stepName}" of run ${parent.id}`,
-      };
+    if (linksBack) return { kind: "resolved", child };
+    if (
+      sameChild && back === undefined &&
+      startedByWaitingStep(parent, wait, child)
+    ) {
+      return { kind: "resolved", child, backLinkDropped: true };
     }
-    return { kind: "resolved", child };
+    return {
+      kind: "broken",
+      reason:
+        `nested run ${ref.runId} does not link back to step "${wait.stepName}" of run ${parent.id}`,
+    };
   }
 
   /**

@@ -265,7 +265,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                 "system",
                 "Detached",
                 STATUS_COLORS.warn,
-                `nested run ${detached.runId} of workflow ${detached.workflowName} left suspended — cancel it with ${detached.cancelCommand}`,
+                `nested run ${detached.runId} of workflow ${detached.workflowName} left unfinished — cancel it with ${detached.cancelCommand}`,
                 formatTimestamp(),
               ),
             );
@@ -889,8 +889,21 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 }
 
+/** An approval gate as the run's stream requested it. */
+interface RequestedGate {
+  runId: string;
+  workflowName?: string;
+  jobId: string;
+  stepId: string;
+  prompt: string;
+  timeout?: number;
+}
+
 class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   private _failed = false;
+  // Gates requested in this stream, nested runs' included, so a run that
+  // suspends on a nested run can name the gate to decide (swamp-club#2736).
+  private readonly _gates: RequestedGate[] = [];
 
   handlers(): EventHandlers<WorkflowRunEvent> {
     return {
@@ -930,7 +943,16 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_queued: () => {},
       step_target_disconnected: () => {},
       step_failed: () => {},
-      approval_requested: () => {},
+      approval_requested: (e) => {
+        this._gates.push({
+          runId: e.runId,
+          workflowName: e.workflowName,
+          jobId: e.jobId,
+          stepId: e.stepId,
+          prompt: e.prompt,
+          timeout: e.timeout,
+        });
+      },
       model_resolved: () => {},
       env_var_warning: () => {},
       method_executing: () => {},
@@ -963,15 +985,35 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         unguardedConsole.log(JSON.stringify(e.run, null, 2));
       },
       suspended: (e) => {
+        // On a nested wait, the gate to decide is the nested run's: the one
+        // requested by the run the step waits on, or else the latest gate
+        // requested deeper down. Without one in this stream (a resume that
+        // found the nested run suspended again), the waiting step is named.
+        const nested = e.nested;
+        const gate = nested
+          ? this._gates.findLast((g) => g.runId === nested.runId) ??
+            this._gates.findLast((g) => g.runId !== e.run.id)
+          : undefined;
         unguardedConsole.log(JSON.stringify(
           {
             ...e.run,
-            approvalRequired: {
-              stepId: e.stepId,
-              jobId: e.jobId,
-              prompt: e.prompt,
-              timeout: e.timeout,
-            },
+            approvalRequired: gate
+              ? {
+                workflowName: gate.workflowName ?? nested?.workflowName,
+                runId: gate.runId,
+                stepId: gate.stepId,
+                jobId: gate.jobId,
+                prompt: gate.prompt,
+                timeout: gate.timeout,
+              }
+              : {
+                workflowName: e.run.workflowName,
+                runId: e.run.id,
+                stepId: e.stepId,
+                jobId: e.jobId,
+                prompt: e.prompt,
+                timeout: e.timeout,
+              },
             // The nested run the step waits on, when the run suspended on a
             // nested workflow rather than a gate of its own.
             ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),

@@ -72,7 +72,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         );
       } else if (step.nestedRun?.detached) {
         writeOutput(
-          `      -> nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName} was left suspended`,
+          `      -> nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName} was detached when the run ended`,
         );
       }
 
