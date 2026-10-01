@@ -13054,7 +13054,7 @@ Deno.test("abort cleanup: steps in flight in a job's last level end failed as ca
   });
 });
 
-Deno.test("abort cleanup: a guard still answering in a job that shares its level holds the run only for the step stop grace", async () => {
+Deno.test("abort cleanup: a guard still answering in a job that shares its level does not hold the run past the step stop grace", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "shared-level-guard-wf",
@@ -13078,6 +13078,7 @@ Deno.test("abort cleanup: a guard still answering in a job that shares its level
     // The guard's model method answers only when the test releases it, after
     // the run has finished: a network call that ignores the abort.
     const guardAnswer = Promise.withResolvers<unknown>();
+    let guardAnswered = false;
     class HeldGuardExecutor extends InFlightAbortExecutor {
       override execute(
         step: Step,
@@ -13085,7 +13086,10 @@ Deno.test("abort cleanup: a guard still answering in a job that shares its level
       ): Promise<unknown> {
         if (ctx.stepName === "__guard_create-bucket") {
           this.arrive();
-          return guardAnswer.promise;
+          return guardAnswer.promise.then((answer) => {
+            guardAnswered = true;
+            return answer;
+          });
         }
         return super.execute(step, ctx);
       }
@@ -13111,6 +13115,9 @@ Deno.test("abort cleanup: a guard still answering in a job that shares its level
         SHORT_STEP_STOP_GRACE_MS,
       );
 
+      // The run waited for the guard's method only until the step stop grace
+      // ran out, and recorded its cancellation with the guard still in flight.
+      assertEquals(guardAnswered, false);
       assertEquals(run.status, "cancelled");
       assertUndecided(run, "j1", ["create-bucket"]);
       assertEquals(executor.count("j1/delete-bucket"), 0);
@@ -17223,9 +17230,27 @@ class LateAnswerExecutor extends CountingStepExecutor {
       this.controller.abort();
     }
     await this.gate;
-    if (outcome === "fail") throw new Error(`${ctx.stepName} stopped`);
-    return ctx.stepName.startsWith("__assert_") ? { ok: true } : result;
+    // Each held method reports one data artifact it wrote before answering.
+    const dataArtifacts = [lateArtifact(ctx.stepName)];
+    if (outcome === "fail") {
+      throw Object.assign(new Error(`${ctx.stepName} stopped`), {
+        dataArtifacts,
+      });
+    }
+    return ctx.stepName.startsWith("__assert_")
+      ? { ok: true }
+      : { ...(result as object), dataArtifacts };
   }
+}
+
+/** The data artifact {@link LateAnswerExecutor} reports for `stepName`. */
+function lateArtifact(stepName: string) {
+  return {
+    dataId: `data-${stepName}`,
+    name: `${stepName}-out`,
+    version: 1,
+    tags: {},
+  };
 }
 
 Deno.test("abort cleanup: a method answering after the abort settled its step leaves the step failed as cancelled (swamp-club#2918)", async () => {
@@ -17270,6 +17295,8 @@ Deno.test("abort cleanup: a method answering after the abort settled its step le
         const step = run.getJob("main")!.getStep(name)!;
         assertEquals(step.status, "failed", name);
         assertEquals(step.error, CANCELLED_STEP_ERROR, name);
+        // The data the method wrote is still recorded on the step.
+        assertEquals(step.dataArtifacts, [lateArtifact(name)], name);
       }
       assertEquals(executor.count("main/stops"), 1);
       assertEquals(executor.count("main/finishes"), 1);

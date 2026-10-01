@@ -1664,7 +1664,11 @@ order:
   `model.method()` call still in flight, until `STEP_STOP_GRACE_MS` (4 s)
   after the cancellation. Each method therefore saves its method run
   `cancelled` before `swamp workflow run` pushes its data and exits; a method
-  still running after that keeps its method run `running` (swamp-club#2918).
+  still running after that keeps its method run `running` (swamp-club#2918),
+  as does any method whose owner was killed. The wait counts from the
+  cancellation, so a run whose cleanup steps outlast it does not wait at all.
+  Nothing settles such a record yet; reaping method runs left `running` by a
+  dead owner is swamp-club#2930.
   A method that answers late does not change the step: it stays `failed` with
   reason `cancelled`, while its method run records what the method did.
 - Steps, `forEach` iterations and jobs that the interrupted level never started

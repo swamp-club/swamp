@@ -739,12 +739,24 @@ class InFlightMethodRuns {
     return execution;
   }
 
-  /** Waits for the executions in flight, until `graceMs` after the abort. */
+  /**
+   * Waits for the executions in flight, until `graceMs` after the abort. The
+   * deadline counts from the abort, not from this call, so the serve graces
+   * that also start at the abort still see the run finish; a run whose
+   * cleanup outlasted the grace does not wait at all.
+   */
   async settle(graceMs: number): Promise<void> {
     if (this.#pending.size === 0) return;
     const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
       performance.now();
     if (remaining <= 0) return;
+    getSwampLogger(["workflow", "cancel"]).info(
+      "Waiting up to {seconds}s for {count} model method(s) to stop",
+      {
+        seconds: Math.ceil(remaining / 1000),
+        count: this.#pending.size,
+      },
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, remaining);

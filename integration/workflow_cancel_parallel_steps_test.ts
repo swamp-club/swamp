@@ -22,6 +22,12 @@
  * (swamp-club#2918). The level stops reading its steps when the abort fires,
  * but the run must not save itself cancelled, and so let the CLI push and
  * exit, before each step's method has saved its method-run record cancelled.
+ *
+ * The unit tests in execution_service_test.ts pin the wait with an in-memory
+ * run repository and tracker. This one wires the stores the CLI uses: the
+ * YAML run, output and definition repositories on disk and the SQLite run
+ * tracker, and checks the records as `swamp model method history` and
+ * `swamp model cancel` would read them.
  */
 
 import { join } from "@std/path";

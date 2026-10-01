@@ -47,8 +47,10 @@ Deno.test("cancel graces: serve still sees an aborted run finish within its step
 });
 
 Deno.test("cancel graces: the step stop grace fits the owner-stop margin after one cleanup level", () => {
-  // Not a worst case: several cleanup levels, or a nested run's wait, can
-  // already outlast OWNER_STOP_GRACE_MS, and the canceller then settles the
-  // record the owner left.
-  assert(CLEANUP_GRACE_TIMEOUT_MS + STEP_STOP_GRACE_MS < OWNER_STOP_GRACE_MS);
+  // The margin cancel allows beyond one cleanup level's grace. Not a worst
+  // case: several cleanup levels, or a nested run's wait, can already outlast
+  // OWNER_STOP_GRACE_MS, and the canceller then settles the record the owner
+  // left.
+  const ownerStopMargin = OWNER_STOP_GRACE_MS - CLEANUP_GRACE_TIMEOUT_MS;
+  assert(STEP_STOP_GRACE_MS < ownerStopMargin);
 });
