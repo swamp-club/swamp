@@ -218,7 +218,6 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository (x5)",
   // Use cases that mark directly.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
-  // Use cases that mark directly.
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
   // Serve handlers marking written paths before pushChanged.
   "src/serve/device_auth_handler.ts: mintServerTokenImpl (x2)",

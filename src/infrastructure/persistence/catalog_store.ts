@@ -699,14 +699,34 @@ export class CatalogStore {
   /**
    * Tells catalogs sharing this filesystem datastore that this repository
    * changed data on disk. Call after the write; a no-op without a tracker.
+   *
+   * Best-effort: the data is already committed, so a token that cannot be
+   * written only delays other repositories noticing it, and must not fail
+   * the write.
    */
   recordLocalWrite(): void {
-    this.writeTracker?.recordWrite(this.writerId());
+    if (!this.writeTracker) return;
+    try {
+      this.writeTracker.recordWrite(this.writerId());
+    } catch (error) {
+      logger
+        .warn`Could not record a write for catalogs sharing this datastore: ${error}`;
+    }
   }
 
   private invalidateOnForeignWrites(): void {
     if (!this.writeTracker) return;
-    const seen = this.writeTracker.foreignTokens(this.writerId());
+    let seen: string;
+    try {
+      seen = this.writeTracker.foreignTokens(this.writerId());
+    } catch (error) {
+      // Unable to tell whether another repository wrote: treat the catalog
+      // as stale rather than failing the read.
+      logger
+        .warn`Could not read writes by catalogs sharing this datastore: ${error}`;
+      this.invalidate();
+      return;
+    }
     if (seen === (this.readMeta("foreign_writers") ?? "{}")) return;
     this.invalidate();
     this.writeMeta("foreign_writers", seen);

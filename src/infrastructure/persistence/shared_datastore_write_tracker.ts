@@ -48,7 +48,11 @@ export class SharedDatastoreWriteTracker {
     try {
       Deno.renameSync(temp, target);
     } catch (error) {
-      Deno.removeSync(temp);
+      try {
+        Deno.removeSync(temp);
+      } catch {
+        // Keep the rename error; a stray temp file is skipped by readers.
+      }
       throw error;
     }
   }

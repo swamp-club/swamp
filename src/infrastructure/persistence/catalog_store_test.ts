@@ -1481,3 +1481,37 @@ Deno.test("CatalogStore: without a tracker, recordLocalWrite writes nothing", ()
     store.close();
   }
 });
+
+Deno.test("CatalogStore: a token that cannot be written does not fail the caller", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-token-fail-" });
+  // The writers directory sits under a regular file, so mkdir fails.
+  const blocker = join(dir, "not-a-dir");
+  Deno.writeTextFileSync(blocker, "");
+  const store = new CatalogStore(join(dir, "_catalog.db"), {
+    writeTracker: new SharedDatastoreWriteTracker(join(blocker, "writers")),
+  });
+  try {
+    store.recordLocalWrite();
+  } finally {
+    store.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("CatalogStore: tokens that cannot be read leave the catalog unpopulated instead of failing", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-token-read-" });
+  // The writers "directory" is a regular file, so listing it fails with an
+  // error other than NotFound.
+  const writers = join(dir, "writers");
+  Deno.writeTextFileSync(writers, "");
+  const store = new CatalogStore(join(dir, "_catalog.db"), {
+    writeTracker: new SharedDatastoreWriteTracker(writers),
+  });
+  try {
+    store.markPopulated();
+    assertEquals(store.isPopulated(), false);
+  } finally {
+    store.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});

@@ -559,6 +559,12 @@ backfill is additive (swamp-club#1581), so three rules keep reads current:
   another writer's token changed (swamp-club#2858). The tokens are plain files,
   not SQLite, because WAL is unsafe on network filesystems. A backfill never
   writes a token, so two catalogs cannot invalidate each other in a loop.
+  Token I/O is best-effort: a token that cannot be written is logged and the
+  data write still succeeds, and tokens that cannot be read are logged and
+  treated as a foreign write. A recreated catalog (deleted `_catalog.db`, or a
+  schema-version bump) gets a new writer id and leaves its old token behind;
+  old tokens never change, so they cost one read each but never invalidate,
+  and the directory grows only with catalog recreations.
 
 ### Namespace-Scoped Sync
 
