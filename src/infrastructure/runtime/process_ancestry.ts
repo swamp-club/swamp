@@ -205,14 +205,16 @@ function linuxExecutablePath(lib: Libc, pid: number): string | undefined {
   );
 }
 
-// libproc (macOS): <libproc.h> and <sys/proc_info.h>.
-const PROC_PIDTBSDINFO = 3;
-/** sizeof(struct proc_bsdinfo). */
-const PROC_BSDINFO_SIZE = 136;
-/** offsetof(struct proc_bsdinfo, pbi_pid). */
-const PBI_PID_OFFSET = 12;
-/** offsetof(struct proc_bsdinfo, pbi_ppid). */
-const PBI_PPID_OFFSET = 16;
+// libproc (macOS): <libproc.h> and <sys/proc_info.h>. The short BSD info
+// flavor, unlike PROC_PIDTBSDINFO, answers for other users' processes (an
+// sshd-session owned by root, say), so the walk can climb past them.
+const PROC_PIDT_SHORTBSDINFO = 13;
+/** sizeof(struct proc_bsdshortinfo). */
+const PROC_BSDSHORTINFO_SIZE = 64;
+/** offsetof(struct proc_bsdshortinfo, pbsi_pid). */
+const PBSI_PID_OFFSET = 0;
+/** offsetof(struct proc_bsdshortinfo, pbsi_ppid). */
+const PBSI_PPID_OFFSET = 4;
 /** PROC_PIDPATHINFO_MAXSIZE: 4 * MAXPATHLEN. */
 const PROC_PIDPATH_MAXSIZE = 4096;
 
@@ -243,19 +245,19 @@ function withLibproc<T>(use: (lib: Libproc) => T | undefined): T | undefined {
 }
 
 function darwinParentPid(lib: Libproc, pid: number): number | undefined {
-  const info = new Uint8Array(PROC_BSDINFO_SIZE);
+  const info = new Uint8Array(PROC_BSDSHORTINFO_SIZE);
   const written = lib.symbols.proc_pidinfo(
     pid,
-    PROC_PIDTBSDINFO,
+    PROC_PIDT_SHORTBSDINFO,
     0n,
     info,
-    PROC_BSDINFO_SIZE,
+    PROC_BSDSHORTINFO_SIZE,
   );
-  if (written !== PROC_BSDINFO_SIZE) return undefined;
+  if (written !== PROC_BSDSHORTINFO_SIZE) return undefined;
   const view = new DataView(info.buffer);
   // A struct that does not echo the pid back was not filled as expected.
-  if (view.getUint32(PBI_PID_OFFSET, true) !== pid) return undefined;
-  return view.getUint32(PBI_PPID_OFFSET, true);
+  if (view.getUint32(PBSI_PID_OFFSET, true) !== pid) return undefined;
+  return view.getUint32(PBSI_PPID_OFFSET, true);
 }
 
 function darwinExecutablePath(lib: Libproc, pid: number): string | undefined {
