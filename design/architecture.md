@@ -84,12 +84,15 @@ runtime data:
   and its catalog, method outputs, workflow runs, `run_tracker.db`, the local
   vault, the extension catalog, pulled extensions and the audit log.
 - **Per user**: `~/.config/swamp/` holds swamp-club and serve credentials, the
-  anonymous identity and the telemetry spool (`SWAMP_CONFIG_DIR` overrides it;
+  cached verification proof the auth gate checks
+  ([surfaces/auth-gate.md](./surfaces/auth-gate.md)), the anonymous identity
+  and the telemetry spool (`SWAMP_CONFIG_DIR` overrides it;
   `SWAMP_HOME` alone moves it to `$SWAMP_HOME/config`). `~/.swamp/` (or
   `SWAMP_HOME`) holds installed binaries and downloaded source
   (`src/infrastructure/persistence/paths.ts`, `getSwampDataDir`,
   `getSwampConfigDir`). `swamp serve daemon enable` pins both in the service
-  definition so the daemon reads the enabling user's credentials.
+  definition so the daemon reads the enabling user's credentials, and
+  `swamp worker daemon enable` pins the config dir for the same reason.
 
 The main way in is an AI agent. `swamp repo init --tool <agent>`
 installs swamp's skills into the agent's global skill directory and registers

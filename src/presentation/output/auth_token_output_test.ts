@@ -177,3 +177,23 @@ Deno.test("renderAuthTokenCreate: json mode includes the fingerprint", () => {
   );
   assertEquals(parsed.fingerprint, "00bd270b8576bc29");
 });
+
+Deno.test("renderAuthTokenCreate: shows the signin token when swamp-club issued one", () => {
+  const withToken = { ...createData, signinToken: "cHJvb2Y.c2ln" };
+  const log = captureLogs(() => renderAuthTokenCreate(withToken, "log"));
+  assertStringIncludes(log, "Signin token:");
+  assertStringIncludes(log, "SWAMP_SIGNIN_TOKEN");
+  assertStringIncludes(log, "cHJvb2Y.c2ln");
+  assertStringIncludes(log, "These are shown once");
+
+  const parsed = JSON.parse(
+    captureLogs(() => renderAuthTokenCreate(withToken, "json")),
+  );
+  assertEquals(parsed.signinToken, "cHJvb2Y.c2ln");
+});
+
+Deno.test("renderAuthTokenCreate: omits the signin token section without one", () => {
+  const log = captureLogs(() => renderAuthTokenCreate(createData, "log"));
+  assertEquals(log.includes("Signin token:"), false);
+  assertStringIncludes(log, "This token is shown once");
+});

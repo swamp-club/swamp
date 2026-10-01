@@ -1368,3 +1368,149 @@ Deno.test("SwampClubClient - revokePresentingApiKey throws on 500 and truncates 
     await mock.shutdown();
   }
 });
+
+async function verifyAgainst(
+  handler: (req: Request) => Response | Promise<Response>,
+) {
+  const mock = startMockServer(handler);
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    return await client.verifyIdentity(
+      "swamp_key123",
+      AbortSignal.timeout(5_000),
+    );
+  } finally {
+    await mock.shutdown();
+  }
+}
+
+Deno.test("SwampClubClient.verifyIdentity: 200 authenticated is verified, with or without a proof", async () => {
+  const bare = await verifyAgainst(() =>
+    Response.json({ authenticated: true, username: "u" })
+  );
+  assertEquals(bare.outcome, { kind: "verified", freshProof: false });
+  assertEquals(bare.response?.username, "u");
+
+  const withProof = await verifyAgainst(() =>
+    Response.json({
+      authenticated: true,
+      verificationProof: "{}",
+      verificationSignature: "sig",
+      publicKeys: [{ kid: "k", key: "pk" }],
+    })
+  );
+  assertEquals(withProof.outcome, { kind: "verified", freshProof: true });
+});
+
+Deno.test("SwampClubClient.verifyIdentity: sends the key as x-api-key", async () => {
+  let seen = "";
+  await verifyAgainst((req) => {
+    seen = req.headers.get("x-api-key") ?? "";
+    return Response.json({ authenticated: true });
+  });
+  assertEquals(seen, "swamp_key123");
+});
+
+Deno.test("SwampClubClient.verifyIdentity: whoami's 401 and authenticated false are rejected", async () => {
+  assertEquals(
+    (await verifyAgainst(() =>
+      Response.json({ authenticated: false }, { status: 401 })
+    )).outcome,
+    { kind: "rejected", status: 401 },
+  );
+  assertEquals(
+    (await verifyAgainst(() => Response.json({ authenticated: false })))
+      .outcome,
+    { kind: "rejected", status: 200 },
+  );
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a gateway's 401 is refused, not rejected", async () => {
+  for (
+    const res of [
+      () => new Response("Unauthorized", { status: 401 }),
+      () => Response.json({ error: "invalid_token" }, { status: 401 }),
+    ]
+  ) {
+    assertEquals((await verifyAgainst(res)).outcome, {
+      kind: "refused",
+      status: 401,
+    });
+  }
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a 403 is rejected only when swamp-club wrote it", async () => {
+  assertEquals(
+    (await verifyAgainst(() =>
+      Response.json({ error: "Forbidden" }, { status: 403 })
+    )).outcome,
+    { kind: "rejected", status: 403 },
+  );
+  assertEquals(
+    (await verifyAgainst(() =>
+      new Response("<html>Access denied</html>", { status: 403 })
+    )).outcome,
+    { kind: "refused", status: 403 },
+  );
+});
+
+Deno.test("SwampClubClient.verifyIdentity: 429 is refused, carrying Retry-After", async () => {
+  assertEquals(
+    (await verifyAgainst(() =>
+      new Response("slow down", {
+        status: 429,
+        headers: { "retry-after": "30" },
+      })
+    )).outcome,
+    { kind: "refused", status: 429, retryAfterSeconds: 30 },
+  );
+});
+
+Deno.test("SwampClubClient.verifyIdentity: 5xx is a server error", async () => {
+  for (const status of [500, 502, 503]) {
+    assertEquals(
+      (await verifyAgainst(() => new Response("down", { status }))).outcome,
+      { kind: "server_error", status },
+    );
+  }
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a 200 that is not whoami JSON is refused", async () => {
+  assertEquals(
+    (await verifyAgainst(() => new Response("<html>portal</html>"))).outcome,
+    { kind: "refused", status: 200 },
+  );
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a refused connection is unreachable", async () => {
+  const client = new SwampClubClient("http://localhost:1");
+  const result = await client.verifyIdentity(
+    "k",
+    AbortSignal.timeout(5_000),
+  );
+  assertEquals(result.outcome, {
+    kind: "unreachable",
+    reason: "connection failed",
+  });
+});
+
+Deno.test("SwampClubClient.verifyIdentity: a timeout is unreachable", async () => {
+  const release = Promise.withResolvers<void>();
+  const mock = startMockServer(async () => {
+    await release.promise;
+    return Response.json({ authenticated: true });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const ac = new AbortController();
+    const pending = client.verifyIdentity("k", ac.signal);
+    ac.abort();
+    assertEquals((await pending).outcome, {
+      kind: "unreachable",
+      reason: "timeout",
+    });
+  } finally {
+    release.resolve();
+    await mock.shutdown();
+  }
+});

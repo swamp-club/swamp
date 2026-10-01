@@ -41,6 +41,7 @@ import {
 } from "../src/domain/expressions/expression_evaluation_service.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { CLI_ARGS } from "./test_helpers.ts";
+import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-def-lifecycle-" });
@@ -91,20 +92,24 @@ async function runCliCommand(
   cwd: string,
   env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-  const command = new Deno.Command(Deno.execPath(), {
-    args: [...CLI_ARGS, ...args],
-    stdout: "piped",
-    stderr: "piped",
-    cwd,
-    env: env ? { ...Deno.env.toObject(), ...env } : undefined,
-  });
+  // Every CLI child needs a swamp-club credential to pass the auth gate.
+  return await withGateCredentialEnv(async (gateEnv) => {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [...CLI_ARGS, ...args],
+      stdout: "piped",
+      stderr: "piped",
+      cwd,
+      env: { ...gateEnv, ...env },
+      clearEnv: true,
+    });
 
-  const { code, stdout, stderr } = await command.output();
-  return {
-    stdout: new TextDecoder().decode(stdout),
-    stderr: new TextDecoder().decode(stderr),
-    code,
-  };
+    const { code, stdout, stderr } = await command.output();
+    return {
+      stdout: new TextDecoder().decode(stdout),
+      stderr: new TextDecoder().decode(stderr),
+      code,
+    };
+  });
 }
 
 // ============================================================================

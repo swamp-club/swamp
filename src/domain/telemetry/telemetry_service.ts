@@ -33,6 +33,7 @@ import {
   type InvocationResultData,
 } from "./invocation_result.ts";
 import type { WorkflowTriggerSource } from "./trigger_source.ts";
+import type { AuthMode } from "../auth/auth_gate_policy.ts";
 import { UserError } from "../errors.ts";
 
 /** Default flush batch size */
@@ -164,7 +165,7 @@ export class TelemetryService {
   constructor(
     private readonly repository: TelemetryRepository,
     private readonly swampVersion: string,
-    private readonly invocationContext?: InvocationContextData,
+    private invocationContext?: InvocationContextData,
     invocationId?: TelemetryId,
     private readonly triggerSource?: WorkflowTriggerSource,
     private readonly initiatedBy?: string,
@@ -177,6 +178,16 @@ export class TelemetryService {
     private readonly endpoint?: string,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
+  }
+
+  /**
+   * Stamps how the auth gate let this invocation through. The gate runs
+   * after the service is built, so this is the one part of the context set
+   * later; every entry recorded afterwards, and every fork, carries it.
+   */
+  setAuthMode(authMode: AuthMode): void {
+    if (!this.invocationContext) return;
+    this.invocationContext = { ...this.invocationContext, authMode };
   }
 
   /**

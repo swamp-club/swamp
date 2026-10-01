@@ -24,8 +24,42 @@ import {
 } from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
 import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
+import type { IdentityCheckOutcome } from "../../domain/auth/auth_gate_policy.ts";
 
 export type { ClientIdentity };
+
+/** A classified `/api/whoami` answer, with the response when there was one. */
+export interface IdentityCheckResult {
+  readonly outcome: IdentityCheckOutcome;
+  /** The parsed body of a verified response. */
+  readonly response?: WhoamiResponse;
+}
+
+/**
+ * True when a 403 body is swamp-club's own JSON error (`{ "error": "…" }`),
+ * which is a real refusal. Anything else came from something in front of
+ * swamp-club — a WAF, CDN or proxy — and says nothing about the key.
+ */
+async function isSwampClubError(res: Response): Promise<boolean> {
+  try {
+    const body = await res.json();
+    return typeof body === "object" && body !== null &&
+      typeof body.error === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** True for whoami's own 401 body, `{ "authenticated": false }`. */
+async function isWhoamiRejection(res: Response): Promise<boolean> {
+  try {
+    const body = await res.json();
+    return typeof body === "object" && body !== null &&
+      body.authenticated === false;
+  } catch {
+    return false;
+  }
+}
 
 /** Metadata fields shared by all collective token responses (never includes the secret key). */
 export interface CollectiveTokenMetadata {
@@ -45,6 +79,12 @@ export interface CollectiveTokenMetadata {
 export interface CreateCollectiveTokenResponse {
   token: CollectiveTokenMetadata;
   key: string;
+  /**
+   * A signed proof for `key` (`<proof>.<signature>`), set as
+   * SWAMP_SIGNIN_TOKEN so a CI run passes the auth gate while swamp-club is
+   * unreachable. Absent from servers that predate it, or when signing failed.
+   */
+  signinToken?: string;
 }
 
 /** Response from listing collective API tokens — metadata only, no secrets. */
@@ -324,6 +364,84 @@ export class SwampClubClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * Call /api/whoami for the auth gate and classify the answer by who gave
+   * it, instead of throwing. Unlike {@link whoami}, a timeout, a refused
+   * connection and a 429 come back as outcomes, so the gate can tell
+   * swamp-club saying no (`rejected`) from swamp-club failing
+   * (`server_error`), from something a client can provoke (`refused`), and
+   * from no answer at all (`unreachable`).
+   */
+  async verifyIdentity(
+    apiKey: string,
+    signal: AbortSignal,
+  ): Promise<IdentityCheckResult> {
+    const headers = mergeIdentityHeaders(this.identity, {
+      "x-api-key": apiKey,
+    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.serverUrl}/api/whoami`, {
+        method: "GET",
+        headers,
+        signal,
+      });
+    } catch (error) {
+      const reason = error instanceof DOMException &&
+          (error.name === "TimeoutError" || error.name === "AbortError")
+        ? "timeout"
+        : "connection failed";
+      return { outcome: { kind: "unreachable", reason } };
+    }
+
+    const status = res.status;
+    if (status === 401) {
+      // swamp-club's whoami answers an unknown key with exactly
+      // `{ "authenticated": false }`. A gateway can send its own 401 (or
+      // strip x-api-key) while the key is fine, so only that body counts.
+      return await isWhoamiRejection(res)
+        ? { outcome: { kind: "rejected", status } }
+        : { outcome: { kind: "refused", status } };
+    }
+    if (status === 403) {
+      return await isSwampClubError(res)
+        ? { outcome: { kind: "rejected", status } }
+        : { outcome: { kind: "refused", status } };
+    }
+    if (status === 429) {
+      const retryAfterSeconds = parseRetryAfter(res.headers.get("retry-after"));
+      await res.body?.cancel();
+      return { outcome: { kind: "refused", status, retryAfterSeconds } };
+    }
+    if (status >= 500) {
+      await res.body?.cancel();
+      return { outcome: { kind: "server_error", status } };
+    }
+    if (!res.ok) {
+      // Anything else (a 404 from a misrouted proxy, say) is not swamp-club
+      // judging the key.
+      await res.body?.cancel();
+      return { outcome: { kind: "refused", status } };
+    }
+
+    let response: WhoamiResponse;
+    try {
+      response = await res.json();
+    } catch {
+      // A 200 that is not whoami JSON is a captive portal or a broken
+      // proxy, not a verification.
+      return { outcome: { kind: "refused", status } };
+    }
+    if (!response.authenticated) {
+      return { outcome: { kind: "rejected", status } };
+    }
+    const freshProof = Boolean(
+      response.verificationProof && response.verificationSignature &&
+        response.publicKeys,
+    );
+    return { outcome: { kind: "verified", freshProof }, response };
   }
 
   /**

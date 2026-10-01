@@ -33,7 +33,6 @@ import { containsExpression } from "../../domain/expressions/expression_parser.t
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
-import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
 import {
   type AssertSeverity,
@@ -54,7 +53,6 @@ import { platformCertStoreHint } from "../output/error_output.ts";
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
-  isAuthenticated?: boolean;
   quiet?: boolean;
   /** Also frame reports whose markdown is empty. */
   verbose?: boolean;
@@ -83,7 +81,6 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
 
 class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;
-  private isAuthenticated: boolean;
   private quiet: boolean;
   private verbose: boolean;
   private failOnSeverity: AssertSeverity;
@@ -110,7 +107,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 
   constructor(opts: WorkflowRunRenderOpts) {
     this.workflowName = opts.workflowName;
-    this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
     this.verbose = opts.verbose ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
@@ -707,10 +703,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             ),
           );
           this.renderDataArtifacts(e.run);
-          if (!this.isAuthenticated) {
-            writeBlankLine();
-            writeOutput(dim(`⚠ ${AUTH_WARNING_MESSAGE}`));
-          }
         }
       },
       cancelled: (e) => {

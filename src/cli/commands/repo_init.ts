@@ -44,7 +44,6 @@ import { ManagedConfigUnresolvedError } from "../repo_context.ts";
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { isAuthenticated } from "../auth_context.ts";
 import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -117,9 +116,7 @@ export async function repoInitAction(
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createRepoInitDeps(VERSION);
-  const renderer = createRepoInitRenderer(cliCtx.outputMode, {
-    isAuthenticated: isAuthenticated(),
-  });
+  const renderer = createRepoInitRenderer(cliCtx.outputMode);
   await consumeStream(
     repoInit(ctx, deps, {
       path: pathArg ?? ".",
@@ -231,9 +228,7 @@ export const repoUpgradeCommand = new Command()
       )
       : undefined;
 
-    const renderer = createRepoUpgradeRenderer(cliCtx.outputMode, {
-      isAuthenticated: isAuthenticated(),
-    });
+    const renderer = createRepoUpgradeRenderer(cliCtx.outputMode);
     await withManagedLockfileTransaction(
       lockfileTransaction,
       () =>

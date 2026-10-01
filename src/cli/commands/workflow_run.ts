@@ -85,7 +85,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
-import { isAuthenticated, resolveCliInitiatedBy } from "../auth_context.ts";
+import { resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
   CA_CERT_DESCRIPTION,
@@ -520,7 +520,6 @@ export const workflowRunCommand = new Command()
           })
           : createWorkflowRunRenderer(ctx.outputMode, {
             workflowName: workflowIdOrName,
-            isAuthenticated: isAuthenticated(),
             quiet: ctx.verbosity === "quiet",
             verbose: ctx.verbosity === "verbose",
             failOnSeverity,
@@ -695,7 +694,6 @@ async function runWorkflowViaServer(
         })
         : createWorkflowRunRenderer(ctx.outputMode, {
           workflowName: workflowIdOrName,
-          isAuthenticated: isAuthenticated(),
           quiet: ctx.verbosity === "quiet",
           verbose: ctx.verbosity === "verbose",
           commandTarget,

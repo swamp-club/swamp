@@ -21,6 +21,7 @@ import {
   AuthRepository,
   type AuthRepositoryOptions,
 } from "../../infrastructure/persistence/auth_repository.ts";
+import { AuthVerificationRepository } from "../../infrastructure/persistence/auth_verification_repository.ts";
 import {
   type RevokePresentingApiKeyResult,
   SwampClubClient,
@@ -105,7 +106,14 @@ export function createAuthLogoutDeps(
     },
     revokeApiKey: (serverUrl, apiKey, signal) =>
       new SwampClubClient(serverUrl).revokePresentingApiKey(apiKey, signal),
-    deleteCredentials: () => repo.delete(),
+    // The cached proof and the auth gate's stamps go with the credentials,
+    // so a later login with another account never starts from them.
+    deleteCredentials: async () => {
+      await repo.delete();
+      await new AuthVerificationRepository({
+        configDir: options.repo?.configDir,
+      }).clearAll();
+    },
     credentialsPath: () => repo.getAuthPath(),
   };
 }

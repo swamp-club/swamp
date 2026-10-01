@@ -34,15 +34,15 @@ export async function verifyProof(
   signatureB64: string,
   publicKeys: PublicKeyEntry[],
   apiKey: string,
+  /** Unix seconds; defaults to the wall clock. */
+  now: number = Math.floor(Date.now() / 1000),
 ): Promise<ProofVerificationResult> {
   const payload = parseProofPayload(proofJson);
   if (!payload) {
     return { valid: false, reason: "malformed proof payload" };
   }
 
-  if (
-    payload.exp !== undefined && payload.exp <= Math.floor(Date.now() / 1000)
-  ) {
+  if (payload.exp !== undefined && payload.exp <= now) {
     return { valid: false, reason: "proof expired" };
   }
 

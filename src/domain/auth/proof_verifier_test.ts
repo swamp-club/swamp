@@ -263,3 +263,28 @@ Deno.test("verifyProof: rejects malformed proof JSON", async () => {
   assertEquals(result.valid, false);
   if (!result.valid) assertEquals(result.reason, "malformed proof payload");
 });
+
+Deno.test("verifyProof: a signin token with no cached keys is checked against the embedded key", async () => {
+  // A signin token carries no public key, so verification falls back to the
+  // embedded production key. A proof signed by any other key must fail on
+  // the signature, not pass and not stop at "no matching public key".
+  const keys = await generateTestKeyPair();
+  const fpr = await computeProofFingerprint(TEST_API_KEY);
+  const { proofJson, signatureB64 } = await signTestProof(
+    {
+      fpr,
+      iat: Math.floor(Date.now() / 1000),
+      kid: "6aab0d1b1c656c22adc781d5",
+      org: [],
+      scopes: [],
+      sub: "collective-1",
+    },
+    keys.privateKey,
+  );
+
+  const result = await verifyProof(proofJson, signatureB64, [], TEST_API_KEY);
+  assertEquals(result, {
+    valid: false,
+    reason: "signature verification failed",
+  });
+});

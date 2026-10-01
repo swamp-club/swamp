@@ -32,9 +32,16 @@ onboarding — say so and stop:
 > You already have models set up. You're past the getting-started stage — just
 > tell me what you'd like to work on and I'll use the right skill.
 
-If the command fails, surface the error and suggest `swamp repo init` (use the
-`swamp` skill for guidance), then return here. If no models exist, present the
-5-step checklist (Goals → Create → Run → Inspect → Graduate) and begin State 1.
+Every swamp command needs a swamp-club.com account. If the command fails with
+code `auth_gate_blocked`, have the user run `swamp auth login` (it opens a
+browser sign-in; they finish it themselves), confirm with
+`swamp auth whoami --json`, then rerun the search. In CI, the user sets
+`SWAMP_API_KEY` and `SWAMP_SIGNIN_TOKEN` from a collective token instead.
+
+If the command fails for another reason, surface the error and suggest
+`swamp repo init` (use the `swamp` skill for guidance), then return here. If no
+models exist, present the 5-step checklist (Goals → Create → Run → Inspect →
+Graduate) and begin State 1.
 
 ## State 1: goals_understood
 

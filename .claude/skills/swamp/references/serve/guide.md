@@ -221,6 +221,13 @@ Serve reads the key at startup for OAuth registration, username lookup and the
 club heartbeat, so restart it after rotating the key; other lookups re-read the
 file.
 
+Every swamp process, serve and worker included, needs a swamp-club credential to
+start. A daemon enabled with `serve daemon enable` or `worker daemon enable`
+reads the enabling user's `auth login` credential and cached proof through
+`SWAMP_CONFIG_DIR`. Container or CI deployments without that config dir set
+`SWAMP_API_KEY` and `SWAMP_SIGNIN_TOKEN` (the signin token lets the process
+start while swamp-club is unreachable).
+
 `SWAMP_SERVER_TOKEN` requires `SWAMP_SERVER_URL` (or `SWAMP_SERVE_URL`) to scope
 which server the token applies to. Without a server URL, the token is silently
 ignored and the client falls back to stored credentials in

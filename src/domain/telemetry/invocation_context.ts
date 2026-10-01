@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DetectableAiTool } from "./agent_harness_detection.ts";
+import type { AuthMode } from "../auth/auth_gate_policy.ts";
 
 /**
  * Captures the runtime conditions of a single CLI invocation: which AI
@@ -38,6 +39,11 @@ import type { DetectableAiTool } from "./agent_harness_detection.ts";
  *    is no configured tool list to report.
  *  - `[]` — the repo exists with `tools: []` (legacy `tool: none`
  *    normalised), an explicit opt-out of tool integration.
+ *
+ * `authMode` is how the auth gate let the run through: `verified` (a valid
+ * proof or a live verification), `offline` (swamp-club could not be checked
+ * and a proof or the 24-hour fail-open window carried the run), or `none`
+ * (exempt or blocked). Absent from entries spooled before the gate existed.
  */
 export interface InvocationContext {
   readonly configuredAiTools?: string[];
@@ -47,6 +53,7 @@ export interface InvocationContext {
   readonly externalDatastoreConfigured: boolean;
   readonly datastoreType?: string;
   readonly externalVaultConfigured: boolean;
+  readonly authMode?: AuthMode;
 }
 
 /**
@@ -60,6 +67,7 @@ export interface InvocationContextData {
   externalDatastoreConfigured: boolean;
   datastoreType?: string;
   externalVaultConfigured: boolean;
+  authMode?: AuthMode;
 }
 
 /**
@@ -78,6 +86,7 @@ export function createInvocationContext(
     externalDatastoreConfigured: props.externalDatastoreConfigured,
     datastoreType: props.datastoreType,
     externalVaultConfigured: props.externalVaultConfigured,
+    authMode: props.authMode,
   };
 }
 
@@ -101,6 +110,9 @@ export function invocationContextToData(
   }
   if (context.detectedAiTool !== undefined) {
     data.detectedAiTool = context.detectedAiTool;
+  }
+  if (context.authMode !== undefined) {
+    data.authMode = context.authMode;
   }
   return data;
 }

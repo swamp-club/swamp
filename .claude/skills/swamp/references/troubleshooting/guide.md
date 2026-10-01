@@ -58,10 +58,29 @@ found), see [references/version-check.md](references/version-check.md).
 | Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`                               |
 | Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
 | "Is anything running right now?"                  | Tier 1 → `swamp run history --active`                            |
+| Every command fails with `auth_gate_blocked`      | Account required → see below                                     |
 | Command errored — message is clear                | Tier 2 → read it, fix the named issue                            |
 | Command errored — message is vague                | Tier 2 → re-run with `--json`                                    |
 | Model method or workflow run failed               | Tier 2 → inspect generated reports                               |
 | Workflow / method / sync is slow                  | Tier 3 → enable tracing                                          |
 | Need to understand internal behavior              | Tier 4 → fetch source                                            |
+
+### Account required (`auth_gate_blocked`)
+
+Every subcommand except `auth login`, `auth logout`, `auth whoami` and the
+`--help`/`--version` flags needs a swamp-club.com account. The message names the
+cause:
+
+- **No account**: the user runs `swamp auth login` (browser sign-in they finish
+  themselves). In CI, set `SWAMP_API_KEY` and `SWAMP_SIGNIN_TOKEN` from a
+  collective token.
+- **Revoked**: the key was deleted or the account suspended. Log in again.
+- **Could not reach swamp-club / not verified in N days**: swamp verifies once
+  online, then runs offline on a cached proof for up to 14 days. Fix the network
+  and retry.
+- **A serve or worker daemon blocks**: log in as the user who enabled it and
+  re-run `swamp serve daemon enable` or `swamp worker daemon enable`.
+
+Do not work around the block; there is no flag to skip it.
 
 For detailed walkthroughs of each tier, see [reference.md](reference.md).

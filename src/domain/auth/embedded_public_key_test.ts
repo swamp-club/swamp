@@ -17,24 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export const AUTH_ENFORCEMENT_DEADLINE = "October 1st, 2026";
+import { assert, assertEquals } from "@std/assert";
+import { EMBEDDED_PUBLIC_KEY } from "./embedded_public_key.ts";
+import { base64urlDecode } from "./verification_proof.ts";
 
-export const AUTH_WARNING_MESSAGE =
-  `swamp will require authentication from ${AUTH_ENFORCEMENT_DEADLINE}. Run \`swamp auth login\` to authenticate.`;
-
-export const AUTH_WARNING_FIRST_RUN_LINES = [
-  `Authentication required from ${AUTH_ENFORCEMENT_DEADLINE}`,
-  "",
-  `Starting ${AUTH_ENFORCEMENT_DEADLINE}, swamp will require authentication.`,
-  "",
-  "Sign in now: swamp auth login",
-] as const;
-
-export interface AuthNudgeState {
-  lastShown?: string;
-  firstRunShown?: boolean;
-}
-
-export function isFirstRunNudge(state: AuthNudgeState): boolean {
-  return !state.firstRunShown && !state.lastShown;
-}
+Deno.test("EMBEDDED_PUBLIC_KEY: is a raw 32-byte Ed25519 public key", async () => {
+  assert(
+    EMBEDDED_PUBLIC_KEY,
+    "a signin token cannot verify offline without it",
+  );
+  const bytes = base64urlDecode(EMBEDDED_PUBLIC_KEY);
+  assertEquals(bytes.length, 32);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    bytes.buffer as ArrayBuffer,
+    "Ed25519",
+    false,
+    ["verify"],
+  );
+  assertEquals(key.algorithm.name, "Ed25519");
+});

@@ -96,6 +96,7 @@ Write in plain English:
 | [agent](./surfaces/agent.md)                     | To fold into agent-interface.md                   |
 | [audit](./surfaces/audit.md)                     | Hook command log; to fold into agent-interface.md |
 | [audit-doctor](./surfaces/audit-doctor.md)       | To fold into agent-interface.md                   |
+| [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
 
 ## Reading order for a new engineer
 

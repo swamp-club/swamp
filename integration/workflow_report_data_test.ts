@@ -37,6 +37,7 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { CLI_ARGS } from "./test_helpers.ts";
+import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -97,19 +98,24 @@ async function runCliCommand(
   args: string[],
   cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-  const command = new Deno.Command(Deno.execPath(), {
-    args: [...CLI_ARGS, ...args],
-    stdout: "piped",
-    stderr: "piped",
-    cwd,
-  });
+  // Every CLI child needs a swamp-club credential to pass the auth gate.
+  return await withGateCredentialEnv(async (env) => {
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [...CLI_ARGS, ...args],
+      stdout: "piped",
+      stderr: "piped",
+      cwd,
+      env,
+      clearEnv: true,
+    });
 
-  const { code, stdout, stderr } = await command.output();
-  return {
-    stdout: new TextDecoder().decode(stdout),
-    stderr: new TextDecoder().decode(stderr),
-    code,
-  };
+    const { code, stdout, stderr } = await command.output();
+    return {
+      stdout: new TextDecoder().decode(stdout),
+      stderr: new TextDecoder().decode(stderr),
+      code,
+    };
+  });
 }
 
 // ============================================================================
