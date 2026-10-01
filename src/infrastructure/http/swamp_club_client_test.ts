@@ -1439,19 +1439,19 @@ Deno.test("SwampClubClient.verifyIdentity: a gateway's 401 is refused, not rejec
   }
 });
 
-Deno.test("SwampClubClient.verifyIdentity: a 403 is rejected only when swamp-club wrote it", async () => {
-  assertEquals(
-    (await verifyAgainst(() =>
-      Response.json({ error: "Forbidden" }, { status: 403 })
-    )).outcome,
-    { kind: "rejected", status: 403 },
-  );
-  assertEquals(
-    (await verifyAgainst(() =>
-      new Response("<html>Access denied</html>", { status: 403 })
-    )).outcome,
-    { kind: "refused", status: 403 },
-  );
+Deno.test("SwampClubClient.verifyIdentity: every 403 is refused, never rejected", async () => {
+  // whoami never answers 403; gateways do, often with a JSON error body.
+  for (
+    const res of [
+      () => Response.json({ error: "Forbidden" }, { status: 403 }),
+      () => new Response("<html>Access denied</html>", { status: 403 }),
+    ]
+  ) {
+    assertEquals((await verifyAgainst(res)).outcome, {
+      kind: "refused",
+      status: 403,
+    });
+  }
 });
 
 Deno.test("SwampClubClient.verifyIdentity: 429 is refused, carrying Retry-After", async () => {

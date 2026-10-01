@@ -339,6 +339,8 @@ export function createAuthLoginDeps(
           result.verificationSignature,
           result.publicKeys,
         ).catch(() => {});
+        // A verified answer ends any fail-open window an outage started.
+        await verificationRepo.clearFailOpen().catch(() => {});
       }
       return {
         username: result.username,

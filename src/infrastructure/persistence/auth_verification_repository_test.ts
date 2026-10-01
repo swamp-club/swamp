@@ -268,3 +268,20 @@ Deno.test("AuthVerificationRepository: with no config dir, a signin token still 
     assertEquals(await repo.readTokenCheck("x"), undefined);
   });
 });
+
+Deno.test("AuthVerificationRepository: writes create a missing config dir", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = join(dir, "not", "yet", "there");
+    const repo = new AuthVerificationRepository({ configDir });
+    await repo.markFailOpenSince(1_800_000_000);
+    assertEquals(await repo.readFailOpenSince(), 1_800_000_000);
+    await repo.recordTokenCheck("f", 5);
+    assertEquals(await repo.readTokenCheck("f"), 5);
+
+    const other = new AuthVerificationRepository({
+      configDir: join(dir, "fresh"),
+    });
+    await other.save("{}", "s", []);
+    assertEquals((await other.loadCandidates()).length, 1);
+  });
+});

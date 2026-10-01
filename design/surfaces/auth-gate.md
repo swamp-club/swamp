@@ -39,13 +39,15 @@ it.
 | ----------------------------------------------------------------- | -------------- | --------------------- | -------------- |
 | 200 with `authenticated: true`                                    | `verified`     | pass                  | pass           |
 | 401 with `{"authenticated": false}`, a 200 with `false`           | `rejected`     | block                 | block          |
-| 403 with swamp-club's `{"error": …}` body                         | `rejected`     | block                 | block          |
 | 5xx                                                               | `server_error` | pass for 24 hours     | pass (offline) |
-| 429, any other 401 or 403, other non-2xx, a 200 that is not JSON  | `refused`      | block                 | pass (offline) |
+| 429, any 403, any other 401 or non-2xx, a 200 that is not whoami  | `refused`      | block                 | pass (offline) |
 | timeout, DNS or connection failure                                | `unreachable`  | block                 | pass (offline) |
 
-A rejection must come from swamp-club itself. A gateway or proxy can send its
-own 401 or 403 while the key is fine, so those count as `refused`. Without a
+A rejection must come from swamp-club itself, because a rejection deletes the
+cached proof. swamp-club's whoami answers an unknown key with exactly
+`401 {"authenticated": false}` and never sends a 403. A gateway or proxy can
+send its own 401 or 403, often with a JSON `error` body, while the key is
+fine. So any other 401 and every 403 count as `refused`. Without a
 proof, `refused` and `unreachable` block because a client can cause them on
 purpose. Blocking swamp-club.com or tripping its rate limit must never stand in
 for verification.

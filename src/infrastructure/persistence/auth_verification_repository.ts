@@ -142,6 +142,7 @@ export class AuthVerificationRepository {
     signature: string,
     publicKeys: PublicKeyEntry[],
   ): Promise<void> {
+    await Deno.mkdir(this.configDir, { recursive: true });
     const path = join(this.configDir, VERIFICATION_FILE);
     const data: CachedVerification = {
       proof,
@@ -242,6 +243,9 @@ export class AuthVerificationRepository {
     file: string,
     data: Record<string, unknown>,
   ): Promise<void> {
+    // A fresh CI box may have no config dir yet; without it the stamps would
+    // silently never persist, unbounding the fail-open window.
+    await Deno.mkdir(this.configDir, { recursive: true });
     await atomicWriteTextFile(
       join(this.configDir, file),
       JSON.stringify(data, null, 2),

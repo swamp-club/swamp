@@ -35,21 +35,6 @@ export interface IdentityCheckResult {
   readonly response?: WhoamiResponse;
 }
 
-/**
- * True when a 403 body is swamp-club's own JSON error (`{ "error": "…" }`),
- * which is a real refusal. Anything else came from something in front of
- * swamp-club — a WAF, CDN or proxy — and says nothing about the key.
- */
-async function isSwampClubError(res: Response): Promise<boolean> {
-  try {
-    const body = await res.json();
-    return typeof body === "object" && body !== null &&
-      typeof body.error === "string";
-  } catch {
-    return false;
-  }
-}
-
 /** True for whoami's own 401 body, `{ "authenticated": false }`. */
 async function isWhoamiRejection(res: Response): Promise<boolean> {
   try {
@@ -412,9 +397,12 @@ export class SwampClubClient {
         : refusedUnlessTimedOut();
     }
     if (status === 403) {
-      return await isSwampClubError(res)
-        ? { outcome: { kind: "rejected", status } }
-        : refusedUnlessTimedOut();
+      // swamp-club's whoami never answers 403, so a 403 always comes from
+      // something in front of it — and gateways commonly send their own
+      // `{ "error": … }` body. Counting it as a rejection would delete a good
+      // proof; without a proof `refused` still blocks.
+      await res.body?.cancel();
+      return refusedUnlessTimedOut();
     }
     if (status === 429) {
       const retryAfterSeconds = parseRetryAfter(res.headers.get("retry-after"));
