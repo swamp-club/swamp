@@ -31,7 +31,8 @@ import {
 } from "../../infrastructure/logging/logger.ts";
 import { containsExpression } from "../../domain/expressions/expression_parser.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
-import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { formatReportFrame } from "../output/report_frame.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
 import {
@@ -55,6 +56,8 @@ export interface WorkflowRunRenderOpts {
   workflowName: string;
   isAuthenticated?: boolean;
   quiet?: boolean;
+  /** Also frame reports whose markdown is empty. */
+  verbose?: boolean;
   failOnSeverity?: AssertSeverity;
   /**
    * Appended to every follow-up command the renderer prints, so it targets
@@ -82,6 +85,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;
   private isAuthenticated: boolean;
   private quiet: boolean;
+  private verbose: boolean;
   private failOnSeverity: AssertSeverity;
   private commandTarget: string;
   private _failed = false;
@@ -108,6 +112,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.workflowName = opts.workflowName;
     this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
+    this.verbose = opts.verbose ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.commandTarget = opts.commandTarget ?? "";
   }
@@ -564,6 +569,13 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!this.pipe) return;
         if (e.reportName === "@swamp/method-summary") return;
         if (e.reportName === "@swamp/workflow-summary") return;
+        const frame = formatReportFrame(
+          e.reportName,
+          e.markdown,
+          getTerminalColumns(),
+          { showEmpty: this.verbose },
+        );
+        if (frame === undefined) return;
         writeBlankLine();
         writeOutput(
           this.pipe.statusLine(
@@ -573,12 +585,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             e.reportName,
           ),
         );
-        const separator = "─".repeat(60);
-        writeOutput(
-          `── Report: ${e.reportName} ${separator}\n${
-            renderMarkdownToTerminal(e.markdown)
-          }\n${separator}`,
-        );
+        writeOutput(frame);
       },
       report_failed: (e) => {
         if (!this.pipe) return;

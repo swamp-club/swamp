@@ -1917,19 +1917,20 @@ Deno.test("executeReports: non-empty markdown report persists normally", async (
   assertEquals(saved.length, 2);
 });
 
-Deno.test("executeReports: empty markdown report does not fire onReportCompleted", async () => {
+Deno.test("executeReports: empty markdown report fires onReportCompleted with no data handles", async () => {
   const registry = new ReportRegistry();
   registry.register("test-empty", makeEmptyReport("method"));
 
-  const { repo } = createInMemoryDataRepo();
+  const { repo, saved } = createInMemoryDataRepo();
   const modelType = ModelType.create("test/model");
   const context = makeMethodContext(repo, modelType);
 
-  let completedCalled = false;
+  const completed: Array<{ name: string; markdown: string; handles: number }> =
+    [];
   const events: ReportEventCallback = {
     onReportStarted: () => {},
-    onReportCompleted: () => {
-      completedCalled = true;
+    onReportCompleted: (name, _scope, markdown, _json, dataHandles) => {
+      completed.push({ name, markdown, handles: dataHandles.length });
     },
     onReportFailed: () => {},
   };
@@ -1946,7 +1947,8 @@ Deno.test("executeReports: empty markdown report does not fire onReportCompleted
     undefined,
   );
 
-  assertEquals(completedCalled, false);
+  assertEquals(completed, [{ name: "test-empty", markdown: "", handles: 0 }]);
+  assertEquals(saved.length, 0);
 });
 
 Deno.test("executeReports: mixed empty and non-empty reports persist only non-empty", async () => {

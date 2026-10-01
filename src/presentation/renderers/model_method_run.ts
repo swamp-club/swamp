@@ -26,7 +26,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
-import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import { AUTH_WARNING_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 import { dim } from "@std/fmt/colors";
@@ -47,6 +47,8 @@ export interface ModelMethodRunRenderOpts {
   methodName: string;
   isAuthenticated?: boolean;
   quiet?: boolean;
+  /** Also frame reports whose markdown is empty. */
+  verbose?: boolean;
 }
 
 export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
@@ -60,6 +62,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   private methodName: string;
   private isAuthenticated: boolean;
   private quiet: boolean;
+  private verbose: boolean;
   private _failed = false;
   private outputBuffer: string[] = [];
 
@@ -68,6 +71,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
     this.methodName = opts.methodName;
     this.isAuthenticated = opts.isAuthenticated ?? false;
     this.quiet = opts.quiet ?? false;
+    this.verbose = opts.verbose ?? false;
   }
 
   handlers(): EventHandlers<ModelMethodRunEvent> {
@@ -154,19 +158,16 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
       report_started: () => {},
       report_completed: (e) => {
         if (e.reportName === "@swamp/method-summary") return;
-        const cols = getTerminalColumns();
-        const headerPrefix = `── Report: ${e.reportName} `;
-        const headerSep = "─".repeat(
-          Math.max(0, cols - headerPrefix.length),
+        const frame = formatReportFrame(
+          e.reportName,
+          e.markdown,
+          getTerminalColumns(),
+          { showEmpty: this.verbose },
         );
-        const separator = "─".repeat(cols);
+        if (frame === undefined) return;
         writeBlankLine();
         writeGutterLine("Report", STATUS_COLORS.info, e.reportName);
-        writeOutput(
-          `${headerPrefix}${headerSep}\n${
-            renderMarkdownToTerminal(e.markdown, { maxWidth: cols })
-          }\n${separator}`,
-        );
+        writeOutput(frame);
       },
       report_failed: (e) => {
         writeGutterLine(

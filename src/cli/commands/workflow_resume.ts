@@ -206,6 +206,7 @@ export const workflowResumeCommand = withRemoteOptions(
         workflowName: workflowIdOrName,
         isAuthenticated: isAuthenticated(),
         quiet: cliCtx.verbosity === "quiet",
+        verbose: cliCtx.verbosity === "verbose",
         commandTarget: formatCommandTarget({
           server: options.server as string | undefined,
         }),
@@ -448,6 +449,7 @@ export const workflowResumeCommand = withRemoteOptions(
       workflowName,
       isAuthenticated: isAuthenticated(),
       quiet: cliCtx.verbosity === "quiet",
+      verbose: cliCtx.verbosity === "verbose",
       commandTarget: formatCommandTarget({
         repoDir: options.repoDir as string | undefined,
       }),

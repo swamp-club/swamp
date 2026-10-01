@@ -501,6 +501,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               methodName,
               isAuthenticated: isAuthenticated(),
               quiet: ctx.verbosity === "quiet",
+              verbose: ctx.verbosity === "verbose",
             });
 
             await consumeStream(
@@ -656,6 +657,7 @@ async function runMethodViaServer(
         methodName,
         isAuthenticated: isAuthenticated(),
         quiet: ctx.verbosity === "quiet",
+        verbose: ctx.verbosity === "verbose",
       });
       await consumeStream(
         runModelMethodOverServer({

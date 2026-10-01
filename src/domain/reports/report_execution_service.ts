@@ -459,8 +459,16 @@ export async function executeReports(
       const result = await report.execute(context);
 
       // Empty markdown means the report is not applicable to this method.
-      // Skip persistence so the previous real version stays latest.
+      // Skip persistence so the previous real version stays latest, but still
+      // announce completion so renderers can show it in verbose mode.
       if (result.markdown.trim() === "") {
+        events?.onReportCompleted(
+          name,
+          report.scope,
+          result.markdown,
+          result.json,
+          [],
+        );
         results.push({
           name,
           scope: report.scope,
