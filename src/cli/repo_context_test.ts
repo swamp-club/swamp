@@ -25,6 +25,10 @@ import {
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join, resolve } from "@std/path";
+import {
+  createInMemoryRemote,
+  createRecordingSyncService,
+} from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
@@ -1010,56 +1014,24 @@ Deno.test(
     // conversion in `buildMarkDirtyHook`. Uses a relPath that contains a
     // directory separator so a regression that drops forward-slash
     // normalization fails on the Windows CI runner.
-    const { datastoreTypeRegistry } = await import(
-      "../domain/datastore/datastore_type_registry.ts"
+    const { registerTestDatastoreType } = await import(
+      "../infrastructure/persistence/test_helpers/test_datastore_type.ts"
     );
     const { Data } = await import("../domain/data/data.ts");
     const { ModelType } = await import("../domain/models/model_type.ts");
 
-    const typeName = "test-markdirty-relpath";
-    const markDirtyCalls: Array<{ relPath?: string }> = [];
-
-    datastoreTypeRegistry.register({
-      type: typeName,
-      name: "Test markDirty relPath wiring",
-      description: "Captures markDirty options to assert relPath threading",
-      isBuiltIn: false,
-      createProvider: () => ({
-        createLock: () => ({
-          acquire: () => Promise.resolve(),
-          release: () => Promise.resolve(),
-          withLock: <T>(fn: () => Promise<T>) => fn(),
-          inspect: () => Promise.resolve(null),
-          forceRelease: () => Promise.resolve(true),
-        }),
-        createVerifier: () => ({
-          verify: () =>
-            Promise.resolve({
-              healthy: true,
-              message: "ok",
-              latencyMs: 1,
-              datastoreType: typeName,
-            }),
-        }),
-        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
-        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
-        createSyncService: () => ({
-          pullChanged: () => Promise.resolve(0),
-          pushChanged: () => Promise.resolve(0),
-          markDirty: (options?: { relPath?: string }) => {
-            markDirtyCalls.push({ relPath: options?.relPath });
-            return Promise.resolve();
-          },
-        }),
-      }),
-    });
+    const remoteType = registerTestDatastoreType(createInMemoryRemote());
+    // Every markDirty call any connection made, as the hand-rolled provider
+    // recorded them into one shared array.
+    const markDirtyCalls = () =>
+      remoteType.connections().flatMap((connection) =>
+        connection.marks().map((relPath) => ({ relPath }))
+      );
 
     try {
       await withTempDir(async (dir) => {
         await initializeRepo(dir);
-        await configureExtensionDatastore(dir, typeName);
-
-        markDirtyCalls.length = 0;
+        await configureExtensionDatastore(dir, remoteType.typeName);
 
         const repo = await requireInitializedRepo({
           repoDir: dir,
@@ -1088,8 +1060,8 @@ Deno.test(
         );
 
         // save fires one markDirty call with the data-name directory as relPath.
-        assertEquals(markDirtyCalls.length, 1);
-        const relPath = markDirtyCalls[0].relPath;
+        assertEquals(markDirtyCalls().length, 1);
+        const relPath = markDirtyCalls()[0].relPath;
         if (relPath === undefined) {
           throw new Error("expected relPath to be set");
         }
@@ -1117,7 +1089,7 @@ Deno.test(
         await flushDatastoreSync();
       });
     } finally {
-      datastoreTypeRegistry.invalidateType(typeName);
+      remoteType.dispose();
     }
   },
 );
@@ -3403,28 +3375,10 @@ Deno.test("flushSinglePhasePush: writes catalog export before acquiring global l
   }
 });
 
-function recordingSyncService(): {
-  service: DatastoreSyncService;
-  marks: Array<string | undefined>;
-} {
-  const marks: Array<string | undefined> = [];
-  return {
-    marks,
-    service: {
-      pullChanged: () => Promise.resolve(0),
-      pushChanged: () => Promise.resolve(0),
-      markDirty: (options) => {
-        marks.push(options?.relPath);
-        return Promise.resolve();
-      },
-    },
-  };
-}
-
 Deno.test("buildMarkDirtyHook: forwards a cache path as a forward-slash relPath", async () => {
   const base = resolve("mark-dirty-hook");
   const cacheRoot = join(base, "cache");
-  const { service, marks } = recordingSyncService();
+  const { service, marks } = createRecordingSyncService();
   const hook = buildMarkDirtyHook(service, cacheRoot, join(base, "repo"));
 
   await hook(join(cacheRoot, "data", "test", "model-1", "result"));
@@ -3435,7 +3389,7 @@ Deno.test("buildMarkDirtyHook: forwards a cache path as a forward-slash relPath"
 Deno.test("buildMarkDirtyHook: maps a repo .swamp path onto the cache layout", async () => {
   const base = resolve("mark-dirty-hook");
   const repoDir = join(base, "repo");
-  const { service, marks } = recordingSyncService();
+  const { service, marks } = createRecordingSyncService();
   const hook = buildMarkDirtyHook(service, join(base, "cache"), repoDir);
 
   await hook(join(repoDir, ".swamp", "outputs", "test", "run-1.yaml"));
@@ -3449,7 +3403,7 @@ Deno.test("buildMarkDirtyHook: sends nothing for a path outside the cache and .s
   // push of the whole cache (swamp-club#2415).
   const base = resolve("mark-dirty-hook");
   const repoDir = join(base, "repo");
-  const { service, marks } = recordingSyncService();
+  const { service, marks } = createRecordingSyncService();
   const hook = buildMarkDirtyHook(service, join(base, "cache"), repoDir);
 
   await hook(join(repoDir, "models", "command", "shell", "probe.yaml"));
@@ -3460,7 +3414,7 @@ Deno.test("buildMarkDirtyHook: sends nothing for a path outside the cache and .s
 
 Deno.test("buildMarkDirtyHook: forwards an absent path as a bare call", async () => {
   const base = resolve("mark-dirty-hook");
-  const { service, marks } = recordingSyncService();
+  const { service, marks } = createRecordingSyncService();
   const hook = buildMarkDirtyHook(
     service,
     join(base, "cache"),

@@ -164,6 +164,98 @@ Deno.test("lock acquire and release", async () => {
 | `lockAcquireFails` | `false`                       | Make lock acquire reject         |
 | `withSyncService`  | `false`                       | Enable `createSyncService`       |
 
+## `createInMemoryRemote`
+
+A shared remote datastore held in memory, with file content. Each
+`connect(cacheDir)` returns a sync service for one local cache directory, so
+several connections simulate several machines sharing one bucket.
+
+```typescript
+import { createInMemoryRemote } from "@swamp-club/swamp-testing";
+
+Deno.test("a pushed file reaches another machine", async () => {
+  const remote = createInMemoryRemote();
+  const a = remote.connect(cacheA, { instance: "a" });
+  const b = remote.connect(cacheB, { instance: "b" });
+
+  await Deno.writeTextFile(join(cacheA, "data", "x"), "hello");
+  await a.markDirty({ relPath: "data/x" });
+  await a.pushChanged();
+
+  await b.pullChanged();
+  assertEquals(await Deno.readTextFile(join(cacheB, "data", "x")), "hello");
+});
+```
+
+Connected services follow the `markDirty` contract:
+
+- **Marks.** A `markDirty` call with a `relPath` marks that path; a bare call
+  marks everything and makes the next push a full walk of the cache. A `relPath`
+  that is not cache-relative with forward slashes is recorded in `violations()`
+  and never pushed. `markDirty` never throws.
+- **Push.** A marked file is uploaded. A marked directory uploads every file
+  under it. A marked path missing on disk is deleted remotely, with everything
+  under it. A push only deletes paths that connection has already pushed or
+  pulled, so it never deletes a peer's file it has not seen. It clears only the
+  marks it started with, and only on success.
+- **Pull.** A pull downloads files the remote changed since that connection last
+  synced them. It skips files that are marked locally and never overwrites a
+  local edit to a file the remote has not changed.
+- **Two-phase push.** `preparePush` stages a push without touching the remote or
+  the marks; `commitPush` applies it and clears the marks it was built from.
+- **Per-machine files.** `_catalog.db*`, `.lock` files, `_index/`, `_control/`
+  and the sync sidecars never cross between machines, as in the S3 and GCS
+  datastores.
+
+| Option (`createInMemoryRemote`) | Default                                       | Description                                             |
+| ------------------------------- | --------------------------------------------- | ------------------------------------------------------- |
+| `pullDeletes`                   | `false`                                       | Pull deletes local files a peer removed (unless marked) |
+| `capabilities`                  | `{ twoPhaseSync: true, configRefresh: true }` | What every connection reports from `capabilities()`     |
+
+| Option (`connect`)    | Default        | Description                               |
+| --------------------- | -------------- | ----------------------------------------- |
+| `instance`            | `instance-<n>` | Name recorded in `remote.ops()`           |
+| `fullWalkOnFirstPush` | `false`        | Treat the first push as a full cache walk |
+
+`pullDeletes: false` matches what the S3 and GCS datastores do today: a pull
+stops tracking a file a peer deleted but leaves it on disk.
+`fullWalkOnFirstPush` defaults to `false` on purpose. The contract asks a sync
+service that keeps its marks in memory to walk the whole cache on its first push
+after starting, but a full walk would upload files whose `markDirty` call was
+missed, hiding exactly the bugs this fake exists to catch.
+
+For tests:
+
+- `remote.files()`, `read`, `write` and `delete` inspect or seed the remote
+  directly, as an out-of-band peer would.
+- `remote.ops()` lists every successful push, pull, prepare and commit across
+  connections, in order.
+- `failNext(op, error?)` makes the next `"push"`, `"pull"`, `"prepare"` or
+  `"commit"` reject before it changes anything.
+- `offline(true)` makes every remote call reject while marks still record.
+- `marks()`, `dirtyPaths()` and `isBulkDirty()` show a connection's marks.
+
+The fake does not scope by namespace and has no lazy hydration, control-plane
+store or `previewPush`.
+
+In swamp's own repository, `registerTestDatastoreType(remote)` in
+`src/infrastructure/persistence/test_helpers/test_datastore_type.ts` registers
+the fake as a datastore type, so `requireInitializedRepo` connects a repo to it
+end to end. It lives there because this package cannot import swamp core.
+
+## `createRecordingSyncService`
+
+A sync service that only records `markDirty` calls. Push and pull do nothing.
+
+```typescript
+import { createRecordingSyncService } from "@swamp-club/swamp-testing";
+
+const { service, marks } = createRecordingSyncService();
+await service.markDirty({ relPath: "data/x" });
+await service.markDirty();
+assertEquals(marks, ["data/x", undefined]); // undefined is a bare call
+```
+
 ## `createReportTestContext`
 
 Fake `ReportContext` for testing report `execute` functions. Supports all three

@@ -135,6 +135,24 @@ export type {
   SyncOperation,
 } from "./datastore_test_context.ts";
 
+export { createInMemoryRemote } from "./in_memory_remote.ts";
+
+export type {
+  InMemoryPullOptions,
+  InMemoryPushManifest,
+  InMemoryRemote,
+  InMemoryRemoteCapabilities,
+  InMemoryRemoteConnectOptions,
+  InMemoryRemoteOp,
+  InMemoryRemoteOperation,
+  InMemoryRemoteOptions,
+  InMemoryRemoteSyncService,
+} from "./in_memory_remote.ts";
+
+export { createRecordingSyncService } from "./recording_sync_service.ts";
+
+export type { RecordingSyncServiceResult } from "./recording_sync_service.ts";
+
 export type {
   DatastoreHealthResult,
   DatastoreProvider,
