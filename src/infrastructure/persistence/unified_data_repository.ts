@@ -1175,27 +1175,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Update latest marker to point to tombstone
       await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
 
-      // Old name is now a tombstone — remove from catalog, and record the
-      // forward so data query can follow it.
+      // Old name is now a tombstone — remove from catalog
       this.catalogRemove(type, modelId, oldName);
-      this.catalogStore.recordRename({
-        namespace: this.namespace,
-        type_normalized: type.normalized,
-        model_id: modelId,
-        data_name: oldName,
-        renamed_to: newName,
-      });
     } catch (tombstoneError) {
       // Roll back: remove the newly created data under the new name
       logger
         .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
       try {
-        this.catalogStore.removeRename(
-          this.namespace,
-          type.normalized,
-          modelId,
-          oldName,
-        );
         const newVersionDir = this.getPath(
           type,
           modelId,
@@ -1221,6 +1207,23 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }. Manual cleanup may be needed.`;
       }
       throw tombstoneError;
+    }
+
+    // Record the forward so data query can follow it. Outside the rollback
+    // above: the files are already authoritative, and the catalog is a
+    // projection the next backfill rebuilds, so a failed write here must not
+    // undo the rename. catalogRemove above already recorded the local write.
+    try {
+      this.catalogStore.recordRename({
+        namespace: this.namespace,
+        type_normalized: type.normalized,
+        model_id: modelId,
+        data_name: oldName,
+        renamed_to: newName,
+      });
+    } catch (error) {
+      logger
+        .warn`Could not record the rename forward ${oldName} -> ${newName} in the data catalog: ${error}. A query by the old name finds the new one after the catalog is next rebuilt.`;
     }
 
     return {

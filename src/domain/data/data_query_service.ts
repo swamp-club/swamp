@@ -603,9 +603,10 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<Map<string, ResolvedModelReference | null> | undefined> {
-    const references = collectModelReferences(
-      this.queryEnv.parse(predicate).ast as ASTNode,
-    );
+    const ast = this.queryEnv.parse(predicate).ast as ASTNode;
+    // Reject unknown fields before any definition lookup.
+    validateFieldReferences(collectRootIdentifiers(ast));
+    const references = collectModelReferences(ast);
     if (references.length === 0) return undefined;
     if (!this.resolveModel) throw modelFunctionUnavailable();
     const resolved = new Map<string, ResolvedModelReference | null>();
@@ -1039,7 +1040,7 @@ export class DataQueryService {
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
-    this.replaceRenameForwards(renames);
+    this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
   }
 
@@ -1105,18 +1106,14 @@ export class DataQueryService {
     computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
-    this.replaceRenameForwards(renames);
+    this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
   }
 
-  /**
-   * Rebuilds this namespace's rename forwards from the markers a backfill
-   * walk found, dropping any forward that is no longer on disk.
-   */
-  private replaceRenameForwards(renames: readonly RenameForward[]): void {
+  /** Merges the rename markers a backfill walk found into the catalog. */
+  private recordRenameForwards(renames: readonly RenameForward[]): void {
     const namespace = this.dataRepo.namespace;
-    this.catalogStore.replaceRenames(
-      namespace,
+    this.catalogStore.mergeRenames(
       renames.map((rename) => ({
         namespace,
         type_normalized: rename.modelType.normalized,

@@ -1605,24 +1605,21 @@ Deno.test("CatalogStore.upsert and bulkUpsert: leave forwards alone", () => {
   store.close();
 });
 
-Deno.test("CatalogStore.replaceRenames: replaces one namespace's forwards only", () => {
+Deno.test("CatalogStore.mergeRenames: adds and replaces forwards, keeping the rest", () => {
   const store = new CatalogStore(makeTempDbPath());
-  store.recordRename(makeForward({ namespace: "own", data_name: "gone" }));
-  store.recordRename(makeForward({ namespace: "peer", data_name: "kept" }));
+  store.recordRename(makeForward({ data_name: "unseen", renamed_to: "u2" }));
+  store.recordRename(makeForward({ data_name: "moved", renamed_to: "before" }));
 
-  store.replaceRenames("own", [
-    makeForward({ namespace: "own", data_name: "fresh", renamed_to: "f2" }),
+  store.mergeRenames([
+    makeForward({ data_name: "moved", renamed_to: "after" }),
+    makeForward({ data_name: "fresh", renamed_to: "f2" }),
   ]);
 
-  assertEquals(store.findRenamesFrom("gone"), []);
-  assertEquals(
-    store.findRenameTarget("own", "test-model", "model-001", "fresh"),
-    "f2",
-  );
-  assertEquals(
-    store.findRenameTarget("peer", "test-model", "model-001", "kept"),
-    "new",
-  );
+  const target = (name: string) =>
+    store.findRenameTarget("", "test-model", "model-001", name);
+  assertEquals(target("unseen"), "u2", "a forward the batch omits survives");
+  assertEquals(target("moved"), "after");
+  assertEquals(target("fresh"), "f2");
   store.close();
 });
 

@@ -540,16 +540,16 @@ export class CatalogStore {
   }
 
   /**
-   * Replaces every rename forward in `namespace` with `rows`, in one
-   * transaction. Backfill rebuilds the forwards from disk this way, so a
-   * forward that another repository's write ended does not survive.
+   * Records `rows` as rename forwards in one transaction, replacing a forward
+   * already recorded for the same name and leaving every other forward in
+   * place. Backfill merges what its walk found this way, as it does catalog
+   * rows: a walk with gaps (lazy hydration) must not drop a forward it could
+   * not see. A forward made stale by a later write is ignored at query time,
+   * since its old name has a latest row again.
    */
-  replaceRenames(namespace: string, rows: readonly RenameForwardRow[]): void {
+  mergeRenames(rows: readonly RenameForwardRow[]): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare("DELETE FROM catalog_renames WHERE namespace = ?").run(
-        namespace,
-      );
       const stmt = this.db.prepare(
         `INSERT OR REPLACE INTO catalog_renames (
            namespace, type_normalized, model_id, data_name, renamed_to
@@ -557,7 +557,7 @@ export class CatalogStore {
       );
       for (const row of rows) {
         stmt.run(
-          namespace,
+          row.namespace,
           row.type_normalized,
           row.model_id,
           row.data_name,

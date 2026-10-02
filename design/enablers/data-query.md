@@ -520,14 +520,16 @@ name (`lifecycle: deleted`, `renamedTo`), so a query can follow them the way
 an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
 `catalog`; only the forward remains.
 
-- **Write-through**: `rename()` records the forward. `upsertNewVersion` (every
-  runtime write) deletes the forward from the name it writes, so writing the
-  old name again ends the forward.
+- **Write-through**: `rename()` records the forward once the rename's files
+  are written; a failed catalog write only logs, since the next backfill
+  restores it. `upsertNewVersion` (every runtime write) deletes the forward from
+  the name it writes, so writing the old name again ends the forward.
 - **Backfill**: the `findAllGlobal` walk reports each rename marker it follows
-  past (`FindAllGlobalOptions.renames`), and backfill replaces this
-  namespace's forwards with them (`replaceRenames`), dropping any forward that
-  is no longer on disk (for example after another repository on a shared
-  datastore wrote the old name again).
+  past (`FindAllGlobalOptions.renames`), and backfill merges them
+  (`mergeRenames`). Like catalog rows, forwards are never deleted by a backfill:
+  a walk with gaps (lazy hydration) must not drop a forward it could not see. A
+  forward made stale by a later write to its old name is ignored at query time
+  instead.
 - **Query**: when the predicate does not open history and has a top-level
   `name == "<literal>"` conjunct, matching resolves the literal's forwards per
   `(namespace, type, model id)`: at most 5 hops, never revisiting a name, and

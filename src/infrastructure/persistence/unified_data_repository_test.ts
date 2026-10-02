@@ -1646,3 +1646,26 @@ Deno.test("findAllGlobal: reports each rename marker it follows past", async () 
     }
   });
 });
+
+Deno.test("rename: a failed forward write leaves the rename in place", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("old"), new Uint8Array([1]));
+    catalogStore.recordRename = () => {
+      throw new Error("database is locked");
+    };
+
+    const result = await repo.rename(testType, modelId, "old", "new");
+
+    assertEquals(result.newName, "new");
+    assertEquals(
+      (await repo.findByName(testType, modelId, "old"))?.name,
+      "new",
+    );
+    assertEquals(
+      new TextDecoder().decode(
+        (await repo.getContent(testType, modelId, "new"))!,
+      ),
+      "\x01",
+    );
+  });
+});

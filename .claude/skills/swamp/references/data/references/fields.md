@@ -43,7 +43,11 @@ deleted model whose name was reused. `modelName == "<m>"` compares the tag
 written with the data, so it can differ in each of those cases.
 
 - The argument must be a string literal. Up to 32 distinct models per predicate.
-- A name or id with no definition matches nothing; the CLI warns about it.
+- A name or id with no definition matches nothing. A local query warns about it;
+  a query sent with `--server` does not (the server will not say whether a model
+  exists), so check the name if the result is empty.
+- It matches the definition's data in every namespace the catalog holds, not
+  only this repository's.
 - Predicates only: not in `--select`, and not in CEL `data.query()` inside
   models and workflows (use `modelId` and `modelType` there).
 

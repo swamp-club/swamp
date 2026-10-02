@@ -79,9 +79,6 @@ export interface DeferredWriteReceipt {
 }
 
 /**
- * Repository interface for unified Data storage with versioning.
- */
-/**
  * A rename marker found while walking the data tree: `dataName` was renamed
  * to `renamedTo` under the same model.
  */
@@ -101,6 +98,9 @@ export interface FindAllGlobalOptions {
   renames?: RenameForward[];
 }
 
+/**
+ * Repository interface for unified Data storage with versioning.
+ */
 export interface UnifiedDataRepository {
   /**
    * The namespace this repository writes as (giga-swamp Phase 2). Catalog rows

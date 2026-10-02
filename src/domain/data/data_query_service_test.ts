@@ -3040,7 +3040,7 @@ Deno.test("DataQueryService rename forwards: --select sees the item's current na
   catalog.close();
 });
 
-Deno.test("DataQueryService rename forwards: backfill rebuilds forwards from disk, async and sync", async () => {
+Deno.test("DataQueryService rename forwards: backfill restores forwards from disk and keeps ones its walk cannot see, async and sync", async () => {
   for (const sync of [false, true]) {
     const dir = Deno.makeTempDirSync({ prefix: "swamp-query-forwards-" });
     const catalog = new CatalogStore(
@@ -3069,22 +3069,27 @@ Deno.test("DataQueryService rename forwards: backfill rebuilds forwards from dis
     );
     await dataRepo.rename(type, modelId, "old", "new");
 
-    // Lose the rename's write-through and leave a forward no longer on disk,
-    // as a foreign write followed by an invalidation can.
-    catalog.replaceRenames("", [{
+    // Lose the rename's write-through, and record a forward for a model whose
+    // directory is not on disk, as a lazily hydrated walk would miss it.
+    catalog.removeRename("", type.normalized, modelId, "old");
+    const unseenModel = crypto.randomUUID();
+    catalog.recordRename({
       namespace: "",
       type_normalized: type.normalized,
-      model_id: modelId,
-      data_name: "ghost",
-      renamed_to: "new",
-    }]);
+      model_id: unseenModel,
+      data_name: "elsewhere",
+      renamed_to: "there",
+    });
     catalog.invalidate();
 
     const results = sync
       ? service.querySync('name == "old"') as DataRecord[]
       : await service.query('name == "old"') as DataRecord[];
     assertEquals(results.map((r) => r.name), ["new"]);
-    assertEquals(catalog.findRenamesFrom("ghost"), []);
+    assertEquals(
+      catalog.findRenameTarget("", type.normalized, unseenModel, "elsewhere"),
+      "there",
+    );
     catalog.close();
   }
 });
