@@ -142,6 +142,17 @@ Deno.test("determineVerdict: a review quoting an error code in markdown code is 
   const fenced = "VERDICT: fail\n\nThe old path returned:\n\n```json\n" +
     '{"code":"invalid_api_key","type":"authentication_error"}\n```\n';
   assertEquals(determineVerdict(fenced), { kind: "fail" });
+
+  // A double-backtick span quoting single backticks, as a reviewer of this
+  // checker writes its test inputs.
+  const doubled = "VERDICT: pass\n\nThe test covers " +
+    "(`` see `whoami\\nrate_limit_error` ``) and ``rate_`x`limit_error``.";
+  assertEquals(determineVerdict(doubled), { kind: "pass" });
+});
+
+Deno.test("determineVerdict: removing quoted code cannot join text into a provider error", () => {
+  const output = "VERDICT: pass\n\nSee rate_`x`limit_error for the shape.";
+  assertEquals(determineVerdict(output), { kind: "pass" });
 });
 
 Deno.test("determineVerdict: a provider error outside quoted code is still detected", () => {
