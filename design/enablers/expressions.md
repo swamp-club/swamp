@@ -480,8 +480,10 @@ the catalog. To scope to the current run, add a `workflowRunId` predicate via
 
 If different workflow steps invoke the same model and write the same
 spec/instance name, each step's output is a distinct record with its own latest
-version. Step A's latest and step B's latest are both returned. A standalone
-model-method write to the same data name demotes all prior step outputs.
+version. Step A's latest and step B's latest are both returned, and the older
+one reports `isLatest: false`. `data.query()`, `data.latest()` and
+`context.readModelData()` return only the newest. A standalone model-method
+write to the same data name demotes all prior step outputs.
 
 ### data.findByTag(tagKey, tagValue)
 
@@ -1091,7 +1093,7 @@ globalArguments:
 > **Warning:** Values read via `env` are not redacted or filtered. An
 > environment variable used as a model attribute is stored on disk in the
 > datastore `data/` directory (default `.swamp/data/`) as model output data,
-> and is visible in `swamp data get` output. This includes sensitive variables
+> and is visible in `swamp data query` output. This includes sensitive variables
 > present at runtime (e.g. `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database
 > passwords).
 

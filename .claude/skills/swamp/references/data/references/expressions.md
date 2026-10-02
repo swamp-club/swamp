@@ -43,7 +43,9 @@ a single key, or history beyond a single version.
 
 Every shortcut is equivalent to a specific `data.query()` call. Results have the
 same `DataRecord[]` shape — anything that works on a shortcut result works on a
-query result.
+query result. One difference: when several workflow steps wrote the same data
+name, `findByTag` and `findBySpec` return each step's latest record, while
+`data.query()` returns only the newest.
 
 | Shortcut                      | Underlying query                                                           |
 | ----------------------------- | -------------------------------------------------------------------------- |

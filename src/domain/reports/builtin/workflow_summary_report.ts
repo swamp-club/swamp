@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stepRetrievalCommand } from "../../data/data_query_command.ts";
 import type {
   ReportContext,
   WorkflowReportContext,
@@ -85,16 +86,17 @@ export const workflowSummaryReport: ReportDefinition = {
             `| ${step.jobName} | **${step.stepName}** | ${label} | No data output. |`,
           );
         } else {
-          const firstHandle = step.dataHandles[0];
-          const firstCmd =
-            `swamp data get ${step.modelName} ${firstHandle.name}`;
+          const [firstCmd, ...otherCmds] = step.dataHandles.map((h) =>
+            stepRetrievalCommand(workflowRunId, step, {
+              name: h.name,
+              version: h.version,
+              contentType: h.metadata.contentType,
+            })
+          );
           lines.push(
             `| ${step.jobName} | **${step.stepName}** | ${label} | \`${firstCmd}\` |`,
           );
-          for (let i = 1; i < step.dataHandles.length; i++) {
-            const cmd = `swamp data get ${step.modelName} ${
-              step.dataHandles[i].name
-            }`;
+          for (const cmd of otherCmds) {
             lines.push(`| | | | \`${cmd}\` |`);
           }
         }
@@ -153,7 +155,11 @@ export const workflowSummaryReport: ReportDefinition = {
         methodName: s.methodName || undefined,
         errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
-          `swamp data get ${s.modelName} ${h.name}`
+          stepRetrievalCommand(workflowRunId, s, {
+            name: h.name,
+            version: h.version,
+            contentType: h.metadata.contentType,
+          })
         ),
       })),
       steps: stepExecutions.map((s) => ({
@@ -166,7 +172,11 @@ export const workflowSummaryReport: ReportDefinition = {
         status: s.status,
         errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
-          `swamp data get ${s.modelName} ${h.name}`
+          stepRetrievalCommand(workflowRunId, s, {
+            name: h.name,
+            version: h.version,
+            contentType: h.metadata.contentType,
+          })
         ),
       })),
     };

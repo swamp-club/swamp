@@ -59,7 +59,7 @@ If any step failed, the attestation includes retrieval commands to get the full
 output:
 
 ```
-swamp data get <model-name> <data-name>
+swamp data query 'workflowRunId == "<run-id>" && jobName == "<job>" && stepName == "<step>" && name == "<data-name>" && version >= 0' --select content
 ```
 
 ## 4. Handle the Result

@@ -335,3 +335,25 @@ Deno.test("renderDataBox: renders artifact source", () => {
     assertEquals(text.includes("from extract[0]"), true);
   });
 });
+
+Deno.test("renderDataBox: prints the data query hint below the box, keeping its edge intact", () => {
+  noColor(() => {
+    const attrs: Record<string, unknown> = {};
+    for (let i = 0; i < 12; i++) {
+      attrs[`key${i}`] = `val${i}`;
+    }
+    const lines = renderDataBox([{ name: "system-info", attributes: attrs }], {
+      modelName: "my-server",
+    });
+    const bottom = lines.findIndex((line) => line.trimStart().startsWith("└"));
+    assertEquals(
+      lines.slice(bottom + 1),
+      [
+        `  → swamp data query 'modelName == "my-server" && name == "system-info"' --select content`,
+      ],
+    );
+    for (const line of lines.slice(0, bottom + 1)) {
+      assertEquals(line.length <= lines[bottom].length, true, line);
+    }
+  });
+});

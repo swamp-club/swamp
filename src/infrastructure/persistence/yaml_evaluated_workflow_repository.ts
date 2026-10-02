@@ -25,6 +25,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -121,7 +122,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirtyHook) await this.markDirtyHook(relPath);
+    await signalChange(
+      this.markDirtyHook,
+      changeFor(relPath, "YamlEvaluatedWorkflowRepository.notifyDirty"),
+    );
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {

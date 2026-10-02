@@ -65,7 +65,9 @@ import {
   flushDatastoreSync,
   getRegisteredLockKeys,
 } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { saveData, saveModel } from "./serve_request_harness.ts";
 import {
   cacheDir,
@@ -308,6 +310,76 @@ for (
         versions: [1],
       });
     });
+  });
+}
+
+/**
+ * The push-failure-on-flush flow above, reduced to what A, the remote and B
+ * observe, with the per-run datastore type, model type and model id
+ * replaced. When `scoped`,
+ * the write runs inside a legacy unit-of-work scope bound to A's own hook
+ * (swamp-club#2971); the flush path is unchanged.
+ */
+async function failedFlushOutcome(
+  options: RowRepoOptions,
+  failOp: "push" | "prepare",
+  scoped: boolean,
+): Promise<unknown> {
+  let outcome: unknown;
+  await withRepos(options, async (repos) => {
+    const model = await saveModel(repos.serveRepo, "writer");
+    const anonymise = (text: string) =>
+      text.replaceAll(model.id, "<model>")
+        .replaceAll(repos.modelType.normalized, "<model type>")
+        .replaceAll(typeName(repos), "<type>");
+    const locks = await lockOnA(repos, model);
+    if (scoped) {
+      const hook = repos.a.repoContext.markDirty;
+      assert(hook !== undefined, "expected A's composition-built mark hook");
+      const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+      await runInUnitOfWork(uow, () => writeData(repos, model, "item"));
+      assert(uow.staged().length > 0, "expected A's write to stage");
+    } else {
+      await writeData(repos, model, "item");
+    }
+    repos.remote.failNext(failOp, new Error(`injected ${failOp} failure`), {
+      instance: "A",
+    });
+    const thrown = await assertRejects(() => locks.flush(), Error);
+    const dirty = await dirtyOnA(repos);
+    const retryFrom = repos.remote.ops().length;
+    const retry = await lockOnA(repos, model);
+    await retry.flush();
+    outcome = {
+      thrown: anonymise(thrown.message),
+      dirty: dirty.map(anonymise),
+      retryOps: pushOpsSince(repos, retryFrom),
+      remote: remoteKeysOf(repos, model).map(anonymise),
+      dirtyAfter: await dirtyOnA(repos),
+      b: await readOnB(repos, model, "item"),
+    };
+  });
+  return outcome;
+}
+
+for (
+  const { label, options, failOp } of [
+    {
+      label: "single-phase push",
+      options: SINGLE_PHASE,
+      failOp: "push" as const,
+    },
+    {
+      label: "two-phase prepare",
+      options: TWO_PHASE,
+      failOp: "prepare" as const,
+    },
+  ]
+) {
+  Deno.test(`acquireModelLocks: a ${label} failing on flush after a write inside a legacy unit of work scope fails and recovers exactly as without one`, async () => {
+    const unscoped = await failedFlushOutcome(options, failOp, false);
+    const scoped = await failedFlushOutcome(options, failOp, true);
+    assertEquals(scoped, unscoped);
   });
 }
 

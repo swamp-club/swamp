@@ -199,6 +199,7 @@ import {
   runAuthGate,
 } from "./auth_gate.ts";
 import { NESTED_GATE_PASS_ENV } from "../domain/auth/nested_gate_pass.ts";
+import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -2348,6 +2349,10 @@ async function runInvocation(
     telemetryCtx?.service.setAuthMode(gateOutcome.authMode);
     publishNestedGatePass(gateOutcome.handoff);
   }
+
+  // Before any command can drain or take per-model locks: hand this
+  // process's pid and its ancestor chain down to any swamp it starts.
+  processLockHolderMarker.publish();
 
   // Read marker once for log level, extension loading, auto-resolver,
   // and serverAddress cache. Hook commands skip this — null marker gives

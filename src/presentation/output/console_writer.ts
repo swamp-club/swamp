@@ -20,6 +20,7 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
 
 export type ColorFn = (str: string) => string;
 
@@ -220,6 +221,7 @@ export function renderDataBox(
 
   const lines: string[] = [];
   const sections: string[][] = [];
+  const retrievalHints: string[] = [];
 
   if (hasArgs) {
     const argEntries: string[] = [];
@@ -291,11 +293,16 @@ export function renderDataBox(
       }
     }
 
+    // Printed below the box: a query is wider than the box's 80 columns.
     if (complexArtifactNames.length > 0 && options?.modelName) {
-      dataEntries.push("");
+      const modelName = options.modelName;
       for (const name of complexArtifactNames) {
-        dataEntries.push(
-          dim(`  → swamp data get ${options.modelName} ${name}`),
+        retrievalHints.push(
+          dim(`  → ${
+            dataQueryCommand({ modelName, dataName: name }, {
+              includeContent: true,
+            })
+          }`),
         );
       }
     }
@@ -324,6 +331,7 @@ export function renderDataBox(
   }
   lines.push(`${side}${" ".repeat(boxWidth)}${sideEnd}`);
   lines.push(bottom);
+  for (const hint of retrievalHints) lines.push(hint);
 
   return lines;
 }

@@ -107,7 +107,7 @@ Access stored reports via data query (see `swamp-data` skill):
 
 ```bash
 swamp data query 'tags.type == "report"'
-swamp data get my-model report-cost-estimate --json
+swamp data query 'modelName == "my-model" && name == "report-cost-estimate"' --select content
 ```
 
 ## Output

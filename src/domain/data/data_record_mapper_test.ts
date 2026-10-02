@@ -44,6 +44,7 @@ function createRow(overrides?: Partial<CatalogRow>): CatalogRow {
     id: "data-id-1",
     version: 1,
     is_latest: 1,
+    is_step_latest: 1,
     model_name: "test-model",
     spec_name: "test-spec",
     data_type: "resource",

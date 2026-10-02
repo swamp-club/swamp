@@ -111,6 +111,7 @@ import type {
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import {
   getSwampLogger,
   getSystemPipeWidth,
@@ -1362,8 +1363,6 @@ export async function createModelLock(
  * callers must omit it. Not exported from any barrel; used solely by
  * `repo_context_test.ts`.
  */
-export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
-
 export async function waitForPerModelLocks(
   datastorePath: string,
   namespace?: string,
@@ -1371,7 +1370,7 @@ export async function waitForPerModelLocks(
   progressWriter?: LockProgressWriter,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
-  const parentPid = Deno.env.get(SWAMP_LOCK_HOLDER_PID);
+  const heldByAncestor = processLockHolderMarker.ancestorLockFilter();
 
   const findModelLocks = findModelLocksOverride ??
     (async (): Promise<number> => {
@@ -1393,10 +1392,12 @@ export async function waitForPerModelLocks(
               acquiredAt: string;
               ttlMs: number;
               pid?: number;
+              hostname?: string;
             };
-            // Skip locks held by our parent process (prevents deadlock
-            // when a workflow shell step spawns a nested swamp command).
-            if (parentPid && info.pid === Number(parentPid)) continue;
+            // Skip locks held by an ancestor swamp on this host (prevents
+            // deadlock when a workflow shell step spawns a nested swamp
+            // command).
+            if (heldByAncestor(info)) continue;
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
             if (Date.now() - acquiredAt <= info.ttlMs) {
@@ -1765,12 +1766,12 @@ export async function acquireModelLocks(
     }
   }
 
-  Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(Deno.pid));
+  // Older nested swamps read only the holder; set once, never cleared, so
+  // concurrent lock holders in this process cannot clear it under each other.
+  processLockHolderMarker.markHoldingLocks();
 
   const flush = async () => {
     try {
-      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
-
       // For custom sync-capable datastores: push changes to remote
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)

@@ -6,8 +6,8 @@ Work with swamp models through the CLI.
 
 - **Execution** (`method run`): Use default log output. Results are persisted in
   the datastore — use `report get --json` for structured detail (narrative,
-  schema, pointers) or `data get --json` for specific resources.
-- **Retrieval** (`model get`, `data get`, `report get`, `output search`): Use
+  schema, pointers) or `data query --json` for specific resources.
+- **Retrieval** (`model get`, `data query`, `report get`, `output search`): Use
   `--json` when you need structured data for action.
 - **Mutation** (`model create`, `model delete`): Use `--json` to capture the
   structured result.

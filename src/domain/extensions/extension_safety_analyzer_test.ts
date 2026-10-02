@@ -106,6 +106,57 @@ Deno.test("analyzeExtensionSafety errors on new Function()", async () => {
   );
 });
 
+Deno.test("analyzeExtensionSafety allows methods named eval and eval text in strings", async () => {
+  await withTempFiles(
+    {
+      "interp.ts":
+        "class Interp { eval(node: string): string { return node; } }\n" +
+        "// eval(x) and new Function(x) in a comment\n" +
+        'const s = "eval(" + retrieval(1);\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety flags a member call named eval", async () => {
+  await withTempFiles(
+    { "interp.ts": 'const r = new Interp().eval("x");\n' },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors.length, 1);
+      assertEquals(
+        result.errors[0].message.includes(
+          "line 1:24 member named eval or Function",
+        ),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety lists dynamic code locations", async () => {
+  await withTempFiles(
+    {
+      "evil.ts": "const a = 1;\n  eval(a);\n" +
+        "globalThis.eval(a);\nnew Function(a);\n(0, eval)(a);\n" +
+        'this.constructor(a);\nx["eval"](a);\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors.length, 1);
+      assertEquals(
+        result.errors[0].message,
+        "File contains eval() or new Function() which are not allowed " +
+          "(line 2:3 eval, line 3:12 eval, line 4:5 Function constructor, " +
+          "line 5:5 eval, line 6:6 .constructor call; and 1 more).",
+      );
+    },
+  );
+});
+
 Deno.test("analyzeExtensionSafety warns on Deno.Command()", async () => {
   await withTempFiles(
     { "cmd.ts": 'const c = new Deno.Command("ls");\n' },

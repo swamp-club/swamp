@@ -38,6 +38,7 @@ import {
   dataGet,
   type DataGetDeps,
   dataList,
+  type DataOwnerInfo,
   dataPrune,
   dataQuery,
   type DataQueryDeps,
@@ -201,6 +202,7 @@ export async function handleDataGet(
         includeContent: payload.includeContent ?? true,
         repoDir: ctx.repoDir,
         expectedOwner,
+        canReadOwner: ownerReadCheck(socket, ctx, principal),
       }),
       {
         resolving: () => {},
@@ -238,6 +240,25 @@ export async function handleDataGet(
       clientErrorDetails(error),
     );
   }
+}
+
+/**
+ * A silent check of whether the principal may read data owned by a model, by
+ * the rules data.list filters items with, so a read's warnings never name a
+ * producer the caller could not list.
+ */
+function ownerReadCheck(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  principal: Principal | null,
+): (owner: DataOwnerInfo) => Promise<boolean> {
+  if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
+  const canonical = canonicalResources(ctx);
+  const readable = resourceDecider(socket, principal, "read", ctx);
+  return async (owner) => {
+    const resources = await canonical.dataOwners(owner);
+    return resources.length > 0 && resources.every(readable);
+  };
 }
 
 /**

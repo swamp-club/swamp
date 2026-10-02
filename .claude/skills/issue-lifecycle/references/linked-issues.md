@@ -31,11 +31,11 @@ Before linking M, check that M has no lifecycle of its own in progress. The
 model cannot see another lifecycle's local state:
 
 ```
-swamp data get issue-<M> state-main --json
+swamp data query 'modelName == "issue-<M>" && name == "state-main"' --select content --json
 ```
 
-If that returns a phase other than `done`, ask the human which lifecycle should
-carry the work. Do not link it.
+If `results` has an entry whose `phase` is anything other than `done`, ask the
+human which lifecycle should carry the work. Do not link it.
 
 ```
 swamp model @swamp/issue-lifecycle method run link_issue issue-<N> \

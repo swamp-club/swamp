@@ -2013,3 +2013,248 @@ Deno.test("extractContentMetadata: lists every method of a container-image shape
     "multi-platform-build",
   ]);
 });
+
+/** A three-method model whose first method's execute body is `body`. */
+function modelWithFirstMethodBody(body: string): string[] {
+  return [
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/braces",',
+    '  version: "2026.10.02.1",',
+    "  methods: {",
+    "    first: {",
+    '      description: "First",',
+    "      arguments: z.object({ a: z.string() }),",
+    "      execute: async (args) => {",
+    `        ${body}`,
+    "      },",
+    "    },",
+    "    second: {",
+    '      description: "Second",',
+    "      arguments: z.object({ b: z.string() }),",
+    "    },",
+    '    third: { description: "Third" },',
+    "  },",
+    "  resources: {",
+    '    out: { description: "Output", lifetime: "persistent" },',
+    "  },",
+    "};",
+  ];
+}
+
+const UNPAIRED_BRACE_BODIES: Record<string, string> = {
+  "an open brace in a double-quoted string": 'log("{");',
+  "a close brace in a single-quoted string": "log('}');",
+  "a brace in a template literal": "log(`}${args.a}{`);",
+  "a nested template in a template expression": "log(`a${`}`}b`);",
+  "an object inside a template expression":
+    "log(`${JSON.stringify({ x: 1 })}}`);",
+  "a brace in a line comment": "// closes the block }",
+  "a brace in a block comment": "/* { */",
+  "a brace in a regex literal": "const re = /\\{/;",
+  "a brace in a regex character class": "args.a.replace(/[{]/g, '');",
+  "a quote in a regex literal": "args.a.replace(/'/g, '');",
+  "a regex after return": "if (args.a) return /\\{/.test(args.a);",
+  "a regex after typeof and case":
+    "switch (typeof args.a) { case /\\}/.source: break; }",
+  "a regex after an if header": "if (args.a) /\\{/.test(args.a);",
+  "a regex after a for await header":
+    "for await (const x of args.a) /\\{/.test(x);",
+  "division after a call":
+    "const r = Math.max(args.a.length, 1) / 2; const o = { r };",
+  "division after an if-like call":
+    "const r = notif(args.a) / 2 / 4; const o = { r };",
+  "division by a property named like a keyword":
+    "const r = args.return / 2; const o = { r };",
+  "division beside braces":
+    "const half = (args.a.length) / 2; const o = { half };",
+  "an unterminated quote": 'const s = "oops\n;',
+  "division after a postfix increment":
+    "let i = 0; const r = i++ / 2; if (r) { log(r / 3); }",
+  "division after a postfix decrement":
+    "let n = 9; const r = n-- / 2; const o = { r: r / 4 };",
+  "a regex after a binary plus following a postfix increment":
+    "let i = 0; const s = i++ + /{/.source;",
+};
+
+for (const [label, body] of Object.entries(UNPAIRED_BRACE_BODIES)) {
+  Deno.test(`extractContentMetadata: lists every method despite ${label}`, async () => {
+    const result = await extractFromSource(modelWithFirstMethodBody(body));
+
+    assertEquals(
+      result.models[0].methods.map((m) => [
+        m.name,
+        m.arguments.map((a) => a.name),
+      ]),
+      [["first", ["a"]], ["second", ["b"]], ["third", []]],
+    );
+    assertEquals(result.models[0].resources.map((r) => r.key), ["out"]);
+  });
+}
+
+Deno.test("extractContentMetadata: a brace in an expression-bodied entry value does not swallow later entries", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/arrows",',
+    '  version: "2026.10.02.1",',
+    "  methods: {",
+    '    helper: makeMethod(/[{]/, "}"),',
+    "    clean: {",
+    '      execute: (a: string) => a.replace(/[{]/g, ""),',
+    '      description: "Clean",',
+    "      arguments: z.object({}),",
+    "    },",
+    "    after: {",
+    '      description: "After",',
+    "      arguments: z.object({}),",
+    "    },",
+    "  },",
+    "};",
+  ]);
+
+  assertEquals(
+    result.models[0].methods.map((m) => [m.name, m.description]),
+    [["clean", "Clean"], ["after", "After"]],
+  );
+});
+
+Deno.test("extractContentMetadata: lists every global argument when regex strings contain an escaped dollar-brace", async () => {
+  // Shape of swamp-extensions model/aws/wellarchitected agent_goal.ts.
+  const pattern = 'new RegExp("^(?:(?!\\\\$\\\\{[a-zA-Z]+:)[\\\\P{C}])+$")';
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "const GlobalArgsSchema = z.object({",
+    `  name: z.string().regex(${pattern}).describe("Name"),`,
+    `  goal: z.string().regex(${pattern}).optional().describe("Goal"),`,
+    '  region: z.string().describe("Region"),',
+    "});",
+    "export const model = {",
+    '  type: "@test/agent-goal",',
+    '  version: "2026.10.02.1",',
+    "  globalArguments: GlobalArgsSchema,",
+    "  methods: {},",
+    "};",
+  ]);
+
+  assertEquals(
+    result.models[0].globalArguments.map((a) => [a.name, a.required]),
+    [["name", true], ["goal", false], ["region", true]],
+  );
+});
+
+Deno.test("extractContentMetadata: lists every global argument when a description has an extra closing brace", async () => {
+  // Shape of swamp-extensions model/gcp/apigee apiproducts_rateplans.ts.
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const model = {",
+    '  type: "@test/rateplans",',
+    '  version: "2026.10.02.1",',
+    "  globalArguments: z.object({",
+    "    ranges: z.string().describe(",
+    '      \'Ranges: ` { "start": 1, "end": 100 }, } ` then fees apply\',',
+    "    ),",
+    '    currency: z.string().describe("Currency"),',
+    '    fee: z.number().optional().describe("Fee"),',
+    "  }),",
+    "  methods: {},",
+    "};",
+  ]);
+
+  assertEquals(
+    result.models[0].globalArguments.map((a) => a.name),
+    ["ranges", "currency", "fee"],
+  );
+});
+
+Deno.test("extractContentMetadata: extension methods array survives a brace in a string", async () => {
+  const result = await extractFromSource([
+    'import { z } from "npm:zod@4";',
+    "export const extension = {",
+    '  type: "@test/target",',
+    "  methods: [",
+    "    {",
+    "      first: {",
+    '        description: "First",',
+    "        arguments: z.object({}),",
+    '        execute: () => { log("}"); return Promise.resolve({ dataHandles: [] }); },',
+    "      },",
+    "    },",
+    "    {",
+    "      second: {",
+    '        description: "Second",',
+    "        arguments: z.object({}),",
+    "        execute: () => Promise.resolve({ dataHandles: [] }),",
+    "      },",
+    "    },",
+    "  ],",
+    "};",
+  ]);
+
+  assertEquals(
+    result.extensions[0].methods.map((m) => m.name),
+    ["first", "second"],
+  );
+});
+
+Deno.test("extractContentMetadata: vault configSchema survives a brace in a description", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+    const vaultFile = join(vaultsDir, "braces.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const vault = {",
+        '  type: "@myorg/braces",',
+        '  name: "Braces Vault",',
+        '  description: "A vault with braces in its docs.",',
+        "  configSchema: z.object({",
+        '    path: z.string().describe("Secret path, opens with {"),',
+        '    token_env: z.string().optional().describe("Token env var"),',
+        "  }),",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(
+      result.vaults[0].configFields.map((f) => f.name),
+      ["path", "token_env"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: unclosed regex-like slashes on one long line finish without a model", async () => {
+  const result = await extractFromSource([
+    'export const model = { type: "@test/slashes", version: "2026.10.02.1", methods: { a: { b: (' +
+    "/[".repeat(500_000) + "}}",
+  ]);
+
+  assertEquals(result.models, []);
+});
+
+Deno.test("extractContentMetadata: deeply nested template expressions read as unterminated", async () => {
+  const result = await extractFromSource([
+    "export const model = {",
+    '  type: "@test/deep",',
+    '  version: "2026.10.02.1",',
+    "  methods: { a: { x: " + "`${".repeat(200_000) + " } },",
+    "};",
+  ]);
+
+  assertEquals(result.models, []);
+});

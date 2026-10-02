@@ -66,7 +66,11 @@ In a workflow, a failed step's report artifacts are recorded on its step run
 exactly as a successful step's are, so run history and
 `swamp data list --workflow --run` reach them. A failed forEach iteration uses
 the same vary-suffixed report names as a successful one. The built-in workflow
-summary lists the data a failed model-method step wrote.
+summary lists the data a failed model-method step wrote. Its retrieval hints,
+like those of the built-in verification and method summaries, are
+`swamp data query` commands that name the run, job and step (or, for a method
+run, the model and version), so they read exactly the item listed
+(`src/domain/data/data_query_command.ts`).
 
 ## Report Context
 
@@ -389,7 +393,8 @@ When `execute()` throws, swamp builds a fallback error artifact with the
 built-in `buildReportErrorResult` function
 (`src/domain/reports/builtin/report_error_report.ts`). It is saved under the
 same data name the report would have used, so
-`swamp data get report-{reportName}-json` still returns useful diagnostics.
+`swamp data query 'modelName == "<model>" && name == "report-{reportName}-json"' --select content` still
+returns useful diagnostics.
 
 The fallback JSON artifact contains:
 

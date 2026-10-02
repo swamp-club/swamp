@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { existsSync } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -154,13 +156,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * mutations.
    */
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
+    await signalChange(
+      this.markDirty,
+      changeFor(relPath, "FileSystemUnifiedDataRepository.notifyDirty"),
+    );
   }
 
   /**
    * Records `data` as the latest version for (type, modelId, data.name) in
-   * the catalog. Clears `is_latest` on any prior row atomically and inserts
-   * the new row with `is_latest=1` inside a single SQLite transaction.
+   * the catalog. {@link CatalogStore.upsertNewVersion} sets both latest
+   * flags by version order and demotes lower rows inside a single SQLite
+   * transaction.
    *
    * Every production write path that mutates a data item (save, append,
    * rename, restore, delete-specific-version) calls this exactly once with
@@ -175,6 +181,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: data.version,
       is_latest: 1,
+      is_step_latest: 1,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",
@@ -666,7 +673,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteFile(contentPath, content);
 
     // Update latest marker
-    await this.updateLatestMarker(type, modelId, data.name, newVersion);
+    await this.advanceLatestMarker(type, modelId, data.name, newVersion);
 
     this.catalogUpsert(type, modelId, dataToSave);
 
@@ -742,7 +749,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(contentPath, boundary);
     await atomicWriteFile(contentPath, content);
 
-    // Catalog row with is_latest=0 — invisible to latest-based queries
+    // Catalog row with both latest flags 0 — invisible to latest-based queries
     this.catalogStore.upsert({
       namespace: this.namespace,
       type_normalized: type.normalized,
@@ -751,6 +758,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: newVersion,
       is_latest: 0,
+      is_step_latest: 0,
       model_name: dataToSave.tags["modelName"] ?? "",
       spec_name: dataToSave.tags["specName"] ?? "",
       data_type: dataToSave.tags["type"] ?? "",
@@ -1261,7 +1269,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteTextFile(metadataPath, metadataContent);
 
     // Update latest marker
-    await this.updateLatestMarker(type, modelId, data.name, version);
+    await this.advanceLatestMarker(type, modelId, data.name, version);
 
     this.catalogUpsert(type, modelId, dataToSave);
 
@@ -1318,6 +1326,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version,
       is_latest: 0,
+      is_step_latest: 0,
       model_name: dataToSave.tags["modelName"] ?? "",
       spec_name: dataToSave.tags["specName"] ?? "",
       data_type: dataToSave.tags["type"] ?? "",
@@ -1349,7 +1358,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<void> {
     for (const receipt of receipts) {
       try {
-        await this.updateLatestMarker(
+        await this.advanceLatestMarker(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
@@ -2035,6 +2044,59 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Final fallback: scan version directories
     const versions = await this.listVersions(type, modelId, dataName);
     return maxOf(versions) ?? null;
+  }
+
+  /**
+   * Moves the latest marker to `version` unless it already names a higher
+   * version, so the marker follows version order like the catalog's
+   * `is_latest` (`CatalogStore.upsertNewVersion`) when parallel writers of
+   * one name finish out of order (swamp-club#2520). The read, compare and
+   * write run synchronously so writers in this process cannot interleave
+   * between them; writers in other processes are serialized by the model
+   * lock. A marker naming a version that is gone from disk (a delete or GC
+   * that stopped before rewriting it) is replaced. Paths that lower the
+   * marker on purpose — delete, rename, GC — use {@link updateLatestMarker}.
+   */
+  private async advanceLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await assertSafePath(dataNameDir, this.baseDir);
+    const latestPath = join(dataNameDir, "latest");
+
+    let current: number | null = null;
+    try {
+      current = parseInt(Deno.readTextFileSync(latestPath).trim(), 10);
+    } catch {
+      // Missing, or a legacy symlink: replaced below.
+    }
+    if (
+      current !== null && !isNaN(current) && current > version &&
+      existsSync(this.getPath(type, modelId, dataName, current))
+    ) {
+      return;
+    }
+
+    try {
+      if (Deno.lstatSync(latestPath).isSymlink) Deno.removeSync(latestPath);
+    } catch {
+      // Ignore if not found
+    }
+    const tmpPath = join(dataNameDir, `.${crypto.randomUUID()}.tmp`);
+    try {
+      Deno.writeTextFileSync(tmpPath, version.toString());
+      Deno.renameSync(tmpPath, latestPath);
+    } catch (error) {
+      try {
+        Deno.removeSync(tmpPath);
+      } catch {
+        // Temp file may not exist if the write failed before creating it
+      }
+      throw error;
+    }
   }
 
   private async updateLatestMarker(
