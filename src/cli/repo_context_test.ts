@@ -3432,6 +3432,7 @@ Deno.test("flushSinglePhasePush: writes catalog export before acquiring global l
         id: "data-uuid-001",
         version: 1,
         is_latest: 1,
+        is_step_latest: 1,
         model_name: "test-model-name",
         spec_name: "result",
         data_type: "resource",

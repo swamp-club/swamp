@@ -484,6 +484,12 @@ export interface CatalogExportRow {
   id: string;
   version: number;
   is_latest: number;
+  /**
+   * Whether this row is its workflow step's latest version of the data
+   * name. Absent from exports written before swamp-club#2520, whose
+   * `is_latest` has that meaning instead.
+   */
+  is_step_latest?: number;
   model_name: string;
   spec_name: string;
   data_type: string;

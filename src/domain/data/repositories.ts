@@ -297,7 +297,7 @@ export interface UnifiedDataRepository {
   /**
    * Saves data without advancing the latest marker. Writes the version
    * directory, content, and metadata to disk, and inserts a catalog row
-   * with is_latest=0. The data is invisible to latest-based reads until
+   * with both latest flags 0. The data is invisible to latest-based reads until
    * advanceLatestMarkers() is called.
    *
    * @returns A receipt that can be passed to advanceLatestMarkers or rollbackVersions
@@ -311,8 +311,8 @@ export interface UnifiedDataRepository {
 
   /**
    * Finalizes a previously allocated version without advancing the latest
-   * marker. Mirrors finalizeVersion but writes the catalog row with
-   * is_latest=0.
+   * marker. Mirrors finalizeVersion but writes the catalog row with both
+   * latest flags 0.
    *
    * @returns A receipt plus size and checksum
    */
@@ -325,8 +325,8 @@ export interface UnifiedDataRepository {
   ): Promise<{ receipt: DeferredWriteReceipt; size: number; checksum: string }>;
 
   /**
-   * Commits deferred writes by advancing the latest marker and flipping
-   * catalog is_latest to 1 for each receipt. Handles partial failure
+   * Commits deferred writes by advancing the latest marker and promoting
+   * each receipt's catalog row (see CatalogStore.upsertNewVersion). Handles partial failure
    * gracefully — logs and continues if one marker fails.
    */
   advanceLatestMarkers(receipts: DeferredWriteReceipt[]): Promise<void>;
