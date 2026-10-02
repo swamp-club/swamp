@@ -77,6 +77,7 @@ Deno.test("groupCommandAction: JSON error carries a held offline warning (swamp-
   const originalError = console.error;
   const originalExit = Deno.exit;
   const lines: string[] = [];
+  let leftover: unknown;
 
   try {
     Object.defineProperty(Deno, "args", {
@@ -107,13 +108,14 @@ Deno.test("groupCommandAction: JSON error carries a held offline warning (swamp-
     console.error = originalError;
     // deno-lint-ignore no-explicit-any
     (Deno as any).exit = originalExit;
+    leftover = takeAuthGateWarning();
   }
 
   assertEquals(lines.length, 1);
   const parsed = JSON.parse(lines[0]);
   assertEquals(parsed.warning, "Running offline");
   assertEquals(parsed.authMode, "offline");
-  assertEquals(takeAuthGateWarning(), undefined);
+  assertEquals(leftover, undefined);
 });
 
 Deno.test("groupCommandAction: calls showHelp when not in JSON mode", () => {
