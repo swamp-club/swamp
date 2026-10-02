@@ -38,8 +38,8 @@ reading the wrong `results[0]`. See [reference.md](reference.md#query-data) for
 the fields `data get --json` has that the query record lacks.
 
 A query returns only each item's latest version unless the predicate names
-`version`, and "latest" is one version per data name, whichever run or step
-wrote it. So:
+`version`. An item is one model's data name, and its latest version is the
+newest one, whichever run or step wrote it. So:
 
 - Add `version >= 0` when reading by `workflowRunId`, or a run whose item was
   written again later, by any run or step, finds nothing.

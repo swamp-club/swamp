@@ -369,7 +369,8 @@ without `--run` (`WorkflowRunRepository.findLatestByWorkflowId`).
   per-row argument such as `latestRun(workflowName)` is an error.
 - An unknown workflow is an error. A workflow with no runs resolves to `null`,
   so `workflowRunId == latestRun("<w>")` matches nothing and
-  `workflowRunId != latestRun("<w>")` matches every row.
+  `workflowRunId != latestRun("<w>")` matches every latest row (every version,
+  with `version >= 0`).
 - Add `version >= 0`, as for any read by `workflowRunId`: a later write
   elsewhere can demote the run's item from latest, and the run still holds it.
   A step that wrote the same name twice in one run then returns both versions.
