@@ -283,6 +283,34 @@ function isGlobalObject(node: AstNode | undefined): boolean {
   return false;
 }
 
+/** The identifier at the root of a member chain: `globalThis` in `globalThis.self`. */
+function chainBase(node: AstNode | undefined): string | undefined {
+  let current = unwrap(node);
+  for (let i = 0; i < MAX_CHAIN && current && isMember(current); i++) {
+    current = unwrap(child(current, "object"));
+  }
+  return current?.type === "Identifier" ? str(current, "name") : undefined;
+}
+
+/**
+ * A receiver whose `constructor` is a function constructor: a function,
+ * arrow or class literal, or `Object.getPrototypeOf(...)` /
+ * `Reflect.getPrototypeOf(...)` of anything.
+ */
+function isFunctionSource(node: AstNode | undefined): boolean {
+  const target = unwrap(node);
+  if (!target) return false;
+  if (
+    ["FunctionExpression", "ArrowFunctionExpression", "ClassExpression"]
+      .includes(target.type)
+  ) {
+    return true;
+  }
+  if (!isCall(target)) return false;
+  const callee = unwrap(child(target, "callee"));
+  return isMember(callee) && memberName(callee) === "getPrototypeOf";
+}
+
 /** Walks up through TS casts and parentheses from `visit`. */
 function outerExpression(visit: Visit): Visit {
   let current = visit;
@@ -354,8 +382,14 @@ class Analyzer {
       else if (name === "Function") this.checkFunction(visit);
       else if (name === "constructor") this.checkConstructor(visit);
       else if (name && VALUE_GLOBALS.has(name)) this.checkGlobalValue(visit);
-    } else if (isMember(node) && node.computed === true) {
-      this.checkComputed(visit);
+    } else if (isMember(node)) {
+      if (node.computed === true) this.checkComputed(visit);
+      // `globalThis.self`, `self.self`: a chain that is itself a global.
+      if (isGlobalObject(node) && VALUE_GLOBALS.has(chainBase(node) ?? "")) {
+        this.checkGlobalValue(visit);
+      }
+    } else if (isCall(node) || node.type === "NewExpression") {
+      this.checkGlobalLookup(node);
     }
   }
 
@@ -490,12 +524,24 @@ class Analyzer {
     this.flag(node, "function-constructor");
   }
 
-  /** `x.constructor(...)` (without `new`) or `x.constructor.call(...)`. */
+  /**
+   * `x.constructor(...)` (without `new`), `x.constructor.call(...)`, or
+   * `new <function literal>.constructor(...)`.
+   */
   private checkConstructor(visit: Visit): void {
     if (this.role(visit) !== "property") return;
-    if (this.isCalledWithoutNew(visit.parent!)) {
+    if (this.reachesFunctionConstructor(visit.parent!)) {
       this.flag(visit.node, "constructor-call");
     }
+  }
+
+  private reachesFunctionConstructor(member: Visit): boolean {
+    if (this.isCalledWithoutNew(member)) return true;
+    // `new this.constructor()` clones; with a function literal receiver the
+    // same `new` builds code like `new Function(...)`.
+    const outer = member.parent;
+    return outer?.node.type === "NewExpression" && member.key === "callee" &&
+      isFunctionSource(child(member.node, "object"));
   }
 
   /** The member is the callee of a call, or of `.call`/`.apply`/`.bind`. */
@@ -517,8 +563,30 @@ class Analyzer {
     if (key === undefined || !property) return;
     if (COMPUTED_NAMES.has(key)) {
       this.flag(property, "eval-computed-access");
-    } else if (key === "constructor" && this.isCalledWithoutNew(visit)) {
+    } else if (
+      key === "constructor" && this.reachesFunctionConstructor(visit)
+    ) {
       this.flag(property, "constructor-call");
+    }
+  }
+
+  /**
+   * `Reflect.get(globalThis, "eval")`, `Object.getOwnPropertyDescriptor(
+   * globalThis, "Function")`: one call given both a global object and the
+   * literal name reads the global the same way `globalThis["eval"]` does.
+   */
+  private checkGlobalLookup(call: AstNode): void {
+    const args = call.arguments;
+    if (!Array.isArray(args)) return;
+    const nodes = args.filter(isNode);
+    const hasGlobal = nodes.some((a) =>
+      isGlobalObject(a) && VALUE_GLOBALS.has(chainBase(a) ?? "")
+    );
+    if (!hasGlobal) return;
+    for (const a of nodes) {
+      if (COMPUTED_NAMES.has(literalKey(a) ?? "")) {
+        this.flag(a, "eval-computed-access");
+      }
     }
   }
 

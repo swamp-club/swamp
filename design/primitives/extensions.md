@@ -1106,8 +1106,10 @@ Every TypeScript file in an extension is checked before push and after pull.
   file that both uses `globalThis`, `window` or `self` as a value (stored,
   passed, or indexed with a computed key) and accesses a member named `eval` or
   `Function` is refused. A file that does not parse falls back to the plain
-  text check for `eval(` and `new Function(`. Aliases built at runtime, such as
-  a key assembled from strings, are not caught; the check is a hygiene gate,
+  text check for `eval(` and `new Function(`. Not caught: aliases built at
+  runtime (a key assembled from strings), a `.constructor` stored before it is
+  called (`const F = fn.constructor; F(src)`), and `new x.constructor(...)`
+  when `x` is not a function or class literal. The check is a hygiene gate,
   not a sandbox.
 
 ### Warnings (prompt user)

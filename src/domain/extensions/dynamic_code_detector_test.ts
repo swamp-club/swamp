@@ -87,6 +87,31 @@ const FLAGGED: Array<[string, string, DynamicCodeKind]> = [
   ],
   ["this.constructor call", "this.constructor(x);", "constructor-call"],
   ["computed constructor call", 'fn["constructor"]("a");', "constructor-call"],
+  [
+    "Reflect.get of eval",
+    'Reflect.get(globalThis, "eval")(src);',
+    "eval-computed-access",
+  ],
+  [
+    "property descriptor of Function",
+    'Object.getOwnPropertyDescriptor(self, "Function").value("a");',
+    "eval-computed-access",
+  ],
+  [
+    "new constructor of an async arrow",
+    'new (async () => {}).constructor("return 1");',
+    "constructor-call",
+  ],
+  [
+    "new constructor of a function expression",
+    'new (function () {}).constructor("a")();',
+    "constructor-call",
+  ],
+  [
+    "new constructor of a prototype",
+    'new (Object.getPrototypeOf(async function () {})).constructor("a");',
+    "constructor-call",
+  ],
   ["chained global member", "globalThis.self.eval(src);", "eval-reference"],
   ["eval on a cast global", "(globalThis as any).eval(src);", "eval-reference"],
   [
@@ -263,6 +288,13 @@ const BENIGN: Array<[string, string]> = [
     "(globalThis as Record<string, unknown>)[KEY] ||= new Map();",
   ],
   ["member eval without a global value", "f.eval(m.receiver, y);"],
+  ["global chain member access", "globalThis.self.fetch(url);"],
+  ["eval string without a global value", 'const cmd = "eval";'],
+  [
+    "Function string with a window parameter and member access",
+    'function line(window: W) { return window ? "x" : ""; }\nconst cols = ["Function", "Errors"];',
+  ],
+  ["new constructor with arguments", "const c = new this.constructor(value);"],
   [
     "parameter named self",
     "function unsupported(self, type) { throw self.err(type); }\nev.eval(a, b);",
@@ -372,6 +404,17 @@ Deno.test("findDynamicCodeExecution: flags assignment pattern key", () => {
 });
 
 const ALIASED: Array<[string, string]> = [
+  ["chained global alias", "const g = globalThis.self;\ng.eval(src);"],
+  ["self.self alias", 'const g = self.self;\ng.Function("a")();'],
+  [
+    "globalThis.globalThis alias",
+    "const g = globalThis.globalThis; g.eval(src);",
+  ],
+  [
+    "cast chained global alias",
+    'const g = (globalThis as any).globalThis; g.Function("a")();',
+  ],
+
   ["alias then member eval", "const g = globalThis;\ng.eval(src);"],
   ["cast alias then member eval", "const g = globalThis as any;\ng.eval(src);"],
   [
