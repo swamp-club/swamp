@@ -1660,7 +1660,10 @@ Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file when its `pid` is one of those
 ancestors and its `hostname` is this host. A process on another host sharing
 the datastore (e.g. over NFS) can carry the same pid, so its lock is still
-waited on. A lock file with no `hostname` is matched on pid alone. The drain
+waited on. A lock file with no `hostname` is matched on pid alone. The
+hostname is read when the drain runs. If the host is renamed after an ancestor
+took its lock (macOS can rename on a network change), that lock no longer
+matches and the child waits on it until `SWAMP_LOCK_TIMEOUT_MS`. The drain
 never skips its own pid, so a structural command still waits on in-flight
 writes by other runs in its own process.
 
@@ -1681,10 +1684,17 @@ the others still held theirs (swamp-club#2659). The ancestor chain keeps a
 nested swamp working when a swamp between it and the lock holder takes no
 locks itself, such as a read-only `model method run`.
 
-Mixed versions still work. An older child reads `SWAMP_LOCK_HOLDER_PID`. A newer
-child under an older parent falls back to it. An older swamp in the middle
-passes the chain through unchanged and overwrites only the holder, and the
-holder is still skipped.
+Mixed versions keep at least the older behaviour, where the immediate lock
+holder is skipped:
+
+- An older child reads `SWAMP_LOCK_HOLDER_PID`.
+- A newer child under an older parent falls back to `SWAMP_LOCK_HOLDER_PID`.
+- An older swamp in the middle overwrites only the holder. If it starts the
+  child from a shell step, its allowlist predates `SWAMP_LOCK_ANCESTOR_PIDS`,
+  so the chain is dropped. The child then skips only that older swamp's locks,
+  not the ancestors' above it. If the child inherits the env directly (an
+  extension using `Deno.Command`), the chain survives and the child skips
+  every ancestor.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by

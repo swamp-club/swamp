@@ -76,9 +76,10 @@ Deno.test("LockHolderMarker.publish: seeds the chain from the holder an older pa
   assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
 });
 
-Deno.test("LockHolderMarker.publish: keeps a holder an older intermediate swamp set over the chain", () => {
-  // A new grandparent published the chain; an older swamp in between
-  // passed it through and overwrote only the holder.
+Deno.test("LockHolderMarker.publish: adds the holder an older intermediate swamp set to an inherited chain", () => {
+  // A new grandparent published the chain, and an older swamp in between
+  // passed it on (by plain env inheritance, not through a shell step, whose
+  // allowlist in an older swamp drops the chain) and overwrote the holder.
   const env = fakeEnv({
     [SWAMP_LOCK_HOLDER_PID]: "200",
     [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
@@ -167,7 +168,7 @@ Deno.test("LockHolderMarker.ancestorLockFilter: matches an ancestor's lock only 
     [SWAMP_LOCK_HOLDER_PID]: "200",
     [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
   });
-  const heldByAncestor = new LockHolderMarker(env.store, 300, "this-host")
+  const heldByAncestor = new LockHolderMarker(env.store, 300, () => "this-host")
     .ancestorLockFilter();
 
   assertEquals(heldByAncestor({ pid: 100, hostname: "this-host" }), true);
@@ -180,7 +181,7 @@ Deno.test("LockHolderMarker.ancestorLockFilter: matches an ancestor's lock only 
 
 Deno.test("LockHolderMarker.ancestorLockFilter: a lock without a hostname matches on pid alone", () => {
   const env = fakeEnv({ [SWAMP_LOCK_ANCESTOR_PIDS]: "100" });
-  const heldByAncestor = new LockHolderMarker(env.store, 300, "this-host")
+  const heldByAncestor = new LockHolderMarker(env.store, 300, () => "this-host")
     .ancestorLockFilter();
 
   assertEquals(heldByAncestor({ pid: 100 }), true);

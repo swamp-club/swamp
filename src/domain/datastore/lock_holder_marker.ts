@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { hostname } from "node:os";
+
 /**
  * The pid of the swamp process a child was started under. A single pid, so a
  * child running an older swamp, which reads only this name, still skips its
@@ -27,15 +29,14 @@ export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
 /**
  * Every swamp process above a child, comma-separated, oldest first, ending
  * with the one that started it. A nested swamp skips per-model locks held by
- * any of them: each is blocked on the subtree the child belongs to, so its
- * locks cannot be released while the child waits.
+ * any of them on this host, since the run that started it holds its lock
+ * until the child exits (design/enablers/datastores.md, "Parent-Process Lock
+ * Awareness", for what that also skips).
  */
 export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
 
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
-
-import { hostname } from "node:os";
 
 /** The slice of `Deno.env` that {@link LockHolderMarker} reads and writes. */
 export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
@@ -69,7 +70,7 @@ export class LockHolderMarker {
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
     private readonly pid: number = Deno.pid,
-    private readonly host: string = hostname(),
+    private readonly host: () => string = hostname,
   ) {}
 
   /**
@@ -115,12 +116,18 @@ export class LockHolderMarker {
    * ancestors: its pid is an ancestor's and it was taken on this host. A
    * process on another host sharing the datastore (e.g. over NFS) can carry
    * the same pid. A lock with no recorded hostname matches on pid alone.
+   *
+   * The hostname is read when the filter is built, not when the module
+   * loads. If the host is renamed between an ancestor taking its lock and
+   * this call (macOS can rename on a network change), the ancestor's lock no
+   * longer matches and is waited on like any other.
    */
   ancestorLockFilter(): (lock: LockOwner) => boolean {
     const pids = this.ancestorPids();
+    const host = this.host();
     return (lock) =>
       lock.pid !== undefined && pids.has(lock.pid) &&
-      (lock.hostname === undefined || lock.hostname === this.host);
+      (lock.hostname === undefined || lock.hostname === host);
   }
 }
 
