@@ -154,6 +154,25 @@ export type ForeignContentFetcher = (
   relPath: string,
 ) => Promise<Uint8Array | null>;
 
+/** What {@link DataQueryService} matched for a predicate, before projection. */
+interface MatchResult {
+  records: DataRecord[];
+  selectParsed?: (ctx: Record<string, unknown>) => unknown;
+  /** Whether matching stopped at the limit, so more rows may match. */
+  hitLimit: boolean;
+}
+
+/** Identifies one version of one data item in the catalog. */
+function catalogRowKey(row: CatalogRow): string {
+  return [
+    row.namespace,
+    row.type_normalized,
+    row.model_id,
+    row.data_name,
+    row.version,
+  ].join("\0");
+}
+
 export interface DataQueryServiceOptions {
   filterStaleRows?: boolean;
 }
@@ -423,7 +442,7 @@ export class DataQueryService {
       const limit = options.limit ?? Infinity;
       let batch = Number.isFinite(limit) ? limit * 4 : undefined;
       while (true) {
-        const matched = this.executeMatch(predicate, {
+        const matched = await this.matchWithHydration(predicate, {
           ...options,
           limit: batch,
         });
@@ -443,7 +462,8 @@ export class DataQueryService {
         batch *= 4;
       }
     } else {
-      results = this.executeQuery(predicate, options);
+      const matched = await this.matchWithHydration(predicate, options);
+      results = this.project(matched.records, matched.selectParsed);
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.
@@ -521,22 +541,59 @@ export class DataQueryService {
   }
 
   /**
+   * {@link executeMatch} for the async query path, with lazy content
+   * hydrated. Matching is synchronous and reads bodies with getContentSync,
+   * which cannot download, so a lazily-synced row would evaluate and return
+   * with empty attributes where `data get` downloads its content. Each pass
+   * collects the own-namespace rows whose needed body was missing, downloads
+   * them through the async getContent, and matches again while a download
+   * succeeded. A later pass can reach rows a limit hid from an earlier one;
+   * each row is tried once, so the loop ends. Rows `include` rejects are
+   * never downloaded, so a caller cannot make the server fetch content it
+   * may not read.
+   */
+  private async matchWithHydration(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<MatchResult> {
+    const tried = new Set<string>();
+    while (true) {
+      const missing = new Map<string, CatalogRow>();
+      const matched = this.executeMatch(predicate, options, missing);
+      let hydrated = false;
+      for (const [key, row] of missing) {
+        if (tried.has(key)) continue;
+        tried.add(key);
+        if (
+          options?.include &&
+          !(await options.include(this.rowToRecord(row, false, false, false)))
+        ) continue;
+        if (await this.rowHasContent(row)) hydrated = true;
+      }
+      if (!hydrated) return matched;
+    }
+  }
+
+  /**
    * Matches and hydrates records for a predicate, and parses the select
-   * expression — loading whatever it needs — without applying it.
+   * expression — loading whatever it needs — without applying it. Own-
+   * namespace rows whose needed body is not on local disk are added to
+   * `missingContent` when given.
    */
   private executeMatch(
     predicate: string,
     options?: DataQueryOptions,
-  ): {
-    records: DataRecord[];
-    selectParsed?: (ctx: Record<string, unknown>) => unknown;
-    /** Whether matching stopped at the limit, so more rows may match. */
-    hitLimit: boolean;
-  } {
+    missingContent?: Map<string, CatalogRow>,
+  ): MatchResult {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
     const includePath = options?.includeContentPath ?? false;
+    const ownNamespace = this.dataRepo.namespace;
+    const reportMissing = (row: CatalogRow) =>
+      missingContent && row.namespace === ownNamespace
+        ? () => missingContent.set(catalogRowKey(row), row)
+        : undefined;
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
@@ -642,6 +699,7 @@ export class DataQueryService {
               needsAttributes,
               needsContent,
               includePath,
+              reportMissing(row),
             );
           } catch (error) {
             loadFailed = true;
@@ -697,7 +755,6 @@ export class DataQueryService {
     // selection (swamp-club#1737).
     if (needsHydration) {
       let writeIndex = 0;
-      const ownNamespace = this.dataRepo.namespace;
       for (let i = 0; i < results.length; i++) {
         const row = matchedRows[i];
         if (this.filterStaleRows && row.namespace === ownNamespace) {
@@ -720,6 +777,7 @@ export class DataQueryService {
           true,
           needsContent,
           includePath,
+          reportMissing(row),
         );
         writeIndex++;
       }
@@ -767,6 +825,7 @@ export class DataQueryService {
     loadAttributes: boolean,
     loadContent: boolean,
     includeContentPath: boolean,
+    onMissingContent?: () => void,
   ): DataRecord {
     return fromRow(
       row,
@@ -774,6 +833,7 @@ export class DataQueryService {
       loadAttributes,
       loadContent,
       includeContentPath,
+      onMissingContent,
     );
   }
 

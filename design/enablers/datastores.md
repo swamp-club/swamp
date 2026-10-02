@@ -1302,9 +1302,11 @@ content download waits until needed.
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
    locally, and downloads it. The existing Phase 2 scoped sync handles this; no
    new code is needed.
-3. **`data get` (read-only, no sync)**: `UnifiedDataRepository.getContent()`
-   tries to read `raw`. If it is missing and a `HydrateFileHook` is wired, it
-   calls the hook to download that file, then retries the read.
+3. **`data get` and `data query` (read-only, no sync)**:
+   `UnifiedDataRepository.getContent()` tries to read `raw`. If it is missing
+   and a `HydrateFileHook` is wired, it calls the hook to download that file,
+   then retries the read. `data query` reaches it through
+   `DataQueryService.query()` (see "`getContentSync` limitation" below).
 
 #### `HydrateFileHook` contract
 
@@ -1330,12 +1332,24 @@ convert paths themselves.
 `getContentSync()` is synchronous and cannot call the async `HydrateFileHook`.
 Its callers:
 
-- `data_record_mapper.ts`: loads attributes/content for query predicates during
-  `data query '<predicate>'`.
+- `data_record_mapper.ts` (`fromRow`): loads attributes/content for query
+  predicates, `select` projections and results.
 - `model_resolver.ts`: resolves CEL expressions during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
-The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
+The async `DataQueryService.query()`, behind `data query`, serve's
+`data.query` and extension `queryData`, works around it. `fromRow` reports a
+needed body that is not on local disk, and `query()` downloads those rows
+through the async `getContent()` and matches again, until no row is left
+untried (swamp-club#2962). Only own-namespace rows whose body the predicate,
+the `select` or the results needed are downloaded, and rows the caller's
+`include` filter rejects never are. A row whose body is absent remotely too
+is returned with empty attributes, as `data get` returns that item without
+content. `integration/data_query_get_parity_test.ts` holds `data query` to
+`data get` on filesystem, full-hydration and lazy datastores.
+
+`querySync()`, behind CEL `data.query()`, cannot download. The
+`model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
 → scoped pull, which downloads `raw` files before CEL evaluation.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks

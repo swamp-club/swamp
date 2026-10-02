@@ -46,6 +46,17 @@ version.
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 
+`integration/data_query_get_parity_test.ts` holds the `data get` and
+`data versions` rows to their queries on the filesystem datastore and on
+full- and lazy-hydration custom datastores, after a pull, an invalidate and a
+catalog rebuild. On a lazy datastore `data query` downloads a body it needs
+and does not yet have, as `data get` does (see
+[datastores.md](./datastores.md#getcontentsync-limitation)), so a broad
+attribute predicate downloads the body of every row that passes its metadata
+terms. Two differences remain: a binary item's `content` is `""` in a query
+but base64 from `data get`, and `data get` follows a renamed item's forward
+reference while a query by the old name matches nothing (swamp-club#2972).
+
 ### CEL shortcuts
 
 | Shortcut                      | Underlying query                                                           |
