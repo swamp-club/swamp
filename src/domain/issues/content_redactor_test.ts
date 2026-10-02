@@ -334,6 +334,28 @@ Deno.test("redactIssueContent: replaces internal hostnames with stable placehold
   assertEquals(result.text.includes("db-prod.internal"), false);
 });
 
+Deno.test("redactIssueContent: file names with an internal-TLD label are not hostnames", () => {
+  const r1 = redactIssueContent(
+    "The hook lives in `.claude/settings.local.json`.",
+  );
+  assertEquals(r1.text, "The hook lives in `.claude/settings.local.json`.");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent("see config.internal.yaml for details");
+  assertEquals(r2.text, "see config.internal.yaml for details");
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: internal hostname before a full stop is still redacted", () => {
+  const result = redactIssueContent("Could not reach db.internal. Retrying.");
+  assertEquals(result.text, "Could not reach [HOST-1]. Retrying.");
+});
+
+Deno.test("redactIssueContent: public name with an internal label is redacted whole", () => {
+  const result = redactIssueContent("Pushed to jenkins.internal.acme.com");
+  assertEquals(result.text, "Pushed to [HOST-1]");
+});
+
 Deno.test("redactIssueContent: replaces FQDNs with stable placeholders", () => {
   const result = redactIssueContent(
     "DNS lookup for api.acme-corp.prod.net failed",

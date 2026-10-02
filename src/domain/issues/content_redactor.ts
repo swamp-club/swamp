@@ -255,9 +255,11 @@ const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
 const FQDN_RE =
   /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.){2,}[a-zA-Z]{2,}\b/g;
 
-// Hostnames with known internal TLDs
+// Hostnames with known internal TLDs. The lookahead refuses a match that
+// another dotted label follows: settings.local.json is a file name, and
+// jenkins.internal.acme.com is left whole for the FQDN matcher.
 const INTERNAL_HOST_RE =
-  /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
+  /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b(?!\.[a-zA-Z0-9])/g;
 
 function isLuhnValid(digits: string): boolean {
   let sum = 0;
