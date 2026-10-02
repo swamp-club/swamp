@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createWorkflowApprovalsDeps,
   type PendingApproval,
+  userErrorFromSwampError,
   workflowApprovals,
   type WorkflowApprovalsEvent,
 } from "../../libswamp/mod.ts";
@@ -219,7 +220,7 @@ export const workflowApprovalsCommand = withRemoteOptions(
         pending = e.data.approvals;
       },
       error: (e) => {
-        throw new Error(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     },
   );
