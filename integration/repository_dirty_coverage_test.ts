@@ -1446,8 +1446,9 @@ Deno.test("unit of work: every repository sends the same marks inside a legacy u
 
 /**
  * Repositories that stage typed changes at each call site rather than through
- * a private notifyDirty (datastore rework Phase 1 repository moves). Rows of
- * the others are skipped below: every change they stage is still `write`.
+ * a private notifyDirty (datastore rework Phase 1 repository moves). Every
+ * repository with rows here is listed; a row of an unlisted one is skipped
+ * below.
  */
 const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
   // swamp-club#2979, move A.
@@ -1458,6 +1459,8 @@ const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
   "Workflow",
   "EvaluatedDefinition",
   "EvaluatedWorkflow",
+  // swamp-club#2992, move C1.
+  "WorkflowRun",
 ]);
 
 /**

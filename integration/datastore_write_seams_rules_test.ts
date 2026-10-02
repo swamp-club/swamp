@@ -269,12 +269,10 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
   // phases stage through the unit of work rather than adding calls here.
   "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
-  // The one routing helper the repositories' notifyDirty bodies delegate to:
+  // The one routing helper the repositories stage their changes through:
   // it stages into an ambient unit of work bound to the hook, or calls the
   // hook (swamp-club#2971). Exactly one call.
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
-  // Repositories notifying their mark hook (through notifyDirty) before a write.
-  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository (x4)",
   // Use cases that mark directly.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
@@ -526,6 +524,9 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository write (x2)",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write|remove",
+  // swamp-club#2992, move C1.
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository remove (x3)",
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository write",
 ];
 
 // Production code that opens an ambient unit of work. Empty in datastore
