@@ -534,6 +534,265 @@ Deno.test("RepoService.upgrade omits settings from changedFiles when unchanged",
   });
 });
 
+// Audit hook merging (swamp-club#2881): an existing audit hook in any form
+// counts as present, so upgrade never wires a second one beside it.
+
+const CLAUDE_AUDIT = "swamp audit record --from-hook";
+const BACKGROUNDED_AUDIT =
+  "payload=$(cat); (printf '%s' \"$payload\" | swamp audit record --from-hook >/dev/null 2>&1 &)";
+
+function claudeEntry(
+  command: string,
+  matcher: unknown = "Bash",
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { matcher, hooks: [{ type: "command", command, ...extra }] };
+}
+
+const CLAUDE_SWAMP_ENTRY = claudeEntry(CLAUDE_AUDIT);
+
+/**
+ * Inits a Claude repo, replaces its hooks, then runs `act` (an upgrade by
+ * default) and a second upgrade, returning the hooks after each.
+ */
+async function claudeHooksAfterUpgrade(
+  hooks: unknown,
+  act?: (repoPath: RepoPath, tempDir: string) => Promise<unknown>,
+): Promise<{
+  first: Record<string, unknown[]>;
+  second: Record<string, unknown[]>;
+  secondUpdated: boolean;
+}> {
+  let result!: {
+    first: Record<string, unknown[]>;
+    second: Record<string, unknown[]>;
+    secondUpdated: boolean;
+  };
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath);
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    const settings = JSON.parse(await Deno.readTextFile(settingsPath));
+    settings.hooks = hooks;
+    await Deno.writeTextFile(settingsPath, JSON.stringify(settings, null, 2));
+
+    await (act
+      ? act(repoPath, tempDir)
+      : testService("0.2.0", tempDir).upgrade(repoPath));
+    const first = JSON.parse(await Deno.readTextFile(settingsPath)).hooks;
+    const again = await testService("0.2.0", tempDir).upgrade(repoPath);
+    const second = JSON.parse(await Deno.readTextFile(settingsPath)).hooks;
+    result = { first, second, secondUpdated: again.settingsUpdated };
+  });
+  return result;
+}
+
+Deno.test("RepoService.upgrade keeps an existing backgrounded Claude audit hook without adding swamp's", async () => {
+  const hooks = {
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT)],
+  };
+  const { first, secondUpdated } = await claudeHooksAfterUpgrade(hooks);
+  assertEquals(first, hooks);
+  assertEquals(secondUpdated, false);
+});
+
+Deno.test("RepoService.upgrade removes swamp's Claude audit hook added beside a user variant", async () => {
+  const { first, second, secondUpdated } = await claudeHooksAfterUpgrade({
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT), CLAUDE_SWAMP_ENTRY],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT), CLAUDE_SWAMP_ENTRY],
+  });
+  const repaired = {
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT)],
+  };
+  assertEquals(first, repaired);
+  assertEquals(second, repaired);
+  assertEquals(secondUpdated, false);
+});
+
+Deno.test("RepoService.init with force removes swamp's Claude audit hook added beside a user variant", async () => {
+  const { first } = await claudeHooksAfterUpgrade(
+    {
+      PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT), CLAUDE_SWAMP_ENTRY],
+      PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT), CLAUDE_SWAMP_ENTRY],
+    },
+    (repoPath, tempDir) =>
+      testService("0.2.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+        force: true,
+      }),
+  );
+  assertEquals(first, {
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT)],
+  });
+});
+
+Deno.test("RepoService.upgrade does not duplicate a Claude audit hook that has extra fields", async () => {
+  const hooks = {
+    PostToolUse: [claudeEntry(CLAUDE_AUDIT, "Bash", { timeout: 5 })],
+    PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, "Bash", { timeout: 5 })],
+  };
+  assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
+});
+
+Deno.test("RepoService.upgrade treats a Claude audit hook under matcher * as present", async () => {
+  const hooks = {
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT, "*")],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT, "Bash|Edit")],
+  };
+  assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
+});
+
+Deno.test("RepoService.upgrade treats a Claude audit hook under a matcher list or unanchored regex as present", async () => {
+  for (const matcher of ["Bash, Edit", "Edit | Bash", "^Bas", "B.sh"]) {
+    const hooks = {
+      PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT, matcher)],
+      PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT, matcher)],
+    };
+    assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
+  }
+});
+
+Deno.test("RepoService.upgrade adds swamp's Claude audit hook when a matcher list names other tools", async () => {
+  for (const matcher of ["Bashful", "Edit, Write", "Bas"]) {
+    const { first } = await claudeHooksAfterUpgrade({
+      PostToolUse: [claudeEntry(CLAUDE_AUDIT, matcher)],
+      PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, matcher)],
+    });
+    assertEquals(first.PostToolUse, [
+      claudeEntry(CLAUDE_AUDIT, matcher),
+      CLAUDE_SWAMP_ENTRY,
+    ]);
+  }
+});
+
+Deno.test("RepoService.upgrade adds swamp's Claude audit hook when the only one does not match Bash", async () => {
+  const { first } = await claudeHooksAfterUpgrade({
+    PostToolUse: [claudeEntry(CLAUDE_AUDIT, "Edit")],
+    PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, "Edit")],
+  });
+  assertEquals(first.PostToolUse, [
+    claudeEntry(CLAUDE_AUDIT, "Edit"),
+    CLAUDE_SWAMP_ENTRY,
+  ]);
+});
+
+Deno.test("RepoService.upgrade keeps unrelated Claude hooks in order", async () => {
+  const formatter = claudeEntry("prettier --write", "Edit|Write");
+  const { first } = await claudeHooksAfterUpgrade({
+    PostToolUse: [
+      formatter,
+      claudeEntry(BACKGROUNDED_AUDIT),
+      CLAUDE_SWAMP_ENTRY,
+    ],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY, CLAUDE_SWAMP_ENTRY],
+    Stop: [formatter],
+  });
+  assertEquals(first, {
+    PostToolUse: [formatter, claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+    Stop: [formatter],
+  });
+});
+
+Deno.test("RepoService.upgrade passes malformed Claude hook entries through", async () => {
+  const malformed = [
+    "junk",
+    null,
+    { matcher: "Bash", hooks: "not-a-list" },
+    { matcher: 7, hooks: [{ command: 3 }] },
+  ];
+  const { first } = await claudeHooksAfterUpgrade({
+    PostToolUse: malformed,
+    PostToolUseFailure: "not-a-list",
+  });
+  assertEquals(first, {
+    PostToolUse: [...malformed, CLAUDE_SWAMP_ENTRY],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+  });
+});
+
+for (
+  const { tool, file, swampEntry } of [
+    {
+      tool: "cursor",
+      file: [".cursor", "hooks.json"],
+      swampEntry: { command: "swamp audit record --from-hook --tool cursor" },
+    },
+    {
+      tool: "copilot",
+      file: [".github", "hooks", "swamp-audit.json"],
+      swampEntry: {
+        type: "command",
+        command: "swamp audit record --from-hook --tool copilot",
+      },
+    },
+  ]
+) {
+  const variant = { ...swampEntry, timeout: 5 };
+
+  const hooksAfterUpgrade = async (hooks: unknown) => {
+    let result!: {
+      first: Record<string, unknown[]>;
+      second: Record<string, unknown[]>;
+    };
+    await withTempDir(async (tempDir) => {
+      const repoPath = RepoPath.create(tempDir);
+      await testService("0.1.0", tempDir).init(repoPath, { tools: [tool] });
+      const hooksPath = join(tempDir, ...file);
+      await Deno.writeTextFile(
+        hooksPath,
+        JSON.stringify({ version: 1, hooks }, null, 2),
+      );
+      await testService("0.2.0", tempDir).upgrade(repoPath);
+      const first = JSON.parse(await Deno.readTextFile(hooksPath)).hooks;
+      await testService("0.2.0", tempDir).upgrade(repoPath);
+      const second = JSON.parse(await Deno.readTextFile(hooksPath)).hooks;
+      result = { first, second };
+    });
+    return result;
+  };
+
+  Deno.test(`RepoService.upgrade keeps an existing ${tool} audit hook variant without adding swamp's`, async () => {
+    const hooks = { postToolUse: [variant], postToolUseFailure: [variant] };
+    assertEquals((await hooksAfterUpgrade(hooks)).first, hooks);
+  });
+
+  Deno.test(`RepoService.upgrade removes swamp's ${tool} audit hook added beside a user variant`, async () => {
+    const { first, second } = await hooksAfterUpgrade({
+      postToolUse: [variant, swampEntry],
+      postToolUseFailure: [swampEntry, variant],
+    });
+    const repaired = { postToolUse: [variant], postToolUseFailure: [variant] };
+    assertEquals(first, repaired);
+    assertEquals(second, repaired);
+  });
+
+  Deno.test(`RepoService.upgrade leaves swamp's ${tool} audit hook and unrelated hooks unchanged`, async () => {
+    const other = { command: "echo done" };
+    const hooks = {
+      postToolUse: [other, swampEntry],
+      postToolUseFailure: [swampEntry],
+      stop: [other],
+    };
+    assertEquals((await hooksAfterUpgrade(hooks)).first, hooks);
+  });
+
+  Deno.test(`RepoService.upgrade passes malformed ${tool} hook entries through`, async () => {
+    const malformed = ["junk", null, { command: 3 }];
+    const { first } = await hooksAfterUpgrade({
+      postToolUse: malformed,
+      postToolUseFailure: [swampEntry],
+    });
+    assertEquals(first, {
+      postToolUse: [...malformed, swampEntry],
+      postToolUseFailure: [swampEntry],
+    });
+  });
+}
+
 Deno.test("RepoService.upgrade includes .gitignore in changedFiles when managed", async () => {
   await withTempDir(async (tempDir) => {
     const oldService = testService("0.1.0", tempDir);

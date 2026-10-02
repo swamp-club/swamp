@@ -71,6 +71,18 @@ The generators are in `src/domain/repo/repo_service.ts`
 `updateKiroAgentConfig`, `ensureKiroCliDefaultAgent`, `updateOpenCodePlugin`,
 `updateCopilotHooks`, `createCopilotHooksIfNotExists`).
 
+Upgrade and `init --force` merge the audit hook into an existing Claude,
+Cursor or Copilot hook config with `mergeAuditHooks`. An event that already
+runs `swamp audit record --from-hook` in any form (a backgrounded wrapper, an
+extra `timeout`) keeps that hook, and swamp's own entry is not added beside it:
+two hooks would record every tool call twice. For Claude, only entries whose
+matcher covers `Bash` count, judged by Claude Code's own matcher rules (a list
+of exact names, or an unanchored regex). Where an earlier upgrade did add
+swamp's entry next to a user's variant, the merge removes swamp's entry again.
+Only entries whose serialised JSON equals swamp's own entry are ever removed;
+every other entry, including one that differs from swamp's only in key order,
+is left as it is.
+
 ## Reserved session / command prefixes
 
 The command prefix `echo swamp-doctor-smoke-test`
