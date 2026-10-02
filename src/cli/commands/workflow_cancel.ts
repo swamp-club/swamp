@@ -45,7 +45,10 @@ import {
   resolveSettlementWorkflow,
 } from "../../domain/workflows/abort_settlement.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -54,6 +57,17 @@ import {
   isProcessAlive,
   killProcessTree,
 } from "../../infrastructure/process/process_kill.ts";
+import {
+  localOwnerLiveness,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import {
+  matchMethodRunOutputs,
+  type MethodRunOutputs,
+  type OwnerLiveness,
+  settleOrphanedMethodRun,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
 import {
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -178,10 +192,16 @@ export interface CancelLocalRunDeps {
   runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
   /** Reads a run's own evaluated workflow snapshot, to settle it against. */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
+  /** The tracker rows of the stopped owner, closed once it is gone. */
+  runTracker: RunTrackerRepository;
+  /** The method-run records of the stopped owner's steps. */
+  outputRepo: MethodRunOutputs;
   killProcess?: (
     pid: number,
     options: { maxWaitMs: number },
   ) => Promise<boolean>;
+  /** Whether a stopped owner is gone; defaults to this host's process table. */
+  liveness?: OwnerLiveness;
 }
 
 /** The pid of the process to stop for `run`, if another process owns it. */
@@ -200,6 +220,43 @@ async function stopOwner(
   killProcess: NonNullable<CancelLocalRunDeps["killProcess"]>,
 ): Promise<void> {
   await killProcess(pid, { maxWaitMs: OWNER_STOP_GRACE_MS });
+}
+
+/**
+ * Closes what a stopped owner left open: an owner killed after its grace, or
+ * one that died before the cancel, never completed its tracker rows or saved
+ * its steps' method runs. Each method run still `running` under its pid is
+ * cancelled with {@link OWNER_STOPPED_STEP_ERROR}, as its step is, and then
+ * its method rows, and the rows of the `cancelled` runs, still `running` on
+ * this host are completed `cancelled` with `reason`. Another workflow run of
+ * the same process, such as a nested child this cancel does not settle,
+ * keeps its row for `run doctor`. An owner that settled itself left nothing
+ * running, and one still alive is left alone.
+ */
+async function closeStoppedOwnerRuns(
+  pid: number,
+  cancelled: ReadonlySet<string>,
+  reason: string,
+  { runTracker, outputRepo, liveness = localOwnerLiveness() }: Pick<
+    CancelLocalRunDeps,
+    "runTracker" | "outputRepo" | "liveness"
+  >,
+): Promise<void> {
+  if (!liveness.isDead(pid)) return;
+  const rows = runTracker.findAllRunning().filter((row) =>
+    row.pid === pid &&
+    row.isLocalTo(liveness.hostname, liveness.instanceId) &&
+    (row.runKind === "model_method" || cancelled.has(row.id))
+  );
+  const { running } = await matchMethodRunOutputs(outputRepo, rows);
+  for (const orphan of running) {
+    await settleOrphanedMethodRun(
+      outputRepo,
+      orphan,
+      OWNER_STOPPED_STEP_ERROR,
+    );
+  }
+  for (const row of rows) runTracker.complete(row.id, "cancelled", reason);
 }
 
 /**
@@ -250,25 +307,36 @@ async function settleCancelledRun(
 
 /**
  * Cancels a locally-owned run. Stops the owning process first, giving it
- * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, then
- * settles the record (see {@link settleCancelledRun}). Returns the persisted
- * run, or null when the record no longer exists.
+ * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, closes
+ * what it left open (see {@link closeStoppedOwnerRuns}), then settles the
+ * record (see {@link settleCancelledRun}). Returns the persisted run, or null
+ * when the record no longer exists.
  */
 export async function cancelLocalRun(
   run: WorkflowRun,
   workflow: Workflow,
   reason: string,
-  { runRepo, findEvaluatedWorkflow, killProcess = killProcessTree }:
-    CancelLocalRunDeps,
+  { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
   const pid = ownerPidToStop(run);
   if (pid !== undefined) {
     await stopOwner(pid, killProcess);
+    await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
   }
-  return await settleCancelledRun(run, workflow, reason, {
-    runRepo,
-    findEvaluatedWorkflow,
-  });
+  return await settleCancelledRun(run, workflow, reason, deps);
+}
+
+/** Runs `fn` with the repository's run tracker open. */
+async function withRunTracker<T>(
+  repoDir: string,
+  fn: (runTracker: RunTrackerRepository) => Promise<T>,
+): Promise<T> {
+  const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+  try {
+    return await fn(runTracker);
+  } finally {
+    runTracker.close();
+  }
 }
 
 export interface CancelAllResult {
@@ -295,8 +363,7 @@ export interface CancelAllResult {
 export async function cancelAllLocalRuns(
   runs: { run: WorkflowRun; workflow: Workflow }[],
   reason: string,
-  { runRepo, findEvaluatedWorkflow, killProcess = killProcessTree }:
-    CancelLocalRunDeps,
+  { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<CancelAllResult> {
   const pids = new Set<number>();
   for (const { run } of runs) {
@@ -304,15 +371,16 @@ export async function cancelAllLocalRuns(
     if (pid !== undefined) pids.add(pid);
   }
   await Promise.all([...pids].map((pid) => stopOwner(pid, killProcess)));
+  const cancelled = new Set(runs.map(({ run }) => run.id as string));
+  for (const pid of pids) {
+    await closeStoppedOwnerRuns(pid, cancelled, reason, deps);
+  }
 
   const result: CancelAllResult = { cancelled: [], finished: [], deleted: [] };
   for (const { run, workflow } of runs) {
     const workflowName = workflow.name;
     const previousStatus = run.status;
-    const finalRun = await settleCancelledRun(run, workflow, reason, {
-      runRepo,
-      findEvaluatedWorkflow,
-    });
+    const finalRun = await settleCancelledRun(run, workflow, reason, deps);
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {
@@ -538,10 +606,15 @@ export const workflowCancelCommand = withRemoteOptions(
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
       }
 
-      const { cancelled, finished, deleted } = await cancelAllLocalRuns(
-        localRuns,
-        reason,
-        { runRepo, findEvaluatedWorkflow },
+      const { cancelled, finished, deleted } = await withRunTracker(
+        repoDir,
+        (runTracker) =>
+          cancelAllLocalRuns(localRuns, reason, {
+            runRepo,
+            findEvaluatedWorkflow,
+            runTracker,
+            outputRepo: repoContext.outputRepo,
+          }),
       );
 
       const serveSkipped = serveRuns.map(({ run, workflow }) => ({
@@ -659,11 +732,15 @@ export const workflowCancelCommand = withRemoteOptions(
     }
 
     const previousStatus = run.status;
-    const finalRun = await cancelLocalRun(
-      run,
-      workflow,
-      reason,
-      { runRepo, findEvaluatedWorkflow },
+    const finalRun = await withRunTracker(
+      repoDir,
+      (runTracker) =>
+        cancelLocalRun(run, workflow, reason, {
+          runRepo,
+          findEvaluatedWorkflow,
+          runTracker,
+          outputRepo: repoContext.outputRepo,
+        }),
     );
     if (!finalRun) {
       throw new UserError(`Workflow run no longer exists: ${run.id}`);

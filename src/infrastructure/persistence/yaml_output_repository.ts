@@ -157,6 +157,39 @@ export class YamlOutputRepository implements OutputRepository {
     return null;
   }
 
+  async findByIds(
+    type: ModelType,
+    method: string,
+    ids: ReadonlySet<string>,
+  ): Promise<Map<string, ModelOutput>> {
+    const found = new Map<string, ModelOutput>();
+    if (ids.size === 0) return found;
+    const dir = this.getMethodDir(type, method);
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+        const path = join(dir, entry.name);
+        // A file deleted or unreadable mid-scan is skipped, as in findById.
+        try {
+          const content = await Deno.readTextFile(path);
+          const data = parseYaml(content) as ModelOutputData | null;
+          if (!data || !ids.has(data.id)) continue;
+          if (data.logFile) {
+            data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+          }
+          found.set(data.id, ModelOutput.fromData(data));
+          if (found.size === ids.size) break;
+        } catch (error) {
+          this.skipUnreadableRecord(path, error);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return found;
+      throw error;
+    }
+    return found;
+  }
+
   async findByDefinition(
     type: ModelType,
     definitionId: DefinitionId,

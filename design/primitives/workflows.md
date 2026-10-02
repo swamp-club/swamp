@@ -1429,7 +1429,12 @@ if the run is still active. The owner saves its own final record while handling
 SIGTERM, once its in-flight model methods have stopped or the step stop grace
 ran out (see [Post-Cancellation Cleanup](#post-cancellation-cleanup)), so a run
 it already finished keeps that record; a cancelled one gets the `--reason` as
-its `cancel_reason` tag.
+its `cancel_reason` tag. An owner killed after its grace, or one that died
+before the cancel, saved nothing: once it is gone, cancel cancels each step
+method-run record it left `running` with the same error its step gets
+(`OWNER_STOPPED_STEP_ERROR`), then completes its tracker rows still `running`
+on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
+`src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
 **Settling a cancelled run.** Every cancel settles the work the run leaves
 unfinished before it marks the run `cancelled`, so a cancelled record never
@@ -1624,7 +1629,9 @@ cancel took effect (`finished` in `--json`) rather than as cancelled.
 A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
 is still recorded failed (`DefaultStepExecutor`,
-`src/domain/workflows/execution_service.ts`).
+`src/domain/workflows/execution_service.ts`). When the owner is killed after
+its grace instead, the method-run output it left `running` is cancelled by the
+command, with `OWNER_STOPPED_STEP_ERROR`, before the row is completed.
 `swamp model cancel` never signals a `swamp serve` process. A method run that
 serve executes (a workflow step or a direct method run) carries serve's
 instance id on its tracker row and serve's pid, so stopping its owner would

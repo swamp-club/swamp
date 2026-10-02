@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "../models/active_run.ts";
+import type { ModelOutput } from "../models/model_output.ts";
+import { ModelType } from "../models/model_type.ts";
+import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import type { WorkflowRunRepository } from "./repositories.ts";
 import {
@@ -210,7 +213,9 @@ export function runHasDeadOwner(
  * still `running` under the dead owner's pid, so a run its owner finished
  * or another process took over is never overwritten. The row is marked
  * settled only after the record is saved, so retention keeps it while the
- * record may still say `running`.
+ * record may still say `running`. The method runs of its steps that the dead
+ * owner left `running` are then settled too (see
+ * {@link settleDeadOwnerMethodRuns}).
  *
  * Returns true when the run was interrupted.
  */
@@ -220,9 +225,12 @@ export async function settleDeadOwnerRun(
   workflowId: WorkflowId,
   runId: WorkflowRunId,
   liveness: OwnerLiveness,
+  outputRepo: MethodRunOutputs,
 ): Promise<boolean> {
   const run = await runRepo.findById(workflowId, runId);
   if (!run || !runHasDeadOwner(run, runTracker, liveness)) return false;
+  // runHasDeadOwner found the row, and the run's pid, if any, matches it.
+  const ownerPid = runTracker.findById(run.id)!.pid;
   logger.warn(
     "Interrupting workflow run {runId} (workflow: {workflowName}): its owning process {pid} is gone",
     { runId: run.id, workflowName: run.workflowName, pid: run.pid },
@@ -231,6 +239,7 @@ export async function settleDeadOwnerRun(
   run.interruptOrphaned("owner_process_dead");
   await runRepo.save(workflowId, run);
   runTracker.markSettled(run.id, "owner_process_dead");
+  await settleDeadOwnerMethodRuns(outputRepo, runTracker, liveness, ownerPid);
   return true;
 }
 
@@ -251,4 +260,184 @@ export async function findDeadOwnerRuns(
   return runs.filter((run): run is WorkflowRun =>
     run !== null && runHasDeadOwner(run, runTracker, liveness)
   );
+}
+
+/** The output repository reads and writes method-run settlement needs. */
+export type MethodRunOutputs = Pick<OutputRepository, "findByIds" | "save">;
+
+/**
+ * The reason a method run is settled `cancelled` with when its owning process
+ * exited before saving the run's final state.
+ */
+export function ownerExitedReason(pid: number): string {
+  return `cancelled: the process running this method run (pid ${pid}) exited before it finished`;
+}
+
+/** A method-run row whose output record is still `running` under its pid. */
+export interface OrphanedMethodRun {
+  readonly row: ActiveRun;
+  readonly type: ModelType;
+  readonly output: ModelOutput;
+}
+
+/** How method-run rows matched their output records. */
+export interface MethodRunMatch {
+  /** Rows whose output is still `running` under the row's pid. */
+  readonly running: OrphanedMethodRun[];
+  /**
+   * Rows with nothing left to settle: the output is missing, finished, or
+   * owned by another pid, or the row cannot name an output.
+   */
+  readonly done: ActiveRun[];
+}
+
+/**
+ * The type a model_method row's output is stored under, or null when the row
+ * cannot name one: it has no type or method, or the method name would leave
+ * the type's output directory.
+ */
+function outputTypeOf(row: ActiveRun): ModelType | null {
+  const method = row.methodName;
+  if (
+    row.runKind !== "model_method" || !row.modelType || !method ||
+    method.includes("/") || method.includes("\\") || method.includes("..")
+  ) {
+    return null;
+  }
+  try {
+    return ModelType.create(row.modelType);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the output records behind method-run rows, one read per model type
+ * and method however many rows share them. A row's output has its id, and
+ * the row's model type and method locate it.
+ */
+export async function matchMethodRunOutputs(
+  outputRepo: Pick<OutputRepository, "findByIds">,
+  rows: readonly ActiveRun[],
+): Promise<MethodRunMatch> {
+  const running: OrphanedMethodRun[] = [];
+  const done: ActiveRun[] = [];
+  const groups = new Map<
+    string,
+    { type: ModelType; method: string; rows: ActiveRun[] }
+  >();
+  for (const row of rows) {
+    const type = outputTypeOf(row);
+    if (!type) {
+      done.push(row);
+      continue;
+    }
+    const method = row.methodName!;
+    const key = `${type.normalized}\0${method}`;
+    const group = groups.get(key) ?? { type, method, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  for (const { type, method, rows: grouped } of groups.values()) {
+    const outputs = await outputRepo.findByIds(
+      type,
+      method,
+      new Set(grouped.map((row) => row.id)),
+    );
+    for (const row of grouped) {
+      const output = outputs.get(row.id);
+      if (
+        output && output.status === "running" &&
+        (output.pid === undefined || output.pid === row.pid)
+      ) {
+        running.push({ row, type, output });
+      } else {
+        done.push(row);
+      }
+    }
+  }
+  return { running, done };
+}
+
+/**
+ * Settles one method run its owner left `running`: marks the output
+ * `cancelled` with `reason` and saves it. The caller has matched the output
+ * against its row, so the owner is known to be gone.
+ */
+export async function settleOrphanedMethodRun(
+  outputRepo: Pick<OutputRepository, "save">,
+  { row, type, output }: OrphanedMethodRun,
+  reason: string | undefined,
+): Promise<void> {
+  output.markCancelled(reason);
+  await outputRepo.save(type, row.methodName!, output);
+}
+
+/**
+ * The method-run rows owned on this host whose owner is gone (see
+ * {@link trackerShowsDeadOwner}), or only those of process `pid`, matched
+ * against their output records.
+ */
+export async function findDeadOwnerMethodRuns(
+  outputRepo: Pick<OutputRepository, "findByIds">,
+  runTracker: RunTrackerRepository,
+  liveness: OwnerLiveness,
+  pid?: number,
+): Promise<MethodRunMatch> {
+  const rows = runTracker.findAll().filter((row) =>
+    row.runKind === "model_method" &&
+    (pid === undefined || row.pid === pid) &&
+    trackerShowsDeadOwner(row, liveness)
+  );
+  return await matchMethodRunOutputs(outputRepo, rows);
+}
+
+/**
+ * Settles the method runs a dead owner left `running`, for example the steps
+ * of a workflow run whose process was force-exited or killed after a cancel
+ * grace. Only rows owned on this host with a dead pid count, as for
+ * {@link settleDeadOwnerRun}, and an output is written only while it is still
+ * `running` under that pid. Each row is marked `interrupted`, its output
+ * `cancelled` with {@link ownerExitedReason}, and the row settled only after
+ * the output is saved. A row with no output left to settle is marked settled
+ * too, so retention may purge it.
+ *
+ * Returns the method runs whose output was settled.
+ */
+export async function settleDeadOwnerMethodRuns(
+  outputRepo: MethodRunOutputs,
+  runTracker: RunTrackerRepository,
+  liveness: OwnerLiveness,
+  pid?: number,
+): Promise<OrphanedMethodRun[]> {
+  const { running, done } = await findDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness,
+    pid,
+  );
+  for (const row of done) {
+    runTracker.complete(row.id, "interrupted");
+    runTracker.markSettled(row.id, "record_settled");
+  }
+  for (const orphan of running) {
+    const { row } = orphan;
+    logger.warn(
+      "Cancelling method run {runId} ({modelType} {methodName}): its owning process {pid} is gone",
+      {
+        runId: row.id,
+        modelType: row.modelType,
+        methodName: row.methodName,
+        pid: row.pid,
+      },
+    );
+    runTracker.complete(row.id, "interrupted");
+    await settleOrphanedMethodRun(
+      outputRepo,
+      orphan,
+      ownerExitedReason(row.pid),
+    );
+    runTracker.markSettled(row.id, "owner_process_dead");
+  }
+  return running;
 }

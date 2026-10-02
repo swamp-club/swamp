@@ -49,10 +49,23 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { cancelLocalRun } from "../src/cli/commands/workflow_cancel.ts";
 
 // Import models barrel to trigger built-in registration.
+import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
+import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
+
+/** Cancel deps for runs with no tracker rows or method-run records. */
+const untracked = {
+  runTracker: {
+    findAllRunning: () => [],
+  } as unknown as RunTrackerRepository,
+  outputRepo: {
+    findByIds: () => Promise.resolve(new Map()),
+    save: () => Promise.reject(new Error("unexpected output save")),
+  } as MethodRunOutputs,
+};
 
 async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-cancel-cleanup-" });
@@ -205,6 +218,7 @@ Deno.test("workflow cancel: the record shows a cleanup step running while it run
         {
           runRepo: reader,
           findEvaluatedWorkflow: () => Promise.resolve(null),
+          ...untracked,
           killProcess: () => Promise.resolve(true),
         },
       );

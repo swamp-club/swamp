@@ -420,7 +420,8 @@ swamp run doctor --fix        # auto-reap stale runs
 A run whose process was killed (for example by a second Ctrl-C) stays `running`
 with a dead pid. `swamp run doctor --fix` or
 `swamp workflow recover <workflow> --run <id>` marks it `interrupted`, with the
-in-flight step `unknown`. Then resume it with `swamp workflow resume`.
+in-flight step `unknown`, and marks the step's method run `cancelled` in
+`swamp model method history`. Then resume it with `swamp workflow resume`.
 
 The history output shows the `KIND` column as `workflow` or `method`, with the
 workflow name or model/method name respectively.

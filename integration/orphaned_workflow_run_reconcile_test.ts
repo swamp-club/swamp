@@ -152,6 +152,7 @@ Deno.test("run doctor --fix: settles a force-exited parent run and its nested ch
         tracker,
         repoContext.workflowRunRepo,
         repoContext.workflowRepo,
+        repoContext.outputRepo,
         localOwnerLiveness(),
         true,
       );
@@ -219,6 +220,7 @@ Deno.test("run doctor --fix: leaves a run alone while its owner is alive", async
         tracker,
         repoContext.workflowRunRepo,
         repoContext.workflowRepo,
+        repoContext.outputRepo,
         localOwnerLiveness(),
         true,
       );

@@ -41,8 +41,16 @@ import type { RunTrackerRepository } from "../../domain/models/run_tracker_repos
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
+  localOwnerLiveness,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
+import {
+  matchMethodRunOutputs,
+  type MethodRunOutputs,
+  type OwnerLiveness,
+  settleOrphanedMethodRun,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -67,6 +75,10 @@ export interface CancelModelMethodRunsDeps {
     RunTrackerRepository,
     "findAllRunning" | "findById" | "complete" | "recordCancelReason"
   >;
+  /** The method-run records an owner killed after its grace left open. */
+  outputRepo: MethodRunOutputs;
+  /** Whether a stopped owner is gone; defaults to this host's process table. */
+  liveness?: OwnerLiveness;
   killProcess?: (
     pid: number,
     options: { maxWaitMs: number },
@@ -102,7 +114,10 @@ export interface MethodRunCancelOutcome {
  * once, since the steps of one workflow share its process and a second
  * SIGTERM makes an owner exit at once. Then completes each tracker row as
  * cancelled. An owner that stopped in time completed its row itself, without
- * the reason, so the reason is recorded on it afterwards. Returns each run's
+ * the reason, so the reason is recorded on it afterwards. An owner killed
+ * after its grace saved nothing, so a method-run record it left `running` is
+ * cancelled with {@link OWNER_STOPPED_STEP_ERROR}, as workflow cancel does,
+ * before its row is completed. Returns each run's
  * final status: a run its owner finished another way during the wait keeps
  * that status. If stopping an owner fails, the other owners are still
  * stopped and their runs completed, then the first failure is thrown.
@@ -110,8 +125,13 @@ export interface MethodRunCancelOutcome {
 export async function cancelModelMethodRuns(
   runs: readonly ActiveRun[],
   reason: string | undefined,
-  { tracker, killProcess = killProcessTree, onStopping }:
-    CancelModelMethodRunsDeps,
+  {
+    tracker,
+    outputRepo,
+    liveness = localOwnerLiveness(),
+    killProcess = killProcessTree,
+    onStopping,
+  }: CancelModelMethodRunsDeps,
 ): Promise<MethodRunCancelOutcome[]> {
   const runningRows = tracker.findAllRunning();
   const pids = new Set<number>();
@@ -137,7 +157,19 @@ export async function cancelModelMethodRuns(
   });
 
   // A run whose owner could not be stopped is left running.
-  const outcomes = runs.filter((run) => !unstopped.has(run.pid)).map((run) => {
+  const stopped = runs.filter((run) => !unstopped.has(run.pid));
+  const abandoned = stopped.filter((run) =>
+    run.pid !== Deno.pid &&
+    run.isLocalTo(liveness.hostname, liveness.instanceId) &&
+    liveness.isDead(run.pid) &&
+    tracker.findById(run.id)?.status === "running"
+  );
+  const { running } = await matchMethodRunOutputs(outputRepo, abandoned);
+  for (const orphan of running) {
+    await settleOrphanedMethodRun(outputRepo, orphan, OWNER_STOPPED_STEP_ERROR);
+  }
+
+  const outcomes = stopped.map((run) => {
     tracker.complete(run.id, "cancelled", reason);
     if (reason !== undefined) tracker.recordCancelReason(run.id, reason);
     // Rows are purged only days after they complete, so the row is still
@@ -335,6 +367,7 @@ export const modelCancelCommand = new Command()
 
         const outcomes = await cancelModelMethodRuns(cancellable, reason, {
           tracker: runTracker,
+          outputRepo: repoContext.outputRepo,
           onStopping: (stops) => {
             const waiting = liveStops(stops);
             if (!waiting || cliCtx.outputMode === "json") return;
@@ -416,6 +449,7 @@ export const modelCancelCommand = new Command()
 
       const [{ status }] = await cancelModelMethodRuns([latest], reason, {
         tracker: runTracker,
+        outputRepo: repoContext.outputRepo,
         onStopping: (stops) => {
           const waiting = liveStops(stops);
           if (!waiting || cliCtx.outputMode === "json") return;

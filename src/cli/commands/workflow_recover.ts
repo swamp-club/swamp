@@ -34,6 +34,7 @@ import {
 } from "../../domain/workflows/recovery_assessment.ts";
 import {
   findDeadOwnerRuns,
+  type MethodRunOutputs,
   settleDeadOwnerRun,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -58,6 +59,7 @@ async function findRecoverableRun(
   repoDir: string,
   workflow: Workflow,
   runRepo: WorkflowRunRepository,
+  outputRepo: MethodRunOutputs,
   runId: string | undefined,
   assessOnly: boolean,
 ): Promise<WorkflowRun | null> {
@@ -79,6 +81,7 @@ async function findRecoverableRun(
           workflow.id,
           run.id,
           liveness,
+          outputRepo,
         );
       }
       return await findInterruptedRun(workflow, runRepo, runId);
@@ -165,6 +168,7 @@ export const workflowRecoverCommand = new Command()
         repoDir,
         workflow,
         repoContext.workflowRunRepo,
+        repoContext.outputRepo,
         options.run as string | undefined,
         !!options.assessOnly,
       );

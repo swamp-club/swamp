@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
@@ -33,6 +33,15 @@ import {
   splitServeOwnedRuns,
 } from "./model_cancel.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
+import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reaper.ts";
+import {
+  createModelOutputId,
+  ModelOutput,
+} from "../../domain/models/model_output.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -41,6 +50,12 @@ await initializeLogging({});
 
 // A PID that is not this process, so cancel asks to stop it.
 const OWNER_PID = Deno.pid + 1;
+
+/** An output repository holding no method-run records. */
+const noOutputs: MethodRunOutputs = {
+  findByIds: () => Promise.resolve(new Map()),
+  save: () => Promise.reject(new Error("unexpected output save")),
+};
 
 async function withTracker(
   fn: (tracker: RunTrackerStore, dbPath: string) => Promise<void>,
@@ -108,6 +123,7 @@ Deno.test("cancelModelMethodRuns: gives a method run's owner the method stop gra
     const calls: OwnerStop[] = [];
     await cancelModelMethodRuns([run], undefined, {
       tracker,
+      outputRepo: noOutputs,
       killProcess: recordingKill(calls),
     });
 
@@ -133,6 +149,7 @@ Deno.test("cancelModelMethodRuns: gives a workflow's process the workflow cancel
     const calls: OwnerStop[] = [];
     await cancelModelMethodRuns([run], undefined, {
       tracker,
+      outputRepo: noOutputs,
       killProcess: recordingKill(calls),
     });
 
@@ -150,6 +167,7 @@ Deno.test("cancelModelMethodRuns: stops a process that owns several runs once", 
     const announced: OwnerStop[][] = [];
     await cancelModelMethodRuns(runs, "No longer needed", {
       tracker,
+      outputRepo: noOutputs,
       killProcess: recordingKill(calls),
       onStopping: (stops) => announced.push([...stops]),
     });
@@ -175,6 +193,7 @@ Deno.test("cancelModelMethodRuns: stops different owners together", async () => 
     const allStarted = new Promise<void>((resolve) => bothStarted = resolve);
     await cancelModelMethodRuns(runs, undefined, {
       tracker,
+      outputRepo: noOutputs,
       killProcess: async (pid) => {
         started.push(pid);
         if (started.length === 2) bothStarted();
@@ -199,6 +218,7 @@ Deno.test("cancelModelMethodRuns: completes a run this process owns without a ki
     let announced = false;
     await cancelModelMethodRuns([run], undefined, {
       tracker,
+      outputRepo: noOutputs,
       killProcess: recordingKill(calls),
       onStopping: () => announced = true,
     });
@@ -216,6 +236,7 @@ Deno.test("cancelModelMethodRuns: records the reason on a run its owner cancelle
 
     const outcomes = await cancelModelMethodRuns([run], "No longer needed", {
       tracker,
+      outputRepo: noOutputs,
       // The owner handles SIGTERM by completing its own row, without a reason.
       killProcess: () => {
         tracker.complete(run.id, "cancelled");
@@ -236,6 +257,7 @@ Deno.test("cancelModelMethodRuns: reports and keeps the status of a run its owne
 
     const outcomes = await cancelModelMethodRuns([run], "No longer needed", {
       tracker,
+      outputRepo: noOutputs,
       killProcess: () => {
         tracker.complete(run.id, "completed");
         return Promise.resolve(true);
@@ -260,6 +282,7 @@ Deno.test("cancelModelMethodRuns: reports each run's own outcome when only some 
       undefined,
       {
         tracker,
+        outputRepo: noOutputs,
         killProcess: (pid) => {
           if (pid === OWNER_PID) tracker.complete(finishing.id, "failed");
           return Promise.resolve(true);
@@ -286,6 +309,7 @@ Deno.test("cancelModelMethodRuns: still stops the other owners and completes the
       () =>
         cancelModelMethodRuns([failing, stopped], undefined, {
           tracker,
+          outputRepo: noOutputs,
           killProcess: async (pid) => {
             if (pid === OWNER_PID) throw new Error("ps failed");
             await Promise.resolve();
@@ -424,6 +448,7 @@ Deno.test("splitServeOwnedRuns: cancelling the cancellable runs never signals th
     );
     await cancelModelMethodRuns(cancellable, undefined, {
       tracker,
+      outputRepo: noOutputs,
       killProcess: recordingKill(calls),
     });
 
@@ -475,4 +500,104 @@ Deno.test("selectMethodRunToCancel: selects nothing when serve owns every run, n
 
   assertEquals(run, undefined);
   assertEquals(skipped.map((s) => s.run), [newer, older]);
+});
+
+/** A workflow step's method-run record, saved `running` by process `pid`. */
+async function saveStepOutput(
+  outputRepo: YamlOutputRepository,
+  run: ActiveRun,
+): Promise<ModelOutput> {
+  const output = ModelOutput.fromData({
+    id: run.id,
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "execute",
+    status: "pending",
+    startedAt: new Date().toISOString(),
+    retryCount: 0,
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "workflow",
+    },
+    artifacts: { dataArtifacts: [] },
+  });
+  output.markRunning(run.pid);
+  await outputRepo.save(ModelType.create("command/shell"), "execute", output);
+  return output;
+}
+
+Deno.test("cancelModelMethodRuns: cancels the method-run record an owner killed after its grace left running", async () => {
+  await withTracker(async (tracker, dbPath) => {
+    const outputRepo = new YamlOutputRepository(dirname(dbPath));
+    const type = ModelType.create("command/shell");
+    const run = methodRun(OWNER_PID);
+    tracker.register(run);
+    await saveStepOutput(outputRepo, run);
+
+    const [outcome] = await cancelModelMethodRuns([run], "Stop it", {
+      tracker,
+      outputRepo,
+      liveness: { hostname: "test-host", isDead: () => true },
+      killProcess: () => Promise.resolve(true),
+    });
+
+    assertEquals(outcome.status, "cancelled");
+    const stored = await outputRepo.findById(
+      type,
+      "execute",
+      createModelOutputId(run.id),
+    );
+    assertEquals(stored?.status, "cancelled");
+    assertEquals(stored?.error?.message, OWNER_STOPPED_STEP_ERROR);
+    assertEquals(readCancelReason(dbPath, run.id), "Stop it");
+  });
+});
+
+Deno.test("cancelModelMethodRuns: leaves the record of an owner that saved its own outcome or is still alive", async () => {
+  await withTracker(async (tracker, dbPath) => {
+    const outputRepo = new YamlOutputRepository(dirname(dbPath));
+    const type = ModelType.create("command/shell");
+    const finished = methodRun(OWNER_PID);
+    const alive = methodRun(OWNER_PID + 1);
+    tracker.register(finished);
+    tracker.register(alive);
+    const finishedOutput = await saveStepOutput(outputRepo, finished);
+    await saveStepOutput(outputRepo, alive);
+
+    await cancelModelMethodRuns([finished, alive], undefined, {
+      tracker,
+      outputRepo,
+      liveness: {
+        hostname: "test-host",
+        isDead: (pid) => pid === OWNER_PID,
+      },
+      killProcess: async (pid) => {
+        if (pid === OWNER_PID) {
+          // The owner saves its own cancelled record and completes its row.
+          finishedOutput.markCancelled("The signal has been aborted");
+          await outputRepo.save(type, "execute", finishedOutput);
+          tracker.complete(finished.id, "cancelled");
+        }
+        return true;
+      },
+    });
+
+    assertEquals(
+      (await outputRepo.findById(
+        type,
+        "execute",
+        createModelOutputId(finished.id),
+      ))?.error
+        ?.message,
+      "The signal has been aborted",
+    );
+    assertEquals(
+      (await outputRepo.findById(
+        type,
+        "execute",
+        createModelOutputId(alive.id),
+      ))?.status,
+      "running",
+    );
+  });
 });

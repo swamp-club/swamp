@@ -43,6 +43,21 @@ export interface OutputRepository {
   ): Promise<ModelOutput | null>;
 
   /**
+   * Finds the outputs of one method with the given IDs, reading the method's
+   * outputs once however many IDs are asked for.
+   *
+   * @param type - The model type
+   * @param method - The method name
+   * @param ids - The output IDs to find
+   * @returns The outputs found, by ID; an ID with no output is absent
+   */
+  findByIds(
+    type: ModelType,
+    method: string,
+    ids: ReadonlySet<string>,
+  ): Promise<Map<string, ModelOutput>>;
+
+  /**
    * Finds all outputs for a given definition.
    *
    * @param type - The model type
