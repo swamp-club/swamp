@@ -320,6 +320,95 @@ Deno.test("credentials-sensitive-field: still warns on z.string() with sensitive
   );
 });
 
+Deno.test("credentials-sensitive-field: no warning for z.coerce.number() token count", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content:
+        "        inputTokens: z.coerce.number().int().nonnegative().optional(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: no warning for coerced numeric, date, or boolean types", () => {
+  for (const type of ["number", "bigint", "boolean", "date"]) {
+    const result = evaluateReviewRules([
+      source({
+        kind: "model",
+        content: `  apiTokenValue: z.coerce.${type}(),`,
+      }),
+    ]);
+    assertEquals(
+      result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+        .length,
+      0,
+      `z.coerce.${type}() should not be flagged`,
+    );
+  }
+});
+
+Deno.test("credentials-sensitive-field: no warning for zod 4 numeric and date types", () => {
+  for (
+    const type of [
+      "int",
+      "int32",
+      "uint32",
+      "int64",
+      "uint64",
+      "float32",
+      "float64",
+      "bigint",
+      "date",
+    ]
+  ) {
+    const result = evaluateReviewRules([
+      source({
+        kind: "model",
+        content: `  maxTokens: z.${type}(),`,
+      }),
+    ]);
+    assertEquals(
+      result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+        .length,
+      0,
+      `z.${type}() should not be flagged`,
+    );
+  }
+});
+
+Deno.test("credentials-sensitive-field: still warns on z.coerce.string() with sensitive name", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  apiToken: z.coerce.string(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    1,
+  );
+});
+
+Deno.test("credentials-sensitive-field: still warns when an exempt type follows an identifier ending in z", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: "  apiToken: biz.date(),",
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    1,
+  );
+});
+
 Deno.test("testing-completeness: warns when entry point lacks a sibling test", () => {
   const result = evaluateReviewRules([
     source({ isEntryPoint: true, hasSiblingTest: false, content: "" }),
