@@ -68,12 +68,16 @@ spec name; match a spec with `specName == "<s>"`. For a binary item, select
 `{"content": content, "contentEncoding": contentEncoding}` so a base64 body can
 be told from text (see [Binary content](#binary-content)). When a query with a top-level
 `name == "<n>"` matches nothing, swamp builds its spec-name counterpart
-(`specNameFallbackPredicate` in `query_predicate.ts`): `name` becomes
-`specName`, the other top-level string and `version` equalities are kept, and
-anything else is dropped. It runs that once with limit 1 and the caller's
-`include` filter, and on a match returns it as `specNameHint.suggestedPredicate`
-(printed as a command in log mode). The hint never reveals data the caller may
-not read, and a failed probe only omits it. A query has no "latest run of
+(`buildSpecNameFallback` in `query_predicate.ts`): `name` becomes `specName`,
+the other top-level string and `version` equalities are kept, and anything else
+is dropped. If something was dropped, it first runs the kept equalities with
+`name` (limit 1): a match there means a dropped condition excluded the data,
+not the name, so there is no hint. Otherwise it runs the spec-name predicate
+(limit 1) and on a match returns `specNameHint` with `suggestedPredicate` and
+`otherFiltersDropped` (log mode prints the command, and notes the dropped
+conditions). Both probes use the caller's `include` filter, so the hint never
+reveals data the caller may not read; a failed probe only omits it, and the
+interactive TUI does not probe. A query has no "latest run of
 a workflow" form: look the run id up with
 `swamp workflow history get <workflow>` first.
 
@@ -445,11 +449,9 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 ```
 Error: Unknown field "model" in query predicate.
 Available: attributes, content, contentType, createdAt, dataType,
-  garbageCollection, id, isLatest,
-  jobName, lifetime, modelId, modelName, modelType, name, ns, ownerRef,
-  ownerType, size,
-  source, specName, stepName, streaming, tags, version, workflowName,
-  workflowRunId
+  garbageCollection, id, isLatest, jobName, lifetime, modelId, modelName,
+  modelType, name, ns, ownerRef, ownerType, size, source, specName, stepName,
+  streaming, tags, version, workflowName, workflowRunId
 ```
 
 ## Catalog

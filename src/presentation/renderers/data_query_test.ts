@@ -360,7 +360,10 @@ const hintData = {
   results: [],
   total: 0,
   limited: false,
-  specNameHint: { suggestedPredicate: 'specName == "classification"' },
+  specNameHint: {
+    suggestedPredicate: 'specName == "classification"',
+    otherFiltersDropped: false,
+  },
 };
 
 Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a pasteable command", () => {
@@ -372,10 +375,34 @@ Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a past
   });
 
   assertStringIncludes(output, "No matching data found.");
-  assertStringIncludes(output, "data with that spec name exists");
+  assertStringIncludes(
+    output,
+    "No data matched that instance name, but data with that spec name exists",
+  );
+  assertEquals(output.includes("not carried over"), false);
   assertStringIncludes(
     output,
     `swamp data query 'specName == "classification"'`,
+  );
+});
+
+Deno.test("createDataQueryRenderer: log mode notes conditions that were not carried over", () => {
+  const output = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data: {
+        ...hintData,
+        specNameHint: {
+          ...hintData.specNameHint,
+          otherFiltersDropped: true,
+        },
+      },
+    });
+  });
+
+  assertStringIncludes(
+    output,
+    "(conditions other than equality checks were not carried over)",
   );
 });
 
@@ -396,9 +423,7 @@ Deno.test("renderJson: specNameHint is included only when present", () => {
   const withHint = captureJsonOutput(() => {
     handlers.completed({ kind: "completed", data: hintData });
   });
-  assertEquals(withHint.specNameHint, {
-    suggestedPredicate: 'specName == "classification"',
-  });
+  assertEquals(withHint.specNameHint, hintData.specNameHint);
 
   const projected = captureJsonOutput(() => {
     handlers.completed({
@@ -410,9 +435,7 @@ Deno.test("renderJson: specNameHint is included only when present", () => {
       },
     });
   });
-  assertEquals(projected.specNameHint, {
-    suggestedPredicate: 'specName == "classification"',
-  });
+  assertEquals(projected.specNameHint, hintData.specNameHint);
 
   const without = captureJsonOutput(() => {
     handlers.completed({

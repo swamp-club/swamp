@@ -123,11 +123,13 @@ export function garbageCollectionToColumn(
  * Decodes a catalog garbage collection column back to the policy's own
  * type: all digits is a count policy, anything else is a duration. The
  * empty string means unknown (a row pulled from a catalog export written
- * before the column existed) and stays empty.
+ * before the column existed) and stays empty. Rows pulled from a foreign
+ * export are not validated, so the result is typed as any number or string
+ * rather than a GarbageCollectionPolicy.
  */
 export function garbageCollectionFromColumn(
   column: string,
-): GarbageCollectionPolicy | "" {
+): number | string {
   return /^\d+$/.test(column) ? Number(column) : column;
 }
 

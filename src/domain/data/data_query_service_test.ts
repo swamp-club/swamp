@@ -173,7 +173,12 @@ Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps 
     service.specNameFallback(
       'workflowRunId == "run-1" && name == "classification"',
     ),
-    'workflowRunId == "run-1" && specName == "classification"',
+    {
+      specNamePredicate:
+        'workflowRunId == "run-1" && specName == "classification"',
+      namePredicate: 'workflowRunId == "run-1" && name == "classification"',
+      droppedConjuncts: false,
+    },
   );
   assertEquals(service.specNameFallback('modelName == "m"'), null);
   assertEquals(service.specNameFallback("name == "), null, "unparseable");

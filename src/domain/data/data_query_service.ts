@@ -29,6 +29,7 @@ import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
+  buildSpecNameFallback,
   collectRootIdentifiers,
   extractModelNameEquality,
   extractStringEquality,
@@ -36,7 +37,7 @@ import {
   referencesAttributes,
   referencesContent,
   selectReadsContent,
-  specNameFallbackPredicate,
+  type SpecNameFallback,
   validateFieldReferences,
 } from "./query_predicate.ts";
 import { isTextContentType } from "./content_type.ts";
@@ -500,13 +501,13 @@ export class DataQueryService {
 
   /**
    * Returns the spec-name counterpart of a predicate that matches one data
-   * instance name exactly (see {@link specNameFallbackPredicate}), or null
-   * when the predicate has no such equality or does not parse. Callers run
-   * it to tell a user who queried by spec name where their data is.
+   * instance name exactly (see {@link buildSpecNameFallback}), or null when
+   * the predicate has no such equality or does not parse. Callers run it to
+   * tell a user who queried by spec name where their data is.
    */
-  specNameFallback(predicate: string): string | null {
+  specNameFallback(predicate: string): SpecNameFallback | null {
     try {
-      return specNameFallbackPredicate(
+      return buildSpecNameFallback(
         this.queryEnv.parse(predicate).ast as ASTNode,
       );
     } catch {

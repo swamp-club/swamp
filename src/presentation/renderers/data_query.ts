@@ -32,7 +32,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { Table } from "@cliffy/table";
-import { bold } from "@std/fmt/colors";
+import { bold, dim } from "@std/fmt/colors";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -314,11 +314,17 @@ export function renderQueryResultsTerminal(
  * whose spec-name counterpart matches: the reason, then the command to run.
  */
 function renderSpecNameHint(hint: SpecNameHint): string {
-  return [
+  const lines = [
     "",
-    "No data has that instance name, but data with that spec name exists. Query it with:",
+    "No data matched that instance name, but data with that spec name exists. Query it with:",
     `  swamp data query ${quoteShellWord(hint.suggestedPredicate)}`,
-  ].join("\n");
+  ];
+  if (hint.otherFiltersDropped) {
+    lines.push(
+      dim("  (conditions other than equality checks were not carried over)"),
+    );
+  }
+  return lines.join("\n");
 }
 
 export function createDataQueryRenderer(

@@ -393,5 +393,22 @@ Deno.test("data query: a run-scoped query by spec name gets a hint scoped to the
       `workflowRunId == "${crypto.randomUUID()}" && name == "classification"`,
     );
     assertEquals(otherRun.specNameHint, undefined);
+
+    // Data whose name equals its spec name, excluded by a condition the
+    // fallback cannot carry: the name was never the problem, so no hint.
+    await saveStepResult(
+      repo,
+      model,
+      { id: runId, workflowName: "classify" },
+      "j",
+      "s",
+      "v",
+      { name: "summary", specName: "summary" },
+    );
+    const filtered = await run(
+      `workflowRunId == "${runId}" && name == "summary" && size > 1000000`,
+    );
+    assertEquals(filtered.total, 0);
+    assertEquals(filtered.specNameHint, undefined);
   });
 });

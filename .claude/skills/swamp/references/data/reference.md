@@ -78,7 +78,8 @@ array means no such item. The query matches the instance `name` exactly; to
 match a spec name use `specName == "<spec>"`. When a `name == "..."` query finds
 nothing but data with that spec name exists, the output also carries
 `specNameHint.suggestedPredicate`, a verified spec-name predicate keeping the
-query's other equalities (log mode prints it as a command).
+query's other equalities (log mode prints it as a command);
+`specNameHint.otherFiltersDropped` is true when other conditions were left out.
 
 **Binary content:** A `--select` that names `content` returns every byte (a
 leading UTF-8 byte-order mark is dropped). When the stored bytes are valid

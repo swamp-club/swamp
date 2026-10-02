@@ -209,7 +209,8 @@ export const dataQueryCommand = withRemoteOptions(
   // Interactive TUI when no predicate is given, TTY, and not --json mode
   if (!predicate && Deno.stdout.isTerminal() && ctx.outputMode !== "json") {
     await renderInteractiveQuery({
-      queryDeps: deps,
+      // The TUI renders no spec-name hint, so it skips the extra probes.
+      queryDeps: { query: deps.query },
       distinctFn: (col) =>
         repoContext.catalogStore!.distinctValues(
           col as Parameters<

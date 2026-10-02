@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import type { LibSwampContext } from "../context.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+import type { SpecNameFallback } from "../../domain/data/query_predicate.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 const logger = getLogger(["swamp", "data", "query"]);
@@ -36,10 +37,12 @@ export type ProjectedData =
 /**
  * Points a query that matched no data instance name at the data whose spec
  * name it named. `suggestedPredicate` is a predicate that was verified to
- * match before it was suggested.
+ * match before it was suggested. `otherFiltersDropped` is true when the
+ * query's conditions other than simple equalities were left out of it.
  */
 export interface SpecNameHint {
   suggestedPredicate: string;
+  otherFiltersDropped: boolean;
 }
 
 /**
@@ -79,7 +82,7 @@ export interface DataQueryDeps {
    * Returns the spec-name counterpart of a predicate that matches one
    * instance name exactly, or null. Without it, no hint is offered.
    */
-  specNameFallback?(predicate: string): string | null;
+  specNameFallback?(predicate: string): SpecNameFallback | null;
 }
 
 /**
@@ -144,7 +147,7 @@ function classifyProjection(
 
 /**
  * Checks whether a query that matched nothing would match by spec name. The
- * probe applies the caller's `include`, so the hint never reveals data the
+ * probes apply the caller's `include`, so the hint never reveals data the
  * caller may not read. A failed probe only omits the hint.
  */
 async function findSpecNameHint(
@@ -153,14 +156,22 @@ async function findSpecNameHint(
 ): Promise<SpecNameHint | undefined> {
   const fallback = deps.specNameFallback?.(input.predicate);
   if (!fallback) return undefined;
+  const matches = async (predicate: string) =>
+    (await deps.query(predicate, { limit: 1, include: input.include }))
+      .length > 0;
   try {
-    const matches = await deps.query(fallback, {
-      limit: 1,
-      include: input.include,
-    });
-    return matches.length > 0 ? { suggestedPredicate: fallback } : undefined;
+    // Data with this instance name in the same scope means a dropped
+    // condition excluded it, not the name: a spec-name hint would mislead.
+    if (fallback.droppedConjuncts && await matches(fallback.namePredicate)) {
+      return undefined;
+    }
+    if (!await matches(fallback.specNamePredicate)) return undefined;
+    return {
+      suggestedPredicate: fallback.specNamePredicate,
+      otherFiltersDropped: fallback.droppedConjuncts,
+    };
   } catch (error) {
-    logger.debug`Spec-name fallback query ${fallback} failed: ${error}`;
+    logger.debug`Spec-name fallback for ${input.predicate} failed: ${error}`;
     return undefined;
   }
 }
@@ -205,7 +216,9 @@ export async function* dataQuery(
         });
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;
-        const specNameHint = total === 0
+        // A zero limit returns nothing by construction; there is no miss
+        // to explain.
+        const specNameHint = total === 0 && limit !== 0
           ? await findSpecNameHint(deps, input)
           : undefined;
         const hint = specNameHint ? { specNameHint } : {};

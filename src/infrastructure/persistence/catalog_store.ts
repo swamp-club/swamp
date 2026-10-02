@@ -823,7 +823,6 @@ export class CatalogStore {
       | "data_type"
       | "content_type"
       | "lifetime"
-      | "garbage_collection"
       | "owner_type"
       | "size"
       | "owner_ref"
@@ -844,7 +843,6 @@ export class CatalogStore {
       "data_type",
       "content_type",
       "lifetime",
-      "garbage_collection",
       "owner_type",
       "size",
       "owner_ref",

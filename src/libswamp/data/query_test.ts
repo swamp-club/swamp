@@ -27,6 +27,7 @@ import {
   requireSingleResult,
 } from "./query.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+import type { SpecNameFallback } from "../../domain/data/query_predicate.ts";
 
 function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
   return {
@@ -451,12 +452,23 @@ function fallbackDeps(
         ? Promise.reject(answer)
         : Promise.resolve(answer);
     },
-    specNameFallback: (predicate) =>
-      predicate === 'name == "classification"'
-        ? 'specName == "classification"'
-        : null,
+    specNameFallback: (predicate) => FALLBACKS[predicate] ?? null,
   };
 }
+
+/** The domain fallback for each predicate these tests run. */
+const FALLBACKS: Record<string, SpecNameFallback> = {
+  'name == "classification"': {
+    specNamePredicate: 'specName == "classification"',
+    namePredicate: 'name == "classification"',
+    droppedConjuncts: false,
+  },
+  'name == "result" && tags.env == "prod"': {
+    specNamePredicate: 'specName == "result"',
+    namePredicate: 'name == "result"',
+    droppedConjuncts: true,
+  },
+};
 
 Deno.test("dataQuery: empty result whose spec-name fallback matches carries a hint", async () => {
   const calls: Array<{ predicate: string; options?: unknown }> = [];
@@ -478,6 +490,7 @@ Deno.test("dataQuery: empty result whose spec-name fallback matches carries a hi
   assertEquals(data.total, 0);
   assertEquals(data.specNameHint, {
     suggestedPredicate: 'specName == "classification"',
+    otherFiltersDropped: false,
   });
   // The probe reads at most one record, through the caller's include filter.
   assertEquals(calls[1], {
@@ -548,5 +561,69 @@ Deno.test("dataQuery: a failed probe omits the hint without failing the query", 
 
   const data = completedOf(events);
   assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: no hint when a dropped condition, not the name, excluded the data", async () => {
+  // Data named "result" (spec "result") exists, but not with tags.env prod.
+  const deps = fallbackDeps({
+    'name == "result"': [makeRecord({ name: "result" })],
+    'specName == "result"': [makeRecord({ name: "result" })],
+  });
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "result" && tags.env == "prod"',
+      }),
+    ),
+  );
+
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: a hint after dropped conditions says they were not carried over", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'specName == "result"': [makeRecord({ name: "result-main" })] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "result" && tags.env == "prod"',
+      }),
+    ),
+  );
+
+  assertEquals(data.specNameHint, {
+    suggestedPredicate: 'specName == "result"',
+    otherFiltersDropped: true,
+  });
+  assertEquals(calls.map((c) => c.predicate), [
+    'name == "result" && tags.env == "prod"',
+    'name == "result"',
+    'specName == "result"',
+  ]);
+});
+
+Deno.test("dataQuery: no probe with a zero limit", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'specName == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        limit: 0,
+      }),
+    ),
+  );
+
+  assertEquals(calls.length, 1);
   assertEquals(data.specNameHint, undefined);
 });

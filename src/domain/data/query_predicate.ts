@@ -278,37 +278,68 @@ const FALLBACK_STRING_FIELDS = new Set([
 ]);
 
 /**
+ * The spec-name counterpart of a predicate that matches one data instance
+ * name exactly, and the same scope matched by name.
+ */
+export interface SpecNameFallback {
+  /** The kept conjuncts with `name == "x"` as `specName == "x"`. */
+  specNamePredicate: string;
+  /** The kept conjuncts as they were, `name == "x"` included. */
+  namePredicate: string;
+  /** Whether conjuncts that are not simple equalities were left out. */
+  droppedConjuncts: boolean;
+}
+
+/**
  * Builds the spec-name counterpart of a predicate that matches one data
  * instance name exactly: the top-level `name == "x"` becomes
  * `specName == "x"`, and every other top-level equality of a string field
  * to a string literal, or of `version` to an int literal, is kept. Other
  * conjuncts are dropped, so the result can match more than the original
- * would have; callers verify it matches before suggesting it.
+ * would have; callers verify it matches before suggesting it, and check
+ * `namePredicate` to tell whether a dropped conjunct, not the name, is what
+ * excluded the data.
  *
  * Returns null when the predicate has no single top-level name equality,
  * or already mentions specName.
  */
-export function specNameFallbackPredicate(ast: ASTNode): string | null {
+export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
   if (collectRootIdentifiers(ast).includes("specName")) return null;
 
-  const clauses: string[] = [];
+  const kept: string[] = [];
+  const specNameClauses: string[] = [];
   let nameEqualities = 0;
+  let droppedConjuncts = false;
   for (const conjunct of topLevelConjuncts(ast)) {
     const eq = equalityOperands(conjunct);
-    if (eq === null) continue;
-    if (eq.field === "name") {
+    let clause: string | null = null;
+    if (eq?.field === "name") {
       if (typeof eq.value !== "string") return null;
       nameEqualities++;
-      clauses.push(`specName == ${celString(eq.value)}`);
+      kept.push(`name == ${celString(eq.value)}`);
+      specNameClauses.push(`specName == ${celString(eq.value)}`);
+      continue;
     } else if (
-      FALLBACK_STRING_FIELDS.has(eq.field) && typeof eq.value === "string"
+      eq && FALLBACK_STRING_FIELDS.has(eq.field) &&
+      typeof eq.value === "string"
     ) {
-      clauses.push(`${eq.field} == ${celString(eq.value)}`);
-    } else if (eq.field === "version" && typeof eq.value === "bigint") {
-      clauses.push(`version == ${eq.value}`);
+      clause = `${eq.field} == ${celString(eq.value)}`;
+    } else if (eq?.field === "version" && typeof eq.value === "bigint") {
+      clause = `version == ${eq.value}`;
+    }
+    if (clause === null) {
+      droppedConjuncts = true;
+    } else {
+      kept.push(clause);
+      specNameClauses.push(clause);
     }
   }
-  return nameEqualities === 1 ? clauses.join(" && ") : null;
+  if (nameEqualities !== 1) return null;
+  return {
+    specNamePredicate: specNameClauses.join(" && "),
+    namePredicate: kept.join(" && "),
+    droppedConjuncts,
+  };
 }
 
 /**
