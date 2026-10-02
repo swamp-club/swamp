@@ -34,6 +34,11 @@ import { defineModel } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
+import {
+  pathExists,
+  recordingUnitOfWork,
+} from "./test_helpers/staged_change_helpers.ts";
+import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -2229,5 +2234,54 @@ Deno.test("YamlDefinitionRepository.findAllByIdGlobal leaves where findById look
     // Reads the auto-definition last; a later findById must not follow it.
     assertEquals((await repo.findAllByIdGlobal(primary.id)).length, 2);
     assertEquals((await repo.findById(testType, primary.id))?.name, "prod-db");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete: stages a remove of the deleted file", async () => {
+  await withTempDir(async (dir) => {
+    const definition = createTestDefinition("probe");
+    const seed = new YamlDefinitionRepository(dir);
+    await seed.save(testType, definition);
+    const path = seed.getPath(testType, definition.id);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      false,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.delete(testType, definition.id));
+
+    assertEquals(uow.staged(), [{ kind: "remove", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete: stages a write when the file holds another definition and is kept", async () => {
+  await withTempDir(async (dir) => {
+    // Never saved: the id-named path it resolves to holds a definition
+    // named with that id, which delete leaves alone.
+    const ghost = createTestDefinition("ghost");
+    const impostor = createTestDefinition(ghost.id);
+    const seed = new YamlDefinitionRepository(dir);
+    await seed.save(testType, impostor);
+    const path = seed.getPath(testType, impostor.id);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      false,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.delete(testType, ghost.id));
+
+    assertEquals(uow.staged(), [{ kind: "write", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), true);
   });
 });

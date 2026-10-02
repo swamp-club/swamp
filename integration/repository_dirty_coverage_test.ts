@@ -88,6 +88,7 @@ import {
   createRepositoryContext,
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
+import { pathExists } from "../src/infrastructure/persistence/test_helpers/staged_change_helpers.ts";
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
@@ -1452,6 +1453,11 @@ const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
   // swamp-club#2979, move A.
   "UnifiedData",
   "Output",
+  // swamp-club#2980, move B.
+  "Definition",
+  "Workflow",
+  "EvaluatedDefinition",
+  "EvaluatedWorkflow",
 ]);
 
 /**
@@ -1463,17 +1469,6 @@ const UNSTAGED_ROWS: ReadonlySet<string> = new Set([
   "UnifiedData.advanceLatestMarkers",
   "UnifiedData.rollbackVersions",
 ]);
-
-/** Whether anything (file, directory or symlink) exists at `path`. */
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await Deno.lstat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error;
-  }
-}
 
 Deno.test("unit of work: each change a moved repository stages matches the disk after the act (swamp-club#2979)", async (t) => {
   for (const row of ROWS) {

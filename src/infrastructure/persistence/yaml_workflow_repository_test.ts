@@ -30,6 +30,11 @@ import {
 } from "./yaml_workflow_repository.ts";
 import { registerManagedConfig } from "./paths.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
+import {
+  pathExists,
+  recordingUnitOfWork,
+} from "./test_helpers/staged_change_helpers.ts";
+import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -674,4 +679,51 @@ Deno.test("YamlWorkflowRepository.getWorkflowsDir: follows a managed config base
     repo.getWorkflowsDir(),
     join(dir, "config-base", "workflows"),
   );
+});
+
+Deno.test("YamlWorkflowRepository.delete: stages a remove of the deleted file", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow("probe");
+    const seed = new YamlWorkflowRepository(dir);
+    await seed.save(workflow);
+    const path = seed.getPath(workflow.id);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.delete(workflow.id));
+
+    assertEquals(uow.staged(), [{ kind: "remove", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), false);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.delete: stages a write when the file holds another workflow and is kept", async () => {
+  await withTempDir(async (dir) => {
+    // Never saved: the id-named path it resolves to holds a workflow named
+    // with that id, which delete leaves alone.
+    const ghost = createTestWorkflow("ghost");
+    const impostor = createTestWorkflow(ghost.id);
+    const seed = new YamlWorkflowRepository(dir);
+    await seed.save(impostor);
+    const path = seed.getPath(impostor.id);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.delete(ghost.id));
+
+    assertEquals(uow.staged(), [{ kind: "write", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), true);
+  });
 });

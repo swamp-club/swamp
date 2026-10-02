@@ -1076,12 +1076,23 @@ even when it fails.
 
 Repositories route their signal through `signalChange`
 (`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
-repositories stage a typed change at each call site: `write` for a path that
-exists after the operation, `remove` for one that is gone after it
-(swamp-club#2979). The other repositories still delegate to a private
-`notifyDirty`, which stages a path as `write` and a missing path as `bulk`. The
-legacy adapter forwards `write` and `remove` the same way, so the marks sent do
-not depend on the kind. When an operation runs inside `runInUnitOfWork`, the
+repositories (swamp-club#2979) and the definition, workflow, evaluated
+definition and evaluated workflow repositories (swamp-club#2980) stage a typed
+change at each call site: `write` for a path that exists after the operation,
+`remove` for one that is gone after it. A definition or workflow `delete` that
+leaves its resolved path in place, because that file declares another entity
+sharing the id, stages a `write` of it. The workflow run repository still
+delegates to a private `notifyDirty`, which stages a path as `write` and a
+missing path as `bulk`. The legacy adapter forwards `write` and `remove` the
+same way, so the marks sent do not depend on the kind.
+
+A change is staged before its write, so its kind is the intended effect: a
+`remove` whose removal then fails (EACCES, say) names a file still on disk.
+That is harmless while the legacy adapter turns every kind into the same mark.
+When Phase 2 gives `remove` its own meaning, a use case must not commit a unit
+of work whose operation failed.
+
+When an operation runs inside `runInUnitOfWork`, the
 repository stages the change into that ambient unit of work, but only when the
 unit is a legacy adapter over the repository's own hook instance. A unit belongs
 to one repository context, so a second context in the same process (side-by-side

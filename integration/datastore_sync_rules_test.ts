@@ -48,10 +48,6 @@ function normalise(p: string): string {
 // design/enablers/datastores.md.
 const PER_PATH_WIRED_REPOS = [
   "yaml_workflow_run_repository.ts",
-  "yaml_evaluated_definition_repository.ts",
-  "yaml_evaluated_workflow_repository.ts",
-  "yaml_definition_repository.ts",
-  "yaml_workflow_repository.ts",
 ];
 
 // Matches `this.notifyDirty()` or `await this.notifyDirty()` with no
@@ -111,6 +107,11 @@ const MOVED_REPOS = [
   // swamp-club#2979, move A.
   "unified_data_repository.ts",
   "yaml_output_repository.ts",
+  // swamp-club#2980, move B.
+  "yaml_definition_repository.ts",
+  "yaml_evaluated_definition_repository.ts",
+  "yaml_evaluated_workflow_repository.ts",
+  "yaml_workflow_repository.ts",
 ];
 
 // The kind property of a bulk StagedChange literal, then its reason: a quoted
@@ -156,10 +157,13 @@ Deno.test("moved repositories stage bulk changes only with a reason, and each is
   const violations: string[] = [];
   for (const filename of MOVED_REPOS) {
     const filepath = join(PERSISTENCE_DIR, filename);
-    const found = bulkChanges(
-      normalise(relative(ROOT, filepath)),
-      await Deno.readTextFile(filepath),
-    );
+    const rel = normalise(relative(ROOT, filepath));
+    const code = await Deno.readTextFile(filepath);
+    // Out of PER_PATH_WIRED_REPOS, so this is what keeps notifyDirty gone.
+    if (/\bnotifyDirty\b/.test(code)) {
+      violations.push(`${rel}: moved repository still uses notifyDirty`);
+    }
+    const found = bulkChanges(rel, code);
     changes.push(...found.changes);
     violations.push(...found.violations);
   }
