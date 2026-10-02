@@ -23,6 +23,7 @@ import { walk } from "@std/fs/walk";
 import {
   assertPinnedSet,
   constructorArgs,
+  isCommentLine,
   TOP_LEVEL_DECLARATION,
 } from "./arch_fitness_helpers.ts";
 
@@ -39,18 +40,17 @@ function normalise(p: string): string {
 }
 
 // Per-path-wired repositories must not call bare notifyDirty() (no path
-// argument). A bare call sets bulkInvalidated in the datastore extension,
+// argument). Repositories that stage typed changes instead (MOVED_REPOS
+// below) have no notifyDirty and are held to the bulk rule there. A bare call sets bulkInvalidated in the datastore extension,
 // forcing a full walk that skips deletion detection — silently dropping
 // remote object deletions (swamp-club#2273). See the "Serve handler
 // obligation" paragraph in design/enablers/datastores.md.
 const PER_PATH_WIRED_REPOS = [
   "yaml_workflow_run_repository.ts",
-  "unified_data_repository.ts",
   "yaml_evaluated_definition_repository.ts",
   "yaml_evaluated_workflow_repository.ts",
   "yaml_definition_repository.ts",
   "yaml_workflow_repository.ts",
-  "yaml_output_repository.ts",
 ];
 
 // Matches `this.notifyDirty()` or `await this.notifyDirty()` with no
@@ -100,6 +100,95 @@ Deno.test("per-path-wired repos must not call bare notifyDirty()", async () => {
       "removed as the argument.\n\nViolations:\n" +
       violations.join("\n"),
   );
+});
+
+// Repositories that stage typed changes at each call site instead of through
+// a private notifyDirty (datastore rework Phase 1 repository moves). A bulk
+// change is their bare notifyDirty(): it must say why no single path covers
+// the change, and every one is pinned so a new one shows up in review.
+const MOVED_REPOS = [
+  // swamp-club#2979, move A.
+  "unified_data_repository.ts",
+  "yaml_output_repository.ts",
+];
+
+// A StagedChange literal of kind bulk, up to its closing brace.
+const BULK_CHANGE = /\{\s*kind:\s*"bulk"([^}]*)\}/g;
+const BULK_REASON = /\breason:\s*([^,\n]+?)\s*,?\s*$/m;
+const EMPTY_STRING = /^(?:""|''|``)$/;
+
+/**
+ * Bulk changes staged in `code`, as "<rel>: bulk <reason>", and the ones whose
+ * reason is missing or an empty string literal.
+ */
+function bulkChanges(
+  rel: string,
+  code: string,
+): { changes: string[]; violations: string[] } {
+  const source = code
+    .split("\n")
+    .map((line) => isCommentLine(line) ? "" : line)
+    .join("\n");
+  const changes: string[] = [];
+  const violations: string[] = [];
+  for (const match of source.matchAll(BULK_CHANGE)) {
+    const reason = match[1].match(BULK_REASON)?.[1];
+    const line = source.slice(0, match.index).split("\n").length;
+    if (reason === undefined || EMPTY_STRING.test(reason)) {
+      violations.push(`${rel}:${line}: bulk change without a reason`);
+    }
+    changes.push(`${rel}: bulk ${reason ?? "<none>"}`);
+  }
+  return { changes, violations };
+}
+
+const PINNED_MOVED_BULK_CHANGES: readonly string[] = [];
+
+Deno.test("moved repositories stage bulk changes only with a reason, and each is pinned (swamp-club#2979)", async () => {
+  const changes: string[] = [];
+  const violations: string[] = [];
+  for (const filename of MOVED_REPOS) {
+    const filepath = join(PERSISTENCE_DIR, filename);
+    const found = bulkChanges(
+      normalise(relative(ROOT, filepath)),
+      await Deno.readTextFile(filepath),
+    );
+    changes.push(...found.changes);
+    violations.push(...found.violations);
+  }
+
+  assertEquals(
+    violations,
+    [],
+    "A bulk change makes the datastore extension walk the whole cache and " +
+      "skip deletion detection (swamp-club#2273). Stage a write or remove " +
+      "with the path instead; if no single path covers the change, give " +
+      "the bulk change a non-empty reason.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+  assertPinnedSet(
+    changes.sort(),
+    PINNED_MOVED_BULK_CHANGES,
+    "Bulk changes staged by moved repositories",
+    "A moved repository stages a bulk change. Prefer a write or remove with " +
+      "the path; if bulk is deliberate, pin it here with a reason.",
+  );
+});
+
+Deno.test("moved repositories: the bulk scan flags a missing or empty reason, not comments", () => {
+  const code = [
+    'await this.stage({ kind: "bulk", reason: "Repo.rebuildIndex" });',
+    "await this.stage({",
+    '  kind: "bulk",',
+    '  reason: "",',
+    "});",
+    '// await this.stage({ kind: "bulk", reason: "" }) in a comment',
+    'await this.stage({ kind: "write", path });',
+  ].join("\n");
+  assertEquals(bulkChanges("probe.ts", code), {
+    changes: ['probe.ts: bulk "Repo.rebuildIndex"', 'probe.ts: bulk ""'],
+    violations: ["probe.ts:2: bulk change without a reason"],
+  });
 });
 
 // Auto-definition repos that save to autoDefinitionsDir must pass markDirty

@@ -1075,19 +1075,24 @@ and the order of bulk and per-path signals, and never batches or deduplicates.
 even when it fails.
 
 Repositories route their signal through `signalChange`
-(`src/infrastructure/persistence/unit_of_work_scope.ts`), which each private
-`notifyDirty` delegates to. When an operation runs inside `runInUnitOfWork`, the
-repository stages the change into that ambient unit of work, but only when the
-unit is a legacy adapter over the repository's own hook instance. A unit belongs
-to one repository context, so a second context in the same process (side-by-side
-repos, namespace migration) never hands it its changes. Otherwise the repository
-calls its hook as before, and with no hook (filesystem datastores) it does
-nothing. The scope is an `AsyncLocalStorage` store, so concurrent operations
-each see their own unit, and a promise started inside a scope keeps it after the
-scope returns. A write that lands after its unit committed is rejected. No
-production code opens a scope yet (pinned empty in
-`integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
-and behaviour is unchanged. Phase 2 opens scopes from use cases.
+(`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
+repositories stage a typed change at each call site: `write` for a path that
+exists after the operation, `remove` for one that is gone after it
+(swamp-club#2979). The other repositories still delegate to a private
+`notifyDirty`, which stages every path as `write`. The legacy adapter forwards
+both kinds the same way, so the marks sent do not depend on the kind. When an
+operation runs inside `runInUnitOfWork`, the repository stages the change into
+that ambient unit of work, but only when the unit is a legacy adapter over the
+repository's own hook instance. A unit belongs to one repository context, so a
+second context in the same process (side-by-side repos, namespace migration)
+never hands it its changes. Otherwise the repository calls its hook as before,
+and with no hook (filesystem datastores) it does nothing. The scope is an
+`AsyncLocalStorage` store, so concurrent operations each see their own unit, and
+a promise started inside a scope keeps it after the scope returns. A write that
+lands after its unit committed is rejected. No production code opens a scope yet
+(pinned empty in `integration/datastore_write_seams_rules_test.ts`): the flush
+paths still push, and behaviour is unchanged. Phase 2 opens scopes from use
+cases.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
@@ -1173,7 +1178,9 @@ lockfile is uploaded either way.
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
 - One rule rejects a bare `notifyDirty()` inside the per-path-wired
-  repositories.
+  repositories that still have one. Repositories that stage typed changes
+  instead must give every `bulk` change a non-empty reason, and their bulk
+  changes are pinned (none today).
 - Another rejects any bare `markDirty()` call in `src/serve` and
   `src/cli/commands/serve.ts`. It matches the `.markDirty()` and
   `.markDirty?.()` forms on any receiver, and names the top-level function that

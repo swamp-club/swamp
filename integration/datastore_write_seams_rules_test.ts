@@ -35,6 +35,8 @@
 //   repository constructions:
 //     grep -rnE "new (YamlDefinition|FileSystemUnifiedData|YamlWorkflow|YamlWorkflowRun|YamlOutput|YamlEvaluatedWorkflow|YamlEvaluatedDefinition|YamlVaultConfig|JsonlAudit|JsonlVaultAudit|CompositeUnifiedData|Lockfile)Repository\b" src \
 //       --include='*.ts' | grep -v "_test.ts:" | grep -v repository_factory.ts
+//   staged changes (datastore-tier repository classes):
+//     grep -nE 'kind: "(write|remove|bulk)"' src/infrastructure/persistence/*_repository.ts
 // The grep counts differ slightly from the scans below: the scans also skip
 // interface members and catch constructions split across lines.
 //
@@ -210,6 +212,33 @@ function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 5: typed changes repositories stage
+// ---------------------------------------------------------------------------
+
+// The kind property of a StagedChange literal. Matched on its own, so a call
+// that deno fmt wraps over several lines still counts once.
+const STAGED_KIND = /\bkind:\s*"(write|remove|bulk)"/g;
+
+/**
+ * One key per staged change inside a datastore-tier repository class, as
+ * "<file>: <class> <kind>". Scoped to those classes, so the StagedChange type
+ * union, changeFor and the legacy adapter never count.
+ */
+function stagedChanges(files: readonly SourceFile[]): string[] {
+  const repositories = new Set<string>(DATASTORE_TIER_REPOSITORIES);
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    lines.forEach((line, i) => {
+      if (isCommentLine(line) || !repositories.has(owners[i])) return;
+      for (const match of line.matchAll(STAGED_KIND)) {
+        keys.push(`${rel}: ${owners[i]} ${match[1]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+// ---------------------------------------------------------------------------
 // Pinned lists
 // ---------------------------------------------------------------------------
 
@@ -240,11 +269,9 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // hook (swamp-club#2971). Exactly one call.
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
   // Repositories notifying their mark hook (through notifyDirty) before a write.
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository (x15)",
   "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository (x3)",
   "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts: YamlEvaluatedDefinitionRepository (x3)",
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository (x5)",
-  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository (x4)",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository (x2)",
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository (x4)",
   // Use cases that mark directly.
@@ -481,6 +508,18 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
 // rework Phase 1 (swamp-club#2971): repositories can stage into a scope, but
 // nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
 // use cases here on purpose.
+// Typed changes the moved repositories stage before each write or remove
+// (datastore rework Phase 1 repository moves). A write names a path that
+// exists after the operation, a remove one that is gone after it;
+// integration/repository_dirty_coverage_test.ts checks that against the disk.
+const PINNED_STAGED_CHANGES: readonly string[] = [
+  // swamp-club#2979, move A.
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x7)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x8)",
+  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
+  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
+];
+
 const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [];
 
 const files = await sourceFiles();
@@ -571,5 +610,49 @@ Deno.test("datastore write seams: the unit-of-work scope scan finds calls and al
   assertEquals(unitOfWorkScopes([probe]), [
     "src/libswamp/probe.ts: <module>",
     "src/libswamp/probe.ts: probe",
+  ]);
+});
+
+Deno.test("datastore write seams: typed changes repositories stage are pinned (swamp-club#2979)", () => {
+  assertPinnedSet(
+    stagedChanges(files),
+    PINNED_STAGED_CHANGES,
+    "Typed write / remove / bulk changes staged by datastore-tier repositories",
+    "A repository changed how it signals a write. Check each staged kind\n" +
+      "matches the disk after the operation (write: the path exists, remove:\n" +
+      "it is gone), then update the counts here.",
+  );
+});
+
+Deno.test("datastore write seams: the staged-change scan counts wrapped literals inside repository classes, not comments", () => {
+  const probe: SourceFile = {
+    rel: "src/infrastructure/persistence/probe.ts",
+    code: "",
+    lines: [
+      'const outside = { kind: "write", path: "/a" };',
+      "export class YamlOutputRepository {",
+      '  // { kind: "remove", path } in a comment is not a change',
+      '    await this.stage({ kind: "write", path });',
+      "    await this.stage({",
+      '      kind: "remove",',
+      "      path: this.pathFor(id),",
+      "    });",
+      "}",
+    ],
+    owners: [
+      "outside",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+    ],
+  };
+  assertEquals(stagedChanges([probe]), [
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository remove",
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository write",
   ]);
 });

@@ -1442,3 +1442,58 @@ Deno.test("unit of work: every repository sends the same marks inside a legacy u
     });
   }
 });
+
+/**
+ * Repositories that stage typed changes at each call site rather than through
+ * a private notifyDirty (datastore rework Phase 1 repository moves). Rows of
+ * the others are skipped below: every change they stage is still `write`.
+ */
+const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
+  // swamp-club#2979, move A.
+  "UnifiedData",
+  "Output",
+]);
+
+/** Whether anything (file, directory or symlink) exists at `path`. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("unit of work: each change a moved repository stages matches the disk after the act (swamp-club#2979)", async (t) => {
+  for (const row of ROWS) {
+    if (!MOVED_REPOSITORIES.has(row.repo)) continue;
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      await withHarness(row.autoGc ?? false, async (h) => {
+        const act = await row.prepare(h);
+        const uow = createLegacyUnitOfWork(h.markDirty, { flush: undefined });
+        await runInUnitOfWork(uow, act);
+        for (const change of uow.staged()) {
+          if (change.kind === "bulk") {
+            throw new Error(
+              `expected no bulk change, got reason ${change.reason}`,
+            );
+          }
+          const shown = comparableMark(h, change.path);
+          const exists = await pathExists(change.path);
+          if (change.kind === "write") {
+            assert(
+              exists,
+              `expected staged write ${shown} to exist after the act`,
+            );
+          } else {
+            assert(
+              !exists,
+              `expected staged remove ${shown} to be gone after the act`,
+            );
+          }
+        }
+      });
+    });
+  }
+});
