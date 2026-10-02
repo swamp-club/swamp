@@ -1083,12 +1083,14 @@ Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection co
       VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
     INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '5');
     INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('generation', '5');
   `);
   db.close();
 
   const store = new CatalogStore(dbPath);
   assertEquals(store.count(), 0, "migration drops and recreates the table");
   assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  assertEquals(store.generation(), 6, "migration advances the generation");
   store.upsert(makeRow({ garbage_collection: "7d" }));
   assertEquals([...store.iterate()][0].garbage_collection, "7d");
   store.close();
@@ -1133,6 +1135,27 @@ Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current bu
   ).get() as { value: string };
   check.close();
   assertEquals(version.value, CATALOG_SCHEMA_VERSION);
+});
+
+Deno.test("CatalogStore: rebuilds a populated catalog whose table is missing under the current version", () => {
+  const dbPath = makeTempDbPath();
+
+  // An older binary can drop the table after this version is recorded; the
+  // populated flag must not survive over the empty table created in its place.
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    DROP TABLE catalog;
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('generation', '2');
+  `);
+  db.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0);
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  assertEquals(store.generation(), 3, "rebuild advances the generation");
+  store.close();
 });
 
 Deno.test("CatalogStore: reopening a current catalog keeps its rows, populated flag and generation", () => {

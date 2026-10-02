@@ -295,9 +295,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - **Catalog.** `catalogDbPath` alone defines the path
   (`src/infrastructure/persistence/repository_factory.ts`): `_catalog.db` in
   the local `data/` directory, so a shared datastore never carries it. On
-  open, a `CATALOG_SCHEMA_VERSION` mismatch, or a table missing any column in
-  `CATALOG_COLUMNS`, drops the table, clears the `populated` flag and
-  advances the generation; the next query refills it from disk
+  open, a `CATALOG_SCHEMA_VERSION` mismatch, or a table that is missing or
+  lacks a column in `CATALOG_COLUMNS`, drops the table, clears the `populated`
+  flag and advances the generation; the next query refills it from disk
   (`catalog_store.ts` `migrateIfNeeded`). Every write path keeps one
   `is_latest=1` row per name and one `is_step_latest=1` row per
   `(name, step_name)` via `upsertNewVersion` ([`latest`](#the-record)).

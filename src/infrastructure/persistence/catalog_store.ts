@@ -110,7 +110,7 @@ export const CATALOG_SCHEMA_VERSION = "7";
  * processes on different schema versions racing on one file can leave the
  * current version recorded over an older table (swamp-club#2994).
  */
-export const CATALOG_COLUMNS: readonly string[] = [
+export const CATALOG_COLUMNS: readonly (keyof CatalogRow)[] = [
   "namespace",
   "type_normalized",
   "model_id",
@@ -292,8 +292,8 @@ export class CatalogStore {
 
   /**
    * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}
-   * and the catalog table's columns against {@link CATALOG_COLUMNS}. If either
-   * is stale, drops the catalog and rename tables, clears the populated flag so the next
+   * and the catalog table against {@link CATALOG_COLUMNS}. If either is stale,
+   * drops the catalog and rename tables, clears the populated flag so the next
    * query triggers a full backfill with the new schema, and advances
    * {@link generation} so a backfill that read the old generation cannot mark
    * the rebuilt catalog populated.
@@ -303,15 +303,18 @@ export class CatalogStore {
    * once; a lock error propagates to {@link initializeWithRetry}.
    */
   private migrateIfNeeded(): void {
-    if (this.missingCatalogColumns() === undefined) return;
+    if (this.catalogStaleness() === undefined) return;
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const missing = this.missingCatalogColumns();
-      if (missing !== undefined) {
-        if (missing.length > 0) {
+      const staleness = this.catalogStaleness();
+      if (staleness !== undefined) {
+        if (staleness.kind === "missing-table") {
           logger
-            .warn`Rebuilding the data catalog: schema version ${CATALOG_SCHEMA_VERSION} is recorded but the table lacks columns ${missing}`;
+            .warn`Rebuilding the data catalog: schema version ${CATALOG_SCHEMA_VERSION} is recorded but the table is missing`;
+        } else if (staleness.kind === "missing-columns") {
+          logger
+            .warn`Rebuilding the data catalog: schema version ${CATALOG_SCHEMA_VERSION} is recorded but the table lacks columns ${staleness.columns}`;
         }
         this.db.exec("DROP TABLE IF EXISTS catalog");
         this.db.exec("DROP TABLE IF EXISTS catalog_renames");
@@ -330,21 +333,28 @@ export class CatalogStore {
   }
 
   /**
-   * Returns `undefined` when the catalog needs no rebuild: the stored schema
-   * version is current and the catalog table is absent or has every column in
-   * {@link CATALOG_COLUMNS}. Otherwise returns the missing columns — empty
-   * when only the version is stale.
+   * Why the catalog must be rebuilt, or `undefined` when it is current. A
+   * missing table under the current version is stale too: the populated flag
+   * may still claim rows that are gone.
    */
-  private missingCatalogColumns(): string[] | undefined {
-    if (this.readMeta("schema_version") !== CATALOG_SCHEMA_VERSION) return [];
+  private catalogStaleness():
+    | { kind: "version" }
+    | { kind: "missing-table" }
+    | { kind: "missing-columns"; columns: string[] }
+    | undefined {
+    if (this.readMeta("schema_version") !== CATALOG_SCHEMA_VERSION) {
+      return { kind: "version" };
+    }
     const present = new Set(
       (this.db.prepare("PRAGMA table_info(catalog)").all() as {
         name: string;
       }[]).map((c) => c.name),
     );
-    if (present.size === 0) return undefined;
-    const missing = CATALOG_COLUMNS.filter((c) => !present.has(c));
-    return missing.length > 0 ? missing : undefined;
+    if (present.size === 0) return { kind: "missing-table" };
+    const columns = CATALOG_COLUMNS.filter((c) => !present.has(c));
+    return columns.length > 0
+      ? { kind: "missing-columns", columns }
+      : undefined;
   }
 
   /**
@@ -909,10 +919,19 @@ export class CatalogStore {
    * invalidation must not mark the catalog fresh.
    */
   markPopulated(ifGeneration?: number): void {
-    if (ifGeneration !== undefined && ifGeneration !== this.generation()) {
+    if (ifGeneration === undefined) {
+      this.writeMeta("populated", "true");
       return;
     }
-    this.writeMeta("populated", "true");
+    // One statement, so an invalidation or rebuild committed by another
+    // connection cannot land between the generation check and the write.
+    this.db.prepare(
+      `INSERT OR REPLACE INTO catalog_meta (key, value)
+       SELECT 'populated', 'true'
+       WHERE CAST(COALESCE(
+         (SELECT value FROM catalog_meta WHERE key = 'generation'), '0'
+       ) AS INTEGER) = ?`,
+    ).run(ifGeneration);
   }
 
   /**
