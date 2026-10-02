@@ -136,6 +136,10 @@ async function resolveVaultRefs(
  *
  * Vault resolution is NOT performed here — callers that need it (e.g.
  * DataQueryService.query) handle it after the query loop.
+ *
+ * The read is synchronous and cannot hydrate lazily-synced content.
+ * `onMissingContent` is called when the body was needed but is not on local
+ * disk, so an async caller can hydrate it and map the row again.
  */
 export function fromRow(
   row: CatalogRow,
@@ -143,6 +147,7 @@ export function fromRow(
   loadAttributes: boolean,
   loadContent: boolean,
   includeContentPath = false,
+  onMissingContent?: () => void,
 ): DataRecord {
   const needsBytes = (loadAttributes &&
     row.content_type === "application/json") ||
@@ -156,6 +161,7 @@ export function fromRow(
       row.data_name,
       row.version,
     );
+    if (rawBytes === null) onMissingContent?.();
   }
 
   const { attributes, textContent } = parseContent(

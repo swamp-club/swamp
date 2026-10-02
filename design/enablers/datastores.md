@@ -1328,9 +1328,11 @@ content download waits until needed.
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
    locally, and downloads it. The existing Phase 2 scoped sync handles this; no
    new code is needed.
-3. **`data get` (read-only, no sync)**: `UnifiedDataRepository.getContent()`
-   tries to read `raw`. If it is missing and a `HydrateFileHook` is wired, it
-   calls the hook to download that file, then retries the read.
+3. **`data get` and `data query` (read-only, no sync)**:
+   `UnifiedDataRepository.getContent()` tries to read `raw`. If it is missing
+   and a `HydrateFileHook` is wired, it calls the hook to download that file,
+   then retries the read. `data query` reaches it through
+   `DataQueryService.query()` (see "`getContentSync` limitation" below).
 
 #### `HydrateFileHook` contract
 
@@ -1356,12 +1358,45 @@ convert paths themselves.
 `getContentSync()` is synchronous and cannot call the async `HydrateFileHook`.
 Its callers:
 
-- `data_record_mapper.ts`: loads attributes/content for query predicates during
-  `data query '<predicate>'`.
+- `data_record_mapper.ts` (`fromRow`): loads attributes/content for query
+  predicates, `select` projections and results.
 - `model_resolver.ts`: resolves CEL expressions during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
-The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
+The async `DataQueryService.query()`, which backs `data query`, serve's
+`data.query` and extension `queryData`, works around it. `fromRow` reports a
+needed body that is not on local disk, and `query()` downloads those rows
+through the async `getContent()` and matches again, until no row is left
+untried (swamp-club#2962). Only own-namespace rows whose body the predicate,
+the `select` or the results needed are downloaded, and rows the caller's
+`include` filter rejects never are, and a row is downloaded at most once
+per query, across serve's `include` batches too. A row whose body is absent
+remotely too is returned with empty attributes, as `data get` returns that
+item without content. A download error fails the query, as it fails
+`data get`; before swamp-club#2962 such a row silently matched as empty.
+
+A downloaded row can stop matching a predicate it matched while empty (for
+example `!has(attributes.x)`), so under a limit a later pass can reach rows
+an earlier pass never evaluated. Only when a pass after a download reaches
+rows not yet tried does `query()` double the limit it collects under, then
+one last pass applies the caller's limit. That keeps such predicates to
+log(rows / limit) passes, with body reads linear in the rows scanned rather
+than one full rescan per limit window. Downloading the bodies of rows that
+are only being returned does not change which rows match, so it never widens
+the window: a metadata predicate under a limit downloads only the rows it
+returns (serve's `include` path matches in batches of four times the limit,
+so up to that many). `integration/data_query_get_parity_test.ts` holds
+`data query` to `data get` on filesystem, full-hydration and lazy
+datastores.
+
+The locked repo contexts wire `hydrateFile` for any custom datastore whose
+provider implements it, whatever its `hydrationStrategy`. On such a
+datastore, a catalog row whose body is gone locally (deleted, or a write
+that never finished; `filterStaleRows` is off) costs one remote lookup per
+query that needs its body, where before it matched as empty.
+
+`querySync()`, behind CEL `data.query()`, cannot download. The
+`model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
 → scoped pull, which downloads `raw` files before CEL evaluation.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks

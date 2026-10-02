@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
@@ -2859,6 +2860,361 @@ Deno.test("DataQueryService: a backfill that started before an invalidate does n
   } finally {
     catalog.close();
     Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+// ============================================================================
+// Lazy content hydration in query() (swamp-club#2962): a lazy-hydration
+// datastore syncs metadata only, so a matched row's raw file may be absent
+// until something downloads it. data get downloads it; query() must too.
+// ============================================================================
+
+interface RemoteBody {
+  name: string;
+  specName?: string;
+  body: unknown;
+  /** Write the body locally too, as if already hydrated. */
+  local?: boolean;
+  /** The remote does not have the body either. */
+  remoteMissing?: boolean;
+  namespace?: string;
+}
+
+function setupHydrationTest(bodies: RemoteBody[]): {
+  service: DataQueryService;
+  hydrated: string[];
+  dataRepo: TracingDataRepository;
+  cleanup: () => void;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-hydrate-lazy-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const remote = new Map<string, Uint8Array>();
+  const hydrated: string[] = [];
+  const names = new Map<string, string>();
+  const dataRepo = new TracingDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    async (absPath: string) => {
+      hydrated.push(names.get(absPath) ?? absPath);
+      const bytes = remote.get(absPath);
+      if (!bytes) return false;
+      await Deno.writeFile(absPath, bytes);
+      return true;
+    },
+  );
+  for (const entry of bodies) {
+    const path = dataRepo.getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      entry.name,
+      1,
+    );
+    names.set(path, entry.name);
+    const bytes = new TextEncoder().encode(JSON.stringify(entry.body));
+    if (!entry.remoteMissing) remote.set(path, bytes);
+    // A lazy pull creates the version directory but skips raw.
+    ensureDirSync(dirname(path));
+    if (entry.local) Deno.writeFileSync(path, bytes);
+    catalog.upsert(
+      makeRow({
+        data_name: entry.name,
+        id: crypto.randomUUID(),
+        spec_name: entry.specName ?? "result",
+        namespace: entry.namespace ?? "",
+      }),
+    );
+  }
+  return {
+    service: new DataQueryService(catalog, dataRepo),
+    hydrated,
+    dataRepo,
+    cleanup: () => {
+      catalog.close();
+      Deno.removeSync(dir, { recursive: true });
+    },
+  };
+}
+
+Deno.test("DataQueryService.query: select content downloads a lazily-synced body", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query(
+      'modelName == "ingest" && name == "a"',
+      { select: "content" },
+    );
+    assertEquals(results, [{ value: 1 }]);
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: an attribute predicate matches a lazily-synced row", async () => {
+  const { service, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query(
+      "attributes.value == 2",
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: default results carry downloaded attributes", async () => {
+  const { service, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].attributes, { value: 1 });
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: rows rejected by a metadata term are never downloaded", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "report-a", specName: "report", body: { value: 10 } },
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query(
+      'specName == "question" && attributes.value > 0',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["question"]);
+    assertEquals(hydrated, ["question"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a metadata-only select downloads nothing", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("true", {
+      select: "[modelId, name]",
+    });
+    assertEquals(results, [["model-001", "a"], ["model-001", "b"]]);
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body missing remotely too leaves empty attributes", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, remoteMissing: true },
+  ]);
+  try {
+    const results = await service.query('name == "a"', {
+      select: "content",
+    });
+    assertEquals(results, [{}]);
+    // Tried once, then no further pass.
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a foreign-namespace row is never sent to the hydrate hook", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, namespace: "infra" },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].attributes, {});
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a row reached only on a later pass is downloaded too", async () => {
+  // With an empty body "a" matches and fills the limit; once downloaded it
+  // no longer matches, so the next pass reaches "b", also not yet synced.
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { flag: true } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("!has(attributes.flag)", {
+      limit: 1,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+    assertEquals(hydrated, ["a", "b"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: rows include rejects are never downloaded", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("attributes.value > 0", {
+      include: (record) => Promise.resolve(record.name !== "a"),
+      limit: 10,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+    assertEquals(hydrated, ["b"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: locally present bodies are read without the hook", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, local: true },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results[0].attributes, { value: 1 });
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.querySync: does not download lazily-synced bodies", () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = service.querySync('name == "a"') as DataRecord[];
+    assertEquals(results[0].attributes, {});
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: later passes under a limit stay linear in body reads", async () => {
+  // Every row matches while empty and stops matching once downloaded, so
+  // each pass can only find new rows past what it already downloaded.
+  const count = 32;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    const results = await service.query("!has(attributes.flag)", {
+      limit: 1,
+    });
+    assertEquals(results, []);
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    // Doubling passes read about 5 bodies per row (misses and the final
+    // pass at the caller's limit included); one rescan per downloaded row
+    // would be about count * count / 2.
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body missing remotely is requested once across include batches", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "gone", body: {}, remoteMissing: true },
+    ...Array.from({ length: 9 }, (_, i) => ({
+      name: `r${i + 1}`,
+      body: { v: i + 1 },
+      local: true,
+    })),
+  ]);
+  try {
+    // The first batch accepts only "gone", so the query grows the batch.
+    const results = await service.query(
+      'attributes.v > 0 || name == "gone"',
+      {
+        include: (record) =>
+          Promise.resolve(record.name === "gone" || record.name === "r9"),
+        limit: 2,
+      },
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["gone", "r9"]);
+    assertEquals(hydrated, ["gone"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a metadata predicate under a limit downloads only the returned rows", async () => {
+  const rows = Array.from({ length: 64 }, (_, i) => ({
+    name: `row-${String(i).padStart(2, "0")}`,
+    body: { v: i },
+  }));
+  for (const select of [undefined, "content"]) {
+    const { service, hydrated, cleanup } = setupHydrationTest(rows);
+    try {
+      const results = await service.query('modelName == "ingest"', {
+        limit: 2,
+        select,
+      });
+      assertEquals(results.length, 2, `select=${select}`);
+      assertEquals(hydrated, ["row-00", "row-01"], `select=${select}`);
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+Deno.test("DataQueryService.query: with include, a metadata predicate downloads only the first batch", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest(
+    Array.from({ length: 64 }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { v: i },
+    })),
+  );
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      include: () => Promise.resolve(true),
+      limit: 2,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["row-00", "row-01"]);
+    // The include path matches in batches of four times the limit.
+    assertEquals(hydrated.length, 8);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: limit 0 still widens when downloaded rows stop matching", async () => {
+  const count = 16;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    await service.query("!has(attributes.flag)", { limit: 0 });
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
   }
 });
 
