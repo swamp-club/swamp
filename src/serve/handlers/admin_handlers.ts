@@ -66,6 +66,7 @@ import {
   type DoctorRegistryDeps,
   doctorSecrets,
   doctorVaults,
+  doctorWorkflowDirs,
   doctorWorkflows,
   type DoctorWorkflowsDeps,
   extensionInfo,
@@ -146,10 +147,7 @@ import type {
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import {
@@ -1562,10 +1560,10 @@ export async function handleDoctorWorkflows(
   ) return;
 
   try {
-    const workflowsDir = swampPath(ctx.repoDir, SWAMP_SUBDIRS.workflows);
-
+    // The live repository context, so remote doctor checks the dirs this
+    // server loads workflows from, including any refreshed by a reload.
     const deps: DoctorWorkflowsDeps = {
-      workflowDirs: [workflowsDir],
+      ...doctorWorkflowDirs(ctx.repoContext),
       abortSignal: controller.signal,
     };
 

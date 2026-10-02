@@ -37,6 +37,27 @@ import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 const logger = getLogger(["extension-workflow-repo"]);
 
 /**
+ * Yields the path of every file under `dir` that the extension workflow
+ * loader reads: `*.yaml` and `*.yml` at any depth, except manifests. Whether
+ * a file is actually a workflow (a top-level `jobs` key) is decided by the
+ * caller after parsing. Walk errors, including `Deno.errors.NotFound` for a
+ * missing `dir`, propagate to the caller.
+ */
+export async function* extensionWorkflowFiles(
+  dir: string,
+): AsyncIterable<string> {
+  for await (
+    const entry of walk(dir, {
+      exts: [".yaml", ".yml"],
+      includeDirs: false,
+    })
+  ) {
+    if (MANIFEST_FILENAMES.has(entry.name)) continue;
+    yield entry.path;
+  }
+}
+
+/**
  * Read-only WorkflowRepository that discovers YAML workflows from an
  * extension workflows directory (e.g. `extensions/workflows/`).
  *
@@ -65,6 +86,11 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     this.workflowsDirs = [this.baseDir, ...additionalDirs];
   }
 
+  /** The directories this repository reads: the base dir, then additional dirs. */
+  getWorkflowDirs(): readonly string[] {
+    return this.workflowsDirs;
+  }
+
   async findById(id: WorkflowId): Promise<Workflow | null> {
     const workflows = await this.findAll();
     return workflows.find((w) => w.id === id) ?? null;
@@ -81,20 +107,14 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
 
     for (const dir of this.workflowsDirs) {
       try {
-        for await (
-          const entry of walk(dir, {
-            exts: [".yaml", ".yml"],
-            includeDirs: false,
-          })
-        ) {
-          if (MANIFEST_FILENAMES.has(entry.name)) continue;
+        for await (const path of extensionWorkflowFiles(dir)) {
           try {
-            const content = await Deno.readTextFile(entry.path);
+            const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as WorkflowData | null;
             if (!data) continue;
             if (!isWorkflowDocument(data)) {
               logger
-                .debug`Skipping ${entry.path}: not a workflow (no top-level jobs key)`;
+                .debug`Skipping ${path}: not a workflow (no top-level jobs key)`;
               continue;
             }
             const workflow = Workflow.fromData(data);
@@ -107,21 +127,21 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             if (isIoError(error)) {
               throw markErrorPaths(
                 new UserError(
-                  `Failed to read extension workflow ${entry.path}: ${
+                  `Failed to read extension workflow ${path}: ${
                     error instanceof Error ? error.message : error
                   }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
                 ),
-                [entry.path, ...errorPaths(error)],
+                [path, ...errorPaths(error)],
               );
             }
             const errorMsg = error instanceof Error
               ? error.message
               : String(error);
-            const warnKey = `${entry.path}\0${errorMsg}`;
+            const warnKey = `${path}\0${errorMsg}`;
             if (this.warnedBroken.has(warnKey)) continue;
             this.warnedBroken.add(warnKey);
             logger
-              .warn`Skipping broken extension workflow ${entry.path}: ${errorMsg}`;
+              .warn`Skipping broken extension workflow ${path}: ${errorMsg}`;
           }
         }
       } catch (error) {
@@ -168,29 +188,23 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   async findPath(id: WorkflowId): Promise<string | null> {
     for (const dir of this.workflowsDirs) {
       try {
-        for await (
-          const entry of walk(dir, {
-            exts: [".yaml", ".yml"],
-            includeDirs: false,
-          })
-        ) {
-          if (MANIFEST_FILENAMES.has(entry.name)) continue;
+        for await (const path of extensionWorkflowFiles(dir)) {
           try {
-            const content = await Deno.readTextFile(entry.path);
+            const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as WorkflowData | null;
             if (!isWorkflowDocument(data)) continue;
             if (data.id === id) {
-              return entry.path;
+              return path;
             }
           } catch (error) {
             if (isIoError(error)) {
               throw markErrorPaths(
                 new UserError(
-                  `Failed to read extension workflow ${entry.path}: ${
+                  `Failed to read extension workflow ${path}: ${
                     error instanceof Error ? error.message : error
                   }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
                 ),
-                [entry.path, ...errorPaths(error)],
+                [path, ...errorPaths(error)],
               );
             }
           }

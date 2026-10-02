@@ -17,10 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { collect } from "../testing.ts";
-import { doctorWorkflows, type DoctorWorkflowsEvent } from "./doctor.ts";
+import {
+  doctorWorkflowDirs,
+  doctorWorkflows,
+  type DoctorWorkflowsDeps,
+  type DoctorWorkflowsEvent,
+  type DoctorWorkflowsReport,
+} from "./doctor.ts";
+import {
+  assertPathArrayEquals,
+  assertPathEquals,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 
 const VALID_WORKFLOW_YAML = `id: "550e8400-e29b-41d4-a716-446655440000"
 name: test-workflow
@@ -375,4 +385,281 @@ Deno.test("doctorWorkflows: still fails non-workflow YAML in repo workflow dirs"
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
+});
+
+function workflowYaml(name: string): string {
+  return `id: "${crypto.randomUUID()}"
+name: ${name}
+jobs:
+  - name: job
+    steps:
+      - name: step
+        task:
+          type: model_method
+          modelIdOrName: my-model
+          methodName: validate
+`;
+}
+
+const UNKNOWN_TASK_YAML = `id: "550e8400-e29b-41d4-a716-446655440002"
+name: unknown-task
+jobs:
+  - name: job
+    steps:
+      - name: step
+        task:
+          type: not_a_real_task
+`;
+
+async function runDoctor(
+  deps: Omit<DoctorWorkflowsDeps, "abortSignal">,
+  abortSignal = new AbortController().signal,
+): Promise<DoctorWorkflowsReport> {
+  const events = await collect<DoctorWorkflowsEvent>(
+    doctorWorkflows({ ...deps, abortSignal }),
+  );
+  const completed = events.at(-1) as Extract<
+    DoctorWorkflowsEvent,
+    { kind: "completed" }
+  >;
+  return completed.report;
+}
+
+Deno.test("doctorWorkflows: checks nested and .yml files in extension dirs", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.mkdir(join(tmpDir, "nested", "deeper"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, "nested", "broken.yml"),
+      UNKNOWN_TASK_YAML,
+    );
+    await Deno.writeTextFile(
+      join(tmpDir, "nested", "deeper", "good.yml"),
+      workflowYaml("nested-good"),
+    );
+    await Deno.writeTextFile(
+      join(tmpDir, "nested", "manifest.yml"),
+      MANIFEST_YAML,
+    );
+    await Deno.writeTextFile(
+      join(tmpDir, "nested", "test-factory.yaml"),
+      ARTIFACT_YAML,
+    );
+
+    const report = await runDoctor({
+      workflowDirs: [],
+      extensionWorkflowDirs: [tmpDir],
+    });
+
+    assertEquals(report.overallStatus, "fail");
+    assertPathArrayEquals(report.workflows.map((w) => w.file), [
+      join(tmpDir, "nested", "broken.yml"),
+      join(tmpDir, "nested", "deeper", "good.yml"),
+    ]);
+    assertEquals(report.workflows.map((w) => [w.name, w.status]), [
+      ["unknown-task", "fail"],
+      ["nested-good", "pass"],
+    ]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: strips .yml from the fallback name of unparseable files", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "unparseable.yml"), "jobs: [oops");
+
+    const report = await runDoctor({
+      workflowDirs: [],
+      extensionWorkflowDirs: [tmpDir],
+    });
+
+    assertEquals(report.totalFailed, 1);
+    assertEquals(report.workflows[0].name, "unparseable");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: warns about loadable repo-dir YAML the loader does not read", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(
+      join(tmpDir, "workflow-good.yaml"),
+      workflowYaml("good"),
+    );
+    await Deno.writeTextFile(
+      join(tmpDir, "deploy.yaml"),
+      workflowYaml("deploy"),
+    );
+    await Deno.writeTextFile(
+      join(tmpDir, "release.yml"),
+      workflowYaml("release"),
+    );
+    await Deno.mkdir(join(tmpDir, "sub"));
+    await Deno.writeTextFile(
+      join(tmpDir, "sub", "workflow-hidden.yaml"),
+      UNKNOWN_TASK_YAML,
+    );
+
+    const report = await runDoctor({ workflowDirs: [tmpDir] });
+
+    // Not loaded, but neither passed nor was ignored before: warn, exit 0.
+    assertEquals(report.overallStatus, "warn");
+    assertEquals(
+      [report.totalPassed, report.totalWarnings, report.totalFailed],
+      [1, 2, 0],
+    );
+    assertEquals(report.workflows.map((w) => [w.name, w.status]), [
+      ["deploy", "warn"],
+      ["release", "warn"],
+      ["good", "pass"],
+    ]);
+    const deploy = report.workflows[0];
+    assertPathEquals(deploy.file, join(tmpDir, "deploy.yaml"));
+    assertEquals(deploy.error, undefined);
+    // The full path, since log mode labels the result only by its YAML name.
+    assertStringIncludes(deploy.warning ?? "", join(tmpDir, "deploy.yaml"));
+    assertStringIncludes(deploy.warning ?? "", "workflow-<name>.yaml");
+    assertStringIncludes(
+      deploy.warning ?? "",
+      "or remove it if it is a stale copy",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: a broken misnamed .yaml in a repo dir still fails, a broken .yml only warns", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    // Before the loader's rule was applied, *.yaml here was always checked
+    // and *.yml never was; neither outcome may get worse.
+    await Deno.writeTextFile(join(tmpDir, "broken.yaml"), UNKNOWN_TASK_YAML);
+    await Deno.writeTextFile(join(tmpDir, "broken.yml"), UNKNOWN_TASK_YAML);
+
+    const report = await runDoctor({ workflowDirs: [tmpDir] });
+
+    assertEquals(report.overallStatus, "fail");
+    const [yaml, yml] = report.workflows;
+    assertPathEquals(yaml.file, join(tmpDir, "broken.yaml"));
+    assertEquals(yaml.status, "fail");
+    // The note leads, on the first line, which log mode indents.
+    const [firstLine] = (yaml.error ?? "").split("\n");
+    assertStringIncludes(firstLine, "Not loaded:");
+    assertStringIncludes(firstLine, "It also fails to load:");
+    assertStringIncludes(yaml.error ?? "", "Invalid discriminator value");
+    assertPathEquals(yml.file, join(tmpDir, "broken.yml"));
+    assertEquals(yml.status, "warn");
+    assertStringIncludes(yml.warning ?? "", "Not loaded:");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: tells non-workflow YAML in a repo dir to move out rather than rename", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "settings.yaml"), ARTIFACT_YAML);
+    await Deno.writeTextFile(join(tmpDir, "notes.yml"), "jobs: [oops");
+
+    const report = await runDoctor({ workflowDirs: [tmpDir] });
+
+    // settings.yaml failed before (no jobs) and still does; notes.yml was
+    // never checked, so it only warns.
+    assertEquals(report.workflows.map((w) => w.status), ["warn", "fail"]);
+    for (const result of report.workflows) {
+      const message = result.error ?? result.warning ?? "";
+      assertStringIncludes(message, result.file);
+      assertStringIncludes(message, "is not a workflow; move it out");
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: a repo dir that is also an extension dir uses the extension rule for other names", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(
+      join(tmpDir, "deploy.yaml"),
+      workflowYaml("deploy"),
+    );
+
+    const report = await runDoctor({
+      workflowDirs: [tmpDir],
+      extensionWorkflowDirs: [tmpDir],
+    });
+
+    assertEquals(report.overallStatus, "pass");
+    assertEquals(report.workflows.map((w) => w.name), ["deploy"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: reports a file reached through overlapping dirs once", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.mkdir(join(tmpDir, "vendor"));
+    await Deno.writeTextFile(
+      join(tmpDir, "vendor", "broken.yaml"),
+      UNKNOWN_TASK_YAML,
+    );
+
+    const report = await runDoctor({
+      workflowDirs: [],
+      extensionWorkflowDirs: [tmpDir, join(tmpDir, "vendor")],
+    });
+
+    assertEquals(report.totalFailed, 1);
+    assertEquals(report.workflows.length, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: checks nothing once aborted", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "broken.yaml"), UNKNOWN_TASK_YAML);
+    const controller = new AbortController();
+    controller.abort();
+
+    const report = await runDoctor(
+      { workflowDirs: [], extensionWorkflowDirs: [tmpDir] },
+      controller.signal,
+    );
+
+    assertEquals(report.workflows, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflowDirs: takes the dirs the workflow repositories read", () => {
+  const dirs = doctorWorkflowDirs({
+    yamlWorkflowRepo: { getWorkflowsDir: () => "repo-workflows" },
+    extensionWorkflowRepo: {
+      getWorkflowDirs: () => ["extension-workflows", "source-a", "pulled-a"],
+    },
+  });
+
+  assertEquals(dirs.workflowDirs, ["repo-workflows"]);
+  assertEquals(dirs.extensionWorkflowDirs, [
+    "extension-workflows",
+    "source-a",
+    "pulled-a",
+  ]);
+});
+
+Deno.test("doctorWorkflowDirs: has no extension dirs without an extension repository", () => {
+  const dirs = doctorWorkflowDirs({
+    yamlWorkflowRepo: { getWorkflowsDir: () => "repo-workflows" },
+    extensionWorkflowRepo: null,
+  });
+
+  assertEquals(dirs.workflowDirs, ["repo-workflows"]);
+  assertEquals(dirs.extensionWorkflowDirs, []);
 });

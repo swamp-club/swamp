@@ -419,6 +419,8 @@ export interface RepositoryContext {
   unifiedDataRepo: FileSystemUnifiedDataRepository;
   outputRepo: YamlOutputRepository;
   workflowRepo: WorkflowRepository;
+  /** The repo's own workflows dir, also wrapped by `workflowRepo`. */
+  yamlWorkflowRepo: YamlWorkflowRepository;
   extensionWorkflowRepo: ExtensionWorkflowRepository | null;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
@@ -555,6 +557,7 @@ export function createRepositoryContext(
     unifiedDataRepo,
     outputRepo,
     workflowRepo,
+    yamlWorkflowRepo,
     extensionWorkflowRepo,
     workflowRunRepo,
     vaultConfigRepo,

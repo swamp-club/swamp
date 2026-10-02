@@ -47,6 +47,15 @@ import {
 const logger = getLogger(["workflow-repo"]);
 
 /**
+ * Reports whether a file in the workflows directory is one the repository
+ * reads: `workflow-{name}.yaml` or the legacy `workflow-{uuid}.yaml`. Any
+ * other file there is never loaded.
+ */
+export function isPrimaryWorkflowFileName(name: string): boolean {
+  return name.startsWith("workflow-") && name.endsWith(".yaml");
+}
+
+/**
  * YAML-based implementation of WorkflowRepository.
  *
  * Stores workflows as YAML files in the directory structure:
@@ -209,10 +218,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
     try {
       for await (const entry of Deno.readDir(dir)) {
-        if (
-          entry.isFile && entry.name.startsWith("workflow-") &&
-          entry.name.endsWith(".yaml")
-        ) {
+        if (entry.isFile && isPrimaryWorkflowFileName(entry.name)) {
           const path = join(dir, entry.name);
           try {
             const content = await Deno.readTextFile(path);
@@ -432,7 +438,8 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return join(this.getWorkflowsDir(), `workflow-${id}.yaml`);
   }
 
-  private getWorkflowsDir(): string {
+  /** The directory this repository reads workflow files from. */
+  getWorkflowsDir(): string {
     return this.baseDir;
   }
 

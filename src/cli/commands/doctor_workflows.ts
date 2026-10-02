@@ -18,12 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { isAbsolute, join, resolve } from "@std/path";
 import {
   consumeStream,
+  doctorWorkflowDirs,
   doctorWorkflows,
   type DoctorWorkflowsReport,
-  enumeratePulledExtensionDirs,
 } from "../../libswamp/mod.ts";
 import { createWorkflowDoctorRenderer } from "../../presentation/renderers/workflow_doctor.ts";
 import {
@@ -31,19 +30,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { resolveDatastoreForRepo } from "../repo_context.ts";
-import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
-import {
-  ensureManagedConfigBase,
-  resolveManagedConfigPaths,
-} from "../repo_context.ts";
-import {
-  collectDirsForKind,
-  expandSourcePaths,
-  readSwampSources,
-  resolveSourceExtensionDirs,
-} from "../../infrastructure/persistence/swamp_sources_repository.ts";
-import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -54,41 +41,6 @@ import type { DoctorWorkflowsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
-  const sourcesConfig = await readSwampSources(repoDir);
-  if (!sourcesConfig) return [];
-  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
-  const expanded = await expandSourcePaths(
-    sourcesConfig,
-    repoDir,
-    sourceBaseDir,
-  );
-  const { resolved } = await resolveSourceExtensionDirs(expanded);
-  return collectDirsForKind(resolved, "workflows");
-}
-
-/**
- * Splits the directories doctor checks into the repo-owned workflows dir,
- * where every file must be a workflow, and the extension-provided dirs, which
- * are exactly the dirs the extension workflow loader reads and so get its
- * rule for skipping manifests and other YAML.
- */
-export function buildDoctorWorkflowDirs(dirs: {
-  yamlWorkflowsDir: string;
-  extensionWorkflowsDir: string;
-  sourceWorkflowDirs: string[];
-  pulledWorkflowDirs: string[];
-}): { workflowDirs: string[]; extensionWorkflowDirs: string[] } {
-  return {
-    workflowDirs: [dirs.yamlWorkflowsDir],
-    extensionWorkflowDirs: [
-      dirs.extensionWorkflowsDir,
-      ...dirs.sourceWorkflowDirs,
-      ...dirs.pulledWorkflowDirs,
-    ],
-  };
-}
 
 export const doctorWorkflowsCommand = withRemoteOptions(
   new Command()
@@ -138,31 +90,11 @@ export const doctorWorkflowsCommand = withRemoteOptions(
     return;
   }
 
-  const repoDir = resolveRepoDir(options.repoDir);
-  const { marker } = await resolveDatastoreForRepo(repoDir);
-
-  const yamlWorkflowsDir = join(repoDir, "workflows");
-
-  const workflowsDirRel = resolveWorkflowsDir(marker);
-  const workflowsDir = isAbsolute(workflowsDirRel)
-    ? workflowsDirRel
-    : resolve(repoDir, workflowsDirRel);
-
-  const sourceWorkflowDirs = await getSourceWorkflowDirs(repoDir);
-
-  await ensureManagedConfigBase(repoDir, marker);
-  const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
-  const pulledWorkflowDirs = await enumeratePulledExtensionDirs(
-    lockfilePath,
-    repoDir,
-    "workflows",
-  );
-
-  const { workflowDirs, extensionWorkflowDirs } = buildDoctorWorkflowDirs({
-    yamlWorkflowsDir,
-    extensionWorkflowsDir: workflowsDir,
-    sourceWorkflowDirs,
-    pulledWorkflowDirs,
+  // Take the directories from the same repository context the workflow
+  // loader uses, so doctor checks exactly the files workflow commands read.
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
 
   const controller = new AbortController();
@@ -170,8 +102,7 @@ export const doctorWorkflowsCommand = withRemoteOptions(
 
   await consumeStream(
     doctorWorkflows({
-      workflowDirs,
-      extensionWorkflowDirs,
+      ...doctorWorkflowDirs(repoContext),
       abortSignal: controller.signal,
     }),
     renderer.handlers(),

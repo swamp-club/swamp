@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { DoctorWorkflowsReport } from "../../libswamp/mod.ts";
 import { createWorkflowDoctorRenderer } from "./workflow_doctor.ts";
@@ -55,6 +56,7 @@ function buildPassReport(): DoctorWorkflowsReport {
       },
     ],
     totalPassed: 2,
+    totalWarnings: 0,
     totalFailed: 0,
   };
 }
@@ -76,7 +78,33 @@ function buildFailReport(): DoctorWorkflowsReport {
       },
     ],
     totalPassed: 1,
+    totalWarnings: 0,
     totalFailed: 1,
+  };
+}
+
+const NOT_LOADED =
+  "Not loaded: swamp only reads files named workflow-<name>.yaml in /repo/workflows.";
+
+function buildWarnReport(): DoctorWorkflowsReport {
+  return {
+    overallStatus: "warn",
+    workflows: [
+      {
+        file: "/repo/workflows/workflow-abc.yaml",
+        name: "deploy",
+        status: "pass",
+      },
+      {
+        file: "/repo/workflows/deploy-old.yaml",
+        name: "deploy-old",
+        status: "warn",
+        warning: NOT_LOADED,
+      },
+    ],
+    totalPassed: 1,
+    totalWarnings: 1,
+    totalFailed: 0,
   };
 }
 
@@ -85,6 +113,7 @@ function buildEmptyReport(): DoctorWorkflowsReport {
     overallStatus: "pass",
     workflows: [],
     totalPassed: 0,
+    totalWarnings: 0,
     totalFailed: 0,
   };
 }
@@ -172,4 +201,52 @@ Deno.test("workflow_doctor json renderer: handles empty report", async () => {
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "pass");
   assertEquals(parsed.workflows.length, 0);
+});
+
+Deno.test("workflow_doctor log renderer: shows warnings and OVERALL: WARN", async () => {
+  const report = buildWarnReport();
+  let renderer = createWorkflowDoctorRenderer("log");
+  const out = await captureStdout(async () => {
+    renderer = createWorkflowDoctorRenderer("log");
+    const handlers = renderer.handlers();
+    for (const result of report.workflows) {
+      await handlers["workflow-checked"]({ kind: "workflow-checked", result });
+    }
+    await handlers.completed({ kind: "completed", report });
+  });
+
+  const text = stripAnsiCode(out);
+  assertStringIncludes(text, "⚠ deploy-old");
+  assertStringIncludes(text, `→ ${NOT_LOADED}`);
+  assertStringIncludes(text, "1 passed, 0 failed, 1 warning — OVERALL: WARN");
+  assertEquals(renderer.overallStatus, "warn");
+});
+
+Deno.test("workflow_doctor log renderer: omits the warning count when there are none", async () => {
+  const out = await captureStdout(async () => {
+    const handlers = createWorkflowDoctorRenderer("log").handlers();
+    await handlers.completed({ kind: "completed", report: buildFailReport() });
+  });
+
+  assertStringIncludes(
+    stripAnsiCode(out),
+    "1 passed, 1 failed — OVERALL: FAIL",
+  );
+});
+
+Deno.test("workflow_doctor json renderer: emits warnings and tracks warn", async () => {
+  const renderer = createWorkflowDoctorRenderer("json");
+  const out = await captureStdout(async () => {
+    await renderer.handlers().completed({
+      kind: "completed",
+      report: buildWarnReport(),
+    });
+  });
+
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.overallStatus, "warn");
+  assertEquals(parsed.totalWarnings, 1);
+  assertEquals(parsed.workflows[1].status, "warn");
+  assertEquals(parsed.workflows[1].warning, NOT_LOADED);
+  assertEquals(renderer.overallStatus, "warn");
 });

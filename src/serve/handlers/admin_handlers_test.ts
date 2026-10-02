@@ -33,6 +33,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { assertPathArrayEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { ConnectionContext } from "./shared.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -43,6 +44,7 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import type { MergedServeOptions } from "../serve_config.ts";
 import {
   collectClusterInstances,
+  handleDoctorWorkflows,
   handleExtensionList,
   handleExtensionRm,
   handleVaultMigrate,
@@ -759,6 +761,97 @@ Deno.test("handleExtensionList: reads the managed lockfile and the transitional 
       assertEquals(names, ["@test/auto", "@test/team"]);
     } finally {
       cleanup();
+    }
+  });
+});
+
+const BROKEN_WORKFLOW_YAML = `id: "550e8400-e29b-41d4-a716-446655440003"
+name: broken-remote
+jobs:
+  - name: job
+    steps:
+      - name: step
+        task:
+          type: not_a_real_task
+`;
+
+Deno.test("handleDoctorWorkflows: checks the dirs the server loads workflows from (swamp-club#2942)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const configBase = join(dir, "config-base");
+    const extensionDir = join(repoDir, "extensions", "workflows");
+    const pulledDir = join(dir, "pulled");
+    // Keyed by this run's temp dir, so it cannot leak into another test.
+    registerManagedConfig(repoDir, true, configBase);
+    await ensureDir(join(configBase, "workflows"));
+    await ensureDir(join(extensionDir, "nested"));
+    await ensureDir(pulledDir);
+    await Deno.writeTextFile(
+      join(configBase, "workflows", "workflow-broken.yaml"),
+      BROKEN_WORKFLOW_YAML,
+    );
+    await Deno.writeTextFile(
+      join(extensionDir, "nested", "broken.yml"),
+      BROKEN_WORKFLOW_YAML,
+    );
+    // Stale repo-local dirs the server never reads: must not be checked.
+    await ensureDir(join(repoDir, "workflows"));
+    await Deno.writeTextFile(
+      join(repoDir, "workflows", "workflow-stale.yaml"),
+      BROKEN_WORKFLOW_YAML,
+    );
+
+    const repoContext = createRepositoryContext({
+      repoDir,
+      enableIndexing: false,
+      workflowsDir: extensionDir,
+    });
+    try {
+      // A reload points the extension repo at newly pulled dirs.
+      await Deno.writeTextFile(
+        join(pulledDir, "broken.yaml"),
+        BROKEN_WORKFLOW_YAML,
+      );
+      repoContext.extensionWorkflowRepo?.updateAdditionalDirs([pulledDir]);
+      const ctx = {
+        repoDir,
+        repoContext,
+        authConfig: {
+          mode: "none" as const,
+          admins: [],
+          allowedCollectives: [],
+          allowedUsers: [],
+          oauthProvider: "",
+          groupsField: "collectives",
+          restrictedModelTypes: [],
+          restrictedCommands: [],
+          approveRequiresExplicitGrant: false,
+        },
+      } as unknown as ConnectionContext;
+      const socket = createMockSocket();
+
+      await handleDoctorWorkflows(
+        socket,
+        ctx,
+        "req-doctor",
+        new AbortController(),
+        null,
+      );
+
+      const message = JSON.parse(socket.sent[0]);
+      assertEquals(message.type, "doctor.workflows");
+      const report = message.payload.data as {
+        overallStatus: string;
+        workflows: { file: string }[];
+      };
+      assertEquals(report.overallStatus, "fail");
+      assertPathArrayEquals(report.workflows.map((w) => w.file), [
+        join(configBase, "workflows", "workflow-broken.yaml"),
+        join(extensionDir, "nested", "broken.yml"),
+        join(pulledDir, "broken.yaml"),
+      ]);
+    } finally {
+      repoContext.catalogStore.close();
     }
   });
 });

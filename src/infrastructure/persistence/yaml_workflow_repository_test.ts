@@ -24,7 +24,12 @@ import {
 } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
+import {
+  isPrimaryWorkflowFileName,
+  YamlWorkflowRepository,
+} from "./yaml_workflow_repository.ts";
+import { registerManagedConfig } from "./paths.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -637,4 +642,36 @@ Deno.test("YamlWorkflowRepository hint rejects a path swapped for a symlink", as
       assertEquals(await repo.findByName("swap-target"), null);
     });
   });
+});
+
+Deno.test("isPrimaryWorkflowFileName: matches only workflow-*.yaml", () => {
+  assertEquals(isPrimaryWorkflowFileName("workflow-deploy.yaml"), true);
+  assertEquals(
+    isPrimaryWorkflowFileName(
+      "workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
+    ),
+    true,
+  );
+  assertEquals(isPrimaryWorkflowFileName("deploy.yaml"), false);
+  assertEquals(isPrimaryWorkflowFileName("workflow-deploy.yml"), false);
+  assertEquals(isPrimaryWorkflowFileName("my-workflow-deploy.yaml"), false);
+});
+
+Deno.test("YamlWorkflowRepository.getWorkflowsDir: defaults to the repo workflows dir", () => {
+  // getWorkflowsDir reads no files, so the repo dir need not exist.
+  const dir = join(Deno.cwd(), `repo-${crypto.randomUUID()}`);
+  const repo = new YamlWorkflowRepository(dir);
+  assertPathEquals(repo.getWorkflowsDir(), join(dir, "workflows"));
+});
+
+Deno.test("YamlWorkflowRepository.getWorkflowsDir: follows a managed config base", () => {
+  // A per-run repo dir keys the registry entry, so it cannot leak into
+  // another test.
+  const dir = join(Deno.cwd(), `repo-${crypto.randomUUID()}`);
+  registerManagedConfig(dir, true, join(dir, "config-base"));
+  const repo = new YamlWorkflowRepository(dir);
+  assertPathEquals(
+    repo.getWorkflowsDir(),
+    join(dir, "config-base", "workflows"),
+  );
 });
