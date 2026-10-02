@@ -351,9 +351,12 @@ Deno.test("redactIssueContent: internal hostname before a full stop is still red
   assertEquals(result.text, "Could not reach [HOST-1]. Retrying.");
 });
 
-Deno.test("redactIssueContent: public name with an internal label is redacted whole", () => {
-  const result = redactIssueContent("Pushed to jenkins.internal.acme.com");
-  assertEquals(result.text, "Pushed to [HOST-1]");
+Deno.test("redactIssueContent: internal hostname followed by a non-extension label is still redacted", () => {
+  const r1 = redactIssueContent("nas.home.arpa is down");
+  assertEquals(r1.text, "[HOST-1].arpa is down");
+
+  const r2 = redactIssueContent("redis.internal.svc refused");
+  assertEquals(r2.text, "[HOST-1].svc refused");
 });
 
 Deno.test("redactIssueContent: replaces FQDNs with stable placeholders", () => {
