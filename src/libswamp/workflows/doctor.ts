@@ -156,66 +156,52 @@ async function listYamlFiles(
   return files.sort((a, b) => a.localeCompare(b));
 }
 
+/** The outcome of loading one file, with its parsed YAML when it parsed. */
+interface LoadedWorkflowFile {
+  result: DoctorWorkflowResult;
+  parsed?: unknown;
+}
+
 /**
- * Loads one file the way the loader would and reports the outcome, with the
- * content when it could be read, or returns null for an extension file that
- * is not a workflow.
+ * Loads one file the way the loader would and reports the outcome, parsing
+ * its YAML once, or returns null for an extension file that is not a
+ * workflow.
  */
 async function loadWorkflowFile(
   filePath: string,
   extension: boolean,
-): Promise<{ result: DoctorWorkflowResult; content?: string } | null> {
-  let content: string;
+): Promise<LoadedWorkflowFile | null> {
+  const fail = (error: unknown, name: string | null): DoctorWorkflowResult => ({
+    file: filePath,
+    name,
+    status: "fail",
+    error: error instanceof Error ? error.message : String(error),
+  });
+
+  let parsed: unknown;
   try {
-    content = await Deno.readTextFile(filePath);
-  } catch (readError) {
-    return {
-      result: {
-        file: filePath,
-        name: fallbackName(filePath),
-        status: "fail",
-        error: readError instanceof Error
-          ? readError.message
-          : String(readError),
-      },
-    };
+    parsed = parseYaml(await Deno.readTextFile(filePath));
+  } catch (error) {
+    return { result: fail(error, fallbackName(filePath)) };
   }
 
+  if (extension && !isWorkflowDocument(parsed)) {
+    logger.debug`Skipping ${filePath}: not a workflow (no top-level jobs key)`;
+    return null;
+  }
+  const yamlName = (parsed as { name?: string } | null)?.name;
   try {
-    const data = parseYaml(content) as WorkflowData;
-    if (extension && !isWorkflowDocument(data)) {
-      logger
-        .debug`Skipping ${filePath}: not a workflow (no top-level jobs key)`;
-      return null;
-    }
-    Workflow.fromData(data);
+    Workflow.fromData(parsed as WorkflowData);
     return {
       result: {
         file: filePath,
-        name: data.name ?? fallbackName(filePath),
+        name: yamlName ?? fallbackName(filePath),
         status: "pass",
       },
-      content,
+      parsed,
     };
-  } catch (parseError) {
-    const name = (() => {
-      try {
-        return (parseYaml(content) as { name?: string })?.name ?? null;
-      } catch {
-        return fallbackName(filePath);
-      }
-    })();
-    return {
-      result: {
-        file: filePath,
-        name,
-        status: "fail",
-        error: parseError instanceof Error
-          ? parseError.message
-          : String(parseError),
-      },
-      content,
-    };
+  } catch (error) {
+    return { result: fail(error, yamlName ?? null), parsed };
   }
 }
 
@@ -224,19 +210,11 @@ async function loadWorkflowFile(
  * a result by its YAML name, so the message carries the full path; renaming
  * is only advised for a file that is a workflow.
  */
-function notLoadedMessage(filePath: string, content?: string): string {
-  const looksLikeWorkflow = (() => {
-    if (content === undefined) return false;
-    try {
-      return isWorkflowDocument(parseYaml(content));
-    } catch {
-      return false;
-    }
-  })();
+function notLoadedMessage(filePath: string, parsed: unknown): string {
   const rule = `swamp only reads files named workflow-<name>.yaml in ${
     dirname(filePath)
   }.`;
-  return looksLikeWorkflow
+  return isWorkflowDocument(parsed)
     ? `Not loaded: ${rule} Rename ${filePath} to workflow-<name>.yaml, ` +
       `or remove it if it is a stale copy of a workflow that already loads.`
     : `Not loaded: ${rule} ${filePath} is not a workflow; move it out of ` +
@@ -260,10 +238,15 @@ async function checkWorkflowFile(
   const loaded = await loadWorkflowFile(filePath, mode === "extension");
   if (!loaded || mode !== "not-loaded") return loaded?.result ?? null;
 
-  const { result, content } = loaded;
-  const notLoaded = notLoadedMessage(filePath, content);
+  const { result, parsed } = loaded;
+  const notLoaded = notLoadedMessage(filePath, parsed);
   if (result.status === "fail" && !filePath.endsWith(".yml")) {
-    return { ...result, error: `${result.error}\n${notLoaded}` };
+    // The note leads, on the line log mode indents; a load error can span
+    // several lines.
+    return {
+      ...result,
+      error: `${notLoaded} It also fails to load: ${result.error}`,
+    };
   }
   return {
     file: result.file,

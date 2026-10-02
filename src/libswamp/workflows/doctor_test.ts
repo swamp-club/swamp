@@ -545,8 +545,11 @@ Deno.test("doctorWorkflows: a broken misnamed .yaml in a repo dir still fails, a
     const [yaml, yml] = report.workflows;
     assertPathEquals(yaml.file, join(tmpDir, "broken.yaml"));
     assertEquals(yaml.status, "fail");
+    // The note leads, on the first line, which log mode indents.
+    const [firstLine] = (yaml.error ?? "").split("\n");
+    assertStringIncludes(firstLine, "Not loaded:");
+    assertStringIncludes(firstLine, "It also fails to load:");
     assertStringIncludes(yaml.error ?? "", "Invalid discriminator value");
-    assertStringIncludes(yaml.error ?? "", "Not loaded:");
     assertPathEquals(yml.file, join(tmpDir, "broken.yml"));
     assertEquals(yml.status, "warn");
     assertStringIncludes(yml.warning ?? "", "Not loaded:");
