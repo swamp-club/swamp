@@ -15852,6 +15852,7 @@ interface StepWriteProbe {
 async function runStepUnderLockHook(
   makeHook: (probe: StepWriteProbe) => StepLockHook,
   methodName: string,
+  execute: () => Promise<Record<string, never>> = () => Promise.resolve({}),
 ): Promise<{
   error: unknown;
   outputs: import("../models/model_output.ts").ModelOutput[];
@@ -15887,7 +15888,7 @@ async function runStepUnderLockHook(
         execute: {
           description: "does nothing",
           arguments: z.object({}),
-          execute: () => Promise.resolve({}),
+          execute,
         },
       },
     });
@@ -16031,6 +16032,65 @@ Deno.test("DefaultStepExecutor: releases the step lock when the step fails befor
   assertEquals(lock?.flushes(), 1);
   assertEquals(outputs.length, 0);
   assertEquals(tracker.registrations.length, 0);
+});
+
+Deno.test("DefaultStepExecutor: parallel steps each hand their children only their own step lock", async () => {
+  const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
+    "../datastore/lock_holder_marker.ts"
+  );
+  // Both methods run before either captures, so the two steps overlap.
+  let started = 0;
+  let releaseBoth: () => void = () => {};
+  const bothStarted = new Promise<void>((resolve) => releaseBoth = resolve);
+  const childEnvs: Record<string, Record<string, string>> = {};
+  const stepHolding = (lockId: string) =>
+    runStepUnderLockHook(
+      () => () =>
+        Promise.resolve({
+          flush: () => Promise.resolve(),
+          heldLockIds: [lockId],
+        }),
+      "execute",
+      async () => {
+        if (++started === 2) releaseBoth();
+        await bothStarted;
+        childEnvs[lockId] = processLockHolderMarker.childLockEnv();
+        return {};
+      },
+    );
+
+  await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+    const results = await Promise.all([
+      stepHolding("lock-a"),
+      stepHolding("lock-b"),
+    ]);
+    assertEquals(results.map((r) => r.error), [undefined, undefined]);
+  });
+
+  assertEquals(childEnvs, {
+    "lock-a": { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:lock-a` },
+    "lock-b": { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:lock-b` },
+  });
+});
+
+Deno.test("DefaultStepExecutor: a step whose hook names no locks hands its children an empty entry", async () => {
+  const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
+    "../datastore/lock_holder_marker.ts"
+  );
+  let childEnv: Record<string, string> | undefined;
+  await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+    const { error } = await runStepUnderLockHook(
+      () => countingLockHook(() => Promise.resolve()).hook,
+      "execute",
+      () => {
+        childEnv = processLockHolderMarker.childLockEnv();
+        return Promise.resolve({});
+      },
+    );
+    assertEquals(error, undefined);
+  });
+
+  assertEquals(childEnv, { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:` });
 });
 
 /** Keeps a copy of every saved run, as a killed owner leaves it on disk. */

@@ -33,6 +33,7 @@ import { NESTED_GATE_PASS_ENV } from "../auth/nested_gate_pass.ts";
 import {
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
+  SWAMP_LOCK_HOLDER_TOKENS,
 } from "../datastore/lock_holder_marker.ts";
 
 /** An immutable name→value capture of environment variables. */
@@ -169,14 +170,19 @@ export function isSwampEnvVar(name: string): boolean {
  * - SWAMP_LOCK_HOLDER_PID: the pid of the nearest swamp that has taken a
  *   per-model lock (this one once it has, else the value it inherited), for
  *   older nested swamps that read only this name.
+ * - SWAMP_LOCK_HOLDER_TOKENS: which of those swamps' locks each holds for
+ *   the run that started the child, so it still waits on their other runs'
+ *   locks. Inherited here; the shell model adds this run's own entry per
+ *   spawn.
  *
- *   Both: design/enablers/datastores.md, "Parent-Process Lock Awareness". A
- *   fitness test pins the list.
+ *   All three: design/enablers/datastores.md, "Parent-Process Lock
+ *   Awareness". A fitness test pins the list.
  */
 export const NESTED_SWAMP_ENV_VARS: readonly string[] = [
   NESTED_GATE_PASS_ENV,
   SWAMP_LOCK_HOLDER_PID,
   SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_TOKENS,
 ];
 
 /**

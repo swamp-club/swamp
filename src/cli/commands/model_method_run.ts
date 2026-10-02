@@ -28,7 +28,9 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  type ModelLockResult,
   requireInitializedRepoUnlocked,
+  runUnderModelLocks,
 } from "../repo_context.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -442,6 +444,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           modelIdOrName,
         );
         let flushModelLocks: (() => Promise<void>) | null = null;
+        let modelLocks: ModelLockResult | undefined;
         let mutating = true;
         if (preResult) {
           try {
@@ -473,6 +476,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             );
             if (lockResult.synced) repoContext.catalogStore.invalidate();
             flushModelLocks = lockResult.flush;
+            modelLocks = lockResult;
           }
         }
 
@@ -503,37 +507,40 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               verbose: ctx.verbosity === "verbose",
             });
 
-            await consumeStream(
-              modelMethodRun(libCtx, deps, {
-                modelIdOrName,
-                methodName,
-                inputs: inputSets[i],
-                lastEvaluated: options.lastEvaluated as boolean,
-                typeArg,
-                definitionName,
-                runtimeTags,
-                skipCheckNames: options.skipCheck as string[] | undefined,
-                skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-                skipAllChecks: options.skipChecks as boolean | undefined,
-                skipReportNames: options.skipReport as string[] | undefined,
-                skipReportLabels: options.skipReportLabel as
-                  | string[]
-                  | undefined,
-                skipAllReports: options.skipReports as boolean | undefined,
-                reportNames: options.report as string[] | undefined,
-                reportLabels: options.reportLabel as string[] | undefined,
-                swampSha: GIT_SHA || undefined,
-                autoGc,
-                traceparent: resolveTraceparent(
-                  options.traceparent as string | undefined,
-                ),
-                tracestate: resolveTracestate(
-                  options.tracestate as string | undefined,
-                ),
-                initiatedBy,
-              }),
-              renderer.handlers(),
-            );
+            await runUnderModelLocks(modelLocks, () =>
+              consumeStream(
+                modelMethodRun(libCtx, deps, {
+                  modelIdOrName,
+                  methodName,
+                  inputs: inputSets[i],
+                  lastEvaluated: options.lastEvaluated as boolean,
+                  typeArg,
+                  definitionName,
+                  runtimeTags,
+                  skipCheckNames: options.skipCheck as string[] | undefined,
+                  skipCheckLabels: options.skipCheckLabel as
+                    | string[]
+                    | undefined,
+                  skipAllChecks: options.skipChecks as boolean | undefined,
+                  skipReportNames: options.skipReport as string[] | undefined,
+                  skipReportLabels: options.skipReportLabel as
+                    | string[]
+                    | undefined,
+                  skipAllReports: options.skipReports as boolean | undefined,
+                  reportNames: options.report as string[] | undefined,
+                  reportLabels: options.reportLabel as string[] | undefined,
+                  swampSha: GIT_SHA || undefined,
+                  autoGc,
+                  traceparent: resolveTraceparent(
+                    options.traceparent as string | undefined,
+                  ),
+                  tracestate: resolveTracestate(
+                    options.tracestate as string | undefined,
+                  ),
+                  initiatedBy,
+                }),
+                renderer.handlers(),
+              ));
 
             if (abort.signal.aborted) {
               Deno.exitCode = 1;

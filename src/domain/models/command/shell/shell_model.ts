@@ -31,6 +31,7 @@ import {
   createSafeMethodEnv,
   NESTED_SWAMP_ENV_VARS,
 } from "../../../remote/environment_snapshot.ts";
+import { processLockHolderMarker } from "../../../datastore/lock_holder_marker.ts";
 import { traceHeadersToEnv } from "../../execution_envelope.ts";
 import { selectShellStrategy } from "./shell_strategy.ts";
 
@@ -142,10 +143,11 @@ async function executeCommand(
     }
 
     const invocation = shellStrategy.buildInvocation(shellCommand);
-    // This execution's own trace context overrides whatever the shared
-    // process env holds; explicit user env still wins over both.
+    // This execution's own trace context and held locks override whatever
+    // the shared process env holds; explicit user env still wins over both.
     const processEnv = {
       ...createSafeMethodEnv(Deno.env.toObject(), NESTED_SWAMP_ENV_VARS),
+      ...processLockHolderMarker.childLockEnv(),
       ...traceHeadersToEnv(context.traceHeaders),
       ...shellEnv,
     };

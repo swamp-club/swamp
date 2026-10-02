@@ -56,6 +56,7 @@ Deno.test("isDeniedEnvVar: denies XDG_/DENO_/SWAMP_ prefixes", () => {
   assertEquals(isDeniedEnvVar("DENO_DIR"), true);
   assertEquals(isDeniedEnvVar("SWAMP_LOCK_HOLDER_PID"), true);
   assertEquals(isDeniedEnvVar("SWAMP_LOCK_ANCESTOR_PIDS"), true);
+  assertEquals(isDeniedEnvVar("SWAMP_LOCK_HOLDER_TOKENS"), true);
 });
 
 Deno.test("isDeniedEnvVar: is case-insensitive (Windows env names)", () => {
@@ -264,6 +265,7 @@ Deno.test("createSafeMethodEnv: NESTED_SWAMP_ENV_VARS keeps the nested-swamp var
     SWAMP_NESTED_GATE_PASS: "4242.e30.c2ln",
     SWAMP_LOCK_HOLDER_PID: "4242",
     SWAMP_LOCK_ANCESTOR_PIDS: "4141,4242",
+    SWAMP_LOCK_HOLDER_TOKENS: "4141:n1",
     SWAMP_API_KEY: "swamp_secret",
     SWAMP_API_KEY_FILE: "/run/secrets/swamp",
     SWAMP_SIGNIN_TOKEN: "e30.c2ln",
@@ -279,6 +281,7 @@ Deno.test("createSafeMethodEnv: NESTED_SWAMP_ENV_VARS keeps the nested-swamp var
     SWAMP_NESTED_GATE_PASS: "4242.e30.c2ln",
     SWAMP_LOCK_HOLDER_PID: "4242",
     SWAMP_LOCK_ANCESTOR_PIDS: "4141,4242",
+    SWAMP_LOCK_HOLDER_TOKENS: "4141:n1",
     PATH: "/usr/bin",
   });
 });

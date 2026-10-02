@@ -85,6 +85,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
+import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
@@ -987,6 +988,12 @@ export type DirectTypeResolver = (
 
 export interface StepLockResult {
   flush: () => Promise<void>;
+  /**
+   * The nonces of the lock files the hook took. The step runs inside
+   * `processLockHolderMarker.runHolding` with them, so a swamp the step
+   * starts skips these locks and not those of parallel steps.
+   */
+  heldLockIds?: readonly string[];
 }
 
 export type StepLockHook = (
@@ -1761,12 +1768,14 @@ export class DefaultStepExecutor implements StepExecutor {
     // datastore. Taking it first also means a lock timeout fails the step
     // before any record is left at running.
     let flushLock: (() => Promise<void>) | null = null;
+    let heldLockIds: readonly string[] = [];
     if (this.stepLockHook) {
       const lockResult = await this.stepLockHook(
         modelType.normalized,
         originalDefinition.id,
       );
       flushLock = lockResult.flush;
+      heldLockIds = lockResult.heldLockIds ?? [];
     }
     try {
       // Save evaluated definition (with vault expressions still raw) for
@@ -1902,22 +1911,28 @@ export class DefaultStepExecutor implements StepExecutor {
         inputs?: Record<string, unknown>;
       };
       try {
-        const result = await this.invokeMethod({
-          task: narrowedTask,
-          ctx,
-          executionService,
-          unifiedDataRepo,
-          definitionRepo,
-          dataQueryService,
-          vaultService,
-          modelType,
-          modelDef,
-          originalDefinition,
-          evaluatedDefinition,
-          runLogger,
-          secretBag,
-          resolvedPlacement,
-        });
+        // A swamp the method starts skips this step's lock, and still
+        // waits on the locks parallel steps hold in this process.
+        const result = await processLockHolderMarker.runHolding(
+          heldLockIds,
+          () =>
+            this.invokeMethod({
+              task: narrowedTask,
+              ctx,
+              executionService,
+              unifiedDataRepo,
+              definitionRepo,
+              dataQueryService,
+              vaultService,
+              modelType,
+              modelDef,
+              originalDefinition,
+              evaluatedDefinition,
+              runLogger,
+              secretBag,
+              resolvedPlacement,
+            }),
+        );
 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (runTracker) runTracker.complete(output.id, "completed");
