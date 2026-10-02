@@ -170,6 +170,22 @@ does: waiting gates and pending steps fail with error `cancelled` (or are
 skipped when their `dependsOn` is unmet), so `history get` shows failed jobs
 under a `cancelled` run. A guarded step that never ran stays `pending`.
 
-Cancelling a run also cancels the child runs of its nested workflow steps. Over
-`--server`, cancel the parent's run id. A child run is not cancellable by its
-own id there.
+Cancelling a running run also cancels the child runs of its nested workflow
+steps. Over `--server`, cancel the parent's run id. A running child run is not
+cancellable by its own id there.
+
+A parent suspended on a nested run is not running, so cancelling or superseding
+it does not cancel the child. The parent's nested step fails with
+`Detached: the run ended while this step waited on …`, and the child stays
+suspended. The output warns that the nested run was left unfinished and prints
+the command that cancels it (`detachedNestedRuns[].cancelCommand` in `--json`).
+Cancel the child under its own workflow name and run id:
+
+```
+swamp workflow cancel <child> --run <child-run-id>
+```
+
+Add `--server <url>` when serve owns the child; serve cancels a suspended child
+by its own id. Cascading this cancel to the child is tracked by swamp-club#2867.
+See
+[nested-workflows.md](nested-workflows.md#approval-gates-in-a-child-workflow).
