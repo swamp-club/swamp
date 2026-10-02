@@ -35,8 +35,16 @@ export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
 
+import { hostname } from "node:os";
+
 /** The slice of `Deno.env` that {@link LockHolderMarker} reads and writes. */
 export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
+
+/** The owner fields a per-model lock file records. */
+export interface LockOwner {
+  readonly pid?: number;
+  readonly hostname?: string;
+}
 
 interface Inherited {
   readonly holder: string | undefined;
@@ -61,6 +69,7 @@ export class LockHolderMarker {
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
     private readonly pid: number = Deno.pid,
+    private readonly host: string = hostname(),
   ) {}
 
   /**
@@ -99,6 +108,19 @@ export class LockHolderMarker {
       ancestors: this.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
     };
     return new Set(inheritedChain(inherited, this.pid));
+  }
+
+  /**
+   * A test for whether a lock file is held by one of this process's
+   * ancestors: its pid is an ancestor's and it was taken on this host. A
+   * process on another host sharing the datastore (e.g. over NFS) can carry
+   * the same pid. A lock with no recorded hostname matches on pid alone.
+   */
+  ancestorLockFilter(): (lock: LockOwner) => boolean {
+    const pids = this.ancestorPids();
+    return (lock) =>
+      lock.pid !== undefined && pids.has(lock.pid) &&
+      (lock.hostname === undefined || lock.hostname === this.host);
   }
 }
 

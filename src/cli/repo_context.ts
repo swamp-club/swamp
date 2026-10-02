@@ -1370,7 +1370,7 @@ export async function waitForPerModelLocks(
   progressWriter?: LockProgressWriter,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
-  const ancestorPids = processLockHolderMarker.ancestorPids();
+  const heldByAncestor = processLockHolderMarker.ancestorLockFilter();
 
   const findModelLocks = findModelLocksOverride ??
     (async (): Promise<number> => {
@@ -1392,12 +1392,12 @@ export async function waitForPerModelLocks(
               acquiredAt: string;
               ttlMs: number;
               pid?: number;
+              hostname?: string;
             };
-            // Skip locks held by an ancestor swamp (prevents deadlock
-            // when a workflow shell step spawns a nested swamp command).
-            if (info.pid !== undefined && ancestorPids.has(info.pid)) {
-              continue;
-            }
+            // Skip locks held by an ancestor swamp on this host (prevents
+            // deadlock when a workflow shell step spawns a nested swamp
+            // command).
+            if (heldByAncestor(info)) continue;
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
             if (Date.now() - acquiredAt <= info.ttlMs) {

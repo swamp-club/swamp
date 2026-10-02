@@ -1657,10 +1657,20 @@ clears them:
   inherited, it is seeded from an inherited `SWAMP_LOCK_HOLDER_PID`.
 
 Before publishing, the marker captures what the process inherited.
-`waitForPerModelLocks` skips any lock file whose `pid` is one of those
-ancestors: each one is blocked on this subtree, so its locks cannot be released
-while the child waits. The drain never skips its own pid, so a structural
-command still waits on in-flight writes by other runs in its own process.
+`waitForPerModelLocks` skips a lock file when its `pid` is one of those
+ancestors and its `hostname` is this host. A process on another host sharing
+the datastore (e.g. over NFS) can carry the same pid, so its lock is still
+waited on. A lock file with no `hostname` is matched on pid alone. The drain
+never skips its own pid, so a structural command still waits on in-flight
+writes by other runs in its own process.
+
+The skip is what avoids the deadlock: the run that started the child holds
+its lock until the child exits. But the marker names a process, not a run. A
+nested swamp under one `swamp serve` run, or under one of several parallel
+workflow steps, also skips locks the same process holds for unrelated runs.
+It can then race their in-flight writes (swamp-club#2955). A child left
+running in the background after its ancestors exit can likewise skip a lock
+taken by an unrelated process that reused an ancestor's pid on this host.
 
 Publishing for the life of the process is equivalent to publishing while
 holding locks, because a lock file carrying a pid exists only while that

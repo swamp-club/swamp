@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join, resolve } from "@std/path";
+import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
@@ -1492,7 +1493,7 @@ Deno.test(
         lockFile,
         JSON.stringify({
           holder: "parent@host",
-          hostname: "host",
+          hostname: hostname(),
           pid: parentPid,
           acquiredAt: new Date().toISOString(),
           ttlMs: 30_000,
@@ -1597,28 +1598,36 @@ Deno.test(
 );
 
 Deno.test(
-  "waitForPerModelLocks - skips locks held by every ancestor in SWAMP_LOCK_ANCESTOR_PIDS",
+  "waitForPerModelLocks - skips locks held by every ancestor on this host",
   async () => {
     await withTempDir(async (dir) => {
-      const writeLock = async (model: string, pid: number, ttlMs: number) => {
+      const writeLock = async (
+        model: string,
+        pid: number,
+        host: string,
+        ttlMs: number,
+      ) => {
         const lockDir = join(dir, "data", "command-shell", model);
         await ensureDir(lockDir);
         await Deno.writeTextFile(
           join(lockDir, ".lock"),
           JSON.stringify({
-            holder: "swamp@host",
-            hostname: "host",
+            holder: `swamp@${host}`,
+            hostname: host,
             pid,
             acquiredAt: new Date().toISOString(),
             ttlMs,
           }),
         );
       };
-      // Two ancestors hold long-lived locks; an unrelated writer's lock
-      // goes stale shortly, which ends the wait.
-      await writeLock("grandparent-model", 11111, 30_000);
-      await writeLock("parent-model", 22222, 30_000);
-      await writeLock("other-model", 33333, 1_500);
+      // Two ancestors hold long-lived locks on this host. An unrelated
+      // writer, and a process on another host sharing the datastore with
+      // an ancestor's pid, hold locks that go stale shortly, ending the
+      // wait.
+      await writeLock("grandparent-model", 11111, hostname(), 30_000);
+      await writeLock("parent-model", 22222, hostname(), 30_000);
+      await writeLock("other-model", 33333, hostname(), 1_500);
+      await writeLock("remote-model", 11111, "another-machine", 1_500);
 
       const messages: string[] = [];
       await withMockedEnv(
@@ -1637,9 +1646,9 @@ Deno.test(
       );
 
       assertEquals(
-        messages.some((m) => m.includes("Waiting for 1 per-model lock(s)")),
+        messages.some((m) => m.includes("Waiting for 2 per-model lock(s)")),
         true,
-        `expected only the non-ancestor lock to be counted, got ${
+        `expected only the non-ancestor and other-host locks to be counted, got ${
           JSON.stringify(messages)
         }`,
       );

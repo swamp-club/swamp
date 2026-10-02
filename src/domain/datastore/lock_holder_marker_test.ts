@@ -161,3 +161,28 @@ Deno.test("LockHolderMarker: caps the chain at the newest MAX_LOCK_ANCESTORS ent
   assertEquals(published.length, MAX_LOCK_ANCESTORS);
   assertEquals(published.at(-1), String(own));
 });
+
+Deno.test("LockHolderMarker.ancestorLockFilter: matches an ancestor's lock only on this host", () => {
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "200",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
+  });
+  const heldByAncestor = new LockHolderMarker(env.store, 300, "this-host")
+    .ancestorLockFilter();
+
+  assertEquals(heldByAncestor({ pid: 100, hostname: "this-host" }), true);
+  assertEquals(heldByAncestor({ pid: 200, hostname: "this-host" }), true);
+  assertEquals(heldByAncestor({ pid: 100, hostname: "other-host" }), false);
+  assertEquals(heldByAncestor({ pid: 300, hostname: "this-host" }), false);
+  assertEquals(heldByAncestor({ pid: 400, hostname: "this-host" }), false);
+  assertEquals(heldByAncestor({ hostname: "this-host" }), false);
+});
+
+Deno.test("LockHolderMarker.ancestorLockFilter: a lock without a hostname matches on pid alone", () => {
+  const env = fakeEnv({ [SWAMP_LOCK_ANCESTOR_PIDS]: "100" });
+  const heldByAncestor = new LockHolderMarker(env.store, 300, "this-host")
+    .ancestorLockFilter();
+
+  assertEquals(heldByAncestor({ pid: 100 }), true);
+  assertEquals(heldByAncestor({ pid: 400 }), false);
+});
