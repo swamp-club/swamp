@@ -159,8 +159,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Records `data` as the latest version for (type, modelId, data.name) in
-   * the catalog. Clears `is_latest` on any prior row atomically and inserts
-   * the new row with `is_latest=1` inside a single SQLite transaction.
+   * the catalog. {@link CatalogStore.upsertNewVersion} sets both latest
+   * flags by version order and demotes lower rows inside a single SQLite
+   * transaction.
    *
    * Every production write path that mutates a data item (save, append,
    * rename, restore, delete-specific-version) calls this exactly once with
@@ -175,6 +176,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: data.version,
       is_latest: 1,
+      is_step_latest: 1,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",
@@ -742,7 +744,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(contentPath, boundary);
     await atomicWriteFile(contentPath, content);
 
-    // Catalog row with is_latest=0 — invisible to latest-based queries
+    // Catalog row with both latest flags 0 — invisible to latest-based queries
     this.catalogStore.upsert({
       namespace: this.namespace,
       type_normalized: type.normalized,
@@ -751,6 +753,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: newVersion,
       is_latest: 0,
+      is_step_latest: 0,
       model_name: dataToSave.tags["modelName"] ?? "",
       spec_name: dataToSave.tags["specName"] ?? "",
       data_type: dataToSave.tags["type"] ?? "",
@@ -1318,6 +1321,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version,
       is_latest: 0,
+      is_step_latest: 0,
       model_name: dataToSave.tags["modelName"] ?? "",
       spec_name: dataToSave.tags["specName"] ?? "",
       data_type: dataToSave.tags["type"] ?? "",

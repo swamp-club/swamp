@@ -43,16 +43,19 @@ import { fromRow } from "./data_record_mapper.ts";
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
 /**
- * Sets `is_latest` on each row to match the demotion semantics of
- * `CatalogStore.upsertNewVersion`:
+ * Sets `is_latest` and `is_step_latest` on each row to match the semantics
+ * of `CatalogStore.upsertNewVersion`:
  *
- * - Model-method rows (step_name = "") are demoted by ANY later write
- *   (model-method or workflow-step), so they keep is_latest only when
- *   they are the absolute highest version in the group.
- * - Workflow-step rows (step_name != "") are demoted by later writes
- *   with the same step_name or by later model-method writes. Above
- *   the highest model-method version, each step_name gets its own
- *   latest.
+ * - `is_latest`: exactly one row per (namespace, type, model, name) group,
+ *   the highest version, whatever its step_name.
+ * - `is_step_latest`: model-method rows (step_name = "") are demoted by ANY
+ *   higher version (model-method or workflow-step), so they keep the flag
+ *   only when they are the absolute highest version in the group.
+ *   Workflow-step rows (step_name != "") are demoted by higher versions
+ *   with the same step_name or by higher model-method versions. Above the
+ *   highest model-method version, each step_name keeps its own latest.
+ *
+ * The highest row always gets both flags.
  */
 export function computeLatestFlags(rows: CatalogRow[]): void {
   const groups = new Map<string, CatalogRow[]>();
@@ -89,13 +92,14 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
     }
 
     for (const row of group) {
+      row.is_latest = row.version === overallMax ? 1 : 0;
       if (row.step_name === "") {
-        row.is_latest = row.version === overallMax ? 1 : 0;
+        row.is_step_latest = row.version === overallMax ? 1 : 0;
       } else if (row.version < globalMax) {
-        row.is_latest = 0;
+        row.is_step_latest = 0;
       } else {
         const maxForStep = maxVersionPerStep.get(row.step_name);
-        row.is_latest = row.version === maxForStep ? 1 : 0;
+        row.is_step_latest = row.version === maxForStep ? 1 : 0;
       }
     }
   }
@@ -107,6 +111,16 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * Replace the implicit latest-only filter with latest-per-step: when the
+   * predicate does not open history, match each workflow step's latest
+   * version of a data name (`is_step_latest`) instead of the single latest
+   * (`is_latest`). Only the CEL collection helpers `findBySpec` and
+   * `findByTag` set this, so every step's output stays visible
+   * (swamp-club#1761). Records of an older step's latest report
+   * `isLatest: false`.
+   */
+  latestPerStep?: boolean;
   /**
    * Populate each record's `path` with its local content path (default
    * false). Applied as each row's record is built, so predicates and select
@@ -551,11 +565,15 @@ export class DataQueryService {
     // 2`, `version >= 0`, `isLatest == false`). String literals like
     // `name == "version-report"` do not trigger the opt-out because
     // collectRootIdentifiers walks the AST rather than the source text.
+    // With latestPerStep the SQL pushdown below filters on is_step_latest
+    // instead, and the CEL `isLatest == true` term is left out because an
+    // older step's latest has isLatest false.
     const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
-    const effectivePredicate = opensHistory
+    const latestPerStep = options?.latestPerStep ?? false;
+    const effectivePredicate = opensHistory || latestPerStep
       ? predicate
       : `(${predicate}) && isLatest == true`;
-    const parsed = opensHistory
+    const parsed = opensHistory || latestPerStep
       ? userParsed
       : this.queryEnv.parse(effectivePredicate);
     const filterAst = parsed.ast as ASTNode;
@@ -589,7 +607,7 @@ export class DataQueryService {
     const whereParams: (string | number)[] = [];
 
     if (!opensHistory) {
-      whereClauses.push("is_latest = ?");
+      whereClauses.push(latestPerStep ? "is_step_latest = ?" : "is_latest = ?");
       whereParams.push(1);
     }
 
@@ -931,6 +949,7 @@ export class DataQueryService {
       id: data.id,
       version: data.version,
       is_latest: isLatest ? 1 : 0,
+      is_step_latest: isLatest ? 1 : 0,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",

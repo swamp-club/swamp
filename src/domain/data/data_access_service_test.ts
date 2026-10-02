@@ -26,6 +26,10 @@ import { computeDefinitionHash } from "../models/model_output.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import { join } from "@std/path";
+import { DataQueryService } from "./data_query_service.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 
 // Import models barrel to trigger self-registration
 import "../models/models.ts";
@@ -301,6 +305,66 @@ Deno.test("DataAccessService.readModelData: handles non-JSON content gracefully"
   // text/plain file should have empty attributes (not parsed as JSON)
   const logRecord = records.find((r) => r.name === "log-file");
   assertEquals(logRecord?.attributes, {});
+});
+
+Deno.test("DataAccessService.readModelData: returns one latest record when workflow steps wrote the same name (swamp-club#2520)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-read-model-data-" });
+  const catalog = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const dataQueryService = new DataQueryService(catalog, dataRepo);
+    for (const [stepName, state] of [["s1", "Ingesting"], ["s2", "Ingested"]]) {
+      const data = Data.create({
+        name: "item-b",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: {
+          type: "resource",
+          specName: "item",
+          modelName: TEST_MODEL_NAME,
+        },
+        // Workflow steps write as the model method, tagged with the step.
+        ownerDefinition: {
+          definitionHash: await computeDefinitionHash({
+            type: "model-method",
+            ref: "test:write",
+          }),
+          ownerType: "model-method",
+          ownerRef: "test:write",
+          stepName,
+        },
+      });
+      await dataRepo.save(
+        TEST_MODEL_TYPE,
+        TEST_MODEL_ID,
+        data,
+        new TextEncoder().encode(JSON.stringify({ state })),
+      );
+    }
+
+    const defRepo = createMockDefinitionRepo([
+      { definition: createTestDefinition(), type: TEST_MODEL_TYPE },
+    ]);
+    const service = new DataAccessService(
+      defRepo,
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const results = await service.readModelData(TEST_MODEL_NAME, "item");
+    assertEquals(results.map((r) => [r.version, r.isLatest]), [[2, true]]);
+    assertEquals(results[0].attributes, { state: "Ingested" });
+  } finally {
+    catalog.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("DataAccessService.resolveModel: returns model info for existing model", async () => {

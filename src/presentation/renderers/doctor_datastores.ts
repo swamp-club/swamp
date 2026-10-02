@@ -626,7 +626,7 @@ class LogCatalogDuplicateLatestRepairRenderer
           `\n${green("✓")} ${bold("Duplicate is_latest flags repaired:")}`,
         );
         writeOutput(
-          `  Demoted ${e.result.demotedRows} stale is_latest flag(s)`,
+          `  Corrected the latest flags on ${e.result.demotedRows} row(s)`,
         );
       },
       not_needed: () => {

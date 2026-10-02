@@ -63,6 +63,8 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     step_name: "",
     source: "",
     ...overrides,
+    // Rows default to a step latest exactly when they are latest.
+    is_step_latest: overrides.is_step_latest ?? overrides.is_latest ?? 1,
   };
 }
 
@@ -1958,6 +1960,11 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
 
 // --- computeLatestFlags tests ---
 
+/** Returns `version:is_latest:is_step_latest` for each row, in input order. */
+function flags(rows: CatalogRow[]): string[] {
+  return rows.map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
 Deno.test("computeLatestFlags: model-method write demotes all prior step outputs", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "step-a" }),
@@ -1966,12 +1973,10 @@ Deno.test("computeLatestFlags: model-method write demotes all prior step outputs
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 0);
-  assertEquals(rows[2].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:0", "3:1:1"]);
 });
 
-Deno.test("computeLatestFlags: different workflow steps keep independent latests above watermark", () => {
+Deno.test("computeLatestFlags: different workflow steps keep independent step latests above watermark", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "" }),
     makeRow({ version: 2, step_name: "step-a" }),
@@ -1979,9 +1984,8 @@ Deno.test("computeLatestFlags: different workflow steps keep independent latests
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 1);
-  assertEquals(rows[2].is_latest, 1);
+  // swamp-club#2520: one is_latest per name; each step keeps its latest.
+  assertEquals(flags(rows), ["1:0:0", "2:0:1", "3:1:1"]);
 });
 
 Deno.test("computeLatestFlags: rows below global watermark are demoted", () => {
@@ -1993,13 +1997,10 @@ Deno.test("computeLatestFlags: rows below global watermark are demoted", () => {
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 0);
-  assertEquals(rows[2].is_latest, 0);
-  assertEquals(rows[3].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:0", "3:0:0", "4:1:1"]);
 });
 
-Deno.test("computeLatestFlags: no model-method rows means each step gets own latest", () => {
+Deno.test("computeLatestFlags: no model-method rows means each step gets own step latest", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "step-a" }),
     makeRow({ version: 2, step_name: "step-a" }),
@@ -2007,9 +2008,7 @@ Deno.test("computeLatestFlags: no model-method rows means each step gets own lat
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 1);
-  assertEquals(rows[2].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:1", "3:1:1"]);
 });
 
 Deno.test("computeLatestFlags: model-method as latest version demotes everything", () => {
@@ -2024,6 +2023,7 @@ Deno.test("computeLatestFlags: model-method as latest version demotes everything
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 3);
   assertEquals(latestRows[0].step_name, "");
+  assertEquals(rows.filter((r) => r.is_step_latest === 1).length, 1);
 });
 
 Deno.test("computeLatestFlags: different namespaces keep independent is_latest", () => {
@@ -2769,4 +2769,85 @@ Deno.test("DataQueryService: a backfill that started before an invalidate does n
     catalog.close();
     Deno.removeSync(dir, { recursive: true });
   }
+});
+
+// --- Latest across workflow steps (swamp-club#2520) ---
+
+function writeStepVersions(catalog: CatalogStore, steps: string[]): void {
+  steps.forEach((step, i) => {
+    catalog.upsertNewVersion(makeRow({
+      version: i + 1,
+      id: `00000000-0000-1000-8000-00000000010${i}`,
+      step_name: step,
+    }));
+  });
+}
+
+Deno.test("DataQueryService: implicit latest returns one version when workflow steps wrote the same name", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  const results = service.querySync(
+    'modelName == "ingest" && name == "my-data"',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => [r.version, r.isLatest]), [[2, true]]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: three steps across jobs return only the newest version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s3"]);
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.map((r) => r.version), [3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: history query reports older step versions as not latest", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  const results = service.querySync(
+    'modelName == "ingest" && version >= 0',
+  ) as DataRecord[];
+  assertEquals(
+    results.map((r) => [r.version, r.isLatest]).sort(),
+    [[1, false], [2, true]],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: latestPerStep returns each step's latest version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s1"]);
+
+  const results = service.querySync('modelName == "ingest"', {
+    latestPerStep: true,
+  }) as DataRecord[];
+  assertEquals(
+    results.map((r) => [r.stepName, r.version, r.isLatest]).sort(),
+    [["s1", 3, true], ["s2", 2, false]],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: latestPerStep with a history predicate returns every version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s1"]);
+
+  const results = service.querySync('modelName == "ingest" && version >= 0', {
+    latestPerStep: true,
+  }) as DataRecord[];
+  assertEquals(results.map((r) => r.version).sort(), [1, 2, 3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.latestDataNamesForSpec: lists a name once when several steps wrote it", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  assertEquals(service.latestDataNamesForSpec("ingest", "result"), [
+    "my-data",
+  ]);
+  catalog.close();
 });

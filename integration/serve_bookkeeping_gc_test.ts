@@ -444,6 +444,7 @@ function foreignRow(
     id: crypto.randomUUID(),
     version: 1,
     is_latest: 1,
+    is_step_latest: 1,
     model_name: modelName,
     spec_name: "",
     data_type: "resource",

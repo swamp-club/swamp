@@ -28,7 +28,10 @@ const logger = getLogger(["swamp", "persistence", "catalog"]);
 /**
  * A single row in the catalog table, representing one version of a data
  * artifact. The `is_latest` flag is set on exactly one row per
- * (namespace, type_normalized, model_id, data_name) triple.
+ * (namespace, type_normalized, model_id, data_name) group: the highest
+ * promoted version. The `is_step_latest` flag marks the latest version each
+ * workflow step wrote to that group (see {@link CatalogStore.upsertNewVersion}),
+ * and is always set on the `is_latest` row.
  */
 export interface CatalogRow {
   namespace: string;
@@ -38,6 +41,7 @@ export interface CatalogRow {
   id: string;
   version: number;
   is_latest: number;
+  is_step_latest: number;
   model_name: string;
   spec_name: string;
   data_type: string;
@@ -61,7 +65,8 @@ export interface CatalogRow {
  *
  * Stores one row per version of each data artifact with all metadata fields
  * needed for CEL predicate evaluation. The `is_latest` column marks exactly
- * one row per (type, model, name) as the current latest. Content is NOT
+ * one row per (type, model, name) as the current latest, and
+ * `is_step_latest` marks each workflow step's latest. Content is NOT
  * stored — it remains on disk in the existing versioned file layout.
  *
  * The catalog is local-only and excluded from datastore sync. It self-heals
@@ -82,7 +87,7 @@ export interface CatalogCheckpointStats {
  * On startup, if the stored version differs, the catalog is dropped and
  * rebuilt via self-healing backfill.
  */
-export const CATALOG_SCHEMA_VERSION = "4";
+export const CATALOG_SCHEMA_VERSION = "5";
 
 /**
  * A value SQLite can round-trip when copying rows generically during
@@ -186,6 +191,7 @@ export class CatalogStore {
         id              TEXT NOT NULL,
         version         INTEGER NOT NULL,
         is_latest       INTEGER NOT NULL DEFAULT 1,
+        is_step_latest  INTEGER NOT NULL DEFAULT 1,
         model_name      TEXT NOT NULL,
         spec_name       TEXT NOT NULL DEFAULT '',
         data_type       TEXT NOT NULL DEFAULT '',
@@ -214,6 +220,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
+      CREATE INDEX IF NOT EXISTS idx_catalog_step_latest   ON catalog(model_name, is_step_latest);
 
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
@@ -256,11 +263,11 @@ export class CatalogStore {
   upsert(row: CatalogRow): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO catalog (
-        namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+        namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
         spec_name, data_type, content_type, lifetime, owner_type,
         streaming, size, created_at, tags,
         owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.namespace,
@@ -270,6 +277,7 @@ export class CatalogStore {
       row.id,
       row.version,
       row.is_latest,
+      row.is_step_latest,
       row.model_name,
       row.spec_name,
       row.data_type,
@@ -290,38 +298,68 @@ export class CatalogStore {
   }
 
   /**
-   * Inserts a row as the new latest version for (type, model, name), clearing
-   * `is_latest` on prior rows. The `is_latest` field on the supplied row is
-   * ignored — this method always writes `1`.
+   * Inserts a newly promoted version and maintains both latest flags for its
+   * (namespace, type, model, name) group. The flags on the supplied row are
+   * ignored. Version order, not arrival order, decides the flags, so
+   * parallel workflow steps that promote out of order converge on the flags
+   * {@link computeLatestFlags} derives on rebuild.
    *
-   * Demotion scope depends on the incoming step_name:
-   * - Model-method writes (step_name = "") demote ALL prior latest rows
-   *   regardless of their step_name.
-   * - Workflow-step writes (step_name != "") demote rows with the same
-   *   step_name AND rows with step_name = "" (model-method rows), but
-   *   leave other steps' latest rows untouched so different workflow
-   *   steps maintain independent version chains.
+   * - `is_latest`: one row per group, the highest promoted version. Lower
+   *   rows are demoted; the new row is latest only when no higher row holds
+   *   either flag. A higher row holding neither flag is either superseded by
+   *   a still-higher flagged row or an unpromoted deferred write, which does
+   *   not count.
+   * - `is_step_latest`: the latest version each workflow step wrote, used by
+   *   `findBySpec`/`findByTag` so every step's output stays visible
+   *   (swamp-club#1761). A row's scope is its own step plus model-method
+   *   rows (step_name = ""), or every row for a model-method write
+   *   (swamp-club#1802). The new row demotes lower rows in its scope, and is
+   *   a step latest unless a higher row in its scope exists. The `is_latest`
+   *   row is always a step latest.
    *
    * Runs in an IMMEDIATE transaction so concurrent writers serialize
-   * through SQLite's reserved lock rather than racing on the flag.
+   * through SQLite's reserved lock rather than racing on the flags.
    */
   upsertNewVersion(row: CatalogRow): void {
+    const group = [
+      row.namespace,
+      row.type_normalized,
+      row.model_id,
+      row.data_name,
+    ];
+    const groupWhere =
+      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
+    const stepScope = "(step_name = ? OR ? = '' OR step_name = '')";
+    const scope = [row.step_name, row.step_name];
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const higherFlagged = this.db.prepare(
+        `SELECT 1 FROM catalog
+         WHERE ${groupWhere} AND version > ?
+           AND (is_latest = 1 OR is_step_latest = 1)
+         LIMIT 1`,
+      ).get(...group, row.version);
+      const higherInScope = this.db.prepare(
+        `SELECT 1 FROM catalog
+         WHERE ${groupWhere} AND version > ? AND ${stepScope}
+         LIMIT 1`,
+      ).get(...group, row.version, ...scope);
+      const isLatest = higherFlagged ? 0 : 1;
+      const isStepLatest = isLatest || !higherInScope ? 1 : 0;
       this.db.prepare(
         `UPDATE catalog SET is_latest = 0
-         WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?
-           AND (step_name = ? OR ? = '' OR step_name = '')
-           AND is_latest = 1`,
-      ).run(
-        row.namespace,
-        row.type_normalized,
-        row.model_id,
-        row.data_name,
-        row.step_name,
-        row.step_name,
-      );
-      this.upsert({ ...row, is_latest: 1 });
+         WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
+      ).run(...group, row.version);
+      this.db.prepare(
+        `UPDATE catalog SET is_step_latest = 0
+         WHERE ${groupWhere} AND version < ? AND ${stepScope}
+           AND is_step_latest = 1`,
+      ).run(...group, row.version, ...scope);
+      this.upsert({
+        ...row,
+        is_latest: isLatest,
+        is_step_latest: isStepLatest,
+      });
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -341,11 +379,11 @@ export class CatalogStore {
     try {
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
-          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -356,6 +394,7 @@ export class CatalogStore {
           row.id,
           row.version,
           row.is_latest,
+          row.is_step_latest,
           row.model_name,
           row.spec_name,
           row.data_type,
@@ -395,11 +434,11 @@ export class CatalogStore {
     try {
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
-          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -410,6 +449,7 @@ export class CatalogStore {
           row.id,
           row.version,
           row.is_latest,
+          row.is_step_latest,
           row.model_name,
           row.spec_name,
           row.data_type,
@@ -1051,8 +1091,10 @@ export class CatalogStore {
   }
 
   /**
-   * Returns the number of (namespace, type, model, name) groups that have
-   * more than one `is_latest=1` row. Zero means the catalog is consistent.
+   * Returns the number of (namespace, type, model, name) groups whose latest
+   * flags conflict: more than one `is_latest=1` row, or more than one
+   * `is_step_latest=1` row for the same step_name. Zero means the catalog
+   * is consistent.
    */
   countDuplicateLatest(): number {
     const stmt = this.db.prepare(
@@ -1060,6 +1102,12 @@ export class CatalogStore {
          SELECT namespace, type_normalized, model_id, data_name
          FROM catalog
          WHERE is_latest = 1
+         GROUP BY namespace, type_normalized, model_id, data_name
+         HAVING COUNT(*) > 1
+         UNION
+         SELECT namespace, type_normalized, model_id, data_name
+         FROM catalog
+         WHERE is_step_latest = 1
          GROUP BY namespace, type_normalized, model_id, data_name, step_name
          HAVING COUNT(*) > 1
        )`,
@@ -1069,9 +1117,14 @@ export class CatalogStore {
   }
 
   /**
-   * Scans all `is_latest=1` rows, recomputes the flag via
-   * {@link computeLatestFlags}, and updates any rows whose flag changed.
-   * Returns the number of rows demoted.
+   * Recomputes both latest flags over every flagged row via
+   * {@link computeLatestFlags} and writes back any row whose flags changed.
+   * Returns the number of rows changed.
+   *
+   * Only flagged rows take part, so an unpromoted deferred write (both
+   * flags 0) is never promoted here. The read, recompute and write run in
+   * one IMMEDIATE transaction, so a concurrent {@link upsertNewVersion}
+   * cannot interleave with a stale snapshot.
    *
    * Called after {@link bulkUpsert} in the backfill path to close the
    * race between the async disk walk and concurrent writes: a `save()`
@@ -1081,39 +1134,45 @@ export class CatalogStore {
   enforceUniqueLatest(
     computeFlags: (rows: CatalogRow[]) => void,
   ): number {
-    const latestRows: CatalogRow[] = [
-      ...this.iterateFiltered("is_latest = ?", [1]),
-    ];
-    if (latestRows.length === 0) return 0;
-
-    computeFlags(latestRows);
-
-    const demoted = latestRows.filter((r) => r.is_latest === 0);
-    if (demoted.length === 0) return 0;
-
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const stmt = this.db.prepare(
-        `UPDATE catalog SET is_latest = 0
-         WHERE namespace = ? AND type_normalized = ? AND model_id = ?
-           AND data_name = ? AND version = ?`,
+      const rows: CatalogRow[] = [
+        ...this.iterateFiltered("(is_latest = ? OR is_step_latest = ?)", [
+          1,
+          1,
+        ]),
+      ];
+      const before = new Map(
+        rows.map((r) => [r, `${r.is_latest}:${r.is_step_latest}`]),
       );
-      for (const row of demoted) {
-        stmt.run(
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-          row.version,
+      computeFlags(rows);
+      const changed = rows.filter((r) =>
+        before.get(r) !== `${r.is_latest}:${r.is_step_latest}`
+      );
+      if (changed.length > 0) {
+        const stmt = this.db.prepare(
+          `UPDATE catalog SET is_latest = ?, is_step_latest = ?
+           WHERE namespace = ? AND type_normalized = ? AND model_id = ?
+             AND data_name = ? AND version = ?`,
         );
+        for (const row of changed) {
+          stmt.run(
+            row.is_latest,
+            row.is_step_latest,
+            row.namespace,
+            row.type_normalized,
+            row.model_id,
+            row.data_name,
+            row.version,
+          );
+        }
       }
       this.db.exec("COMMIT");
+      return changed.length;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-
-    return demoted.length;
   }
 
   /**
