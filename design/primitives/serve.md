@@ -593,6 +593,14 @@ fails to unregister (for example, the pulled-extensions lock times out), the
 next reload retries it. `sweepRemovedPulledExtensions` in
 `src/serve/extension_reload.ts` implements this.
 
+Installed add-ons go the other way. After re-registering pulled types, the
+reload attaches every pulled add-on whose target model type is registered
+(`attachPulledAddOns`). A built-in or local type the reload never re-registers
+gains the add-on's members without a restart, even if serve had already used
+that type (swamp-club#2846). Lazy targets attach their add-ons when they load,
+control-plane types are never extended, and add-ons already attached are
+skipped.
+
 The reload re-bundles from the instance's own pulled root. Extension sources are
 not pushed (each repo keeps them in its own pulled root until swamp-club#2612),
 so a peer's new extension registers only after `extension install` on each
