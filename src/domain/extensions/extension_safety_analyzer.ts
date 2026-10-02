@@ -139,6 +139,8 @@ const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
   "constructor-call": ".constructor call",
   "global-object-alias": "global object used as a value",
   "aliased-eval-member": "member named eval in a file that aliases a global",
+  "unparsed-eval-text":
+    "eval( or new Function( text in a file that does not parse",
 };
 
 function describeDynamicCode(findings: DynamicCodeFinding[]): string {

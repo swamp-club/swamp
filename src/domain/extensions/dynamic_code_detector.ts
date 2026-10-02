@@ -22,18 +22,21 @@
  * constructor, and `.constructor(...)` calls — in TypeScript/JavaScript
  * source, for the extension safety gate.
  *
- * This is a hygiene gate, not a sandbox. It tokenizes the source so text in
- * comments, strings, template text and regex literals never counts, then
- * applies default-deny rules: an `eval` or `Function` token is flagged unless
- * it sits in a context positively identified as benign (a property name on an
- * ordinary object, a class member or object-literal key, a TypeScript type
- * position). Ambiguous contexts resolve toward flagging. Aliases built at
- * runtime (`globalThis["ev" + "al"]`) cannot be caught statically.
+ * This is a hygiene gate, not a sandbox. The source is parsed with
+ * `@babel/parser`, so comments, strings, template text and regex literals
+ * never count, and the rules apply to syntax-tree nodes: an `eval` or
+ * `Function` identifier is flagged unless its role is positively benign (a
+ * property name on an ordinary object, a class member or object-literal key,
+ * a TypeScript type). A file that does not parse falls back to the plain
+ * text check (`eval(` or `new Function(`), so unparseable code is never
+ * treated as safe. Aliases built at runtime (`globalThis["ev" + "al"]`)
+ * cannot be caught statically.
  *
- * The scan is a single linear pass with explicit stacks — no recursion and no
- * backtracking regexes over the input — because `extension pull` runs it on
- * untrusted archive sources.
+ * The tree walk uses an explicit stack, because `extension pull` runs this
+ * on untrusted archive sources.
  */
+
+import { parse, type ParserPlugin } from "@babel/parser";
 
 /** The form of dynamic code execution a finding reports. */
 export type DynamicCodeKind =
@@ -42,7 +45,8 @@ export type DynamicCodeKind =
   | "function-constructor"
   | "constructor-call"
   | "global-object-alias"
-  | "aliased-eval-member";
+  | "aliased-eval-member"
+  | "unparsed-eval-text";
 
 /** One occurrence of dynamic code execution, 1-based line and column. */
 export interface DynamicCodeFinding {
@@ -51,59 +55,21 @@ export interface DynamicCodeFinding {
   kind: DynamicCodeKind;
 }
 
-type TokenType =
-  | "ident"
-  | "private"
-  | "punct"
-  | "string"
-  | "template"
-  | "number"
-  | "regex";
-
-type FrameKind =
-  | "block"
-  | "class"
-  | "object"
-  | "type"
-  | "paren"
-  | "bracket"
-  | "tmpl";
-
-interface Token {
-  type: TokenType;
-  /** Decoded name for identifiers, cooked value for strings and templates. */
-  value: string;
-  line: number;
-  column: number;
-  /** A line terminator separates this token from the previous one. */
-  nl: boolean;
-  /** Index of the innermost enclosing opener token, or -1 at top level. */
-  frame: number;
-  /** Frame kind this token opens (openers only). */
-  opens?: FrameKind;
-  /** Index of the matching opener/closer, or -1 when unmatched. */
-  match: number;
-  /** For `:` — what the colon separates. */
-  colon?: "prop" | "ternary" | "other";
-  /** For `}` — the kind of frame it closed. */
-  closes?: FrameKind;
-  /** For `{` and `}` — the body of a function or class expression. */
-  exprBody?: boolean;
-  /** Token is part of a TypeScript type declaration. */
-  inType: boolean;
-  /** For templates — the chunk is a whole template with no substitutions. */
-  whole?: boolean;
+/** The parts of a Babel AST node this module reads. */
+interface AstNode {
+  type: string;
+  loc?: { start: { line: number; column: number } } | null;
+  [key: string]: unknown;
 }
 
-interface Frame {
-  opener: number;
-  char: "{" | "(" | "[" | "${";
-  kind: FrameKind;
-  ternary: number;
-  inType: boolean;
-  exprBody: boolean;
+/** A node on the walk stack, linked to its parent. */
+interface Visit {
+  node: AstNode;
+  key: string;
+  parent: Visit | null;
 }
 
+// Global objects whose `eval` member is the global `eval`.
 const GLOBAL_OBJECTS = new Set([
   "globalThis",
   "window",
@@ -114,1259 +80,479 @@ const GLOBAL_OBJECTS = new Set([
   "top",
 ]);
 
-// Keywords after which `/` starts a regex and `{` starts an expression.
-const EXPRESSION_KEYWORDS = new Set([
-  "return",
-  "typeof",
-  "instanceof",
-  "in",
-  "of",
-  "new",
-  "delete",
-  "void",
-  "throw",
-  "case",
-  "do",
-  "else",
-  "yield",
-  "await",
-]);
-
-// Only keywords that plausibly take an object operand. `void` is left out
-// because it also ends a return type (`(): void {`), where `{` is a body.
-const OBJECT_AFTER_KEYWORDS = new Set([
-  "in",
-  "of",
-  "throw",
-  "await",
-]);
-
-// Keywords after which `function` or `class` is an expression.
-const EXPRESSION_START_KEYWORDS = new Set([
-  "return",
-  "yield",
-  "await",
-  "throw",
-  "typeof",
-  "void",
-  "delete",
-  "new",
-  "in",
-  "of",
-  "instanceof",
-  "case",
-]);
-
-// Keywords whose parenthesized head is followed by a statement, so a `/`
-// after the closing paren starts a regex.
-const STATEMENT_HEAD_KEYWORDS = new Set(["if", "while", "for", "with"]);
-
-const OBJECT_AFTER_PUNCT = new Set([
-  "(",
-  "[",
-  ",",
-  "=",
-  "?",
-  "...",
-  "${",
-  "+",
-  "-",
-  "*",
-  "/",
-  "%",
-  "**",
-  "<",
-  "<=",
-  ">=",
-  "==",
-  "!=",
-  "===",
-  "!==",
-  "&&",
-  "||",
-  "??",
-  "!",
-  "~",
-  "&",
-  "|",
-  "^",
-  "<<",
-  "+=",
-  "-=",
-  "*=",
-  "/=",
-  "%=",
-  "**=",
-  "<<=",
-  ">>=",
-  ">>>=",
-  "&=",
-  "|=",
-  "^=",
-  "&&=",
-  "||=",
-  "??=",
-]);
-
-const CLASS_MODIFIERS = new Set([
-  "static",
-  "async",
-  "get",
-  "set",
-  "public",
-  "private",
-  "protected",
-  "readonly",
-  "override",
-  "abstract",
-  "declare",
-  "accessor",
-]);
-
-const OBJECT_MODIFIERS = new Set(["async", "get", "set"]);
-
-// Tokens that continue a type alias across a line break.
-const TYPE_CONTINUATION = new Set([
-  "=",
-  "|",
-  "&",
-  ",",
-  "<",
-  "?",
-  ":",
-  "=>",
-  ".",
-  "(",
-  "[",
-  "{",
-  "extends",
-  "keyof",
-  "typeof",
-  "infer",
-  "readonly",
-]);
-const TYPE_LEADING_CONTINUATION = new Set([
-  "|",
-  "&",
-  ".",
-  "?",
-  ":",
-  "=>",
-  "extends",
-  ">",
-  ")",
-  "]",
-  "}",
-]);
-
-const PUNCTUATORS = [
-  ">>>=",
-  "...",
-  "===",
-  "!==",
-  "**=",
-  "<<=",
-  ">>=",
-  ">>>",
-  "&&=",
-  "||=",
-  "??=",
-  "=>",
-  "==",
-  "!=",
-  "<=",
-  ">=",
-  "&&",
-  "||",
-  "??",
-  "?.",
-  "++",
-  "--",
-  "+=",
-  "-=",
-  "*=",
-  "%=",
-  "&=",
-  "|=",
-  "^=",
-  "**",
-  "<<",
-  ">>",
-];
-
-// Operators that can follow a variable named `type` in an expression.
-const NOT_A_DECLARED_NAME = new Set([
-  "in",
-  "instanceof",
-  "of",
-  "as",
-  "satisfies",
-  "is",
-  "extends",
-  "keyof",
-]);
-
-// Code-like call text inside a regex, or inside a string right after a `/`.
-// Either means the tokenizer may have misread code as a literal, so the
-// literal is checked as text and the ambiguity resolves toward flagging.
-const CALL_TEXT = /(?:^|[^\w$.\\])(?:eval|Function)\s*\(/;
-
 // Global objects whose use as a value can alias the global `eval`.
 const VALUE_GLOBALS = new Set(["globalThis", "window", "self"]);
 
 const CALL_FORMS = new Set(["call", "apply", "bind"]);
 const COMPUTED_NAMES = new Set(["eval", "Function"]);
-const MAX_WALK_BACK = 64;
+const MAX_CHAIN = 64;
 
-const ID_START = /[\p{ID_Start}$_]/u;
-const ID_CONTINUE = /[\p{ID_Continue}$\u200c\u200d]/u;
-const SPACE = /[\p{Zs}\t\v\f\ufeff]/u;
+// Keys that hold TypeScript types, which are erased at runtime.
+const TYPE_KEYS = new Set([
+  "typeAnnotation",
+  "returnType",
+  "typeParameters",
+  "typeArguments",
+  "superTypeParameters",
+  "implements",
+  "predicate",
+]);
 
-function isLineTerminator(ch: string): boolean {
-  return ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029";
+// Keys that never hold child nodes worth walking.
+const SKIP_KEYS = new Set([
+  "loc",
+  "start",
+  "end",
+  "range",
+  "extra",
+  "leadingComments",
+  "trailingComments",
+  "innerComments",
+  "comments",
+  "tokens",
+]);
+
+// TypeScript nodes with no runtime code. Every other node, including TS
+// nodes not listed here, is walked, so an unknown node resolves toward
+// flagging. TSQualifiedName is deliberately absent: `import e = a.b` is a
+// runtime assignment, and inside types it sits under a skipped node anyway.
+const TYPE_ONLY_NODES = new Set([
+  "TSInterfaceDeclaration",
+  "TSTypeAliasDeclaration",
+  "TSDeclareFunction",
+  "TSDeclareMethod",
+  "TSIndexSignature",
+  "TSPropertySignature",
+  "TSMethodSignature",
+  "TSTypeAnnotation",
+  "TSTypeLiteral",
+  "TSTypeQuery",
+  "TSTypeReference",
+  "TSTypeParameterDeclaration",
+  "TSTypeParameterInstantiation",
+  "TSInterfaceBody",
+  "TSExpressionWithTypeArguments",
+  "TSTypePredicate",
+  "TSLiteralType",
+  "TSIndexedAccessType",
+]);
+
+const TS_WRAPPERS = new Set([
+  "TSAsExpression",
+  "TSSatisfiesExpression",
+  "TSNonNullExpression",
+  "TSTypeAssertion",
+  "ParenthesizedExpression",
+]);
+
+const PLUGINS: ParserPlugin[] = [
+  "typescript",
+  "decorators-legacy",
+  "explicitResourceManagement",
+  "importAttributes",
+];
+
+function isNode(value: unknown): value is AstNode {
+  return typeof value === "object" && value !== null &&
+    typeof (value as { type?: unknown }).type === "string";
 }
 
-function isIdStart(cp: number): boolean {
-  if (cp < 128) {
-    return (cp >= 97 && cp <= 122) || (cp >= 65 && cp <= 90) || cp === 36 ||
-      cp === 95;
-  }
-  return ID_START.test(String.fromCodePoint(cp));
+function isTypeOnly(node: AstNode): boolean {
+  if (TYPE_ONLY_NODES.has(node.type)) return true;
+  // The remaining type nodes: TSStringKeyword, TSUnionType, TSFunctionType
+  // and so on. Runtime TS nodes are expressions or declarations.
+  return node.type.startsWith("TS") &&
+    (node.type.endsWith("Type") || node.type.endsWith("Keyword"));
 }
 
-function isIdContinue(cp: number): boolean {
-  if (cp < 128) {
-    return (cp >= 97 && cp <= 122) || (cp >= 65 && cp <= 90) ||
-      (cp >= 48 && cp <= 57) || cp === 36 || cp === 95;
+function parseSource(source: string): AstNode | null {
+  for (const sourceType of ["module", "script"] as const) {
+    try {
+      const file = parse(source, {
+        sourceType,
+        plugins: PLUGINS,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowImportExportEverywhere: true,
+        allowUndeclaredExports: true,
+        allowNewTargetOutsideFunction: true,
+        allowSuperOutsideMethod: true,
+        errorRecovery: false,
+      });
+      return file.program as unknown as AstNode;
+    } catch {
+      // Syntax errors, and stack overflow on extreme nesting, fall through
+      // to the next source type and finally to the text check.
+    }
   }
-  return ID_CONTINUE.test(String.fromCodePoint(cp));
+  return null;
 }
 
-function isDigit(ch: string | undefined): boolean {
-  return ch !== undefined && ch >= "0" && ch <= "9";
-}
-
-class Tokenizer {
-  private pos = 0;
-  private line = 1;
-  private lineStart = 0;
-  private sawNewline = false;
-  private noRegexUntil = -1;
-  readonly tokens: Token[] = [];
-  private readonly frames: Frame[] = [];
-  private readonly pendingClass: Array<{ depth: number; expr: boolean }> = [];
-  private readonly pendingFunction: Array<{ depth: number; expr: boolean }> =
-    [];
-  private pendingInterface = -1;
-  private typeAlias:
-    | { depth: number; active: boolean; named: boolean }
-    | null = null;
-  private lastQuestion = -1;
-  /** Open ternaries outside any frame. */
-  private rootTernary = 0;
-
-  constructor(private readonly src: string) {}
-
-  run(): Token[] {
-    const src = this.src;
-    if (src.startsWith("#!")) {
-      while (this.pos < src.length && !isLineTerminator(src[this.pos])) {
-        this.pos++;
+/** The old text check, used when the source does not parse. */
+function textFallback(source: string): DynamicCodeFinding[] {
+  const findings: DynamicCodeFinding[] = [];
+  let lineStart = 0;
+  let line = 1;
+  let scanned = 0;
+  for (const match of source.matchAll(/eval\(|new Function\(/g)) {
+    for (; scanned < match.index; scanned++) {
+      if (source[scanned] === "\n") {
+        line++;
+        lineStart = scanned + 1;
       }
     }
-    while (this.pos < src.length) {
-      const ch = src[this.pos];
-      if (isLineTerminator(ch)) {
-        this.newline();
-        continue;
-      }
-      if (ch === " " || SPACE.test(ch)) {
-        this.pos++;
-        continue;
-      }
-      if (ch === "/" && src[this.pos + 1] === "/") {
-        while (this.pos < src.length && !isLineTerminator(src[this.pos])) {
-          this.pos++;
-        }
-        continue;
-      }
-      if (ch === "/" && src[this.pos + 1] === "*") {
-        this.blockComment();
-        continue;
-      }
-      this.token();
-    }
-    return this.tokens;
-  }
-
-  private newline(): void {
-    if (this.src[this.pos] === "\r" && this.src[this.pos + 1] === "\n") {
-      this.pos++;
-    }
-    this.pos++;
-    this.line++;
-    this.lineStart = this.pos;
-    this.sawNewline = true;
-  }
-
-  private blockComment(): void {
-    const src = this.src;
-    this.pos += 2;
-    while (this.pos < src.length) {
-      if (src[this.pos] === "*" && src[this.pos + 1] === "/") {
-        this.pos += 2;
-        return;
-      }
-      if (isLineTerminator(src[this.pos])) this.newline();
-      else this.pos++;
-    }
-  }
-
-  private token(): void {
-    const src = this.src;
-    const start = this.pos;
-    const line = this.line;
-    const column = start - this.lineStart + 1;
-    const ch = src[start];
-    const cp = src.codePointAt(start) ?? 0;
-
-    if (isIdStart(cp) || (ch === "\\" && src[start + 1] === "u")) {
-      const name = this.readIdentifier();
-      // An invalid escape such as a lone `\u` reads nothing; consume it as
-      // punctuation so the scan always advances.
-      if (this.pos > start) {
-        this.emit("ident", name, line, column);
-        return;
-      }
-    }
-    if (ch === "#") {
-      const next = src.codePointAt(start + 1) ?? 0;
-      this.pos++;
-      if (isIdStart(next) || src[start + 1] === "\\") {
-        this.emit("private", "#" + this.readIdentifier(), line, column);
-      } else {
-        this.emit("punct", "#", line, column);
-      }
-      return;
-    }
-    if (isDigit(ch) || (ch === "." && isDigit(src[start + 1]))) {
-      this.readNumber();
-      this.emit("number", src.slice(start, this.pos), line, column);
-      return;
-    }
-    if (ch === "'" || ch === '"') {
-      this.emit("string", this.readString(ch), line, column);
-      return;
-    }
-    if (ch === "`") {
-      this.pos++;
-      this.readTemplateChunk(line, column, true);
-      return;
-    }
-    if (ch === "/") {
-      if (this.regexAllowed() && this.readRegex()) {
-        this.emit("regex", src.slice(start, this.pos), line, column);
-        return;
-      }
-      this.pos = start + (src[start + 1] === "=" ? 2 : 1);
-      this.emit("punct", src.slice(start, this.pos), line, column);
-      return;
-    }
-    for (const p of PUNCTUATORS) {
-      if (src.startsWith(p, start)) {
-        if (p === "?." && isDigit(src[start + 2])) continue;
-        this.pos += p.length;
-        this.emit("punct", p, line, column);
-        return;
-      }
-    }
-    this.pos += cp > 0xffff ? 2 : 1;
-    this.emit("punct", String.fromCodePoint(cp), line, column);
-  }
-
-  private readIdentifier(): string {
-    const src = this.src;
-    let name = "";
-    while (this.pos < src.length) {
-      if (src[this.pos] === "\\" && src[this.pos + 1] === "u") {
-        const decoded = this.readUnicodeEscape(this.pos + 2);
-        if (decoded === null) break;
-        name += decoded.text;
-        this.pos = decoded.end;
-        continue;
-      }
-      const cp = src.codePointAt(this.pos) ?? 0;
-      if (!isIdContinue(cp)) break;
-      name += String.fromCodePoint(cp);
-      this.pos += cp > 0xffff ? 2 : 1;
-    }
-    return name;
-  }
-
-  /** Decodes `XXXX` or `{X...}` starting at `at` (just past `\u`). */
-  private readUnicodeEscape(at: number): { text: string; end: number } | null {
-    const src = this.src;
-    if (src[at] === "{") {
-      // Bounded search: an unbounded indexOf would make repeated `\u{`
-      // quadratic on hostile input.
-      const offset = src.slice(at, at + 10).indexOf("}");
-      if (offset === -1) return null;
-      const close = at + offset;
-      const cp = parseInt(src.slice(at + 1, close), 16);
-      if (!Number.isFinite(cp) || cp > 0x10ffff) return null;
-      return { text: String.fromCodePoint(cp), end: close + 1 };
-    }
-    const hex = src.slice(at, at + 4);
-    if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null;
-    return { text: String.fromCharCode(parseInt(hex, 16)), end: at + 4 };
-  }
-
-  private readNumber(): void {
-    const src = this.src;
-    const hex = src[this.pos] === "0" &&
-      /[xXoObB]/.test(src[this.pos + 1] ?? "");
-    while (this.pos < src.length) {
-      const c = src[this.pos];
-      if (/[0-9A-Za-z_]/.test(c)) {
-        this.pos++;
-        if (
-          !hex && (c === "e" || c === "E") && /[+-]/.test(src[this.pos] ?? "")
-        ) {
-          this.pos++;
-        }
-      } else if (c === "." && src[this.pos + 1] !== ".") {
-        this.pos++;
-      } else {
-        break;
-      }
-    }
-  }
-
-  private readString(quote: string): string {
-    const src = this.src;
-    this.pos++;
-    let value = "";
-    while (this.pos < src.length) {
-      const c = src[this.pos];
-      if (c === quote) {
-        this.pos++;
-        return value;
-      }
-      if (c === "\\") {
-        value += this.readEscape();
-        continue;
-      }
-      if (c === "\n" || c === "\r") return value; // unterminated
-      value += c;
-      this.pos++;
-    }
-    return value;
-  }
-
-  /** Reads an escape at `\`, returning its cooked text. */
-  private readEscape(): string {
-    const src = this.src;
-    const c = src[this.pos + 1];
-    if (c === undefined) {
-      this.pos++;
-      return "";
-    }
-    if (isLineTerminator(c)) {
-      this.pos++;
-      this.newline();
-      return "";
-    }
-    if (c === "u") {
-      const decoded = this.readUnicodeEscape(this.pos + 2);
-      if (decoded) {
-        this.pos = decoded.end;
-        return decoded.text;
-      }
-    }
-    if (
-      c === "x" &&
-      /^[0-9a-fA-F]{2}$/.test(src.slice(this.pos + 2, this.pos + 4))
-    ) {
-      const text = String.fromCharCode(
-        parseInt(src.slice(this.pos + 2, this.pos + 4), 16),
-      );
-      this.pos += 4;
-      return text;
-    }
-    this.pos += 2;
-    const simple: Record<string, string> = {
-      n: "\n",
-      r: "\r",
-      t: "\t",
-      b: "\b",
-      f: "\f",
-      v: "\v",
-      "0": "\0",
-    };
-    return simple[c] ?? c;
-  }
-
-  /**
-   * Reads template text up to the closing backtick or a `${`. `first` is true
-   * for the chunk right after the opening backtick.
-   */
-  private readTemplateChunk(
-    line: number,
-    column: number,
-    first: boolean,
-  ): void {
-    const src = this.src;
-    let value = "";
-    while (this.pos < src.length) {
-      const c = src[this.pos];
-      if (c === "`") {
-        this.pos++;
-        const t = this.emit("template", value, line, column);
-        t.whole = first;
-        return;
-      }
-      if (c === "$" && src[this.pos + 1] === "{") {
-        this.emit("template", value, line, column);
-        const subLine = this.line;
-        const subColumn = this.pos - this.lineStart + 1;
-        this.pos += 2;
-        this.emit("punct", "${", subLine, subColumn);
-        return;
-      }
-      if (c === "\\") {
-        value += this.readEscape();
-        continue;
-      }
-      if (isLineTerminator(c)) {
-        value += "\n";
-        this.newline();
-        continue;
-      }
-      value += c;
-      this.pos++;
-    }
-    this.emit("template", value, line, column);
-  }
-
-  private regexAllowed(): boolean {
-    if (this.pos < this.noRegexUntil) return false;
-    const prev = this.tokens[this.tokens.length - 1];
-    if (!prev) return true;
-    switch (prev.type) {
-      case "number":
-      case "string":
-      case "template":
-      case "regex":
-      case "private":
-        return false;
-      case "ident":
-        if (prev.value === "of") return this.inForHead();
-        return EXPRESSION_KEYWORDS.has(prev.value);
-      case "punct":
-        if (prev.value === ")") return this.closesStatementHead(prev);
-        if (prev.value === "]") return false;
-        if (prev.value === "++" || prev.value === "--") return false;
-        if (prev.value === "}") {
-          if (prev.exprBody) return false;
-          return prev.closes === "block" || prev.closes === "class";
-        }
-        return true;
-    }
-  }
-
-  /** `)` closes the head of `if`, `while`, `for` or `with`. */
-  private closesStatementHead(close: Token): boolean {
-    const before = this.tokens[close.match - 1];
-    if (close.match < 0 || before?.type !== "ident") return false;
-    if (STATEMENT_HEAD_KEYWORDS.has(before.value)) return true;
-    // `for await (`
-    return before.value === "await" &&
-      isIdent(this.tokens[close.match - 2], "for");
-  }
-
-  /** The innermost frame is the parenthesized head of a `for`. */
-  private inForHead(): boolean {
-    const top = this.frames[this.frames.length - 1];
-    if (!top || top.char !== "(") return false;
-    const before = this.tokens[top.opener - 1];
-    return isIdent(before, "for") ||
-      (isIdent(before, "await") && isIdent(this.tokens[top.opener - 2], "for"));
-  }
-
-  /** `function` or `class` at `index - 1`... is in expression position. */
-  private startsExpression(prev: Token | undefined): boolean {
-    if (!prev) return false;
-    if (prev.type === "ident") return EXPRESSION_START_KEYWORDS.has(prev.value);
-    if (prev.type !== "punct") return false;
-    if (prev.value === ":") return prev.colon !== "other";
-    return OBJECT_AFTER_PUNCT.has(prev.value) || prev.value === "=>" ||
-      prev.value === ">" || prev.value === ">>" || prev.value === ">>>";
-  }
-
-  /** Reads a regex literal at `/`; false (position unchanged) if none. */
-  private readRegex(): boolean {
-    const src = this.src;
-    const start = this.pos;
-    let i = start + 1;
-    let inClass = false;
-    while (i < src.length) {
-      const c = src[i];
-      if (isLineTerminator(c)) break;
-      if (c === "\\") {
-        if (i + 1 < src.length && isLineTerminator(src[i + 1])) break;
-        i += 2;
-        continue;
-      }
-      if (c === "[") inClass = true;
-      else if (c === "]") inClass = false;
-      else if (c === "/" && !inClass) {
-        i++;
-        while (i < src.length && isIdContinue(src.codePointAt(i) ?? 0)) i++;
-        this.pos = i;
-        return true;
-      }
-      i++;
-    }
-    // Not a regex: a later `/` on this line cannot start one either.
-    this.noRegexUntil = i;
-    return false;
-  }
-
-  private emit(
-    type: TokenType,
-    value: string,
-    line: number,
-    column: number,
-  ): Token {
-    const tokens = this.tokens;
-    const index = tokens.length;
-    const prev = tokens[index - 1];
-    const top = this.frames[this.frames.length - 1];
-    const token: Token = {
-      type,
-      value,
+    findings.push({
       line,
-      column,
-      nl: this.sawNewline,
-      frame: top ? top.opener : -1,
-      match: -1,
-      inType: false,
-    };
-    this.sawNewline = false;
-    tokens.push(token);
-
-    // A `?` directly followed by these is a TS optional marker, not a ternary.
-    if (this.lastQuestion === index - 1) {
-      if (type === "punct" && [":", ")", ",", "=", ";"].includes(value)) {
-        if (top) top.ternary--;
-        else this.rootTernary--;
-      }
-    }
-
-    this.updateTypeAlias(token, prev);
-
-    // `type Name` / `interface Name` on one line at statement start is a
-    // TypeScript declaration; elsewhere `type` is an ordinary variable.
-    if (
-      type === "ident" && prev?.type === "ident" && !token.nl &&
-      !NOT_A_DECLARED_NAME.has(value)
-    ) {
-      const before = tokens[index - 2];
-      const declared = prev.nl || !before ||
-        (before.type === "punct" &&
-          (before.value === ";" || before.value === "{" ||
-            before.value === "}")) ||
-        (before.type === "ident" &&
-          (before.value === "export" || before.value === "declare"));
-      if (declared && prev.value === "interface") {
-        this.pendingInterface = this.frames.length;
-        prev.inType = true;
-      } else if (declared && prev.value === "type" && !this.typeAlias) {
-        this.typeAlias = {
-          depth: this.frames.length,
-          active: false,
-          named: true,
-        };
-      }
-    }
-
-    token.inType = (top?.inType ?? false) ||
-      this.pendingInterface === this.frames.length ||
-      (this.typeAlias?.active ?? false);
-
-    if (type === "ident" && (value === "class" || value === "function")) {
-      const memberName = prev?.type === "punct" &&
-        (prev.value === "." || prev.value === "?.");
-      if (!memberName) {
-        // `async function` takes its position from the token before `async`.
-        const lead = isIdent(prev, "async") ? tokens[index - 2] : prev;
-        const pending = {
-          depth: this.frames.length,
-          expr: this.startsExpression(lead),
-        };
-        if (value === "class") this.pendingClass.push(pending);
-        else this.pendingFunction.push(pending);
-      }
-    }
-
-    if (type !== "punct") return token;
-
-    switch (value) {
-      case "?":
-        if (top) top.ternary++;
-        else this.rootTernary++;
-        this.lastQuestion = index;
-        break;
-      case ":":
-        if (top && top.ternary > 0) {
-          token.colon = "ternary";
-          top.ternary--;
-        } else if (!top && this.rootTernary > 0) {
-          token.colon = "ternary";
-          this.rootTernary--;
-        } else if (top?.kind === "object") {
-          token.colon = "prop";
-        } else {
-          token.colon = "other";
-        }
-        break;
-      case "(":
-        this.push(index, "(", "paren");
-        break;
-      case "[":
-        this.push(index, "[", "bracket");
-        break;
-      case "${":
-        this.push(index, "${", "tmpl");
-        break;
-      case "{":
-        this.push(index, "{", this.classifyBrace(token, prev));
-        break;
-      case ")":
-        this.close(index, "(");
-        break;
-      case "]":
-        this.close(index, "[");
-        break;
-      case "}":
-        if (top?.char === "${") {
-          this.close(index, "${");
-          this.readTemplateChunk(
-            this.line,
-            this.pos - this.lineStart + 1,
-            false,
-          );
-        } else {
-          this.close(index, "{");
-        }
-        break;
-    }
-    return token;
-  }
-
-  private classifyBrace(token: Token, prev: Token | undefined): FrameKind {
-    const depth = this.frames.length;
-    if (this.pendingInterface === depth) {
-      this.pendingInterface = -1;
-      token.inType = true;
-      return "type";
-    }
-    if (token.inType) return "type";
-    const pendingClass = this.pendingClass[this.pendingClass.length - 1];
-    if (pendingClass?.depth === depth) {
-      this.pendingClass.pop();
-      token.exprBody = pendingClass.expr;
-      return "class";
-    }
-    const pendingFunction =
-      this.pendingFunction[this.pendingFunction.length - 1];
-    // A `{` after a type-annotation colon is an object type in the return
-    // type, not the body.
-    const afterAnnotation = isPunct(prev, ":") && prev?.colon === "other";
-    if (pendingFunction?.depth === depth && !afterAnnotation) {
-      this.pendingFunction.pop();
-      token.exprBody = pendingFunction.expr;
-      return "block";
-    }
-    if (!prev) return "block";
-    if (prev.type === "punct") {
-      if (prev.value === ":") {
-        return prev.colon === "prop" || prev.colon === "ternary"
-          ? "object"
-          : "block";
-      }
-      return OBJECT_AFTER_PUNCT.has(prev.value) ? "object" : "block";
-    }
-    if (prev.type === "ident") {
-      if ((prev.value === "return" || prev.value === "yield") && !token.nl) {
-        return "object";
-      }
-      if (OBJECT_AFTER_KEYWORDS.has(prev.value)) return "object";
-      const before = this.tokens[this.tokens.length - 3];
-      if (
-        prev.value === "default" && before?.type === "ident" &&
-        before.value === "export"
-      ) {
-        return "object";
-      }
-    }
-    return "block";
-  }
-
-  private push(opener: number, char: Frame["char"], kind: FrameKind): void {
-    const top = this.frames[this.frames.length - 1];
-    this.tokens[opener].opens = kind;
-    this.frames.push({
-      opener,
-      char,
-      kind,
-      ternary: 0,
-      inType: kind === "type" || (top?.inType ?? false) ||
-        (this.typeAlias?.active ?? false),
-      exprBody: this.tokens[opener].exprBody ?? false,
+      column: match.index - lineStart + 1,
+      kind: "unparsed-eval-text",
     });
   }
+  return findings;
+}
 
-  private close(index: number, char: Frame["char"]): void {
-    const top = this.frames[this.frames.length - 1];
-    if (!top || top.char !== char) return;
-    this.frames.pop();
-    const token = this.tokens[index];
-    token.match = top.opener;
-    token.frame = this.frames.length > 0
-      ? this.frames[this.frames.length - 1].opener
-      : -1;
-    this.tokens[top.opener].match = index;
-    if (char === "{") {
-      token.closes = top.kind;
-      token.exprBody = top.exprBody;
-    }
-    for (const pending of [this.pendingClass, this.pendingFunction]) {
-      if ((pending[pending.length - 1]?.depth ?? -1) > this.frames.length) {
-        pending.pop();
-      }
-    }
-    if (this.pendingInterface > this.frames.length) this.pendingInterface = -1;
-  }
+function str(node: AstNode | undefined, key: string): string | undefined {
+  const value = node?.[key];
+  return typeof value === "string" ? value : undefined;
+}
 
-  private updateTypeAlias(token: Token, prev: Token | undefined): void {
-    const alias = this.typeAlias;
-    if (!alias) return;
-    const depth = this.frames.length;
-    const atDepth = depth === alias.depth;
-    const isPunct = token.type === "punct";
-    if (depth < alias.depth) {
-      this.typeAlias = null;
-      return;
-    }
-    if (!alias.active) {
-      // The token right after the name must be `=` or the `<` of a
-      // generic parameter list.
-      if (alias.named) {
-        alias.named = false;
-        if (!(isPunct && (token.value === "=" || token.value === "<"))) {
-          this.typeAlias = null;
-          return;
-        }
-      }
-      if (atDepth && isPunct && token.value === "=") {
-        alias.active = true;
-      } else if (
-        atDepth &&
-        (token.nl || (isPunct && (token.value === ";" || token.value === "{")))
-      ) {
-        this.typeAlias = null;
-      }
-      return;
-    }
-    if (atDepth && isPunct && token.value === ";") {
-      this.typeAlias = null;
-      return;
-    }
+function child(node: AstNode | undefined, key: string): AstNode | undefined {
+  const value = node?.[key];
+  return isNode(value) ? value : undefined;
+}
+
+function isMember(node: AstNode | undefined): boolean {
+  return node?.type === "MemberExpression" ||
+    node?.type === "OptionalMemberExpression";
+}
+
+function isCall(node: AstNode | undefined): boolean {
+  return node?.type === "CallExpression" ||
+    node?.type === "OptionalCallExpression";
+}
+
+/** The name of a non-computed member's property, or a literal computed key. */
+function memberName(member: AstNode | undefined): string | undefined {
+  const property = child(member, "property");
+  if (member?.computed === true) return literalKey(property);
+  return property?.type === "Identifier" ? str(property, "name") : undefined;
+}
+
+/** A string literal, or a template literal with no substitutions. */
+function literalKey(node: AstNode | undefined): string | undefined {
+  if (!node) return undefined;
+  if (node.type === "StringLiteral") return str(node, "value");
+  if (node.type === "TemplateLiteral") {
+    const expressions = node.expressions;
+    const quasis = node.quasis;
     if (
-      atDepth && token.nl && prev && !TYPE_CONTINUATION.has(prev.value) &&
-      !TYPE_LEADING_CONTINUATION.has(token.value)
+      Array.isArray(expressions) && expressions.length === 0 &&
+      Array.isArray(quasis) && quasis.length === 1 && isNode(quasis[0])
     ) {
-      this.typeAlias = null;
+      const value = quasis[0].value as { cooked?: string | null };
+      return value.cooked ?? undefined;
     }
   }
+  return undefined;
 }
 
-function isDot(t: Token | undefined): boolean {
-  return t?.type === "punct" && (t.value === "." || t.value === "?.");
-}
-
-function isPunct(t: Token | undefined, value: string): boolean {
-  return t?.type === "punct" && t.value === value;
-}
-
-function isIdent(t: Token | undefined, value?: string): boolean {
-  return t?.type === "ident" && (value === undefined || t.value === value);
-}
-
-function isOperandEnd(t: Token | undefined): boolean {
-  if (!t) return false;
-  switch (t.type) {
-    case "ident":
-      return !EXPRESSION_KEYWORDS.has(t.value);
-    case "punct":
-      return t.value === ")" || t.value === "]" || t.value === "}";
-    default:
-      return true;
+/** Strips TS casts and parentheses: `(globalThis as any)` → `globalThis`. */
+function unwrap(node: AstNode | undefined): AstNode | undefined {
+  let current = node;
+  for (let i = 0; i < MAX_CHAIN && current; i++) {
+    if (!TS_WRAPPERS.has(current.type)) return current;
+    current = child(current, "expression");
   }
+  return current;
 }
+
+/**
+ * The expression is a global object: a global name, a cast of one, or a
+ * chain of them (`globalThis.self`).
+ */
+function isGlobalObject(node: AstNode | undefined): boolean {
+  let current = unwrap(node);
+  for (let i = 0; i < MAX_CHAIN && current; i++) {
+    if (current.type === "Identifier") {
+      return GLOBAL_OBJECTS.has(str(current, "name") ?? "");
+    }
+    if (!isMember(current)) return false;
+    const name = memberName(current);
+    if (name === undefined || !GLOBAL_OBJECTS.has(name)) return false;
+    current = unwrap(child(current, "object"));
+  }
+  return false;
+}
+
+/** Walks up through TS casts and parentheses from `visit`. */
+function outerExpression(visit: Visit): Visit {
+  let current = visit;
+  while (current.parent && TS_WRAPPERS.has(current.parent.node.type)) {
+    current = current.parent;
+  }
+  return current;
+}
+
+type Role =
+  | "property"
+  | "key"
+  | "pattern-key"
+  | "binding"
+  | "label"
+  | "reference";
 
 class Analyzer {
   private readonly findings: DynamicCodeFinding[] = [];
-  /** Per opener index: the frame is a destructuring pattern. */
-  private readonly pattern: boolean[] = [];
-  /** Tokens where a global object is used as a value. */
-  private readonly globalValues: number[] = [];
+  /** Nodes where a global object is used as a value. */
+  private readonly globalValues: AstNode[] = [];
   /** `x.eval` / `x.Function` member accesses on a non-global receiver. */
-  private readonly evalMembers: number[] = [];
+  private readonly evalMembers: AstNode[] = [];
 
-  constructor(private readonly tokens: Token[]) {}
-
-  run(): DynamicCodeFinding[] {
-    const tokens = this.tokens;
-    for (let i = 0; i < tokens.length; i++) {
-      const t = tokens[i];
-      if (t.opens === "object" || t.opens === "bracket") {
-        this.pattern[i] = this.computePattern(i);
-      }
-      if (t.inType) continue;
-      if (t.type === "ident") {
-        if (t.value === "eval") this.checkEval(i);
-        else if (t.value === "Function") this.checkFunction(i);
-        else if (t.value === "constructor") this.checkConstructor(i);
-        else if (VALUE_GLOBALS.has(t.value)) this.checkGlobalValue(i);
-      } else if (isPunct(t, "[")) {
-        this.checkComputed(i);
-      } else if (this.isSuspectLiteral(i) && CALL_TEXT.test(t.value)) {
-        this.flag(i, "eval-reference");
+  run(program: AstNode): DynamicCodeFinding[] {
+    const stack: Visit[] = [{ node: program, key: "", parent: null }];
+    while (stack.length > 0) {
+      const visit = stack.pop()!;
+      const node = visit.node;
+      if (isTypeOnly(node)) continue;
+      this.check(visit);
+      for (const key of Object.keys(node)) {
+        if (SKIP_KEYS.has(key) || TYPE_KEYS.has(key)) continue;
+        const value = node[key];
+        if (Array.isArray(value)) {
+          for (let i = value.length - 1; i >= 0; i--) {
+            const item = value[i];
+            if (isNode(item)) stack.push({ node: item, key, parent: visit });
+          }
+        } else if (isNode(value)) {
+          stack.push({ node: value, key, parent: visit });
+        }
       }
     }
     // A member named `eval` is allowed because the receiver is usually an
     // interpreter, but once a global object escapes into a value the
     // receiver could be an alias of it. A file with both is flagged.
     if (this.globalValues.length > 0 && this.evalMembers.length > 0) {
-      for (const i of this.globalValues) this.flag(i, "global-object-alias");
-      for (const i of this.evalMembers) this.flag(i, "aliased-eval-member");
-      this.findings.sort((a, b) => a.line - b.line || a.column - b.column);
+      for (const n of this.globalValues) this.flag(n, "global-object-alias");
+      for (const n of this.evalMembers) this.flag(n, "aliased-eval-member");
     }
-    return this.findings;
+    return this.findings.sort((a, b) => a.line - b.line || a.column - b.column);
   }
 
-  private flag(i: number, kind: DynamicCodeKind): void {
-    const t = this.tokens[i];
-    this.findings.push({ line: t.line, column: t.column, kind });
+  private flag(node: AstNode, kind: DynamicCodeKind): void {
+    const start = node.loc?.start;
+    this.findings.push({
+      line: start?.line ?? 1,
+      column: (start?.column ?? 0) + 1,
+      kind,
+    });
   }
 
-  private frameKind(i: number): FrameKind {
-    const opener = this.tokens[i].frame;
-    if (opener < 0) return "block";
-    return this.tokens[opener].opens ?? "block";
+  private check(visit: Visit): void {
+    const node = visit.node;
+    if (node.type === "Identifier") {
+      const name = str(node, "name");
+      if (name === "eval") this.checkEval(visit);
+      else if (name === "Function") this.checkFunction(visit);
+      else if (name === "constructor") this.checkConstructor(visit);
+      else if (name && VALUE_GLOBALS.has(name)) this.checkGlobalValue(visit);
+    } else if (isMember(node) && node.computed === true) {
+      this.checkComputed(visit);
+    }
   }
 
-  /** Forward pass: parents are always computed before their children. */
-  private computePattern(opener: number): boolean {
-    const tokens = this.tokens;
-    const close = tokens[opener].match;
-    if (close >= 0) {
-      const after = tokens[close + 1];
-      if (isPunct(after, "=") || isIdent(after, "of")) return true;
+  /** How an identifier is used. */
+  private role(visit: Visit): Role {
+    const parent = visit.parent?.node;
+    const key = visit.key;
+    if (!parent) return "reference";
+    // `#eval` is a private name, never the global.
+    if (parent.type === "PrivateName") return "key";
+    if (isMember(parent) && key === "property" && parent.computed !== true) {
+      return "property";
     }
-    const parent = tokens[opener].frame;
-    if (parent < 0) return false;
-    const parentToken = tokens[parent];
-    if (parentToken.opens === "object" || parentToken.opens === "bracket") {
-      return this.pattern[parent] ?? false;
+    if (
+      key === "key" && parent.computed !== true &&
+      [
+        "ObjectProperty",
+        "ObjectMethod",
+        "ClassMethod",
+        "ClassProperty",
+        "ClassAccessorProperty",
+        "TSEnumMember",
+      ].includes(parent.type)
+    ) {
+      // A key in a destructuring pattern reads that property off the value.
+      return visit.parent?.parent?.node.type === "ObjectPattern"
+        ? "pattern-key"
+        : "key";
     }
-    if (parentToken.opens === "paren" && parentToken.match >= 0) {
-      const after = tokens[parentToken.match + 1];
-      return isPunct(after, "{") || isPunct(after, "=>") || isPunct(after, ":");
+    if (
+      key === "label" &&
+      ["LabeledStatement", "BreakStatement", "ContinueStatement"].includes(
+        parent.type,
+      )
+    ) {
+      return "label";
+    }
+    if (
+      (parent.type === "ImportSpecifier" && key === "imported") ||
+      (parent.type === "ExportSpecifier" && key === "exported")
+    ) {
+      return "key";
+    }
+    if (
+      key === "id" &&
+      [
+        "VariableDeclarator",
+        "FunctionDeclaration",
+        "FunctionExpression",
+        "ClassDeclaration",
+        "ClassExpression",
+      ].includes(parent.type)
+    ) {
+      return "binding";
+    }
+    if (
+      key === "params" &&
+      (parent.type.includes("Function") ||
+        ["ObjectMethod", "ClassMethod", "ClassPrivateMethod"].includes(
+          parent.type,
+        ))
+    ) {
+      return "binding";
+    }
+    return "reference";
+  }
+
+  private isTypeofOperand(visit: Visit): boolean {
+    const parent = visit.parent?.node;
+    return parent?.type === "UnaryExpression" && visit.key === "argument" &&
+      str(parent, "operator") === "typeof";
+  }
+
+  private checkEval(visit: Visit): void {
+    const role = this.role(visit);
+    if (role === "property") {
+      if (isGlobalObject(child(visit.parent!.node, "object"))) {
+        this.flag(visit.node, "eval-reference");
+      } else {
+        this.evalMembers.push(visit.node);
+      }
+      return;
+    }
+    if (role === "key" || role === "label") return;
+    if (this.isTypeofOperand(visit)) return;
+    this.flag(visit.node, "eval-reference");
+  }
+
+  private checkFunction(visit: Visit): void {
+    const role = this.role(visit);
+    const node = visit.node;
+    if (role === "property") {
+      if (isGlobalObject(child(visit.parent!.node, "object"))) {
+        this.flag(node, "function-constructor");
+      } else {
+        this.evalMembers.push(node);
+      }
+      return;
+    }
+    if (role === "key" || role === "label") return;
+    if (this.isTypeofOperand(visit)) return;
+    const parent = visit.parent?.node;
+    // `x instanceof Function` compares; it cannot build code.
+    if (
+      parent?.type === "BinaryExpression" && visit.key === "right" &&
+      str(parent, "operator") === "instanceof"
+    ) {
+      return;
+    }
+    // Reads such as `Function.prototype.toString` are allowed;
+    // `Function.call`/`apply`/`bind`/`constructor`, computed access, and
+    // `Function.prototype.constructor` reach the constructor.
+    if (isMember(parent) && visit.key === "object") {
+      const name = memberName(parent);
+      if (name === "prototype") {
+        const outer = visit.parent!.parent?.node;
+        if (
+          isMember(outer) && visit.parent!.key === "object" &&
+          memberName(outer) === "constructor"
+        ) {
+          this.flag(node, "function-constructor");
+        }
+        return;
+      }
+      if (
+        name === undefined || CALL_FORMS.has(name) || name === "constructor"
+      ) {
+        this.flag(node, "function-constructor");
+      }
+      return;
+    }
+    this.flag(node, "function-constructor");
+  }
+
+  /** `x.constructor(...)` (without `new`) or `x.constructor.call(...)`. */
+  private checkConstructor(visit: Visit): void {
+    if (this.role(visit) !== "property") return;
+    if (this.isCalledWithoutNew(visit.parent!)) {
+      this.flag(visit.node, "constructor-call");
+    }
+  }
+
+  /** The member is the callee of a call, or of `.call`/`.apply`/`.bind`. */
+  private isCalledWithoutNew(member: Visit): boolean {
+    const outer = member.parent;
+    if (!outer) return false;
+    if (isCall(outer.node) && member.key === "callee") return true;
+    if (isMember(outer.node) && member.key === "object") {
+      const name = memberName(outer.node);
+      return name !== undefined && CALL_FORMS.has(name) &&
+        isCall(outer.parent?.node) && outer.key === "callee";
     }
     return false;
   }
 
-  /**
-   * `obj.name` where `obj` is a global-object name, a paren group ending in
-   * one, or a chain of them (`globalThis.self.eval`).
-   */
-  private isGlobalMember(i: number): boolean {
-    const tokens = this.tokens;
-    let at = i - 2;
-    for (let steps = 0; steps < MAX_WALK_BACK; steps++) {
-      if (isPunct(tokens[at], ")")) {
-        if (this.isGlobalCast(tokens[at].match)) return true;
-        at--;
-      }
-      const obj = tokens[at];
-      if (obj?.type !== "ident" || !GLOBAL_OBJECTS.has(obj.value)) {
-        return false;
-      }
-      if (!isDot(tokens[at - 1])) return true;
-      at -= 2;
+  private checkComputed(visit: Visit): void {
+    const property = child(visit.node, "property");
+    const key = literalKey(property);
+    if (key === undefined || !property) return;
+    if (COMPUTED_NAMES.has(key)) {
+      this.flag(property, "eval-computed-access");
+    } else if (key === "constructor" && this.isCalledWithoutNew(visit)) {
+      this.flag(property, "constructor-call");
     }
-    return true;
-  }
-
-  /**
-   * The paren group opened at `open` is a TypeScript cast of a global
-   * object: `(globalThis as T)`, `(globalThis satisfies T)`, `(globalThis!)`.
-   */
-  private isGlobalCast(open: number): boolean {
-    const tokens = this.tokens;
-    if (open < 0 || !isPunct(tokens[open], "(")) return false;
-    const obj = tokens[open + 1];
-    const after = tokens[open + 2];
-    return obj?.type === "ident" && GLOBAL_OBJECTS.has(obj.value) &&
-      (isIdent(after, "as") || isIdent(after, "satisfies") ||
-        isPunct(after, "!"));
-  }
-
-  /**
-   * The identifier at `i` declares a binding of that name — a variable, a
-   * function or class name, or a parameter — rather than reading the global.
-   */
-  private declaresName(i: number): boolean {
-    const tokens = this.tokens;
-    const prev = tokens[i - 1];
-    if (
-      prev?.type === "ident" &&
-      ["const", "let", "var", "function", "class"].includes(prev.value)
-    ) {
-      return true;
-    }
-    const next = tokens[i + 1];
-    // A parameter: directly inside a paren group that a body or arrow
-    // follows, at a position where a parameter name can stand.
-    const frame = tokens[i].frame;
-    if (frame < 0 || tokens[frame].opens !== "paren") return false;
-    const close = tokens[frame].match;
-    if (close < 0) return false;
-    const after = tokens[close + 1];
-    const isParams = isPunct(after, "{") || isPunct(after, "=>") ||
-      isPunct(after, ":");
-    const atParam = isPunct(prev, "(") || isPunct(prev, ",");
-    const endsParam = isPunct(next, ",") || isPunct(next, ")") ||
-      isPunct(next, ":") || isPunct(next, "=") || isPunct(next, "?");
-    return isParams && atParam && endsParam;
-  }
-
-  /** A regex literal, or a string or template right after a `/`. */
-  private isSuspectLiteral(i: number): boolean {
-    const t = this.tokens[i];
-    if (t.type === "regex") return true;
-    if (t.type !== "string" && t.type !== "template") return false;
-    const prev = this.tokens[i - 1];
-    return isPunct(prev, "/") || isPunct(prev, "/=");
   }
 
   /**
    * Records a global object used as a value — held, passed, or indexed with
    * a computed key — as opposed to member access, `typeof` or `in`.
    */
-  private checkGlobalValue(i: number): void {
-    const tokens = this.tokens;
-    const prev = tokens[i - 1];
-    if (isDot(prev)) return;
-    if (this.declaresName(i)) return;
-    if (isIdent(prev, "typeof") || isIdent(prev, "in")) return;
-    // A cast followed by member access, `(globalThis as T).x`, is used the
-    // same way as `globalThis.x`; member names are checked like any other.
-    const member = isPunct(prev, "(") && this.isGlobalCast(i - 1)
-      ? tokens[i - 1].match
-      : i;
-    if (member >= 0) {
-      const after = tokens[member + 1];
-      if (isDot(after)) return;
-      if (isPunct(after, "[")) {
-        const key = tokens[member + 2];
-        const literal = key?.type === "string" ||
-          (key?.type === "template" && key.whole);
-        if (literal && isPunct(tokens[member + 3], "]")) return;
-      }
-    }
-    this.globalValues.push(i);
-  }
-
-  /** The identifier at `i` is a member name in a class body or object literal. */
-  private isMemberName(i: number): boolean {
-    const tokens = this.tokens;
-    const kind = this.frameKind(i);
-    const prev = tokens[i - 1];
-    const next = tokens[i + 1];
-    if (kind === "class") {
-      if (
-        isPunct(prev, "{") || isPunct(prev, ";") || isPunct(prev, "}") ||
-        isPunct(prev, "*")
-      ) {
-        return true;
-      }
-      if (prev?.type === "ident" && CLASS_MODIFIERS.has(prev.value)) {
-        return true;
-      }
-      return tokens[i].nl && isOperandEnd(prev);
-    }
-    if (kind !== "object" || this.pattern[tokens[i].frame]) return false;
-    const atMember = isPunct(prev, "{") || isPunct(prev, ",") ||
-      isPunct(prev, "*") ||
-      (prev?.type === "ident" && OBJECT_MODIFIERS.has(prev.value) &&
-        (isPunct(tokens[i - 2], "{") || isPunct(tokens[i - 2], ",")));
-    if (!atMember) return false;
-    if (isPunct(next, ":")) return true;
-    if (isPunct(next, "?")) {
-      return isPunct(tokens[i + 2], "(") || isPunct(tokens[i + 2], ":");
-    }
-    if (isPunct(next, "(") && next.match >= 0) {
-      const after = tokens[next.match + 1];
-      if (isPunct(after, ":")) return true;
-      if (isPunct(after, "{") && after.match >= 0) {
-        const end = tokens[after.match + 1];
-        return isPunct(end, ",") || isPunct(end, "}");
-      }
-    }
-    return false;
-  }
-
-  private checkEval(i: number): void {
-    const prev = this.tokens[i - 1];
-    if (isDot(prev)) {
-      if (this.isGlobalMember(i)) this.flag(i, "eval-reference");
-      else this.evalMembers.push(i);
+  private checkGlobalValue(visit: Visit): void {
+    if (this.role(visit) !== "reference") return;
+    const outer = outerExpression(visit);
+    const parent = outer.parent?.node;
+    if (this.isTypeofOperand(outer)) return;
+    if (
+      parent?.type === "BinaryExpression" && outer.key === "right" &&
+      str(parent, "operator") === "in"
+    ) {
       return;
     }
-    if (isIdent(prev, "typeof")) return;
-    if (this.isMemberName(i)) return;
-    this.flag(i, "eval-reference");
-  }
-
-  private checkFunction(i: number): void {
-    const tokens = this.tokens;
-    const prev = tokens[i - 1];
-    const next = tokens[i + 1];
-    if (isDot(prev)) {
-      if (this.isGlobalMember(i)) this.flag(i, "function-constructor");
-      else this.evalMembers.push(i);
-      return;
+    if (isMember(parent) && outer.key === "object") {
+      if (parent!.computed !== true) return;
+      if (literalKey(child(parent, "property")) !== undefined) return;
     }
-    if (this.isMemberName(i)) return;
-    if (isIdent(prev, "new")) return this.flag(i, "function-constructor");
-    if (isPunct(next, "(")) return this.flag(i, "function-constructor");
-    if (isDot(next)) {
-      const name = tokens[i + 2];
-      if (
-        name?.type === "ident" &&
-        (CALL_FORMS.has(name.value) || name.value === "constructor")
-      ) {
-        return this.flag(i, "function-constructor");
-      }
-      if (
-        isIdent(name, "prototype") && isDot(tokens[i + 3]) &&
-        isIdent(tokens[i + 4], "constructor")
-      ) {
-        return this.flag(i, "function-constructor");
-      }
-      if (isPunct(name, "(")) return this.flag(i, "function-constructor");
-      return;
-    }
-    if (isPunct(next, "[")) {
-      if (!isPunct(tokens[i + 2], "]")) this.flag(i, "function-constructor");
-      return;
-    }
-    if (prev?.type === "ident") {
-      if (
-        ["typeof", "instanceof", "keyof", "as", "satisfies", "is", "implements"]
-          .includes(prev.value)
-      ) {
-        return;
-      }
-      if (prev.value === "extends") {
-        if (isPunct(next, "{")) this.flag(i, "function-constructor");
-        return;
-      }
-    }
-    if (isPunct(prev, ":") && prev?.colon === "other") return;
-    if (isPunct(prev, "<") || isPunct(prev, "|") || isPunct(prev, "&")) return;
-    if (isPunct(next, ">") || isPunct(next, "|") || isPunct(next, "&")) return;
-    this.flag(i, "function-constructor");
-  }
-
-  private checkConstructor(i: number): void {
-    const tokens = this.tokens;
-    if (!isDot(tokens[i - 1])) return;
-    const next = tokens[i + 1];
-    const called = isPunct(next, "(") ||
-      (isDot(next) && tokens[i + 2]?.type === "ident" &&
-        CALL_FORMS.has(tokens[i + 2].value));
-    if (!called) return;
-    if (isPunct(next, "(") && this.precededByNew(i)) return;
-    this.flag(i, "constructor-call");
-  }
-
-  /** Walks back over the member chain ending at `.constructor` to find `new`. */
-  private precededByNew(i: number): boolean {
-    const tokens = this.tokens;
-    let j = i - 1;
-    for (let steps = 0; steps < MAX_WALK_BACK && j >= 0; steps++) {
-      if (!isDot(tokens[j])) return isIdent(tokens[j], "new");
-      j--;
-      const operand = tokens[j];
-      if (!operand) return false;
-      if (isPunct(operand, "]")) {
-        if (operand.match < 0) return false;
-        j = operand.match - 1;
-        if (!isOperandEnd(tokens[j])) return false;
-        j = this.skipOperand(j);
-        if (j < -1) return false;
-        continue;
-      }
-      j = this.skipOperand(j);
-      if (j < -1) return false;
-    }
-    return false;
-  }
-
-  /**
-   * Skips one primary operand ending at `j` and returns the index before it,
-   * or -2 when the operand is a call (so `new` cannot apply to the chain).
-   */
-  private skipOperand(j: number): number {
-    const tokens = this.tokens;
-    const t = tokens[j];
-    if (isPunct(t, ")")) {
-      if (t.match < 0) return -2;
-      const before = tokens[t.match - 1];
-      if (isOperandEnd(before) && !isIdent(before, "new")) return -2;
-      return t.match - 1;
-    }
-    if (t.type === "ident" || t.type === "private") return j - 1;
-    return -2;
-  }
-
-  private checkComputed(i: number): void {
-    const tokens = this.tokens;
-    const prev = tokens[i - 1];
-    if (!isOperandEnd(prev) && !isPunct(prev, "?.")) return;
-    const key = tokens[i + 1];
-    if (!key || !isPunct(tokens[i + 2], "]")) return;
-    const literal = key.type === "string" ||
-      (key.type === "template" && key.whole);
-    if (!literal) return;
-    if (COMPUTED_NAMES.has(key.value)) {
-      this.flag(i + 1, "eval-computed-access");
-    } else if (key.value === "constructor" && isPunct(tokens[i + 3], "(")) {
-      this.flag(i + 1, "constructor-call");
-    }
+    this.globalValues.push(visit.node);
   }
 }
 
 /**
- * Finds dynamic code execution in `source`. Never throws; unterminated
- * strings, templates, comments and regexes end at end of input.
+ * Finds dynamic code execution in `source`. Never throws: a file that does
+ * not parse is checked with the plain text check instead.
  */
-export function findDynamicCodeExecution(source: string): DynamicCodeFinding[] {
-  const tokens = new Tokenizer(source).run();
-  return new Analyzer(tokens).run();
+export function findDynamicCodeExecution(
+  source: string,
+): DynamicCodeFinding[] {
+  const program = parseSource(source);
+  if (!program) return textFallback(source);
+  return new Analyzer().run(program);
 }

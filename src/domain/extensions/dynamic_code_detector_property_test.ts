@@ -37,7 +37,10 @@ const arbCleanStatement = fc.constantFrom(
   "const q = c ? { a: 1 } : [2];",
 );
 
-const arbClean = fc.array(arbCleanStatement, { maxLength: 8 });
+// Each statement gets its own block so repeated declarations stay valid.
+const arbClean = fc.array(arbCleanStatement.map((s) => `{ ${s} }`), {
+  maxLength: 8,
+});
 
 /** Text that would be dynamic code if it were read as code. */
 const arbHostileText = fc.oneof(
