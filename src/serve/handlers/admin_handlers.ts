@@ -1275,11 +1275,9 @@ export async function handleVaultMigrate(
     const repoDir = ctx.repoDir;
     // The shared repository's mark hook signals the config it writes and the
     // one it removes, which the scoped push then deletes remotely.
-    const deps = await createVaultMigrateDeps(
-      repoDir,
-      undefined,
-      ctx.repoContext.vaultConfigRepo,
-    );
+    const deps = await createVaultMigrateDeps(repoDir, {
+      repo: ctx.repoContext.vaultConfigRepo,
+    });
 
     // No trustKeySource: the client does not own this host, so a
     // local_encryption target gets the server's key source (swamp-club#2690).

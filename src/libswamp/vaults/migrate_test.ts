@@ -585,11 +585,7 @@ Deno.test("createVaultMigrateDeps: reads, saves and deletes configs through an i
       join(dir, "injected"),
     );
     await injected.save(SOURCE_CONFIG);
-    const deps = await createVaultMigrateDeps(
-      dir,
-      { vaultsDir: join(dir, "options") },
-      injected,
-    );
+    const deps = await createVaultMigrateDeps(dir, { repo: injected });
     const target = VaultConfig.create(
       SOURCE_CONFIG.id,
       SOURCE_CONFIG.name,
@@ -606,12 +602,7 @@ Deno.test("createVaultMigrateDeps: reads, saves and deletes configs through an i
       "my-vault",
     );
     assertEquals(await injected.findById("mock", "vault-1"), null);
-    const options = new YamlVaultConfigRepository(
-      dir,
-      undefined,
-      join(dir, "options"),
-    );
-    assertEquals(await options.findAll(), []);
+    assertEquals(await new YamlVaultConfigRepository(dir).findAll(), []);
   });
 });
 

@@ -1113,10 +1113,10 @@ files through the definition and data repos. `vault.create`, `vault.edit` and
 `vault.migrate` write through serve's shared vault config repository
 (swamp-club#2995). `vault.migrate` removes the old config through it too, so the
 scoped push deletes the remote copy. Otherwise the config poller would bring it
-back as a second config with the same name. The per-path signals are enough, and they
-drive the extension's scoped walk, which detects deletions by absence on disk
-(rule 2). A bare `markDirty()` sets `bulkInvalidated` in the extension and
-overrides the per-path signal. That has two costs:
+back as a second config with the same name. The per-path signals are enough,
+and they drive the extension's scoped walk, which detects deletions by absence
+on disk (rule 2). A bare `markDirty()` sets `bulkInvalidated` in the extension
+and overrides the per-path signal. That has two costs:
 
 - **Dropped deletions.** The full walk skips deletion detection unless the
   per-path set overflowed, so remote deletions are silently lost
@@ -1158,8 +1158,9 @@ writing:
   `models/` to `auto-definitions/` on disk, and marks each moved file.
 
 Without managedConfig, the vault config is repo-local and the hook drops the
-vault config repository's mark (rule 5). The extension handlers do not push at all then, since nothing they
-write is in the cache. Handlers that never write into the cache do not push:
+vault config repository's mark (rule 5). The extension handlers do not push at
+all then, since nothing they write is in the cache. Handlers that never write
+into the cache do not push:
 `vault.put`, `vault.annotate` and `vault.delete`. Secrets and annotations live
 in the always-local `.swamp/secrets`, and vault audit entries go to the
 repo-local `.swamp/audit`.
