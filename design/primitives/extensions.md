@@ -1097,7 +1097,10 @@ Every TypeScript file in an extension is checked before push and after pull.
 - A single file over 1 MB
 - Total extension size over 10 MB
 - More than 150 files
-- Use of `eval()` or `new Function()` (code injection)
+- Dynamic code execution (code injection): the global `eval` in any form, the
+  `Function` constructor, and `.constructor(...)` calls. The check tokenizes
+  the source, so methods and properties named `eval` and text in strings and
+  comments do not count (`src/domain/extensions/dynamic_code_detector.ts`)
 
 ### Warnings (prompt user)
 
