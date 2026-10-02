@@ -1177,6 +1177,14 @@ async function loadUserModels(
 
     throwOnTransientLoadFailures(result.failed, "model");
 
+    // Built-in and other eagerly registered types skip the type loader, so
+    // their extensions attach through this hook instead (swamp-club#2846).
+    // Wired once the index is built, so an attach never reads a partial
+    // catalog.
+    modelRegistry.setExtensionAttacher((type) =>
+      loader.attachPendingExtensionsForType(type)
+    );
+
     for (const failure of result.failed) {
       if (failure.error.startsWith("Cannot extend unregistered model type")) {
         logger

@@ -23,6 +23,7 @@ import { getLogger } from "@logtape/logtape";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import { bundleExtension } from "../models/bundle.ts";
 import { ModelType } from "../models/model_type.ts";
+import { isControlPlaneModelType } from "../models/control_plane_types.ts";
 import { CalVer } from "../models/calver.ts";
 import {
   type CheckDefinition,
@@ -973,6 +974,16 @@ export const modelKindAdapter: KindAdapter = {
         }
         flatMethods[name] = method;
       }
+    }
+
+    // Control-plane records (grants, groups, tokens, the worker fleet) are
+    // never extended, on any attach path (swamp-club#2846).
+    if (isControlPlaneModelType(ext.type)) {
+      result.failed.push({
+        file,
+        error: `Cannot extend control-plane model type: ${ext.type}`,
+      });
+      return;
     }
 
     const targetModel = modelRegistry.get(ext.type);

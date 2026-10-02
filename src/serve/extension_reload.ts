@@ -45,6 +45,7 @@ import { bundleExtension } from "../domain/models/bundle.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 import {
   canonicalizePath,
@@ -367,6 +368,74 @@ async function detachRemovedAddOns(args: {
 }
 
 /**
+ * Attaches pulled add-ons to the registered model types they extend
+ * (swamp-club#2846). The reload loop re-registers only the types a pulled
+ * extension defines; an add-on row extends a type it does not own, such as
+ * a built-in, which the loop never touches. Without this, an add-on pulled
+ * into a running serve stays missing until restart once its target type was
+ * used. Lazy targets attach their add-ons when they load, and control-plane
+ * types are never extended. Attaching is idempotent per source and
+ * fingerprint, so add-ons already attached are skipped. Failures are logged,
+ * never thrown: one bad add-on must not stop the reload.
+ */
+async function attachPulledAddOns(args: {
+  catalog: ExtensionCatalogStore;
+  lockfile: LockfileRepository;
+  repoDir: string;
+  pulledRoot: string;
+  names: readonly string[];
+  denoRuntime?: DenoRuntime;
+}): Promise<void> {
+  // Rows carry the symlink-resolved source path, which differs from the
+  // configured root when the repo sits under a symlink (macOS /tmp), so look
+  // under both spellings, as the removed-extension sweep does.
+  const roots = new Set([
+    args.pulledRoot,
+    realCanonicalPath(args.pulledRoot),
+  ]);
+  const targets = new Set<string>();
+  for (const name of args.names) {
+    for (const root of roots) {
+      for (
+        const row of args.catalog.findBySourcePathPrefix(
+          pulledPrefix(root, name),
+        )
+      ) {
+        if (row.kind === "extension" && row.extends_type) {
+          targets.add(row.extends_type);
+        }
+      }
+    }
+  }
+  let loader: ExtensionLoader | undefined;
+  for (const type of targets) {
+    if (isControlPlaneModelType(type) || !modelRegistry.get(type)) continue;
+    loader ??= new ExtensionLoader(
+      args.denoRuntime ?? new EmbeddedDenoRuntime(),
+      modelKindAdapter,
+      args.repoDir,
+      undefined,
+      new ExtensionRepository({
+        catalog: args.catalog,
+        lockfileRepository: args.lockfile,
+        repoRoot: args.repoDir,
+      }),
+    );
+    try {
+      await loader.attachPendingExtensionsForType(type);
+    } catch (err) {
+      logger.warn(
+        "Hot-reload: failed to attach pulled add-ons to {type}: {error}",
+        {
+          type,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
+}
+
+/**
  * Catalogues lockfile entries that have no catalog rows, so the register
  * loop below picks their types up and later reloads hot-reload them.
  * Files reach a running serve without rows when a managed-config sync
@@ -608,6 +677,15 @@ export async function reloadPulledExtensions(
         }
       }
     }
+
+    await attachPulledAddOns({
+      catalog,
+      lockfile,
+      repoDir,
+      pulledRoot,
+      names: Object.keys(entries),
+      denoRuntime,
+    });
 
     // Re-read: an extension installed while this reload ran must be in
     // the snapshot, or an rm before the next reload would miss its types.

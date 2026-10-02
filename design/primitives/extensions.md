@@ -763,8 +763,9 @@ recorded one counts as a base member, which wins. Each collision emits one
 extension can end up partly active.
 
 Every attach path (`load()`, `loadSingleType`, and
-`attachPendingExtensionsForType`) marks a processed extension attached by
-source path and fingerprint, so a later pass does not import it again.
+`attachPendingExtensionsForType`, which the registry's extension attacher also
+calls) marks a processed extension attached by source path and fingerprint, so
+a later pass does not import it again.
 
 Cold-start indexing defers to rows written by the import-based reconcile. When
 `populateCatalogFromDir` finds an indexed row with the same fingerprint, it
@@ -2465,6 +2466,21 @@ has been fully indexed.
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports
    only that bundle, plus any extension bundles targeting the base type.
+
+   A type that is already registered never reaches the type loader: built-in
+   types such as `command/shell`, and types that a full load or the
+   auto-resolver registered directly. For these, `ensureTypeLoaded` runs the
+   extension attacher once per type per process instead
+   (`ModelRegistry.setExtensionAttacher`, wired by the CLI to
+   `attachPendingExtensionsForType`). Control-plane types are never extended:
+   `ModelRegistry.extend` and `applyExtensionMembers` refuse them, and the model
+   adapter fails an add-on that targets one with `Cannot extend control-plane
+   model type`, on every attach path.
+   If the attacher itself fails (for example the catalog is unreadable), the
+   failure is logged and retried on the next call, and the base type stays
+   usable without its add-ons. A single add-on that fails to import is skipped
+   and logged, and is retried by the next attach pass: a hot reload, a new
+   attacher or a new process (swamp-club#2846).
 
 4. Concurrent callers for the same type share one load promise (per-type
    memoization). `ensureTypeLoaded` also awaits a pending load promise when the

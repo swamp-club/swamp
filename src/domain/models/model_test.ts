@@ -28,6 +28,7 @@ import {
   isMutatingKind,
   type LazyModelEntry,
   type MethodContext,
+  type MethodDefinition,
   type ModelDefinition,
   ModelRegistry,
 } from "./model.ts";
@@ -1338,6 +1339,220 @@ Deno.test("ModelRegistry.ensureTypeLoaded: concurrent caller waits for extension
   assertEquals("write" in modelDef!.methods, true);
 
   await promise1;
+});
+
+function extensionMethod(): Record<string, MethodDefinition> {
+  return {
+    addon_method: {
+      description: "Added by an extension",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({}),
+    },
+  };
+}
+
+Deno.test("ModelRegistry.ensureTypeLoaded: attaches extensions to an eagerly registered type", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  registry.setExtensionAttacher((type) => {
+    registry.extend(type, extensionMethod());
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("command/shell");
+
+  const def = registry.get("command/shell");
+  assertEquals("addon_method" in def!.methods, true);
+  assertEquals("write" in def!.methods, true);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: attaches once per type however often it is called", async () => {
+  const registry = new ModelRegistry();
+  const types = ["@myorg/a", "@myorg/b", "@myorg/c"];
+  for (const type of types) registry.register(createTestModel(type));
+  const calls: string[] = [];
+  registry.setExtensionAttacher((type) => {
+    calls.push(type);
+    return Promise.resolve();
+  });
+
+  for (let i = 0; i < 50; i++) {
+    await registry.ensureTypeLoaded(types[i % types.length]);
+  }
+
+  assertEquals(calls.sort(), types);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: concurrent callers share one extension attach", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  const gate = Promise.withResolvers<void>();
+  let calls = 0;
+  registry.setExtensionAttacher(async (type) => {
+    calls++;
+    await gate.promise;
+    registry.extend(type, extensionMethod());
+  });
+
+  const first = registry.ensureTypeLoaded("command/shell");
+  const second = registry.ensureTypeLoaded("command/shell").then(() =>
+    "addon_method" in registry.get("command/shell")!.methods
+  );
+  gate.resolve();
+  await first;
+
+  assertEquals(await second, true);
+  assertEquals(calls, 1);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: a failed extension attach leaves the base type usable and retries", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  let calls = 0;
+  registry.setExtensionAttacher((type) => {
+    calls++;
+    if (calls < 3) {
+      return Promise.reject(new Error("database is locked"));
+    }
+    registry.extend(type, extensionMethod());
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("command/shell");
+  assertEquals("write" in registry.get("command/shell")!.methods, true);
+  assertEquals("addon_method" in registry.get("command/shell")!.methods, false);
+
+  await registry.ensureTypeLoaded("command/shell");
+  await registry.ensureTypeLoaded("command/shell");
+  await registry.ensureTypeLoaded("command/shell");
+
+  assertEquals(calls, 3);
+  assertEquals("addon_method" in registry.get("command/shell")!.methods, true);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: an attacher that throws synchronously leaves the base type usable", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  registry.setExtensionAttacher(() => {
+    throw new Error("catalog closed");
+  });
+
+  await registry.ensureTypeLoaded("command/shell");
+
+  assertEquals("write" in registry.get("command/shell")!.methods, true);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: invalidateType re-arms the extension attach", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@myorg/echo"));
+  let calls = 0;
+  registry.setExtensionAttacher(() => {
+    calls++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/echo");
+  registry.invalidateType("@myorg/echo");
+  registry.register(createTestModel("@myorg/echo"));
+  await registry.ensureTypeLoaded("@myorg/echo");
+
+  assertEquals(calls, 2);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: lazy types, before and after promotion, and unknown types never use the extension attacher", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  registry.setTypeLoader((type) => {
+    registry.promoteFromLazy(createTestModel(type));
+    return Promise.resolve();
+  });
+  let calls = 0;
+  registry.setExtensionAttacher(() => {
+    calls++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/echo");
+  await registry.ensureTypeLoaded("@myorg/echo");
+  await registry.ensureTypeLoaded("@myorg/nonexistent");
+
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+  assertEquals(calls, 0);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: attaches once the attacher is set later", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+
+  await registry.ensureTypeLoaded("command/shell");
+  assertEquals("addon_method" in registry.get("command/shell")!.methods, false);
+
+  registry.setExtensionAttacher((type) => {
+    registry.extend(type, extensionMethod());
+    return Promise.resolve();
+  });
+  await registry.ensureTypeLoaded("command/shell");
+
+  assertEquals("addon_method" in registry.get("command/shell")!.methods, true);
+});
+
+Deno.test("ModelRegistry.setExtensionAttacher: a new attacher checks every type again", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  const calls: string[] = [];
+  registry.setExtensionAttacher(() => {
+    calls.push("first");
+    return Promise.resolve();
+  });
+  await registry.ensureTypeLoaded("command/shell");
+
+  registry.setExtensionAttacher(() => {
+    calls.push("second");
+    return Promise.resolve();
+  });
+  await registry.ensureTypeLoaded("command/shell");
+  registry.setExtensionAttacher(null);
+  await registry.ensureTypeLoaded("command/shell");
+
+  assertEquals(calls, ["first", "second"]);
+});
+
+Deno.test("ModelRegistry.extend: refuses control-plane types", () => {
+  const registry = new ModelRegistry();
+  for (const type of ["swamp/grant", "@swamp/grant", "swamp/worker"]) {
+    registry.register(createTestModel(type));
+    assertThrows(
+      () => registry.extend(type, extensionMethod()),
+      Error,
+      "Cannot extend control-plane model type",
+    );
+    assertThrows(
+      () =>
+        registry.applyExtensionMembers(
+          type,
+          { methods: extensionMethod() },
+          {},
+        ),
+      Error,
+      "Cannot extend control-plane model type",
+    );
+    assertEquals("addon_method" in registry.get(type)!.methods, false);
+  }
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: control-plane types are never extended", async () => {
+  const registry = new ModelRegistry();
+  const types = ["swamp/grant", "@swamp/grant", "swamp/worker"];
+  for (const type of types) registry.register(createTestModel(type));
+  let calls = 0;
+  registry.setExtensionAttacher(() => {
+    calls++;
+    return Promise.resolve();
+  });
+
+  for (const type of types) await registry.ensureTypeLoaded(type);
+
+  assertEquals(calls, 0);
 });
 
 Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", async () => {

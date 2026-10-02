@@ -45,7 +45,10 @@ import {
   bundleNamespace,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
-import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import {
+  canonicalizePath,
+  realCanonicalPath,
+} from "../infrastructure/persistence/canonicalize_path.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import {
   detachExtensionSources,
@@ -1491,6 +1494,7 @@ async function withAttachedAddOns(
     sourceOf: (ext: string) => string;
     pulledDir: (ext: string) => string;
   }) => Promise<void>,
+  options: { attachFirst?: boolean } = {},
 ): Promise<void> {
   installZodGlobal();
   await withPulledRepo(addOns.map((a) => a.ext), async (repo) => {
@@ -1543,7 +1547,9 @@ async function withAttachedAddOns(
       }),
     );
     try {
-      await loader.attachPendingExtensionsForType(baseType);
+      if (options.attachFirst ?? true) {
+        await loader.attachPendingExtensionsForType(baseType);
+      }
       // Serve's first reload records the add-ons in its type snapshot.
       await reload(repo.repoDir, repo.lockfilePath);
       await fn({
@@ -1637,6 +1643,106 @@ Deno.test("reloadPulledExtensions: a surviving add-on keeps its method and recla
 
       assertEquals(methodOn("command/shell", shared), "from kept");
     },
+  );
+});
+
+Deno.test("reloadPulledExtensions: attaches an add-on pulled into a running serve to a built-in type (swamp-club#2846)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/addon-${id}`;
+  const method = `pulled_${id.replaceAll("-", "_")}`;
+  // The add-on's rows land while serve runs; nothing has attached them yet.
+  await withAttachedAddOns(
+    "command/shell",
+    [{ ext, method, description: "pulled" }],
+    async ({ repoDir, lockfilePath }) => {
+      assertEquals(methodOn("command/shell", method), "pulled");
+
+      // A second reload finds it already attached and changes nothing.
+      await reload(repoDir, lockfilePath);
+      assertEquals(methodOn("command/shell", method), "pulled");
+      assertEquals(
+        Object.hasOwn(modelRegistry.get("command/shell")!.methods, "execute"),
+        true,
+      );
+    },
+    { attachFirst: false },
+  );
+});
+
+Deno.test("reloadPulledExtensions: attaches a pulled add-on when serve reaches the repo through a symlink (swamp-club#2846)", async () => {
+  // Directory symlinks need elevated rights on Windows.
+  if (Deno.build.os === "windows") return;
+  installZodGlobal();
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/addon-${id}`;
+  const method = `pulled_${id.replaceAll("-", "_")}`;
+  await withPulledRepo([ext], async ({ repoDir, stage, catalog }) => {
+    const sourcePath = await stage(
+      ext,
+      "addon",
+      addOnCode("command/shell", method, "pulled"),
+    );
+    const modelsDir = join(
+      swampPath(repoDir, "pulled-extensions"),
+      ext,
+      "models",
+    );
+    // The loader stores the symlink-resolved source path.
+    catalog.upsert({
+      type_normalized: "command/shell",
+      kind: "extension",
+      bundle_path: join(
+        swampPath(repoDir, "bundles"),
+        bundleNamespace(modelsDir, repoDir),
+        "addon.js",
+      ),
+      source_path: realCanonicalPath(sourcePath),
+      version: "",
+      description: "",
+      extends_type: "command/shell",
+      source_mtime: "",
+      source_fingerprint: "",
+    });
+    // Serve configured with a pulled root spelled through a symlink.
+    const link = `${repoDir}-link`;
+    await Deno.symlink(repoDir, link, { type: "dir" });
+    try {
+      await reloadPulledExtensions(
+        repoDir,
+        join(repoDir, "extensions", "models", "upstream_extensions.json"),
+        swampPath(link, "pulled-extensions"),
+        stubDenoRuntime,
+      );
+
+      assertEquals(methodOn("command/shell", method), "pulled");
+    } finally {
+      detachExtensionSources(
+        "command/shell",
+        (p) => p.includes(join(ext, "models")),
+      );
+      await Deno.remove(link);
+    }
+  });
+});
+
+Deno.test("reloadPulledExtensions: never attaches a pulled add-on to a control-plane type (swamp-club#2846)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/addon-${id}`;
+  const method = `pulled_${id.replaceAll("-", "_")}`;
+  const before = Object.keys(modelRegistry.get("swamp/grant")!.methods);
+  await withAttachedAddOns(
+    "swamp/grant",
+    [{ ext, method, description: "pulled" }],
+    async ({ repoDir, lockfilePath }) => {
+      await reload(repoDir, lockfilePath);
+
+      assertEquals(methodOn("swamp/grant", method), undefined);
+      assertEquals(
+        Object.keys(modelRegistry.get("swamp/grant")!.methods),
+        before,
+      );
+    },
+    { attachFirst: false },
   );
 });
 

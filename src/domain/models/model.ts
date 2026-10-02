@@ -21,8 +21,9 @@ import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Environment } from "cel-js";
-import type { Logger } from "@logtape/logtape";
+import { getLogger, type Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
+import { isControlPlaneModelType } from "./control_plane_types.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -954,6 +955,8 @@ export interface LazyModelEntry {
   sourceFingerprint?: string;
 }
 
+const registryLogger = getLogger(["swamp", "models", "registry"]);
+
 /**
  * Registry of all known model definitions.
  *
@@ -977,6 +980,11 @@ export class ModelRegistry {
   private typeLoader:
     | ((type: string, lazyEntry?: LazyModelEntry) => Promise<void>)
     | null = null;
+  private extensionAttacher: ((type: string) => Promise<void>) | null = null;
+  /** Registered types whose extensions have been looked up and attached. */
+  private extensionsAttached = new Set<string>();
+  /** Types whose failed extension attach has already been warned about. */
+  private extensionAttachWarned = new Set<string>();
 
   /**
    * Configures the lazy loader for user extensions.
@@ -995,6 +1003,22 @@ export class ModelRegistry {
     loader: (type: string, lazyEntry?: LazyModelEntry) => Promise<void>,
   ): void {
     this.typeLoader = loader;
+  }
+
+  /**
+   * Configures how extensions are attached to a type that was registered
+   * eagerly — a built-in type, or one a full load or auto-resolve registered
+   * directly. Lazy types get their extensions from the type loader instead.
+   * Called by {@link ensureTypeLoaded} once per such type (swamp-club#2846).
+   * A new attacher reads a new catalog, so every type is checked again;
+   * `null` removes the hook.
+   */
+  setExtensionAttacher(
+    attacher: ((type: string) => Promise<void>) | null,
+  ): void {
+    this.extensionAttacher = attacher;
+    this.extensionsAttached.clear();
+    this.extensionAttachWarned.clear();
   }
 
   /**
@@ -1069,6 +1093,8 @@ export class ModelRegistry {
     this.models.delete(key);
     this.lazyTypes.delete(key);
     this.typeLoadPromises.delete(key);
+    this.extensionsAttached.delete(key);
+    this.extensionAttachWarned.delete(key);
   }
 
   /**
@@ -1085,10 +1111,15 @@ export class ModelRegistry {
     // progress. loadSingleType registers the base type (promoteFromLazy)
     // before attaching extensions; a pending promise means extensions may
     // not yet be merged. Await the pending promise to avoid returning a
-    // base-only definition. (swamp-club#521)
+    // base-only definition. (swamp-club#521) The one-time extension attach
+    // for eagerly registered types parks its promise there too.
     if (this.models.has(key)) {
       const pending = this.typeLoadPromises.get(key);
-      if (pending) await pending;
+      if (pending) {
+        await pending;
+        return;
+      }
+      await this.attachExtensionsOnce(key);
       return;
     }
 
@@ -1115,6 +1146,9 @@ export class ModelRegistry {
         // subsequent calls treat it as unknown instead of retrying.
         if (!this.models.has(key)) {
           this.lazyTypes.delete(key);
+        } else {
+          // loadSingleType attached this type's extensions itself.
+          this.extensionsAttached.add(key);
         }
         this.typeLoadPromises.delete(key);
       }).catch((err) => {
@@ -1123,6 +1157,48 @@ export class ModelRegistry {
       });
       this.typeLoadPromises.set(key, promise);
     }
+    await promise;
+  }
+
+  /**
+   * Attaches extensions to an eagerly registered type the first time it is
+   * used. Built-in types never go through the type loader, so without this
+   * their extensions would never attach (swamp-club#2846). Control-plane
+   * types are never extended. Concurrent callers share one attach through
+   * {@link typeLoadPromises}, so none sees the base-only definition while it
+   * runs (swamp-club#521). An attach failure never fails the base type: when
+   * the attacher itself fails (for example the catalog is unreadable), it is
+   * logged and the next call retries. A single extension that fails to
+   * import is skipped and logged by the attacher, and the type still counts
+   * as attached; it is retried by the next attach pass (hot reload, a new
+   * attacher, or a new process).
+   */
+  private async attachExtensionsOnce(key: string): Promise<void> {
+    const attacher = this.extensionAttacher;
+    if (!attacher || this.extensionsAttached.has(key)) return;
+    if (isControlPlaneModelType(key)) return;
+
+    // Wrapped so an attacher that throws synchronously is handled the same.
+    const promise = new Promise<void>((resolve) => resolve(attacher(key))).then(
+      () => {
+        this.extensionsAttached.add(key);
+      },
+      (error: unknown) => {
+        if (this.extensionAttachWarned.has(key)) {
+          registryLogger
+            .debug`Attaching extensions to ${key} failed again: ${error}`;
+          return;
+        }
+        this.extensionAttachWarned.add(key);
+        registryLogger
+          .warn`Could not attach extensions to ${key}; using it without them: ${error}`;
+      },
+    ).finally(() => {
+      if (this.typeLoadPromises.get(key) === promise) {
+        this.typeLoadPromises.delete(key);
+      }
+    });
+    this.typeLoadPromises.set(key, promise);
     await promise;
   }
 
@@ -1223,6 +1299,9 @@ export class ModelRegistry {
     if (!existing) {
       throw new Error(`Cannot extend unregistered model type: ${key}`);
     }
+    if (isControlPlaneModelType(key)) {
+      throw new Error(`Cannot extend control-plane model type: ${key}`);
+    }
 
     // Check for method name conflicts
     for (const methodName of Object.keys(methods)) {
@@ -1307,6 +1386,9 @@ export class ModelRegistry {
 
     if (!existing) {
       throw new Error(`Cannot extend unregistered model type: ${key}`);
+    }
+    if (isControlPlaneModelType(key)) {
+      throw new Error(`Cannot extend control-plane model type: ${key}`);
     }
 
     const current: Record<keyof ExtensionMemberSet, Record<string, unknown>> = {
