@@ -27,6 +27,7 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { isIoError } from "./io_errors.ts";
@@ -133,7 +134,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirtyHook) await this.markDirtyHook(relPath);
+    await signalChange(
+      this.markDirtyHook,
+      changeFor(relPath, "YamlDefinitionRepository.notifyDirty"),
+    );
   }
 
   async findById(

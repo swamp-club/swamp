@@ -26,7 +26,10 @@ import {
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { assertUnitOfWorkContract } from "../testing/unit_of_work_contract.ts";
-import { createLegacyUnitOfWork } from "./legacy_unit_of_work.ts";
+import {
+  createLegacyUnitOfWork,
+  legacyUnitOfWorkTarget,
+} from "./legacy_unit_of_work.ts";
 
 /**
  * A mark hook that records its arguments, and can reject the next call or
@@ -256,4 +259,30 @@ Deno.test("createLegacyUnitOfWork: staged() returns frozen copies", async () => 
   change.path = "/cache/data/changed";
 
   assertEquals(unit.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+});
+
+Deno.test("legacyUnitOfWorkTarget: is the exact hook the unit was created with", () => {
+  const { hook } = recordingHook();
+  const other = recordingHook().hook;
+  const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+  assertStrictEquals(legacyUnitOfWorkTarget(uow), hook);
+  assertEquals(legacyUnitOfWorkTarget(uow) === other, false);
+});
+
+Deno.test("legacyUnitOfWorkTarget: is undefined for a unit created without a hook", () => {
+  const uow = createLegacyUnitOfWork(undefined, { flush: undefined });
+  assertStrictEquals(legacyUnitOfWorkTarget(uow), undefined);
+});
+
+Deno.test("legacyUnitOfWorkTarget: is undefined for a unit of work built any other way", () => {
+  const staged: StagedChange[] = [];
+  const uow = {
+    stage: (change: StagedChange) => {
+      staged.push(change);
+      return Promise.resolve();
+    },
+    commit: () => Promise.resolve(),
+    staged: () => staged,
+  };
+  assertStrictEquals(legacyUnitOfWorkTarget(uow), undefined);
 });

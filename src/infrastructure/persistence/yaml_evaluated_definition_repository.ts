@@ -23,6 +23,7 @@ import {
 } from "../../domain/expressions/deferred_expression.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -102,7 +103,10 @@ export class YamlEvaluatedDefinitionRepository {
   }
 
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
+    await signalChange(
+      this.markDirty,
+      changeFor(relPath, "YamlEvaluatedDefinitionRepository.notifyDirty"),
+    );
   }
 
   /**

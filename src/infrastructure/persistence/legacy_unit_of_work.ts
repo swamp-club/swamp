@@ -34,6 +34,28 @@ export interface LegacyUnitOfWorkOptions {
 }
 
 /**
+ * The hook each legacy unit of work forwards to, by unit. Kept beside the
+ * adapter, not on the {@link UnitOfWork} port: which hook a unit belongs to
+ * is an adapter detail, and a unit built any other way can never claim one.
+ */
+const targets = new WeakMap<UnitOfWork, MarkDirtyHook>();
+
+/**
+ * The mark hook `uow` forwards to, when `uow` came from
+ * {@link createLegacyUnitOfWork} with a hook. Undefined for a unit created
+ * without a hook and for any other {@link UnitOfWork}.
+ *
+ * A repository stages into an ambient unit of work only when this is its own
+ * hook (`signalChange` in `unit_of_work_scope.ts`), so a unit opened for one
+ * repository context never takes another context's changes.
+ */
+export function legacyUnitOfWorkTarget(
+  uow: UnitOfWork,
+): MarkDirtyHook | undefined {
+  return targets.get(uow);
+}
+
+/**
  * A {@link UnitOfWork} over today's {@link MarkDirtyHook}: datastore rework
  * Phase 1.
  *
@@ -64,7 +86,7 @@ export function createLegacyUnitOfWork(
     if (committed) throw new Error("unit of work already committed");
   };
 
-  return {
+  const uow: UnitOfWork = {
     async stage(change: StagedChange): Promise<void> {
       refuseIfCommitted();
       changes.push(Object.freeze({ ...change }));
@@ -86,4 +108,6 @@ export function createLegacyUnitOfWork(
       return Object.freeze([...changes]);
     },
   };
+  if (markDirty !== undefined) targets.set(uow, markDirty);
+  return uow;
 }

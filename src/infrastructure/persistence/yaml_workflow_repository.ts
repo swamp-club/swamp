@@ -19,6 +19,7 @@
 
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { resolveEffectiveWorkflowsDir } from "./paths.ts";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -93,7 +94,10 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirtyHook) await this.markDirtyHook(relPath);
+    await signalChange(
+      this.markDirtyHook,
+      changeFor(relPath, "YamlWorkflowRepository.notifyDirty"),
+    );
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
