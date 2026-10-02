@@ -276,6 +276,18 @@ const PUNCTUATORS = [
   ">>",
 ];
 
+// Operators that can follow a variable named `type` in an expression.
+const NOT_A_DECLARED_NAME = new Set([
+  "in",
+  "instanceof",
+  "of",
+  "as",
+  "satisfies",
+  "is",
+  "extends",
+  "keyof",
+]);
+
 const CALL_FORMS = new Set(["call", "apply", "bind"]);
 const COMPUTED_NAMES = new Set(["eval", "Function"]);
 const MAX_WALK_BACK = 64;
@@ -318,8 +330,12 @@ class Tokenizer {
   private readonly frames: Frame[] = [];
   private readonly pendingClass: number[] = [];
   private pendingInterface = -1;
-  private typeAlias: { depth: number; active: boolean } | null = null;
+  private typeAlias:
+    | { depth: number; active: boolean; named: boolean }
+    | null = null;
   private lastQuestion = -1;
+  /** Open ternaries outside any frame. */
+  private rootTernary = 0;
 
   constructor(private readonly src: string) {}
 
@@ -677,24 +693,37 @@ class Tokenizer {
     tokens.push(token);
 
     // A `?` directly followed by these is a TS optional marker, not a ternary.
-    if (this.lastQuestion === index - 1 && top) {
+    if (this.lastQuestion === index - 1) {
       if (type === "punct" && [":", ")", ",", "=", ";"].includes(value)) {
-        top.ternary--;
+        if (top) top.ternary--;
+        else this.rootTernary--;
       }
     }
 
     this.updateTypeAlias(token, prev);
 
-    if (type === "ident" && prev?.type === "ident" && !token.nl) {
+    // `type Name` / `interface Name` on one line at statement start is a
+    // TypeScript declaration; elsewhere `type` is an ordinary variable.
+    if (
+      type === "ident" && prev?.type === "ident" && !token.nl &&
+      !NOT_A_DECLARED_NAME.has(value)
+    ) {
       const before = tokens[index - 2];
-      const declared = !before ||
-        !(before.type === "punct" &&
-          (before.value === "." || before.value === "?."));
+      const declared = prev.nl || !before ||
+        (before.type === "punct" &&
+          (before.value === ";" || before.value === "{" ||
+            before.value === "}")) ||
+        (before.type === "ident" &&
+          (before.value === "export" || before.value === "declare"));
       if (declared && prev.value === "interface") {
         this.pendingInterface = this.frames.length;
         prev.inType = true;
       } else if (declared && prev.value === "type" && !this.typeAlias) {
-        this.typeAlias = { depth: this.frames.length, active: false };
+        this.typeAlias = {
+          depth: this.frames.length,
+          active: false,
+          named: true,
+        };
       }
     }
 
@@ -713,12 +742,16 @@ class Tokenizer {
     switch (value) {
       case "?":
         if (top) top.ternary++;
+        else this.rootTernary++;
         this.lastQuestion = index;
         break;
       case ":":
         if (top && top.ternary > 0) {
           token.colon = "ternary";
           top.ternary--;
+        } else if (!top && this.rootTernary > 0) {
+          token.colon = "ternary";
+          this.rootTernary--;
         } else if (top?.kind === "object") {
           token.colon = "prop";
         } else {
@@ -837,6 +870,15 @@ class Tokenizer {
       return;
     }
     if (!alias.active) {
+      // The token right after the name must be `=` or the `<` of a
+      // generic parameter list.
+      if (alias.named) {
+        alias.named = false;
+        if (!(isPunct && (token.value === "=" || token.value === "<"))) {
+          this.typeAlias = null;
+          return;
+        }
+      }
       if (atDepth && isPunct && token.value === "=") {
         alias.active = true;
       } else if (

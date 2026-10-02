@@ -115,6 +115,14 @@ const ADVERSARIAL: Array<[string, string]> = [
     "type\nT = { a: eval(src) };",
   ],
   ["call after a type alias ends", "type T = A\neval(src);"],
+  ["variable named type before as", "const k = type as string, v = eval(src);"],
+  ["variable named type before in", "let t = type in o ? a = eval(s) : 0;"],
+  [
+    "variable named type before instanceof",
+    "x = type instanceof Y, v = eval(s);",
+  ],
+  ["type then a non-declaration", "f(type); type, v = eval(s);"],
+  ["variable named type mid-expression", "a = b + type\nfoo = eval(s);"],
 ];
 
 for (const [name, source] of ADVERSARIAL) {
@@ -170,6 +178,14 @@ const BENIGN: Array<[string, string]> = [
   ["interface extending Function", "interface F extends Function { x: 1 }"],
   ["type alias method signature", "type E = { eval(n: Node): Value };"],
   ["type alias of Function", "type F = Function;"],
+  ["exported type alias", "export type E = { eval(n: Node): Value };"],
+  ["declared type alias", "declare type F = Function;"],
+  [
+    "generic type alias",
+    "type G<T extends Function> = { eval(t: T): void };",
+  ],
+  ["type alias after a block", "if (a) { b(); } type F = Function;"],
+  ["object after a top-level ternary", "const o = c ? x : { eval: 1 };"],
   [
     "multi-line type alias",
     "type E =\n  | { eval(n: Node): Value }\n  | Function;\nconst x = 1;",
