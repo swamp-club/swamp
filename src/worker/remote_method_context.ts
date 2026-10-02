@@ -356,6 +356,7 @@ function createRemoteOutputRepository(
       (await readOutput({ modelType: type.normalized })).result as Awaited<
         ReturnType<OutputRepository["findAll"]>
       >,
+    findByIds: () => unsupported("outputRepository.findByIds"),
     findAllGlobal: () => unsupported("outputRepository.findAllGlobal"),
     findAllGlobalSince: () =>
       unsupported("outputRepository.findAllGlobalSince"),

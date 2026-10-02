@@ -530,6 +530,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       status: row.status as ActiveRunStatus,
       initiatedBy: row.initiated_by,
       instanceId: row.instance_id ?? undefined,
+      settled: row.status === "interrupted" && row.cancel_reason !== null,
     };
   }
 }

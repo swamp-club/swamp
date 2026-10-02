@@ -3847,15 +3847,23 @@ export const serveCommand = new Command()
     // of a run the previous serve process was driving when it died. A row is
     // judged on host and pid, not instance id: this serve's instance id is
     // new, so the rows of the process it replaces carry another one.
-    const settledMethodRuns = await settleDeadOwnerMethodRuns(
-      repoContext.outputRepo,
-      runTracker,
-      localOwnerLiveness(),
-    );
-    if (settledMethodRuns.length > 0) {
+    // Best-effort: a row left unsettled is kept for `run doctor --fix`.
+    try {
+      const settledMethodRuns = await settleDeadOwnerMethodRuns(
+        repoContext.outputRepo,
+        runTracker,
+        localOwnerLiveness(),
+      );
+      if (settledMethodRuns.length > 0) {
+        logger.warn(
+          "Boot: cancelled {count} method run(s) whose owning process is gone",
+          { count: settledMethodRuns.length },
+        );
+      }
+    } catch (error) {
       logger.warn(
-        "Boot: cancelled {count} method run(s) whose owning process is gone",
-        { count: settledMethodRuns.length },
+        "Boot: could not settle method runs whose owning process is gone: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
       );
     }
 

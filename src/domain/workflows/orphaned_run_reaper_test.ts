@@ -812,6 +812,7 @@ function methodRow(
     pid?: number;
     hostname?: string;
     methodName?: string;
+    settled?: boolean;
   } = {},
 ): ActiveRun {
   const now = new Date().toISOString();
@@ -827,6 +828,7 @@ function methodRow(
     heartbeatAt: now,
     status: overrides.status ?? "running",
     initiatedBy: null,
+    settled: overrides.settled,
   });
 }
 
@@ -1060,6 +1062,53 @@ Deno.test("settleDeadOwnerRun: settles the method runs its dead owner left runni
     "settled:owner_process_dead",
     "complete:interrupted",
     "save-output:cancelled",
+    "settled:owner_process_dead",
+  ]);
+});
+
+Deno.test("findDeadOwnerMethodRuns: a row already settled is not read again", async () => {
+  const settled = methodRow({ status: "interrupted", settled: true });
+  const { runTracker } = stubs([], [settled]);
+  const { outputRepo, reads } = outputStub([runningOutput(settled)]);
+
+  const { running, done } = await findDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242]),
+  );
+
+  assertEquals(running, []);
+  assertEquals(done, []);
+  assertEquals(reads, []);
+});
+
+Deno.test("settleDeadOwnerRun: a method-run settlement failure does not fail the settled run", async () => {
+  const run = makeRun({ pid: 4242 });
+  const step = methodRow();
+  const { runRepo, runTracker, recorded } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242 }), step],
+  );
+  const outputRepo: MethodRunOutputs = {
+    findByIds: () => Promise.reject(new Error("permission denied")),
+    save: () => Promise.reject(new Error("unexpected output save")),
+  };
+
+  const settled = await settleDeadOwnerRun(
+    runRepo,
+    runTracker,
+    WORKFLOW_ID,
+    run.id,
+    liveness([4242]),
+    outputRepo,
+  );
+
+  assertEquals(settled, true);
+  assertEquals(run.status, "interrupted");
+  // The step's row is left unsettled for run doctor.
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "save:interrupted",
     "settled:owner_process_dead",
   ]);
 });

@@ -1119,6 +1119,25 @@ Deno.test("RunTrackerStore: retention keeps an interrupted workflow or method ro
   }
 });
 
+Deno.test("RunTrackerStore: a row reads as settled only once markSettled gives it a reason", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("unsettled", "model_method"));
+    store.register(workflowRow("settled", "model_method"));
+    store.register(workflowRow("cancelled", "model_method"));
+    store.complete("cancelled", "cancelled", "Stop it");
+    store.reapDeadProcessRuns();
+    store.markSettled("settled", "record_settled");
+
+    assertEquals(store.findById("unsettled")?.settled, false);
+    assertEquals(store.findById("settled")?.settled, true);
+    assertEquals(store.findById("cancelled")?.settled, false);
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: markSettled only touches an unsettled interrupted row", () => {
   const dbPath = makeTempDbPath();
   const store = new RunTrackerStore(dbPath);

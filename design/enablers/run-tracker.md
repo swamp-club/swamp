@@ -121,15 +121,18 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    A workflow step saves its method-run output `running` under its pid before
    it finishes, so a dead owner strands that record too. It is settled
    `cancelled` through `settleDeadOwnerMethodRuns`
-   (`src/domain/workflows/orphaned_run_reaper.ts`) by `run doctor --fix`
-   (reported as `orphanedMethodRuns` and `orphanedMethodReaped`), by
+   (`src/domain/workflows/orphaned_run_reaper.ts`) by local
+   `run doctor --fix` (reported as `orphanedMethodRuns` and
+   `orphanedMethodReaped`; the `run.doctor` handler does not settle them), by
    `settleDeadOwnerRun` for the steps of the run it interrupts, and by the
    serve boot reaper, with the same rules: a local row, `running` or
    `interrupted`, with a dead pid, and an output still `running` under that
    pid, found by the row's id, model type and method (one read per type and
    method, `OutputRepository.findByIds`). The row is marked `interrupted`,
    the output saved with the owner-exited error, and only then the row
-   settled; a row whose output is missing or finished is settled too. Serve
+   settled; a row whose output is missing or finished is settled too, and a
+   settled row is not read again. For `settleDeadOwnerRun` and serve boot
+   this is best-effort: a failure is logged and the row kept. Serve
    boot judges these rows on host and pid, not instance id, since its own
    instance id is new each start. `swamp workflow cancel` and
    `swamp model cancel` cancel the outputs of an owner they killed after its

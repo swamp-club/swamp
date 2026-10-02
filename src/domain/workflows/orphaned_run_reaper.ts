@@ -214,7 +214,7 @@ export function runHasDeadOwner(
  * or another process took over is never overwritten. The row is marked
  * settled only after the record is saved, so retention keeps it while the
  * record may still say `running`. The method runs of its steps that the dead
- * owner left `running` are then settled too (see
+ * owner left `running` are then settled too, best-effort (see
  * {@link settleDeadOwnerMethodRuns}).
  *
  * Returns true when the run was interrupted.
@@ -239,7 +239,19 @@ export async function settleDeadOwnerRun(
   run.interruptOrphaned("owner_process_dead");
   await runRepo.save(workflowId, run);
   runTracker.markSettled(run.id, "owner_process_dead");
-  await settleDeadOwnerMethodRuns(outputRepo, runTracker, liveness, ownerPid);
+  // The run is settled; its method runs are best-effort, and a row left
+  // unsettled is kept for `run doctor --fix`.
+  try {
+    await settleDeadOwnerMethodRuns(outputRepo, runTracker, liveness, ownerPid);
+  } catch (error) {
+    logger.warn(
+      "Could not settle the method runs of workflow run {runId}: {error}",
+      {
+        runId: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
   return true;
 }
 
@@ -376,7 +388,8 @@ export async function settleOrphanedMethodRun(
 /**
  * The method-run rows owned on this host whose owner is gone (see
  * {@link trackerShowsDeadOwner}), or only those of process `pid`, matched
- * against their output records.
+ * against their output records. A row already settled is skipped, so its
+ * outputs are not read again while retention keeps it.
  */
 export async function findDeadOwnerMethodRuns(
   outputRepo: Pick<OutputRepository, "findByIds">,
@@ -385,7 +398,7 @@ export async function findDeadOwnerMethodRuns(
   pid?: number,
 ): Promise<MethodRunMatch> {
   const rows = runTracker.findAll().filter((row) =>
-    row.runKind === "model_method" &&
+    row.runKind === "model_method" && !row.settled &&
     (pid === undefined || row.pid === pid) &&
     trackerShowsDeadOwner(row, liveness)
   );
