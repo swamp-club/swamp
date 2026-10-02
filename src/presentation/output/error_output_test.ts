@@ -31,6 +31,11 @@ import { UserError } from "../../domain/errors.ts";
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import {
+  flushAuthGateWarning,
+  renderAuthGateWarning,
+  takeAuthGateWarning,
+} from "../renderers/auth_gate_warning.ts";
 
 await initializeLogging({});
 
@@ -214,6 +219,48 @@ Deno.test("renderError: json mode is single-emitter (stderr JSON, no stdout)", (
     // Single-emission contract: in JSON mode renderError writes to
     // stderr only — stdout stays clean for success data.
     assertEquals(stdoutLogs.length, 0);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode carries a held offline warning on the one error document (swamp-club#2938)", () => {
+  const stderrLogs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+
+  try {
+    renderAuthGateWarning("json", "Running offline", () => {});
+    renderError(new UserError("Model not found"), "json");
+    // The exit hook runs after the error and must add nothing.
+    flushAuthGateWarning();
+
+    assertEquals(stderrLogs.length, 1);
+    assertEquals(JSON.parse(stderrLogs[0]), {
+      error: "Model not found",
+      warning: "Running offline",
+      authMode: "offline",
+    });
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    takeAuthGateWarning();
+  }
+});
+
+Deno.test("renderError: json mode without a held warning adds no warning fields", () => {
+  const stderrLogs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+
+  try {
+    renderError(new UserError("Model not found"), "json");
+    assertEquals(JSON.parse(stderrLogs[0]), { error: "Model not found" });
   } finally {
     console.log = originalLog;
     console.error = originalError;

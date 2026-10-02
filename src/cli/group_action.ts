@@ -21,6 +21,7 @@ import type { Command } from "@cliffy/command";
 import { getOutputModeFromArgs } from "./context.ts";
 import { buildErrorJson } from "../presentation/output/error_output.ts";
 import { UserError } from "../domain/errors.ts";
+import { takeAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 
 // JSON-aware showHelp action for group commands. Must be a regular function (not arrow) for Cliffy `this` binding.
 // deno-lint-ignore no-explicit-any
@@ -29,6 +30,7 @@ export function groupCommandAction(this: Command<any>): void {
     const commands = this.getCommands(false).map((cmd) => cmd.getName());
     const json = buildErrorJson(new UserError("No subcommand specified"));
     json.availableCommands = commands;
+    Object.assign(json, takeAuthGateWarning());
     // deno-lint-ignore no-console
     console.error(JSON.stringify(json, null, 2));
     Deno.exit(1);

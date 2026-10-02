@@ -18,20 +18,80 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { renderAuthGateWarning } from "./auth_gate_warning.ts";
+import {
+  flushAuthGateWarning,
+  renderAuthGateWarning,
+  takeAuthGateWarning,
+} from "./auth_gate_warning.ts";
 
-Deno.test("renderAuthGateWarning: JSON mode writes one JSON line to stderr", () => {
-  const lines: string[] = [];
-  renderAuthGateWarning("json", "Running offline", (line) => lines.push(line));
-  assertEquals(lines.length, 1);
-  assertEquals(JSON.parse(lines[0]), {
-    warning: "Running offline",
-    authMode: "offline",
-  });
+Deno.test("renderAuthGateWarning: JSON mode holds the warning and registers an exit hook", () => {
+  const hooks: (() => void)[] = [];
+  try {
+    renderAuthGateWarning(
+      "json",
+      "Running offline",
+      (hook) => hooks.push(hook),
+    );
+    assertEquals(hooks.length, 1);
+    assertEquals(takeAuthGateWarning(), {
+      warning: "Running offline",
+      authMode: "offline",
+    });
+    assertEquals(takeAuthGateWarning(), undefined);
+  } finally {
+    takeAuthGateWarning();
+  }
 });
 
-Deno.test("renderAuthGateWarning: log mode leaves stderr to the logger", () => {
+Deno.test("renderAuthGateWarning: the exit hook writes the held warning once", () => {
+  const hooks: (() => void)[] = [];
+  const originalError = console.error;
   const lines: string[] = [];
-  renderAuthGateWarning("log", "Running offline", (line) => lines.push(line));
+  try {
+    console.error = (...args: unknown[]) => lines.push(args.join(" "));
+    renderAuthGateWarning(
+      "json",
+      "Running offline",
+      (hook) => hooks.push(hook),
+    );
+    hooks[0]();
+    hooks[0]();
+    assertEquals(lines.map((line) => JSON.parse(line)), [
+      { warning: "Running offline", authMode: "offline" },
+    ]);
+  } finally {
+    console.error = originalError;
+    takeAuthGateWarning();
+  }
+});
+
+Deno.test("flushAuthGateWarning: writes one JSON line, then nothing", () => {
+  const lines: string[] = [];
+  try {
+    renderAuthGateWarning("json", "Running offline", () => {});
+    flushAuthGateWarning((line) => lines.push(line));
+    flushAuthGateWarning((line) => lines.push(line));
+    assertEquals(lines.length, 1);
+    assertEquals(JSON.parse(lines[0]), {
+      warning: "Running offline",
+      authMode: "offline",
+    });
+  } finally {
+    takeAuthGateWarning();
+  }
+});
+
+Deno.test("flushAuthGateWarning: writes nothing when the exit hook follows a taken warning", () => {
+  const lines: string[] = [];
+  renderAuthGateWarning("json", "Running offline", () => {});
+  takeAuthGateWarning();
+  flushAuthGateWarning((line) => lines.push(line));
   assertEquals(lines, []);
+});
+
+Deno.test("renderAuthGateWarning: log mode holds nothing and registers no hook", () => {
+  const hooks: (() => void)[] = [];
+  renderAuthGateWarning("log", "Running offline", (hook) => hooks.push(hook));
+  assertEquals(hooks, []);
+  assertEquals(takeAuthGateWarning(), undefined);
 });

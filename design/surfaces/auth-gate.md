@@ -94,9 +94,13 @@ credential exits 1. An error the gate itself hits, such as an unreadable
 records nothing and exits 0, so an agent session is not broken.
 
 A run that passes as `offline` warns why. In log mode the warning goes through
-the logger. JSON mode has no console log output, so the warning is one line on
-stderr, `{"warning": "<message>", "authMode": "offline"}`, and stdout carries
-only the command's own output.
+the logger. JSON mode has no console log output, and a failing command's
+stderr must stay one JSON document, so the warning is held until the run ends.
+A failing run carries it as `warning` and `authMode: "offline"` fields on its
+error document. Any other run writes one line to stderr when the process exits,
+`{"warning": "<message>", "authMode": "offline"}`, so a long-running `serve` or
+`worker connect` reports it at shutdown. Stdout carries only the command's own
+output.
 
 ### Troubleshooting an empty audit trail
 

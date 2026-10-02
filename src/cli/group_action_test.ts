@@ -20,6 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "./group_action.ts";
+import {
+  renderAuthGateWarning,
+  takeAuthGateWarning,
+} from "../presentation/renderers/auth_gate_warning.ts";
 
 Deno.test("groupCommandAction: emits JSON error when --json is in args", () => {
   const originalArgs = Deno.args;
@@ -66,6 +70,50 @@ Deno.test("groupCommandAction: emits JSON error when --json is in args", () => {
   const parsed = JSON.parse(output);
   assertEquals(parsed.error, "No subcommand specified");
   assertEquals(parsed.availableCommands.sort(), ["sub1", "sub2"]);
+});
+
+Deno.test("groupCommandAction: JSON error carries a held offline warning (swamp-club#2938)", () => {
+  const originalArgs = Deno.args;
+  const originalError = console.error;
+  const originalExit = Deno.exit;
+  const lines: string[] = [];
+
+  try {
+    Object.defineProperty(Deno, "args", {
+      value: ["--json"],
+      configurable: true,
+    });
+    console.error = (...args: unknown[]) => lines.push(args.join(" "));
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).exit = () => {
+      throw new Error("EXIT");
+    };
+    renderAuthGateWarning("json", "Running offline", () => {});
+
+    const cmd = new Command()
+      .name("test-group")
+      .command("sub1", new Command().description("First subcommand"));
+
+    try {
+      groupCommandAction.call(cmd);
+    } catch (e) {
+      if ((e as Error).message !== "EXIT") throw e;
+    }
+  } finally {
+    Object.defineProperty(Deno, "args", {
+      value: originalArgs,
+      configurable: true,
+    });
+    console.error = originalError;
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).exit = originalExit;
+  }
+
+  assertEquals(lines.length, 1);
+  const parsed = JSON.parse(lines[0]);
+  assertEquals(parsed.warning, "Running offline");
+  assertEquals(parsed.authMode, "offline");
+  assertEquals(takeAuthGateWarning(), undefined);
 });
 
 Deno.test("groupCommandAction: calls showHelp when not in JSON mode", () => {
