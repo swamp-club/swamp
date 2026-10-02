@@ -40,11 +40,12 @@ function normalise(p: string): string {
 }
 
 // Per-path-wired repositories must not call bare notifyDirty() (no path
-// argument). Repositories that stage typed changes instead (MOVED_REPOS
-// below) have no notifyDirty and are held to the bulk rule there. A bare
-// call sets bulkInvalidated in the datastore extension, forcing a full walk that skips deletion detection — silently dropping
-// remote object deletions (swamp-club#2273). See the "Serve handler
-// obligation" paragraph in design/enablers/datastores.md.
+// argument). Repositories that stage typed changes instead (MOVED_REPOS below)
+// have no notifyDirty and are held to the bulk rule there. A bare call sets
+// bulkInvalidated in the datastore extension, forcing a full walk that skips
+// deletion detection — silently dropping remote object deletions
+// (swamp-club#2273). See the "Serve handler obligation" paragraph in
+// design/enablers/datastores.md.
 const PER_PATH_WIRED_REPOS = [
   "yaml_workflow_run_repository.ts",
   "yaml_evaluated_definition_repository.ts",
