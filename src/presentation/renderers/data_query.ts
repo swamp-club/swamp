@@ -17,15 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  DataQueryData,
-  DataQueryEvent,
-  DataRecord,
-  EventHandlers,
-  ProjectedData,
+import {
+  type DataQueryData,
+  type DataQueryEvent,
+  type DataRecord,
+  type EventHandlers,
+  type ProjectedData,
+  userErrorFromSwampError,
 } from "../../libswamp/mod.ts";
 import type { OutputMode } from "../output/output.ts";
-import { UserError } from "../../domain/errors.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
@@ -323,7 +323,7 @@ export function createDataQueryRenderer(
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
-        throw new UserError(event.error.message);
+        throw userErrorFromSwampError(event.error);
       },
     }),
   };

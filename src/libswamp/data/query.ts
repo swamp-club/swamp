@@ -88,13 +88,7 @@ export interface DataQueryInput {
 export function requireSingleResult(
   data: { predicate: string; total: number },
 ): SwampError | undefined {
-  if (data.total === 0) {
-    return {
-      code: "QUERY_NO_MATCH",
-      message:
-        `Expected exactly one data artifact to match ${data.predicate}, but none did.`,
-    };
-  }
+  if (data.total === 1) return undefined;
   if (data.total > 1) {
     return {
       code: "QUERY_MULTIPLE_MATCHES",
@@ -103,7 +97,12 @@ export function requireSingleResult(
         "Narrow the predicate, for example by name or version.",
     };
   }
-  return undefined;
+  // Zero, or a count missing from a malformed server response.
+  return {
+    code: "QUERY_NO_MATCH",
+    message:
+      `Expected exactly one data artifact to match ${data.predicate}, but none did.`,
+  };
 }
 
 /**

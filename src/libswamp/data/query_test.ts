@@ -426,3 +426,10 @@ Deno.test("requireSingleResult: rejects several matches", () => {
   assertEquals(error?.code, "QUERY_MULTIPLE_MATCHES");
   assertStringIncludes(error?.message ?? "", "more than one");
 });
+
+Deno.test("requireSingleResult: treats a missing count as no match", () => {
+  const error = requireSingleResult(
+    { predicate: "true" } as unknown as { predicate: string; total: number },
+  );
+  assertEquals(error?.code, "QUERY_NO_MATCH");
+});

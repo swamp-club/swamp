@@ -284,11 +284,11 @@ Deno.test("renderJson: single prints null when the one projection failed", () =>
   assertEquals(output, null);
 });
 
-Deno.test("createDataQueryRenderer: single mode error throws UserError", () => {
+Deno.test("createDataQueryRenderer: error throws UserError carrying the error code", () => {
   const handlers = createDataQueryRenderer("json", false, { single: true })
     .handlers();
 
-  assertThrows(
+  const error = assertThrows(
     () =>
       handlers.error({
         kind: "error",
@@ -297,4 +297,5 @@ Deno.test("createDataQueryRenderer: single mode error throws UserError", () => {
     UserError,
     "no match",
   );
+  assertEquals(error.code, "QUERY_NO_MATCH");
 });
