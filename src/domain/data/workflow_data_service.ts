@@ -107,7 +107,9 @@ function matchAmong(
   const byProducer = new Map<string, WorkflowDataItem[]>();
   for (const candidate of items) {
     const key = producerKey(candidate);
-    byProducer.set(key, [...(byProducer.get(key) ?? []), candidate]);
+    const producerItems = byProducer.get(key);
+    if (producerItems) producerItems.push(candidate);
+    else byProducer.set(key, [candidate]);
   }
   const selectedKey = producerKey(item);
   const otherProducers: WorkflowDataItem[] = [];

@@ -28,6 +28,7 @@ import {
   dataQueryCommand,
   type DataQueryTarget,
 } from "../../domain/data/data_query_command.ts";
+import { isTextContentType } from "../../domain/data/content_type.ts";
 import {
   type ContentEncoding,
   encodeContent,
@@ -604,15 +605,20 @@ async function* workflowScopedGet(
     contentPath: deps.toRelativePath(repoDir, item.contentPath),
   };
 
-  const replacementQuery = dataQueryCommand(
-    workflowQueryTarget(located.location.run.id, item),
-    { includeContent: input.includeContent },
-  );
-  output.replacementQuery = replacementQuery;
-  output.warnings = [deprecationWarning(replacementQuery)];
+  output.warnings = [];
+  if (isTextContentType(item.data.contentType)) {
+    output.replacementQuery = dataQueryCommand(
+      workflowQueryTarget(item),
+      { includeContent: input.includeContent },
+    );
+    output.warnings.push(deprecationWarning(output.replacementQuery, false));
+  } else {
+    output.warnings.push(binaryDeprecationWarning());
+  }
   const ambiguity = await otherProducersWarning(
     located.location,
     input.canReadOwner,
+    input.includeContent,
   );
   if (ambiguity) output.warnings.push(ambiguity);
 
@@ -713,12 +719,21 @@ async function* modelScopedGet(
     contentPath: deps.toRelativePath(repoDir, absoluteContentPath),
   };
 
-  const replacementQuery = dataQueryCommand(
-    { modelName: definition.name, dataName: data.name, version: data.version },
-    { includeContent },
-  );
-  output.replacementQuery = replacementQuery;
-  output.warnings = [deprecationWarning(replacementQuery)];
+  if (isTextContentType(data.contentType)) {
+    output.replacementQuery = dataQueryCommand(
+      {
+        modelName: storedModelName(data, definition.name),
+        dataName: data.name,
+        version: data.version,
+      },
+      { includeContent },
+    );
+    output.warnings = [
+      deprecationWarning(output.replacementQuery, version === undefined),
+    ];
+  } else {
+    output.warnings = [binaryDeprecationWarning()];
+  }
 
   if (includeContent) {
     const rawContent = await deps.getContent(
@@ -737,29 +752,57 @@ async function* modelScopedGet(
   yield { kind: "completed", data: output };
 }
 
-/** The deprecation notice every `data get` read carries. */
-function deprecationWarning(replacementQuery: string): string {
-  return "swamp data get is deprecated and will be removed in a future " +
-    `release. Read this item with: ${replacementQuery}`;
+/**
+ * The deprecation notice a `data get` read carries, naming the query that
+ * reads the same item. A read of the latest version is pinned to that
+ * version, so the notice says how to follow later versions instead.
+ */
+function deprecationWarning(
+  replacementQuery: string,
+  readLatest: boolean,
+): string {
+  const notice = "swamp data get is deprecated and will be removed in a " +
+    `future release. Read this item with: ${replacementQuery}`;
+  return readLatest
+    ? `${notice} (drop the version clause to read the latest version instead)`
+    : notice;
 }
 
 /**
- * The query coordinates of a workflow-run item: the run, job and step that
- * produced it, or its owner for workflow-scope data, which has no step.
+ * The deprecation notice for a binary item: `data query` does not return
+ * binary content yet (swamp-club#2959), so no replacement is named.
  */
-function workflowQueryTarget(
-  runId: string,
-  item: WorkflowDataItemInfo,
-): DataQueryTarget {
+function binaryDeprecationWarning(): string {
+  return "swamp data get is deprecated, but swamp data query cannot return " +
+    "binary content yet (swamp-club#2959); keep using data get for this item.";
+}
+
+/**
+ * The model name the catalog stores for an item: the `modelName` tag stamped
+ * when it was written, which outlives a later rename of the definition.
+ */
+function storedModelName(data: DataItem, fallback: string): string {
+  return data.tags["modelName"] ?? fallback;
+}
+
+/**
+ * The query coordinates of a workflow-run item, from what the item itself
+ * records — the catalog indexes those fields, not the run's. Step output
+ * records its run, job and step. Report output records none, so it is named
+ * by its owner, data name and version instead.
+ */
+function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
+  const owner = item.data.ownerDefinition;
   const target: DataQueryTarget = {
-    workflowRunId: runId,
     dataName: item.data.name,
     version: item.data.version,
   };
-  if (item.jobName !== undefined) target.jobName = item.jobName;
-  if (item.stepName !== undefined) target.stepName = item.stepName;
-  if (item.jobName === undefined && item.stepName === undefined) {
-    target.modelName = item.modelName;
+  if (owner.workflowRunId) {
+    target.workflowRunId = owner.workflowRunId;
+    if (owner.jobName) target.jobName = owner.jobName;
+    if (owner.stepName) target.stepName = owner.stepName;
+  } else {
+    target.modelName = storedModelName(item.data, item.modelName);
   }
   return target;
 }
@@ -775,35 +818,51 @@ function producerLabel(item: WorkflowDataItemInfo): string {
 }
 
 /**
+ * Whether the caller may read `item`'s owner. A failed check leaves the
+ * producer out: the warning is advisory and must not fail the read.
+ */
+async function isReadable(
+  item: WorkflowDataItemInfo,
+  canReadOwner: DataGetInput["canReadOwner"],
+): Promise<boolean> {
+  if (!canReadOwner) return true;
+  try {
+    return await canReadOwner({
+      modelType: item.modelType.normalized,
+      modelId: item.modelId,
+      modelName: item.modelName,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Warns that other producers in the run wrote data with the same name, so
- * the item returned is one of several (swamp-club#2948). Only producers the
- * caller may read are named or counted.
+ * the item returned is one of several (swamp-club#2948), and names the query
+ * that reads each of them. Only producers the caller may read are named or
+ * counted.
  */
 async function otherProducersWarning(
   location: WorkflowDataLocation,
   canReadOwner: DataGetInput["canReadOwner"],
+  includeContent: boolean,
 ): Promise<string | undefined> {
   const readable: WorkflowDataItemInfo[] = [];
   for (const other of location.otherProducers) {
-    if (
-      !canReadOwner ||
-      await canReadOwner({
-        modelType: other.modelType.normalized,
-        modelId: other.modelId,
-        modelName: other.modelName,
-      })
-    ) {
-      readable.push(other);
-    }
+    if (await isReadable(other, canReadOwner)) readable.push(other);
   }
   if (readable.length === 0) return undefined;
   const { item, run } = location;
+  const others = readable.map((other) => {
+    const query = isTextContentType(other.data.contentType)
+      ? `: ${dataQueryCommand(workflowQueryTarget(other), { includeContent })}`
+      : "";
+    return `${producerLabel(other)}${query}`;
+  });
   return `${readable.length + 1} items in run ${run.id} are named ` +
     `${item.data.name}; returned the one from ${producerLabel(item)}. ` +
-    `Also named ${item.data.name}: ${
-      readable.map(producerLabel).join("; ")
-    }. To read another, change jobName and stepName in the data query ` +
-    "command.";
+    `Also named ${item.data.name}: ${others.join("; ")}`;
 }
 
 /** Whether a located item is exactly the one a caller authorized. */

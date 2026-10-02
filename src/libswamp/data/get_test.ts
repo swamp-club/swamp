@@ -79,7 +79,15 @@ function makeDeps(
     findDataByName: () => Promise.resolve(dataItem),
     findDataInWorkflowRun: () => {
       const info: WorkflowDataItemInfo = {
-        data: dataItem,
+        data: {
+          ...dataItem,
+          ownerDefinition: {
+            ...dataItem.ownerDefinition,
+            workflowRunId: "run-1",
+            jobName: "main",
+            stepName: "build",
+          },
+        },
         modelType,
         modelId: definition.id,
         modelName: definition.name,
@@ -516,8 +524,17 @@ function producedBy(
   modelName: string,
   modelId: string,
 ): WorkflowDataItemInfo {
+  const data = makeDataItem();
   return {
-    data: makeDataItem(),
+    data: {
+      ...data,
+      ownerDefinition: {
+        ...data.ownerDefinition,
+        workflowRunId: "run-1",
+        jobName,
+        stepName,
+      },
+    },
     modelType: makeModelType(),
     modelId,
     modelName,
@@ -558,6 +575,7 @@ Deno.test("dataGet: a model-scoped read is deprecated and names the equivalent q
   assertEquals(data.warnings?.length, 1);
   assertStringIncludes(data.warnings![0], "swamp data get is deprecated");
   assertStringIncludes(data.warnings![0], data.replacementQuery!);
+  assertStringIncludes(data.warnings![0], "drop the version clause");
 });
 
 Deno.test("dataGet: a metadata-only read's query lists metadata instead of selecting content", async () => {
@@ -635,4 +653,79 @@ Deno.test("dataGet: never names another producer the caller cannot read", async 
   for (const warning of data.warnings!) {
     assertEquals(warning.includes("secret-model"), false);
   }
+});
+
+Deno.test("dataGet: a read of a pinned version does not suggest dropping it", async () => {
+  const data = await readCompleted(makeDeps(), {
+    modelIdOrName: "my-model",
+    dataName: "output",
+    version: 1,
+  });
+
+  assertEquals(data.warnings?.length, 1);
+  assertEquals(data.warnings![0].includes("drop the version clause"), false);
+});
+
+Deno.test("dataGet: the model-scoped query names the model as the data recorded it", async () => {
+  const renamed = { ...makeDataItem(), tags: { modelName: "old-name" } };
+  const data = await readCompleted(
+    makeDeps({ findDataByName: () => Promise.resolve(renamed) }),
+    { modelIdOrName: "my-model", dataName: "output" },
+  );
+
+  assertStringIncludes(data.replacementQuery!, 'modelName == "old-name"');
+});
+
+Deno.test("dataGet: a binary item names no replacement query, since data query cannot return it yet", async () => {
+  const binary = { ...makeDataItem(), contentType: "image/png" };
+  const data = await readCompleted(
+    makeDeps({ findDataByName: () => Promise.resolve(binary) }),
+    { modelIdOrName: "my-model", dataName: "output" },
+  );
+
+  assertEquals(data.replacementQuery, undefined);
+  assertEquals(data.warnings?.length, 1);
+  assertStringIncludes(data.warnings![0], "cannot return binary content");
+});
+
+Deno.test("dataGet: workflow data that records no run is queried by its owner", async () => {
+  const report: WorkflowDataItemInfo = {
+    data: makeDataItem(),
+    modelType: makeModelType(),
+    modelId: "id-report",
+    modelName: "wf",
+    contentPath: "/abs/path/to/data",
+  };
+  const data = await readCompleted(
+    makeDeps({
+      findDataInWorkflowRun: () =>
+        Promise.resolve({ item: report, otherProducers: [] }),
+    }),
+    { workflowName: "wf", dataName: "output" },
+  );
+
+  assertEquals(
+    data.replacementQuery,
+    `swamp data query 'modelName == "wf" && name == "output" && version == 1' --select content`,
+  );
+});
+
+Deno.test("dataGet: a failing owner check leaves that producer out instead of failing the read", async () => {
+  const deps = makeDeps({
+    findDataInWorkflowRun: () =>
+      Promise.resolve({
+        item: producedBy("setup", "checkout", "git", "id-git"),
+        otherProducers: [
+          producedBy("reviews", "code-review", "review-code", "id-review"),
+        ],
+      }),
+  });
+
+  const data = await readCompleted(deps, {
+    workflowName: "wf",
+    dataName: "output",
+    canReadOwner: () => Promise.reject(new Error("lookup failed")),
+  });
+
+  assertEquals(data.warnings?.length, 1);
 });

@@ -93,7 +93,7 @@ swamp data list --workflow test-data-fetch --run <run_id> --json
 
 # Read one step's output; name the job and step, since several steps can
 # write data with the same name
-swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName == "<step>" && name == "output"' --select content
+swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName == "<step>" && name == "output" && version >= 0' --select content
 ```
 
 A query has no "latest run" shortcut: get the run id from

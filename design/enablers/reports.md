@@ -393,7 +393,7 @@ When `execute()` throws, swamp builds a fallback error artifact with the
 built-in `buildReportErrorResult` function
 (`src/domain/reports/builtin/report_error_report.ts`). It is saved under the
 same data name the report would have used, so
-`swamp data query 'name == "report-{reportName}-json"' --select content` still
+`swamp data query 'modelName == "<model>" && name == "report-{reportName}-json"' --select content` still
 returns useful diagnostics.
 
 The fallback JSON artifact contains:

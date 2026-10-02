@@ -49,7 +49,9 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
       completed: (e) => {
         const data = e.data;
         for (const warning of data.warnings ?? []) {
-          logger.warn(warning);
+          // Braces escaped so a name containing {…} is printed, not read as
+          // a LogTape placeholder; a tagged template would quote the text.
+          logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
         }
         writeOutput(`Data: ${data.name} (v${data.version})`);
         writeOutput(`Model: ${data.modelName} (${data.modelType})`);

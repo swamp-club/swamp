@@ -45,11 +45,11 @@ first matching step when several steps in a run wrote the same data name
 
 Deprecated `data get` forms map to these queries:
 
-| Deprecated command                             | Query                                                                                                              |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                          |
-| `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                          |
-| `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>"' --select content` |
+| Deprecated command                             | Query                                                                                                                                   |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                               |
+| `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
+| `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
@@ -63,7 +63,7 @@ The remaining read subcommands are shortcuts:
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
-| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                |
+| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>" && version >= 0'`                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 

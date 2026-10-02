@@ -47,7 +47,9 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
+  saveData,
   saveModel,
+  saveWorkflowData,
   type ServeRepo,
   withServeRepo,
 } from "./serve_request_harness.ts";
@@ -135,11 +137,22 @@ async function sharedNameRun(repo: ServeRepo) {
     "check",
     "checked",
   );
-  const artifactFor = (saved: typeof built) => ({
+  // Report output records no run, job or step on the data, as
+  // persistReportData writes it: one on the build step, one for the run.
+  const stepReport = await saveData(
+    repo,
+    buildModel,
+    "report-build",
+    "report",
+  );
+  const runReport = await saveWorkflowData(repo, workflow, "report-run");
+  const artifactFor = (
+    saved: { id: string; name: string; version: number; tags: object },
+  ) => ({
     dataId: saved.id,
     name: saved.name,
     version: saved.version,
-    tags: { ...saved.data.tags },
+    tags: { ...saved.tags } as Record<string, string>,
   });
   const run = WorkflowRun.fromData({
     ...created,
@@ -150,9 +163,15 @@ async function sharedNameRun(repo: ServeRepo) {
       steps: job.steps.map((step) => ({
         ...step,
         status: "succeeded",
-        dataArtifacts: [artifactFor(job.jobName === "build" ? built : checked)],
+        dataArtifacts: job.jobName === "build"
+          ? [
+            artifactFor({ ...built, tags: built.data.tags }),
+            artifactFor(stepReport),
+          ]
+          : [artifactFor({ ...checked, tags: checked.data.tags })],
       })),
     })),
+    workflowDataArtifacts: [artifactFor(runReport)],
   });
   await repo.repoContext.workflowRunRepo.save(workflow.id, run);
 
@@ -165,7 +184,7 @@ async function sharedNameRun(repo: ServeRepo) {
     "other",
     "later",
   );
-  return { run, built, checked };
+  return { run, built, checked, stepReport, runReport };
 }
 
 async function read(
@@ -274,5 +293,22 @@ Deno.test("data get: a model-scoped read's replacement query selects the same it
     });
     assertEquals(pinned.version, 1);
     assertSameItem(await queryReplacement(repo, pinned), pinned);
+  });
+});
+
+Deno.test("data get: report output, which records no run on the data, gets a replacement query that selects it", async () => {
+  await withServeRepo(async (repo) => {
+    const { stepReport, runReport } = await sharedNameRun(repo);
+
+    for (
+      const [dataName, expected] of [
+        ["report-build", stepReport],
+        ["report-run", runReport],
+      ] as const
+    ) {
+      const data = await read(repo, { workflowName: "shared-name", dataName });
+      assertEquals(data.id, expected.id);
+      assertSameItem(await queryReplacement(repo, data), data);
+    }
   });
 });

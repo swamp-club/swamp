@@ -14868,6 +14868,18 @@ function failureRetrievalCommands(
   return failures?.[0]?.retrievalCommands;
 }
 
+/**
+ * Asserts the failure lists one retrieval command: a data query for the
+ * failed step's `state`, named by its run, job and step.
+ */
+function assertDataQueryForState(commands: string[] | undefined): void {
+  assertEquals(commands?.length, 1);
+  const [command] = commands!;
+  assertStringIncludes(command, "swamp data query 'workflowRunId == ");
+  assertStringIncludes(command, "&& stepName == ");
+  assertStringIncludes(command, '&& name == "state" && version == ');
+}
+
 function completedReport(
   events: WorkflowExecutionEvent[],
   reportName: string,
@@ -14932,9 +14944,7 @@ Deno.test("run(): a failed model-method step records its report artifacts and bo
       assertEquals(methodSummary.markdown.includes("No data output."), false);
 
       // The workflow summary points at the same data for the failed step.
-      assertEquals(failureRetrievalCommands(events), [
-        "swamp data get failer state",
-      ]);
+      assertDataQueryForState(failureRetrievalCommands(events));
       const [workflowSummary] = completedReport(
         events,
         "@swamp/workflow-summary",
@@ -15063,9 +15073,7 @@ Deno.test("resume: the workflow summary lists the data a step that fails after a
         events.push(event);
       }
 
-      assertEquals(failureRetrievalCommands(events), [
-        "swamp data get failer state",
-      ]);
+      assertDataQueryForState(failureRetrievalCommands(events));
     } finally {
       catalogStore.close();
     }

@@ -294,7 +294,7 @@ jobs:
 swamp data list --workflow deploy-workflow --json
 
 # Read one step's data artifact (job/step from the listing above)
-swamp data query 'workflowRunId == "<run-id>" && jobName == "<job>" && stepName == "<step>" && name == "deployment-state"' --select content --json
+swamp data query 'workflowRunId == "<run-id>" && jobName == "<job>" && stepName == "<step>" && name == "deployment-state" && version >= 0' --select content --json
 ```
 
 ### Cross-Workflow Data References

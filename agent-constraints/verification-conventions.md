@@ -189,7 +189,7 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --js
 # 3. Read one step's output (e.g. review findings or build errors). Several
 #    steps write `log`, so name the step.
 SWAMP_WORKFLOWS_DIR=verification swamp data query \
-  'workflowRunId == "<reviews-run-id>" && stepName == "code-review" && name == "log"' \
+  'workflowRunId == "<reviews-run-id>" && stepName == "code-review" && name == "log" && version >= 0' \
   --select content
 ```
 
@@ -429,7 +429,7 @@ Each `command/shell` step writes a data item named `log`, so a read must name
 the step. Read a failed step's log with `swamp data query`:
 ```bash
 SWAMP_WORKFLOWS_DIR=verification swamp data query \
-  'workflowRunId == "<run-id>" && stepName == "<step>" && name == "log"' \
+  'workflowRunId == "<run-id>" && stepName == "<step>" && name == "log" && version >= 0' \
   --select content
 ```
 
