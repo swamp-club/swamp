@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, join, resolve } from "@std/path";
+import { basename, dirname, join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   Workflow,
@@ -176,12 +176,28 @@ async function checkWorkflowFile(
   };
 
   if (mode === "not-loaded") {
+    // Log mode labels a result by its YAML name, so the message carries the
+    // full path; renaming is only advised for a file that is a workflow.
+    const looksLikeWorkflow = (() => {
+      try {
+        return isWorkflowDocument(parseYaml(content));
+      } catch {
+        return false;
+      }
+    })();
+    const rule = `swamp only reads files named workflow-<name>.yaml in ${
+      dirname(filePath)
+    }.`;
     return {
       file: filePath,
       name: nameFromContent(),
       status: "fail",
-      error: `Not loaded: workflow files in this directory must be named ` +
-        `workflow-<name>.yaml. Rename ${basename(filePath)} so swamp reads it.`,
+      error: looksLikeWorkflow
+        ? `Not loaded: ${rule} Rename ${filePath} to workflow-<name>.yaml, ` +
+          `or remove it if it is a stale copy of a workflow that already loads.`
+        : `Not loaded: ${rule} ${filePath} is not a workflow; move it out of ` +
+          `that directory, or rename it to workflow-<name>.yaml if it is ` +
+          `meant to be one.`,
     };
   }
 

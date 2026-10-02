@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import {
@@ -513,8 +513,34 @@ Deno.test("doctorWorkflows: fails repo-dir YAML the loader does not read", async
     ]);
     const deploy = report.workflows[0];
     assertPathEquals(deploy.file, join(tmpDir, "deploy.yaml"));
-    assertEquals(deploy.error?.includes("workflow-<name>.yaml"), true);
-    assertEquals(deploy.error?.includes("deploy.yaml"), true);
+    // The full path, since log mode labels the result only by its YAML name.
+    assertStringIncludes(deploy.error ?? "", join(tmpDir, "deploy.yaml"));
+    assertStringIncludes(deploy.error ?? "", "workflow-<name>.yaml");
+    assertStringIncludes(
+      deploy.error ?? "",
+      "or remove it if it is a stale copy",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: tells non-workflow YAML in a repo dir to move out rather than rename", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "settings.yaml"), ARTIFACT_YAML);
+    await Deno.writeTextFile(join(tmpDir, "notes.yml"), "jobs: [oops");
+
+    const report = await runDoctor({ workflowDirs: [tmpDir] });
+
+    assertEquals(report.totalFailed, 2);
+    for (const result of report.workflows) {
+      assertStringIncludes(result.error ?? "", result.file);
+      assertStringIncludes(
+        result.error ?? "",
+        "is not a workflow; move it out",
+      );
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }

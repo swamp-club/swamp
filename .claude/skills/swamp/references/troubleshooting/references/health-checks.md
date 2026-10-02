@@ -232,11 +232,11 @@ over `swamp serve` (`--server`) alike — and for each workflow file:
 2. Parses YAML via `@std/yaml`
 3. Constructs the domain object via `Workflow.fromData()`
 
-| Directory                                                                 | Files checked                                                                                                                                                      |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Primary `workflows/` (the managed config copy when managed config is on)  | Top level only. Every `workflow-*.yaml` must load, so one without `jobs` fails. Any other `*.yaml` / `*.yml` fails as not loaded: rename it `workflow-<name>.yaml` |
-| Extension workflows dir (`extensions/workflows/` or `workflowsDir`)       | `*.yaml` and `*.yml` at any depth                                                                                                                                  |
-| Source-mounted (`.swamp-sources.yaml`) and pulled extension workflow dirs | `*.yaml` and `*.yml` at any depth                                                                                                                                  |
+| Directory                                                                 | Files checked                                                                                                                                               |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Primary `workflows/` (the managed config copy when managed config is on)  | Top level only. Every `workflow-*.yaml` must load, so one without `jobs` fails. Any other `*.yaml` / `*.yml` fails as not loaded, with the file's full path |
+| Extension workflows dir (`extensions/workflows/` or `workflowsDir`)       | `*.yaml` and `*.yml` at any depth                                                                                                                           |
+| Source-mounted (`.swamp-sources.yaml`) and pulled extension workflow dirs | `*.yaml` and `*.yml` at any depth                                                                                                                           |
 
 Extension, source-mounted and pulled directories also hold manifests and data
 files an extension ships, so doctor applies the extension loader's rule there:
@@ -288,14 +288,14 @@ Checking workflows...
 
 ### Common failures
 
-| Error fragment                                               | Fix                                                                   |
-| ------------------------------------------------------------ | --------------------------------------------------------------------- |
-| YAML parse error at line N                                   | Fix the YAML syntax at the indicated line/column                      |
-| `type "shell" is no longer supported`                        | Replace `type: shell` with `type: model_method` using `command/shell` |
-| Invalid uuid / missing name                                  | Add required `id` (UUID) and `name` fields to the workflow YAML       |
-| Invalid cron expression                                      | Fix the `trigger.schedule` cron expression                            |
-| Extension workflow missing, no error                         | Check its top-level `jobs:` key; rerun with `--log-level debug`       |
-| `Not loaded: workflow files in this directory must be named` | Rename the file in `workflows/` to `workflow-<name>.yaml`             |
+| Error fragment                                                  | Fix                                                                                                                                                                                             |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| YAML parse error at line N                                      | Fix the YAML syntax at the indicated line/column                                                                                                                                                |
+| `type "shell" is no longer supported`                           | Replace `type: shell` with `type: model_method` using `command/shell`                                                                                                                           |
+| Invalid uuid / missing name                                     | Add required `id` (UUID) and `name` fields to the workflow YAML                                                                                                                                 |
+| Invalid cron expression                                         | Fix the `trigger.schedule` cron expression                                                                                                                                                      |
+| Extension workflow missing, no error                            | Check its top-level `jobs:` key; rerun with `--log-level debug`                                                                                                                                 |
+| `Not loaded: swamp only reads files named workflow-<name>.yaml` | The error names the file. A workflow: rename it to `workflow-<name>.yaml`, or remove it if it is a stale copy of one that already loads. Not a workflow: move it out of the workflows directory |
 
 ### Relationship with `swamp workflow validate`
 
