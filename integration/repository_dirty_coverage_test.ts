@@ -1442,3 +1442,83 @@ Deno.test("unit of work: every repository sends the same marks inside a legacy u
     });
   }
 });
+
+/**
+ * Repositories that stage typed changes at each call site rather than through
+ * a private notifyDirty (datastore rework Phase 1 repository moves). Rows of
+ * the others are skipped below: every change they stage is still `write`.
+ */
+const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
+  // swamp-club#2979, move A.
+  "UnifiedData",
+  "Output",
+]);
+
+/**
+ * Moved-repository rows whose act changes the cache but marks nothing, so
+ * they stage nothing either. Each is a KNOWN_UNMARKED gap this move must not
+ * fix; fixing one makes the row stage a change and this entry must go.
+ */
+const UNSTAGED_ROWS: ReadonlySet<string> = new Set([
+  "UnifiedData.advanceLatestMarkers",
+  "UnifiedData.rollbackVersions",
+]);
+
+/** Whether anything (file, directory or symlink) exists at `path`. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("unit of work: each change a moved repository stages matches the disk after the act (swamp-club#2979)", async (t) => {
+  for (const row of ROWS) {
+    if (!MOVED_REPOSITORIES.has(row.repo)) continue;
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      await withHarness(row.autoGc ?? false, async (h) => {
+        const act = await row.prepare(h);
+        const uow = createLegacyUnitOfWork(h.markDirty, { flush: undefined });
+        await runInUnitOfWork(uow, act);
+        const staged = uow.staged();
+        // Without this the loop below passes vacuously on a row that
+        // stages nothing.
+        if (row.changesCache === false) {
+          assertEquals(staged, [], "expected a dry run to stage nothing");
+        } else if (UNSTAGED_ROWS.has(`${row.repo}.${row.method}`)) {
+          assertEquals(
+            staged,
+            [],
+            "expected this KNOWN_UNMARKED row to stage nothing; if it now " +
+              "stages a change, remove it from UNSTAGED_ROWS",
+          );
+        } else {
+          assert(staged.length > 0, "expected at least one staged change");
+        }
+        for (const change of staged) {
+          if (change.kind === "bulk") {
+            throw new Error(
+              `expected no bulk change, got reason ${change.reason}`,
+            );
+          }
+          const shown = comparableMark(h, change.path);
+          const exists = await pathExists(change.path);
+          if (change.kind === "write") {
+            assert(
+              exists,
+              `expected staged write ${shown} to exist after the act`,
+            );
+          } else {
+            assert(
+              !exists,
+              `expected staged remove ${shown} to be gone after the act`,
+            );
+          }
+        }
+      });
+    });
+  }
+});

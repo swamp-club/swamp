@@ -107,7 +107,8 @@ export async function signalChange(
  * `write` too. The legacy adapter forwards both kinds identically, and a path
  * absent on disk at push time is a delete, so nothing changes. Distinguishing
  * them is the job of the Phase 1 repository moves, which change the call
- * sites themselves.
+ * sites themselves. Moved repositories (data and output, swamp-club#2979)
+ * stage typed changes directly and no longer call this.
  */
 export function changeFor(
   relPath: string | undefined,

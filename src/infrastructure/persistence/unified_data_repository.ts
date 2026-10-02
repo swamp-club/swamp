@@ -20,7 +20,8 @@
 import { existsSync } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { changeFor, signalChange } from "./unit_of_work_scope.ts";
+import { signalChange } from "./unit_of_work_scope.ts";
+import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -142,24 +143,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Signals the configured sync service that the cache has uncommitted work.
+   * Stages a typed change for the configured sync service: the cache has
+   * uncommitted work at `change.path`.
    *
    * Called at the start of every mutation that writes into (or removes from)
-   * the cache directory. The hook is no-op when no sync service is wired —
-   * e.g. filesystem datastores, or when constructing the repository outside
-   * a CLI sync lifecycle. See `design/enablers/datastores.md` for the contract.
-   *
-   * `relPath` is the absolute path of the file or directory about to be
-   * written or removed (when core can attribute the dirty signal to a single
-   * path); the wiring layer converts it to a cache-relative form before
-   * forwarding to the sync service. Pass `undefined` for genuine bulk
-   * mutations.
+   * the cache directory, before the write. A `write` names a file or directory
+   * that exists after the operation; a `remove` names one that is gone after
+   * it. The path is absolute; the wiring layer converts it to a
+   * cache-relative form before forwarding to the sync service. The change
+   * goes into the ambient unit of work bound to this
+   * repository's hook, or straight to the hook, which is a no-op when no sync
+   * service is wired — e.g. filesystem datastores, or when constructing the
+   * repository outside a CLI sync lifecycle. See
+   * `design/enablers/datastores.md` for the contract.
    */
-  private async notifyDirty(relPath?: string): Promise<void> {
-    await signalChange(
-      this.markDirty,
-      changeFor(relPath, "FileSystemUnifiedDataRepository.notifyDirty"),
-    );
+  private async stage(change: StagedChange): Promise<void> {
+    await signalChange(this.markDirty, change);
   }
 
   /**
@@ -617,7 +616,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Pre-write notify with the data-name directory: version not yet
     // allocated, so the truthful signal is "this subtree is changing."
-    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
+    await this.stage({
+      kind: "write",
+      path: this.getDataNameDir(type, modelId, data.name),
+    });
 
     // Check if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
@@ -702,7 +704,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
+    await this.stage({
+      kind: "write",
+      path: this.getDataNameDir(type, modelId, data.name),
+    });
 
     const existing = await this.findByName(type, modelId, data.name);
     if (existing) {
@@ -787,7 +792,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     content: Uint8Array,
   ): Promise<void> {
-    await this.notifyDirty(this.getDataNameDir(type, modelId, dataName));
+    await this.stage({
+      kind: "write",
+      path: this.getDataNameDir(type, modelId, dataName),
+    });
 
     const latestVersion = await this.getLatestVersion(type, modelId, dataName);
     if (latestVersion === null) {
@@ -918,7 +926,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
   ): Promise<void> {
     if (version !== undefined) {
-      await this.notifyDirty(this.getPath(type, modelId, dataName, version));
+      await this.stage({
+        kind: "remove",
+        path: this.getPath(type, modelId, dataName, version),
+      });
       // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
       try {
@@ -972,13 +983,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       try {
         const versions = await this.listVersions(type, modelId, dataName);
         for (const v of versions) {
-          await this.notifyDirty(this.getPath(type, modelId, dataName, v));
+          await this.stage({
+            kind: "remove",
+            path: this.getPath(type, modelId, dataName, v),
+          });
         }
-        await this.notifyDirty(join(dataNameDir, "latest"));
+        await this.stage({ kind: "remove", path: join(dataNameDir, "latest") });
       } catch {
         // Enumeration failed (directory absent, lazy hydration) — fall
         // back to the data-name directory signal.
-        await this.notifyDirty(dataNameDir);
+        await this.stage({ kind: "remove", path: dataNameDir });
       }
       try {
         await Deno.remove(dataNameDir, { recursive: true });
@@ -1001,7 +1015,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<void> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-    await this.notifyDirty(dataNameDir);
+    await this.stage({ kind: "write", path: dataNameDir });
 
     const latestMarker = join(dataNameDir, "latest");
 
@@ -1032,7 +1046,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   > {
     // Old-name directory covers tombstone, content, and latest-marker
     // writes. The inner save() emits its own per-path signal for newName.
-    await this.notifyDirty(this.getDataNameDir(type, modelId, oldName));
+    await this.stage({
+      kind: "write",
+      path: this.getDataNameDir(type, modelId, oldName),
+    });
 
     // Read the latest version of old data
     const oldData = await this.findByName(type, modelId, oldName);
@@ -1194,7 +1211,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Pre-write notify with the data-name directory: version not yet
     // allocated. Same granularity as save/append.
-    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
+    await this.stage({
+      kind: "write",
+      path: this.getDataNameDir(type, modelId, data.name),
+    });
 
     // Validate ownership if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
@@ -1235,7 +1255,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<{ size: number; checksum: string }> {
     // Version is known here (allocateVersion has already run); pass the
     // version directory as the per-call signal.
-    await this.notifyDirty(this.getPath(type, modelId, data.name, version));
+    await this.stage({
+      kind: "write",
+      path: this.getPath(type, modelId, data.name, version),
+    });
 
     const contentPath = this.getContentPath(
       type,
@@ -1298,7 +1321,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
-    await this.notifyDirty(this.getPath(type, modelId, data.name, version));
+    await this.stage({
+      kind: "write",
+      path: this.getPath(type, modelId, data.name, version),
+    });
 
     const contentPath = this.getContentPath(type, modelId, data.name, version);
     const content = await Deno.readFile(contentPath);
@@ -1823,7 +1849,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               // Ignore stat errors
             }
             if (!dryRun) {
-              await this.notifyDirty(versionDir);
+              await this.stage({ kind: "remove", path: versionDir });
               try {
                 await Deno.remove(versionDir, { recursive: true });
               } catch (error) {
@@ -1882,7 +1908,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
-          await this.notifyDirty(dataNameDir);
+          await this.stage({ kind: "remove", path: dataNameDir });
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
           this.catalogRemove(type, modelId, data.name);
         }
@@ -1966,7 +1992,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const toRemove = sorted.slice(0, sorted.length - cap + 1);
     for (const version of toRemove) {
       const versionDir = this.getPath(type, modelId, dataName, version);
-      await this.notifyDirty(versionDir);
+      await this.stage({ kind: "remove", path: versionDir });
       try {
         await Deno.remove(versionDir, { recursive: true });
       } catch (error) {
