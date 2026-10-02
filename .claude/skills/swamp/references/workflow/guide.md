@@ -57,7 +57,11 @@ skill.
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json`                   |
 | List workflow data | `swamp data list --workflow <name> --json`                               |
 | Query wf data      | `swamp data query 'tags.workflow == "<name>"'`                           |
-| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`                    |
+| Get a step's data  | `swamp data query '<run/job/step predicate>' --select content`           |
+
+Read one step's data by run, job and step, since several steps can write the
+same data name:
+`swamp data query 'workflowRunId == "<id>" && jobName == "<job>" && stepName == "<step>" && name == "<data>" && version >= 0' --select content`.
 
 `--filter` accepts a CEL expression over run metadata (`status`, `inputs.*`,
 `tags.*`, `duration`, `startedAt`, `workflowName`, etc.). See

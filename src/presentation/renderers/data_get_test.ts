@@ -22,7 +22,34 @@ import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { DataGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createDataGetRenderer } from "./data_get.ts";
+import { createDataGetRenderer, withCommandTarget } from "./data_get.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+
+// noColor: true selects LogTape's text formatter, so a captured record is
+// one pre-rendered string.
+await initializeLogging({ noColor: true });
+
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  // deno-lint-ignore no-control-regex
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 const testData = {
   id: "data-1",
@@ -201,4 +228,123 @@ Deno.test("JsonDataGetRenderer - base64 application/json content is not parsed",
   const parsed = JSON.parse(output);
   assertEquals(parsed.content, "eyJhIjoxfQ==");
   assertEquals(parsed.contentEncoding, "base64");
+});
+
+Deno.test("JsonDataGetRenderer: carries the deprecation warnings and replacement query", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createDataGetRenderer("json");
+    const replacementQuery =
+      `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`;
+    const events: DataGetEvent[] = [
+      {
+        kind: "completed",
+        data: {
+          ...testData,
+          replacementQuery,
+          warnings: ["swamp data get is deprecated"],
+        },
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.replacementQuery, replacementQuery);
+    assertEquals(parsed.warnings, ["swamp data get is deprecated"]);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogDataGetRenderer: logs each warning verbatim, braces included", () => {
+  const warning = "swamp data get is deprecated; model {name} wrote it";
+  const output = captureLog(() =>
+    createDataGetRenderer("log").handlers().completed({
+      kind: "completed",
+      data: { ...testData, warnings: [warning] },
+    })
+  );
+  assertStringIncludes(output, warning);
+});
+
+Deno.test("withCommandTarget: appends the target to every query the read names", () => {
+  const own = `swamp data query 'name == "output" && version == 1'`;
+  const other = `swamp data query 'name == "output" && version == 2'`;
+  const data = withCommandTarget({
+    ...testData,
+    replacementQuery: own,
+    alternatives: [{
+      modelName: "other",
+      modelType: "command/shell",
+      modelId: "id-other",
+      version: 2,
+      replacementQuery: other,
+    }],
+    warnings: [
+      `Read this item with: ${own}`,
+      `The others: x, read with: ${other}`,
+    ],
+  }, " --repo-dir /srv/repo");
+
+  assertEquals(data.replacementQuery, `${own} --repo-dir /srv/repo`);
+  assertEquals(
+    data.alternatives?.[0].replacementQuery,
+    `${other} --repo-dir /srv/repo`,
+  );
+  assertEquals(data.warnings, [
+    `Read this item with: ${own} --repo-dir /srv/repo`,
+    `The others: x, read with: ${other} --repo-dir /srv/repo`,
+  ]);
+});
+
+Deno.test("withCommandTarget: a query that prefixes another is not matched inside it", () => {
+  const short = `swamp data query 'name == "a"'`;
+  const long = `${short} --select content`;
+  const data = withCommandTarget({
+    ...testData,
+    replacementQuery: long,
+    alternatives: [{
+      modelName: "m",
+      modelType: "t",
+      modelId: "i",
+      version: 1,
+      replacementQuery: short,
+    }],
+    warnings: [`${long} | ${short}`],
+  }, " --server wss://host");
+
+  assertEquals(data.warnings, [
+    `${long} --server wss://host | ${short} --server wss://host`,
+  ]);
+});
+
+Deno.test("withCommandTarget: leaves the read unchanged without a target", () => {
+  const data = { ...testData, replacementQuery: "swamp data query 'x'" };
+  assertEquals(withCommandTarget(data, ""), data);
+});
+
+Deno.test("JsonDataGetRenderer: prints queries with the command target", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createDataGetRenderer("json", {
+      commandTarget: " --repo-dir /srv/repo",
+    });
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: { ...testData, replacementQuery: "swamp data query 'x'" },
+      }]),
+      renderer.handlers(),
+    );
+    assertEquals(
+      JSON.parse(logs[0]).replacementQuery,
+      "swamp data query 'x' --repo-dir /srv/repo",
+    );
+  } finally {
+    console.log = originalLog;
+  }
 });

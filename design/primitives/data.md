@@ -189,15 +189,23 @@ removes every version.
   finds data written under the old UUID: first by `modelName` tag, then, only
   when the type has a single definition, by that definition. This "orphan
   recovery" is a read-time convenience, never a delete.
-- **CLI**: `swamp data get <model> <name> [--version N] [--no-content]`, or
-  `--workflow <name> [--run <id>]` to read what a run produced
-  (`src/domain/data/workflow_data_service.ts`). `data get`, serve's `data.get`
-  and `swamp model output data` return content without loss: text when the
+- **CLI**: `swamp data query '<predicate>' [--select] [--limit]` is the read
+  path, e.g. `modelName == "<m>" && name == "<n>"` with `--select content` for
+  one item's content, or `workflowRunId`, `jobName` and `stepName` to pick one
+  step's output in a run. `swamp data get <model> <name> [--version N]
+  [--no-content]` and its `--workflow <name> [--run <id>]` form
+  (`src/domain/data/workflow_data_service.ts`) are **deprecated**: they still
+  return the item, with a deprecation warning and a `replacementQuery` naming
+  the equivalent `data query` command
+  (`src/domain/data/data_query_command.ts`). The `--workflow` form takes the
+  highest-versioned match (the first step on a tie) when several steps wrote
+  the name (swamp-club#2948) and warns
+  with the other matches. `data get`, serve's `data.get` and
+  `swamp model output data` return content without loss: text when the
   stored bytes are valid UTF-8 (less a leading byte-order mark), otherwise
   base64, with a `contentEncoding` of `utf-8` or `base64` saying which
   (`content_encoding.ts` `encodeContent`). Also `swamp data list` (grouped by
-  type), `swamp data versions`, `swamp data search` and
-  `swamp data query '<predicate>' [--select] [--limit]`
+  type), `swamp data versions` and `swamp data search`
   (`src/cli/commands/data_*.ts`). `search` takes free text plus `--type`,
   `--lifetime`, `--owner-type`, `--workflow`, `--model`, `--content-type`,
   `--since`, `--output`, `--run`, `--tag KEY=VALUE`, `--streaming`, `--limit`.

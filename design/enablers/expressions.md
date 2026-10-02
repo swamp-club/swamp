@@ -1091,7 +1091,7 @@ globalArguments:
 > **Warning:** Values read via `env` are not redacted or filtered. An
 > environment variable used as a model attribute is stored on disk in the
 > datastore `data/` directory (default `.swamp/data/`) as model output data,
-> and is visible in `swamp data get` output. This includes sensitive variables
+> and is visible in `swamp data query` output. This includes sensitive variables
 > present at runtime (e.g. `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database
 > passwords).
 

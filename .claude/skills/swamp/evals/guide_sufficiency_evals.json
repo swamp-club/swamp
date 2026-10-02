@@ -57,7 +57,7 @@
     "query": "What is the difference between swamp data get and swamp data query?",
     "guide": "data",
     "answerable_from_guide": true,
-    "note": "CLI shortcut mapping explains the relationship"
+    "note": "The query section says data get is deprecated and Reading one item gives the data query replacement"
   },
   {
     "query": "How does data garbage collection work with lifetime policies?",

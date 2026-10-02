@@ -194,12 +194,13 @@ command), reading the codebase, classifying the issue, and reproducing bugs.
 The first command to run is always the existence check:
 
 ```
-swamp data get issue-<N> state-main --json
+swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select content --json
 ```
 
-- If this **returns data**, the model already exists — check the `phase` field
-  and go to the "Resuming a Session" table below. **Do NOT call `start`.**
-- If this **fails** (model not found), the issue is new — run:
+- If `results` **has an entry**, the model already exists — check
+  `results[0].phase` and go to the "Resuming a Session" table below. **Do NOT
+  call `start`.**
+- If `results` is **empty** (model or data not found), the issue is new — run:
 
 ```
 swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
@@ -323,10 +324,10 @@ swamp model output search issue-<N> --json
 If the human comes back to an in-progress issue, check the current phase:
 
 ```
-swamp data get issue-<N> state-main --json
+swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select content --json
 ```
 
-Read the `phase` field from the response. **Do NOT call `start` to resume** —
+Read `results[0].phase` from the response. **Do NOT call `start` to resume** —
 `start` unconditionally resets the phase to `triaging`, destroying progress.
 
 Use this table to determine what to do next:
@@ -355,8 +356,9 @@ When a PR has already merged and the lifecycle just needs to be marked done:
 
 1. Check the current phase:
    ```
-   swamp data get issue-<N> state-main --json
+   swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select content --json
    ```
+   The phase is `results[0].phase`.
 2. If the phase is `implementing`, link the PR first:
    ```
    swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>

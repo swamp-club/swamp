@@ -8,14 +8,14 @@ resuming an issue in the `triaging` phase.
 Check whether the model instance already exists and is past triage:
 
 ```
-swamp data get issue-<N> state-main --json
+swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select content --json
 ```
 
-- If this **returns data** and the `phase` is anything other than `created` or
-  `triaging`, the issue is already in flight. **Do NOT call `start`** — go to
-  the "Resuming a Session" section in SKILL.md and use the phase-to-action table
-  to pick up where the issue left off.
-- If the command **fails** (no data found), the model instance hasn't been
+- If `results` **has an entry** and `results[0].phase` is anything other than
+  `created` or `triaging`, the issue is already in flight. **Do NOT call
+  `start`** — go to the "Resuming a Session" section in SKILL.md and use the
+  phase-to-action table to pick up where the issue left off.
+- If `results` is **empty** (no data found), the model instance hasn't been
   created yet — proceed with step 1 below.
 
 ## 1. Start the Lifecycle

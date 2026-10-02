@@ -39,7 +39,13 @@ This prevents scenarios where multiple models accidentally share data names.
 
 ## Viewing Ownership
 
-Use `swamp data get` to see ownership information:
+Use `swamp data query` to see the owner type and ref:
+
+```bash
+swamp data query 'modelName == "my-model" && name == "state"' --select '{"ownerType": ownerType, "ownerRef": ownerRef}'
+```
+
+The `definitionHash` is only in the output of the deprecated `swamp data get`:
 
 ```bash
 swamp data get my-model state --json

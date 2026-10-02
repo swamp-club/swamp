@@ -26,7 +26,10 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 
 /**
  * Formats a byte size into a human-readable string.
@@ -38,12 +41,66 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+/** Options for rendering a data get read. */
+export interface DataGetRenderOptions {
+  /**
+   * Target arguments (` --server …` / ` --repo-dir …`) appended to every
+   * printed query, so a pasted query reaches the same server or repository
+   * as the read; see `formatCommandTarget`.
+   */
+  commandTarget?: string;
+}
+
+/**
+ * Appends `commandTarget` to every query the read names: its replacement
+ * query, each alternative's, and where they appear inside the warnings.
+ */
+export function withCommandTarget(
+  data: DataGetData,
+  commandTarget: string | undefined,
+): DataGetData {
+  if (!commandTarget) return data;
+  const queries = [
+    data.replacementQuery,
+    ...(data.alternatives ?? []).map((alt) => alt.replacementQuery),
+  ].filter((query): query is string => query !== undefined);
+  if (queries.length === 0) return data;
+  // Longest first, so a query that prefixes another never matches inside it.
+  const pattern = new RegExp(
+    [...new Set(queries)]
+      .sort((a, b) => b.length - a.length)
+      .map((query) => query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|"),
+    "g",
+  );
+  const retarget = (text: string) =>
+    text.replace(pattern, (query) => `${query}${commandTarget}`);
+  return {
+    ...data,
+    replacementQuery: data.replacementQuery &&
+      retarget(data.replacementQuery),
+    warnings: data.warnings?.map(retarget),
+    alternatives: data.alternatives?.map((alt) => ({
+      ...alt,
+      replacementQuery: alt.replacementQuery && retarget(alt.replacementQuery),
+    })),
+  };
+}
+
 class LogDataGetRenderer implements Renderer<DataGetEvent> {
+  constructor(private readonly options: DataGetRenderOptions = {}) {}
+
   handlers(): EventHandlers<DataGetEvent> {
+    const logger = getSwampLogger(["data", "get"]);
     return {
       resolving: () => {},
       completed: (e) => {
-        const data = e.data;
+        const data = withCommandTarget(e.data, this.options.commandTarget);
+        for (const warning of data.warnings ?? []) {
+          // Braces escaped so a name containing {…} is printed, not read as
+          // a LogTape placeholder; a tagged template would quote the text.
+          logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
+        }
         writeOutput(`Data: ${data.name} (v${data.version})`);
         writeOutput(`Model: ${data.modelName} (${data.modelType})`);
         writeOutput(
@@ -94,18 +151,21 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
 }
 
 class JsonDataGetRenderer implements Renderer<DataGetEvent> {
+  constructor(private readonly options: DataGetRenderOptions = {}) {}
+
   handlers(): EventHandlers<DataGetEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        const jsonOutput: Record<string, unknown> = { ...e.data };
+        const data = withCommandTarget(e.data, this.options.commandTarget);
+        const jsonOutput: Record<string, unknown> = { ...data };
         // Parse JSON content inline for structured output
         if (
-          e.data.content && e.data.contentType === "application/json" &&
-          e.data.contentEncoding !== "base64"
+          data.content && data.contentType === "application/json" &&
+          data.contentEncoding !== "base64"
         ) {
           try {
-            jsonOutput.content = JSON.parse(e.data.content);
+            jsonOutput.content = JSON.parse(data.content);
           } catch {
             // Leave as string if not valid JSON
           }
@@ -121,18 +181,23 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
 
 export function createDataGetRenderer(
   mode: OutputMode,
+  options: DataGetRenderOptions = {},
 ): Renderer<DataGetEvent> {
   switch (mode) {
     case "json":
-      return new JsonDataGetRenderer();
+      return new JsonDataGetRenderer(options);
     case "log":
-      return new LogDataGetRenderer();
+      return new LogDataGetRenderer(options);
   }
 }
 
 /** Standalone render function for use by un-migrated search commands. */
-export function renderDataGet(data: DataGetData, mode: OutputMode): void {
-  const renderer = createDataGetRenderer(mode);
+export function renderDataGet(
+  data: DataGetData,
+  mode: OutputMode,
+  options: DataGetRenderOptions = {},
+): void {
+  const renderer = createDataGetRenderer(mode, options);
   const handlers = renderer.handlers();
   handlers.completed({ kind: "completed", data });
 }

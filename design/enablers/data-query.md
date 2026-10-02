@@ -33,16 +33,43 @@ The shortcuts read more clearly, so **prefer the shortcut when it fits**. Use
 projection, tag filters beyond a single key, or history beyond a single
 version.
 
+`swamp data get` is deprecated: `data query` is the CLI read path for a single
+item. `data get` still returns the item, but every read carries a deprecation
+warning and a `replacementQuery` naming the equivalent `data query` command
+(`src/domain/data/data_query_command.ts`). Its `--workflow` form returns the
+highest-versioned match (the first step on a tie) when several steps in a
+run wrote the same data name
+(swamp-club#2948), so it warns with the other matches; a query that names
+`workflowRunId`, `jobName` and `stepName` selects one item.
+The printed `replacementQuery` names a model's data by `modelType` and
+`modelId`, which survive a rename, and report output (which records no run) the
+same way. A read whose content is not UTF-8 text has no replacement yet
+(swamp-club#2959). The CLI appends its own `--server` / `--repo-dir` to every
+printed query.
+
 ### CLI shortcuts
+
+Deprecated `data get` forms map to these queries:
+
+| Deprecated command                             | Query                                                                                                                                   |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                               |
+| `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
+| `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
+
+A query matches the instance `name` exactly, where `data get` fell back to the
+spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
+a workflow" form: look the run id up with
+`swamp workflow history get <workflow>` first.
+
+The remaining read subcommands are shortcuts:
 
 | Shortcut                              | Underlying query                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
-| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
-| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                |
+| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>" && version >= 0'`                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 
@@ -210,6 +237,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
 | `modelName` | string | Owning model name |
+| `modelId` | string | Owning model id (stable across renames) |
 | `modelType` | string | Owning model type |
 | `specName` | string | Output spec name |
 | `dataType` | string | `"resource"` or `"file"` |
@@ -313,7 +341,8 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 ```
 Error: Unknown field "model" in query predicate.
 Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
-  jobName, lifetime, modelName, modelType, name, ns, ownerRef, ownerType, size,
+  jobName, lifetime, modelId, modelName, modelType, name, ns, ownerRef,
+  ownerType, size,
   source, specName, stepName, streaming, tags, version, workflowName,
   workflowRunId
 ```
