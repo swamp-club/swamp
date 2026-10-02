@@ -2431,6 +2431,7 @@ async function runInvocation(
   // cache round-trip issues with --unstable-bundle module duplication.
   // Must run before the authCollectives read so the first invocation gets
   // cached collectives for extension trust.
+  let uncachedCollectives: string[] | undefined;
   if (!hookMode && hasApiKeySource()) {
     try {
       const authRepo = new AuthRepository();
@@ -2458,9 +2459,7 @@ async function runInvocation(
               }
             }
           }
-        } else if (!creds.username && configDirOwned) {
-          // Only fetched to fill the identity cache, which a process that
-          // does not own the config dir must not write.
+        } else if (!creds.username) {
           const response = await gateWhoamiOr(
             gateOutcome,
             creds.serverUrl,
@@ -2468,13 +2467,18 @@ async function runInvocation(
           );
           if (response.authenticated && response.username) {
             const collectives = getCollectives(response) ?? [];
-            await authRepo.saveIdentityCache(
-              creds.serverUrl,
-              response.username,
-              collectives,
-              await keyFingerprint(creds.apiKey),
-              response.scopes,
-            );
+            // A process that does not own the config dir must not write the
+            // cache, so it keeps this run's collectives in memory instead.
+            uncachedCollectives = collectives;
+            if (configDirOwned) {
+              await authRepo.saveIdentityCache(
+                creds.serverUrl,
+                response.username,
+                collectives,
+                await keyFingerprint(creds.apiKey),
+                response.scopes,
+              );
+            }
           }
         }
       }
@@ -2492,7 +2496,7 @@ async function runInvocation(
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
-      authCollectives = creds?.collectives;
+      authCollectives = creds?.collectives ?? uncachedCollectives;
       if (!hasApiKeySource()) {
         if (creds?.apiKey) setCollectiveToken(creds.apiKey);
         setAuthScopes(creds?.scopes);

@@ -514,7 +514,7 @@ function offlineWarning(
   }
   if (windowUnrecorded) {
     return `Running unverified: ${why}, and swamp cannot record when this ` +
-      `started because this process cannot write its config dir. See ` +
+      `started because this process does not write its config dir. See ` +
       `${ACCOUNT_REQUIREMENT_URL}`;
   }
   return `Running unverified for up to 24 hours: ${why}. swamp will block ` +
