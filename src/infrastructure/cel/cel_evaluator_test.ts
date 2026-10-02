@@ -32,6 +32,7 @@ import {
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 
 Deno.test("createExtensionCelEnvironment: arithmetic overloads work for double/int mixes", () => {
   const env = createExtensionCelEnvironment();
@@ -1483,6 +1484,53 @@ Deno.test("CelEvaluator: explains 'No such key' when data.latest() found no reco
     'data.latest("echo-hi", "nope").attributes.exitCode',
   );
   assertStringIncludes(message, "^");
+});
+
+Deno.test("CelEvaluator: explains 'No such key' for every DataRecord field when data.latest() found no record", async () => {
+  // Typed against DataRecord's declared keys so a new field fails type
+  // checking until it is listed here, and then fails this test until
+  // DATA_RECORD_FIELDS lists it too.
+  const fields: Record<DeclaredKeys<DataRecord>, true> = {
+    id: true,
+    name: true,
+    version: true,
+    isLatest: true,
+    createdAt: true,
+    namespace: true,
+    attributes: true,
+    tags: true,
+    modelName: true,
+    modelId: true,
+    modelType: true,
+    specName: true,
+    dataType: true,
+    contentType: true,
+    lifetime: true,
+    garbageCollection: true,
+    ownerType: true,
+    streaming: true,
+    size: true,
+    content: true,
+    path: true,
+    ownerRef: true,
+    workflowRunId: true,
+    workflowName: true,
+    jobName: true,
+    stepName: true,
+    source: true,
+  };
+  for (const field of Object.keys(fields)) {
+    const message = await messageFrom(
+      new CelEvaluator(),
+      `data.latest("echo-hi", "nope").${field}`,
+      missingRecordContext(),
+    );
+    assertStringIncludes(
+      message,
+      'data.latest("echo-hi", "nope") found no data record',
+      field,
+    );
+  }
 });
 
 Deno.test("CelEvaluator: explains 'No such key: path' when data.latest() found no record", async () => {

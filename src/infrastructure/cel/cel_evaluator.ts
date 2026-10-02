@@ -47,6 +47,7 @@ const DATA_RECORD_FIELDS = new Set([
   "contentType",
   "createdAt",
   "dataType",
+  "garbageCollection",
   "id",
   "isLatest",
   "jobName",
