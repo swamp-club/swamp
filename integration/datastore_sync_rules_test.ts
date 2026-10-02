@@ -41,8 +41,8 @@ function normalise(p: string): string {
 
 // Per-path-wired repositories must not call bare notifyDirty() (no path
 // argument). Repositories that stage typed changes instead (MOVED_REPOS
-// below) have no notifyDirty and are held to the bulk rule there. A bare call sets bulkInvalidated in the datastore extension,
-// forcing a full walk that skips deletion detection — silently dropping
+// below) have no notifyDirty and are held to the bulk rule there. A bare
+// call sets bulkInvalidated in the datastore extension, forcing a full walk that skips deletion detection — silently dropping
 // remote object deletions (swamp-club#2273). See the "Serve handler
 // obligation" paragraph in design/enablers/datastores.md.
 const PER_PATH_WIRED_REPOS = [
@@ -112,9 +112,13 @@ const MOVED_REPOS = [
   "yaml_output_repository.ts",
 ];
 
-// A StagedChange literal of kind bulk, up to its closing brace.
-const BULK_CHANGE = /\{\s*kind:\s*"bulk"([^}]*)\}/g;
-const BULK_REASON = /\breason:\s*([^,\n]+?)\s*,?\s*$/m;
+// The kind property of a bulk StagedChange literal, then its reason: a quoted
+// string (commas and braces inside it are fine), an expression such as
+// `this.reasonFor(id)`, or the shorthand `reason`. The reason must follow the
+// kind, as every StagedChange literal in src/ writes it.
+const BULK_CHANGE = /\bkind:\s*"bulk"/g;
+const BULK_REASON =
+  /^\s*,\s*reason(?:\s*:\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`|[\w.]+(?:\([^)\n]*\))?)|(?=\s*[,}\n]))/;
 const EMPTY_STRING = /^(?:""|''|``)$/;
 
 /**
@@ -132,7 +136,9 @@ function bulkChanges(
   const changes: string[] = [];
   const violations: string[] = [];
   for (const match of source.matchAll(BULK_CHANGE)) {
-    const reason = match[1].match(BULK_REASON)?.[1];
+    const after = source.slice(match.index + match[0].length);
+    const found = after.match(BULK_REASON);
+    const reason = found ? found[1] ?? "reason" : undefined;
     const line = source.slice(0, match.index).split("\n").length;
     if (reason === undefined || EMPTY_STRING.test(reason)) {
       violations.push(`${rel}:${line}: bulk change without a reason`);
@@ -182,12 +188,24 @@ Deno.test("moved repositories: the bulk scan flags a missing or empty reason, no
     '  kind: "bulk",',
     '  reason: "",',
     "});",
+    'await this.stage({ kind: "bulk", reason: "rebuild {all}, then prune" });',
+    'await this.stage({ kind: "bulk", reason });',
+    'await this.stage({ kind: "bulk" } as StagedChange);',
     '// await this.stage({ kind: "bulk", reason: "" }) in a comment',
     'await this.stage({ kind: "write", path });',
   ].join("\n");
   assertEquals(bulkChanges("probe.ts", code), {
-    changes: ['probe.ts: bulk "Repo.rebuildIndex"', 'probe.ts: bulk ""'],
-    violations: ["probe.ts:2: bulk change without a reason"],
+    changes: [
+      'probe.ts: bulk "Repo.rebuildIndex"',
+      'probe.ts: bulk ""',
+      'probe.ts: bulk "rebuild {all}, then prune"',
+      "probe.ts: bulk reason",
+      "probe.ts: bulk <none>",
+    ],
+    violations: [
+      "probe.ts:3: bulk change without a reason",
+      "probe.ts:8: bulk change without a reason",
+    ],
   });
 });
 

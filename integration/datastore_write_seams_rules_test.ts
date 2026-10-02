@@ -504,10 +504,6 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/workflows/evaluate.ts: createWorkflowEvaluateDeps: YamlEvaluatedWorkflowRepository",
 ];
 
-// Production code that opens an ambient unit of work. Empty in datastore
-// rework Phase 1 (swamp-club#2971): repositories can stage into a scope, but
-// nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
-// use cases here on purpose.
 // Typed changes the moved repositories stage before each write or remove
 // (datastore rework Phase 1 repository moves). A write names a path that
 // exists after the operation, a remove one that is gone after it;
@@ -520,6 +516,10 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
 ];
 
+// Production code that opens an ambient unit of work. Empty in datastore
+// rework Phase 1 (swamp-club#2971): repositories can stage into a scope, but
+// nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
+// use cases here on purpose.
 const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [];
 
 const files = await sourceFiles();
