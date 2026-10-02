@@ -163,10 +163,15 @@ export function isSwampEnvVar(name: string): boolean {
  * - SWAMP_NESTED_GATE_PASS: this run's signed proof and pid, so a nested
  *   swamp passes the auth gate without a key (design/surfaces/auth-gate.md,
  *   "Nested runs").
- * - SWAMP_LOCK_HOLDER_PID and SWAMP_LOCK_ANCESTOR_PIDS: this swamp's pid and
- *   the pids of every swamp above it, so a nested swamp skips the per-model
- *   locks they hold instead of waiting on them (design/enablers/datastores.md,
- *   "Parent-Process Lock Awareness"). A fitness test pins the list.
+ * - SWAMP_LOCK_ANCESTOR_PIDS: the pids of every swamp above the child,
+ *   ending with this one, so a nested swamp skips the per-model locks they
+ *   hold instead of waiting on them.
+ * - SWAMP_LOCK_HOLDER_PID: the pid of the nearest swamp that has taken a
+ *   per-model lock (this one once it has, else the value it inherited), for
+ *   older nested swamps that read only this name.
+ *
+ *   Both: design/enablers/datastores.md, "Parent-Process Lock Awareness". A
+ *   fitness test pins the list.
  */
 export const NESTED_SWAMP_ENV_VARS: readonly string[] = [
   NESTED_GATE_PASS_ENV,
