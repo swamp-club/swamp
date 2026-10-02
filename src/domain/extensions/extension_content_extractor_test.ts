@@ -2069,6 +2069,12 @@ const UNPAIRED_BRACE_BODIES: Record<string, string> = {
   "division beside braces":
     "const half = (args.a.length) / 2; const o = { half };",
   "an unterminated quote": 'const s = "oops\n;',
+  "division after a postfix increment":
+    "let i = 0; const r = i++ / 2; if (r) { log(r / 3); }",
+  "division after a postfix decrement":
+    "let n = 9; const r = n-- / 2; const o = { r: r / 4 };",
+  "a regex after a binary plus following a postfix increment":
+    "let i = 0; const s = i++ + /{/.source;",
 };
 
 for (const [label, body] of Object.entries(UNPAIRED_BRACE_BODIES)) {

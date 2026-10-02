@@ -646,10 +646,15 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
   // Advances past the rest of the current value to just after the next
   // comma at depth 0. Parentheses and brackets are tracked here because, at
   // depth 0 of the block, they can only be call arguments or arrays.
+  // noRegexBefore stays shared because it holds positions in this block; paren
+  // tracking starts afresh for each value so one value's unbalanced paren
+  // cannot change how a later value is read.
   const scan = newScanState();
   const skipValue = () => {
     let nesting = 0;
     let prev = ":";
+    scan.controlParens = [];
+    scan.lastParenWasControl = false;
     while (i < block.length) {
       const next = skipNonCode(block, i, prev, scan);
       if (next !== i) {
@@ -1226,8 +1231,10 @@ const MAX_TEMPLATE_DEPTH = 64;
 
 /**
  * State carried through one brace scan. `noRegexBefore` records that a regex
- * failed to close before its newline, which rules out any other regex start
- * before that newline and keeps the scan linear. `controlParens` holds one
+ * failed to close before its newline; every later slash before that newline
+ * is then read as division. That is a heuristic, not a proof (a slash inside
+ * a failed `[` class can hide a real regex after it), and it is what keeps
+ * the scan linear on lines full of slashes. `controlParens` holds one
  * entry per open paren: whether it opens an if/while/for/with header, after
  * which a slash starts a regex.
  */
@@ -1320,12 +1327,18 @@ function skipNonCode(
     return end === -1 ? source.length : end + 2;
   }
   // A slash after a value is division; after an operator, opener, keyword or
-  // control header it starts a regex.
+  // control header it starts a regex. A postfix `++` or `--` ends a value, so
+  // the slash after it is division.
   if (
     prev !== "" && !REGEX_PRECEDERS.includes(prev) &&
     !REGEX_KEYWORDS.has(wordBefore(source, i)) &&
     !(prev === ")" && scan.lastParenWasControl)
   ) return i;
+  if (prev === "+" || prev === "-") {
+    let k = i - 1;
+    while (k > 0 && /\s/.test(source[k])) k--;
+    if (source[k - 1] === prev) return i;
+  }
   if (i < scan.noRegexBefore) return i;
   let inClass = false;
   for (let j = i + 1; j < source.length; j++) {
