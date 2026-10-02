@@ -34,8 +34,12 @@ import {
   HISTORY_OPT_IN_FIELDS,
   referencesAttributes,
   referencesContent,
+  selectReadsContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
+import { isTextContentType } from "./content_type.ts";
+import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
+import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
@@ -172,8 +176,23 @@ export type ForeignContentFetcher = (
 interface MatchResult {
   records: DataRecord[];
   selectParsed?: (ctx: Record<string, unknown>) => unknown;
+  /** Whether the select expression reads the items' bytes. */
+  selectReadsContent: boolean;
+  /**
+   * Rows whose predicate read `content` although their content type is not
+   * text, as metadata-only records, in evaluation order. `matchesBefore`
+   * counts the records matched before the row. They are never matches; the
+   * caller raises {@link BinaryContentPredicateError} for one it may read.
+   */
+  violations: Array<{ record: DataRecord; matchesBefore: number }>;
   /** Whether matching stopped at the limit, so more rows may match. */
   hitLimit: boolean;
+}
+
+/** A record's content as a projection sees it; see `projectedContent`. */
+interface ProjectedContent {
+  content: unknown;
+  contentEncoding: ContentEncoding | null;
 }
 
 /** Identifies one version of one data item in the catalog. */
@@ -503,24 +522,60 @@ export class DataQueryService {
           ...options,
           limit: batch,
         }, tried);
+        // Walk violations and matches in the order they were evaluated, and
+        // stop where the accepted page fills, so a violation is raised only
+        // where a query without include would have reached it. A violation
+        // the caller may not read is dropped like any other hidden record,
+        // so the error never names, or reveals, an item outside the caller's
+        // reach.
         const accepted: DataRecord[] = [];
-        for (const record of matched.records) {
-          if (accepted.length >= limit) break;
-          if (await include(record)) accepted.push(record);
+        let nextViolation = 0;
+        for (
+          let i = 0;
+          i <= matched.records.length && accepted.length < limit;
+          i++
+        ) {
+          for (
+            ;
+            nextViolation < matched.violations.length &&
+            matched.violations[nextViolation].matchesBefore <= i;
+            nextViolation++
+          ) {
+            const { record } = matched.violations[nextViolation];
+            if (await include(record)) {
+              throw new BinaryContentPredicateError(record);
+            }
+          }
+          const record = matched.records[i];
+          if (record && await include(record)) accepted.push(record);
         }
         // Stale rows dropped during hydration can shorten a batch, so only
         // stopping short of the batch limit means the matches ran out.
         if (
           accepted.length >= limit || batch === undefined || !matched.hitLimit
         ) {
-          results = this.project(accepted, matched.selectParsed);
+          results = this.project(
+            accepted,
+            matched.selectParsed,
+            await this.projectedContents(accepted, matched.selectReadsContent),
+          );
           break;
         }
         batch *= 4;
       }
     } else {
       const matched = await this.matchWithHydration(predicate, options);
-      results = this.project(matched.records, matched.selectParsed);
+      if (matched.violations.length > 0) {
+        throw new BinaryContentPredicateError(matched.violations[0].record);
+      }
+      results = this.project(
+        matched.records,
+        matched.selectParsed,
+        await this.projectedContents(
+          matched.records,
+          matched.selectReadsContent,
+        ),
+      );
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.
@@ -594,7 +649,16 @@ export class DataQueryService {
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
     const matched = this.executeMatch(predicate, options);
-    return this.project(matched.records, matched.selectParsed);
+    if (matched.violations.length > 0) {
+      throw new BinaryContentPredicateError(matched.violations[0].record);
+    }
+    return this.project(
+      matched.records,
+      matched.selectParsed,
+      matched.selectReadsContent
+        ? new Map(matched.records.map((r) => [r, this.projectedContent(r)]))
+        : undefined,
+    );
   }
 
   /**
@@ -713,15 +777,19 @@ export class DataQueryService {
 
     // Detect attributes and content usage — union filter and select expression.
     // content is aliased to attributes for JSON records in the CEL context,
-    // so referencing content also requires loading attributes.
-    let needsContent = referencesContent(filterAst);
+    // so referencing content also requires loading attributes. Only the
+    // filter needs content loaded while matching: a select that reads it gets
+    // the bytes in project(), after the caller's include has run.
+    const needsContent = referencesContent(filterAst);
     let needsAttributes = options?.loadAttributes ??
       (referencesAttributes(filterAst) || needsContent);
+    let readsContentInSelect = false;
     if (options?.select) {
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
-      if (!needsContent) needsContent = referencesContent(selectAst);
+      readsContentInSelect = selectReadsContent(selectAst);
       if (!needsAttributes) {
-        needsAttributes = referencesAttributes(selectAst) || needsContent;
+        needsAttributes = referencesAttributes(selectAst) ||
+          readsContentInSelect;
       }
     }
 
@@ -764,6 +832,7 @@ export class DataQueryService {
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
+    const violations: Array<{ record: DataRecord; matchesBefore: number }> = [];
     let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
@@ -795,6 +864,10 @@ export class DataQueryService {
         }
         return full;
       };
+      // `content` in a predicate is text; reading it on a binary item is an
+      // error (swamp-club#2959). The check uses the catalog's content type, so
+      // no bytes are read to make it.
+      let readBinaryContent = false;
       const ctx = Object.create(
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
@@ -803,6 +876,10 @@ export class DataQueryService {
         attributes: { get: () => load().attributes },
         content: {
           get: () => {
+            if (!isTextContentType(record.contentType)) {
+              readBinaryContent = true;
+              throw new Error("content of a non-text item");
+            }
             const loaded = load();
             return loaded.contentType === "application/json"
               ? loaded.attributes
@@ -812,6 +889,11 @@ export class DataQueryService {
       });
       try {
         const match = parsed(ctx);
+        // Also when CEL absorbed the read, as in `content == "x" || true`.
+        if (readBinaryContent) {
+          violations.push({ record, matchesBefore: results.length });
+          continue;
+        }
         if (match === true) {
           // Materialize as a plain record; a read error absorbed by CEL
           // (e.g. `<read error> || true`) resurfaces here.
@@ -825,6 +907,10 @@ export class DataQueryService {
       } catch (error) {
         // Required body reads must fail the query, not skip the row.
         if (loadFailed) throw loadError;
+        if (readBinaryContent) {
+          violations.push({ record, matchesBefore: results.length });
+          continue;
+        }
         logger
           .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
           String(error)
@@ -841,7 +927,11 @@ export class DataQueryService {
     // selection (swamp-club#1737).
     if (needsHydration) {
       let writeIndex = 0;
+      // keptBefore[i] counts the records kept before results[i], so a
+      // violation's position survives the stale rows dropped here.
+      const keptBefore: number[] = [];
       for (let i = 0; i < results.length; i++) {
+        keptBefore.push(writeIndex);
         const row = matchedRows[i];
         if (this.filterStaleRows && row.namespace === ownNamespace) {
           const contentPath = this.dataRepo.getContentPath(
@@ -867,10 +957,20 @@ export class DataQueryService {
         );
         writeIndex++;
       }
+      keptBefore.push(writeIndex);
+      for (const violation of violations) {
+        violation.matchesBefore = keptBefore[violation.matchesBefore];
+      }
       results.length = writeIndex;
     }
 
-    return { records: results, selectParsed, hitLimit };
+    return {
+      records: results,
+      selectParsed,
+      selectReadsContent: readsContentInSelect,
+      violations,
+      hitLimit,
+    };
   }
 
   /**
@@ -881,6 +981,7 @@ export class DataQueryService {
   private project(
     results: DataRecord[],
     selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
+    contents: Map<DataRecord, ProjectedContent> | undefined,
   ): DataRecord[] | unknown[] {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
@@ -893,7 +994,11 @@ export class DataQueryService {
             r as unknown as Record<string, unknown>,
           ) as Record<string, unknown>;
           selectCtx["ns"] = r.namespace;
-          if (r.contentType === "application/json") {
+          const projected = contents?.get(r);
+          if (projected) {
+            selectCtx["content"] = projected.content;
+            selectCtx["contentEncoding"] = projected.contentEncoding;
+          } else if (r.contentType === "application/json") {
             selectCtx["content"] = r.attributes;
           }
           return coerceBigInts(selectParsed(selectCtx));
@@ -904,6 +1009,95 @@ export class DataQueryService {
     }
 
     return results;
+  }
+
+  /**
+   * A record's content as a projection sees it (swamp-club#2959): JSON as its
+   * parsed attributes, anything else as UTF-8 text when the bytes are valid
+   * UTF-8 and base64 otherwise, the same representation `data get` returns
+   * (a leading UTF-8 byte-order mark is dropped, as there). Content whose
+   * bytes are not on this host — any item from another namespace in a shared
+   * datastore, or a non-JSON item whose body cannot be read — is null, so it
+   * is never mistaken for empty content. A row stamped with the empty
+   * namespace (written before the repository set one) is this repository's
+   * own, and is read like any other.
+   *
+   * Returns undefined when the answer needs the item's bytes.
+   */
+  private projectedContentWithoutBytes(
+    record: DataRecord,
+  ): ProjectedContent | undefined {
+    if (
+      record.namespace !== "" && record.namespace !== this.dataRepo.namespace
+    ) {
+      return { content: null, contentEncoding: null };
+    }
+    if (record.contentType === "application/json") {
+      return { content: record.attributes, contentEncoding: "utf-8" };
+    }
+    return undefined;
+  }
+
+  /** Represents read bytes, or their absence, as projected content. */
+  private encodeProjected(bytes: Uint8Array | null): ProjectedContent {
+    return bytes
+      ? encodeContent(bytes)
+      : { content: null, contentEncoding: null };
+  }
+
+  /**
+   * The projected content of `record`, read synchronously from local disk
+   * (the querySync path, which cannot download lazily-synced bodies).
+   */
+  private projectedContent(record: DataRecord): ProjectedContent {
+    const known = this.projectedContentWithoutBytes(record);
+    if (known) return known;
+    let bytes: Uint8Array | null = null;
+    try {
+      bytes = this.dataRepo.getContentSync(
+        ModelType.create(record.modelType),
+        record.modelId,
+        record.name,
+        record.version,
+      );
+    } catch (error) {
+      logger
+        .debug`Projection could not read content of ${record.modelName}/${record.name}@v${record.version}: ${
+        String(error)
+      }`;
+    }
+    return this.encodeProjected(bytes);
+  }
+
+  /**
+   * The projected content of each record a select that reads content will
+   * see, for the async query path. Bodies are read with the async getContent,
+   * which downloads a lazily-synced body the way `data get` does
+   * (swamp-club#2962). Only records that passed the caller's include reach
+   * here, so no body is read or downloaded for one the caller may not read.
+   * A download error fails the query, as it fails `data get`.
+   */
+  private async projectedContents(
+    records: DataRecord[],
+    readsContent: boolean,
+  ): Promise<Map<DataRecord, ProjectedContent> | undefined> {
+    if (!readsContent) return undefined;
+    const contents = new Map<DataRecord, ProjectedContent>();
+    for (const record of records) {
+      const known = this.projectedContentWithoutBytes(record);
+      contents.set(
+        record,
+        known ?? this.encodeProjected(
+          await this.dataRepo.getContent(
+            ModelType.create(record.modelType),
+            record.modelId,
+            record.name,
+            record.version,
+          ),
+        ),
+      );
+    }
+    return contents;
   }
 
   private rowToRecord(

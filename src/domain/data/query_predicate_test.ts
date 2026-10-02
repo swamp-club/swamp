@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { Environment } from "cel-js";
-import { type ASTNode, extractModelNameEquality } from "./query_predicate.ts";
+import {
+  type ASTNode,
+  extractModelNameEquality,
+  selectReadsContent,
+} from "./query_predicate.ts";
 
 const env = new Environment({
   unlistedVariablesAreDyn: true,
@@ -81,4 +85,21 @@ Deno.test("extractModelNameEquality: true literal returns null", () => {
 
 Deno.test("extractModelNameEquality: false literal returns null", () => {
   assertEquals(extractModelNameEquality(ast("false")), null);
+});
+
+Deno.test("selectReadsContent: true for content or contentEncoding at root", () => {
+  assertEquals(selectReadsContent(ast("content")), true);
+  assertEquals(selectReadsContent(ast("contentEncoding")), true);
+  assertEquals(
+    selectReadsContent(
+      ast('{"content": content, "contentEncoding": contentEncoding}'),
+    ),
+    true,
+  );
+});
+
+Deno.test("selectReadsContent: false for other fields and string literals", () => {
+  assertEquals(selectReadsContent(ast("name")), false);
+  assertEquals(selectReadsContent(ast("attributes.content")), false);
+  assertEquals(selectReadsContent(ast('"content"')), false);
 });

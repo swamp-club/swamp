@@ -73,6 +73,27 @@ Deno.test("dataQueryCommand: selects content when the read includes it", () => {
   );
 });
 
+Deno.test("dataQueryCommand: withEncoding also selects contentEncoding", () => {
+  assertEquals(
+    dataQueryCommand({ modelName: "m", dataName: "n" }, {
+      includeContent: true,
+      withEncoding: true,
+    }),
+    `swamp data query 'modelName == "m" && name == "n"' ` +
+      `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
+});
+
+Deno.test("dataQueryCommand: withEncoding is ignored when the read omits content", () => {
+  assertEquals(
+    dataQueryCommand({ modelName: "m", dataName: "n" }, {
+      includeContent: false,
+      withEncoding: true,
+    }),
+    `swamp data query 'modelName == "m" && name == "n"'`,
+  );
+});
+
 Deno.test("dataQueryCommand: lists metadata when the read omits content", () => {
   assertEquals(
     dataQueryCommand({ modelName: "m", dataName: "n" }, {
@@ -95,7 +116,7 @@ Deno.test("stepRetrievalCommand: reads a step's item by run, job, step, name and
   assertEquals(
     stepRetrievalCommand(
       "run-1",
-      { jobName: "tests", stepName: "lint", modelName: "lint-model" },
+      { jobName: "tests", stepName: "lint" },
       { name: "log", version: 3, contentType: "text/plain" },
     ),
     `swamp data query 'workflowRunId == "run-1" && jobName == "tests" && ` +
@@ -103,14 +124,28 @@ Deno.test("stepRetrievalCommand: reads a step's item by run, job, step, name and
   );
 });
 
-Deno.test("stepRetrievalCommand: a binary item keeps data get, which returns its bytes", () => {
+Deno.test("stepRetrievalCommand: a binary item is selected with its content encoding", () => {
   assertEquals(
     stepRetrievalCommand(
       "run-1",
-      { jobName: "build", stepName: "package", modelName: "packager" },
+      { jobName: "build", stepName: "package" },
       { name: "bundle.tar", version: 2, contentType: "application/x-tar" },
     ),
-    "swamp data get packager bundle.tar --version 2",
+    `swamp data query 'workflowRunId == "run-1" && jobName == "build" && ` +
+      `stepName == "package" && name == "bundle.tar" && version == 2' ` +
+      `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
+});
+
+Deno.test("modelRetrievalCommand: a binary item is selected with its content encoding", () => {
+  assertEquals(
+    modelRetrievalCommand("site", {
+      name: "logo",
+      version: 1,
+      contentType: "image/png",
+    }),
+    `swamp data query 'modelName == "site" && name == "logo" && version == 1' ` +
+      `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
   );
 });
 

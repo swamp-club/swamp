@@ -23,6 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   createDataQueryRenderer,
   renderQueryResultsMarkdown,
+  renderQueryResultsTerminal,
 } from "./data_query.ts";
 
 function makeRecord(
@@ -298,4 +299,44 @@ Deno.test("createDataQueryRenderer: error throws UserError carrying the error co
     "no match",
   );
   assertEquals(error.code, "QUERY_NO_MATCH");
+});
+
+// Bytes 0..255 repeated: base64 using every character of its alphabet.
+const BASE64_CONTENT = Uint8Array.from({ length: 3000 }, (_, i) => i % 256)
+  .toBase64();
+
+Deno.test("renderQueryResultsTerminal: base64 content survives log output unchanged", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "logo"',
+    select: "content",
+    results: [],
+    projected: { shape: "scalar", values: [BASE64_CONTENT] },
+    total: 1,
+    limited: false,
+  });
+  // deno-lint-ignore no-control-regex
+  assertEquals(output.replace(/\x1b\[[0-9;]*m/g, "").trim(), BASE64_CONTENT);
+});
+
+Deno.test("renderJson: projected base64 content and its encoding pass through", () => {
+  const renderer = createDataQueryRenderer("json");
+  const output = captureJsonOutput(() => {
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        predicate: 'name == "logo"',
+        results: [],
+        projected: {
+          shape: "map",
+          columns: ["content", "contentEncoding"],
+          rows: [{ content: BASE64_CONTENT, contentEncoding: "base64" }],
+        },
+        total: 1,
+        limited: false,
+      },
+    });
+  });
+  assertEquals(output.results, [
+    { content: BASE64_CONTENT, contentEncoding: "base64" },
+  ]);
 });
