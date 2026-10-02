@@ -48,6 +48,16 @@ export interface UnitOfWorkProbe {
   forwarded(): readonly (string | undefined)[];
   /** Makes the next downstream forward reject with `error`. */
   failNext(error: Error): void;
+  /**
+   * Holds the next downstream forward open until the returned function is
+   * called.
+   */
+  holdNext(): () => void;
+  /**
+   * Runs `listener` each time the unit makes its changes durable downstream.
+   * A listener that rejects makes that commit reject with the same error.
+   */
+  onCommit(listener: () => Promise<void>): void;
 }
 
 /** Builds a fresh probe for each contract case. */
@@ -63,6 +73,19 @@ interface ContractCase {
 const WRITE_A: StagedChange = { kind: "write", path: "/cache/data/a" };
 const REMOVE_B: StagedChange = { kind: "remove", path: "/cache/data/b" };
 const BULK: StagedChange = { kind: "bulk", reason: "contract bulk" };
+
+async function assertSpent(unit: UnitOfWork): Promise<void> {
+  await assertRejects(
+    () => unit.stage(REMOVE_B),
+    Error,
+    "unit of work already committed",
+  );
+  await assertRejects(
+    () => unit.commit(),
+    Error,
+    "unit of work already committed",
+  );
+}
 
 const CASES: readonly ContractCase[] = [
   {
@@ -91,21 +114,58 @@ const CASES: readonly ContractCase[] = [
     },
   },
   {
-    name: "commit happens once",
+    name: "staged() is not changed through the caller's objects",
     run: async ({ unit }) => {
+      const change = { kind: "write" as const, path: "/cache/data/a" };
+      await unit.stage(change);
+      change.path = "/cache/data/changed";
+      assertEquals(unit.staged(), [WRITE_A]);
+    },
+  },
+  {
+    name: "commit happens once",
+    run: async ({ unit, onCommit }) => {
+      let commits = 0;
+      onCommit(() => {
+        commits++;
+        return Promise.resolve();
+      });
       await unit.stage(WRITE_A);
       await unit.commit();
-      await assertRejects(
-        () => unit.stage(REMOVE_B),
-        Error,
-        "unit of work already committed",
-      );
-      await assertRejects(
-        () => unit.commit(),
-        Error,
-        "unit of work already committed",
-      );
+      await assertSpent(unit);
+      assertEquals(commits, 1);
       assertEquals(unit.staged(), [WRITE_A]);
+    },
+  },
+  {
+    name: "a failed commit spends the unit",
+    run: async ({ unit, onCommit }) => {
+      const error = new Error("commit failed");
+      onCommit(() => Promise.reject(error));
+      await unit.stage(WRITE_A);
+      const rejected = await assertRejects(() => unit.commit());
+      assertStrictEquals(rejected, error);
+      await assertSpent(unit);
+    },
+  },
+  {
+    name: "commit waits for a stage in flight",
+    run: async ({ unit, holdNext, onCommit }) => {
+      const release = holdNext();
+      let staged = false;
+      const stage = unit.stage(WRITE_A).then(() => {
+        staged = true;
+      });
+      let stagedAtCommit: boolean | undefined;
+      onCommit(() => {
+        stagedAtCommit = staged;
+        return Promise.resolve();
+      });
+      const commit = unit.commit();
+      release();
+      await stage;
+      await commit;
+      assertEquals(stagedAtCommit, true);
     },
   },
   {

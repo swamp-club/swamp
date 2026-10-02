@@ -28,37 +28,63 @@ import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { assertUnitOfWorkContract } from "../testing/unit_of_work_contract.ts";
 import { createLegacyUnitOfWork } from "./legacy_unit_of_work.ts";
 
-/** A mark hook that records its arguments and can reject the next call. */
+/**
+ * A mark hook that records its arguments, and can reject the next call or
+ * hold it open until released.
+ */
 function recordingHook(): {
   hook: MarkDirtyHook;
   calls: (string | undefined)[];
   failNext: (error: Error) => void;
+  holdNext: () => () => void;
 } {
   const calls: (string | undefined)[] = [];
   let failure: Error | undefined;
+  let hold: Promise<void> | undefined;
   const hook: MarkDirtyHook = (relPath?: string) => {
     calls.push(relPath);
     const error = failure;
+    const held = hold;
     failure = undefined;
-    return error ? Promise.reject(error) : Promise.resolve();
+    hold = undefined;
+    if (error) return Promise.reject(error);
+    return held ?? Promise.resolve();
   };
-  return { hook, calls, failNext: (error) => (failure = error) };
+  const holdNext = () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    hold = promise;
+    return () => resolve();
+  };
+  return {
+    hook,
+    calls,
+    failNext: (error) => (failure = error),
+    holdNext,
+  };
 }
 
 Deno.test("createLegacyUnitOfWork: meets the unit of work contract", async () => {
   await assertUnitOfWorkContract(() => {
-    const { hook, calls, failNext } = recordingHook();
+    const { hook, calls, failNext, holdNext } = recordingHook();
+    const listeners: Array<() => Promise<void>> = [];
+    const unit = createLegacyUnitOfWork(hook, {
+      flush: async () => {
+        for (const listener of listeners) await listener();
+      },
+    });
     return {
-      unit: createLegacyUnitOfWork(hook),
+      unit,
       forwarded: () => calls,
       failNext,
+      holdNext,
+      onCommit: (listener) => listeners.push(listener),
     };
   });
 });
 
 Deno.test("createLegacyUnitOfWork: write, remove and bulk mark the path, the path and nothing, in order", async () => {
   const { hook, calls } = recordingHook();
-  const unit = createLegacyUnitOfWork(hook);
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
 
   await unit.stage({ kind: "write", path: "/cache/data/a" });
   await unit.stage({ kind: "remove", path: "/cache/data/b" });
@@ -74,7 +100,7 @@ Deno.test("createLegacyUnitOfWork: write, remove and bulk mark the path, the pat
 });
 
 Deno.test("createLegacyUnitOfWork: with no hook, sends nothing and still records the changes", async () => {
-  const unit = createLegacyUnitOfWork(undefined);
+  const unit = createLegacyUnitOfWork(undefined, { flush: undefined });
 
   await unit.stage({ kind: "write", path: "/repo/.swamp/data/a" });
   await unit.stage({ kind: "bulk", reason: "gc" });
@@ -87,7 +113,7 @@ Deno.test("createLegacyUnitOfWork: with no hook, sends nothing and still records
 
 Deno.test("createLegacyUnitOfWork: a hook rejection rejects stage with the same error and keeps the change", async () => {
   const { hook, failNext } = recordingHook();
-  const unit = createLegacyUnitOfWork(hook);
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
   const error = new Error("remote unreachable");
   failNext(error);
 
@@ -115,7 +141,7 @@ Deno.test("createLegacyUnitOfWork: commit calls flush once", async () => {
 
 Deno.test("createLegacyUnitOfWork: commit resolves without flush", async () => {
   const { hook, calls } = recordingHook();
-  const unit = createLegacyUnitOfWork(hook);
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
   await unit.stage({ kind: "write", path: "/cache/data/a" });
 
   await unit.commit();
@@ -123,9 +149,54 @@ Deno.test("createLegacyUnitOfWork: commit resolves without flush", async () => {
   assertEquals(calls, ["/cache/data/a"]);
 });
 
+Deno.test("createLegacyUnitOfWork: commit flushes only after a mark in flight settles", async () => {
+  const { hook, holdNext } = recordingHook();
+  const release = holdNext();
+  let marked = false;
+  let markedAtFlush: boolean | undefined;
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      markedAtFlush = marked;
+      return Promise.resolve();
+    },
+  });
+
+  const stage = unit.stage({ kind: "write", path: "/cache/data/a" }).then(
+    () => {
+      marked = true;
+    },
+  );
+  const commit = unit.commit();
+  release();
+  await stage;
+  await commit;
+
+  assertEquals(markedAtFlush, true);
+});
+
+Deno.test("createLegacyUnitOfWork: commit still flushes after a mark in flight rejects", async () => {
+  const { hook, failNext } = recordingHook();
+  const error = new Error("remote unreachable");
+  failNext(error);
+  let flushes = 0;
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      flushes++;
+      return Promise.resolve();
+    },
+  });
+
+  const stage = unit.stage({ kind: "write", path: "/cache/data/a" });
+  const commit = unit.commit();
+
+  assertStrictEquals(await assertRejects(() => stage), error);
+  await commit;
+  assertEquals(flushes, 1);
+});
+
 Deno.test("createLegacyUnitOfWork: staging or committing after commit rejects", async () => {
   const { hook, calls } = recordingHook();
-  const unit = createLegacyUnitOfWork(hook);
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
   await unit.commit();
 
   await assertRejects(
@@ -163,12 +234,17 @@ Deno.test("createLegacyUnitOfWork: a failed flush rejects commit and spends the 
   assertEquals(flushes, 1);
 });
 
-Deno.test("createLegacyUnitOfWork: staged() returns a frozen copy", async () => {
-  const unit = createLegacyUnitOfWork(undefined);
-  await unit.stage({ kind: "write", path: "/cache/data/a" });
+Deno.test("createLegacyUnitOfWork: staged() returns frozen copies", async () => {
+  const unit = createLegacyUnitOfWork(undefined, { flush: undefined });
+  const change = { kind: "write" as const, path: "/cache/data/a" };
+  await unit.stage(change);
 
   const staged = unit.staged() as StagedChange[];
   assertThrows(() => staged.push({ kind: "bulk", reason: "tamper" }));
+  assertThrows(() => {
+    (staged[0] as { path: string }).path = "/cache/data/tamper";
+  });
+  change.path = "/cache/data/changed";
 
   assertEquals(unit.staged(), [{ kind: "write", path: "/cache/data/a" }]);
 });

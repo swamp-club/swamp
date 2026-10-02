@@ -72,10 +72,21 @@ export interface UnitOfWork {
    * still leaves the change recorded (`DatastoreSyncService.markDirty`
    * rule 1). The change is recorded even when forwarding it rejects: the
    * operation attempted it.
+   *
+   * Changes are ordered by when `stage` is called. Await each call before
+   * the write it announces and before staging the next change: the order of
+   * bulk and per-path changes is part of the contract.
    */
   stage(change: StagedChange): Promise<void>;
-  /** Makes the staged changes durable and visible to others. */
+  /**
+   * Makes the staged changes durable and visible to others, once. It waits
+   * for any `stage` still in flight first, so no change is left behind. The
+   * unit is spent as soon as `commit` is called, whether or not it succeeds.
+   */
   commit(): Promise<void>;
-  /** The changes staged so far, in staging order. */
+  /**
+   * The changes staged so far, in staging order. A snapshot: later stage
+   * calls, and changes the caller makes to its own objects, do not alter it.
+   */
   staged(): readonly StagedChange[];
 }

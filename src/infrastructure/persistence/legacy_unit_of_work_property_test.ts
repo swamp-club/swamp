@@ -59,7 +59,7 @@ Deno.test("createLegacyUnitOfWork: hook calls equal direct hook calls for any ch
         const unit = createLegacyUnitOfWork((relPath?: string) => {
           viaAdapter.push(relPath);
           return Promise.resolve();
-        });
+        }, { flush: undefined });
         for (const change of changes) await unit.stage(change);
 
         assertEquals(viaAdapter, direct);
@@ -86,7 +86,7 @@ Deno.test("createLegacyUnitOfWork: a hook rejection stops staging at exactly tha
           return calls.length - 1 === failAt
             ? Promise.reject(error)
             : Promise.resolve();
-        });
+        }, { flush: undefined });
 
         for (let i = 0; i < failAt; i++) await unit.stage(changes[i]);
         const rejected = await assertRejects(() => unit.stage(changes[failAt]));

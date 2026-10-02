@@ -25,8 +25,12 @@ import type {
 
 /** Options for {@link createLegacyUnitOfWork}. */
 export interface LegacyUnitOfWorkOptions {
-  /** Pushes the marked changes. `commit` awaits it when given. */
-  flush?: () => Promise<void>;
+  /**
+   * Pushes the marked changes; `commit` awaits it. Required so every caller
+   * decides: pass `undefined` only where there is nothing to push
+   * (filesystem datastores), because `commit` then pushes nothing.
+   */
+  flush: (() => Promise<void>) | undefined;
 }
 
 /**
@@ -42,17 +46,18 @@ export interface LegacyUnitOfWorkOptions {
  * rejects `stage` with the same error, as `notifyDirty` does today. With no
  * hook (filesystem datastores) `stage` only records the change.
  *
- * `commit` awaits `options.flush` if one was given and otherwise resolves.
- * In Phase 1 no production code calls `commit`: the existing flush paths
- * (`acquireModelLocks().flush`, `flushDatastoreSync`,
- * `pushManagedConfigChanges`, serve's `pushChangedToRemote`) keep pushing
- * as they do today. Phase 2 wires `commit` to them.
+ * `commit` waits for any mark still in flight, then awaits `options.flush`
+ * when one is given. In Phase 1 no production code calls `commit`: the
+ * existing flush paths (`acquireModelLocks().flush`, `flushDatastoreSync`,
+ * `pushManagedConfigChanges`, serve's `pushChangedToRemote`) keep pushing as
+ * they do today. Phase 2 wires `commit` to them.
  */
 export function createLegacyUnitOfWork(
   markDirty: MarkDirtyHook | undefined,
-  options?: LegacyUnitOfWorkOptions,
+  options: LegacyUnitOfWorkOptions,
 ): UnitOfWork {
   const changes: StagedChange[] = [];
+  const marks: Promise<void>[] = [];
   let committed = false;
 
   const refuseIfCommitted = (): void => {
@@ -62,14 +67,20 @@ export function createLegacyUnitOfWork(
   return {
     async stage(change: StagedChange): Promise<void> {
       refuseIfCommitted();
-      changes.push(change);
+      changes.push(Object.freeze({ ...change }));
       if (markDirty === undefined) return;
-      await markDirty(change.kind === "bulk" ? undefined : change.path);
+      const mark = markDirty(
+        change.kind === "bulk" ? undefined : change.path,
+      );
+      marks.push(mark);
+      await mark;
     },
     async commit(): Promise<void> {
       refuseIfCommitted();
       committed = true;
-      await options?.flush?.();
+      // A rejected mark already rejected its own stage call.
+      await Promise.allSettled(marks);
+      await options.flush?.();
     },
     staged(): readonly StagedChange[] {
       return Object.freeze([...changes]);

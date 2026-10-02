@@ -119,7 +119,7 @@ async function observe(
       assert(syncService !== undefined, "expected a sync service");
       const cacheDir = join(repoDir, ".test-cache");
 
-      const unit = createLegacyUnitOfWork(hook);
+      const unit = createLegacyUnitOfWork(hook, { flush: undefined });
       const mark: Mark = via === "direct"
         ? (change) => hook(change.kind === "bulk" ? undefined : change.path)
         : (change) => unit.stage(change);

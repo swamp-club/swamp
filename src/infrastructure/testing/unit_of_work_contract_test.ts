@@ -47,7 +47,13 @@ Deno.test("assertUnitOfWorkContract: names the failing case and keeps the origin
       commit: () => Promise.resolve(),
       staged: () => [...changes],
     };
-    return { unit, forwarded: () => forwarded, failNext: () => {} };
+    return {
+      unit,
+      forwarded: () => forwarded,
+      failNext: () => {},
+      holdNext: () => () => {},
+      onCommit: () => {},
+    };
   };
 
   const error = await assertRejects(

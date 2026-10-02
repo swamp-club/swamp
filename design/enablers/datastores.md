@@ -1071,8 +1071,9 @@ done. The legacy adapter (`src/infrastructure/persistence/legacy_unit_of_work.ts
 forwards each staged change to the dirty hook straight away, `markDirty(path)`
 for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
 and the order of bulk and per-path signals, and never batches or deduplicates.
-No production code uses it yet: repositories still call the hook themselves,
-and the flush paths still push.
+`commit` waits for any stage still in flight, runs once, and spends the unit
+even when it fails. No production code uses it yet: repositories still call the
+hook themselves, and the flush paths still push.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
