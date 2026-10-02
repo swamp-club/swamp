@@ -17,14 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import "../domain/models/models.ts";
-import { REMOTE_PROTOCOL_VERSION } from "../domain/remote/protocol.ts";
+import {
+  type DispatchExecution,
+  REMOTE_PROTOCOL_VERSION,
+} from "../domain/remote/protocol.ts";
 import {
   createStdioReader,
   StdioTransport,
 } from "../domain/remote/stdio_transport.ts";
-import { runDispatchRunner } from "./exec_dispatch.ts";
+import { definitionFromExecution, runDispatchRunner } from "./exec_dispatch.ts";
 
 Deno.test("runDispatchRunner: returns after sending its result frame instead of exiting", async () => {
   const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
@@ -82,4 +85,50 @@ Deno.test("runDispatchRunner: returns after sending its result frame instead of 
   } finally {
     await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
   }
+});
+
+function executionNamed(name: string): DispatchExecution {
+  return {
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    modelType: "command/shell",
+    modelId: "m-1",
+    methodName: "execute",
+    globalArgs: { region: "us-east-1" },
+    methodArgs: {},
+    definitionMeta: {
+      id: crypto.randomUUID(),
+      name,
+      version: 3,
+      tags: { env: "test" },
+    },
+  };
+}
+
+Deno.test("definitionFromExecution: accepts a name that predates the strict naming rule", () => {
+  // A definition named before bf0320ef loads and runs locally; the worker
+  // rejected it with a ZodError until swamp-club#2926.
+  const execution = executionNamed("MyServer");
+  const definition = definitionFromExecution(execution, { run: "echo hi" });
+
+  assertEquals(definition.name, "MyServer");
+  assertEquals(definition.id, execution.definitionMeta.id);
+  assertEquals(definition.type, "command/shell");
+  assertEquals(definition.version, 3);
+  assertEquals(definition.tags, { env: "test" });
+  assertEquals(definition.globalArguments, { region: "us-east-1" });
+  assertEquals(definition.getMethodArguments("execute"), { run: "echo hi" });
+  assertEquals(definition.typeVersion, undefined);
+});
+
+Deno.test("definitionFromExecution: accepts a name longer than the new-definition limit", () => {
+  const name = "a".repeat(65);
+  assertEquals(definitionFromExecution(executionNamed(name), {}).name, name);
+});
+
+Deno.test("definitionFromExecution: still rejects a path-traversal name", () => {
+  assertThrows(
+    () => definitionFromExecution(executionNamed("../etc"), {}),
+    Error,
+    "path traversal",
+  );
 });

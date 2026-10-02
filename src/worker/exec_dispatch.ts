@@ -32,6 +32,7 @@ import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
 import {
   dispatchErrorPaths,
+  type DispatchExecution,
   type DispatchOutput,
   type DispatchResult,
 } from "../domain/remote/protocol.ts";
@@ -79,6 +80,36 @@ function serializeFollowUpActions(
     delayMs: action.delayMs,
     maxRetries: action.maxRetries,
   }));
+}
+
+/**
+ * Rebuild the definition named in a remote execution envelope so the worker
+ * can run one method against it.
+ *
+ * The definition already exists on the dispatching side, so this reconstitutes
+ * it with `Definition.fromData` rather than creating it. `Definition.create`
+ * enforces the naming rule for new definitions (bf0320ef), which a definition
+ * named before that rule may not meet; local loading accepts those names, and
+ * so must the worker (swamp-club#2926). The path-traversal guard still applies.
+ *
+ * No typeVersion: the result is never persisted. The upgrade chain does not
+ * run here either — only executeWorkflow upgrades, and it does so before
+ * dispatching, so `methodArgs` are already migrated.
+ */
+export function definitionFromExecution(
+  execution: DispatchExecution,
+  methodArgs: Record<string, unknown>,
+): Definition {
+  return Definition.fromData({
+    type: execution.modelType,
+    id: execution.definitionMeta.id,
+    name: execution.definitionMeta.name,
+    version: execution.definitionMeta.version,
+    tags: execution.definitionMeta.tags,
+    globalArguments: execution.globalArgs,
+    methods: { [execution.methodName]: { arguments: methodArgs } },
+    inputs: undefined,
+  });
 }
 
 /**
@@ -171,19 +202,7 @@ export async function runDispatchRunner(
       ? { ...execution.methodArgs, probeMarker: dispatch.probeMarker }
       : execution.methodArgs;
 
-    // No typeVersion: this reconstructs a definition from the remote execution
-    // envelope purely to run one method, and is never persisted. The upgrade
-    // chain does not run here either — only executeWorkflow upgrades, and it
-    // does so before dispatching, so the arguments below are already migrated.
-    const definition = Definition.create({
-      type: execution.modelType,
-      id: execution.definitionMeta.id,
-      name: execution.definitionMeta.name,
-      version: execution.definitionMeta.version,
-      tags: execution.definitionMeta.tags,
-      globalArguments: execution.globalArgs,
-      methods: { [execution.methodName]: { arguments: methodArgs } },
-    });
+    const definition = definitionFromExecution(execution, methodArgs);
 
     const remote = createRemoteMethodContext({
       channel,

@@ -47,12 +47,7 @@ import {
  * Call sites that deliberately construct a Definition without a typeVersion.
  * Add to this list only with a comment in the source explaining why.
  */
-const PINNED_OMISSIONS: readonly string[] = [
-  // Reconstructs a definition from the remote execution envelope to run one
-  // method. Never persisted, and the upgrade chain does not run on this path —
-  // only executeWorkflow upgrades, and it does so before dispatching.
-  "src/worker/exec_dispatch.ts",
-];
+const PINNED_OMISSIONS: readonly string[] = [];
 
 /** Matches `Definition.create({` and captures the object literal that follows. */
 function findDefinitionCreateCalls(source: string): string[] {
