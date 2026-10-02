@@ -1349,6 +1349,21 @@ export async function createModelLock(
 }
 
 /**
+ * One scan of the per-model locks a structural command's drain waits on.
+ */
+export interface PerModelLockScan {
+  /** Live (non-stale) locks the drain waits on. */
+  held: number;
+  /**
+   * Those of `held` that a swamp above this one holds for another of its
+   * runs or steps, by lock file path relative to the datastore. They are
+   * released only when that run finishes (design/enablers/datastores.md,
+   * "Parent-Process Lock Awareness").
+   */
+  heldForOtherRuns: ReadonlyArray<{ pid: number; lockPath: string }>;
+}
+
+/**
  * Waits for any held per-model locks to be released.
  *
  * Called twice during structural command setup (`requireInitializedRepo`):
@@ -1366,15 +1381,16 @@ export async function createModelLock(
 export async function waitForPerModelLocks(
   datastorePath: string,
   namespace?: string,
-  findModelLocksOverride?: () => Promise<number>,
+  findModelLocksOverride?: () => Promise<PerModelLockScan>,
   progressWriter?: LockProgressWriter,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
-  const heldByAncestor = processLockHolderMarker.ancestorLockFilter();
+  const relationTo = processLockHolderMarker.lockRelation();
 
   const findModelLocks = findModelLocksOverride ??
-    (async (): Promise<number> => {
-      let count = 0;
+    (async (): Promise<PerModelLockScan> => {
+      let held = 0;
+      const heldForOtherRuns: Array<{ pid: number; lockPath: string }> = [];
       try {
         for await (
           const entry of walk(datastorePath, {
@@ -1393,15 +1409,22 @@ export async function waitForPerModelLocks(
               ttlMs: number;
               pid?: number;
               hostname?: string;
+              nonce?: string;
             };
-            // Skip locks held by an ancestor swamp on this host (prevents
-            // deadlock when a workflow shell step spawns a nested swamp
-            // command).
-            if (heldByAncestor(info)) continue;
+            // Skip locks an ancestor swamp on this host holds for the run
+            // that started this one (prevents deadlock when a workflow
+            // shell step spawns a nested swamp command).
+            const relation = relationTo(info);
+            if (relation === "ancestor") continue;
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
             if (Date.now() - acquiredAt <= info.ttlMs) {
-              count++;
+              held++;
+              if (
+                relation === "ancestor-other-run" && info.pid !== undefined
+              ) {
+                heldForOtherRuns.push({ pid: info.pid, lockPath: rel });
+              }
             }
           } catch {
             // Skip unreadable lock files
@@ -1410,31 +1433,55 @@ export async function waitForPerModelLocks(
       } catch {
         // Datastore directory may not exist yet
       }
-      return count;
+      return { held, heldForOtherRuns };
     });
 
   const maxWaitMs = resolveLockTimeoutMs();
-  const held = await findModelLocks();
-  if (held > 0) {
+  const first = await findModelLocks();
+  if (first.held > 0) {
     write(
-      yellow(`Waiting for ${held} per-model lock(s) to be released...`),
+      yellow(`Waiting for ${first.held} per-model lock(s) to be released...`),
     );
     const waitStart = Date.now();
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const remaining = await findModelLocks();
-      if (remaining === 0) break;
+      if (remaining.held === 0) break;
       const elapsed = Date.now() - waitStart;
       if (elapsed >= maxWaitMs) {
         throw new LockTimeoutError(
           "per-model locks",
           null,
           elapsed,
+          remaining.heldForOtherRuns.length > 0
+            ? { message: heldForOtherRunsMessage(remaining, elapsed) }
+            : undefined,
         );
       }
     }
     write(dim("Per-model locks released"));
   }
+}
+
+/**
+ * The timeout message for a drain still waiting on locks a swamp above it
+ * holds for another of its runs, which a nested structural command cannot
+ * outwait when that run is itself waiting on a nested structural command.
+ */
+function heldForOtherRunsMessage(
+  scan: PerModelLockScan,
+  elapsed: number,
+): string {
+  const pids = [...new Set(scan.heldForOtherRuns.map((lock) => lock.pid))];
+  const paths = scan.heldForOtherRuns.map((lock) => lock.lockPath).join(", ");
+  return `Lock "per-model locks" — timed out after ${elapsed}ms waiting on ` +
+    `${scan.held} per-model lock(s). ${scan.heldForOtherRuns.length} of ` +
+    `them (${paths}) are held by swamp pid ${pids.join(", ")}, above ` +
+    `this command, for another of its runs or steps, such as a ` +
+    `parallel workflow step or another swamp serve run. That run keeps its ` +
+    `lock until it finishes, so parallel runs that each start a nested ` +
+    `structural command (for example swamp data gc) wait on each other. ` +
+    `Run those commands one at a time, or in a workflow step of their own.`;
 }
 
 /**
@@ -1462,6 +1509,14 @@ export interface ModelLockResult {
    * backfill while the lock is held (swamp-club#2553).
    */
   synced: boolean;
+  /**
+   * The nonces of the filesystem lock files these locks wrote. Run the work
+   * done under the locks inside `processLockHolderMarker.runHolding` with
+   * them, so a swamp it starts skips these locks and no others
+   * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). Empty
+   * for custom datastore locks, which the drain never scans.
+   */
+  heldLockIds: readonly string[];
 }
 
 /** Runs a datastore sync call; see {@link AcquireModelLocksOptions}. */
@@ -1631,6 +1686,7 @@ export async function acquireModelLocks(
   });
 
   const lockKeys: string[] = [];
+  const heldLocks: DistributedLock[] = [];
 
   let caps: SyncCapabilities | undefined;
   if (customSyncService) {
@@ -1663,6 +1719,7 @@ export async function acquireModelLocks(
       },
     });
     lockKeys.push(coordinatorKey);
+    heldLocks.push(lock);
 
     // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
     // If a structural command acquired the global lock between our initial check
@@ -1679,6 +1736,7 @@ export async function acquireModelLocks(
         await flushDatastoreSyncNamed(acquiredKey);
       }
       lockKeys.length = 0;
+      heldLocks.length = 0;
 
       // Wait for global lock to be released (with timeout)
       const retryWaitStart = Date.now();
@@ -1825,7 +1883,25 @@ export async function acquireModelLocks(
     }
   };
 
-  return { flush, synced };
+  const heldLockIds = heldLocks.flatMap((lock) =>
+    lock instanceof FileLock && lock.heldNonce ? [lock.heldNonce] : []
+  );
+  return { flush, synced, heldLockIds };
+}
+
+/**
+ * Runs `fn`, the method run done under the per-model locks `lockResult`
+ * took (or under none, when it is undefined), so a swamp it starts skips
+ * those locks and still waits on the ones this process holds for other
+ * runs (design/enablers/datastores.md, "Parent-Process Lock Awareness").
+ * Wrap the whole consumption of a method run's event stream: an async
+ * generator's body runs in the context of whoever iterates it.
+ */
+export function runUnderModelLocks<T>(
+  lockResult: Pick<ModelLockResult, "heldLockIds"> | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return processLockHolderMarker.runHolding(lockResult?.heldLockIds ?? [], fn);
 }
 
 /**

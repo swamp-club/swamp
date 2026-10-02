@@ -1715,9 +1715,9 @@ A workflow shell step can run a nested `swamp` command (e.g.
 child's drain waited on that lock it would deadlock: the parent waits on the
 child, the child on the parent's lock.
 
-Every swamp hands two variables to the swamps it starts, through
+Every swamp hands three variables to the swamps it starts, through
 `LockHolderMarker` in `src/domain/datastore/lock_holder_marker.ts`. It never
-clears either:
+clears the first two from its own env:
 
 - `SWAMP_LOCK_ANCESTOR_PIDS`, published once at startup (`runInvocation`):
   the comma-separated pids of every swamp above it, followed by its own (at
@@ -1728,10 +1728,29 @@ clears either:
   Until then it keeps the value it inherited, so through a swamp that takes
   no locks (e.g. a read-only `model method run`) it still names the real lock
   holder.
+- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never in the process env:
+  comma-separated `<pid>:<nonce>+<nonce>` entries naming, for each swamp
+  above the child, the per-model locks it holds for the run that started the
+  child. A nonce is the one each lock file already records. The shell model
+  adds `LockHolderMarker.childLockEnv()` to the child's env: the inherited
+  entries plus one for its own pid. That entry lists the locks held by the
+  `runHolding` scope (an `AsyncLocalStorage` scope) the spawn runs in, and is
+  empty when that run holds none. Each locked execution runs in its scope: a
+  workflow step's method (`execution_service.ts`, from `StepLockHook`'s
+  `heldLockIds`; a hook that leaves them out runs the step outside any scope,
+  so its children fall back to the pid match rather than wait on the step's
+  own lock), and a CLI or `swamp serve` model method run
+  (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
+  `runModel()` and other in-process nesting carry the outer run's locks.
+  `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
 Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file when its `pid` is one of those
-ancestors and its `hostname` is this host. A process on another host sharing
+ancestors and its `hostname` is this host, and, if that ancestor has an entry
+in `SWAMP_LOCK_HOLDER_TOKENS`, its `nonce` is listed there. A lock whose
+ancestor has no entry (it was started outside any scope, e.g. by an extension
+using `Deno.Command`, or through an older swamp), or a lock file without a
+nonce, is matched on the pid alone, as before. A process on another host sharing
 the datastore (e.g. over NFS) can carry the same pid, so its lock is still
 waited on. A lock file with no `hostname` is matched on pid alone. The
 hostname is read when the drain runs. If the host is renamed after an ancestor
@@ -1741,12 +1760,30 @@ never skips its own pid, so a structural command still waits on in-flight
 writes by other runs in its own process.
 
 The skip is what avoids the deadlock: the run that started the child holds
-its lock until the child exits. But the marker names a process, not a run. A
-nested swamp under one `swamp serve` run, or under one of several parallel
-workflow steps, also skips locks the same process holds for unrelated runs.
-It can then race their in-flight writes (swamp-club#2955). A child left
-running in the background after its ancestors exit can likewise skip a lock
-taken by an unrelated process that reused an ancestor's pid on this host.
+its lock until the child exits. The nonce list narrows it from the process to
+the run (swamp-club#2955). A nested swamp under one `swamp serve` run, or
+under one of several parallel workflow steps, waits on the locks the same
+process holds for its other runs instead of racing their in-flight writes.
+When that wait times out, the `LockTimeoutError` names the locks held for an
+ancestor's other runs and says why.
+
+Known limits of the run-level match:
+
+- Two parallel steps or runs that each start a nested structural command
+  (e.g. `swamp data gc`) wait on each other: each holds its step lock until
+  its child exits. Both fail at `SWAMP_LOCK_TIMEOUT_MS`. Run such commands
+  one at a time or in a step of their own (fail-fast detection:
+  swamp-club#2981).
+- A step that calls back into the same `swamp serve` with `--server` starts
+  a server-side run in a new scope. A nested structural swamp under that run
+  waits on the calling step's lock, which process ancestry cannot connect
+  across the WebSocket (swamp-club#2982).
+- A step dispatched to a remote worker on the same host runs while serve
+  holds its lock, and the worker is not a descendant of serve, so a nested
+  structural swamp there waits on its own step's lock (swamp-club#2983).
+- A child left running in the background after its ancestors exit can skip a
+  lock taken by an unrelated process that reused an ancestor's pid on this
+  host.
 
 Keeping either value for the rest of the process's life is equivalent to
 keeping it while holding locks, because a lock file carrying a pid exists only
@@ -1769,6 +1806,10 @@ it that holds locks, as before this change:
   `SWAMP_LOCK_ANCESTOR_PIDS`, so the chain is dropped and the child skips
   only the holder. If the child inherits the env directly (an extension using
   `Deno.Command`), the chain survives and the child skips every ancestor.
+- An older child ignores `SWAMP_LOCK_HOLDER_TOKENS` and skips by pid. An
+  older swamp in the middle strips it from a shell step's env, so the child
+  matches every ancestor on the pid alone. Neither waits on a lock it skipped
+  before.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by

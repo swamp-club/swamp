@@ -23,7 +23,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { ensureDir } from "@std/fs";
+import { ensureDir, walk } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
@@ -42,17 +42,21 @@ import {
   ManagedConfigUnresolvedError,
   MODEL_LOCK_MAX_BACKOFF_MS,
   MODEL_LOCK_RETRY_INTERVAL_MS,
+  type PerModelLockScan,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
+  runUnderModelLocks,
   waitForPerModelLocks,
 } from "./repo_context.ts";
 import {
+  processLockHolderMarker,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
+  SWAMP_LOCK_HOLDER_TOKENS,
 } from "../domain/datastore/lock_holder_marker.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
@@ -1294,13 +1298,19 @@ Deno.test(
 // concurrent writer). These tests exercise the polling primitive with an
 // injected scanner so the regression coverage is deterministic.
 
+/** A scan that counts `held` locks, none held for an ancestor's other run. */
+const heldCount = (held: number): PerModelLockScan => ({
+  held,
+  heldForOtherRuns: [],
+});
+
 Deno.test(
   "waitForPerModelLocks - returns immediately when no locks are held",
   async () => {
     let calls = 0;
-    const scanner = (): Promise<number> => {
+    const scanner = (): Promise<PerModelLockScan> => {
       calls++;
-      return Promise.resolve(0);
+      return Promise.resolve(heldCount(0));
     };
 
     const start = Date.now();
@@ -1326,10 +1336,10 @@ Deno.test(
     // return until the scanner reports 0.
     const sequence = [1, 1, 0];
     let i = 0;
-    const scanner = (): Promise<number> => {
+    const scanner = (): Promise<PerModelLockScan> => {
       const next = sequence[Math.min(i, sequence.length - 1)];
       i++;
-      return Promise.resolve(next);
+      return Promise.resolve(heldCount(next));
     };
 
     const start = Date.now();
@@ -1351,7 +1361,8 @@ Deno.test(
 Deno.test(
   "waitForPerModelLocks - throws LockTimeoutError when locks are not released within timeout",
   async () => {
-    const scanner = (): Promise<number> => Promise.resolve(1);
+    const scanner = (): Promise<PerModelLockScan> =>
+      Promise.resolve(heldCount(1));
 
     await assertRejects(
       async () => {
@@ -1376,10 +1387,10 @@ Deno.test(
   async () => {
     const sequence = [1, 0];
     let i = 0;
-    const scanner = (): Promise<number> => {
+    const scanner = (): Promise<PerModelLockScan> => {
       const next = sequence[Math.min(i, sequence.length - 1)];
       i++;
-      return Promise.resolve(next);
+      return Promise.resolve(heldCount(next));
     };
 
     const messages: string[] = [];
@@ -1656,6 +1667,238 @@ Deno.test(
   },
 );
 
+/** Writes a per-model lock file for `model` under `dir`. */
+async function writeModelLock(
+  dir: string,
+  model: string,
+  lock: { pid: number; ttlMs: number; nonce?: string; host?: string },
+): Promise<void> {
+  const lockDir = join(dir, "data", "command-shell", model);
+  await ensureDir(lockDir);
+  const host = lock.host ?? hostname();
+  await Deno.writeTextFile(
+    join(lockDir, ".lock"),
+    JSON.stringify({
+      holder: `swamp@${host}`,
+      hostname: host,
+      pid: lock.pid,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: lock.ttlMs,
+      ...(lock.nonce ? { nonce: lock.nonce } : {}),
+    }),
+  );
+}
+
+Deno.test(
+  "waitForPerModelLocks - skips the lock a parent holds for this run and waits on its other runs' locks",
+  async () => {
+    await withTempDir(async (dir) => {
+      // The parent (22222) runs two steps in parallel. This command was
+      // started by the step holding "run-a"; "run-b" is the sibling step's
+      // lock, which goes stale shortly and ends the wait.
+      await writeModelLock(dir, "step-a-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-a",
+      });
+      await writeModelLock(dir, "step-b-model", {
+        pid: 22222,
+        ttlMs: 1_500,
+        nonce: "run-b",
+      });
+
+      const messages: string[] = [];
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: "22222:run-a",
+        },
+        async () => {
+          await waitForPerModelLocks(
+            dir,
+            undefined,
+            undefined,
+            (msg) => messages.push(msg),
+          );
+        },
+      );
+
+      assertEquals(
+        messages.some((m) => m.includes("Waiting for 1 per-model lock(s)")),
+        true,
+        `expected only the sibling step's lock to be counted, got ${
+          JSON.stringify(messages)
+        }`,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - matches on the pid when the parent handed down no held locks",
+  async () => {
+    await withTempDir(async (dir) => {
+      // An older parent, or a spawn outside any held-lock scope: no list
+      // for 22222, so both of its locks are skipped, as before.
+      await writeModelLock(dir, "step-a-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-a",
+      });
+      await writeModelLock(dir, "step-b-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-b",
+      });
+
+      const messages: string[] = [];
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: undefined,
+        },
+        async () => {
+          await waitForPerModelLocks(
+            dir,
+            undefined,
+            undefined,
+            (msg) => messages.push(msg),
+          );
+        },
+      );
+
+      assertEquals(messages, []);
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - a timeout on a parent's other-run lock explains the wait",
+  async () => {
+    await withTempDir(async (dir) => {
+      await writeModelLock(dir, "step-b-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-b",
+      });
+      await writeModelLock(dir, "unrelated-model", {
+        pid: 33333,
+        ttlMs: 30_000,
+        nonce: "other",
+      });
+
+      const error = await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: "22222:run-a",
+          SWAMP_LOCK_TIMEOUT_MS: "1000",
+        },
+        () =>
+          assertRejects(
+            () => waitForPerModelLocks(dir, undefined, undefined, () => {}),
+            LockTimeoutError,
+          ),
+      );
+
+      assertStringIncludes(error.message, "waiting on 2 per-model lock(s)");
+      assertStringIncludes(error.message, "1 of them");
+      assertStringIncludes(
+        error.message,
+        join("data", "command-shell", "step-b-model", ".lock"),
+      );
+      assertStringIncludes(error.message, "held by swamp pid 22222");
+      assertStringIncludes(error.message, "one at a time");
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - a timeout on unrelated locks keeps the plain message",
+  async () => {
+    const error = await withMockedEnv(
+      { SWAMP_LOCK_TIMEOUT_MS: "1000" },
+      () =>
+        assertRejects(
+          () =>
+            waitForPerModelLocks(
+              "/unused/datastore/path",
+              undefined,
+              () => Promise.resolve(heldCount(1)),
+              () => {},
+            ),
+          LockTimeoutError,
+        ),
+    );
+
+    assertStringIncludes(error.message, `Lock "per-model locks"`);
+    assertEquals(error.message.includes("one at a time"), false);
+  },
+);
+
+Deno.test(
+  "acquireModelLocks - returns the nonces of the lock files it wrote",
+  async () => {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      if (isCustomDatastoreConfig(datastoreConfig)) {
+        throw new Error("expected filesystem datastore for this test");
+      }
+
+      const lockResult = await acquireModelLocks(datastoreConfig, [
+        { modelType: "aws-ec2", modelId: "server-1" },
+        { modelType: "aws-ec2", modelId: "server-2" },
+      ], dir);
+      try {
+        const written: string[] = [];
+        for await (
+          const entry of walk(datastoreConfig.path, { match: [/\.lock$/] })
+        ) {
+          const info = JSON.parse(await Deno.readTextFile(entry.path));
+          if (info.nonce) written.push(info.nonce);
+        }
+        assertEquals(lockResult.heldLockIds.length, 2);
+        assertEquals([...lockResult.heldLockIds].sort(), written.sort());
+      } finally {
+        await lockResult.flush();
+      }
+    });
+  },
+);
+
+Deno.test(
+  "runUnderModelLocks - a method run's event stream sees the locks it took",
+  async () => {
+    // The method body runs inside an async generator, as libswamp's
+    // modelMethodRun does; its spawns read the scope of whoever iterates.
+    async function* methodRun(): AsyncGenerator<Record<string, string>> {
+      await Promise.resolve();
+      yield processLockHolderMarker.childLockEnv();
+    }
+    const consume = async () => {
+      const seen: Record<string, string>[] = [];
+      for await (const env of methodRun()) seen.push(env);
+      return seen;
+    };
+
+    await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+      assertEquals(
+        await runUnderModelLocks({ heldLockIds: ["n1", "n2"] }, consume),
+        [{ [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:n1+n2` }],
+      );
+      // A non-mutating run takes no lock and still gets a scope.
+      assertEquals(await runUnderModelLocks(undefined, consume), [
+        { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:` },
+      ]);
+      // Outside the helper nothing is handed down for this process.
+      assertEquals(await consume(), [{}]);
+    });
+  },
+);
+
 // ============================================================================
 // acquireModelLocks — lock holder marker (swamp-club#2659)
 // ============================================================================
@@ -1764,6 +2007,8 @@ Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", 
       ], dir);
 
       assertEquals(lockResult.synced, true);
+      // Custom datastore locks are never scanned by the drain.
+      assertEquals(lockResult.heldLockIds, []);
       assertEquals(pullArgs.length, 1);
 
       const pullOpts = pullArgs[0] as {

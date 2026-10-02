@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hostname } from "node:os";
 
 /**
@@ -31,11 +32,24 @@ export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
 /**
  * Every swamp process above a child, comma-separated, oldest first, ending
  * with the one that started it. A nested swamp skips per-model locks held by
- * any of them on this host, since the run that started it holds its lock
- * until the child exits (design/enablers/datastores.md, "Parent-Process Lock
- * Awareness", for what that also skips).
+ * any of them on this host for the run that started it, since that run holds
+ * its lock until the child exits; {@link SWAMP_LOCK_HOLDER_TOKENS} says
+ * which locks those are (design/enablers/datastores.md, "Parent-Process Lock
+ * Awareness").
  */
 export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
+
+/**
+ * The per-model locks each swamp above a child holds for the run that
+ * started it: comma-separated `<pid>:<nonce>+<nonce>` entries, the nonces
+ * being those written to the lock files. A pid with an entry (an empty one
+ * when the run holds none) is held to it, so the child still waits on the
+ * locks that swamp holds for other runs, such as parallel steps or other
+ * `swamp serve` runs. A pid without one is matched on the pid alone. Set per
+ * spawn, never in the process env (design/enablers/datastores.md,
+ * "Parent-Process Lock Awareness").
+ */
+export const SWAMP_LOCK_HOLDER_TOKENS = "SWAMP_LOCK_HOLDER_TOKENS";
 
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
@@ -47,11 +61,23 @@ export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
 export interface LockOwner {
   readonly pid?: number;
   readonly hostname?: string;
+  readonly nonce?: string;
 }
+
+/**
+ * How a per-model lock relates to this process, as its drain sees it:
+ * - `"ancestor"`: held by a swamp above it for the run that started it,
+ *   which keeps it until this process exits, so the drain skips it.
+ * - `"ancestor-other-run"`: held by a swamp above it, but for another run
+ *   or step of that swamp, so the drain waits on it.
+ * - `"other"`: held by anything else; the drain waits on it.
+ */
+export type LockRelation = "ancestor" | "ancestor-other-run" | "other";
 
 interface Inherited {
   readonly holder: string | undefined;
   readonly ancestors: string | undefined;
+  readonly tokens: string | undefined;
 }
 
 /**
@@ -65,11 +91,14 @@ interface Inherited {
  * while that process holds it, so keeping either for the rest of the
  * process's life is equivalent to keeping it while it holds locks, and
  * concurrent lock holders in one process (parallel workflow steps,
- * `swamp serve` runs) cannot clear it under each other.
+ * `swamp serve` runs) cannot clear it under each other. Which locks belong
+ * to which run is per execution instead: {@link runHolding} scopes it, and
+ * {@link childLockEnv} hands it to one spawned swamp.
  */
 export class LockHolderMarker {
   #inherited: Inherited | undefined;
   #holding = false;
+  readonly #held = new AsyncLocalStorage<readonly string[]>();
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -90,10 +119,7 @@ export class LockHolderMarker {
     if (this.#inherited) {
       return;
     }
-    const inherited: Inherited = {
-      holder: this.env.get(SWAMP_LOCK_HOLDER_PID),
-      ancestors: this.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
-    };
+    const inherited = this.#readEnv();
     // Captured before writing, so this process's drain still skips the
     // locks its ancestors hold.
     this.#inherited = inherited;
@@ -124,30 +150,94 @@ export class LockHolderMarker {
    * a unit test) this reads the live env.
    */
   ancestorPids(): ReadonlySet<number> {
-    const inherited = this.#inherited ?? {
-      holder: this.env.get(SWAMP_LOCK_HOLDER_PID),
-      ancestors: this.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
-    };
-    return new Set(inheritedChain(inherited, this.pid));
+    return new Set(inheritedChain(this.#inheritedOrLive(), this.pid));
   }
 
   /**
-   * A test for whether a lock file is held by one of this process's
-   * ancestors: its pid is an ancestor's and it was taken on this host. A
-   * process on another host sharing the datastore (e.g. over NFS) can carry
-   * the same pid. A lock with no recorded hostname matches on pid alone.
+   * Runs `fn` as work done under the per-model locks whose lock-file nonces
+   * are `lockIds`, so a swamp started from within it (see
+   * {@link childLockEnv}) skips those locks and not the ones this process
+   * holds for other runs. Nests: work started inside `fn` also counts as
+   * holding the outer scopes' locks, which stay held until it finishes.
+   * Pass an empty list for work that holds no lock, so its children still
+   * wait on every lock this process holds.
+   */
+  runHolding<T>(lockIds: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const outer = this.#held.getStore() ?? [];
+    return this.#held.run([...new Set([...outer, ...lockIds])], fn);
+  }
+
+  /**
+   * The lock env for one swamp started by this process: the
+   * {@link SWAMP_LOCK_HOLDER_TOKENS} entries it inherited, plus one for its
+   * own pid naming the locks held by the {@link runHolding} scope it is
+   * called from. Outside any scope this process adds no entry, so its child
+   * matches its locks on the pid alone, as before. Empty when there is
+   * nothing to hand down. Spread it into the child's env; never write it to
+   * the process env, which every run in the process shares.
+   */
+  childLockEnv(): Record<string, string> {
+    const entries = parseTokens(this.#inheritedOrLive().tokens);
+    entries.delete(this.pid);
+    const held = this.#held.getStore();
+    if (held !== undefined) {
+      entries.set(this.pid, new Set(held));
+    }
+    if (entries.size === 0) {
+      return {};
+    }
+    return { [SWAMP_LOCK_HOLDER_TOKENS]: formatTokens(entries) };
+  }
+
+  /**
+   * A test for how a lock file relates to this process (see
+   * {@link LockRelation}). It is an ancestor's when its pid is an
+   * ancestor's and it was taken on this host. A process on another host
+   * sharing the datastore (e.g. over NFS) can carry the same pid. A lock
+   * with no recorded hostname matches on pid alone. When that ancestor
+   * handed down which locks it holds for this process's run, a lock whose
+   * nonce is not among them is held for another run. Without that list,
+   * or for a lock with no nonce, the pid alone decides.
    *
-   * The hostname is read when the filter is built, not when the module
+   * The hostname is read when the test is built, not when the module
    * loads. If the host is renamed between an ancestor taking its lock and
    * this call (macOS can rename on a network change), the ancestor's lock no
    * longer matches and is waited on like any other.
    */
-  ancestorLockFilter(): (lock: LockOwner) => boolean {
-    const pids = this.ancestorPids();
+  lockRelation(): (lock: LockOwner) => LockRelation {
+    const inherited = this.#inheritedOrLive();
+    const pids = new Set(inheritedChain(inherited, this.pid));
+    const tokens = parseTokens(inherited.tokens);
     const host = this.host();
-    return (lock) =>
-      lock.pid !== undefined && pids.has(lock.pid) &&
-      (lock.hostname === undefined || lock.hostname === host);
+    return (lock) => {
+      if (
+        lock.pid === undefined || !pids.has(lock.pid) ||
+        (lock.hostname !== undefined && lock.hostname !== host)
+      ) {
+        return "other";
+      }
+      const listed = tokens.get(lock.pid);
+      if (listed === undefined || lock.nonce === undefined) {
+        return "ancestor";
+      }
+      return listed.has(lock.nonce) ? "ancestor" : "ancestor-other-run";
+    };
+  }
+
+  /**
+   * What this process inherited. Before {@link publish} (an embedder or a
+   * unit test) this reads the live env.
+   */
+  #inheritedOrLive(): Inherited {
+    return this.#inherited ?? this.#readEnv();
+  }
+
+  #readEnv(): Inherited {
+    return {
+      holder: this.env.get(SWAMP_LOCK_HOLDER_PID),
+      ancestors: this.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
+      tokens: this.env.get(SWAMP_LOCK_HOLDER_TOKENS),
+    };
   }
 }
 
@@ -170,6 +260,41 @@ function inheritedChain(inherited: Inherited, ownPid: number): number[] {
     }
   }
   return chain.slice(-MAX_LOCK_ANCESTORS);
+}
+
+/**
+ * Parses {@link SWAMP_LOCK_HOLDER_TOKENS}, merging repeated pids and
+ * dropping malformed entries and nonces. Keeps the newest
+ * {@link MAX_LOCK_ANCESTORS} pids, in order.
+ */
+function parseTokens(value: string | undefined): Map<number, Set<string>> {
+  const entries = new Map<number, Set<string>>();
+  for (const entry of (value ?? "").split(",")) {
+    const separator = entry.indexOf(":");
+    if (separator < 0) {
+      continue;
+    }
+    const pid = parsePid(entry.slice(0, separator));
+    if (pid === undefined) {
+      continue;
+    }
+    const nonces = entries.get(pid) ?? new Set<string>();
+    for (const nonce of entry.slice(separator + 1).split("+")) {
+      if (/^[A-Za-z0-9-]+$/.test(nonce)) {
+        nonces.add(nonce);
+      }
+    }
+    // Re-inserted so a repeated pid counts as its newest position.
+    entries.delete(pid);
+    entries.set(pid, nonces);
+  }
+  return new Map([...entries].slice(-MAX_LOCK_ANCESTORS));
+}
+
+function formatTokens(entries: Map<number, Set<string>>): string {
+  return [...entries].slice(-MAX_LOCK_ANCESTORS)
+    .map(([pid, nonces]) => `${pid}:${[...nonces].join("+")}`)
+    .join(",");
 }
 
 function parsePid(value: string): number | undefined {

@@ -45,6 +45,10 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { setProcessGroupIsolation } from "../../../../infrastructure/process/process_group_policy.ts";
 import { isProcessAlive } from "../../../../infrastructure/process/process_kill.ts";
 import { withMockedEnv } from "../../../../infrastructure/persistence/path_test_helpers.ts";
+import {
+  processLockHolderMarker,
+  SWAMP_LOCK_HOLDER_TOKENS,
+} from "../../../datastore/lock_holder_marker.ts";
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -742,6 +746,56 @@ posixOnlyTest(
           true,
         );
         assertEquals(logContent.includes("leaked"), false);
+      },
+    );
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute hands the child the locks its run holds",
+  async () => {
+    await withMockedEnv(
+      { [SWAMP_LOCK_HOLDER_TOKENS]: "4141:inherited" },
+      async () => {
+        const args: ShellInputAttributes = {
+          run: "echo TOKENS=$SWAMP_LOCK_HOLDER_TOKENS",
+        };
+
+        const { context, getResults } = createTestContext();
+        await processLockHolderMarker.runHolding(
+          ["step-lock"],
+          () => shellModel.methods.execute.execute(args, context),
+        );
+
+        const logContent = getOutputLogContent(getResults());
+        assertStringIncludes(
+          logContent,
+          `TOKENS=4141:inherited,${Deno.pid}:step-lock`,
+        );
+      },
+    );
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute lets explicit user env override the held locks",
+  async () => {
+    await withMockedEnv(
+      { [SWAMP_LOCK_HOLDER_TOKENS]: undefined },
+      async () => {
+        const args: ShellInputAttributes = {
+          run: "echo TOKENS=$SWAMP_LOCK_HOLDER_TOKENS",
+          env: { [SWAMP_LOCK_HOLDER_TOKENS]: "user-value" },
+        };
+
+        const { context, getResults } = createTestContext();
+        await processLockHolderMarker.runHolding(
+          ["step-lock"],
+          () => shellModel.methods.execute.execute(args, context),
+        );
+
+        const logContent = getOutputLogContent(getResults());
+        assertStringIncludes(logContent, "TOKENS=user-value");
       },
     );
   },
