@@ -1630,3 +1630,34 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each te
     assertEquals(await pathExists(path), false);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each unparseable run file it deletes", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const runId = crypto.randomUUID();
+    const path = join(
+      dirname(seed.getPath(workflow.id, seed.nextId())),
+      `workflow-run-${runId}.yaml`,
+    );
+    await ensureDir(dirname(path));
+    await Deno.writeTextFile(path, "");
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    const result = await runInUnitOfWork(
+      uow,
+      () => repo.deleteOlderThan(new Date(Date.now() + 60_000)),
+    );
+
+    assertEquals(result.deletedRunIds, [runId]);
+    assertEquals(uow.staged(), [{ kind: "remove", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), false);
+  });
+});

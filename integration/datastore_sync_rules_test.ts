@@ -161,7 +161,7 @@ Deno.test("moved repositories: the bulk scan flags a missing or empty reason, no
 // keeps the method from coming back in a repository that is not in
 // MOVED_REPOS, where the bulk rule above would not see it.
 const NOTIFY_DIRTY_DEFINITION =
-  /^\s*(?:(?:private|protected|public|static|async|readonly|export|const|let|function)\s+)*notifyDirty\s*[(<=:]/;
+  /^\s*(?:(?:(?:private|protected|public|static|async|readonly|export|const|let|function)\s+)*notifyDirty\s*[(<:]|(?:(?:private|protected|public|static|readonly|export|const|let)\s+)*(?:this\.)?notifyDirty\s*=(?!=))/;
 
 /** Lines of `code` that define a notifyDirty, as "<rel>:<line>". */
 function notifyDirtyDefinitions(rel: string, code: string): string[] {
@@ -204,6 +204,7 @@ Deno.test("persistence: the notifyDirty scan finds definitions, not calls or com
     "  async notifyDirty(path: string) {",
     "  private readonly notifyDirty = async (path?: string) => {};",
     "function notifyDirty(path?: string): Promise<void> {",
+    "    this.notifyDirty = (path?: string) => markDirty(path);",
     "    await this.notifyDirty(path);",
     "   * The StagedChange for a repository's `notifyDirty(relPath?)` call.",
     "  // private async notifyDirty(relPath?: string) in a comment",
@@ -214,6 +215,7 @@ Deno.test("persistence: the notifyDirty scan finds definitions, not calls or com
     "probe.ts:2",
     "probe.ts:3",
     "probe.ts:4",
+    "probe.ts:5",
   ]);
 });
 
