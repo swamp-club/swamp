@@ -41,7 +41,6 @@ import {
   vaultAnnotate,
   vaultAuditTrail,
   vaultCreate,
-  type VaultCreateData,
   vaultDelete,
   vaultDeletePreview,
   vaultDescribe,
@@ -838,9 +837,12 @@ export async function handleVaultCreate(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = await createVaultCreateDeps(ctx.repoDir);
+    // The shared repository's mark hook signals the config it writes.
+    const deps = await createVaultCreateDeps(
+      ctx.repoDir,
+      ctx.repoContext.vaultConfigRepo,
+    );
 
-    let created: VaultCreateData | undefined;
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       vaultCreate(libCtx, deps, {
@@ -856,7 +858,6 @@ export async function handleVaultCreate(
       {
         creating: () => {},
         completed: (e) => {
-          created = e.data;
           result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
@@ -881,16 +882,6 @@ export async function handleVaultCreate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        // The vault config repository has no markDirty hook, so mark the
-        // file it wrote, by path: a bare markDirty() turns the push into a
-        // walk of the whole cache (swamp-club#2415). Under managedConfig the
-        // file is in the datastore's config tier; otherwise it is repo-local
-        // and the hook drops the mark.
-        if (created) {
-          await ctx.repoContext.markDirty?.(
-            ctx.repoContext.vaultConfigRepo.getPath(created.type, created.id),
-          );
-        }
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(
@@ -1082,14 +1073,6 @@ export async function handleVaultEdit(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        // Mark the file the edit wrote, by path, as handleVaultCreate does: a
-        // bare markDirty() turns the push into a walk of the whole cache
-        // (swamp-club#2415). Under managedConfig the file is in the
-        // datastore's config tier; otherwise it is repo-local and the hook
-        // drops the mark.
-        await ctx.repoContext.markDirty?.(
-          vaultConfigRepo.getPath(target.type, target.id),
-        );
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn(

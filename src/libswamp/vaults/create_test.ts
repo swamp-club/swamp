@@ -18,14 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createVaultCreateDeps,
   vaultCreate,
   type VaultCreateDeps,
   type VaultCreateEvent,
 } from "./create.ts";
-import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 function makeDeps(overrides: Partial<VaultCreateDeps> = {}): VaultCreateDeps {
   return {
@@ -215,4 +218,64 @@ Deno.test("vaultCreate: a trusted local_encryption config may name its own key s
 
   assertEquals(last.kind, "completed");
   assertEquals(saved[0].config, { ssh_key_path: "~/.ssh/id_ed25519" });
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir({
+    prefix: "swamp-vault-create-test-",
+  });
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("createVaultCreateDeps: saves through an injected repository", async () => {
+  await withTempDir(async (dir) => {
+    const injected = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      join(dir, "injected"),
+    );
+    const deps = await createVaultCreateDeps(dir, injected);
+    const config = VaultConfig.create("vault-1", "v1", "local_encryption", {});
+
+    await deps.save(config);
+
+    assertEquals(
+      (await injected.findById("local_encryption", "vault-1"))?.name,
+      "v1",
+    );
+    assertEquals(
+      await new YamlVaultConfigRepository(dir).findById(
+        "local_encryption",
+        "vault-1",
+      ),
+      null,
+    );
+    assertEquals(await deps.findByName("v1"), true);
+  });
+});
+
+Deno.test("createVaultCreateDeps: without an injected repository, saves under the repo's vaults dir", async () => {
+  await withTempDir(async (dir) => {
+    const deps = await createVaultCreateDeps(dir);
+
+    await deps.save(
+      VaultConfig.create("vault-1", "v1", "local_encryption", {}),
+    );
+
+    assertEquals(
+      (await new YamlVaultConfigRepository(dir).findById(
+        "local_encryption",
+        "vault-1",
+      ))?.name,
+      "v1",
+    );
+  });
 });

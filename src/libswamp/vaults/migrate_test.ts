@@ -23,11 +23,14 @@ import {
   assertStringIncludes,
   unreachable,
 } from "@std/assert";
+import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
+  createVaultMigrateDeps,
   vaultMigrate,
   type VaultMigrateDeps,
   type VaultMigrateEvent,
@@ -557,4 +560,73 @@ Deno.test("vaultMigrate: a trusted local_encryption target may name its own key 
 
   assertEquals(events[events.length - 1].kind, "completed");
   assertEquals(savedConfig!.config, { key_file: "/k", auto_generate: true });
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir({
+    prefix: "swamp-vault-migrate-test-",
+  });
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("createVaultMigrateDeps: reads, saves and deletes configs through an injected repository", async () => {
+  await withTempDir(async (dir) => {
+    const injected = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      join(dir, "injected"),
+    );
+    await injected.save(SOURCE_CONFIG);
+    const deps = await createVaultMigrateDeps(
+      dir,
+      { vaultsDir: join(dir, "options") },
+      injected,
+    );
+    const target = VaultConfig.create(
+      SOURCE_CONFIG.id,
+      SOURCE_CONFIG.name,
+      "local_encryption",
+      {},
+    );
+
+    assertEquals((await deps.findVaultConfig("my-vault"))?.type, "mock");
+    await deps.saveConfig(target);
+    await deps.deleteConfig(SOURCE_CONFIG);
+
+    assertEquals(
+      (await injected.findById("local_encryption", "vault-1"))?.name,
+      "my-vault",
+    );
+    assertEquals(await injected.findById("mock", "vault-1"), null);
+    const options = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      join(dir, "options"),
+    );
+    assertEquals(await options.findAll(), []);
+  });
+});
+
+Deno.test("createVaultMigrateDeps: without an injected repository, uses the vaultsDir option", async () => {
+  await withTempDir(async (dir) => {
+    const vaultsDir = join(dir, "options");
+    const deps = await createVaultMigrateDeps(dir, { vaultsDir });
+
+    await deps.saveConfig(SOURCE_CONFIG);
+
+    const own = new YamlVaultConfigRepository(dir, undefined, vaultsDir);
+    assertEquals((await own.findById("mock", "vault-1"))?.name, "my-vault");
+    assertEquals(
+      (await deps.findVaultConfig("my-vault"))?.id,
+      SOURCE_CONFIG.id,
+    );
+  });
 });

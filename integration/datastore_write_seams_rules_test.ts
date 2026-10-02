@@ -156,6 +156,10 @@ const HOOK_ARGUMENT: Record<string, { index: number; file: string }> = {
     index: 2,
     file: "yaml_evaluated_workflow_repository.ts",
   },
+  YamlVaultConfigRepository: {
+    index: 3,
+    file: "yaml_vault_config_repository.ts",
+  },
 };
 
 function repositoryConstructions(files: readonly SourceFile[]): string[] {
@@ -281,9 +285,6 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   "src/serve/grant_write_tracking.ts: publishGrantWrites",
   "src/serve/handlers/access_handlers.ts: handleAccessReload",
   "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
-  "src/serve/handlers/admin_handlers.ts: handleVaultMigrate (x2)",
-  "src/serve/handlers/vault_handlers.ts: handleVaultCreate",
-  "src/serve/handlers/vault_handlers.ts: handleVaultEdit",
 ];
 
 const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
@@ -501,6 +502,30 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   // refactor phase 2.
   "src/libswamp/models/evaluate.ts: createModelEvaluateDeps: YamlEvaluatedDefinitionRepository",
   "src/libswamp/workflows/evaluate.ts: createWorkflowEvaluateDeps: YamlEvaluatedWorkflowRepository",
+  // Vault configs (swamp-club#2995). Read only: these never save or delete a
+  // vault config.
+  "src/cli/commands/datastore_setup.ts: nudgeVaultMigration: YamlVaultConfigRepository",
+  "src/cli/commands/doctor_datastores.ts: createDoctorDatastoresDeps: YamlVaultConfigRepository",
+  "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
+  "src/cli/datastore_expression_resolver.ts: createEarlyVaultService: YamlVaultConfigRepository",
+  "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
+  "src/domain/vaults/vault_service.ts: VaultService: YamlVaultConfigRepository",
+  "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/delete.ts: createVaultDeleteDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/describe.ts: createVaultDescribeDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/get.ts: createVaultGetDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/inspect.ts: createVaultInspectDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/list_keys.ts: createVaultListKeysDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
+  // The CLI writes vault configs through these, then pushManagedConfigChanges
+  // sends a bare mark (managedConfig only); serve injects the hooked
+  // repository.
+  "src/libswamp/vaults/create.ts: createVaultCreateDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/edit.ts: createVaultEditDeps: YamlVaultConfigRepository",
+  "src/libswamp/vaults/migrate.ts: createVaultMigrateDeps: YamlVaultConfigRepository",
+  // Factory helper with no callers.
+  "src/infrastructure/persistence/repository_factory.ts: createVaultConfigRepository: YamlVaultConfigRepository",
 ];
 
 // Typed changes the moved repositories stage before each write or remove
@@ -527,6 +552,9 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   // swamp-club#2992, move C1.
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository remove (x3)",
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository write",
+  // swamp-club#2995, move C2.
+  "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository remove",
+  "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository write",
 ];
 
 // Production code that opens an ambient unit of work. Empty in datastore

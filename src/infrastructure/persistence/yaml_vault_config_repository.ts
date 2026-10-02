@@ -23,6 +23,7 @@ import { resolveEffectiveVaultsDir } from "./paths.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { signalChange } from "./unit_of_work_scope.ts";
 import {
   VaultConfig,
   type VaultConfigData,
@@ -30,6 +31,7 @@ import {
   type VaultConfigId,
 } from "../../domain/vaults/vault_config.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   createVaultCreated,
@@ -75,6 +77,7 @@ export class YamlVaultConfigRepository {
     private readonly repoDir: string,
     eventBus?: EventBus,
     baseDir?: string,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this.eventBus = eventBus ?? null;
     this.baseDir = baseDir ?? resolveEffectiveVaultsDir(repoDir);
@@ -215,6 +218,7 @@ export class YamlVaultConfigRepository {
 
     const data = config.toData();
     const content = stringifyYaml(data as unknown as Record<string, unknown>);
+    await signalChange(this.markDirty, { kind: "write", path });
     await atomicWriteTextFile(path, content);
 
     // Emit event
@@ -231,6 +235,7 @@ export class YamlVaultConfigRepository {
    */
   async delete(config: VaultConfig): Promise<void> {
     const path = this.getPath(config.type, config.id);
+    await signalChange(this.markDirty, { kind: "remove", path });
     try {
       await Deno.remove(path);
 

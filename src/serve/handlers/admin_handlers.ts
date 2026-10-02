@@ -1273,7 +1273,13 @@ export async function handleVaultMigrate(
   try {
     const libCtx = createLibSwampContext();
     const repoDir = ctx.repoDir;
-    const deps = await createVaultMigrateDeps(repoDir);
+    // The shared repository's mark hook signals the config it writes and the
+    // one it removes, which the scoped push then deletes remotely.
+    const deps = await createVaultMigrateDeps(
+      repoDir,
+      undefined,
+      ctx.repoContext.vaultConfigRepo,
+    );
 
     // No trustKeySource: the client does not own this host, so a
     // local_encryption target gets the server's key source (swamp-club#2690).
@@ -1283,11 +1289,6 @@ export async function handleVaultMigrate(
       targetConfig: payload.targetConfig,
       repoDir,
     });
-    // Read before migrating: the migration keeps the id but moves the
-    // config to the target type's directory.
-    const sourceConfig = await ctx.repoContext.vaultConfigRepo.findByName(
-      payload.vaultName,
-    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1325,19 +1326,6 @@ export async function handleVaultMigrate(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        // The vault config repository has no markDirty hook, so mark both
-        // files by path: the config it wrote and the one it removed, which
-        // the scoped push then deletes remotely. A bare markDirty() walks
-        // the whole cache and skips deletion detection (swamp-club#2415).
-        if (sourceConfig) {
-          const vaultConfigRepo = ctx.repoContext.vaultConfigRepo;
-          await ctx.repoContext.markDirty?.(
-            vaultConfigRepo.getPath(payload.targetType, sourceConfig.id),
-          );
-          await ctx.repoContext.markDirty?.(
-            vaultConfigRepo.getPath(sourceConfig.type, sourceConfig.id),
-          );
-        }
         await ctx.syncService.pushChanged({ namespace });
       } catch (pushError) {
         logger.warn("Failed to push changes to remote datastore: {error}", {

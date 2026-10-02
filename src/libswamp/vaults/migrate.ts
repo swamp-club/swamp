@@ -97,17 +97,20 @@ export interface VaultMigrateDeps {
   listAvailableTypes: () => string[];
 }
 
-/** Wires real infrastructure into VaultMigrateDeps. */
+/**
+ * Wires real infrastructure into VaultMigrateDeps. Serve injects its shared
+ * repository, whose mark hook signals the saved and deleted configs. An
+ * injected repository serves every config read and write, so
+ * `options.vaultsDir` then applies only to the source vault service.
+ */
 export async function createVaultMigrateDeps(
   repoDir: string,
   options?: { vaultsDir?: string },
+  injectedRepo?: YamlVaultConfigRepository,
 ): Promise<VaultMigrateDeps> {
   await vaultTypeRegistry.ensureLoaded();
-  const repo = new YamlVaultConfigRepository(
-    repoDir,
-    undefined,
-    options?.vaultsDir,
-  );
+  const repo = injectedRepo ??
+    new YamlVaultConfigRepository(repoDir, undefined, options?.vaultsDir);
   return {
     findVaultConfig: (name) => repo.findByName(name),
     resolveExtensionVaultType: async (type) => {

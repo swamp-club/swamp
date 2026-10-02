@@ -38,11 +38,10 @@
 // logs are repo-local and never synced.
 //
 // Not in the table:
-// - YamlVaultConfigRepository and LockfileRepository take no hook; their
-//   callers mark the file by path (src/serve/handlers/vault_handlers.ts:884-893
-//   and :1086-1092, src/serve/handlers/admin_handlers.ts:1330-1342,
+// - LockfileRepository takes no hook; its callers mark the lockfile by path
+//   (src/libswamp/extensions/managed_lockfile_transaction.ts:384,
 //   src/cli/managed_config_sync.ts:159-195). The use-case characterisation
-//   tests cover them.
+//   tests cover it.
 // - Audit repositories: always repo-local.
 // - The namespace manifest.
 //
@@ -80,6 +79,7 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -244,12 +244,13 @@ async function withHarness(
       datastorePath: join(dir, "remote"),
       cachePath: cacheRoot,
     });
-    // Definitions and workflows under the cache config/ tier, as managedConfig
-    // wires them (src/cli/repo_context.ts:1220-1231). Repo-local, the hook
-    // drops their marks and the rows would prove nothing.
+    // Definitions, workflows and vault configs under the cache config/ tier, as
+    // managedConfig wires them (src/cli/repo_context.ts:1220-1231). Repo-local,
+    // the hook drops their marks and the rows would prove nothing.
     const configBase = resolver.resolvePath("config");
     const definitionsDir = join(configBase, "models");
     const workflowsDir = join(configBase, "workflows");
+    const vaultsDir = join(configBase, "vaults");
 
     const opened: RepositoryContext[] = [];
     const build = (): Repos => {
@@ -260,6 +261,7 @@ async function withHarness(
         markDirty,
         definitionsDir,
         yamlWorkflowsDir: workflowsDir,
+        vaultsDir,
         autoGc,
       });
       opened.push(ctx);
@@ -1313,6 +1315,45 @@ const outputRows: Row[] = [
   },
 ];
 
+function makeVaultConfig(name: string): VaultConfig {
+  return VaultConfig.create(crypto.randomUUID(), name, "local_encryption", {});
+}
+
+const vaultConfigRows: Row[] = [
+  {
+    repo: "VaultConfig",
+    method: "save(new)",
+    prepare: (h) => {
+      const config = makeVaultConfig("probe");
+      return Promise.resolve(() => h.ctx.vaultConfigRepo.save(config));
+    },
+  },
+  {
+    repo: "VaultConfig",
+    method: "save(update)",
+    prepare: async (h) => {
+      const config = makeVaultConfig("probe");
+      await h.ctx.vaultConfigRepo.save(config);
+      const updated = VaultConfig.create(
+        config.id,
+        config.name,
+        config.type,
+        { auto_generate: true },
+      );
+      return () => h.ctx.vaultConfigRepo.save(updated);
+    },
+  },
+  {
+    repo: "VaultConfig",
+    method: "delete",
+    prepare: async (h) => {
+      const config = makeVaultConfig("probe");
+      await h.ctx.vaultConfigRepo.save(config);
+      return () => h.ctx.vaultConfigRepo.delete(config);
+    },
+  },
+];
+
 const ROWS: Row[] = [
   ...unifiedDataRows,
   ...definitionRows,
@@ -1321,6 +1362,7 @@ const ROWS: Row[] = [
   ...evaluatedDefinitionRows,
   ...evaluatedWorkflowRows,
   ...outputRows,
+  ...vaultConfigRows,
 ];
 
 Deno.test("markDirty: every cache file a hooked repository changes is covered by a mark inside the cache (swamp-club#2855)", async (t) => {
@@ -1461,6 +1503,8 @@ const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
   "EvaluatedWorkflow",
   // swamp-club#2992, move C1.
   "WorkflowRun",
+  // swamp-club#2995, move C2.
+  "VaultConfig",
 ]);
 
 /**
