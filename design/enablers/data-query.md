@@ -53,7 +53,7 @@ catalog rebuild. On a lazy datastore `data query` downloads a body it needs
 and does not yet have, as `data get` does (see
 [datastores.md](./datastores.md#getcontentsync-limitation)), so a broad
 attribute predicate downloads the body of every row that passes its metadata
-terms, and a query with no `select` downloads the body of every row it
+terms, and a query with no `select` downloads the body of every JSON row it
 returns, because results carry `attributes`. A `select` over metadata fields
 only downloads nothing. A failed download fails the query, as it fails
 `data get`. Two differences remain: a binary item's `content` is `""` in a query

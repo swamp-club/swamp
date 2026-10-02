@@ -433,7 +433,7 @@ async function lazyPull(writerData: string, readerData: string): Promise<void> {
   }
 }
 
-Deno.test("data query/get parity: custom datastore, lazy hydration", async () => {
+Deno.test("data query/get parity: hand-wired lazy hydration", async () => {
   await withTempDir(async (dir) => {
     const writerDir = join(dir, "writer");
     const readerDir = join(dir, "reader");

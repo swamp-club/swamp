@@ -1351,12 +1351,23 @@ item without content. A download error fails the query, as it fails
 
 A downloaded row can stop matching a predicate it matched while empty (for
 example `!has(attributes.x)`), so under a limit a later pass can reach rows
-an earlier pass never evaluated. Each pass after a download doubles the
-limit it collects under, then one last pass applies the caller's limit. That
-keeps the body reads linear in the rows scanned rather than one full rescan
-per limit window, and downloads at most twice the bodies the result needs.
-`integration/data_query_get_parity_test.ts` holds `data query` to `data get`
-on filesystem, full-hydration and lazy datastores.
+an earlier pass never evaluated. Only when a pass after a download reaches
+rows not yet tried does `query()` double the limit it collects under, then
+one last pass applies the caller's limit. That keeps such predicates to
+log(rows / limit) passes, with body reads linear in the rows scanned rather
+than one full rescan per limit window. Downloading the bodies of rows that
+are only being returned does not change which rows match, so it never widens
+the window: a metadata predicate under a limit downloads only the rows it
+returns (serve's `include` path matches in batches of four times the limit,
+so up to that many). `integration/data_query_get_parity_test.ts` holds
+`data query` to `data get` on filesystem, full-hydration and lazy
+datastores.
+
+The locked repo contexts wire `hydrateFile` for any custom datastore whose
+provider implements it, whatever its `hydrationStrategy`. On such a
+datastore, a catalog row whose body is gone locally (deleted, or a write
+that never finished; `filterStaleRows` is off) costs one remote lookup per
+query that needs its body, where before it matched as empty.
 
 `querySync()`, behind CEL `data.query()`, cannot download. The
 `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`

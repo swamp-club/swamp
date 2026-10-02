@@ -554,10 +554,12 @@ export class DataQueryService {
    * fails the query, as it fails `data get`.
    *
    * A row that matched while empty can stop matching once downloaded, so a
-   * later pass can reach rows a limit hid from an earlier one. Each pass
-   * after a download doubles the limit it collects under, so a predicate
-   * like `!has(attributes.x)` takes log(rows / limit) passes rather than one
-   * per limit window, and at most twice the needed bodies are downloaded.
+   * later pass can reach rows a limit hid from an earlier one. Only then —
+   * a pass after a download reaching rows not yet tried — is the limit it
+   * collects under doubled, so a predicate like `!has(attributes.x)` takes
+   * log(rows / limit) passes rather than one per limit window. Bodies
+   * downloaded because their rows are returned leave the match set as it
+   * was, so a metadata predicate downloads only the rows within the limit.
    * A pass that collected under a raised limit is followed by one at the
    * caller's limit. Each row is tried once, so the loop ends.
    */
@@ -567,6 +569,7 @@ export class DataQueryService {
     tried = new Set<string>(),
   ): Promise<MatchResult> {
     let collectLimit = options?.limit;
+    let downloadedBefore = false;
     while (true) {
       const missing = new Map<string, CatalogRow>();
       const matched = this.executeMatch(
@@ -589,7 +592,12 @@ export class DataQueryService {
           ? matched
           : this.executeMatch(predicate, options);
       }
-      if (collectLimit !== undefined) collectLimit *= 2;
+      // This pass reached rows a previous download had not: the rows that
+      // download synced stopped matching, so widen the window.
+      if (downloadedBefore && collectLimit !== undefined) {
+        collectLimit = Math.max(collectLimit, 1) * 2;
+      }
+      downloadedBefore = true;
     }
   }
 

@@ -3068,3 +3068,61 @@ Deno.test("DataQueryService.query: a body missing remotely is requested once acr
     cleanup();
   }
 });
+
+Deno.test("DataQueryService.query: a metadata predicate under a limit downloads only the returned rows", async () => {
+  const rows = Array.from({ length: 64 }, (_, i) => ({
+    name: `row-${String(i).padStart(2, "0")}`,
+    body: { v: i },
+  }));
+  for (const select of [undefined, "content"]) {
+    const { service, hydrated, cleanup } = setupHydrationTest(rows);
+    try {
+      const results = await service.query('modelName == "ingest"', {
+        limit: 2,
+        select,
+      });
+      assertEquals(results.length, 2, `select=${select}`);
+      assertEquals(hydrated, ["row-00", "row-01"], `select=${select}`);
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+Deno.test("DataQueryService.query: with include, a metadata predicate downloads only the first batch", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest(
+    Array.from({ length: 64 }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { v: i },
+    })),
+  );
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      include: () => Promise.resolve(true),
+      limit: 2,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["row-00", "row-01"]);
+    // The include path matches in batches of four times the limit.
+    assertEquals(hydrated.length, 8);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: limit 0 still widens when downloaded rows stop matching", async () => {
+  const count = 16;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    await service.query("!has(attributes.flag)", { limit: 0 });
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
+  }
+});
