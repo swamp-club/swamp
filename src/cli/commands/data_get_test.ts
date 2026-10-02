@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -31,12 +31,11 @@ Deno.test("dataGetCommand module loads", async () => {
   assertEquals(dataGetCommand.getName(), "get");
 });
 
-Deno.test("dataGetCommand has correct description", async () => {
+Deno.test("dataGetCommand: description marks it deprecated in favor of data query", async () => {
   const { dataGetCommand } = await import("./data_get.ts");
-  assertEquals(
-    dataGetCommand.getDescription(),
-    "Get data by model and name, or by workflow",
-  );
+  const description = dataGetCommand.getDescription();
+  assertEquals(description.startsWith("(Deprecated)"), true);
+  assertStringIncludes(description, "swamp data query");
 });
 
 Deno.test("dataGetCommand is registered as subcommand of dataCommand", async () => {

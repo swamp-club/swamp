@@ -60,8 +60,9 @@ swamp model list                               # list all models in the repo
 
 # Data
 swamp data list <name>                         # list data versions for a model
-swamp data query <name> '<CEL predicate>'      # query data with CEL expressions
-swamp data get <name>                          # get latest data snapshot
+swamp data query '<CEL predicate>'             # query data with CEL expressions
+# read one item's latest content (`swamp data get` is deprecated)
+swamp data query 'modelName == "<model>" && name == "<data>"' --select content
 
 # Workflows
 swamp workflow create <name>                   # create a new workflow

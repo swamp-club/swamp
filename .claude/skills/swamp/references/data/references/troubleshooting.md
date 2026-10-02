@@ -37,7 +37,7 @@ resource"
 swamp data list <model-name> --json
 
 # 2. Check exact spec and instance names
-swamp data get <model-name> <data-name> --json
+swamp data query 'modelName == "<model-name>"' --select '{"name": name, "specName": specName}'
 
 # 3. Run the create method first
 swamp model method run <model-name> create
@@ -88,7 +88,7 @@ swamp data list <model-name> --json
 
 # 2. The data name is not always the spec name — a spec that varies is stored
 #    under a composite name, which data.latest() takes as a third argument
-swamp data get <model-name> <data-name> --json
+swamp data query 'modelName == "<model-name>" && specName == "<spec-name>"' --select 'name'
 ```
 
 ```
@@ -140,11 +140,12 @@ swamp model get <model-name> --json
 **Solutions**:
 
 ```bash
-# View ownership information
-swamp data get <model-name> <data-name> --json
+# View ownership information (owner type and ref)
+swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --json
 
-# Check the ownerDefinition.definitionHash in output
-# Compare with current model's hash
+# The definition hash is only in the deprecated `data get` output: check
+# ownerDefinition.definitionHash and compare with the current model's hash
+swamp data get <model-name> <data-name> --json
 
 # If intentional: delete the old data first
 swamp model delete <old-model-name> --json
@@ -169,9 +170,9 @@ swamp model delete <old-model-name> --json
 # List all versions
 swamp data versions <model-name> <data-name> --json
 
-# Check GC settings
+# Check GC settings: the garbageCollection field is only in the deprecated
+# `data get` output
 swamp data get <model-name> <data-name> --json
-# Look at garbageCollection field
 ```
 
 ### "GC deleted data I needed"
@@ -217,7 +218,7 @@ identical.
 
 ### Forward reference not resolving after rename
 
-**Symptom**: `swamp data get model old-name` returns null after rename
+**Symptom**: `data.latest("model", "old-name")` returns null after rename
 
 **Causes**:
 
@@ -263,18 +264,18 @@ swamp model search --json
 swamp data list <model-name> --json
 
 # Get specific data item
-swamp data get <model-name> <data-name> --json
+swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select content --json
 ```
 
 ### Step 2: Verify Path Components
 
 For expression `model.my-vpc.resource.vpc.main.attributes.VpcId`:
 
-| Component | Check Command                                           |
-| --------- | ------------------------------------------------------- |
-| `my-vpc`  | `swamp model get my-vpc --json`                         |
-| `vpc`     | `swamp data list my-vpc --json` (check specName in tag) |
-| `VpcId`   | `swamp data get my-vpc vpc --json` (check attributes)   |
+| Component | Check Command                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------ |
+| `my-vpc`  | `swamp model get my-vpc --json`                                                                  |
+| `vpc`     | `swamp data list my-vpc --json` (check specName in tag)                                          |
+| `VpcId`   | `swamp data query 'modelName == "my-vpc" && name == "main"' --select content` (check attributes) |
 
 ### Step 3: Validate Model Definition
 

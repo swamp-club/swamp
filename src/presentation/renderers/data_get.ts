@@ -26,7 +26,10 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 
 /**
  * Formats a byte size into a human-readable string.
@@ -40,10 +43,14 @@ function formatSize(bytes?: number): string {
 
 class LogDataGetRenderer implements Renderer<DataGetEvent> {
   handlers(): EventHandlers<DataGetEvent> {
+    const logger = getSwampLogger(["data", "get"]);
     return {
       resolving: () => {},
       completed: (e) => {
         const data = e.data;
+        for (const warning of data.warnings ?? []) {
+          logger.warn(warning);
+        }
         writeOutput(`Data: ${data.name} (v${data.version})`);
         writeOutput(`Model: ${data.modelName} (${data.modelType})`);
         writeOutput(

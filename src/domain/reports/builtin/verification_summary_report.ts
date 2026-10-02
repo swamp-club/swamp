@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stepDataQueryCommand } from "../../data/data_query_command.ts";
 import type {
   ReportContext,
   StepSkipReasonInfo,
@@ -172,7 +173,7 @@ export const verificationSummaryReport: ReportDefinition = {
             lines.push(`    ${step.errorMessage}`);
           } else if (step.dataHandles.length > 0) {
             const cmds = step.dataHandles.map((h) =>
-              `swamp data get ${step.modelName} ${h.name}`
+              stepDataQueryCommand(workflowRunId, step, h)
             );
             failureDetails.push({
               job: step.jobName,
@@ -226,7 +227,7 @@ export const verificationSummaryReport: ReportDefinition = {
           ? describeSkipReason(s.skipReason)
           : undefined,
         retrievalCommands: s.status === "failed"
-          ? s.dataHandles.map((h) => `swamp data get ${s.modelName} ${h.name}`)
+          ? s.dataHandles.map((h) => stepDataQueryCommand(workflowRunId, s, h))
           : undefined,
       })),
 

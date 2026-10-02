@@ -192,9 +192,11 @@ swamp data rename my-vpc web-vpc dev-web-vpc
 ### Verify Forward Reference Works
 
 ```bash
-# Old name transparently resolves to new name
-swamp data get my-vpc web-vpc --json
-# Returns the data under "dev-web-vpc"
+# The new name holds the latest data (version 1)
+swamp data query 'modelName == "my-vpc" && name == "dev-web-vpc"' --select content --json
+
+# In CEL, the old name transparently resolves to the new one:
+#   data.latest("my-vpc", "web-vpc")  -> the data under "dev-web-vpc"
 
 # Historical versions still accessible
 swamp data versions my-vpc web-vpc --json
@@ -287,11 +289,12 @@ jobs:
 ### Access Data from Latest Workflow Run
 
 ```bash
-# List data from the latest run of a workflow
+# List data from the latest run of a workflow, with the run id and the
+# job/step that wrote each item
 swamp data list --workflow deploy-workflow --json
 
-# Get specific data artifact
-swamp data get --workflow deploy-workflow deployment-state --json
+# Read one step's data artifact (job/step from the listing above)
+swamp data query 'workflowRunId == "<run-id>" && jobName == "<job>" && stepName == "<step>" && name == "deployment-state"' --select content --json
 ```
 
 ### Cross-Workflow Data References

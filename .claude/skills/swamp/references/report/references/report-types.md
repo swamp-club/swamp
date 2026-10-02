@@ -125,7 +125,9 @@ Names must be unique — `register()` throws on duplicates.
 
 If `execute()` throws, the error is **advisory** — it does not fail the workflow
 or change the exit code. Swamp persists a fallback error artifact under the same
-data name so `swamp data get report-{name}-json` returns structured error info:
+data name so
+`swamp data query 'name == "report-{name}-json"' --select content --json`
+returns structured error info:
 
 ```json
 {

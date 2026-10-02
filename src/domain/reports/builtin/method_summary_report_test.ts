@@ -90,7 +90,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
   assertStringIncludes(result.markdown, "| Name | Kind | Retrieval Command |");
   assertStringIncludes(
     result.markdown,
-    "| **output.json** | file | `swamp data get my-server output.json --version 1` |",
+    '| **output.json** | file | `swamp data query \'modelName == "my-server" && name == "output.json" && version == 1\' --select content` |',
   );
   // No schema in markdown — that's JSON-only for agents
   assertEquals(result.markdown.includes("## Output Schema"), false);
@@ -120,7 +120,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
   assertEquals(items[0].specName, "output");
   assertEquals(
     items[0].retrievalCommand,
-    "swamp data get my-server output.json --version 1",
+    'swamp data query \'modelName == "my-server" && name == "output.json" && version == 1\' --select content',
   );
 });
 
@@ -297,15 +297,15 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
   assertStringIncludes(result.markdown, "## Data Output");
   assertStringIncludes(
     result.markdown,
-    "| **item-1** | resource | `swamp data get my-server item-1 --version 1` |",
+    '| **item-1** | resource | `swamp data query \'modelName == "my-server" && name == "item-1" && version == 1\' --select content` |',
   );
   assertStringIncludes(
     result.markdown,
-    "| **item-2** | resource | `swamp data get my-server item-2 --version 1` |",
+    '| **item-2** | resource | `swamp data query \'modelName == "my-server" && name == "item-2" && version == 1\' --select content` |',
   );
   assertStringIncludes(
     result.markdown,
-    "| **log.txt** | file | `swamp data get my-server log.txt --version 1` |",
+    '| **log.txt** | file | `swamp data query \'modelName == "my-server" && name == "log.txt" && version == 1\' --select content` |',
   );
 
   // JSON dataProduced includes specName

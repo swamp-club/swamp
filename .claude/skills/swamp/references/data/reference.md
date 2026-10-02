@@ -41,29 +41,40 @@ full output shape.
 
 ## Get Specific Data
 
-Retrieve the latest version of a specific data item. Shortcut for
-`swamp data query 'modelName == "<model>" && name == "<name>"' --select content`
-(omit `--select content` to return metadata only).
+Read one data item with `swamp data query`. `swamp data get` is deprecated: it
+still works, but every read warns and prints the equivalent query as
+`replacementQuery`.
 
 ```bash
-swamp data get my-model execution-log --json
+# Latest content
+swamp data query 'modelName == "my-model" && name == "execution-log"' --select content
 
-# Metadata only (no content)
-swamp data get my-model execution-log --no-content --json
+# A specific version (naming `version` also searches history)
+swamp data query 'modelName == "my-model" && name == "execution-log" && version == 2' --select content
+
+# One field of JSON content
+swamp data query 'modelName == "my-model" && name == "state"' --select 'content.status'
+
+# Metadata only (no content): omit --select
+swamp data query 'modelName == "my-model" && name == "execution-log"' --json
 ```
 
-**Output shape:** Returns `id`, `name`, `modelId`, `version`, `contentType`,
-`lifetime`, `tags`, `ownerDefinition`, `size`, `checksum`, `content`, and
-`contentEncoding`. See
-[references/output-shapes.md](references/output-shapes.md#get-data) for the full
-output shape.
+**Output shape:** `--json` returns
+`{"results": [...], "total": N, "limited":
+bool}`. With `--select content` each
+result is the content (JSON content is the parsed object), so read `results[0]`;
+without `--select` each result is the item's metadata record. An empty `results`
+array means no such item. The query matches the instance `name` exactly; to
+match a spec name use `specName == "<spec>"`.
 
 **Binary content:** When the stored bytes are valid UTF-8, `contentEncoding` is
 `"utf-8"` and `content` is the text (a leading byte-order mark is dropped), or
 the parsed value for `application/json` content that parses. Otherwise (an
 image, an archive) `contentEncoding` is `"base64"` and `content` is the
 base64-encoded bytes, so no byte is lost. Without `--json`, binary data prints a
-one-line notice instead of the bytes. To save a base64 artifact as a file:
+one-line notice instead of the bytes. `data query` returns `content` only for
+text content types (`text/*`, JSON, YAML), so saving a binary artifact still
+goes through the deprecated `data get`:
 
 ```bash
 swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png
@@ -71,21 +82,24 @@ swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png
 
 ## Workflow-Scoped Data Access
 
-List or get data produced by a workflow run instead of specifying a model.
+List or read data produced by a workflow run instead of specifying a model.
 
 ```bash
-# List all data from the latest run of a workflow
+# List all data from the latest run of a workflow (shows each item's job/step)
 swamp data list --workflow test-data-fetch --json
 
 # List data from a specific run
 swamp data list --workflow test-data-fetch --run <run_id> --json
 
-# Get specific data by name from a workflow run
-swamp data get --workflow test-data-fetch output --json
-
-# Get with specific version
-swamp data get --workflow test-data-fetch output --version 2 --json
+# Read one step's output; name the job and step, since several steps can
+# write data with the same name
+swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName == "<step>" && name == "output"' --select content
 ```
+
+A query has no "latest run" shortcut: get the run id from
+`swamp workflow history get <workflow>` or the `data list --workflow` output.
+The deprecated `swamp data get --workflow` returns the first matching step's
+item when several steps wrote the name, and warns with the other matches.
 
 ## View Version History
 
@@ -119,18 +133,20 @@ transparently resolves to the new name.
 
 1. **Verify** the new name doesn't already exist:
    ```bash
-   swamp data get my-model new-name --no-content --json
+   swamp data query 'modelName == "my-model" && name == "new-name"' --json
    ```
-   This should return an error (not found). If it succeeds, the name is taken.
+   `results` should be empty. If it has an entry, the name is taken.
 2. **Rename** the data instance:
    ```bash
    swamp data rename my-model old-name new-name
    ```
-3. **Confirm** the forward reference works:
+3. **Confirm** the rename landed:
    ```bash
-   swamp data get my-model old-name --no-content --json
+   swamp data query 'modelName == "my-model" && name == "new-name"' --json
    ```
-   Should resolve to `new-name` via the forward reference.
+   Should return `new-name` at version 1. `data query` matches names exactly and
+   does not follow the forward reference; CEL
+   `data.latest("my-model", "old-name")` resolves `old-name` to `new-name`.
 
 **What happens:**
 

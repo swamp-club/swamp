@@ -887,3 +887,129 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun: an unreadable candidate in
   assertEquals(result.length, 1);
   assertEquals(result[0].modelId, TEST_MODEL_ID);
 });
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: reports other steps that wrote the same name", async () => {
+  const modelType = ModelType.create("command/shell");
+  const first = await createRunData("result", TEST_RUN_ID, 1);
+  const second = await createRunData("result", TEST_RUN_ID, 1);
+  const global = [
+    { data: first, modelType, modelId: TEST_MODEL_ID },
+    { data: second, modelType, modelId: OTHER_MODEL_ID },
+  ];
+
+  const run = createTestRun([
+    { stepName: "checkout", artifacts: [refFor(first)] },
+    { stepName: "review", artifacts: [refFor(second)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result");
+  assertEquals(match?.item.stepName, "checkout");
+  assertEquals(match?.otherProducers.map((item) => item.stepName), [
+    "review",
+  ]);
+  assertEquals(match?.otherProducers[0].modelId, OTHER_MODEL_ID);
+});
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: a name only one step wrote has no other producers", async () => {
+  const modelType = ModelType.create("command/shell");
+  const ours = await createRunData("result", TEST_RUN_ID, 1);
+  const log = await createRunData("log", TEST_RUN_ID, 1);
+  const global = [
+    { data: ours, modelType, modelId: TEST_MODEL_ID },
+    { data: log, modelType, modelId: OTHER_MODEL_ID },
+  ];
+
+  const run = createTestRun([
+    { stepName: "checkout", artifacts: [refFor(ours)] },
+    { stepName: "review", artifacts: [refFor(log)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result");
+  assertEquals(match?.item.data.id, ours.id);
+  assertEquals(match?.otherProducers, []);
+});
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: several versions from one step are not other producers", async () => {
+  const modelType = ModelType.create("command/shell");
+  const v1 = await createRunData("result", TEST_RUN_ID, 1);
+  const v2 = v1.withNewVersion({ version: 2 });
+  const latest = [{ data: v2, modelType, modelId: TEST_MODEL_ID }];
+  const stored = [{ data: v1, modelType, modelId: TEST_MODEL_ID }, ...latest];
+
+  const run = createTestRun([
+    { stepName: "retry", artifacts: [refFor(v1), refFor(v2)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(latest, stored),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result");
+  assertEquals(match?.item.data.version, 2);
+  assertEquals(match?.otherProducers, []);
+});
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: with a version, only producers holding that version count", async () => {
+  const modelType = ModelType.create("command/shell");
+  const first = await createRunData("result", TEST_RUN_ID, 1);
+  const second = await createRunData("result", TEST_RUN_ID, 2);
+  const global = [
+    { data: first, modelType, modelId: TEST_MODEL_ID },
+    { data: second, modelType, modelId: OTHER_MODEL_ID },
+  ];
+
+  const run = createTestRun([
+    { stepName: "checkout", artifacts: [refFor(first)] },
+    { stepName: "review", artifacts: [refFor(second)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result", 1);
+  assertEquals(match?.item.stepName, "checkout");
+  assertEquals(match?.otherProducers, []);
+});
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: the specName fallback also reports other producers", async () => {
+  const modelType = ModelType.create("command/shell");
+  const first = await createRunData("classification-a", TEST_RUN_ID, 1);
+  const second = await createRunData("classification-b", TEST_RUN_ID, 1);
+  const specTagged = (data: Data) => ({
+    ...refFor(data),
+    tags: { ...data.tags, specName: "classification" },
+  });
+  const withSpec = (data: Data) =>
+    Data.fromData({
+      ...data.toData(),
+      tags: { ...data.tags, specName: "classification" },
+    });
+  const global = [
+    { data: withSpec(first), modelType, modelId: TEST_MODEL_ID },
+    { data: withSpec(second), modelType, modelId: OTHER_MODEL_ID },
+  ];
+
+  const run = createTestRun([
+    { stepName: "classify-a", artifacts: [specTagged(first)] },
+    { stepName: "classify-b", artifacts: [specTagged(second)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "classification");
+  assertEquals(match?.item.stepName, "classify-a");
+  assertEquals(match?.otherProducers.map((item) => item.stepName), [
+    "classify-b",
+  ]);
+});

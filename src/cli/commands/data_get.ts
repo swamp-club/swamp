@@ -49,7 +49,13 @@ type AnyOptions = any;
 export const dataGetCommand = withRemoteOptions(
   new Command()
     .name("get")
-    .description("Get data by model and name, or by workflow")
+    .description(
+      "(Deprecated) Get data by model and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query.",
+    )
+    .example(
+      "Preferred: read the same data with data query",
+      `swamp data query 'modelName == "my-server" && name == "system-info"' --select content`,
+    )
     .example("Get latest data", "swamp data get my-server system-info")
     .example(
       "Get using flags",

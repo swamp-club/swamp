@@ -424,8 +424,9 @@ Boundary: Which Inputs Are Evaluated".
 
 **Data versioning:** Running a method multiple times creates new data versions
 (v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use
-`swamp data get <name> <spec> --version <N>` to access a specific version, or
-see the **swamp-data** skill for version history and cleanup.
+`swamp data query 'modelName == "<model>" && name == "<data>" && version == <N>' --select content`
+to access a specific version, or see the **swamp-data** skill for version
+history and cleanup.
 
 Pre-flight checks run automatically before mutating methods (`create`, `update`,
 `delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger

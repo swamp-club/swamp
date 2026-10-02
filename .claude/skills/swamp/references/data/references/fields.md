@@ -27,7 +27,9 @@
 | `content`    | string | Raw text content. Only loaded when referenced. Empty `""` for binary types. Available for text/\*, application/json, application/yaml. |
 
 These fields describe the record that CEL and `swamp data query` see. To read a
-binary artifact's bytes, use `swamp data get <model> <name> --json`: its
+binary artifact's bytes, use the deprecated
+`swamp data get <model> <name>
+--json` (no `data query` equivalent yet): its
 `content` is base64 when `contentEncoding` is `"base64"`.
 
 ## CEL Operators

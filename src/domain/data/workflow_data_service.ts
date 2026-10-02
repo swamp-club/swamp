@@ -74,6 +74,51 @@ function selectVersion(
   return best;
 }
 
+/** The item a workflow-run lookup selected, and what else matched. */
+export interface WorkflowDataMatch {
+  item: WorkflowDataItem;
+  /**
+   * One item per other producer whose data matched, in run order, each at
+   * the version the lookup would have selected for it.
+   */
+  otherProducers: WorkflowDataItem[];
+}
+
+/** Identifies the job, step and owning model that produced an item. */
+function producerKey(item: WorkflowDataItem): string {
+  return JSON.stringify([
+    item.modelType.normalized,
+    item.modelId,
+    item.jobName ?? null,
+    item.stepName ?? null,
+  ]);
+}
+
+/**
+ * Selects the version among `items` and collects one item for every other
+ * producer that has a match at that version choice.
+ */
+function matchAmong(
+  items: WorkflowDataItem[],
+  version: number | undefined,
+): WorkflowDataMatch | null {
+  const item = selectVersion(items, version);
+  if (!item) return null;
+  const byProducer = new Map<string, WorkflowDataItem[]>();
+  for (const candidate of items) {
+    const key = producerKey(candidate);
+    byProducer.set(key, [...(byProducer.get(key) ?? []), candidate]);
+  }
+  const selectedKey = producerKey(item);
+  const otherProducers: WorkflowDataItem[] = [];
+  for (const [key, producerItems] of byProducer) {
+    if (key === selectedKey) continue;
+    const selected = selectVersion(producerItems, version);
+    if (selected) otherProducers.push(selected);
+  }
+  return { item, otherProducers };
+}
+
 /**
  * Service for resolving data produced by workflow runs.
  *
@@ -233,19 +278,34 @@ export class WorkflowDataService {
     dataName: string,
     version?: number,
   ): Promise<WorkflowDataItem | null> {
+    const match = await this.matchByNameInWorkflowRun(run, dataName, version);
+    return match?.item ?? null;
+  }
+
+  /**
+   * Finds data by name within a workflow run, as
+   * {@link findByNameInWorkflowRun} does, and also reports the other
+   * producers — a distinct job, step and owning model — whose data matched
+   * the name, so a caller can tell the selected item was one of several.
+   * Several versions from one producer are a version choice, not another
+   * producer.
+   */
+  async matchByNameInWorkflowRun(
+    run: WorkflowRun,
+    dataName: string,
+    version?: number,
+  ): Promise<WorkflowDataMatch | null> {
     const allItems = await this.findAllForWorkflowRun(run);
 
     // Primary: match by exact data instance name.
-    const byName = selectVersion(
-      allItems.filter((item) => item.data.name === dataName),
-      version,
-    );
-    if (byName) return byName;
+    const byName = allItems.filter((item) => item.data.name === dataName);
+    const byNameMatch = matchAmong(byName, version);
+    if (byNameMatch) return byNameMatch;
 
     // Fallback: match by specName tag. Instance names often differ from
     // spec names (e.g. "classification-main" vs "classification"), and
     // users naturally query by spec name.
-    return selectVersion(
+    return matchAmong(
       allItems.filter((item) => item.data.tags["specName"] === dataName),
       version,
     );

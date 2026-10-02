@@ -83,9 +83,11 @@ function makeDeps(
         modelType,
         modelId: definition.id,
         modelName: definition.name,
+        jobName: "main",
+        stepName: "build",
         contentPath: "/abs/path/to/data",
       };
-      return Promise.resolve(info);
+      return Promise.resolve({ item: info, otherProducers: [] });
     },
     getContent: () => Promise.resolve(null),
     getContentPath: () => "/abs/path/to/data",
@@ -449,7 +451,10 @@ Deno.test("dataGet with expectedOwner is not-found when the item has another own
   const events = await collect<DataGetEvent>(
     dataGet(
       createLibSwampContext(),
-      pinnedDeps({ findDataInWorkflowRun: () => Promise.resolve(other) }),
+      pinnedDeps({
+        findDataInWorkflowRun: () =>
+          Promise.resolve({ item: other, otherProducers: [] }),
+      }),
       {
         workflowName: "wf",
         dataName: "output",
@@ -502,4 +507,132 @@ Deno.test("dataGet with expectedOwner is not-found when the pinned workflow was 
   );
 
   assertEquals(events[1].kind, "error");
+});
+
+/** A workflow-run item produced by `jobName`/`stepName` of `modelName`. */
+function producedBy(
+  jobName: string,
+  stepName: string,
+  modelName: string,
+  modelId: string,
+): WorkflowDataItemInfo {
+  return {
+    data: makeDataItem(),
+    modelType: makeModelType(),
+    modelId,
+    modelName,
+    jobName,
+    stepName,
+    contentPath: "/abs/path/to/data",
+  };
+}
+
+async function readCompleted(
+  deps: DataGetDeps,
+  input: Partial<Parameters<typeof dataGet>[2]>,
+) {
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      includeContent: true,
+      repoDir: ".",
+      ...input,
+    }),
+  );
+  const last = events[events.length - 1];
+  if (last.kind !== "completed") {
+    throw new Error(`expected completed, got ${JSON.stringify(last)}`);
+  }
+  return last.data;
+}
+
+Deno.test("dataGet: a model-scoped read is deprecated and names the equivalent query", async () => {
+  const data = await readCompleted(makeDeps(), {
+    modelIdOrName: "my-model",
+    dataName: "output",
+  });
+
+  assertEquals(
+    data.replacementQuery,
+    `swamp data query 'modelName == "my-model" && name == "output" && version == 1' --select content`,
+  );
+  assertEquals(data.warnings?.length, 1);
+  assertStringIncludes(data.warnings![0], "swamp data get is deprecated");
+  assertStringIncludes(data.warnings![0], data.replacementQuery!);
+});
+
+Deno.test("dataGet: a metadata-only read's query lists metadata instead of selecting content", async () => {
+  const data = await readCompleted(makeDeps(), {
+    modelIdOrName: "my-model",
+    dataName: "output",
+    includeContent: false,
+  });
+
+  assertEquals(
+    data.replacementQuery,
+    `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`,
+  );
+});
+
+Deno.test("dataGet: a workflow-scoped read's query names the run, job and step", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(
+    data.replacementQuery,
+    `swamp data query 'workflowRunId == "run-1" && jobName == "main" && ` +
+      `stepName == "build" && name == "output" && version == 1' --select content`,
+  );
+  assertEquals(data.warnings?.length, 1);
+});
+
+Deno.test("dataGet: warns when other steps in the run wrote the same data name (swamp-club#2948)", async () => {
+  const deps = makeDeps({
+    findDataInWorkflowRun: () =>
+      Promise.resolve({
+        item: producedBy("setup", "checkout", "git", "id-git"),
+        otherProducers: [
+          producedBy("reviews", "code-review", "review-code", "id-review"),
+        ],
+      }),
+  });
+
+  const data = await readCompleted(deps, {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(data.warnings?.length, 2);
+  const ambiguity = data.warnings![1];
+  assertStringIncludes(ambiguity, "2 items in run run-1 are named output");
+  assertStringIncludes(ambiguity, "job setup, step checkout (git)");
+  assertStringIncludes(
+    ambiguity,
+    "job reviews, step code-review (review-code)",
+  );
+  assertStringIncludes(data.replacementQuery!, 'stepName == "checkout"');
+});
+
+Deno.test("dataGet: never names another producer the caller cannot read", async () => {
+  const deps = makeDeps({
+    findDataInWorkflowRun: () =>
+      Promise.resolve({
+        item: producedBy("setup", "checkout", "git", "id-git"),
+        otherProducers: [
+          producedBy("reviews", "code-review", "secret-model", "id-secret"),
+        ],
+      }),
+  });
+
+  const data = await readCompleted(deps, {
+    workflowName: "wf",
+    dataName: "output",
+    canReadOwner: (owner) => Promise.resolve(owner.modelId !== "id-secret"),
+  });
+
+  assertEquals(data.warnings?.length, 1);
+  for (const warning of data.warnings!) {
+    assertEquals(warning.includes("secret-model"), false);
+  }
 });

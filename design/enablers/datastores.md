@@ -1744,7 +1744,7 @@ Relocated: data, outputs, workflow-runs now resolve under /new/path
 After setup, `DefaultDatastorePathResolver.resolvePath()` routes these
 subdirectories to the new location. Code that hardcodes `.swamp/workflow-runs/`
 or similar paths silently breaks. Use `swamp workflow run search --json`,
-`swamp data get` or other CLI commands instead of direct filesystem access.
+`swamp data query` or other CLI commands instead of direct filesystem access.
 
 The migration copies files to the cache (overwriting any partial cache from an
 earlier attempt), pushes to the remote (idempotent), and pulls from it. Only

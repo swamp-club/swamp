@@ -11,12 +11,12 @@ conformance review exists or if any deviations lack justifications.
 ## Step 1: Retrieve the Approved Plan
 
 ```
-swamp data get issue-<N> plan-main --json
+swamp data query 'modelName == "issue-<N>" && name == "plan-main"' --select content --json
 ```
 
-Parse the plan to get the step list, DDD analysis, testing strategy, and
-potential challenges. Note the plan version — the conformance review must
-reference it.
+The plan is `results[0]`. Parse it to get the step list, DDD analysis, testing
+strategy, and potential challenges. Note the plan version — the conformance
+review must reference it.
 
 ## Step 2: Review the Code Changes
 

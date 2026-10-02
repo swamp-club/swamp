@@ -202,3 +202,42 @@ Deno.test("JsonDataGetRenderer - base64 application/json content is not parsed",
   assertEquals(parsed.content, "eyJhIjoxfQ==");
   assertEquals(parsed.contentEncoding, "base64");
 });
+
+Deno.test("JsonDataGetRenderer: carries the deprecation warnings and replacement query", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createDataGetRenderer("json");
+    const replacementQuery =
+      `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`;
+    const events: DataGetEvent[] = [
+      {
+        kind: "completed",
+        data: {
+          ...testData,
+          replacementQuery,
+          warnings: ["swamp data get is deprecated"],
+        },
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.replacementQuery, replacementQuery);
+    assertEquals(parsed.warnings, ["swamp data get is deprecated"]);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogDataGetRenderer: renders a read that carries warnings", async () => {
+  const renderer = createDataGetRenderer("log");
+  const events: DataGetEvent[] = [
+    {
+      kind: "completed",
+      data: { ...testData, warnings: ["swamp data get is deprecated"] },
+    },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+});

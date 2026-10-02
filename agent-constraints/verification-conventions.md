@@ -186,9 +186,11 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <build-run-id> --jso
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <reviews-run-id> --json
 SWAMP_WORKFLOWS_DIR=verification swamp workflow history get <skills-run-id> --json
 
-# 3. Read step output (e.g. review findings or build errors)
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-reviews --run <reviews-run-id> log --json
+# 3. Read one step's output (e.g. review findings or build errors). Several
+#    steps write `log`, so name the step.
+SWAMP_WORKFLOWS_DIR=verification swamp data query \
+  'workflowRunId == "<reviews-run-id>" && stepName == "code-review" && name == "log"' \
+  --select content
 ```
 
 ## Verification Checklist
@@ -414,33 +416,33 @@ user what went wrong and what you're going to do:
 
 ### 2. Read the failure details
 
-Use `swamp data` with `--workflow` and `--run` flags to read step output
-without needing model names. The run ID comes from the `workflow history
-search` output.
-
-List all data for a run:
+Read step output by run ID and step name, without needing model names. The run
+ID comes from the `workflow history search` output. Find the failing step with
+`workflow history get <run-id>` or by listing the run's data, which shows the
+job and step that wrote each item:
 ```bash
 SWAMP_WORKFLOWS_DIR=verification swamp data list \
   --workflow verify-build --run <run-id> --json
 ```
 
-Get a specific data item (e.g. the log for a failed step):
+Each `command/shell` step writes a data item named `log`, so a read must name
+the step. Read a failed step's log with `swamp data query`:
 ```bash
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-build --run <run-id> log --json
+SWAMP_WORKFLOWS_DIR=verification swamp data query \
+  'workflowRunId == "<run-id>" && stepName == "<step>" && name == "log"' \
+  --select content
 ```
 
-For review output, query the reviews workflow:
-```bash
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-reviews --run <run-id> log --json
-```
+The step names per workflow (from `verification/workflow-verify-*.yaml`):
 
-For skill check output, query the skills workflow:
-```bash
-SWAMP_WORKFLOWS_DIR=verification swamp data get \
-  --workflow verify-skills --run <run-id> log --json
-```
+- `verify-build`: `lint`, `fmt-check`, `type-check`, `run-tests`,
+  `vuln-scan`, `build`, `binary-check`
+- `verify-reviews`: `code-review`, `adversarial-review`, `ux-review`,
+  `ci-security-review`
+- `verify-skills`: `skill-review`, `skill-trigger-eval`
+
+Add `--json` for `{"results": [...], "total": N, "limited": bool}`; the log
+content is `results[0]`.
 
 ### 3. Fix the issues
 

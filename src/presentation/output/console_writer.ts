@@ -20,6 +20,7 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
 
 export type ColorFn = (str: string) => string;
 
@@ -295,7 +296,12 @@ export function renderDataBox(
       dataEntries.push("");
       for (const name of complexArtifactNames) {
         dataEntries.push(
-          dim(`  → swamp data get ${options.modelName} ${name}`),
+          dim(`  → ${
+            dataQueryCommand(
+              { modelName: options.modelName, dataName: name },
+              { includeContent: true },
+            )
+          }`),
         );
       }
     }

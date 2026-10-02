@@ -33,12 +33,33 @@ The shortcuts read more clearly, so **prefer the shortcut when it fits**. Use
 projection, tag filters beyond a single key, or history beyond a single
 version.
 
+`swamp data get` is deprecated: `data query` is the CLI read path for a single
+item. `data get` still returns the item, but every read carries a deprecation
+warning and a `replacementQuery` naming the equivalent `data query` command
+(`src/domain/data/data_query_command.ts`). Its `--workflow` form returns the
+first matching step when several steps in a run wrote the same data name
+(swamp-club#2948), so it warns with the other matches; a query that names
+`workflowRunId`, `jobName` and `stepName` selects one item.
+
 ### CLI shortcuts
+
+Deprecated `data get` forms map to these queries:
+
+| Deprecated command                             | Query                                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                          |
+| `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                          |
+| `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>"' --select content` |
+
+A query matches the instance `name` exactly, where `data get` fell back to the
+spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
+a workflow" form: look the run id up with
+`swamp workflow history get <workflow>` first.
+
+The remaining read subcommands are shortcuts:
 
 | Shortcut                              | Underlying query                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
-| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |

@@ -6,22 +6,33 @@ machine-readable output.
 **Verify CLI syntax:** Always run `swamp help data` to confirm exact flags
 before executing — the output is structured JSON.
 
-## Query is the primitive; get/list/search/versions are shortcuts
+## Query is the primitive; list/search/versions are shortcuts
 
 `swamp data query` is the general data-access command — it takes any CEL
 predicate over artifact metadata and content, with optional projections via
-`--select`. The `get`, `list`, `search`, and `versions` subcommands are
-shortcuts for common queries. **Prefer the shortcut when your intent matches** —
-`swamp data get my-model state` reads more clearly than the equivalent
-predicate. Reach for `swamp data query` directly when you need a multi-field
-predicate, a projection, or history beyond a single version.
+`--select`. It is also how to read one item: `swamp data get` is **deprecated**
+(it still works, but warns and prints the equivalent query as
+`replacementQuery`). The `list`, `search`, and `versions` subcommands are
+shortcuts for common queries; prefer them when your intent matches.
+
+### Reading one item
+
+| Read                     | Query                                                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Latest content           | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                               |
+| A specific version       | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                               |
+| A workflow step's output | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>"' --select content` |
+| Metadata only            | `swamp data query 'modelName == "<m>" && name == "<n>"'` (no `--select`)                                                |
+
+With `--json` the output is `{"results": [...], "total": N, "limited": bool}`;
+read `results[0]` (JSON content comes back parsed). An empty `results` means no
+such item. The query matches the instance `name` exactly (use
+`specName == "<spec>"` for a spec name).
 
 ### CLI shortcut mapping
 
 | Shortcut                              | Underlying query                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
-| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
@@ -44,9 +55,7 @@ for the full list of queryable fields and predicate operators.
 | Query by content         | `swamp data query 'attributes.status == "failed"'`    |
 | List model data          | `swamp data list <model> --json`                      |
 | List workflow data       | `swamp data list --workflow <name> --json`            |
-| Get specific data        | `swamp data get <model> <name> --json`                |
-| Get metadata only        | `swamp data get <model> <name> --no-content --json`   |
-| Get data via workflow    | `swamp data get --workflow <name> <data_name> --json` |
+| Read one item            | See [Reading one item](#reading-one-item)             |
 | View version history     | `swamp data versions <model> <name> --json`           |
 | Run garbage collection   | `swamp data gc --json`                                |
 | Prune orphaned data      | `swamp data prune --force --json`                     |
@@ -70,7 +79,7 @@ and version GC policies.
 | Don't do this                             | Do this instead                                       |
 | ----------------------------------------- | ----------------------------------------------------- |
 | `grep`/`find` on `.swamp/data/` files     | `swamp data query '<predicate>'`                      |
-| `cat .swamp/data/.../raw \| jq`           | `swamp data get <model> <name> --json`                |
+| `cat .swamp/data/.../raw \| jq`           | `swamp data query '<predicate>' --select content`     |
 | `ls .swamp/data/` to list artifacts       | `swamp data list <model>`                             |
 | Re-fetching data a model already produced | Use CEL: `data.latest("<name>", "<data>").attributes` |
 

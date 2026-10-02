@@ -118,7 +118,7 @@ Deno.test("verificationSummaryReport: failed step shows cross and retrieval comm
   assertStringIncludes(result.markdown, "✗ run-tests");
   assertStringIncludes(
     result.markdown,
-    "→ `swamp data get tests result`",
+    '\u2192 `swamp data query \'workflowRunId == "run-1" && jobName == "tests" && stepName == "run-tests" && name == "result" && version == 1\' --select content`',
   );
 });
 
@@ -225,12 +225,12 @@ Deno.test("verificationSummaryReport: JSON includes failures array when steps fa
   assertEquals(failures[0].job, "compile");
   assertEquals(failures[0].step, "binary-check");
   assertEquals(failures[0].retrievalCommands, [
-    "swamp data get binary-check result",
+    'swamp data query \'workflowRunId == "run-1" && jobName == "compile" && stepName == "binary-check" && name == "result" && version == 1\' --select content',
   ]);
 
   const steps = json.steps as Array<Record<string, unknown>>;
   assertEquals(steps[0].retrievalCommands, [
-    "swamp data get binary-check result",
+    'swamp data query \'workflowRunId == "run-1" && jobName == "compile" && stepName == "binary-check" && name == "result" && version == 1\' --select content',
   ]);
 });
 

@@ -25,6 +25,10 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import {
+  dataQueryCommand,
+  type DataQueryTarget,
+} from "../../domain/data/data_query_command.ts";
+import {
   type ContentEncoding,
   encodeContent,
 } from "../../domain/data/content_encoding.ts";
@@ -86,6 +90,14 @@ export interface DataGetData {
    * stored bytes are valid UTF-8, `base64` otherwise (e.g. an image).
    */
   contentEncoding?: ContentEncoding;
+  /**
+   * The `swamp data query` command that reads this same item. `data get` is
+   * deprecated in its favor; for a workflow-scoped read the query names the
+   * run, job and step that produced the item.
+   */
+  replacementQuery?: string;
+  /** Notices about this read, such as the deprecation of `data get`. */
+  warnings?: string[];
 }
 
 export interface DataGetInput {
@@ -115,6 +127,20 @@ export interface DataGetInput {
    * returned is what was authorized.
    */
   expectedOwner?: WorkflowDataPin;
+  /**
+   * Whether the caller may read data owned by this model. A workflow-scoped
+   * read names other producers of the same data name in its warnings only
+   * when they pass, so a caller never learns of data it cannot read. Every
+   * producer passes when omitted.
+   */
+  canReadOwner?: (owner: DataOwnerInfo) => Promise<boolean>;
+}
+
+/** The model that owns a data item, as an authorization check sees it. */
+export interface DataOwnerInfo {
+  modelType: string;
+  modelId: string;
+  modelName: string;
 }
 
 /** The workflow-scoped item a caller authorized. */
@@ -159,7 +185,19 @@ export interface WorkflowDataItemInfo {
   modelType: ModelType;
   modelId: string;
   modelName: string;
+  /** The job and step that produced the item; absent for workflow scope. */
+  jobName?: string;
+  stepName?: string;
   contentPath: string;
+}
+
+/**
+ * The item a workflow-run lookup selected by name, and one item for each
+ * other producer (job, step and model) whose data matched the name.
+ */
+export interface WorkflowDataMatchInfo {
+  item: WorkflowDataItemInfo;
+  otherProducers: WorkflowDataItemInfo[];
 }
 
 /** Minimal workflow shape. */
@@ -215,7 +253,7 @@ export interface DataGetDeps {
     run: WorkflowRunInfo,
     dataName: string,
     version?: number,
-  ) => Promise<WorkflowDataItemInfo | null>;
+  ) => Promise<WorkflowDataMatchInfo | null>;
   getContent: (
     modelType: ModelType,
     modelId: string,
@@ -294,7 +332,7 @@ export function createDataGetDeps(
           run.id as ReturnType<typeof runRepo.nextId>,
         );
         return fullRun
-          ? await workflowDataService.findByNameInWorkflowRun(
+          ? await workflowDataService.matchByNameInWorkflowRun(
             fullRun,
             dataNameArg,
             version,
@@ -308,7 +346,7 @@ export function createDataGetDeps(
           run.id as ReturnType<typeof runRepo.nextId>,
         );
         if (fullRun) {
-          return await workflowDataService.findByNameInWorkflowRun(
+          return await workflowDataService.matchByNameInWorkflowRun(
             fullRun,
             dataNameArg,
             version,
@@ -382,6 +420,8 @@ export interface WorkflowDataLocation {
   workflow: WorkflowInfo;
   run: WorkflowRunInfo;
   item: WorkflowDataItemInfo;
+  /** Other producers in the run whose data matched the name. */
+  otherProducers: WorkflowDataItemInfo[];
 }
 
 /** What {@link resolveWorkflowData} locates by. */
@@ -441,8 +481,8 @@ async function locateInWorkflow(
   const run: WorkflowRunInfo = { ...found, workflowId: workflow.id };
 
   const { dataName, version } = query;
-  const item = await deps.findDataInWorkflowRun(run, dataName, version);
-  if (!item) {
+  const match = await deps.findDataInWorkflowRun(run, dataName, version);
+  if (!match) {
     const versionInfo = version ? ` (version ${version})` : "";
     const activeStatuses = new Set(["running", "pending", "suspended"]);
     if (run.status && activeStatuses.has(run.status)) {
@@ -466,7 +506,15 @@ async function locateInWorkflow(
       ),
     };
   }
-  return { kind: "found", location: { workflow, run, item } };
+  return {
+    kind: "found",
+    location: {
+      workflow,
+      run,
+      item: match.item,
+      otherProducers: match.otherProducers,
+    },
+  };
 }
 
 async function* workflowScopedGet(
@@ -555,6 +603,18 @@ async function* workflowScopedGet(
     checksum: item.data.checksum,
     contentPath: deps.toRelativePath(repoDir, item.contentPath),
   };
+
+  const replacementQuery = dataQueryCommand(
+    workflowQueryTarget(located.location.run.id, item),
+    { includeContent: input.includeContent },
+  );
+  output.replacementQuery = replacementQuery;
+  output.warnings = [deprecationWarning(replacementQuery)];
+  const ambiguity = await otherProducersWarning(
+    located.location,
+    input.canReadOwner,
+  );
+  if (ambiguity) output.warnings.push(ambiguity);
 
   if (input.includeContent) {
     const rawContent = await deps.getContent(
@@ -653,6 +713,13 @@ async function* modelScopedGet(
     contentPath: deps.toRelativePath(repoDir, absoluteContentPath),
   };
 
+  const replacementQuery = dataQueryCommand(
+    { modelName: definition.name, dataName: data.name, version: data.version },
+    { includeContent },
+  );
+  output.replacementQuery = replacementQuery;
+  output.warnings = [deprecationWarning(replacementQuery)];
+
   if (includeContent) {
     const rawContent = await deps.getContent(
       modelType,
@@ -668,6 +735,75 @@ async function* modelScopedGet(
   }
 
   yield { kind: "completed", data: output };
+}
+
+/** The deprecation notice every `data get` read carries. */
+function deprecationWarning(replacementQuery: string): string {
+  return "swamp data get is deprecated and will be removed in a future " +
+    `release. Read this item with: ${replacementQuery}`;
+}
+
+/**
+ * The query coordinates of a workflow-run item: the run, job and step that
+ * produced it, or its owner for workflow-scope data, which has no step.
+ */
+function workflowQueryTarget(
+  runId: string,
+  item: WorkflowDataItemInfo,
+): DataQueryTarget {
+  const target: DataQueryTarget = {
+    workflowRunId: runId,
+    dataName: item.data.name,
+    version: item.data.version,
+  };
+  if (item.jobName !== undefined) target.jobName = item.jobName;
+  if (item.stepName !== undefined) target.stepName = item.stepName;
+  if (item.jobName === undefined && item.stepName === undefined) {
+    target.modelName = item.modelName;
+  }
+  return target;
+}
+
+/** Names the producer of a workflow-run item for a warning. */
+function producerLabel(item: WorkflowDataItemInfo): string {
+  if (item.jobName === undefined && item.stepName === undefined) {
+    return item.modelName;
+  }
+  return `job ${item.jobName ?? "-"}, step ${
+    item.stepName ?? "-"
+  } (${item.modelName})`;
+}
+
+/**
+ * Warns that other producers in the run wrote data with the same name, so
+ * the item returned is one of several (swamp-club#2948). Only producers the
+ * caller may read are named or counted.
+ */
+async function otherProducersWarning(
+  location: WorkflowDataLocation,
+  canReadOwner: DataGetInput["canReadOwner"],
+): Promise<string | undefined> {
+  const readable: WorkflowDataItemInfo[] = [];
+  for (const other of location.otherProducers) {
+    if (
+      !canReadOwner ||
+      await canReadOwner({
+        modelType: other.modelType.normalized,
+        modelId: other.modelId,
+        modelName: other.modelName,
+      })
+    ) {
+      readable.push(other);
+    }
+  }
+  if (readable.length === 0) return undefined;
+  const { item, run } = location;
+  return `${readable.length + 1} items in run ${run.id} are named ` +
+    `${item.data.name}; returned the one from ${producerLabel(item)}. ` +
+    `Also named ${item.data.name}: ${
+      readable.map(producerLabel).join("; ")
+    }. To read another, change jobName and stepName in the data query ` +
+    "command.";
 }
 
 /** Whether a located item is exactly the one a caller authorized. */

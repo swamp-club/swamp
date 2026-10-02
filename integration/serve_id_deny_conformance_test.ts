@@ -1548,6 +1548,43 @@ Deno.test("serve id-deny conformance: workflow-scoped data reads need read on th
   });
 });
 
+Deno.test("serve id-deny conformance: workflow-scoped data.get never names a same-named item the caller cannot read (swamp-club#2948)", async () => {
+  await withFixtures(async (f) => {
+    const devState = await saveData(f.repo, f.devModel, "shared-state");
+    const prodState = await saveData(f.repo, f.prodModel, "shared-state");
+    const mix = await saveWorkflow(f.repo, "state-flow", f.devModel);
+    await saveRunWithData(f.repo, mix, [devState, prodState]);
+    const get = request("data.get", {
+      workflowName: "state-flow",
+      dataName: "shared-state",
+    });
+    const warningsOf = (frames: Frame[]) => {
+      const reply = frames.find((fr) => fr.type === "data.get") as {
+        payload?: { data?: { modelName?: string; warnings?: string[] } };
+      };
+      assertEquals(reply.payload?.data?.modelName, "dev-db");
+      return reply.payload?.data?.warnings ?? [];
+    };
+
+    const restricted = await sendRequest(f.ctx, get);
+    assertAllowed(restricted, "data.get");
+    const hidden = warningsOf(restricted);
+    assertEquals(hidden.length, 1, JSON.stringify(hidden));
+    assert(!JSON.stringify(restricted).includes("prod-db"));
+
+    const open = createServeCtx(f.repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+      grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+    ]);
+    const shown = warningsOf(await sendRequest(open, get));
+    assertEquals(shown.length, 2, JSON.stringify(shown));
+    assert(shown[1].includes("prod-db"), shown[1]);
+  });
+});
+
 Deno.test("serve id-deny conformance: workflow-scope data is named, filtered and refused as its workflow", async () => {
   await withFixtures(async (f) => {
     const summary = await saveWorkflowData(f.repo, f.prodWorkflow, "summary");

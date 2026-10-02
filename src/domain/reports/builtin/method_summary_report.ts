@@ -17,9 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { dataQueryCommand } from "../../data/data_query_command.ts";
 import type { MethodReportContext, ReportContext } from "../report_context.ts";
 import type { DataHandle } from "../../models/model.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
+
+/** The `swamp data query` command that reads one version of a model's data. */
+function modelDataQuery(
+  modelName: string,
+  handle: { name: string; version: number },
+): string {
+  return dataQueryCommand({
+    modelName,
+    dataName: handle.name,
+    version: handle.version,
+  }, { includeContent: true });
+}
 
 function isMethodContext(ctx: ReportContext): ctx is MethodReportContext {
   return ctx.scope === "method";
@@ -82,8 +95,7 @@ function renderPointersMarkdown(
   lines.push("| Name | Kind | Retrieval Command |");
   lines.push("| ---- | ---- | ----------------- |");
   for (const handle of dataHandles) {
-    const cmd =
-      `swamp data get ${definitionName} ${handle.name} --version ${handle.version}`;
+    const cmd = modelDataQuery(definitionName, handle);
     lines.push(`| **${handle.name}** | ${handle.kind} | \`${cmd}\` |`);
   }
 
@@ -188,8 +200,7 @@ export const methodSummaryReport: ReportDefinition = {
         kind: h.kind,
         specName: h.specName,
         version: h.version,
-        retrievalCommand:
-          `swamp data get ${definition.name} ${h.name} --version ${h.version}`,
+        retrievalCommand: modelDataQuery(definition.name, h),
       })),
     };
 
