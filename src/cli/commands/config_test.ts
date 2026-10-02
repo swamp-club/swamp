@@ -27,78 +27,6 @@ import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
-Deno.test("config get: rejects unknown key", async () => {
-  const cmd = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "--unstable-bundle",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env",
-      "--allow-run",
-      "--allow-sys",
-      "main.ts",
-      "config",
-      "get",
-      "unknown.key",
-    ],
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const result = await cmd.output();
-  const stderr = new TextDecoder().decode(result.stderr);
-  assertStringIncludes(stderr, "Unknown config key: unknown.key");
-  assertStringIncludes(stderr, "update.auto");
-});
-
-Deno.test("config set: rejects invalid cadence", async () => {
-  const cmd = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "--unstable-bundle",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env",
-      "--allow-run",
-      "--allow-sys",
-      "main.ts",
-      "config",
-      "set",
-      "update.cadence",
-      "monthly",
-    ],
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const result = await cmd.output();
-  const stderr = new TextDecoder().decode(result.stderr);
-  assertStringIncludes(stderr, "Invalid value for update.cadence");
-});
-
-Deno.test("config set: rejects unknown key", async () => {
-  const cmd = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "--unstable-bundle",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env",
-      "--allow-run",
-      "--allow-sys",
-      "main.ts",
-      "config",
-      "set",
-      "bogus.key",
-      "value",
-    ],
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const result = await cmd.output();
-  const stderr = new TextDecoder().decode(result.stderr);
-  assertStringIncludes(stderr, "Unknown config key: bogus.key");
-});
-
 async function withTempConfigDir(
   fn: (dir: string) => Promise<void>,
 ): Promise<void> {
@@ -113,6 +41,45 @@ async function withTempConfigDir(
     }
   }
 }
+
+Deno.test("config get: rejects unknown key", async () => {
+  await withTempConfigDir(async () => {
+    const error = await assertRejects(() =>
+      configCommand.parse(["get", "unknown.key"])
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Unknown config key: unknown.key",
+    );
+    assertStringIncludes((error as Error).message, "update.auto");
+  });
+});
+
+Deno.test("config set: rejects invalid cadence", async () => {
+  await withTempConfigDir(async (dir) => {
+    const error = await assertRejects(() =>
+      configCommand.parse(["set", "update.cadence", "monthly"])
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Invalid value for update.cadence",
+    );
+    // Nothing is written for a rejected value.
+    assertEquals(await Array.fromAsync(Deno.readDir(dir)), []);
+  });
+});
+
+Deno.test("config set: rejects unknown key", async () => {
+  await withTempConfigDir(async () => {
+    const error = await assertRejects(() =>
+      configCommand.parse(["set", "bogus.key", "value"])
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Unknown config key: bogus.key",
+    );
+  });
+});
 
 Deno.test("config set telemetry.collection: writes the user-level opt-out", async () => {
   await withTempConfigDir(async (dir) => {
