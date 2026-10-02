@@ -634,10 +634,10 @@ const LEADING_STRING_LITERAL =
 /**
  * Walks the top-level entries of an object literal body. Only text at brace
  * depth 0 is interpreted: keys (bare or quoted), the start of each value, and
- * comments. Nested bodies are skipped by brace depth alone, the same
- * assumption extractBalancedBraces makes, so regex literals or apostrophes
- * inside method bodies cannot throw the walk off. Spreads, computed keys and
- * shorthand entries are skipped.
+ * comments. Nested bodies and the rest of each value are skipped with the
+ * same literal-aware scan extractBalancedBraces uses, so braces, quotes or
+ * commas inside strings, comments or regex literals cannot throw the walk
+ * off. Spreads, computed keys and shorthand entries are skipped.
  */
 function extractTopLevelEntries(block: string): TopLevelEntry[] {
   const entries: TopLevelEntry[] = [];
@@ -646,9 +646,17 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
   // Advances past the rest of the current value to just after the next
   // comma at depth 0. Parentheses and brackets are tracked here because, at
   // depth 0 of the block, they can only be call arguments or arrays.
+  const scan = newScanState();
   const skipValue = () => {
     let nesting = 0;
+    let prev = ":";
     while (i < block.length) {
+      const next = skipNonCode(block, i, prev, scan);
+      if (next !== i) {
+        if (!isComment(block, i)) prev = '"';
+        i = next;
+        continue;
+      }
       const c = block[i];
       if (c === "{") {
         const body = extractBalancedBraces(block, i + 1);
@@ -657,13 +665,7 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
           return;
         }
         i += body.length + 2;
-        continue;
-      }
-      if (c === '"' || c === "'" || c === "`") {
-        LEADING_STRING_LITERAL.lastIndex = i;
-        i = LEADING_STRING_LITERAL.test(block)
-          ? LEADING_STRING_LITERAL.lastIndex
-          : i + 1;
+        prev = "}";
         continue;
       }
       if (c === "(" || c === "[") nesting++;
@@ -672,6 +674,8 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
         i++;
         return;
       }
+      trackParen(block, i, scan);
+      if (!/\s/.test(c)) prev = c;
       i++;
     }
   };
@@ -1158,21 +1162,186 @@ function extractWebhookFromSource(
 /**
  * Extracts the content between balanced braces, starting after an opening brace.
  * Returns the content between the braces (excluding the outer braces themselves).
+ * Braces inside string, template, comment and regex literals are not counted.
  */
 function extractBalancedBraces(
   text: string,
   startAfterBrace: number,
 ): string | null {
-  let depth = 1;
-  let i = startAfterBrace;
+  const start = startAfterBrace - 1;
+  if (text[start] !== "{") return null;
+  const end = findClosingBrace(text, start, newScanState());
+  return end === -1 ? null : text.slice(startAfterBrace, end);
+}
 
-  while (i < text.length && depth > 0) {
-    if (text[i] === "{") depth++;
-    else if (text[i] === "}") depth--;
+/**
+ * Returns the index of the brace that closes the one at `start`, or -1 when
+ * it never closes. Literals are skipped with skipNonCode, so a brace inside a
+ * string, template, comment or regex does not change the depth.
+ */
+function findClosingBrace(
+  source: string,
+  start: number,
+  scan: ScanState,
+): number {
+  let depth = 0;
+  let prev = "";
+  let i = start;
+  while (i < source.length) {
+    const next = skipNonCode(source, i, prev, scan);
+    if (next !== i) {
+      if (!isComment(source, i)) prev = '"';
+      i = next;
+      continue;
+    }
+    const c = source[i];
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+    else trackParen(source, i, scan);
+    if (!/\s/.test(c)) prev = c;
     i++;
   }
+  return -1;
+}
 
-  if (depth !== 0) return null;
-  // Return content between the braces (exclude closing brace)
-  return text.slice(startAfterBrace, i - 1);
+const REGEX_PRECEDERS = "(,=:[!&|?{};+-*%<>~^";
+const REGEX_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "case",
+  "throw",
+  "yield",
+  "await",
+  "void",
+  "delete",
+  "in",
+  "of",
+  "instanceof",
+  "new",
+  "else",
+  "do",
+]);
+const CONTROL_KEYWORDS = new Set(["if", "while", "for", "with"]);
+const MAX_TEMPLATE_DEPTH = 64;
+
+/**
+ * State carried through one brace scan. `noRegexBefore` records that a regex
+ * failed to close before its newline, which rules out any other regex start
+ * before that newline and keeps the scan linear. `controlParens` holds one
+ * entry per open paren: whether it opens an if/while/for/with header, after
+ * which a slash starts a regex.
+ */
+interface ScanState {
+  noRegexBefore: number;
+  controlParens: boolean[];
+  lastParenWasControl: boolean;
+  templateDepth: number;
+}
+
+function newScanState(): ScanState {
+  return {
+    noRegexBefore: -1,
+    controlParens: [],
+    lastParenWasControl: false,
+    templateDepth: 0,
+  };
+}
+
+function trackParen(source: string, i: number, scan: ScanState): void {
+  if (source[i] === "(") {
+    let word = wordBefore(source, i);
+    if (word === "await") {
+      word = wordBefore(source, source.lastIndexOf("await", i));
+    }
+    scan.controlParens.push(CONTROL_KEYWORDS.has(word));
+  } else if (source[i] === ")") {
+    scan.lastParenWasControl = scan.controlParens.pop() ?? false;
+  }
+}
+
+/** The identifier ending just before `i`, or "" when it is a property name. */
+function wordBefore(source: string, i: number): string {
+  let end = i;
+  while (end > 0 && /\s/.test(source[end - 1])) end--;
+  let start = end;
+  while (start > 0 && /[\w$]/.test(source[start - 1])) start--;
+  return start > 0 && source[start - 1] === "." ? "" : source.slice(start, end);
+}
+
+function isComment(source: string, i: number): boolean {
+  return source.startsWith("//", i) || source.startsWith("/*", i);
+}
+
+/**
+ * Returns the index past a string, template, comment or regex literal at `i`,
+ * or `i` when there is none. An unterminated string or regex ends at its
+ * newline so one stray quote cannot swallow the file. Template expressions
+ * are scanned as code, up to MAX_TEMPLATE_DEPTH levels deep.
+ */
+function skipNonCode(
+  source: string,
+  i: number,
+  prev: string,
+  scan: ScanState,
+): number {
+  const c = source[i];
+  if (c === '"' || c === "'") {
+    for (let j = i + 1; j < source.length; j++) {
+      if (source[j] === "\\") j++;
+      else if (source[j] === c) return j + 1;
+      else if (source[j] === "\n") return j;
+    }
+    return source.length;
+  }
+  if (c === "`") {
+    for (let j = i + 1; j < source.length; j++) {
+      if (source[j] === "\\") j++;
+      else if (source[j] === "`") return j + 1;
+      else if (source[j] === "$" && source[j + 1] === "{") {
+        // Past the cap the template reads as unterminated rather than
+        // recursing toward a stack overflow.
+        if (scan.templateDepth >= MAX_TEMPLATE_DEPTH) return source.length;
+        scan.templateDepth++;
+        const close = findClosingBrace(source, j + 1, scan);
+        scan.templateDepth--;
+        if (close === -1) return source.length;
+        j = close;
+      }
+    }
+    return source.length;
+  }
+  if (c !== "/") return i;
+  if (source[i + 1] === "/") {
+    const end = source.indexOf("\n", i);
+    return end === -1 ? source.length : end + 1;
+  }
+  if (source[i + 1] === "*") {
+    const end = source.indexOf("*/", i + 2);
+    return end === -1 ? source.length : end + 2;
+  }
+  // A slash after a value is division; after an operator, opener, keyword or
+  // control header it starts a regex.
+  if (
+    prev !== "" && !REGEX_PRECEDERS.includes(prev) &&
+    !REGEX_KEYWORDS.has(wordBefore(source, i)) &&
+    !(prev === ")" && scan.lastParenWasControl)
+  ) return i;
+  if (i < scan.noRegexBefore) return i;
+  let inClass = false;
+  for (let j = i + 1; j < source.length; j++) {
+    const ch = source[j];
+    if (ch === "\\") j++;
+    else if (ch === "\n") {
+      scan.noRegexBefore = j;
+      return i;
+    } else if (inClass) inClass = ch !== "]";
+    else if (ch === "[") inClass = true;
+    else if (ch === "/") {
+      let k = j + 1;
+      while (k < source.length && /\w/.test(source[k])) k++;
+      return k;
+    }
+  }
+  scan.noRegexBefore = source.length;
+  return i;
 }
