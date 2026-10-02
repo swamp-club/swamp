@@ -156,8 +156,6 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.
   "src/cli/commands/access_group_test.ts",
-  // Spawns the CLI via Deno.execPath() to exercise `swamp config` end-to-end.
-  "src/cli/commands/config_test.ts",
   // Spawns a deno subprocess to exercise the doctor audit path end-to-end.
   "src/cli/commands/doctor_audit_test.ts",
   // Runs real `git init` to build repository fixtures for context detection.
