@@ -23,14 +23,16 @@ import {
   type DataRecord,
   type EventHandlers,
   type ProjectedData,
+  type SpecNameHint,
   userErrorFromSwampError,
 } from "../../libswamp/mod.ts";
 import type { OutputMode } from "../output/output.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { Table } from "@cliffy/table";
-import { bold } from "@std/fmt/colors";
+import { bold, dim } from "@std/fmt/colors";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -250,6 +252,7 @@ function renderJson(data: DataQueryData, single: boolean): void {
         results,
         total: data.total,
         limited: data.limited,
+        ...(data.specNameHint && { specNameHint: data.specNameHint }),
       },
       null,
       2,
@@ -261,6 +264,7 @@ function renderJson(data: DataQueryData, single: boolean): void {
         results: data.results.map(recordToJsonOutput),
         total: data.total,
         limited: data.limited,
+        ...(data.specNameHint && { specNameHint: data.specNameHint }),
       },
       null,
       2,
@@ -305,6 +309,24 @@ export function renderQueryResultsTerminal(
   return renderDefaultTable(data, showNamespace);
 }
 
+/**
+ * Renders the follow-up for a query that matched no instance name but
+ * whose spec-name counterpart matches: the reason, then the command to run.
+ */
+function renderSpecNameHint(hint: SpecNameHint): string {
+  const lines = [
+    "",
+    "No data matched that instance name, but data with that spec name exists. Query it with:",
+    `  swamp data query ${quoteShellWord(hint.suggestedPredicate)}`,
+  ];
+  if (hint.otherFiltersDropped) {
+    lines.push(
+      dim("  (some conditions from your query were not carried over)"),
+    );
+  }
+  return lines.join("\n");
+}
+
 export function createDataQueryRenderer(
   outputMode: OutputMode,
   showNamespace = false,
@@ -321,6 +343,9 @@ export function createDataQueryRenderer(
           return;
         }
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
+        if (event.data.specNameHint) {
+          writeOutput(renderSpecNameHint(event.data.specNameHint));
+        }
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
         throw userErrorFromSwampError(event.error);

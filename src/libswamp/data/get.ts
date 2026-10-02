@@ -107,8 +107,8 @@ export interface DataGetData {
   warnings?: string[];
   /**
    * For a workflow-scoped read, the other producers in the run whose data
-   * matched the name (swamp-club#2948), each with the query that reads it
-   * where one exists. Only producers the caller may read are listed.
+   * matched the name (swamp-club#2948), each with the query that reads it.
+   * Only producers the caller may read are listed.
    */
   alternatives?: DataGetAlternative[];
 }
@@ -121,7 +121,7 @@ export interface DataGetAlternative {
   jobName?: string;
   stepName?: string;
   version: number;
-  /** The `swamp data query` command that reads it, where one exists. */
+  /** The `swamp data query` command that reads it. */
   replacementQuery?: string;
 }
 
@@ -659,11 +659,11 @@ async function* workflowScopedGet(
     input.includeContent,
     output.contentEncoding,
   );
-  output.replacementQuery = replacement.query;
+  output.replacementQuery = replacement;
   output.latestRunQuery = latestRunCommand(
     input,
     located.location,
-    replacement,
+    output.contentEncoding,
   );
   output.warnings = [
     deprecationWarning(replacement, false, output.latestRunQuery),
@@ -786,41 +786,29 @@ async function* modelScopedGet(
     includeContent,
     output.contentEncoding,
   );
-  output.replacementQuery = replacement.query;
+  output.replacementQuery = replacement;
   output.warnings = [deprecationWarning(replacement, version === undefined)];
 
   yield { kind: "completed", data: output };
 }
 
 /**
- * The `swamp data query` command that reads the same item as a `data get`
- * read, or why none can read it yet.
- */
-type Replacement =
-  | { query: string; unavailable?: undefined }
-  | { query?: undefined; unavailable: string };
-
-/**
- * Builds the replacement for `data`. A query returns content only for a
- * textual content type, decoded as UTF-8, so a read whose content came back
- * base64-encoded — binary, or text that is not UTF-8 — has none yet.
+ * Builds the `swamp data query` command that reads the same item as a
+ * `data get` read. Content that came back base64-encoded — binary, or text
+ * that is not UTF-8 — or may (a non-text content type) is selected with its
+ * `contentEncoding`, as `data get` reports it.
  */
 function replacementFor(
   data: DataItem,
   target: DataQueryTarget,
   includeContent: boolean,
   contentEncoding?: ContentEncoding,
-): Replacement {
-  if (
-    includeContent &&
-    (!isTextContentType(data.contentType) || contentEncoding === "base64")
-  ) {
-    return {
-      unavailable: "data query returns content only as UTF-8 text, and this " +
-        "item's content is not (swamp-club#2959)",
-    };
-  }
-  return { query: dataQueryCommand(target, { includeContent }) };
+): string {
+  return dataQueryCommand(target, {
+    includeContent,
+    withEncoding: !isTextContentType(data.contentType) ||
+      contentEncoding === "base64",
+  });
 }
 
 /**
@@ -829,16 +817,12 @@ function replacementFor(
  * version, so the notice says how to follow later versions instead.
  */
 function deprecationWarning(
-  replacement: Replacement,
+  query: string,
   readLatest: boolean,
   latestRun?: string,
 ): string {
-  if (replacement.unavailable !== undefined) {
-    return "swamp data get is deprecated, but no data query reads this item " +
-      `yet: ${replacement.unavailable}. Keep using data get for it.`;
-  }
   const notice = "swamp data get is deprecated and will be removed in a " +
-    `future release. Read this item with: ${replacement.query}`;
+    `future release. Read this item with: ${query}`;
   if (latestRun !== undefined) {
     return `${notice} (to follow the workflow's latest run instead, run: ` +
       `${latestRun})`;
@@ -883,20 +867,23 @@ function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
 function latestRunCommand(
   input: DataGetInput,
   location: WorkflowDataLocation,
-  replacement: Replacement,
+  contentEncoding?: ContentEncoding,
 ): string | undefined {
-  if (input.runId !== undefined || replacement.query === undefined) {
-    return undefined;
-  }
+  if (input.runId !== undefined) return undefined;
   const { workflowRunId: pinnedRun, ...target } = workflowQueryTarget(
     location.item,
   );
   if (pinnedRun === undefined) return undefined;
-  return dataQueryCommand({
-    ...target,
-    latestRunWorkflow: location.workflow.name,
-    version: input.version,
-  }, { includeContent: input.includeContent });
+  return replacementFor(
+    location.item.data,
+    {
+      ...target,
+      latestRunWorkflow: location.workflow.name,
+      version: input.version,
+    },
+    input.includeContent,
+    contentEncoding,
+  );
 }
 
 /** Identifies the job, step and owning model that produced an item. */
@@ -990,14 +977,11 @@ async function sharedNameNotice(
       other.data,
       workflowQueryTarget(other),
       includeContent,
-    ).query,
+    ),
   }));
-  const others = readable.map((other, i) => {
-    const query = alternatives[i].replacementQuery;
-    return query
-      ? `${producerLabel(other)}, read with: ${query}`
-      : producerLabel(other);
-  });
+  const others = readable.map((other, i) =>
+    `${producerLabel(other)}, read with: ${alternatives[i].replacementQuery}`
+  );
   const { item, run } = location;
   return {
     warning: `${readable.length + 1} items in run ${run.id} are named ` +

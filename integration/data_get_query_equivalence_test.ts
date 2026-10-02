@@ -36,10 +36,14 @@ import {
   type DataGetData,
   type DataGetEvent,
   type DataGetInput,
+  dataQuery,
+  type DataQueryDeps,
+  type DataQueryEvent,
   type DataRecord,
 } from "../src/libswamp/mod.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { Data } from "../src/domain/data/data.ts";
+import type { GarbageCollectionPolicy } from "../src/domain/data/data_metadata.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -67,13 +71,22 @@ async function saveStepResult(
   jobName: string,
   stepName: string,
   value: string,
+  item: {
+    name?: string;
+    specName?: string;
+    garbageCollection?: GarbageCollectionPolicy;
+  } = {},
 ): Promise<{ id: string; name: string; version: number; data: Data }> {
   const data = Data.create({
-    name: "result",
+    name: item.name ?? "result",
     contentType: "application/json",
     lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "resource", specName: "result", modelName: model.name },
+    garbageCollection: item.garbageCollection ?? 10,
+    tags: {
+      type: "resource",
+      specName: item.specName ?? "result",
+      modelName: model.name,
+    },
     ownerDefinition: {
       ownerType: "model-method",
       ownerRef: `${repo.modelType.normalized}:${model.id}`,
@@ -311,6 +324,93 @@ Deno.test("data get: report output, which records no run on the data, gets a rep
       assertEquals(data.id, expected.id);
       assertSameItem(await queryReplacement(repo, data), data);
     }
+  });
+});
+
+Deno.test("data query: garbageCollection matches what data get returns, for count and duration policies", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "gc-model");
+    const run = { id: crypto.randomUUID(), workflowName: "gc" };
+
+    for (const policy of [10, "30d"] as const) {
+      const saved = await saveStepResult(repo, model, run, "j", "s", "v", {
+        name: `gc-${policy}`,
+        garbageCollection: policy,
+      });
+      const data = await read(repo, {
+        modelIdOrName: "gc-model",
+        dataName: saved.name,
+      });
+      assertEquals(data.garbageCollection, policy);
+
+      const records = await queryReplacement(repo, data);
+      assertEquals(records.map((r) => r.garbageCollection), [policy]);
+    }
+  });
+});
+
+Deno.test("data query: a run-scoped query by spec name gets a hint scoped to the same run", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "classify-model");
+    const runId = crypto.randomUUID();
+    const saved = await saveStepResult(
+      repo,
+      model,
+      { id: runId, workflowName: "classify" },
+      "j",
+      "s",
+      "v",
+      { name: "classification-main", specName: "classification" },
+    );
+
+    const queryService = repo.repoContext.dataQueryService;
+    const deps: DataQueryDeps = {
+      query: (pred, opts) => queryService.query(pred, opts),
+      specNameFallback: (pred) => queryService.specNameFallback(pred),
+    };
+    const run = async (predicate: string) => {
+      const events = await collect<DataQueryEvent>(
+        dataQuery(createLibSwampContext(), deps, { predicate }),
+      );
+      const last = events.at(-1);
+      assert(last?.kind === "completed", JSON.stringify(last));
+      return last.data;
+    };
+
+    const missed = await run(
+      `workflowRunId == "${runId}" && name == "classification"`,
+    );
+    assertEquals(missed.total, 0);
+    const suggested = missed.specNameHint?.suggestedPredicate;
+    assertEquals(
+      suggested,
+      `workflowRunId == "${runId}" && specName == "classification"`,
+    );
+    const followed = await queryService.query(suggested!) as DataRecord[];
+    assertEquals(followed.map((r) => r.id), [saved.id]);
+
+    // The same spec name in another run is not this run's data: no hint.
+    const otherRun = await run(
+      `workflowRunId == "${crypto.randomUUID()}" && name == "classification"`,
+    );
+    assertEquals(otherRun.specNameHint, undefined);
+
+    // Data whose name equals its spec name, excluded by a condition the
+    // fallback cannot carry: the name was never the problem, so no hint.
+    await saveStepResult(
+      repo,
+      model,
+      { id: runId, workflowName: "classify" },
+      "j",
+      "s",
+      "v",
+      { name: "summary", specName: "summary" },
+    );
+    const filtered = await run(
+      `workflowRunId == "${runId}" && name == "summary" && size > 1000000`,
+    );
+    assertEquals(filtered.total, 0);
+    assertEquals(filtered.specNameHint, undefined);
   });
 });
 

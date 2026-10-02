@@ -93,3 +93,15 @@ Deno.test("exportRowsToCatalogRows: leaves rows the export did not flag unflagge
   ]);
   assertEquals(flags(rows), ["1:1:1", "2:0:0"]);
 });
+
+Deno.test("exportRowsToCatalogRows: carries garbage_collection from the export", () => {
+  const [row] = exportRowsToCatalogRows([
+    makeExportRow({ garbage_collection: "7d" }),
+  ]);
+  assertEquals(row.garbage_collection, "7d");
+});
+
+Deno.test("exportRowsToCatalogRows: an export without garbage_collection reads as unknown", () => {
+  const [row] = exportRowsToCatalogRows([makeExportRow()]);
+  assertEquals(row.garbage_collection, "");
+});

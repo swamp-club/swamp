@@ -26,9 +26,12 @@ shortcuts for common queries; prefer them when your intent matches.
 | Metadata only            | `swamp data query 'modelName == "<m>" && name == "<n>"'` (no `--select`)                                                                          |
 
 With `--json` the output is `{"results": [...], "total": N, "limited": bool}`;
-read `results[0]` (JSON content comes back parsed). An empty `results` means no
-such item. The query matches the instance `name` exactly (use
-`specName == "<spec>"` for a spec name).
+read `results[0]` (JSON content comes back parsed). For a binary item, select
+`{"content": content, "contentEncoding": contentEncoding}`: `content` is base64
+when `contentEncoding` is `"base64"`. An empty `results` means no such item. The
+query matches the instance `name` exactly (use `specName == "<spec>"` for a spec
+name); when nothing matches by name but something does by spec name,
+`specNameHint.suggestedPredicate` gives the query to run.
 
 Add `--single` to require exactly one match. With `--json` it prints that record
 (or its `--select` value) on its own instead of the envelope, so scripts that

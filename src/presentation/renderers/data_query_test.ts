@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import type { DataQueryData, DataRecord } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createDataQueryRenderer,
   renderQueryResultsMarkdown,
+  renderQueryResultsTerminal,
 } from "./data_query.ts";
 
 function makeRecord(
@@ -44,6 +46,7 @@ function makeRecord(
     dataType: "resource",
     contentType: "application/json",
     lifetime: "infinite",
+    garbageCollection: 10,
     ownerType: "model-method",
     streaming: false,
     size: 100,
@@ -298,4 +301,147 @@ Deno.test("createDataQueryRenderer: error throws UserError carrying the error co
     "no match",
   );
   assertEquals(error.code, "QUERY_NO_MATCH");
+});
+
+// Bytes 0..255 repeated: base64 using every character of its alphabet.
+const BASE64_CONTENT = Uint8Array.from({ length: 3000 }, (_, i) => i % 256)
+  .toBase64();
+
+Deno.test("renderQueryResultsTerminal: base64 content survives log output unchanged", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "logo"',
+    select: "content",
+    results: [],
+    projected: { shape: "scalar", values: [BASE64_CONTENT] },
+    total: 1,
+    limited: false,
+  });
+  // deno-lint-ignore no-control-regex
+  assertEquals(output.replace(/\x1b\[[0-9;]*m/g, "").trim(), BASE64_CONTENT);
+});
+
+Deno.test("renderJson: projected base64 content and its encoding pass through", () => {
+  const renderer = createDataQueryRenderer("json");
+  const output = captureJsonOutput(() => {
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        predicate: 'name == "logo"',
+        results: [],
+        projected: {
+          shape: "map",
+          columns: ["content", "contentEncoding"],
+          rows: [{ content: BASE64_CONTENT, contentEncoding: "base64" }],
+        },
+        total: 1,
+        limited: false,
+      },
+    });
+  });
+  assertEquals(output.results, [
+    { content: BASE64_CONTENT, contentEncoding: "base64" },
+  ]);
+});
+
+function captureLines(fn: () => void): string {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(logs.join("\n"));
+}
+
+const hintData = {
+  predicate: 'name == "classification"',
+  results: [],
+  total: 0,
+  limited: false,
+  specNameHint: {
+    suggestedPredicate: 'specName == "classification"',
+    otherFiltersDropped: false,
+  },
+};
+
+Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a pasteable command", () => {
+  const output = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data: hintData,
+    });
+  });
+
+  assertStringIncludes(output, "No matching data found.");
+  assertStringIncludes(
+    output,
+    "No data matched that instance name, but data with that spec name exists",
+  );
+  assertEquals(output.includes("not carried over"), false);
+  assertStringIncludes(
+    output,
+    `swamp data query 'specName == "classification"'`,
+  );
+});
+
+Deno.test("createDataQueryRenderer: log mode notes conditions that were not carried over", () => {
+  const output = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data: {
+        ...hintData,
+        specNameHint: {
+          ...hintData.specNameHint,
+          otherFiltersDropped: true,
+        },
+      },
+    });
+  });
+
+  assertStringIncludes(
+    output,
+    "(some conditions from your query were not carried over)",
+  );
+});
+
+Deno.test("createDataQueryRenderer: log mode prints no hint without one", () => {
+  const output = captureLines(() => {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data: { ...hintData, specNameHint: undefined },
+    });
+  });
+
+  assertEquals(output, "No matching data found.");
+});
+
+Deno.test("renderJson: specNameHint is included only when present", () => {
+  const handlers = createDataQueryRenderer("json").handlers();
+
+  const withHint = captureJsonOutput(() => {
+    handlers.completed({ kind: "completed", data: hintData });
+  });
+  assertEquals(withHint.specNameHint, hintData.specNameHint);
+
+  const projected = captureJsonOutput(() => {
+    handlers.completed({
+      kind: "completed",
+      data: {
+        ...hintData,
+        select: "name",
+        projected: { shape: "scalar", values: [] },
+      },
+    });
+  });
+  assertEquals(projected.specNameHint, hintData.specNameHint);
+
+  const without = captureJsonOutput(() => {
+    handlers.completed({
+      kind: "completed",
+      data: { ...hintData, specNameHint: undefined },
+    });
+  });
+  assertEquals("specNameHint" in without, false);
 });

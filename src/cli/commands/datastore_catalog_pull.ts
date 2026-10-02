@@ -55,6 +55,7 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
     data_type: row.data_type,
     content_type: row.content_type,
     lifetime: row.lifetime,
+    garbage_collection: row.garbage_collection ?? "",
     owner_type: row.owner_type,
     streaming: row.streaming,
     size: row.size,

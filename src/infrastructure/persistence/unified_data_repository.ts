@@ -54,6 +54,7 @@ import {
   OwnershipValidationError,
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
+import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 
 // Re-export domain repository types so existing infra-path importers keep working.
 // New domain code should import directly from src/domain/data/repositories.ts.
@@ -186,6 +187,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data_type: data.tags["type"] ?? "",
       content_type: data.contentType,
       lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,
@@ -769,6 +771,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data_type: dataToSave.tags["type"] ?? "",
       content_type: dataToSave.contentType,
       lifetime: dataToSave.lifetime,
+      garbage_collection: garbageCollectionToColumn(
+        dataToSave.garbageCollection,
+      ),
       owner_type: dataToSave.ownerDefinition.ownerType,
       streaming: dataToSave.streaming ? 1 : 0,
       size: dataToSave.size ?? 0,
@@ -1358,6 +1363,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data_type: dataToSave.tags["type"] ?? "",
       content_type: dataToSave.contentType,
       lifetime: dataToSave.lifetime,
+      garbage_collection: garbageCollectionToColumn(
+        dataToSave.garbageCollection,
+      ),
       owner_type: dataToSave.ownerDefinition.ownerType,
       streaming: dataToSave.streaming ? 1 : 0,
       size: dataToSave.size ?? 0,

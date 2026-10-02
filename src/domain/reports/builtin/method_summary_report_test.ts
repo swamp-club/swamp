@@ -430,7 +430,7 @@ Deno.test("methodSummaryReport: argument values never appear in markdown or JSON
   assertEquals(result.json.methodArgs, ["target", "password"]);
 });
 
-Deno.test("methodSummaryReport: a binary data handle keeps the data get retrieval command", async () => {
+Deno.test("methodSummaryReport: a binary data handle is read with its content encoding", async () => {
   const ctx = makeMethodContext({
     dataHandles: [
       {
@@ -450,6 +450,8 @@ Deno.test("methodSummaryReport: a binary data handle keeps the data get retrieva
   const result = await methodSummaryReport.execute(ctx);
   assertStringIncludes(
     result.markdown,
-    "`swamp data get my-server logo.png --version 2`",
+    '`swamp data query \'modelName == "my-server" && name == "logo.png" && ' +
+      'version == 2\' --select \'{"content": content, "contentEncoding": ' +
+      "contentEncoding}' --json`",
   );
 });

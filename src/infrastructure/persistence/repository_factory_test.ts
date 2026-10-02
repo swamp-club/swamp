@@ -187,6 +187,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_type: "resource",
     content_type: "application/json",
     lifetime: "infinite",
+    garbage_collection: "10",
     owner_type: "model-method",
     owner_ref: "",
     workflow_run_id: "",

@@ -688,19 +688,22 @@ Deno.test("dataGet: the model-scoped query names the owner by id, not by a name 
   assertEquals(data.replacementQuery!.includes("modelName"), false);
 });
 
-Deno.test("dataGet: a binary item names no replacement query, since data query cannot return it yet", async () => {
+Deno.test("dataGet: a binary item names a query that selects its content encoding", async () => {
   const binary = { ...makeDataItem(), contentType: "image/png" };
   const data = await readCompleted(
     makeDeps({ findDataByName: () => Promise.resolve(binary) }),
     { modelIdOrName: "my-model", dataName: "output" },
   );
 
-  assertEquals(data.replacementQuery, undefined);
+  assertStringIncludes(
+    data.replacementQuery!,
+    `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
   assertEquals(data.warnings?.length, 1);
-  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
+  assertStringIncludes(data.warnings![0], data.replacementQuery!);
 });
 
-Deno.test("dataGet: text content that is not UTF-8 names no content query", async () => {
+Deno.test("dataGet: text content that is not UTF-8 names a query that selects its content encoding", async () => {
   const text = { ...makeDataItem(), contentType: "text/plain" };
   // A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
   const utf16 = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
@@ -713,8 +716,11 @@ Deno.test("dataGet: text content that is not UTF-8 names no content query", asyn
   );
 
   assertEquals(data.contentEncoding, "base64");
-  assertEquals(data.replacementQuery, undefined);
-  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
+  assertStringIncludes(
+    data.replacementQuery!,
+    `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
+  assertStringIncludes(data.warnings![0], data.replacementQuery!);
 });
 
 Deno.test("dataGet: a metadata-only read of a binary item still names a query", async () => {
@@ -725,6 +731,7 @@ Deno.test("dataGet: a metadata-only read of a binary item still names a query", 
   );
 
   assertStringIncludes(data.replacementQuery!, 'name == "output"');
+  assertEquals(data.replacementQuery!.includes("--select"), false);
 });
 
 Deno.test("dataGet: workflow data that records no run is queried by its owner", async () => {
@@ -928,7 +935,7 @@ Deno.test("dataGet: a pinned read the caller sent without --run still names the 
   assertStringIncludes(data.warnings![0], "version >= 0");
 });
 
-Deno.test("dataGet: a workflow read with no replacement query gets no latest-run query", async () => {
+Deno.test("dataGet: a binary workflow read's latest-run query selects content with its encoding", async () => {
   const binary = producedBy("main", "build", "my-model", "id-model");
   binary.data = { ...binary.data, contentType: "image/png" };
   const data = await readCompleted(
@@ -939,6 +946,11 @@ Deno.test("dataGet: a workflow read with no replacement query gets no latest-run
     { workflowName: "wf", dataName: "output" },
   );
 
-  assertEquals(data.replacementQuery, undefined);
-  assertEquals(data.warnings![0].includes(LATEST_RUN_NOTICE), false);
+  assertEquals(
+    data.latestRunQuery,
+    `swamp data query 'workflowRunId == latestRun("wf") && jobName == ` +
+      `"main" && stepName == "build" && name == "output" && version >= 0' ` +
+      `--select '{"content": content, "contentEncoding": contentEncoding}' ` +
+      `--json`,
+  );
 });

@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -36,6 +37,7 @@ import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
+import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
@@ -52,6 +54,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_type: "resource",
     content_type: "application/json",
     lifetime: "infinite",
+    garbage_collection: "10",
     owner_type: "model-method",
     streaming: 0,
     size: 256,
@@ -118,6 +121,67 @@ Deno.test("DataQueryService: compound predicate", () => {
   ) as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].specName, "result");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: garbageCollection filters count and duration policies", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "count", garbage_collection: "5" }));
+  catalog.upsert(
+    makeRow({
+      data_name: "duration",
+      garbage_collection: "7d",
+      id: "data-uuid-002",
+    }),
+  );
+
+  const names = (predicate: string) =>
+    (service.querySync(predicate) as DataRecord[]).map((r) => r.name).sort();
+
+  assertEquals(names("garbageCollection == 5"), ["count"]);
+  assertEquals(names('garbageCollection == "7d"'), ["duration"]);
+  // Ordering a duration row against an int throws, which skips that row;
+  // the type guard keeps the comparison to count policies.
+  assertEquals(
+    names("type(garbageCollection) != string && garbageCollection < 10"),
+    ["count"],
+  );
+  assertEquals(
+    service.querySync('name == "duration"', { select: "garbageCollection" }),
+    ["7d"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: specName equality filters through the SQL pushdown", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ spec_name: "result" }));
+  catalog.upsert(
+    makeRow({ data_name: "other", spec_name: "raw", id: "data-uuid-002" }),
+  );
+
+  const results = service.querySync(
+    'specName == "raw" && size > 0',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["other"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps scoping", () => {
+  const { catalog, service } = setupTest();
+  assertEquals(
+    service.specNameFallback(
+      'workflowRunId == "run-1" && name == "classification"',
+    ),
+    {
+      specNamePredicate:
+        'workflowRunId == "run-1" && specName == "classification"',
+      namePredicate: 'workflowRunId == "run-1" && name == "classification"',
+      droppedConjuncts: false,
+    },
+  );
+  assertEquals(service.specNameFallback('modelName == "m"'), null);
+  assertEquals(service.specNameFallback("name == "), null, "unparseable");
   catalog.close();
 });
 
@@ -541,6 +605,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const results = await service.query('modelName == "ingest"') as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
+  assertEquals(results[0].garbageCollection, 10, "backfill carries GC");
   assertEquals(catalog.isPopulated(), true);
   catalog.close();
 });
@@ -2649,6 +2714,7 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
     dataType: "dataType",
     contentType: "contentType",
     lifetime: "lifetime",
+    garbageCollection: "garbageCollection",
     ownerType: "ownerType",
     streaming: "streaming",
     size: "size",
@@ -3058,6 +3124,10 @@ interface RemoteBody {
   name: string;
   specName?: string;
   body: unknown;
+  /** Stored bytes, instead of `body` as JSON. */
+  bytes?: Uint8Array;
+  /** Defaults to application/json. */
+  contentType?: string;
   /** Write the body locally too, as if already hydrated. */
   local?: boolean;
   /** The remote does not have the body either. */
@@ -3098,7 +3168,8 @@ function setupHydrationTest(bodies: RemoteBody[]): {
       1,
     );
     names.set(path, entry.name);
-    const bytes = new TextEncoder().encode(JSON.stringify(entry.body));
+    const bytes = entry.bytes ??
+      new TextEncoder().encode(JSON.stringify(entry.body));
     if (!entry.remoteMissing) remote.set(path, bytes);
     // A lazy pull creates the version directory but skips raw.
     ensureDirSync(dirname(path));
@@ -3109,6 +3180,7 @@ function setupHydrationTest(bodies: RemoteBody[]): {
         id: crypto.randomUUID(),
         spec_name: entry.specName ?? "result",
         namespace: entry.namespace ?? "",
+        content_type: entry.contentType ?? "application/json",
       }),
     );
   }
@@ -3134,6 +3206,60 @@ Deno.test("DataQueryService.query: select content downloads a lazily-synced body
     );
     assertEquals(results, [{ value: 1 }]);
     assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: select content downloads a lazily-synced binary or text body", async () => {
+  // swamp-club#2959 reads projected content after include; the read still
+  // downloads a body a lazy pull skipped, as data get does.
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "logo", body: null, bytes: png, contentType: "image/png" },
+    {
+      name: "notes",
+      body: null,
+      bytes: new TextEncoder().encode("hello"),
+      contentType: "text/plain",
+    },
+  ]);
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      select: '{"content": content, "contentEncoding": contentEncoding}',
+    });
+    assertEquals(results, [
+      { content: png.toBase64(), contentEncoding: "base64" },
+      { content: "hello", contentEncoding: "utf-8" },
+    ]);
+    assertEquals(hydrated.sort(), ["logo", "notes"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: select content never downloads a body include rejects", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    {
+      name: "logo",
+      body: null,
+      bytes: new Uint8Array([0x89, 0x50]),
+      contentType: "image/png",
+    },
+    {
+      name: "notes",
+      body: null,
+      bytes: new TextEncoder().encode("hello"),
+      contentType: "text/plain",
+    },
+  ]);
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      select: "content",
+      include: (record) => Promise.resolve(record.name === "notes"),
+    });
+    assertEquals(results, ["hello"]);
+    assertEquals(hydrated, ["notes"]);
   } finally {
     cleanup();
   }
@@ -3482,4 +3608,373 @@ Deno.test("DataQueryService.latestDataNamesForSpec: lists a name once when sever
     "my-data",
   ]);
   catalog.close();
+});
+
+// ============================================================================
+// Binary content (swamp-club#2959): a projection reads any item's bytes
+// without loss, and a predicate reading `content` on a non-text item fails.
+// ============================================================================
+
+/** Writes one stored item with raw bytes and indexes it in the catalog. */
+function writeContentItem(
+  dir: string,
+  catalog: CatalogStore,
+  item: { name: string; id: string; contentType: string; bytes: Uint8Array },
+): void {
+  const itemDir = join(dir, ".swamp", "data", "test-model", "model-001");
+  const dataDir = join(itemDir, item.name, "1");
+  ensureDirSync(dataDir);
+  Deno.writeFileSync(join(dataDir, "raw"), item.bytes);
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: item.name,
+      id: item.id,
+      version: 1,
+      contentType: item.contentType,
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(join(itemDir, item.name, "latest"), "1");
+  catalog.upsert(makeRow({
+    data_name: item.name,
+    id: item.id,
+    content_type: item.contentType,
+  }));
+}
+
+// A PNG signature: 0x89 is never a valid leading UTF-8 byte.
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a]);
+// A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
+const UTF16_BYTES = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
+
+/**
+ * Runs `fn` against a query service over a repo holding, in catalog order,
+ * UTF-8 text (`notes`), a binary item (`logo`), text whose bytes are not
+ * UTF-8 (`legacy`) and JSON (`info`). `reads` lists the data names whose
+ * bytes were read, by either the sync or the async read. The rows carry the empty namespace; `namespace` sets
+ * the repository's own. The repo is removed afterwards, pass or fail.
+ */
+async function withContentItems(
+  fn: (
+    ctx: {
+      dir: string;
+      catalog: CatalogStore;
+      service: DataQueryService;
+      reads: string[];
+    },
+  ) => void | Promise<void>,
+  options: { namespace?: string } = {},
+): Promise<void> {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-binary-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    catalog.markPopulated();
+    writeContentItem(dir, catalog, {
+      name: "notes",
+      id: "00000000-0000-1000-8000-000000000011",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("hello world"),
+    });
+    writeContentItem(dir, catalog, {
+      name: "logo",
+      id: "00000000-0000-1000-8000-000000000012",
+      contentType: "image/png",
+      bytes: PNG_BYTES,
+    });
+    writeContentItem(dir, catalog, {
+      name: "legacy",
+      id: "00000000-0000-1000-8000-000000000013",
+      contentType: "text/plain",
+      bytes: UTF16_BYTES,
+    });
+    writeContentItem(dir, catalog, {
+      name: "info",
+      id: "00000000-0000-1000-8000-000000000014",
+      contentType: "application/json",
+      bytes: new TextEncoder().encode('{"kernel":"6.1"}'),
+    });
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+      undefined,
+      undefined,
+      options.namespace === undefined
+        ? undefined
+        : createNamespace(options.namespace),
+    );
+    const reads: string[] = [];
+    const getContentSync = dataRepo.getContentSync.bind(dataRepo);
+    dataRepo.getContentSync = (type, modelId, dataName, version) => {
+      reads.push(dataName);
+      return getContentSync(type, modelId, dataName, version);
+    };
+    // query() reads projected content through the async getContent, which
+    // can download a lazily-synced body (swamp-club#2962).
+    const getContent = dataRepo.getContent.bind(dataRepo);
+    dataRepo.getContent = (type, modelId, dataName, version) => {
+      reads.push(dataName);
+      return getContent(type, modelId, dataName, version);
+    };
+    await fn({
+      dir,
+      catalog,
+      service: new DataQueryService(catalog, dataRepo),
+      reads,
+    });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const ENCODED_SELECT =
+  '{"content": content, "contentEncoding": contentEncoding}';
+
+Deno.test("DataQueryService: select content returns binary bytes base64-encoded", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "logo"', { select: ENCODED_SELECT }),
+      [{ content: PNG_BYTES.toBase64(), contentEncoding: "base64" }],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content base64-encodes text whose bytes are not UTF-8", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "legacy"', { select: ENCODED_SELECT }),
+      [{ content: UTF16_BYTES.toBase64(), contentEncoding: "base64" }],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content returns UTF-8 text and JSON attributes as before", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "notes"', { select: ENCODED_SELECT }),
+      [{ content: "hello world", contentEncoding: "utf-8" }],
+    );
+    assertEquals(
+      service.querySync('name == "info"', { select: ENCODED_SELECT }),
+      [{ content: { kernel: "6.1" }, contentEncoding: "utf-8" }],
+    );
+    assertEquals(
+      service.querySync('name == "notes"', { select: "content" }),
+      ["hello world"],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select contentEncoding alone reads the bytes", async () => {
+  await withContentItems(({ service, reads }) => {
+    assertEquals(
+      service.querySync('name == "logo"', { select: "contentEncoding" }),
+      ["base64"],
+    );
+    assertEquals(reads, ["logo"]);
+  });
+});
+
+Deno.test("DataQueryService: select content is null when the bytes are not on this host", async () => {
+  await withContentItems(({ catalog, service }) => {
+    // Indexed, but no stored body: a missing file.
+    catalog.upsert(makeRow({
+      data_name: "gone",
+      id: "00000000-0000-1000-8000-000000000015",
+      content_type: "image/png",
+    }));
+    // Another namespace's items in a shared datastore, JSON included.
+    catalog.upsert(makeRow({
+      namespace: "other-repo",
+      data_name: "theirs",
+      id: "00000000-0000-1000-8000-000000000016",
+      content_type: "image/png",
+    }));
+    catalog.upsert(makeRow({
+      namespace: "other-repo",
+      data_name: "their-state",
+      id: "00000000-0000-1000-8000-000000000017",
+      content_type: "application/json",
+    }));
+    assertEquals(
+      service.querySync(
+        'name == "gone" || name == "theirs" || name == "their-state"',
+        { select: ENCODED_SELECT },
+      ),
+      [
+        { content: null, contentEncoding: null },
+        { content: null, contentEncoding: null },
+        { content: null, contentEncoding: null },
+      ],
+    );
+  });
+});
+
+Deno.test("DataQueryService: a predicate reading content on a binary item fails, naming it", async () => {
+  await withContentItems(({ service, reads }) => {
+    const error = assertThrows(
+      () => service.querySync('content.contains("PNG")'),
+      BinaryContentPredicateError,
+    );
+    assertEquals(error.item.name, "logo");
+    assertEquals(error.item.contentType, "image/png");
+    assertStringIncludes(error.message, "ingest/logo version 1");
+    assertStringIncludes(error.message, 'contentType.startsWith("text/")');
+    // The guard it suggests covers text/*; it names the other text types.
+    assertStringIncludes(error.message, "JSON, YAML, XML or TOML");
+    // The check uses the catalog's content type, never the binary's bytes.
+    assertEquals(reads.includes("logo"), false);
+  });
+});
+
+Deno.test("DataQueryService: the async query fails the same way", async () => {
+  await withContentItems(async ({ service }) => {
+    await assertRejects(
+      () => service.query('content == "x"'),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: a binary content read absorbed by CEL still fails", async () => {
+  await withContentItems(({ service }) => {
+    assertThrows(
+      () => service.querySync('content == "x" || true'),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: a contentType guard keeps a content predicate off binary items", async () => {
+  await withContentItems(({ service, reads }) => {
+    const results = service.querySync(
+      'contentType.startsWith("text/") && content.contains("hello")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["notes"]);
+    assertEquals(reads.includes("logo"), false);
+  });
+});
+
+Deno.test("DataQueryService: a text content predicate still decodes leniently", async () => {
+  await withContentItems(({ service }) => {
+    const results = service.querySync(
+      'name == "legacy" && content.contains("h")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["legacy"]);
+  });
+});
+
+Deno.test("DataQueryService: an unreadable binary item is dropped, not reported", async () => {
+  await withContentItems(async ({ service }) => {
+    const results = await service.query('content.contains("hello")', {
+      include: (record) => Promise.resolve(record.name !== "logo"),
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: a readable binary item fails the query under include", async () => {
+  await withContentItems(async ({ service }) => {
+    const error = await assertRejects(
+      () =>
+        service.query('content.contains("hello")', {
+          include: () => Promise.resolve(true),
+        }),
+      BinaryContentPredicateError,
+    );
+    assertEquals(error.item.name, "logo");
+  });
+});
+
+Deno.test("DataQueryService: a binary item past the limit fails neither with nor without include", async () => {
+  await withContentItems(async ({ service }) => {
+    // `notes` matches first and fills the page; `logo` comes after it.
+    const predicate = 'content.contains("hello")';
+    const local = service.querySync(predicate, { limit: 1 }) as DataRecord[];
+    assertEquals(local.map((r) => r.name), ["notes"]);
+    // With include, matching runs ahead in batches and reaches `logo`, but
+    // the page is already full there, so the outcome is the same.
+    const served = await service.query(predicate, {
+      limit: 1,
+      include: () => Promise.resolve(true),
+    }) as DataRecord[];
+    assertEquals(served.map((r) => r.name), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: under include, a binary item before the page fills still fails", async () => {
+  await withContentItems(async ({ service }) => {
+    // `notes` is rejected, so the page is still empty when `logo` is reached.
+    await assertRejects(
+      () =>
+        service.query('content.contains("hello")', {
+          limit: 1,
+          include: (record) => Promise.resolve(record.name !== "notes"),
+        }),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: include decides before select reads any bytes", async () => {
+  await withContentItems(async ({ service, reads }) => {
+    const results = await service.query("true", {
+      select: ENCODED_SELECT,
+      include: (record) => Promise.resolve(record.name === "notes"),
+    });
+    assertEquals(results, [{
+      content: "hello world",
+      contentEncoding: "utf-8",
+    }]);
+    // JSON attributes load while matching, as before; no other body is read
+    // for a record include rejects.
+    assertEquals(reads.filter((name) => name !== "info"), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: contentEncoding is not a predicate field", async () => {
+  await withContentItems(({ service }) => {
+    assertThrows(
+      () => service.querySync('contentEncoding == "base64"'),
+      UserError,
+      "contentEncoding",
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content reads a legacy row stamped with the empty namespace", async () => {
+  // Rows written before the repository set a namespace keep "", but their
+  // bytes are this repository's own.
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "notes"', { select: ENCODED_SELECT }),
+      [{ content: "hello world", contentEncoding: "utf-8" }],
+    );
+  }, { namespace: "infra" });
+});
+
+Deno.test("DataQueryService: a content predicate reads text types beyond text/*", async () => {
+  await withContentItems(({ dir, catalog, service }) => {
+    writeContentItem(dir, catalog, {
+      name: "manifest",
+      id: "00000000-0000-1000-8000-000000000018",
+      contentType: "application/xml; charset=utf-8",
+      bytes: new TextEncoder().encode("<hello/>"),
+    });
+    const results = service.querySync(
+      'name == "manifest" && content.contains("hello")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["manifest"]);
+  });
 });

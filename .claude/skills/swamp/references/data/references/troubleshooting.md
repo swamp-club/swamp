@@ -6,7 +6,7 @@
   - ["No such key: resource" in CEL Expressions](#no-such-key-resource-in-cel-expressions)
   - ["No such key: attributes" after data.latest()](#no-such-key-attributes-after-datalatest)
   - ["No data found for model"](#no-data-found-for-model)
-  - ["Data ownership validation failed"](#data-ownership-validation-failed)
+  - ["Ownership validation failed"](#ownership-validation-failed)
   - ["Version not found"](#version-not-found)
   - ["GC deleted data I needed"](#gc-deleted-data-i-needed)
 - [Rename Issues](#rename-issues)
@@ -126,26 +126,26 @@ swamp model method run <model-name> <method>
 swamp model get <model-name> --json
 ```
 
-### "Data ownership validation failed"
+### "Ownership validation failed"
 
 **Symptom**:
-`Error: Data ownership validation failed - definition hash mismatch`
+`Ownership validation failed for "<data-name>": existing owner "<type>:<ref>" does not match new owner "<type>:<ref>"`
 
 **Causes**:
 
 1. A different model with the same data name is trying to overwrite data
-2. Model definition changed after data was created
+2. The same name is written under a different owner type (for example `manual`
+   data later written by a model method)
 3. Manual data manipulation
+
+Ownership is checked on `ownerType` and `ownerRef` only. A legacy
+`definitionHash` on older data plays no part.
 
 **Solutions**:
 
 ```bash
-# View ownership information (owner type and ref)
-swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --json
-
-# The definition hash is only in the deprecated `data get` output: check
-# ownerDefinition.definitionHash and compare with the current model's hash
-swamp data get <model-name> <data-name> --json
+# View the existing item's owner type and ref
+swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select '{"ownerType": ownerType, "ownerRef": ownerRef}'
 
 # If intentional: delete the old data first
 swamp model delete <old-model-name> --json
@@ -170,9 +170,9 @@ swamp model delete <old-model-name> --json
 # List all versions
 swamp data versions <model-name> <data-name> --json
 
-# Check GC settings: the garbageCollection field is only in the deprecated
-# `data get` output
-swamp data get <model-name> <data-name> --json
+# Check the GC setting: a number keeps that many versions, a duration
+# keeps versions created within it
+swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select garbageCollection
 ```
 
 ### "GC deleted data I needed"

@@ -19,7 +19,13 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { LifetimeSchema, normalizeLifetime } from "./data_metadata.ts";
+import {
+  garbageCollectionFromColumn,
+  GarbageCollectionSchema,
+  garbageCollectionToColumn,
+  LifetimeSchema,
+  normalizeLifetime,
+} from "./data_metadata.ts";
 import type { Lifetime } from "./data_metadata.ts";
 
 const UNITS = ["h", "m", "d", "w", "mo", "y"] as const;
@@ -172,4 +178,27 @@ Deno.test("property: bare numbers and bare units pass through unchanged", () => 
     }),
     { numRuns: 100 },
   );
+});
+
+/** Every garbage collection policy the schema accepts. */
+const arbGarbageCollection = fc.oneof(
+  fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }),
+  fc.tuple(fc.integer({ min: 1, max: 99999 }), arbUnit).map(([n, unit]) =>
+    `${n}${unit}`
+  ),
+).filter((policy) => GarbageCollectionSchema.safeParse(policy).success);
+
+Deno.test("property: garbage collection catalog column round-trips every policy", () => {
+  fc.assert(
+    fc.property(arbGarbageCollection, (policy) => {
+      assertEquals(
+        garbageCollectionFromColumn(garbageCollectionToColumn(policy)),
+        policy,
+      );
+    }),
+  );
+});
+
+Deno.test("garbageCollectionFromColumn: empty column stays unknown", () => {
+  assertEquals(garbageCollectionFromColumn(""), "");
 });

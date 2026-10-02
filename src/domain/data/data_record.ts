@@ -44,6 +44,10 @@ export interface DataRecord {
   dataType: string;
   contentType: string;
   lifetime: string;
+  // Version retention policy: a number for a count policy, a duration
+  // string otherwise. Empty string when unknown (a foreign row pulled from
+  // a catalog export written before the field existed).
+  garbageCollection: number | string;
   ownerType: string;
   streaming: boolean;
   size: number;

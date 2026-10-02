@@ -47,6 +47,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_type: "resource",
     content_type: "application/json",
     lifetime: "infinite",
+    garbage_collection: "10",
     owner_type: "model-method",
     owner_ref: "",
     workflow_run_id: "",
@@ -1063,6 +1064,59 @@ Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latest
   store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
   store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
   assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection column", () => {
+  const dbPath = makeTempDbPath();
+
+  // Build a v5 catalog: today's table without the garbage_collection column,
+  // schema_version=5, with a row and the populated flag set.
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    ALTER TABLE catalog DROP COLUMN garbage_collection;
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
+      VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '5');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+  `);
+  db.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "migration drops and recreates the table");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  store.upsert(makeRow({ garbage_collection: "7d" }));
+  assertEquals([...store.iterate()][0].garbage_collection, "7d");
+  store.close();
+});
+
+Deno.test("CatalogStore: every write path stores garbage_collection", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ data_name: "upsert", garbage_collection: "5" }));
+  store.upsertNewVersion(
+    makeRow({ data_name: "new-version", garbage_collection: "1mo" }),
+  );
+  store.bulkUpsert([makeRow({ data_name: "bulk", garbage_collection: "3" })]);
+  store.bulkUpsertForeign("other", [
+    makeRow({
+      namespace: "other",
+      data_name: "foreign",
+      garbage_collection: "2w",
+    }),
+  ]);
+
+  const byName = Object.fromEntries(
+    [...store.iterate()].map((row) => [row.data_name, row.garbage_collection]),
+  );
+  assertEquals(byName, {
+    upsert: "5",
+    "new-version": "1mo",
+    bulk: "3",
+    foreign: "2w",
+  });
   store.close();
 });
 
