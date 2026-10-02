@@ -207,6 +207,17 @@ Deno.test("step latest: deferred writes promoted in reverse version order conver
       await dataRepo.advanceLatestMarkers([r2]);
       await dataRepo.advanceLatestMarkers([r1]);
 
+      // The on-disk marker follows version order too, so disk reads and
+      // catalog reads agree.
+      assertEquals(
+        dataRepo.getLatestVersionSync(MODEL_TYPE, MODEL_ID, "item-b"),
+        2,
+      );
+      assertEquals(
+        (await dataRepo.findByName(MODEL_TYPE, MODEL_ID, "item-b"))?.version,
+        2,
+      );
+
       const latest = await query.query(PREDICATE) as DataRecord[];
       assertEquals(versionsAndLatest(latest), [[2, true]]);
       const perStep = await query.query(PREDICATE, {
@@ -214,6 +225,51 @@ Deno.test("step latest: deferred writes promoted in reverse version order conver
       }) as DataRecord[];
       assertEquals(versionsAndLatest(perStep), [[1, false], [2, true]]);
       assertEquals(catalog.countDuplicateLatest(), 0);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("step latest: saves finishing out of version order keep disk and catalog on the highest version", async () => {
+  await withTempDir(async (dir) => {
+    const { catalog, dataRepo, query } = await openRepo(dir);
+    try {
+      catalog.markPopulated();
+      // Two parallel steps allocate v1 and v2; the v2 writer finishes first.
+      const v1 = await itemB("s1");
+      const v2 = await itemB("s2");
+      const allocated1 = await dataRepo.allocateVersion(
+        MODEL_TYPE,
+        MODEL_ID,
+        v1,
+      );
+      const allocated2 = await dataRepo.allocateVersion(
+        MODEL_TYPE,
+        MODEL_ID,
+        v2,
+      );
+      await Deno.writeFile(allocated1.contentPath, body("Ingesting"));
+      await Deno.writeFile(allocated2.contentPath, body("Ingested"));
+      await dataRepo.finalizeVersion(
+        MODEL_TYPE,
+        MODEL_ID,
+        v2,
+        allocated2.version,
+      );
+      await dataRepo.finalizeVersion(
+        MODEL_TYPE,
+        MODEL_ID,
+        v1,
+        allocated1.version,
+      );
+
+      assertEquals(
+        dataRepo.getLatestVersionSync(MODEL_TYPE, MODEL_ID, "item-b"),
+        2,
+      );
+      const latest = await query.query(PREDICATE) as DataRecord[];
+      assertEquals(versionsAndLatest(latest), [[2, true]]);
     } finally {
       catalog.close();
     }

@@ -668,7 +668,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteFile(contentPath, content);
 
     // Update latest marker
-    await this.updateLatestMarker(type, modelId, data.name, newVersion);
+    await this.advanceLatestMarker(type, modelId, data.name, newVersion);
 
     this.catalogUpsert(type, modelId, dataToSave);
 
@@ -1264,7 +1264,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteTextFile(metadataPath, metadataContent);
 
     // Update latest marker
-    await this.updateLatestMarker(type, modelId, data.name, version);
+    await this.advanceLatestMarker(type, modelId, data.name, version);
 
     this.catalogUpsert(type, modelId, dataToSave);
 
@@ -1353,7 +1353,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<void> {
     for (const receipt of receipts) {
       try {
-        await this.updateLatestMarker(
+        await this.advanceLatestMarker(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
@@ -2039,6 +2039,53 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Final fallback: scan version directories
     const versions = await this.listVersions(type, modelId, dataName);
     return maxOf(versions) ?? null;
+  }
+
+  /**
+   * Moves the latest marker to `version` unless it already names a higher
+   * version, so the marker follows version order like the catalog's
+   * `is_latest` (`CatalogStore.upsertNewVersion`) when parallel writers of
+   * one name finish out of order (swamp-club#2520). The read, compare and
+   * write run synchronously so writers in this process cannot interleave
+   * between them; writers in other processes are serialized by the model
+   * lock. Paths that lower the marker on purpose — delete, rename, GC — use
+   * {@link updateLatestMarker}.
+   */
+  private async advanceLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await assertSafePath(dataNameDir, this.baseDir);
+    const latestPath = join(dataNameDir, "latest");
+
+    let current: number | null = null;
+    try {
+      current = parseInt(Deno.readTextFileSync(latestPath).trim(), 10);
+    } catch {
+      // Missing, or a legacy symlink: replaced below.
+    }
+    if (current !== null && !isNaN(current) && current > version) return;
+
+    try {
+      if (Deno.lstatSync(latestPath).isSymlink) Deno.removeSync(latestPath);
+    } catch {
+      // Ignore if not found
+    }
+    const tmpPath = join(dataNameDir, `.${crypto.randomUUID()}.tmp`);
+    try {
+      Deno.writeTextFileSync(tmpPath, version.toString());
+      Deno.renameSync(tmpPath, latestPath);
+    } catch (error) {
+      try {
+        Deno.removeSync(tmpPath);
+      } catch {
+        // Temp file may not exist if the write failed before creating it
+      }
+      throw error;
+    }
   }
 
   private async updateLatestMarker(

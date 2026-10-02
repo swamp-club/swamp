@@ -80,7 +80,11 @@ named inputs into a suffix (`src/domain/workflows/data_suffix.ts`
 
 **`latest`.** Each name directory holds a plain-text `latest` file with the
 current version number. Reads without a version use it (`getLatestVersion`,
-falling back to a symlink for older layouts, then a directory scan). The catalog
+falling back to a symlink for older layouts, then a directory scan). Promoting a
+version (`save`, `finalizeVersion`, deferred advance) only moves the marker
+forward (`advanceLatestMarker`), so parallel writers that finish out of order
+leave it on the highest version; delete, rename and GC set it explicitly. The
+catalog
 mirrors it as `is_latest`: one row per `(namespace, type, modelId, name)`, the
 highest promoted version. A second flag, `is_step_latest`, marks each workflow
 step's latest version for `findBySpec`/`findByTag`; `upsertNewVersion`
