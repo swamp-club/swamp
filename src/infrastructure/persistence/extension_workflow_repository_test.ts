@@ -24,6 +24,8 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { UserError } from "../../domain/errors.ts";
+import { configure, type LogRecord } from "@logtape/logtape";
+import { initializeLogging } from "../logging/logger.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -42,6 +44,28 @@ async function withTempDir(
       await Deno.remove(dir, { recursive: true });
     }
   }
+}
+
+/** Runs fn with warnings from the repository captured, returning them. */
+async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["extension-workflow-repo"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return records.map((r) => r.message.map((p) => String(p)).join(""));
 }
 
 function createWorkflowYaml(
@@ -281,6 +305,89 @@ Deno.test("ExtensionWorkflowRepository findPath skips manifest.yaml", async () =
     );
 
     assertEquals(path, null);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findAll skips non-workflow YAML without warning", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "deploy.yaml"),
+      stringifyYaml(createWorkflowYaml("real-workflow")),
+    );
+    await Deno.writeTextFile(
+      join(dir, "test-factory.yaml"),
+      stringifyYaml({ networks: ["default"], tests: [{ name: "smoke" }] }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    let workflows: Workflow[] = [];
+    const warnings = await captureWarnings(async () => {
+      workflows = await repo.findAll();
+    });
+
+    assertEquals(workflows.map((w) => w.name), ["real-workflow"]);
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findPath skips non-workflow YAML", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(dir, "test-factory.yaml"),
+      stringifyYaml({ id, tests: [] }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const path = await repo.findPath(
+      id as ReturnType<typeof repo.nextId>,
+    );
+
+    assertEquals(path, null);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository warns once per broken workflow across scans", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "deploy.yaml"),
+      stringifyYaml(createWorkflowYaml("real-workflow")),
+    );
+    const brokenPath = join(dir, "broken.yaml");
+    await Deno.writeTextFile(
+      brokenPath,
+      stringifyYaml({ name: "broken", jobs: [] }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const warnings = await captureWarnings(async () => {
+      await repo.findAll();
+      await repo.findByName("real-workflow");
+      await repo.findByName("missing");
+    });
+
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0].includes("broken.yaml"), true);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository warns again when a broken workflow's error changes", async () => {
+  await withTempDir(async (dir) => {
+    const brokenPath = join(dir, "broken.yaml");
+    await Deno.writeTextFile(
+      brokenPath,
+      stringifyYaml({ name: "broken", jobs: [] }),
+    );
+
+    const repo = new ExtensionWorkflowRepository(dir);
+    const warnings = await captureWarnings(async () => {
+      await repo.findAll();
+      await Deno.writeTextFile(brokenPath, "jobs: [\n");
+      await repo.findAll();
+      await repo.findAll();
+    });
+
+    assertEquals(warnings.length, 2);
   });
 });
 

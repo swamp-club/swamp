@@ -35,6 +35,7 @@ import {
   type SwampSourcesConfig,
 } from "../../domain/repo/swamp_sources.ts";
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
+import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
 
 const logger = getLogger(["swamp", "sources"]);
 
@@ -297,11 +298,7 @@ async function contentPreScan(
           const yamlStat = await Deno.stat(entry.path);
           if (yamlStat.size > PRE_SCAN_YAML_MAX_BYTES) continue;
           const content = await Deno.readTextFile(entry.path);
-          const raw = parseYaml(content);
-          if (
-            raw && typeof raw === "object" && !Array.isArray(raw) &&
-            "jobs" in (raw as Record<string, unknown>)
-          ) {
+          if (isWorkflowDocument(parseYaml(content))) {
             found.add("workflows");
           }
         } catch {

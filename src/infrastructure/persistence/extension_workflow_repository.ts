@@ -30,24 +30,28 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
+import { MANIFEST_FILENAMES } from "../../domain/extensions/manifest_cross_kind_discovery.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
-
-// Keep in sync with MANIFEST_FILENAMES in manifest_cross_kind_discovery.ts
-const MANIFEST_FILENAMES = new Set(["manifest.yaml", "manifest.yml"]);
 
 /**
  * Read-only WorkflowRepository that discovers YAML workflows from an
  * extension workflows directory (e.g. `extensions/workflows/`).
  *
  * Extension workflows are read-only — save() and delete() throw UserError.
- * Any `*.yaml` / `*.yml` file in the directory tree is treated as a workflow
- * definition; `manifest.yaml` and `manifest.yml` are skipped.
+ * A `*.yaml` / `*.yml` file in the directory tree is treated as a workflow
+ * definition only if it has a top-level `jobs` key; `manifest.yaml`,
+ * `manifest.yml`, and other YAML an extension ships (data files read by its
+ * models) are skipped.
  */
 export class ExtensionWorkflowRepository implements WorkflowRepository {
   private readonly baseDir: string;
   private workflowsDirs: string[];
+  // Broken files already warned about, keyed by path and error, so repeated
+  // scans (one per findByName during push, every reload in serve) warn once.
+  private readonly warnedBroken = new Set<string>();
 
   constructor(
     workflowsDir: string,
@@ -88,6 +92,11 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             const content = await Deno.readTextFile(entry.path);
             const data = parseYaml(content) as WorkflowData | null;
             if (!data) continue;
+            if (!isWorkflowDocument(data)) {
+              logger
+                .debug`Skipping ${entry.path}: not a workflow (no top-level jobs key)`;
+              continue;
+            }
             const workflow = Workflow.fromData(data);
             // Deduplicate: first directory wins (user dir before pulled dir)
             if (!seenNames.has(workflow.name)) {
@@ -108,6 +117,9 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
             const errorMsg = error instanceof Error
               ? error.message
               : String(error);
+            const warnKey = `${entry.path}\0${errorMsg}`;
+            if (this.warnedBroken.has(warnKey)) continue;
+            this.warnedBroken.add(warnKey);
             logger
               .warn`Skipping broken extension workflow ${entry.path}: ${errorMsg}`;
           }
@@ -166,7 +178,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
           try {
             const content = await Deno.readTextFile(entry.path);
             const data = parseYaml(content) as WorkflowData | null;
-            if (!data) continue;
+            if (!isWorkflowDocument(data)) continue;
             if (data.id === id) {
               return entry.path;
             }

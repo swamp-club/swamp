@@ -23,6 +23,8 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
+import { MANIFEST_FILENAMES } from "../../domain/extensions/manifest_cross_kind_discovery.ts";
 import type { SwampError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -51,7 +53,15 @@ export type DoctorWorkflowsEvent =
 
 /** Dependencies injected by the CLI command. */
 export interface DoctorWorkflowsDeps {
+  /** Repo-owned workflow dirs: every `*.yaml` file must load as a workflow. */
   workflowDirs: string[];
+  /**
+   * Extension-provided workflow dirs (the extension workflows dir, sources,
+   * pulled extensions). These hold other YAML too, so — matching the
+   * extension workflow loader — manifests and YAML without a top-level
+   * `jobs` key are skipped rather than reported.
+   */
+  extensionWorkflowDirs?: string[];
   abortSignal: AbortSignal;
 }
 
@@ -65,14 +75,22 @@ function fallbackName(filePath: string): string | null {
  * Walks every supplied workflow directory and attempts to load each
  * `*.yaml` file through the same YAML + Workflow.fromData() path
  * the workflow loader uses. Reports parse and construction errors
- * instead of silently skipping them.
+ * instead of silently skipping them. In extension workflow directories,
+ * files the loader does not treat as workflows are skipped.
  */
 export async function* doctorWorkflows(
   deps: DoctorWorkflowsDeps,
 ): AsyncIterable<DoctorWorkflowsEvent> {
   const results: DoctorWorkflowResult[] = [];
+  const dirs = [
+    ...deps.workflowDirs.map((dir) => ({ dir, extension: false })),
+    ...(deps.extensionWorkflowDirs ?? []).map((dir) => ({
+      dir,
+      extension: true,
+    })),
+  ];
 
-  for (const dir of deps.workflowDirs) {
+  for (const { dir, extension } of dirs) {
     if (deps.abortSignal.aborted) break;
 
     let entries: Deno.DirEntry[];
@@ -94,6 +112,7 @@ export async function* doctorWorkflows(
 
     const yamlFiles = entries
       .filter((e) => e.isFile && e.name.endsWith(".yaml"))
+      .filter((e) => !(extension && MANIFEST_FILENAMES.has(e.name)))
       .sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of yamlFiles) {
@@ -120,6 +139,11 @@ export async function* doctorWorkflows(
 
       try {
         const data = parseYaml(content) as WorkflowData;
+        if (extension && !isWorkflowDocument(data)) {
+          logger
+            .debug`Skipping ${filePath}: not a workflow (no top-level jobs key)`;
+          continue;
+        }
         Workflow.fromData(data);
         const result: DoctorWorkflowResult = {
           file: filePath,

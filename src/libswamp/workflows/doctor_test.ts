@@ -277,3 +277,102 @@ Deno.test("doctorWorkflows: extracts name from parseable YAML even when construc
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+const MANIFEST_YAML = `manifestVersion: 1
+name: "@test/my-ext"
+version: "2026.10.02.1"
+workflows:
+  - workflow-test.yaml
+`;
+
+const ARTIFACT_YAML = `networks:
+  - default
+tests:
+  - name: smoke
+`;
+
+Deno.test("doctorWorkflows: skips manifests and non-workflow YAML in extension dirs", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(
+      join(tmpDir, "workflow-test.yaml"),
+      VALID_WORKFLOW_YAML,
+    );
+    await Deno.writeTextFile(join(tmpDir, "manifest.yaml"), MANIFEST_YAML);
+    await Deno.writeTextFile(join(tmpDir, "manifest.yml"), MANIFEST_YAML);
+    await Deno.writeTextFile(join(tmpDir, "test-factory.yaml"), ARTIFACT_YAML);
+
+    const events = await collect<DoctorWorkflowsEvent>(
+      doctorWorkflows({
+        workflowDirs: [],
+        extensionWorkflowDirs: [tmpDir],
+        abortSignal: new AbortController().signal,
+      }),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DoctorWorkflowsEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.report.overallStatus, "pass");
+    assertEquals(completed.report.totalPassed, 1);
+    assertEquals(completed.report.totalFailed, 0);
+    assertEquals(
+      completed.report.workflows.map((w) => w.name),
+      ["test-workflow"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: still fails broken workflows in extension dirs", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "broken.yaml"), BROKEN_YAML);
+    await Deno.writeTextFile(
+      join(tmpDir, "empty-jobs.yaml"),
+      `id: "550e8400-e29b-41d4-a716-446655440002"\nname: empty-jobs\njobs: []\n`,
+    );
+
+    const events = await collect<DoctorWorkflowsEvent>(
+      doctorWorkflows({
+        workflowDirs: [],
+        extensionWorkflowDirs: [tmpDir],
+        abortSignal: new AbortController().signal,
+      }),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DoctorWorkflowsEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.report.overallStatus, "fail");
+    assertEquals(completed.report.totalFailed, 2);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: still fails non-workflow YAML in repo workflow dirs", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    await Deno.writeTextFile(join(tmpDir, "workflow-x.yaml"), ARTIFACT_YAML);
+
+    const events = await collect<DoctorWorkflowsEvent>(
+      doctorWorkflows({
+        workflowDirs: [tmpDir],
+        abortSignal: new AbortController().signal,
+      }),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DoctorWorkflowsEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.report.overallStatus, "fail");
+    assertEquals(completed.report.totalFailed, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
