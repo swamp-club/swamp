@@ -1730,7 +1730,9 @@ clears the first two from its own env:
   `runHolding` scope (an `AsyncLocalStorage` scope) the spawn runs in, and is
   empty when that run holds none. Each locked execution runs in its scope: a
   workflow step's method (`execution_service.ts`, from `StepLockHook`'s
-  `heldLockIds`), and a CLI or `swamp serve` model method run
+  `heldLockIds`; a hook that leaves them out runs the step outside any scope,
+  so its children fall back to the pid match rather than wait on the step's
+  own lock), and a CLI or `swamp serve` model method run
   (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
   `runModel()` and other in-process nesting carry the outer run's locks.
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.

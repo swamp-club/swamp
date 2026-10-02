@@ -16073,7 +16073,30 @@ Deno.test("DefaultStepExecutor: parallel steps each hand their children only the
   });
 });
 
-Deno.test("DefaultStepExecutor: a step whose hook names no locks hands its children an empty entry", async () => {
+Deno.test("DefaultStepExecutor: a step whose hook holds no lock hands its children an empty entry", async () => {
+  const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
+    "../datastore/lock_holder_marker.ts"
+  );
+  let childEnv: Record<string, string> | undefined;
+  await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+    const { error } = await runStepUnderLockHook(
+      () => () =>
+        Promise.resolve({ flush: () => Promise.resolve(), heldLockIds: [] }),
+      "execute",
+      () => {
+        childEnv = processLockHolderMarker.childLockEnv();
+        return Promise.resolve({});
+      },
+    );
+    assertEquals(error, undefined);
+  });
+
+  assertEquals(childEnv, { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:` });
+});
+
+Deno.test("DefaultStepExecutor: a step whose hook does not name its locks leaves its children on the pid match", async () => {
+  // Without an entry for this pid, a nested swamp skips every lock this
+  // process holds, the step's own included, rather than waiting on it.
   const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
     "../datastore/lock_holder_marker.ts"
   );
@@ -16090,7 +16113,7 @@ Deno.test("DefaultStepExecutor: a step whose hook names no locks hands its child
     assertEquals(error, undefined);
   });
 
-  assertEquals(childEnv, { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:` });
+  assertEquals(childEnv, {});
 });
 
 /** Keeps a copy of every saved run, as a killed owner leaves it on disk. */

@@ -991,7 +991,10 @@ export interface StepLockResult {
   /**
    * The nonces of the lock files the hook took. The step runs inside
    * `processLockHolderMarker.runHolding` with them, so a swamp the step
-   * starts skips these locks and not those of parallel steps.
+   * starts skips these locks and not those of parallel steps. A hook that
+   * leaves it out runs the step outside any scope, so that swamp matches
+   * this process's locks on the pid alone and never waits on the step's
+   * own lock.
    */
   heldLockIds?: readonly string[];
 }
@@ -1768,14 +1771,15 @@ export class DefaultStepExecutor implements StepExecutor {
     // datastore. Taking it first also means a lock timeout fails the step
     // before any record is left at running.
     let flushLock: (() => Promise<void>) | null = null;
-    let heldLockIds: readonly string[] = [];
+    // Undefined when a hook took locks without naming them.
+    let heldLockIds: readonly string[] | undefined = [];
     if (this.stepLockHook) {
       const lockResult = await this.stepLockHook(
         modelType.normalized,
         originalDefinition.id,
       );
       flushLock = lockResult.flush;
-      heldLockIds = lockResult.heldLockIds ?? [];
+      heldLockIds = lockResult.heldLockIds;
     }
     try {
       // Save evaluated definition (with vault expressions still raw) for
@@ -1913,26 +1917,26 @@ export class DefaultStepExecutor implements StepExecutor {
       try {
         // A swamp the method starts skips this step's lock, and still
         // waits on the locks parallel steps hold in this process.
-        const result = await processLockHolderMarker.runHolding(
-          heldLockIds,
-          () =>
-            this.invokeMethod({
-              task: narrowedTask,
-              ctx,
-              executionService,
-              unifiedDataRepo,
-              definitionRepo,
-              dataQueryService,
-              vaultService,
-              modelType,
-              modelDef,
-              originalDefinition,
-              evaluatedDefinition,
-              runLogger,
-              secretBag,
-              resolvedPlacement,
-            }),
-        );
+        const invoke = () =>
+          this.invokeMethod({
+            task: narrowedTask,
+            ctx,
+            executionService,
+            unifiedDataRepo,
+            definitionRepo,
+            dataQueryService,
+            vaultService,
+            modelType,
+            modelDef,
+            originalDefinition,
+            evaluatedDefinition,
+            runLogger,
+            secretBag,
+            resolvedPlacement,
+          });
+        const result = heldLockIds === undefined
+          ? await invoke()
+          : await processLockHolderMarker.runHolding(heldLockIds, invoke);
 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (runTracker) runTracker.complete(output.id, "completed");
