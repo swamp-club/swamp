@@ -33,6 +33,11 @@ import {
   createWorkflowRunId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
+import {
+  pathExists,
+  recordingUnitOfWork,
+} from "./test_helpers/staged_change_helpers.ts";
+import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -1548,5 +1553,80 @@ Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: lists one workflow's
       (await repo.listRunIdsForWorkflow(workflow.id)).sort(),
       [run.id, emptyId].sort(),
     );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: stages a write of the run file", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    const path = repo.getPath(workflow.id, run.id);
+
+    await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
+
+    assertEquals(uow.staged(), [{ kind: "write", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: stages a remove of the runs directory", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await seed.save(workflow.id, run);
+    const runsDir = dirname(seed.getPath(workflow.id, run.id));
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.deleteAllByWorkflowId(workflow.id));
+
+    assertEquals(uow.staged(), [{ kind: "remove", path: runsDir }]);
+    assertEquals(marks, [runsDir]);
+    assertEquals(await pathExists(runsDir), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each terminal run file it deletes", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.endAsCancelled("test");
+    await seed.save(workflow.id, finished);
+    const path = seed.getPath(workflow.id, finished.id);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    const result = await runInUnitOfWork(
+      uow,
+      () => repo.deleteOlderThan(new Date(Date.now() + 60_000)),
+    );
+
+    assertEquals(result.deletedRunIds, [finished.id]);
+    assertEquals(uow.staged(), [{ kind: "remove", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), false);
   });
 });

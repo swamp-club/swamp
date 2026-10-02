@@ -97,19 +97,19 @@ export async function signalChange(
 }
 
 /**
- * The {@link StagedChange} for a repository's `notifyDirty(relPath?)` call.
- * Despite its historical name, `relPath` is the absolute path of the file or
- * directory about to change (the composition root's hook makes it
- * cache-relative). A path becomes `write`; no path becomes `bulk` with
- * `reason`.
+ * The {@link StagedChange} for a dirty mark given as an optional path, the
+ * form repositories used before they staged typed changes. `relPath` is the
+ * absolute path of the file or directory about to change (the composition
+ * root's hook makes it cache-relative). A path becomes `write`; no path
+ * becomes `bulk` with `reason`.
  *
- * `notifyDirty` cannot tell a write from a remove, so removals are staged as
+ * A bare path cannot tell a write from a remove, so removals are staged as
  * `write` too. The legacy adapter forwards both kinds identically, and a path
- * absent on disk at push time is a delete, so nothing changes. Distinguishing
- * them is the job of the Phase 1 repository moves, which change the call
- * sites themselves. Moved repositories (data and output, swamp-club#2979;
- * definition, workflow and evaluated, swamp-club#2980) stage typed changes
- * directly and no longer call this.
+ * absent on disk at push time is a delete, so nothing changes. No repository
+ * calls this now: every hooked repository stages typed changes at its call
+ * sites (data and output, swamp-club#2979; definition, workflow and
+ * evaluated, swamp-club#2980; workflow run, swamp-club#2992). It goes with
+ * the Phase 1 step that ratchets repository marks to zero.
  */
 export function changeFor(
   relPath: string | undefined,

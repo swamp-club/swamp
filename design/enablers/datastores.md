@@ -1076,15 +1076,14 @@ even when it fails.
 
 Repositories route their signal through `signalChange`
 (`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
-repositories (swamp-club#2979) and the definition, workflow, evaluated
-definition and evaluated workflow repositories (swamp-club#2980) stage a typed
-change at each call site: `write` for a path that exists after the operation,
-`remove` for one that is gone after it. A definition or workflow `delete` that
-leaves its resolved path in place, because that file declares another entity
-sharing the id, stages a `write` of it. The workflow run repository still
-delegates to a private `notifyDirty`, which stages a path as `write` and a
-missing path as `bulk`. The legacy adapter forwards `write` and `remove` the
-same way, so the marks sent do not depend on the kind.
+repositories (swamp-club#2979), the definition, workflow, evaluated definition
+and evaluated workflow repositories (swamp-club#2980) and the workflow run
+repository (swamp-club#2992) stage a typed change at each call site: `write`
+for a path that exists after the operation, `remove` for one that is gone after
+it. A definition or workflow `delete` that leaves its resolved path in place,
+because that file declares another entity sharing the id, stages a `write` of
+it. No repository has a private `notifyDirty` now. The legacy adapter forwards
+`write` and `remove` the same way, so the marks sent do not depend on the kind.
 
 A change is staged before its write, so its kind is the intended effect: a
 `remove` whose removal then fails (EACCES, say) names a file still on disk.
@@ -1188,10 +1187,10 @@ lockfile is uploaded either way.
 
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
-- One rule rejects a bare `notifyDirty()` inside the per-path-wired
-  repositories that still have one. Repositories that stage typed changes
-  instead must give every `bulk` change a non-empty reason, and their bulk
-  changes are pinned (none today).
+- Repositories that stage typed changes must give every `bulk` change a
+  non-empty reason, and their bulk changes are pinned (none today). A guard
+  pins the `notifyDirty` definitions under `src/infrastructure/persistence/`
+  to an empty list, so no repository goes back to an untyped mark.
 - Another rejects any bare `markDirty()` call in `src/serve` and
   `src/cli/commands/serve.ts`. It matches the `.markDirty()` and
   `.markDirty?.()` forms on any receiver, and names the top-level function that

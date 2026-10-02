@@ -20,7 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { changeFor, signalChange } from "./unit_of_work_scope.ts";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import {
@@ -89,13 +89,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     private readonly markDirty?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
-  }
-
-  private async notifyDirty(relPath?: string): Promise<void> {
-    await signalChange(
-      this.markDirty,
-      changeFor(relPath, "YamlWorkflowRunRepository.notifyDirty"),
-    );
   }
 
   async findById(
@@ -562,7 +555,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const path = this.getPath(workflowId, run.id);
-    await this.notifyDirty(path);
+    await signalChange(this.markDirty, { kind: "write", path });
 
     const dir = this.getRunsDir(workflowId);
     await assertSafePath(dir, this.baseDir);
@@ -658,7 +651,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    await this.notifyDirty(dir);
+    await signalChange(this.markDirty, { kind: "remove", path: dir });
 
     try {
       await Deno.remove(dir, { recursive: true });
@@ -743,7 +736,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   // log file may not exist
                 }
                 if (!options?.dryRun) {
-                  await this.notifyDirty(yamlPath);
+                  await signalChange(this.markDirty, {
+                    kind: "remove",
+                    path: yamlPath,
+                  });
                   try {
                     await Deno.remove(yamlPath);
                   } catch (error) {
@@ -791,7 +787,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               }
 
               if (!options?.dryRun) {
-                await this.notifyDirty(yamlPath);
+                await signalChange(this.markDirty, {
+                  kind: "remove",
+                  path: yamlPath,
+                });
                 try {
                   await Deno.remove(yamlPath);
                 } catch (error) {
