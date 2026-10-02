@@ -24,6 +24,7 @@ import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import type { OutputMode } from "./output.ts";
+import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 
 const logger = getSwampLogger(["error"]);
 
@@ -203,6 +204,9 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     if (hint) {
       json.hint = hint;
     }
+    // An offline auth gate warning rides on the error so stderr stays one
+    // JSON document (swamp-club#2938).
+    Object.assign(json, takeAuthGateWarning());
     // deno-lint-ignore no-console
     console.error(JSON.stringify(json, null, 2));
     return;

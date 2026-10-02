@@ -20,19 +20,55 @@
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
+/** The offline warning as fields on a JSON-mode document. */
+export interface AuthGateWarningFields {
+  warning: string;
+  authMode: "offline";
+}
+
+// The JSON-mode warning held until the run ends (swamp-club#2938).
+let pendingWarning: string | undefined;
+
 /**
  * Report that the auth gate let this run through unverified. Log mode warns
- * through the logger. JSON mode has no console log sink, so it writes one
- * JSON line to stderr instead, leaving stdout to the command's own output.
+ * through the logger. JSON mode has no console log sink, and stderr must stay
+ * one JSON document when the command fails, so the warning is held: a fatal
+ * error takes it as fields on its own document (`takeAuthGateWarning`), and
+ * any other run writes it as one JSON line to stderr when the process exits.
  */
 export function renderAuthGateWarning(
   mode: OutputMode,
   message: string,
-  writeStderr: (line: string) => void = (line) => console.error(line),
+  registerExitHook: (hook: () => void) => void = (hook) =>
+    globalThis.addEventListener("unload", hook),
 ): void {
   if (mode === "json") {
-    writeStderr(JSON.stringify({ warning: message, authMode: "offline" }));
+    pendingWarning = message;
+    // Deno fires unload on Deno.exit too, so commands that exit early still
+    // write the warning. The flush takes the warning, so a second hook
+    // writes nothing.
+    registerExitHook(() => flushAuthGateWarning());
     return;
   }
   getSwampLogger(["swamp", "cli"]).warn`${message}`;
+}
+
+/**
+ * Take the held JSON-mode warning for a fatal error document, so the exit
+ * hook writes nothing. Returns `undefined` when no warning is held.
+ */
+export function takeAuthGateWarning(): AuthGateWarningFields | undefined {
+  const message = pendingWarning;
+  pendingWarning = undefined;
+  return message === undefined
+    ? undefined
+    : { warning: message, authMode: "offline" };
+}
+
+/** Write the held JSON-mode warning as one JSON line, if one is held. */
+export function flushAuthGateWarning(
+  writeStderr: (line: string) => void = (line) => console.error(line),
+): void {
+  const fields = takeAuthGateWarning();
+  if (fields) writeStderr(JSON.stringify(fields));
 }

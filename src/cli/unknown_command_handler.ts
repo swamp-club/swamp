@@ -22,6 +22,7 @@ import { red } from "@std/fmt/colors";
 import { findClosestMatch } from "../domain/string_distance.ts";
 import { getOutputModeFromArgs } from "./context.ts";
 import { buildErrorJson } from "../presentation/output/error_output.ts";
+import { takeAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 
 /**
  * Extracts the unknown command name from a Cliffy "Unknown command" error message.
@@ -264,6 +265,7 @@ export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
         const message = buildUnknownCommandMessage(unknownName, cmd);
         if (getOutputModeFromArgs(Deno.args) === "json") {
           const jsonError = buildErrorJson(new Error(message));
+          Object.assign(jsonError, takeAuthGateWarning());
           // deno-lint-ignore no-console
           console.error(JSON.stringify(jsonError, null, 2));
           Deno.exit(2);
@@ -277,6 +279,7 @@ export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
       const message = buildTooManyArgumentsMessage(cmd, Deno.args);
       if (getOutputModeFromArgs(Deno.args) === "json") {
         const jsonError = buildErrorJson(new Error(message));
+        Object.assign(jsonError, takeAuthGateWarning());
         // deno-lint-ignore no-console
         console.error(JSON.stringify(jsonError, null, 2));
         Deno.exit(2);
