@@ -43,7 +43,10 @@ function isTestOnlyImport(specifier: string): boolean {
     specifier.includes("infrastructure/testing/");
 }
 
-/** Files under src/ that are not shipped production code. */
+/**
+ * Files under src/ that are not shipped production code. Benchmarks run
+ * under `deno bench` only; nothing the compiled binary loads imports them.
+ */
 function isTestSupport(rel: string): boolean {
   return rel.startsWith(TESTING_DIR) || /_bench\.tsx?$/.test(rel);
 }

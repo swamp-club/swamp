@@ -82,6 +82,8 @@ export interface UnitOfWork {
    * Makes the staged changes durable and visible to others, once. It waits
    * for any `stage` still in flight first, so no change is left behind. The
    * unit is spent as soon as `commit` is called, whether or not it succeeds.
+   * Call it once the operation's writes have finished: it does not wait for
+   * a write that follows a resolved `stage`.
    */
   commit(): Promise<void>;
   /**

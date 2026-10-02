@@ -37,18 +37,25 @@ function recordingHook(): {
   calls: (string | undefined)[];
   failNext: (error: Error) => void;
   holdNext: () => () => void;
+  pending: () => number;
 } {
   const calls: (string | undefined)[] = [];
   let failure: Error | undefined;
   let hold: Promise<void> | undefined;
-  const hook: MarkDirtyHook = (relPath?: string) => {
+  let pending = 0;
+  const hook: MarkDirtyHook = async (relPath?: string) => {
     calls.push(relPath);
     const error = failure;
     const held = hold;
     failure = undefined;
     hold = undefined;
-    if (error) return Promise.reject(error);
-    return held ?? Promise.resolve();
+    if (error) throw error;
+    pending++;
+    try {
+      await held;
+    } finally {
+      pending--;
+    }
   };
   const holdNext = () => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -60,12 +67,13 @@ function recordingHook(): {
     calls,
     failNext: (error) => (failure = error),
     holdNext,
+    pending: () => pending,
   };
 }
 
 Deno.test("createLegacyUnitOfWork: meets the unit of work contract", async () => {
   await assertUnitOfWorkContract(() => {
-    const { hook, calls, failNext, holdNext } = recordingHook();
+    const { hook, calls, failNext, holdNext, pending } = recordingHook();
     const listeners: Array<() => Promise<void>> = [];
     const unit = createLegacyUnitOfWork(hook, {
       flush: async () => {
@@ -77,6 +85,7 @@ Deno.test("createLegacyUnitOfWork: meets the unit of work contract", async () =>
       forwarded: () => calls,
       failNext,
       holdNext,
+      pendingForwards: pending,
       onCommit: (listener) => listeners.push(listener),
     };
   });

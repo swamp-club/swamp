@@ -52,6 +52,7 @@ Deno.test("assertUnitOfWorkContract: names the failing case and keeps the origin
       forwarded: () => forwarded,
       failNext: () => {},
       holdNext: () => () => {},
+      pendingForwards: () => 0,
       onCommit: () => {},
     };
   };

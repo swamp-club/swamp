@@ -119,10 +119,14 @@ async function observe(
       assert(syncService !== undefined, "expected a sync service");
       const cacheDir = join(repoDir, ".test-cache");
 
-      const unit = createLegacyUnitOfWork(hook, { flush: undefined });
-      const mark: Mark = via === "direct"
-        ? (change) => hook(change.kind === "bulk" ? undefined : change.path)
-        : (change) => unit.stage(change);
+      let mark: Mark;
+      if (via === "direct") {
+        mark = (change) =>
+          hook(change.kind === "bulk" ? undefined : change.path);
+      } else {
+        const unit = createLegacyUnitOfWork(hook, { flush: undefined });
+        mark = (change) => unit.stage(change);
+      }
       const opsBefore = remote.ops().length;
       await runScript(cacheDir, mark, syncService);
 

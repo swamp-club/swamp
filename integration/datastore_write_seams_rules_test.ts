@@ -209,7 +209,8 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
   // The legacy unit of work forwarding staged changes to the mark hook
-  // (datastore rework Phase 1, swamp-club#2970).
+  // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
+  // phases stage through the unit of work rather than adding calls here.
   "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
   // Repositories notifying their mark hook after a write.
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository (x16)",

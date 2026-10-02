@@ -53,6 +53,8 @@ export interface UnitOfWorkProbe {
    * called.
    */
   holdNext(): () => void;
+  /** How many forwards downstream have started but not yet completed. */
+  pendingForwards(): number;
   /**
    * Runs `listener` each time the unit makes its changes durable downstream.
    * A listener that rejects makes that commit reject with the same error.
@@ -150,22 +152,19 @@ const CASES: readonly ContractCase[] = [
   },
   {
     name: "commit waits for a stage in flight",
-    run: async ({ unit, holdNext, onCommit }) => {
+    run: async ({ unit, holdNext, pendingForwards, onCommit }) => {
       const release = holdNext();
-      let staged = false;
-      const stage = unit.stage(WRITE_A).then(() => {
-        staged = true;
-      });
-      let stagedAtCommit: boolean | undefined;
+      const stage = unit.stage(WRITE_A);
+      let pendingAtCommit: number | undefined;
       onCommit(() => {
-        stagedAtCommit = staged;
+        pendingAtCommit = pendingForwards();
         return Promise.resolve();
       });
       const commit = unit.commit();
       release();
       await stage;
       await commit;
-      assertEquals(stagedAtCommit, true);
+      assertEquals(pendingAtCommit, 0);
     },
   },
   {
