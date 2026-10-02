@@ -53,9 +53,11 @@ type AnyOptions = any;
 
 /**
  * Builds the `data.query` request sent with `--server`. A single-result query
- * asks for two matches, enough to tell one from several; the check itself runs
- * on the client (renderRemoteQueryResponse) so older servers need no protocol
- * change.
+ * asks for two matches, enough to tell one from several. That limit is safe
+ * remotely because the server filters every query by read access, and the
+ * query service fills a filtered limit from records that survive its stale-row
+ * check. The check itself runs on the client (renderRemoteQueryResponse) so
+ * older servers need no protocol change.
  */
 export function remoteQueryPayload(
   predicate: string,

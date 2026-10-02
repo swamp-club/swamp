@@ -736,15 +736,18 @@ applies to matched rows, the projection to output.
 
 ### Single result (`--single`)
 
-`--single` requires exactly one match. The libswamp generator queries with a
-limit of 2 (enough to tell one match from several) and yields `QUERY_NO_MATCH`
-or `QUERY_MULTIPLE_MATCHES` instead of `completed` otherwise, so the command
-exits non-zero. With `--json` the renderer prints the one record (the object the
+`--single` requires exactly one match. The libswamp generator queries without
+a limit and yields `QUERY_NO_MATCH` or `QUERY_MULTIPLE_MATCHES` instead of
+`completed` otherwise, so the command exits non-zero. It does not query with a
+limit of 2: an unfiltered query applies its limit before stale catalog rows are
+dropped, so two scanned rows could leave one live match and hide a second. With `--json` the renderer prints the one record (the object the
 envelope would carry as `results[0]`) or its projected value bare, without the
 `{results, total, limited}` envelope; log output is unchanged. `--single`
 conflicts with `--limit` and requires a predicate. Over `--server` the client
 sends `limit: 2` and applies the same `requireSingleResult` check to the
-response, so the `data.query` protocol is unchanged.
+records in the response, so the `data.query` protocol is unchanged. The limit is
+safe there because the server filters by read access, and a filtered query
+keeps matching until enough rows survive the stale-row check.
 
 ### Implementation
 

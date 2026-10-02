@@ -309,7 +309,7 @@ Deno.test("dataQuery: stringifies non-Error throws in the error event", async ()
   });
 });
 
-Deno.test("dataQuery: single mode queries with a limit of 2 and completes on one match", async () => {
+Deno.test("dataQuery: single mode queries without a limit and completes on one match", async () => {
   const record = makeRecord({ name: "only" });
   const limits: Array<number | undefined> = [];
   const deps: DataQueryDeps = {
@@ -326,7 +326,7 @@ Deno.test("dataQuery: single mode queries with a limit of 2 and completes on one
     }),
   );
 
-  assertEquals(limits, [2]);
+  assertEquals(limits, [undefined]);
   const data = completedOf(events);
   assertEquals(data.results, [record]);
   assertEquals(data.total, 1);

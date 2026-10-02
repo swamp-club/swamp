@@ -81,9 +81,8 @@ export interface DataQueryInput {
 
 /**
  * Checks that a query matched exactly one data artifact. Returns the error to
- * report when it did not, or undefined when it did. Callers that only need to
- * tell one match from several query with a limit of 2, so `total` counts at
- * most two.
+ * report when it did not, or undefined when it did. Any count above one is
+ * several matches; a missing count is none.
  */
 export function requireSingleResult(
   data: { predicate: string; total: number },
@@ -146,8 +145,10 @@ export async function* dataQuery(
       // Unlimited by default — callers pass an explicit limit when they
       // need a cap. `limited` in the completed event reflects whether
       // the query service actually hit the supplied limit. A single-result
-      // query needs only two matches to tell one from several.
-      const limit = input.single ? 2 : input.limit;
+      // query stays unlimited: the query service applies a limit before it
+      // drops stale catalog rows, so a limit of 2 could keep one live match
+      // and miss a second, reporting it as the only one.
+      const limit = input.single ? undefined : input.limit;
 
       try {
         const rawResults = await deps.query(input.predicate, {
