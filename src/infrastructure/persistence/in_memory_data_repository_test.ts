@@ -22,6 +22,7 @@ import { InMemoryUnifiedDataRepository } from "./in_memory_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { RenameForward } from "../../domain/data/repositories.ts";
 import {
   EphemeralBudgetExceededError,
   OwnershipValidationError,
@@ -338,6 +339,26 @@ Deno.test("rename: creates new entry and tombstones old", async () => {
     "new-name",
   );
   assertEquals(content, TEST_CONTENT);
+});
+
+Deno.test("findAllGlobal: reports the rename markers it walks past", async () => {
+  const { repo } = createRepo();
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "old-name" }),
+    TEST_CONTENT,
+  );
+  await repo.rename(TEST_TYPE, TEST_MODEL_ID, "old-name", "new-name");
+
+  const renames: RenameForward[] = [];
+  const results = await repo.findAllGlobal({ renames });
+
+  assertEquals(results.map((r) => r.data.name), ["new-name"]);
+  assertEquals(
+    renames.map((r) => [r.modelId, r.dataName, r.renamedTo]),
+    [[TEST_MODEL_ID, "old-name", "new-name"]],
+  );
 });
 
 Deno.test("getPath: returns synthetic ephemeral path", () => {

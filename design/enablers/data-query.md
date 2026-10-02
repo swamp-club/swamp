@@ -383,8 +383,14 @@ arguments are validated separately (see [model references](#model-references)).
   `DataQueryOptions.onUnresolvedModel`, which only the CLI wires (libswamp
   `reportUnresolvedModels`, rendered as `warnings`). Serve leaves it unset, so
   a client cannot tell a missing model from one it may not read.
-- `querySync()` (CEL `data.query()` in models and workflows), services built
-  without a resolver, and `--select` expressions reject `model()`.
+- Only the repository's query service (`RepositoryContext.dataQueryService`,
+  used by `swamp data query` and serve's `data.query`) has a resolver.
+  `querySync()`, query services built without one (including the composite
+  service CEL `data.query()` uses during model and workflow runs), and
+  `--select` expressions reject `model()`.
+- A name or definition that leaves the catalog (delete, expiry) loses its
+  forward through `catalogRemove`; deleting an older version while a rename
+  marker stays latest keeps it.
 
 ## Catalog
 

@@ -48,8 +48,9 @@ written with the data, so it can differ in each of those cases.
   exists), so check the name if the result is empty.
 - It matches the definition's data in every namespace the catalog holds, not
   only this repository's.
-- Predicates only: not in `--select`, and not in CEL `data.query()` inside
-  models and workflows (use `modelId` and `modelType` there).
+- Predicates only, not `--select`. It is resolved by `swamp data query` and
+  serve's `data.query`; CEL `data.query()` during model and workflow runs
+  rejects it (use `modelId` and `modelType` there).
 
 ## CEL Operators
 

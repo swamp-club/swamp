@@ -2930,6 +2930,11 @@ Deno.test("DataQueryService model(): rejected in --select and with a computed ar
     "not in --select",
   );
   await assertRejects(
+    () => service.query('name == "my-data"', { select: "model(name)" }),
+    UserError,
+    "not in --select",
+  );
+  await assertRejects(
     () => service.query("model(name)"),
     UserError,
     "exactly one string literal",

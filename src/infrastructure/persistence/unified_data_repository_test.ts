@@ -1669,3 +1669,72 @@ Deno.test("rename: a failed forward write leaves the rename in place", async () 
     );
   });
 });
+
+Deno.test("delete: deleting a renamed name ends its forward", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("old"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "old", "new");
+    await repo.delete(testType, modelId, "old");
+
+    assertEquals(
+      catalogStore.findRenameTarget(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      null,
+    );
+    assertEquals(await repo.findByName(testType, modelId, "old"), null);
+  });
+});
+
+Deno.test("delete: deleting an old version keeps the forward of a rename marker that stays latest", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("old"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "old", "new");
+    await repo.delete(testType, modelId, "old", 1);
+
+    assertEquals(
+      (await repo.findByName(testType, modelId, "old"))?.name,
+      "new",
+    );
+    assertEquals(
+      catalogStore.findRenameTarget(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      "new",
+    );
+    assertEquals(
+      catalogStore.hasLatestRow(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      false,
+      "the tombstone is not a catalog row",
+    );
+  });
+});
+
+Deno.test("removeLatestMarker: an expired renamed name ends its forward", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("old"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "old", "new");
+    await repo.removeLatestMarker(testType, modelId, "old");
+
+    assertEquals(
+      catalogStore.findRenameTarget(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      null,
+    );
+  });
+});

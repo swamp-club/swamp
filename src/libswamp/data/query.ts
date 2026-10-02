@@ -86,7 +86,7 @@ export interface DataQueryInput {
 function unresolvedModelWarning(reference: string): string {
   return `model(${
     JSON.stringify(reference)
-  }) matched no model definition, so it matched no data. Check the model name or definition id.`;
+  }): no model definition has that name or id, so nothing matched.`;
 }
 
 /**

@@ -68,7 +68,10 @@ export const dataQueryCommand = withRemoteOptions(
       "Interactive mode",
       "swamp data query",
     )
-    .example("Filter by model", "swamp data query 'modelName == \"scanner\"'")
+    .example(
+      "Filter by the model name stored with the data",
+      "swamp data query 'modelName == \"scanner\"'",
+    )
     .example(
       "Read one item, resolving the model as data get does",
       'swamp data query \'model("scanner") && name == "result"\' --select content',

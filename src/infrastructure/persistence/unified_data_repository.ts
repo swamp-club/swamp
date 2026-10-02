@@ -208,7 +208,40 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       modelId,
       dataName,
     );
+    // A name that leaves the catalog no longer forwards anywhere: a deleted
+    // or expired name reads as not found, as `data get` reads it.
+    this.catalogStore.removeRename(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
     this.catalogStore.recordLocalWrite();
+  }
+
+  /**
+   * Records that `dataName` forwards to `renamedTo`. The files are already
+   * authoritative and the catalog is a projection the next backfill rebuilds,
+   * so a failed write only logs.
+   */
+  private recordRenameForward(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    renamedTo: string,
+  ): void {
+    try {
+      this.catalogStore.recordRename({
+        namespace: this.namespace,
+        type_normalized: type.normalized,
+        model_id: modelId,
+        data_name: dataName,
+        renamed_to: renamedTo,
+      });
+    } catch (error) {
+      logger
+        .warn`Could not record the rename forward ${dataName} -> ${renamedTo} in the data catalog: ${error}. A query by the old name finds the new one after the catalog is next rebuilt.`;
+    }
   }
 
   async findAllGlobal(options?: FindAllGlobalOptions): Promise<
@@ -992,7 +1025,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           dataName,
           newLatest,
         );
-        if (latestData) {
+        if (latestData?.isDeleted) {
+          // The latest version left is a tombstone: the name has no data,
+          // and a rename marker still forwards it.
+          this.catalogRemove(type, modelId, dataName);
+          if (latestData.isRenamed && latestData.renamedTo) {
+            this.recordRenameForward(
+              type,
+              modelId,
+              dataName,
+              latestData.renamedTo,
+            );
+          }
+        } else if (latestData) {
           this.catalogUpsert(type, modelId, latestData);
         }
       } else {
@@ -1209,22 +1254,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       throw tombstoneError;
     }
 
-    // Record the forward so data query can follow it. Outside the rollback
-    // above: the files are already authoritative, and the catalog is a
-    // projection the next backfill rebuilds, so a failed write here must not
-    // undo the rename. catalogRemove above already recorded the local write.
-    try {
-      this.catalogStore.recordRename({
-        namespace: this.namespace,
-        type_normalized: type.normalized,
-        model_id: modelId,
-        data_name: oldName,
-        renamed_to: newName,
-      });
-    } catch (error) {
-      logger
-        .warn`Could not record the rename forward ${oldName} -> ${newName} in the data catalog: ${error}. A query by the old name finds the new one after the catalog is next rebuilt.`;
-    }
+    // Record the forward so data query can follow it, outside the rollback
+    // above so a failed catalog write never undoes the rename. catalogRemove
+    // above already recorded the local write.
+    this.recordRenameForward(type, modelId, oldName, newName);
 
     return {
       oldName,

@@ -276,6 +276,14 @@ export function collectModelReferences(ast: ASTNode): string[] {
       visit(argNodes);
       return;
     }
+    if (value.op === "rcall") {
+      const [name] = value.args as [string, ASTNode, ASTNode[]];
+      if (name === MODEL_FUNCTION) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() is a function, not a method: write ${MODEL_FUNCTION}("my-model").`,
+        );
+      }
+    }
     visit(value.args);
   };
   visit(ast);

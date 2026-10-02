@@ -714,7 +714,14 @@ export class DataQueryService {
         ctx: Record<string, unknown>,
       ) => unknown;
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
-      if (collectModelReferences(selectAst).length > 0) {
+      let selectUsesModel: boolean;
+      try {
+        selectUsesModel = collectModelReferences(selectAst).length > 0;
+      } catch {
+        // A malformed model() call is still a model() call.
+        selectUsesModel = true;
+      }
+      if (selectUsesModel) {
         throw new UserError(
           `${MODEL_FUNCTION}() can only be used in the query predicate, not in --select.`,
         );

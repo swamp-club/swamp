@@ -469,3 +469,31 @@ Deno.test("data query: a read by a renamed data item's old name selects what dat
     assertSameItem(await queryDocumented(repo, "renamer", "x"), fresh);
   });
 });
+
+Deno.test("data query: after a renamed item's old name is deleted, neither data get nor query finds it", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "deleter");
+    await saveData(repo, model, "x");
+    const dataRepo = repo.repoContext.unifiedDataRepo;
+    await dataRepo.rename(repo.modelType, model.id, "x", "y");
+    await dataRepo.delete(repo.modelType, model.id, "x");
+
+    const deps = createDataGetDeps(
+      repo.repoDir,
+      repo.datastoreResolver,
+      repo.repoContext.unifiedDataRepo,
+      repo.repoContext.workflowRepo,
+      repo.repoContext.definitionRepo,
+    );
+    const events = await collect<DataGetEvent>(
+      dataGet(createLibSwampContext(), deps, {
+        includeContent: true,
+        repoDir: repo.repoDir,
+        modelIdOrName: "deleter",
+        dataName: "x",
+      }),
+    );
+    assertEquals(events.at(-1)?.kind, "error");
+    assertEquals(await queryDocumented(repo, "deleter", "x"), []);
+  });
+});

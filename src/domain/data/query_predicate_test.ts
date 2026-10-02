@@ -177,3 +177,11 @@ Deno.test("validateFieldReferences: unknown-field error names the model() functi
   );
   assertStringIncludes(error.message, 'model("<model name or definition id>")');
 });
+
+Deno.test("collectModelReferences: rejects model() written as a method", () => {
+  assertThrows(
+    () => collectModelReferences(ast('"x".model()')),
+    UserError,
+    "is a function, not a method",
+  );
+});

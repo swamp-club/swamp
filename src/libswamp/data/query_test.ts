@@ -320,7 +320,7 @@ Deno.test("dataQuery: reportUnresolvedModels turns each unresolved model() into 
   );
   const warnings = completedOf(events).warnings ?? [];
   assertEquals(warnings.length, 1);
-  assertStringIncludes(warnings[0], 'model("missing") matched no model');
+  assertStringIncludes(warnings[0], 'model("missing"): no model definition');
 });
 
 Deno.test("dataQuery: without reportUnresolvedModels no callback is passed and no warning is added", async () => {
