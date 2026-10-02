@@ -31,7 +31,6 @@ const arbCleanStatement = fc.constantFrom(
   "class C { eval(n: number): number { return n; } }",
   "const o = { eval(x) { return x; }, key: { nested: [1, 2] } };",
   "if (a) { b(); } else { c(); }",
-  "const v = interp.eval(ast, ctx);",
   "type T = { eval(n: Node): Value };",
   "label: for (const x of xs) { break label; }",
   "const q = c ? { a: 1 } : [2];",
@@ -157,7 +156,7 @@ Deno.test("findDynamicCodeExecution property: comments and strings are inert", (
   );
 });
 
-Deno.test("findDynamicCodeExecution property: member calls named eval are allowed", () => {
+Deno.test("findDynamicCodeExecution property: members named eval are always flagged", () => {
   fc.assert(
     fc.property(
       arbObjectName,
@@ -167,7 +166,8 @@ Deno.test("findDynamicCodeExecution property: member calls named eval are allowe
         const source = `${object}${optional ? "?." : "."}eval(${
           args.join(", ")
         });`;
-        assertEquals(findDynamicCodeExecution(source), []);
+        const kinds = findDynamicCodeExecution(source).map((f) => f.kind);
+        assertEquals(kinds, ["eval-member"]);
       },
     ),
     { numRuns: 1000 },

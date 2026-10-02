@@ -203,9 +203,10 @@ for (const [name, source] of ADVERSARIAL) {
 }
 
 const BENIGN: Array<[string, string]> = [
-  ["member call named eval", "const r = interpreter.eval(ast, ctx);"],
-  ["optional member call", "obj?.eval(x);"],
-  ["nested member", "a.window.eval(x);"],
+  [
+    "minified cel-js method definition",
+    "class Ev{eval(t,n){return t.evaluate(this,t,n)}}",
+  ],
   [
     "class method named eval",
     "class Interp { eval(node: string): string { return node; } }",
@@ -287,7 +288,6 @@ const BENIGN: Array<[string, string]> = [
     "shared pool on globalThis",
     "(globalThis as Record<string, unknown>)[KEY] ||= new Map();",
   ],
-  ["member eval without a global value", "f.eval(m.receiver, y);"],
   ["global chain member access", "globalThis.self.fetch(url);"],
   ["eval string without a global value", 'const cmd = "eval";'],
   [
@@ -295,19 +295,9 @@ const BENIGN: Array<[string, string]> = [
     'function line(window: W) { return window ? "x" : ""; }\nconst cols = ["Function", "Errors"];',
   ],
   ["new constructor with arguments", "const c = new this.constructor(value);"],
-  [
-    "parameter named self",
-    "function unsupported(self, type) { throw self.err(type); }\nev.eval(a, b);",
-  ],
-  ["variable named self", "const self = this;\nev.eval(a, b);"],
   ["regex with escaped eval", "const r = /eval\\(/;"],
   ["eval text in a regex", "const s = /x eval(y)/;"],
   ["regex with member call text", "const r = /x\\.eval(y)/;"],
-  [
-    "minified cel-js",
-    "class Ev{eval(t,n){return t.evaluate(this,t,n)}}" +
-    "function g(f,m,y){return f.eval(m.receiver,y)+f.eval(m.arg,y)}",
-  ],
 ];
 
 for (const [name, source] of BENIGN) {
@@ -403,7 +393,15 @@ Deno.test("findDynamicCodeExecution: flags assignment pattern key", () => {
   assertEquals(kinds("({ eval: e } = globalThis);"), ["eval-reference"]);
 });
 
+// Ways to reach the global object that no static check can enumerate. They
+// are all caught because any member named eval or Function is flagged.
 const ALIASED: Array<[string, string]> = [
+  ["valueOf of a global", "const g = globalThis.valueOf();\ng.eval(src);"],
+  [
+    "host-bound this in a callback",
+    'addEventListener("x", function () { this.eval(src); });',
+  ],
+  ["node global alias", "const g = global; g.eval(src);"],
   ["chained global alias", "const g = globalThis.self;\ng.eval(src);"],
   ["self.self alias", 'const g = self.self;\ng.Function("a")();'],
   [
@@ -435,18 +433,34 @@ const ALIASED: Array<[string, string]> = [
 
 for (const [name, source] of ALIASED) {
   Deno.test(`findDynamicCodeExecution: flags ${name}`, () => {
-    const found = kinds(source);
-    assertEquals(found.includes("global-object-alias"), true);
-    assertEquals(found.includes("aliased-eval-member"), true);
+    assertEquals(kinds(source).includes("eval-member"), true);
   });
 }
 
-Deno.test("findDynamicCodeExecution: aliased findings are sorted by position", () => {
+Deno.test("findDynamicCodeExecution: findings are sorted by position", () => {
   const findings = findDynamicCodeExecution(
-    "x.eval(a);\nconst g = globalThis;",
+    "x.eval(a);\nconst g = globalThis;\neval(b);",
   );
   assertEquals(findings, [
-    { line: 1, column: 3, kind: "aliased-eval-member" },
-    { line: 2, column: 11, kind: "global-object-alias" },
+    { line: 1, column: 3, kind: "eval-member" },
+    { line: 3, column: 1, kind: "eval-reference" },
   ]);
 });
+
+const MEMBERS: Array<[string, string]> = [
+  ["member call named eval", "const r = interpreter.eval(ast, ctx);"],
+  ["optional member call", "obj?.eval(x);"],
+  ["nested member", "a.window.eval(x);"],
+  ["member read named eval", "const e = x.eval;"],
+  ["member named Function", 'lib.Function("a");'],
+  [
+    "minified cel-js member calls",
+    "function g(f,m,y){return f.eval(m.receiver,y)}",
+  ],
+];
+
+for (const [name, source] of MEMBERS) {
+  Deno.test(`findDynamicCodeExecution: flags ${name}`, () => {
+    assertEquals(kinds(source), ["eval-member"]);
+  });
+}

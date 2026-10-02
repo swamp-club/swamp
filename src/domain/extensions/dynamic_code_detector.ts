@@ -26,8 +26,9 @@
  * `@babel/parser`, so comments, strings, template text and regex literals
  * never count, and the rules apply to syntax-tree nodes: an `eval` or
  * `Function` identifier is flagged unless its role is positively benign (a
- * property name on an ordinary object, a class member or object-literal key,
- * a TypeScript type). A file that does not parse falls back to the plain
+ * class member or object-literal key, a label, a TypeScript type). A member
+ * access named `eval` or `Function` is flagged on any receiver, because the
+ * receiver may be the global object and no static check can rule that out. A file that does not parse falls back to the plain
  * text check (`eval(` or `new Function(`), so unparseable code is never
  * treated as safe. Aliases built at runtime (`globalThis["ev" + "al"]`)
  * cannot be caught statically.
@@ -44,8 +45,7 @@ export type DynamicCodeKind =
   | "eval-computed-access"
   | "function-constructor"
   | "constructor-call"
-  | "global-object-alias"
-  | "aliased-eval-member"
+  | "eval-member"
   | "unparsed-eval-text";
 
 /** One occurrence of dynamic code execution, 1-based line and column. */
@@ -79,9 +79,6 @@ const GLOBAL_OBJECTS = new Set([
   "parent",
   "top",
 ]);
-
-// Global objects whose use as a value can alias the global `eval`.
-const VALUE_GLOBALS = new Set(["globalThis", "window", "self"]);
 
 const CALL_FORMS = new Set(["call", "apply", "bind"]);
 const COMPUTED_NAMES = new Set(["eval", "Function"]);
@@ -283,15 +280,6 @@ function isGlobalObject(node: AstNode | undefined): boolean {
   return false;
 }
 
-/** The identifier at the root of a member chain: `globalThis` in `globalThis.self`. */
-function chainBase(node: AstNode | undefined): string | undefined {
-  let current = unwrap(node);
-  for (let i = 0; i < MAX_CHAIN && current && isMember(current); i++) {
-    current = unwrap(child(current, "object"));
-  }
-  return current?.type === "Identifier" ? str(current, "name") : undefined;
-}
-
 /**
  * A receiver whose `constructor` is a function constructor: a function,
  * arrow or class literal, or `Object.getPrototypeOf(...)` /
@@ -311,15 +299,6 @@ function isFunctionSource(node: AstNode | undefined): boolean {
   return isMember(callee) && memberName(callee) === "getPrototypeOf";
 }
 
-/** Walks up through TS casts and parentheses from `visit`. */
-function outerExpression(visit: Visit): Visit {
-  let current = visit;
-  while (current.parent && TS_WRAPPERS.has(current.parent.node.type)) {
-    current = current.parent;
-  }
-  return current;
-}
-
 type Role =
   | "property"
   | "key"
@@ -330,10 +309,6 @@ type Role =
 
 class Analyzer {
   private readonly findings: DynamicCodeFinding[] = [];
-  /** Nodes where a global object is used as a value. */
-  private readonly globalValues: AstNode[] = [];
-  /** `x.eval` / `x.Function` member accesses on a non-global receiver. */
-  private readonly evalMembers: AstNode[] = [];
 
   run(program: AstNode): DynamicCodeFinding[] {
     const stack: Visit[] = [{ node: program, key: "", parent: null }];
@@ -355,13 +330,6 @@ class Analyzer {
         }
       }
     }
-    // A member named `eval` is allowed because the receiver is usually an
-    // interpreter, but once a global object escapes into a value the
-    // receiver could be an alias of it. A file with both is flagged.
-    if (this.globalValues.length > 0 && this.evalMembers.length > 0) {
-      for (const n of this.globalValues) this.flag(n, "global-object-alias");
-      for (const n of this.evalMembers) this.flag(n, "aliased-eval-member");
-    }
     return this.findings.sort((a, b) => a.line - b.line || a.column - b.column);
   }
 
@@ -381,13 +349,8 @@ class Analyzer {
       if (name === "eval") this.checkEval(visit);
       else if (name === "Function") this.checkFunction(visit);
       else if (name === "constructor") this.checkConstructor(visit);
-      else if (name && VALUE_GLOBALS.has(name)) this.checkGlobalValue(visit);
     } else if (isMember(node)) {
       if (node.computed === true) this.checkComputed(visit);
-      // `globalThis.self`, `self.self`: a chain that is itself a global.
-      if (isGlobalObject(node) && VALUE_GLOBALS.has(chainBase(node) ?? "")) {
-        this.checkGlobalValue(visit);
-      }
     } else if (isCall(node) || node.type === "NewExpression") {
       this.checkGlobalLookup(node);
     }
@@ -466,11 +429,15 @@ class Analyzer {
   private checkEval(visit: Visit): void {
     const role = this.role(visit);
     if (role === "property") {
-      if (isGlobalObject(child(visit.parent!.node, "object"))) {
-        this.flag(visit.node, "eval-reference");
-      } else {
-        this.evalMembers.push(visit.node);
-      }
+      // A member named `eval` is flagged on any receiver: the receiver may
+      // be the global object (`globalThis.valueOf()`, a host-bound `this`),
+      // and no static check can rule that out.
+      this.flag(
+        visit.node,
+        isGlobalObject(child(visit.parent!.node, "object"))
+          ? "eval-reference"
+          : "eval-member",
+      );
       return;
     }
     if (role === "key" || role === "label") return;
@@ -482,11 +449,12 @@ class Analyzer {
     const role = this.role(visit);
     const node = visit.node;
     if (role === "property") {
-      if (isGlobalObject(child(visit.parent!.node, "object"))) {
-        this.flag(node, "function-constructor");
-      } else {
-        this.evalMembers.push(node);
-      }
+      this.flag(
+        node,
+        isGlobalObject(child(visit.parent!.node, "object"))
+          ? "function-constructor"
+          : "eval-member",
+      );
       return;
     }
     if (role === "key" || role === "label") return;
@@ -579,37 +547,13 @@ class Analyzer {
     const args = call.arguments;
     if (!Array.isArray(args)) return;
     const nodes = args.filter(isNode);
-    const hasGlobal = nodes.some((a) =>
-      isGlobalObject(a) && VALUE_GLOBALS.has(chainBase(a) ?? "")
-    );
+    const hasGlobal = nodes.some((a) => isGlobalObject(a));
     if (!hasGlobal) return;
     for (const a of nodes) {
       if (COMPUTED_NAMES.has(literalKey(a) ?? "")) {
         this.flag(a, "eval-computed-access");
       }
     }
-  }
-
-  /**
-   * Records a global object used as a value — held, passed, or indexed with
-   * a computed key — as opposed to member access, `typeof` or `in`.
-   */
-  private checkGlobalValue(visit: Visit): void {
-    if (this.role(visit) !== "reference") return;
-    const outer = outerExpression(visit);
-    const parent = outer.parent?.node;
-    if (this.isTypeofOperand(outer)) return;
-    if (
-      parent?.type === "BinaryExpression" && outer.key === "right" &&
-      str(parent, "operator") === "in"
-    ) {
-      return;
-    }
-    if (isMember(parent) && outer.key === "object") {
-      if (parent!.computed !== true) return;
-      if (literalKey(child(parent, "property")) !== undefined) return;
-    }
-    this.globalValues.push(visit.node);
   }
 }
 

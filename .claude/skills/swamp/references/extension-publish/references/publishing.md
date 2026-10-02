@@ -518,16 +518,16 @@ The safety analyzer scans all files before push. Issues are classified as
 
 ### Errors (block push)
 
-| Rule                        | Detail                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `eval()` / `new Function()` | Dynamic code execution not allowed in `.ts` files: global `eval` in any form, the `Function` constructor, and `.constructor(...)` calls. Methods and properties named `eval`, and text in strings and comments, are fine, unless the same file also uses `globalThis`, `window` or `self` as a value. The error lists each location as `line:column`. |
-| Symlinks                    | Symlinked files are not allowed                                                                                                                                                                                                                                                                                                                       |
-| Hidden files                | Files starting with `.` are not allowed                                                                                                                                                                                                                                                                                                               |
-| Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` in `additionalFiles`. Files in the `binaries` manifest field are exempt — use `binaries` for executables and files with other extensions.                                                                                                                                                         |
-| File too large              | Individual files must be under 1 MB                                                                                                                                                                                                                                                                                                                   |
-| Total size exceeded         | All files combined must be under 10 MB                                                                                                                                                                                                                                                                                                                |
-| Too many files              | Maximum 150 files per extension                                                                                                                                                                                                                                                                                                                       |
-| Archive too large           | The built `.tar.gz` (after bundling) must be at most 50 MiB — larger archives cannot be installed                                                                                                                                                                                                                                                     |
+| Rule                        | Detail                                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eval()` / `new Function()` | Dynamic code execution not allowed in `.ts` files: global `eval` in any form, the `Function` constructor, `.constructor(...)` calls, and members named `eval` or `Function` (`x.eval(...)`). Methods _defined_ with those names, and text in strings, comments and regexes, are fine. The error lists each location as `line:column`. |
+| Symlinks                    | Symlinked files are not allowed                                                                                                                                                                                                                                                                                                       |
+| Hidden files                | Files starting with `.` are not allowed                                                                                                                                                                                                                                                                                               |
+| Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` in `additionalFiles`. Files in the `binaries` manifest field are exempt — use `binaries` for executables and files with other extensions.                                                                                                                                         |
+| File too large              | Individual files must be under 1 MB                                                                                                                                                                                                                                                                                                   |
+| Total size exceeded         | All files combined must be under 10 MB                                                                                                                                                                                                                                                                                                |
+| Too many files              | Maximum 150 files per extension                                                                                                                                                                                                                                                                                                       |
+| Archive too large           | The built `.tar.gz` (after bundling) must be at most 50 MiB — larger archives cannot be installed                                                                                                                                                                                                                                     |
 
 ### Warnings (prompted)
 
@@ -581,21 +581,21 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                             | Fix                                                                            |
-| --------------------------------- | ------------------------------------------------------------------------------ |
-| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                        |
-| "Not authenticated"               | Run `swamp auth login` first                                                   |
-| "collective does not match"       | Manifest `name` must use `@your-username/...`                                  |
-| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                  |
-| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array         |
-| "Model file not found"            | Check path is relative to `extensions/models/`                                 |
-| "Workflow file not found"         | Check path is relative to `workflows/`                                         |
-| "eval() or new Function()"        | Remove dynamic code execution at the listed `line:column` locations            |
-| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                  |
-| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                      |
-| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                      |
-| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason |
-| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                 |
+| Error                             | Fix                                                                                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                                                                            |
+| "Not authenticated"               | Run `swamp auth login` first                                                                                                       |
+| "collective does not match"       | Manifest `name` must use `@your-username/...`                                                                                      |
+| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                                                                      |
+| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array                                                             |
+| "Model file not found"            | Check path is relative to `extensions/models/`                                                                                     |
+| "Workflow file not found"         | Check path is relative to `workflows/`                                                                                             |
+| "eval() or new Function()"        | Remove dynamic code at the listed `line:column` locations; rename a method called as `x.eval(...)`, or import the library from npm |
+| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                                                                      |
+| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                                                                          |
+| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                                                                          |
+| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason                                                     |
+| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                                                                     |
 
 ## Related Skills
 

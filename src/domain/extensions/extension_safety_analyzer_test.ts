@@ -106,18 +106,33 @@ Deno.test("analyzeExtensionSafety errors on new Function()", async () => {
   );
 });
 
-Deno.test("analyzeExtensionSafety allows methods and member calls named eval", async () => {
+Deno.test("analyzeExtensionSafety allows methods named eval and eval text in strings", async () => {
   await withTempFiles(
     {
       "interp.ts":
         "class Interp { eval(node: string): string { return node; } }\n" +
-        'const r = new Interp().eval("x");\n' +
         "// eval(x) and new Function(x) in a comment\n" +
         'const s = "eval(" + retrieval(1);\n',
     },
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.errors, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety flags a member call named eval", async () => {
+  await withTempFiles(
+    { "interp.ts": 'const r = new Interp().eval("x");\n' },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors.length, 1);
+      assertEquals(
+        result.errors[0].message.includes(
+          "line 1:24 member named eval or Function",
+        ),
+        true,
+      );
     },
   );
 });

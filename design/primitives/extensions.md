@@ -1098,16 +1098,15 @@ Every TypeScript file in an extension is checked before push and after pull.
 - Total extension size over 10 MB
 - More than 150 files
 - Dynamic code execution (code injection): the global `eval` in any form, the
-  `Function` constructor, and `.constructor(...)` calls. The source is parsed
-  with `@babel/parser` and the rules apply to the syntax tree, so methods and
-  properties named `eval`, TypeScript types, and text in strings and comments
-  do not count (`src/domain/extensions/dynamic_code_detector.ts`). Because a
-  member named `eval` could be reached through an alias of a global object, a
-  file that both uses `globalThis`, `window` or `self` as a value (stored,
-  passed, or indexed with a computed key) and accesses a member named `eval` or
-  `Function` is refused. A file that does not parse falls back to the plain
-  text check for `eval(` and `new Function(`. Not caught: aliases built at
-  runtime (a key assembled from strings), a `.constructor` stored before it is
+  `Function` constructor, `.constructor(...)` calls, and any member access
+  named `eval` or `Function` (`x.eval(...)`), because the receiver may be the
+  global object and no static check can rule that out. The source is parsed
+  with `@babel/parser` and the rules apply to the syntax tree, so method and
+  property *definitions* named `eval`, TypeScript types, and text in strings,
+  comments and regexes do not count
+  (`src/domain/extensions/dynamic_code_detector.ts`). A file that does not
+  parse falls back to the plain text check for `eval(` and `new Function(`.
+  Not caught: names assembled at runtime, a `.constructor` stored before it is
   called (`const F = fn.constructor; F(src)`), and `new x.constructor(...)`
   when `x` is not a function or class literal. The check is a hygiene gate,
   not a sandbox.
