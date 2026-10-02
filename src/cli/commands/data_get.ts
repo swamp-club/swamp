@@ -36,6 +36,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
+  formatCommandTarget,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -139,7 +140,15 @@ export const dataGetCommand = withRemoteOptions(
           },
         },
       );
-      renderDataGet(response.data as unknown as DataGetData, cliCtx.outputMode);
+      renderDataGet(
+        response.data as unknown as DataGetData,
+        cliCtx.outputMode,
+        {
+          commandTarget: formatCommandTarget({
+            server: options.server as string | undefined,
+          }),
+        },
+      );
       return;
     }
 
@@ -157,7 +166,11 @@ export const dataGetCommand = withRemoteOptions(
       repoContext.workflowRepo,
     );
 
-    const renderer = createDataGetRenderer(cliCtx.outputMode);
+    const renderer = createDataGetRenderer(cliCtx.outputMode, {
+      commandTarget: formatCommandTarget({
+        repoDir: options.repoDir as string | undefined,
+      }),
+    });
     await consumeStream(
       dataGet(ctx, deps, {
         modelIdOrName,

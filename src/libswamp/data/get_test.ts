@@ -570,7 +570,8 @@ Deno.test("dataGet: a model-scoped read is deprecated and names the equivalent q
 
   assertEquals(
     data.replacementQuery,
-    `swamp data query 'modelName == "my-model" && name == "output" && version == 1' --select content`,
+    `swamp data query 'modelType == "model/type" && modelId == "00000000-0000-4000-8000-000000000001" && ` +
+      `name == "output" && version == 1' --select content`,
   );
   assertEquals(data.warnings?.length, 1);
   assertStringIncludes(data.warnings![0], "swamp data get is deprecated");
@@ -588,7 +589,8 @@ Deno.test("dataGet: a metadata-only read's query lists metadata instead of selec
 
   assertEquals(
     data.replacementQuery,
-    `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`,
+    `swamp data query 'modelType == "model/type" && modelId == "00000000-0000-4000-8000-000000000001" && ` +
+      `name == "output" && version == 1'`,
   );
 });
 
@@ -672,14 +674,18 @@ Deno.test("dataGet: a read of a pinned version does not suggest dropping it", as
   assertEquals(data.warnings![0].includes("drop the version clause"), false);
 });
 
-Deno.test("dataGet: the model-scoped query names the model as the data recorded it", async () => {
+Deno.test("dataGet: the model-scoped query names the owner by id, not by a name another model may reuse", async () => {
   const renamed = { ...makeDataItem(), tags: { modelName: "old-name" } };
   const data = await readCompleted(
     makeDeps({ findDataByName: () => Promise.resolve(renamed) }),
     { modelIdOrName: "my-model", dataName: "output" },
   );
 
-  assertStringIncludes(data.replacementQuery!, 'modelName == "old-name"');
+  assertStringIncludes(
+    data.replacementQuery!,
+    'modelId == "00000000-0000-4000-8000-000000000001"',
+  );
+  assertEquals(data.replacementQuery!.includes("modelName"), false);
 });
 
 Deno.test("dataGet: a binary item names no replacement query, since data query cannot return it yet", async () => {
@@ -691,26 +697,39 @@ Deno.test("dataGet: a binary item names no replacement query, since data query c
 
   assertEquals(data.replacementQuery, undefined);
   assertEquals(data.warnings?.length, 1);
-  assertStringIncludes(data.warnings![0], "cannot return binary content");
+  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
 });
 
-Deno.test("dataGet: an item written without a modelName tag names no replacement query", async () => {
-  const untagged = { ...makeDataItem(), tags: {} };
+Deno.test("dataGet: text content that is not UTF-8 names no content query", async () => {
+  const text = { ...makeDataItem(), contentType: "text/plain" };
+  // A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
+  const utf16 = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
   const data = await readCompleted(
-    makeDeps({ findDataByName: () => Promise.resolve(untagged) }),
+    makeDeps({
+      findDataByName: () => Promise.resolve(text),
+      getContent: () => Promise.resolve(utf16),
+    }),
     { modelIdOrName: "my-model", dataName: "output" },
   );
 
+  assertEquals(data.contentEncoding, "base64");
   assertEquals(data.replacementQuery, undefined);
-  assertStringIncludes(
-    data.warnings![0],
-    "before data recorded its model name",
+  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
+});
+
+Deno.test("dataGet: a metadata-only read of a binary item still names a query", async () => {
+  const binary = { ...makeDataItem(), contentType: "image/png" };
+  const data = await readCompleted(
+    makeDeps({ findDataByName: () => Promise.resolve(binary) }),
+    { modelIdOrName: "my-model", dataName: "output", includeContent: false },
   );
+
+  assertStringIncludes(data.replacementQuery!, 'name == "output"');
 });
 
 Deno.test("dataGet: workflow data that records no run is queried by its owner", async () => {
   const report: WorkflowDataItemInfo = {
-    data: { ...makeDataItem(), tags: { modelName: "wf" } },
+    data: makeDataItem(),
     modelType: makeModelType(),
     modelId: "id-report",
     modelName: "wf",
@@ -726,7 +745,7 @@ Deno.test("dataGet: workflow data that records no run is queried by its owner", 
 
   assertEquals(
     data.replacementQuery,
-    `swamp data query 'modelType == "model/type" && modelName == "wf" && ` +
+    `swamp data query 'modelType == "model/type" && modelId == "id-report" && ` +
       `name == "output" && version == 1' --select content`,
   );
 });
@@ -749,4 +768,61 @@ Deno.test("dataGet: a failing owner check leaves that producer out instead of fa
   });
 
   assertEquals(data.warnings?.length, 1);
+});
+
+Deno.test("dataGet: the shared-name notice lists each other producer as an alternative", async () => {
+  const deps = makeDeps({
+    findDataInWorkflowRun: () =>
+      Promise.resolve({
+        item: producedBy("setup", "checkout", "git", "id-git"),
+        otherProducers: [
+          producedBy("reviews", "code-review", "review-code", "id-review"),
+        ],
+      }),
+  });
+
+  const data = await readCompleted(deps, {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(data.alternatives?.length, 1);
+  const [alt] = data.alternatives!;
+  assertEquals(
+    [alt.jobName, alt.stepName, alt.modelName, alt.modelId],
+    ["reviews", "code-review", "review-code", "id-review"],
+  );
+  assertStringIncludes(alt.replacementQuery!, 'stepName == "code-review"');
+  assertStringIncludes(data.warnings![1], alt.replacementQuery!);
+});
+
+Deno.test("dataGet: a pinned read still warns about producers at another version", async () => {
+  const selected = producedBy("main", "build", "my-model", PIN.modelId);
+  const other = {
+    ...producedBy("main", "lint", "linter", "id-linter"),
+  };
+  other.data = { ...other.data, version: 2 };
+  const versionsAsked: Array<number | undefined> = [];
+  const deps = pinnedDeps({
+    findDataInWorkflowRun: (_run, _name, version) => {
+      versionsAsked.push(version);
+      // The pinned lookup (version 1) sees only the selected item; the
+      // caller's own constraint (none) also sees the v2 producer.
+      return Promise.resolve(
+        version === PIN.version
+          ? { item: selected, otherProducers: [] }
+          : { item: other, otherProducers: [selected] },
+      );
+    },
+  });
+
+  const data = await readCompleted(deps, {
+    workflowName: "wf",
+    dataName: "output",
+    expectedOwner: PIN,
+  });
+
+  assertEquals(versionsAsked, [PIN.version, undefined]);
+  assertEquals(data.modelId, PIN.modelId);
+  assertEquals(data.alternatives?.map((alt) => alt.stepName), ["lint"]);
 });

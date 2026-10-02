@@ -51,6 +51,8 @@ import {
   Definition as DefinitionEntity,
 } from "../src/domain/definitions/definition.ts";
 import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { Data } from "../src/domain/data/data.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
@@ -1582,6 +1584,92 @@ Deno.test("serve id-deny conformance: workflow-scoped data.get never names a sam
     const shown = warningsOf(await sendRequest(open, get));
     assertEquals(shown.length, 2, JSON.stringify(shown));
     assert(shown[1].includes("prod-db"), shown[1]);
+  });
+});
+
+Deno.test("serve id-deny conformance: a workflow-scoped data.get names a same-named producer at another version (swamp-club#2948)", async () => {
+  await withFixtures(async (f) => {
+    const lintModel = await saveModel(f.repo, "lint-db");
+    const save = async (model: Definition) => {
+      const data = Data.create({
+        name: "versioned",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName: model.name },
+        ownerDefinition: {
+          ownerType: "model-method",
+          ownerRef: `${f.repo.modelType.normalized}:${model.id}`,
+        },
+      });
+      const saved = await f.repo.repoContext.unifiedDataRepo.save(
+        f.repo.modelType,
+        model.id,
+        data,
+        new TextEncoder().encode("{}"),
+      );
+      return { data, version: saved.version };
+    };
+    await save(f.devModel);
+    const devV2 = await save(f.devModel);
+    const lintV1 = await save(lintModel);
+    assertEquals([devV2.version, lintV1.version], [2, 1]);
+
+    const flow = await saveWorkflow(f.repo, "versioned-flow", f.devModel);
+    const created = WorkflowRun.create(flow).toData();
+    const artifact = (saved: { data: Data; version: number }) => ({
+      dataId: saved.data.id,
+      name: saved.data.name,
+      version: saved.version,
+      tags: { ...saved.data.tags },
+    });
+    await f.repo.repoContext.workflowRunRepo.save(
+      flow.id,
+      WorkflowRun.fromData({
+        ...created,
+        status: "succeeded",
+        jobs: created.jobs.map((job) => ({
+          ...job,
+          status: "succeeded",
+          steps: job.steps.map((step) => ({
+            ...step,
+            status: "succeeded",
+            dataArtifacts: [artifact(devV2), artifact(lintV1)],
+          })),
+        })),
+      }),
+    );
+
+    const open = createServeCtx(f.repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+      grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+    ]);
+    const frames = await sendRequest(
+      open,
+      request("data.get", {
+        workflowName: "versioned-flow",
+        dataName: "versioned",
+      }),
+    );
+    assertAllowed(frames, "data.get");
+    const reply = frames.find((fr) => fr.type === "data.get") as {
+      payload?: {
+        data?: {
+          modelName?: string;
+          version?: number;
+          alternatives?: Array<{ modelName: string; version: number }>;
+        };
+      };
+    };
+    const data = reply.payload?.data;
+    assertEquals([data?.modelName, data?.version], ["dev-db", 2]);
+    assertEquals(
+      data?.alternatives?.map((alt) => [alt.modelName, alt.version]),
+      [["lint-db", 1]],
+    );
   });
 });
 

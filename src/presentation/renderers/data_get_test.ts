@@ -22,7 +22,7 @@ import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { DataGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createDataGetRenderer } from "./data_get.ts";
+import { createDataGetRenderer, withCommandTarget } from "./data_get.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // noColor: true selects LogTape's text formatter, so a captured record is
@@ -267,4 +267,84 @@ Deno.test("LogDataGetRenderer: logs each warning verbatim, braces included", () 
     })
   );
   assertStringIncludes(output, warning);
+});
+
+Deno.test("withCommandTarget: appends the target to every query the read names", () => {
+  const own = `swamp data query 'name == "output" && version == 1'`;
+  const other = `swamp data query 'name == "output" && version == 2'`;
+  const data = withCommandTarget({
+    ...testData,
+    replacementQuery: own,
+    alternatives: [{
+      modelName: "other",
+      modelType: "command/shell",
+      modelId: "id-other",
+      version: 2,
+      replacementQuery: other,
+    }],
+    warnings: [
+      `Read this item with: ${own}`,
+      `The others: x, read with: ${other}`,
+    ],
+  }, " --repo-dir /srv/repo");
+
+  assertEquals(data.replacementQuery, `${own} --repo-dir /srv/repo`);
+  assertEquals(
+    data.alternatives?.[0].replacementQuery,
+    `${other} --repo-dir /srv/repo`,
+  );
+  assertEquals(data.warnings, [
+    `Read this item with: ${own} --repo-dir /srv/repo`,
+    `The others: x, read with: ${other} --repo-dir /srv/repo`,
+  ]);
+});
+
+Deno.test("withCommandTarget: a query that prefixes another is not matched inside it", () => {
+  const short = `swamp data query 'name == "a"'`;
+  const long = `${short} --select content`;
+  const data = withCommandTarget({
+    ...testData,
+    replacementQuery: long,
+    alternatives: [{
+      modelName: "m",
+      modelType: "t",
+      modelId: "i",
+      version: 1,
+      replacementQuery: short,
+    }],
+    warnings: [`${long} | ${short}`],
+  }, " --server wss://host");
+
+  assertEquals(data.warnings, [
+    `${long} --server wss://host | ${short} --server wss://host`,
+  ]);
+});
+
+Deno.test("withCommandTarget: leaves the read unchanged without a target", () => {
+  const data = { ...testData, replacementQuery: "swamp data query 'x'" };
+  assertEquals(withCommandTarget(data, ""), data);
+});
+
+Deno.test("JsonDataGetRenderer: prints queries with the command target", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createDataGetRenderer("json", {
+      commandTarget: " --repo-dir /srv/repo",
+    });
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: { ...testData, replacementQuery: "swamp data query 'x'" },
+      }]),
+      renderer.handlers(),
+    );
+    assertEquals(
+      JSON.parse(logs[0]).replacementQuery,
+      "swamp data query 'x' --repo-dir /srv/repo",
+    );
+  } finally {
+    console.log = originalLog;
+  }
 });

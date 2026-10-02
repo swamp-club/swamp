@@ -41,6 +41,11 @@ highest-versioned match (the first step on a tie) when several steps in a
 run wrote the same data name
 (swamp-club#2948), so it warns with the other matches; a query that names
 `workflowRunId`, `jobName` and `stepName` selects one item.
+The printed `replacementQuery` names a model's data by `modelType` and
+`modelId`, which survive a rename, and report output (which records no run) the
+same way. A read whose content is not UTF-8 text has no replacement yet
+(swamp-club#2959). The CLI appends its own `--server` / `--repo-dir` to every
+printed query.
 
 ### CLI shortcuts
 
@@ -232,6 +237,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
 | `modelName` | string | Owning model name |
+| `modelId` | string | Owning model id (stable across renames) |
 | `modelType` | string | Owning model type |
 | `specName` | string | Output spec name |
 | `dataType` | string | `"resource"` or `"file"` |
@@ -335,7 +341,8 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 ```
 Error: Unknown field "model" in query predicate.
 Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
-  jobName, lifetime, modelName, modelType, name, ns, ownerRef, ownerType, size,
+  jobName, lifetime, modelId, modelName, modelType, name, ns, ownerRef,
+  ownerType, size,
   source, specName, stepName, streaming, tags, version, workflowName,
   workflowRunId
 ```

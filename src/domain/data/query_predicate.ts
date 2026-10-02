@@ -29,6 +29,7 @@ export const QUERY_FIELDS = new Set([
   "attributes",
   "tags",
   "modelName",
+  "modelId",
   "modelType",
   "specName",
   "dataType",

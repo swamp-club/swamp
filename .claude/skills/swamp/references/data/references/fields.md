@@ -9,6 +9,7 @@
 | `version`     | int    | Latest version number                                                               |
 | `createdAt`   | string | ISO-8601 timestamp                                                                  |
 | `modelName`   | string | Owning model name                                                                   |
+| `modelId`     | string | Owning model id (definition id; workflow id for workflow-scope data)                |
 | `modelType`   | string | Owning model type (normalized)                                                      |
 | `specName`    | string | Output spec name                                                                    |
 | `dataType`    | string | `"resource"` or `"file"`                                                            |

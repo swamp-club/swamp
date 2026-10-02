@@ -30,6 +30,7 @@ export interface DataQueryTarget {
   dataName: string;
   version?: number;
   modelType?: string;
+  modelId?: string;
   modelName?: string;
   workflowRunId?: string;
   jobName?: string;
@@ -59,6 +60,9 @@ export function dataQueryPredicate(target: DataQueryTarget): string {
   }
   if (target.modelType !== undefined) {
     clauses.push(`modelType == ${celString(target.modelType)}`);
+  }
+  if (target.modelId !== undefined) {
+    clauses.push(`modelId == ${celString(target.modelId)}`);
   }
   if (target.modelName !== undefined) {
     clauses.push(`modelName == ${celString(target.modelName)}`);

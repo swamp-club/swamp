@@ -35,6 +35,8 @@ const env = new Environment({
 const arbTarget: fc.Arbitrary<DataQueryTarget> = fc.record({
   dataName: fc.string({ minLength: 1 }),
   version: fc.option(fc.integer({ min: 1, max: 1000 }), { nil: undefined }),
+  modelType: fc.option(fc.string(), { nil: undefined }),
+  modelId: fc.option(fc.uuid(), { nil: undefined }),
   modelName: fc.option(fc.string(), { nil: undefined }),
   workflowRunId: fc.option(fc.uuid(), { nil: undefined }),
   jobName: fc.option(fc.string(), { nil: undefined }),
@@ -46,6 +48,8 @@ function recordFor(target: DataQueryTarget): Record<string, unknown> {
   return {
     name: target.dataName,
     version: target.version ?? 1,
+    modelType: target.modelType ?? "",
+    modelId: target.modelId ?? "",
     modelName: target.modelName ?? "",
     workflowRunId: target.workflowRunId ?? "",
     jobName: target.jobName ?? "",
