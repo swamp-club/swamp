@@ -275,7 +275,10 @@ async function saveDefinition(
 
 type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
 
-/** Takes the model lock (pulling), invalidates as the CLI does, runs fn, then flushes. */
+/**
+ * Takes the model lock (pulling), invalidates as the CLI does, runs fn, then
+ * flushes.
+ */
 async function withModelLock<T>(
   repoDir: string,
   modelId: string,
@@ -302,7 +305,10 @@ async function withModelLock<T>(
   }
 }
 
-/** Opens a repo without pulling, as the read-only `data get`/`data query` do. */
+/**
+ * Opens a repo without pulling, as the read-only `data get` and `data query`
+ * do.
+ */
 async function withReader(
   repoDir: string,
   modelId: string,

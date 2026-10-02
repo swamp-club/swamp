@@ -1363,7 +1363,7 @@ Its callers:
 - `model_resolver.ts`: resolves CEL expressions during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
-The async `DataQueryService.query()`, behind `data query`, serve's
+The async `DataQueryService.query()`, which backs `data query`, serve's
 `data.query` and extension `queryData`, works around it. `fromRow` reports a
 needed body that is not on local disk, and `query()` downloads those rows
 through the async `getContent()` and matches again, until no row is left
