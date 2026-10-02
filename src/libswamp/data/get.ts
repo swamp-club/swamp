@@ -97,6 +97,12 @@ export interface DataGetData {
    * run, job and step that produced the item.
    */
   replacementQuery?: string;
+  /**
+   * For a workflow-scoped read without `--run`, the `swamp data query`
+   * command that follows the workflow's latest run, as this read did, where
+   * `replacementQuery` pins the run it found (swamp-club#2957).
+   */
+  latestRunQuery?: string;
   /** Notices about this read, such as the deprecation of `data get`. */
   warnings?: string[];
   /**
@@ -654,12 +660,13 @@ async function* workflowScopedGet(
     output.contentEncoding,
   );
   output.replacementQuery = replacement.query;
+  output.latestRunQuery = latestRunCommand(
+    input,
+    located.location,
+    replacement,
+  );
   output.warnings = [
-    deprecationWarning(
-      replacement,
-      false,
-      latestRunCommand(input, located.location, replacement),
-    ),
+    deprecationWarning(replacement, false, output.latestRunQuery),
   ];
   const shared = await sharedNameNotice(
     located.location,

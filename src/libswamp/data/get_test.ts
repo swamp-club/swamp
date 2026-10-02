@@ -847,6 +847,21 @@ Deno.test("dataGet: a workflow read without --run names the query that follows t
   );
 });
 
+Deno.test("dataGet: a workflow read without --run carries the latest-run query as a field", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(
+    data.latestRunQuery,
+    `swamp data query 'workflowRunId == latestRun("wf") && jobName == ` +
+      `"main" && stepName == "build" && name == "output" && version >= 0' ` +
+      `--select content`,
+  );
+  assertStringIncludes(data.warnings![0], data.latestRunQuery!);
+});
+
 Deno.test("dataGet: the latest-run query names the workflow as resolved, not as given", async () => {
   const data = await readCompleted(makeDeps(), {
     workflowName: "00000000-0000-4000-8000-0000000000aa",
@@ -878,6 +893,7 @@ Deno.test("dataGet: a read of a named run gets no latest-run query", async () =>
   });
 
   assertEquals(data.warnings![0].includes(LATEST_RUN_NOTICE), false);
+  assertEquals(data.latestRunQuery, undefined);
 });
 
 Deno.test("dataGet: workflow data that records no run gets no latest-run query", async () => {

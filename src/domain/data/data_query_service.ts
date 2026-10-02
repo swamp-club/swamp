@@ -47,7 +47,9 @@ const logger = getLogger(["swamp", "domain", "data", "query"]);
 
 function latestRunUnavailable(): UserError {
   return new UserError(
-    `${LATEST_RUN_FUNCTION}() is only available in swamp data query`,
+    `${LATEST_RUN_FUNCTION}() is only available in swamp data query; ` +
+      `here, compare workflowRunId with the run id as a string, e.g. ` +
+      `workflowRunId == "<run-id>"`,
   );
 }
 

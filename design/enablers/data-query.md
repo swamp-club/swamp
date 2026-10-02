@@ -62,7 +62,8 @@ A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. `latestRun("<w>")` follows a
 workflow's latest run, as `data get --workflow` does without `--run` (see
 [Latest run of a workflow](#latest-run-of-a-workflow)). A workflow read without
-`--run` also names this latest-run query in its deprecation warning.
+`--run` also names this latest-run query, in its deprecation warning and as
+`latestRunQuery` in `--json` output.
 
 The remaining read subcommands are shortcuts:
 

@@ -2908,7 +2908,8 @@ Deno.test("DataQueryService.querySync: latestRun is a UserError, not an empty re
   assertThrows(
     () => service.querySync('workflowRunId == latestRun("deploy")'),
     UserError,
-    "latestRun() is only available in swamp data query",
+    "latestRun() is only available in swamp data query; here, compare " +
+      'workflowRunId with the run id as a string, e.g. workflowRunId == "<run-id>"',
   );
   catalog.close();
 });

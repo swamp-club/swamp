@@ -53,7 +53,8 @@ export interface DataGetRenderOptions {
 
 /**
  * Appends `commandTarget` to every query the read names: its replacement
- * query, each alternative's, and where they appear inside the warnings.
+ * query, its latest-run query, each alternative's, and where they appear
+ * inside the warnings.
  */
 export function withCommandTarget(
   data: DataGetData,
@@ -62,6 +63,7 @@ export function withCommandTarget(
   if (!commandTarget) return data;
   const queries = [
     data.replacementQuery,
+    data.latestRunQuery,
     ...(data.alternatives ?? []).map((alt) => alt.replacementQuery),
   ].filter((query): query is string => query !== undefined);
   if (queries.length === 0) return data;
@@ -79,6 +81,7 @@ export function withCommandTarget(
     ...data,
     replacementQuery: data.replacementQuery &&
       retarget(data.replacementQuery),
+    latestRunQuery: data.latestRunQuery && retarget(data.latestRunQuery),
     warnings: data.warnings?.map(retarget),
     alternatives: data.alternatives?.map((alt) => ({
       ...alt,

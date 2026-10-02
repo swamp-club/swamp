@@ -77,6 +77,10 @@ export const dataQueryCommand = withRemoteOptions(
     .example(
       "Project a single field",
       "swamp data query 'dataType == \"resource\"' --select data.name",
+    )
+    .example(
+      "Read from a workflow's latest run",
+      "swamp data query 'workflowRunId == latestRun(\"deploy\") && version >= 0'",
     ),
 ).action(async function (options: AnyOptions, predicate?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "query"]);
