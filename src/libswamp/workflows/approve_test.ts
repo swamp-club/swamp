@@ -25,6 +25,7 @@ import {
   type WorkflowApproveDeps,
   type WorkflowApproveEvent,
 } from "./approve.ts";
+import { workflowReject, type WorkflowRejectEvent } from "./reject.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -323,4 +324,54 @@ Deno.test("workflowApprove: an unreadable linked run after the decision is saved
     assertEquals(last.data.allGatesDecided, false);
     assertEquals(last.data.awaitingParent, undefined);
   }
+});
+
+Deno.test("workflowApprove: a run failed by a rejected parallel gate names --from that gate", async () => {
+  // Two parallel jobs, each suspended at its own gate (swamp-club#2899).
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: ["side", "main"].map((jobName) =>
+      Job.create({
+        name: jobName,
+        steps: [
+          Step.create({
+            name: `${jobName}-gate`,
+            task: StepTask.manualApproval(`Approve ${jobName}`),
+          }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    const step = job.steps[0];
+    step.start();
+    step.waitForApproval();
+  }
+  run.suspend();
+  const deps = makeDeps(workflow, run);
+  const rejected = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "side-gate",
+      runId: run.id,
+      decidedBy: "approver",
+    }),
+  );
+  assertEquals(rejected.at(-1)?.kind, "completed");
+  assertEquals(run.getJob("main")!.steps[0].status, "waiting_approval");
+
+  const last = await approve(deps, "main-gate");
+
+  if (last?.kind !== "error") {
+    throw new Error(`expected an error event, got ${last?.kind}`);
+  }
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(
+    last.error.message,
+    `No suspended runs found for workflow "gated". The latest run is failed. ` +
+      `Ask again with 'swamp workflow resume gated --run ${run.id} --from side-gate'.`,
+  );
 });

@@ -23,6 +23,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createWorkflowRejectDeps,
+  userErrorFromSwampError,
   workflowReject,
   type WorkflowRejectData,
   type WorkflowRejectEvent,
@@ -114,7 +115,7 @@ export const workflowRejectCommand = withRemoteOptions(
             }
           },
           error: (e) => {
-            throw new Error(e.error.message);
+            throw userErrorFromSwampError(e.error);
           },
         },
       );
@@ -155,7 +156,7 @@ export const workflowRejectCommand = withRemoteOptions(
             }
           },
           error: (e) => {
-            throw new Error(e.error.message);
+            throw userErrorFromSwampError(e.error);
           },
         },
       );
