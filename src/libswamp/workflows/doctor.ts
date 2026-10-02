@@ -37,19 +37,27 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["doctor-workflows"]);
 
-/** Per-file result: pass means the file loaded cleanly. */
+/**
+ * Per-file result: pass means the file loaded cleanly; warn means it is not
+ * broken but no workflow loader reads it.
+ */
 export interface DoctorWorkflowResult {
   file: string;
   name: string | null;
-  status: "pass" | "fail";
+  status: "pass" | "warn" | "fail";
   error?: string;
+  warning?: string;
 }
 
-/** Final report shape. */
+/**
+ * Final report shape. Overall status is fail if any file failed, else warn
+ * if any file warned, else pass.
+ */
 export interface DoctorWorkflowsReport {
-  overallStatus: "pass" | "fail";
+  overallStatus: "pass" | "warn" | "fail";
   workflows: DoctorWorkflowResult[];
   totalPassed: number;
+  totalWarnings: number;
   totalFailed: number;
 }
 
@@ -62,8 +70,9 @@ export type DoctorWorkflowsEvent =
 export interface DoctorWorkflowsDeps {
   /**
    * Repo-owned workflow dirs, read like `YamlWorkflowRepository`: top level
-   * only. `workflow-*.yaml` files must load as workflows; any other `*.yaml`
-   * or `*.yml` file there fails, because the loader never reads it.
+   * only. `workflow-*.yaml` files must load as workflows. Any other `*.yaml`
+   * or `*.yml` file there is never loaded and is reported as a warning, unless
+   * it is a `*.yaml` file that fails to load, which fails as it always has.
    */
   workflowDirs: string[];
   /**
@@ -148,82 +157,120 @@ async function listYamlFiles(
 }
 
 /**
- * Loads one file the way the loader would and reports the outcome, or
- * returns null for an extension file that is not a workflow.
+ * Loads one file the way the loader would and reports the outcome, with the
+ * content when it could be read, or returns null for an extension file that
+ * is not a workflow.
  */
-async function checkWorkflowFile(
+async function loadWorkflowFile(
   filePath: string,
-  mode: CheckMode,
-): Promise<DoctorWorkflowResult | null> {
+  extension: boolean,
+): Promise<{ result: DoctorWorkflowResult; content?: string } | null> {
   let content: string;
   try {
     content = await Deno.readTextFile(filePath);
   } catch (readError) {
     return {
-      file: filePath,
-      name: fallbackName(filePath),
-      status: "fail",
-      error: readError instanceof Error ? readError.message : String(readError),
-    };
-  }
-
-  const nameFromContent = (): string | null => {
-    try {
-      return (parseYaml(content) as { name?: string })?.name ?? null;
-    } catch {
-      return fallbackName(filePath);
-    }
-  };
-
-  if (mode === "not-loaded") {
-    // Log mode labels a result by its YAML name, so the message carries the
-    // full path; renaming is only advised for a file that is a workflow.
-    const looksLikeWorkflow = (() => {
-      try {
-        return isWorkflowDocument(parseYaml(content));
-      } catch {
-        return false;
-      }
-    })();
-    const rule = `swamp only reads files named workflow-<name>.yaml in ${
-      dirname(filePath)
-    }.`;
-    return {
-      file: filePath,
-      name: nameFromContent(),
-      status: "fail",
-      error: looksLikeWorkflow
-        ? `Not loaded: ${rule} Rename ${filePath} to workflow-<name>.yaml, ` +
-          `or remove it if it is a stale copy of a workflow that already loads.`
-        : `Not loaded: ${rule} ${filePath} is not a workflow; move it out of ` +
-          `that directory, or rename it to workflow-<name>.yaml if it is ` +
-          `meant to be one.`,
+      result: {
+        file: filePath,
+        name: fallbackName(filePath),
+        status: "fail",
+        error: readError instanceof Error
+          ? readError.message
+          : String(readError),
+      },
     };
   }
 
   try {
     const data = parseYaml(content) as WorkflowData;
-    if (mode === "extension" && !isWorkflowDocument(data)) {
+    if (extension && !isWorkflowDocument(data)) {
       logger
         .debug`Skipping ${filePath}: not a workflow (no top-level jobs key)`;
       return null;
     }
     Workflow.fromData(data);
     return {
-      file: filePath,
-      name: data.name ?? fallbackName(filePath),
-      status: "pass",
+      result: {
+        file: filePath,
+        name: data.name ?? fallbackName(filePath),
+        status: "pass",
+      },
+      content,
     };
   } catch (parseError) {
+    const name = (() => {
+      try {
+        return (parseYaml(content) as { name?: string })?.name ?? null;
+      } catch {
+        return fallbackName(filePath);
+      }
+    })();
     return {
-      file: filePath,
-      name: nameFromContent(),
-      status: "fail",
-      error: parseError instanceof Error
-        ? parseError.message
-        : String(parseError),
+      result: {
+        file: filePath,
+        name,
+        status: "fail",
+        error: parseError instanceof Error
+          ? parseError.message
+          : String(parseError),
+      },
+      content,
     };
   }
+}
+
+/**
+ * Explains why a file in a repo workflows dir is not loaded. Log mode labels
+ * a result by its YAML name, so the message carries the full path; renaming
+ * is only advised for a file that is a workflow.
+ */
+function notLoadedMessage(filePath: string, content?: string): string {
+  const looksLikeWorkflow = (() => {
+    if (content === undefined) return false;
+    try {
+      return isWorkflowDocument(parseYaml(content));
+    } catch {
+      return false;
+    }
+  })();
+  const rule = `swamp only reads files named workflow-<name>.yaml in ${
+    dirname(filePath)
+  }.`;
+  return looksLikeWorkflow
+    ? `Not loaded: ${rule} Rename ${filePath} to workflow-<name>.yaml, ` +
+      `or remove it if it is a stale copy of a workflow that already loads.`
+    : `Not loaded: ${rule} ${filePath} is not a workflow; move it out of ` +
+      `that directory, or rename it to workflow-<name>.yaml if it is ` +
+      `meant to be one.`;
+}
+
+/**
+ * Checks one file under its mode, or returns null for an extension file that
+ * is not a workflow.
+ *
+ * A file no loader reads must not get a worse outcome than doctor gave it
+ * before it knew the loader's rule: a `*.yaml` file in a repo dir was always
+ * loaded strictly, so one that fails still fails; one that loads, and any
+ * `*.yml` file, which was never checked, only warn that it is not loaded.
+ */
+async function checkWorkflowFile(
+  filePath: string,
+  mode: CheckMode,
+): Promise<DoctorWorkflowResult | null> {
+  const loaded = await loadWorkflowFile(filePath, mode === "extension");
+  if (!loaded || mode !== "not-loaded") return loaded?.result ?? null;
+
+  const { result, content } = loaded;
+  const notLoaded = notLoadedMessage(filePath, content);
+  if (result.status === "fail" && !filePath.endsWith(".yml")) {
+    return { ...result, error: `${result.error}\n${notLoaded}` };
+  }
+  return {
+    file: result.file,
+    name: result.name,
+    status: "warn",
+    warning: notLoaded,
+  };
 }
 
 /**
@@ -233,7 +280,8 @@ async function checkWorkflowFile(
  * them. Each file is checked under the rule of the loader that reads it: the
  * repo rule for `workflow-*.yaml` in a repo dir, the extension rule for files
  * an extension dir yields. A YAML file in a repo dir that no loader reads
- * fails. A file reached through more than one dir is reported once.
+ * warns, or fails if it is a `*.yaml` file that fails to load. A file
+ * reached through more than one dir is reported once.
  */
 export async function* doctorWorkflows(
   deps: DoctorWorkflowsDeps,
@@ -283,14 +331,20 @@ export async function* doctorWorkflows(
   }
 
   const totalPassed = results.filter((r) => r.status === "pass").length;
-  const totalFailed = results.length - totalPassed;
+  const totalWarnings = results.filter((r) => r.status === "warn").length;
+  const totalFailed = results.filter((r) => r.status === "fail").length;
 
   yield {
     kind: "completed",
     report: {
-      overallStatus: totalFailed > 0 ? "fail" : "pass",
+      overallStatus: totalFailed > 0
+        ? "fail"
+        : totalWarnings > 0
+        ? "warn"
+        : "pass",
       workflows: results,
       totalPassed,
+      totalWarnings,
       totalFailed,
     },
   };

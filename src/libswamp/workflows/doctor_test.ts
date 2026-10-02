@@ -482,7 +482,7 @@ Deno.test("doctorWorkflows: strips .yml from the fallback name of unparseable fi
   }
 });
 
-Deno.test("doctorWorkflows: fails repo-dir YAML the loader does not read", async () => {
+Deno.test("doctorWorkflows: warns about loadable repo-dir YAML the loader does not read", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
   try {
     await Deno.writeTextFile(
@@ -505,21 +505,51 @@ Deno.test("doctorWorkflows: fails repo-dir YAML the loader does not read", async
 
     const report = await runDoctor({ workflowDirs: [tmpDir] });
 
-    assertEquals(report.overallStatus, "fail");
+    // Not loaded, but neither passed nor was ignored before: warn, exit 0.
+    assertEquals(report.overallStatus, "warn");
+    assertEquals(
+      [report.totalPassed, report.totalWarnings, report.totalFailed],
+      [1, 2, 0],
+    );
     assertEquals(report.workflows.map((w) => [w.name, w.status]), [
-      ["deploy", "fail"],
-      ["release", "fail"],
+      ["deploy", "warn"],
+      ["release", "warn"],
       ["good", "pass"],
     ]);
     const deploy = report.workflows[0];
     assertPathEquals(deploy.file, join(tmpDir, "deploy.yaml"));
+    assertEquals(deploy.error, undefined);
     // The full path, since log mode labels the result only by its YAML name.
-    assertStringIncludes(deploy.error ?? "", join(tmpDir, "deploy.yaml"));
-    assertStringIncludes(deploy.error ?? "", "workflow-<name>.yaml");
+    assertStringIncludes(deploy.warning ?? "", join(tmpDir, "deploy.yaml"));
+    assertStringIncludes(deploy.warning ?? "", "workflow-<name>.yaml");
     assertStringIncludes(
-      deploy.error ?? "",
+      deploy.warning ?? "",
       "or remove it if it is a stale copy",
     );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("doctorWorkflows: a broken misnamed .yaml in a repo dir still fails, a broken .yml only warns", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
+  try {
+    // Before the loader's rule was applied, *.yaml here was always checked
+    // and *.yml never was; neither outcome may get worse.
+    await Deno.writeTextFile(join(tmpDir, "broken.yaml"), UNKNOWN_TASK_YAML);
+    await Deno.writeTextFile(join(tmpDir, "broken.yml"), UNKNOWN_TASK_YAML);
+
+    const report = await runDoctor({ workflowDirs: [tmpDir] });
+
+    assertEquals(report.overallStatus, "fail");
+    const [yaml, yml] = report.workflows;
+    assertPathEquals(yaml.file, join(tmpDir, "broken.yaml"));
+    assertEquals(yaml.status, "fail");
+    assertStringIncludes(yaml.error ?? "", "Invalid discriminator value");
+    assertStringIncludes(yaml.error ?? "", "Not loaded:");
+    assertPathEquals(yml.file, join(tmpDir, "broken.yml"));
+    assertEquals(yml.status, "warn");
+    assertStringIncludes(yml.warning ?? "", "Not loaded:");
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -533,13 +563,13 @@ Deno.test("doctorWorkflows: tells non-workflow YAML in a repo dir to move out ra
 
     const report = await runDoctor({ workflowDirs: [tmpDir] });
 
-    assertEquals(report.totalFailed, 2);
+    // settings.yaml failed before (no jobs) and still does; notes.yml was
+    // never checked, so it only warns.
+    assertEquals(report.workflows.map((w) => w.status), ["warn", "fail"]);
     for (const result of report.workflows) {
-      assertStringIncludes(result.error ?? "", result.file);
-      assertStringIncludes(
-        result.error ?? "",
-        "is not a workflow; move it out",
-      );
+      const message = result.error ?? result.warning ?? "";
+      assertStringIncludes(message, result.file);
+      assertStringIncludes(message, "is not a workflow; move it out");
     }
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
