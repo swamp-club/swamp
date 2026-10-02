@@ -643,6 +643,7 @@ export async function* repairCatalogIndex(
 // ============================================================================
 
 export interface CatalogDuplicateLatestResult {
+  /** Catalog rows whose latest flags were corrected. */
   demotedRows: number;
 }
 
@@ -685,7 +686,7 @@ export async function* repairCatalogDuplicateLatest(
         yield {
           kind: "step",
           description:
-            "Demoting stale is_latest flags so each record has exactly one latest version",
+            "Recomputing latest flags so each record has exactly one latest version",
         };
         const demotedRows = deps.enforceUniqueLatest();
 

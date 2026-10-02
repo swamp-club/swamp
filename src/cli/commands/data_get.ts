@@ -36,6 +36,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
+  formatCommandTarget,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -49,7 +50,13 @@ type AnyOptions = any;
 export const dataGetCommand = withRemoteOptions(
   new Command()
     .name("get")
-    .description("Get data by model and name, or by workflow")
+    .description(
+      "(Deprecated) Get data by model and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query where one exists.",
+    )
+    .example(
+      "Preferred: read the same data with data query",
+      `swamp data query 'modelName == "my-server" && name == "system-info"' --select content`,
+    )
     .example("Get latest data", "swamp data get my-server system-info")
     .example(
       "Get using flags",
@@ -133,7 +140,15 @@ export const dataGetCommand = withRemoteOptions(
           },
         },
       );
-      renderDataGet(response.data as unknown as DataGetData, cliCtx.outputMode);
+      renderDataGet(
+        response.data as unknown as DataGetData,
+        cliCtx.outputMode,
+        {
+          commandTarget: formatCommandTarget({
+            server: options.server as string | undefined,
+          }),
+        },
+      );
       return;
     }
 
@@ -151,7 +166,11 @@ export const dataGetCommand = withRemoteOptions(
       repoContext.workflowRepo,
     );
 
-    const renderer = createDataGetRenderer(cliCtx.outputMode);
+    const renderer = createDataGetRenderer(cliCtx.outputMode, {
+      commandTarget: formatCommandTarget({
+        repoDir: options.repoDir as string | undefined,
+      }),
+    });
     await consumeStream(
       dataGet(ctx, deps, {
         modelIdOrName,

@@ -107,7 +107,7 @@ swamp model validate my-model --json
 
    ```bash
    # Get the actual data structure
-   swamp data get <model> <data-name> --json
+   swamp data query 'modelName == "<model>" && name == "<data-name>"' --select content --json
    # Check the attributes object
    ```
 
@@ -165,7 +165,7 @@ swamp model validate my-model --json
 
    ```bash
    # Check actual attribute names
-   swamp data get my-vpc vpc --json
+   swamp data query 'modelName == "my-vpc" && name == "vpc"' --select content --json
    ```
 
 ### "Unresolved expression in globalArguments"
@@ -211,7 +211,7 @@ templating system (`${{ github.sha }}`, or `${{ inputs.version }}` when
 **Solutions**:
 
 1. **Fix the reference** named in the message (check field names with
-   `swamp data get <model> <name> --json`).
+   `swamp data query 'modelName == "<model>" && name == "<name>"' --select content`).
 2. **Run the producing model first** if the data does not exist yet, or use
    `.?field` when the record may legitimately be absent.
 3. **Supply the value directly.** For a declared input, pass it
@@ -298,7 +298,7 @@ swamp data list <referenced-model> --json
 **Step 3: Check the exact data structure**
 
 ```bash
-swamp data get <referenced-model> <data-name> --json
+swamp data query 'modelName == "<referenced-model>" && name == "<data-name>"' --select content --json
 ```
 
 **Step 4: Build the expression path**
@@ -428,7 +428,7 @@ different storage areas.
 # List all versions
 swamp data versions <model-name> <data-name> --json
 
-# Check GC settings haven't pruned them
+# Check GC settings haven't pruned them: the garbageCollection field is only
+# in the deprecated `data get` output
 swamp data get <model-name> <data-name> --json
-# Look at gcSetting field
 ```

@@ -9,6 +9,7 @@
 | `version`     | int    | Latest version number                                                               |
 | `createdAt`   | string | ISO-8601 timestamp                                                                  |
 | `modelName`   | string | Owning model name                                                                   |
+| `modelId`     | string | Owning model id (definition id; workflow id for workflow-scope data)                |
 | `modelType`   | string | Owning model type (normalized)                                                      |
 | `specName`    | string | Output spec name                                                                    |
 | `dataType`    | string | `"resource"` or `"file"`                                                            |
@@ -27,7 +28,9 @@
 | `content`    | string | Raw text content. Only loaded when referenced. Empty `""` for binary types. Available for text/\*, application/json, application/yaml. |
 
 These fields describe the record that CEL and `swamp data query` see. To read a
-binary artifact's bytes, use `swamp data get <model> <name> --json`: its
+binary artifact's bytes, use the deprecated
+`swamp data get <model> <name>
+--json` (no `data query` equivalent yet): its
 `content` is base64 when `contentEncoding` is `"base64"`.
 
 ## CEL Operators

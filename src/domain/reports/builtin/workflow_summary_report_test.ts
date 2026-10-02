@@ -112,7 +112,7 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
             size: 139,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
           {
             name: "log",
@@ -123,7 +123,7 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
             size: 22,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),
@@ -146,11 +146,11 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
   assertStringIncludes(result.markdown, "my-server \u2192 deploy");
   assertStringIncludes(
     result.markdown,
-    "`swamp data get my-server result`",
+    '`swamp data query \'workflowRunId == "run-1" && jobName == "deploy-job" && stepName == "bad-step" && name == "result" && version == 1\' --select content`',
   );
   assertStringIncludes(
     result.markdown,
-    "`swamp data get my-server log`",
+    '`swamp data query \'workflowRunId == "run-1" && jobName == "deploy-job" && stepName == "bad-step" && name == "log" && version == 1\' --select content`',
   );
 });
 
@@ -312,7 +312,7 @@ Deno.test("workflowSummaryReport: failure JSON includes retrievalCommands", asyn
             size: 100,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),
@@ -324,7 +324,7 @@ Deno.test("workflowSummaryReport: failure JSON includes retrievalCommands", asyn
   const failures = result.json.failures as Array<Record<string, unknown>>;
   assertEquals(failures.length, 1);
   assertEquals(failures[0].retrievalCommands, [
-    "swamp data get broken-svc result",
+    'swamp data query \'workflowRunId == "run-1" && jobName == "deploy-job" && stepName == "deploy-step" && name == "result" && version == 1\' --select content',
   ]);
 });
 

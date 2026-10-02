@@ -255,9 +255,10 @@ const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
 const FQDN_RE =
   /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.){2,}[a-zA-Z]{2,}\b/g;
 
-// Hostnames with known internal TLDs
+// Hostnames with known internal TLDs. The lookahead refuses a match that a
+// file extension follows: settings.local.json is a file name, not a host.
 const INTERNAL_HOST_RE =
-  /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b/g;
+  /\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.(?:internal|local|lan|corp|intranet|private|home)\b(?!\.(?:json|jsonc|ya?ml|toml|ini|conf|cfg|env|xml|lock|log|txt|[cm]?[jt]sx?)\b)/g;
 
 function isLuhnValid(digits: string): boolean {
   let sum = 0;

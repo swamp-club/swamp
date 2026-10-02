@@ -18,25 +18,28 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins the method-to-child allow list (NESTED_SWAMP_ENV_VARS) to the owners
-// of the names on it. The domain spells SWAMP_LOCK_HOLDER_PID as a literal
-// because it may not import src/cli, so a rename on either side would
-// silently re-break nested swamp; and no credential may ever join the list
+// of the names on it, so a name dropped from the list would silently
+// re-break nested swamp; and no credential may ever join the list
 // (swamp-club#2032, design/enablers/remote-execution.md).
 
 import { assert, assertEquals } from "@std/assert";
 import { NESTED_SWAMP_ENV_VARS } from "../src/domain/remote/environment_snapshot.ts";
 import { NESTED_GATE_PASS_ENV } from "../src/domain/auth/nested_gate_pass.ts";
-import { SWAMP_LOCK_HOLDER_PID } from "../src/cli/repo_context.ts";
+import {
+  SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_PID,
+} from "../src/domain/datastore/lock_holder_marker.ts";
 import {
   API_KEY_ENV,
   API_KEY_FILE_ENV,
 } from "../src/infrastructure/persistence/api_key_source.ts";
 import { SIGNIN_TOKEN_ENV } from "../src/infrastructure/persistence/auth_verification_repository.ts";
 
-Deno.test("nested swamp env: the allow list names the nested pass and the lock holder", () => {
+Deno.test("nested swamp env: the allow list names the nested pass and the lock markers", () => {
   assertEquals(
     [...NESTED_SWAMP_ENV_VARS].sort(),
-    [NESTED_GATE_PASS_ENV, SWAMP_LOCK_HOLDER_PID].sort(),
+    [NESTED_GATE_PASS_ENV, SWAMP_LOCK_HOLDER_PID, SWAMP_LOCK_ANCESTOR_PIDS]
+      .sort(),
   );
 });
 

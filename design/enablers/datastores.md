@@ -1642,14 +1642,65 @@ distributed) datastores rely on their own `DistributedLock` semantics instead.
 
 #### Parent-Process Lock Awareness
 
-`acquireModelLocks` sets `SWAMP_LOCK_HOLDER_PID` to the current process PID when
-it takes per-model locks. `waitForPerModelLocks` skips any lock file whose `pid`
-matches. Those locks belong to the parent, and waiting on them would deadlock:
-the parent waits on the child, the child on the parent's locks.
+A workflow shell step can run a nested `swamp` command (e.g.
+`swamp extension push`) while the step's own per-model lock is held. If the
+child's drain waited on that lock it would deadlock: the parent waits on the
+child, the child on the parent's lock.
 
-This happens when a workflow shell step runs a nested `swamp` command (e.g.
-`swamp extension push`). The child inherits the env var and does not poll its
-parent's locks. The parent clears the variable when it flushes its locks.
+Every swamp hands two variables to the swamps it starts, through
+`LockHolderMarker` in `src/domain/datastore/lock_holder_marker.ts`. It never
+clears either:
+
+- `SWAMP_LOCK_ANCESTOR_PIDS`, published once at startup (`runInvocation`):
+  the comma-separated pids of every swamp above it, followed by its own (at
+  most 64, the newest kept). If no chain was inherited, it is seeded from an
+  inherited `SWAMP_LOCK_HOLDER_PID`.
+- `SWAMP_LOCK_HOLDER_PID`, which older binaries read alone: the swamp's own
+  pid from the first time it takes a per-model lock (`acquireModelLocks`).
+  Until then it keeps the value it inherited, so through a swamp that takes
+  no locks (e.g. a read-only `model method run`) it still names the real lock
+  holder.
+
+Before publishing, the marker captures what the process inherited.
+`waitForPerModelLocks` skips a lock file when its `pid` is one of those
+ancestors and its `hostname` is this host. A process on another host sharing
+the datastore (e.g. over NFS) can carry the same pid, so its lock is still
+waited on. A lock file with no `hostname` is matched on pid alone. The
+hostname is read when the drain runs. If the host is renamed after an ancestor
+took its lock (macOS can rename on a network change), that lock no longer
+matches and the child waits on it until `SWAMP_LOCK_TIMEOUT_MS`. The drain
+never skips its own pid, so a structural command still waits on in-flight
+writes by other runs in its own process.
+
+The skip is what avoids the deadlock: the run that started the child holds
+its lock until the child exits. But the marker names a process, not a run. A
+nested swamp under one `swamp serve` run, or under one of several parallel
+workflow steps, also skips locks the same process holds for unrelated runs.
+It can then race their in-flight writes (swamp-club#2955). A child left
+running in the background after its ancestors exit can likewise skip a lock
+taken by an unrelated process that reused an ancestor's pid on this host.
+
+Keeping either value for the rest of the process's life is equivalent to
+keeping it while holding locks, because a lock file carrying a pid exists only
+while that process holds it. Setting the holder on acquire and clearing it on
+flush is
+not safe: per-step workflow locks and concurrent `swamp serve` runs hold locks
+side by side in one process, and the first flush would clear the marker while
+the others still held theirs (swamp-club#2659). The ancestor chain keeps a
+nested swamp working when a swamp between it and the lock holder takes no
+locks itself, such as a read-only `model method run`.
+
+With mixed versions, a child still skips the locks of the nearest swamp above
+it that holds locks, as before this change:
+
+- An older child reads only `SWAMP_LOCK_HOLDER_PID`, which names that swamp.
+  It does not skip lock holders further up.
+- A newer child under an older parent falls back to `SWAMP_LOCK_HOLDER_PID`.
+- An older swamp in the middle sets the holder only while it holds locks. If
+  it starts the child from a shell step, its allowlist predates
+  `SWAMP_LOCK_ANCESTOR_PIDS`, so the chain is dropped and the child skips
+  only the holder. If the child inherits the env directly (an extension using
+  `Deno.Command`), the chain survives and the child skips every ancestor.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
@@ -1768,7 +1819,7 @@ Relocated: data, outputs, workflow-runs now resolve under /new/path
 After setup, `DefaultDatastorePathResolver.resolvePath()` routes these
 subdirectories to the new location. Code that hardcodes `.swamp/workflow-runs/`
 or similar paths silently breaks. Use `swamp workflow run search --json`,
-`swamp data get` or other CLI commands instead of direct filesystem access.
+`swamp data query` or other CLI commands instead of direct filesystem access.
 
 The migration copies files to the cache (overwriting any partial cache from an
 earlier attempt), pushes to the remote (idempotent), and pulls from it. Only

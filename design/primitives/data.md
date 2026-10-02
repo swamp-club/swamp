@@ -80,12 +80,14 @@ named inputs into a suffix (`src/domain/workflows/data_suffix.ts`
 
 **`latest`.** Each name directory holds a plain-text `latest` file with the
 current version number. Reads without a version use it (`getLatestVersion`,
-falling back to a symlink for older layouts, then a directory scan). The catalog
-mirrors it as `is_latest`, and `upsertNewVersion` (`catalog_store.ts`) is
-step-aware. A model-method write (`step_name = ""`) demotes every prior latest
-row for the name; a workflow-step write demotes only rows with the same
-`step_name` or an empty one. That leaves one `is_latest=1` row per
-`(namespace, type, modelId, name, step_name)`
+falling back to a symlink for older layouts, then a directory scan). Promoting a
+version (`save`, `finalizeVersion`, deferred advance) only moves the marker
+forward (`advanceLatestMarker`), so parallel writers that finish out of order
+leave it on the highest version; delete, rename and GC set it explicitly. The
+catalog mirrors it as `is_latest`: one row per `(namespace, type, modelId,
+name)`, the highest promoted version. A second flag, `is_step_latest`, marks
+each workflow step's latest version for `findBySpec`/`findByTag`;
+`upsertNewVersion` (`catalog_store.ts`) maintains both by version order
 ([data-query.md §Step-aware versioning](../enablers/data-query.md#provenance-based-filtering)).
 
 **`ModelOutput`, the run-level record.** Every method call also writes a
@@ -189,15 +191,23 @@ removes every version.
   finds data written under the old UUID: first by `modelName` tag, then, only
   when the type has a single definition, by that definition. This "orphan
   recovery" is a read-time convenience, never a delete.
-- **CLI**: `swamp data get <model> <name> [--version N] [--no-content]`, or
-  `--workflow <name> [--run <id>]` to read what a run produced
-  (`src/domain/data/workflow_data_service.ts`). `data get`, serve's `data.get`
-  and `swamp model output data` return content without loss: text when the
+- **CLI**: `swamp data query '<predicate>' [--select] [--limit]` is the read
+  path, e.g. `modelName == "<m>" && name == "<n>"` with `--select content` for
+  one item's content, or `workflowRunId`, `jobName` and `stepName` to pick one
+  step's output in a run. `swamp data get <model> <name> [--version N]
+  [--no-content]` and its `--workflow <name> [--run <id>]` form
+  (`src/domain/data/workflow_data_service.ts`) are **deprecated**: they still
+  return the item, with a deprecation warning and a `replacementQuery` naming
+  the equivalent `data query` command
+  (`src/domain/data/data_query_command.ts`). The `--workflow` form takes the
+  highest-versioned match (the first step on a tie) when several steps wrote
+  the name (swamp-club#2948) and warns
+  with the other matches. `data get`, serve's `data.get` and
+  `swamp model output data` return content without loss: text when the
   stored bytes are valid UTF-8 (less a leading byte-order mark), otherwise
   base64, with a `contentEncoding` of `utf-8` or `base64` saying which
   (`content_encoding.ts` `encodeContent`). Also `swamp data list` (grouped by
-  type), `swamp data versions`, `swamp data search` and
-  `swamp data query '<predicate>' [--select] [--limit]`
+  type), `swamp data versions` and `swamp data search`
   (`src/cli/commands/data_*.ts`). `search` takes free text plus `--type`,
   `--lifetime`, `--owner-type`, `--workflow`, `--model`, `--content-type`,
   `--since`, `--output`, `--run`, `--tag KEY=VALUE`, `--streaming`, `--limit`.
@@ -284,8 +294,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   the local `data/` directory, so a shared datastore never carries it. On
   open, a `CATALOG_SCHEMA_VERSION` mismatch drops the table and clears the
   `populated` flag; the next query refills it from disk (`catalog_store.ts`
-  `migrateIfNeeded`). Every write path keeps one `is_latest=1` row per
-  `(name, step_name)` via `upsertNewVersion` ([`latest`](#the-record)).
+  `migrateIfNeeded`). Every write path keeps one `is_latest=1` row per name
+  and one `is_step_latest=1` row per `(name, step_name)` via
+  `upsertNewVersion` ([`latest`](#the-record)).
 - **Datastores and sync.** The repository writes wherever the
   `DatastorePathResolver` points. A remote backend (S3 extension) gets a
   `markDirty` hook on its changes, is pulled when a write command starts, and is
@@ -337,9 +348,10 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - Version numbers are allocated by `mkdir`, so two concurrent writers to one
   name get different versions.
 - Exactly one `latest` per name on disk, and exactly one `is_latest=1` row per
-  `(namespace, type, modelId, name, step_name)` in the catalog. Every mutating
-  path restores both before returning: `save`, `append`, `rename`, `delete`,
-  `collectGarbage` and deferred advance.
+  `(namespace, type, modelId, name)` in the catalog. Every mutating path
+  restores both before returning: `save`, `append`, `rename`, `delete`,
+  `collectGarbage` and deferred advance. The `is_latest` row is also
+  `is_step_latest`.
 - Only the owner (same `ownerType` and `ownerRef`) may add a version to an
   existing name (`Data.isOwnedBy`, enforced in `save` and `allocateVersion`).
 - `tags.type` is always present: writers set `resource` or `file`, and callers

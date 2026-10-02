@@ -122,6 +122,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: data.version,
       is_latest: 1,
+      is_step_latest: 1,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",

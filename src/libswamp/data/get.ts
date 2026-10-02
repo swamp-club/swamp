@@ -25,6 +25,11 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import {
+  dataQueryCommand,
+  type DataQueryTarget,
+} from "../../domain/data/data_query_command.ts";
+import { isTextContentType } from "../../domain/data/content_type.ts";
+import {
   type ContentEncoding,
   encodeContent,
 } from "../../domain/data/content_encoding.ts";
@@ -86,6 +91,32 @@ export interface DataGetData {
    * stored bytes are valid UTF-8, `base64` otherwise (e.g. an image).
    */
   contentEncoding?: ContentEncoding;
+  /**
+   * The `swamp data query` command that reads this same item. `data get` is
+   * deprecated in its favor; for a workflow-scoped read the query names the
+   * run, job and step that produced the item.
+   */
+  replacementQuery?: string;
+  /** Notices about this read, such as the deprecation of `data get`. */
+  warnings?: string[];
+  /**
+   * For a workflow-scoped read, the other producers in the run whose data
+   * matched the name (swamp-club#2948), each with the query that reads it
+   * where one exists. Only producers the caller may read are listed.
+   */
+  alternatives?: DataGetAlternative[];
+}
+
+/** Another producer of the same data name in a workflow run. */
+export interface DataGetAlternative {
+  modelName: string;
+  modelType: string;
+  modelId: string;
+  jobName?: string;
+  stepName?: string;
+  version: number;
+  /** The `swamp data query` command that reads it, where one exists. */
+  replacementQuery?: string;
 }
 
 export interface DataGetInput {
@@ -115,6 +146,20 @@ export interface DataGetInput {
    * returned is what was authorized.
    */
   expectedOwner?: WorkflowDataPin;
+  /**
+   * Whether the caller may read data owned by this model. A workflow-scoped
+   * read names other producers of the same data name in its warnings only
+   * when they pass, so a caller never learns of data it cannot read. Every
+   * producer passes when omitted.
+   */
+  canReadOwner?: (owner: DataOwnerInfo) => Promise<boolean>;
+}
+
+/** The model that owns a data item, as an authorization check sees it. */
+export interface DataOwnerInfo {
+  modelType: string;
+  modelId: string;
+  modelName: string;
 }
 
 /** The workflow-scoped item a caller authorized. */
@@ -159,7 +204,19 @@ export interface WorkflowDataItemInfo {
   modelType: ModelType;
   modelId: string;
   modelName: string;
+  /** The job and step that produced the item; absent for workflow scope. */
+  jobName?: string;
+  stepName?: string;
   contentPath: string;
+}
+
+/**
+ * The item a workflow-run lookup selected by name, and one item for each
+ * other producer (job, step and model) whose data matched the name.
+ */
+export interface WorkflowDataMatchInfo {
+  item: WorkflowDataItemInfo;
+  otherProducers: WorkflowDataItemInfo[];
 }
 
 /** Minimal workflow shape. */
@@ -215,7 +272,7 @@ export interface DataGetDeps {
     run: WorkflowRunInfo,
     dataName: string,
     version?: number,
-  ) => Promise<WorkflowDataItemInfo | null>;
+  ) => Promise<WorkflowDataMatchInfo | null>;
   getContent: (
     modelType: ModelType,
     modelId: string,
@@ -294,7 +351,7 @@ export function createDataGetDeps(
           run.id as ReturnType<typeof runRepo.nextId>,
         );
         return fullRun
-          ? await workflowDataService.findByNameInWorkflowRun(
+          ? await workflowDataService.matchByNameInWorkflowRun(
             fullRun,
             dataNameArg,
             version,
@@ -308,7 +365,7 @@ export function createDataGetDeps(
           run.id as ReturnType<typeof runRepo.nextId>,
         );
         if (fullRun) {
-          return await workflowDataService.findByNameInWorkflowRun(
+          return await workflowDataService.matchByNameInWorkflowRun(
             fullRun,
             dataNameArg,
             version,
@@ -382,6 +439,8 @@ export interface WorkflowDataLocation {
   workflow: WorkflowInfo;
   run: WorkflowRunInfo;
   item: WorkflowDataItemInfo;
+  /** Other producers in the run whose data matched the name. */
+  otherProducers: WorkflowDataItemInfo[];
 }
 
 /** What {@link resolveWorkflowData} locates by. */
@@ -441,8 +500,8 @@ async function locateInWorkflow(
   const run: WorkflowRunInfo = { ...found, workflowId: workflow.id };
 
   const { dataName, version } = query;
-  const item = await deps.findDataInWorkflowRun(run, dataName, version);
-  if (!item) {
+  const match = await deps.findDataInWorkflowRun(run, dataName, version);
+  if (!match) {
     const versionInfo = version ? ` (version ${version})` : "";
     const activeStatuses = new Set(["running", "pending", "suspended"]);
     if (run.status && activeStatuses.has(run.status)) {
@@ -466,7 +525,15 @@ async function locateInWorkflow(
       ),
     };
   }
-  return { kind: "found", location: { workflow, run, item } };
+  return {
+    kind: "found",
+    location: {
+      workflow,
+      run,
+      item: match.item,
+      otherProducers: match.otherProducers,
+    },
+  };
 }
 
 async function* workflowScopedGet(
@@ -520,6 +587,16 @@ async function* workflowScopedGet(
           `"${actualDataName}" in workflow run ${pin.runId}`,
         ),
       };
+    } else if (located.kind === "found") {
+      // The pin fixes the version that was authorized, which would hide
+      // producers at other versions; find them under the caller's own
+      // version constraint, as an unpinned read does.
+      located.location.otherProducers = await producersBesides(
+        deps,
+        located.location,
+        actualDataName,
+        input.version,
+      );
     }
   } else {
     const workflow = await deps.findWorkflow(workflowName);
@@ -568,6 +645,24 @@ async function* workflowScopedGet(
       output.content = content;
       output.contentEncoding = contentEncoding;
     }
+  }
+
+  const replacement = replacementFor(
+    item.data,
+    workflowQueryTarget(item),
+    input.includeContent,
+    output.contentEncoding,
+  );
+  output.replacementQuery = replacement.query;
+  output.warnings = [deprecationWarning(replacement, false)];
+  const shared = await sharedNameNotice(
+    located.location,
+    input.canReadOwner,
+    input.includeContent,
+  );
+  if (shared) {
+    output.alternatives = shared.alternatives;
+    output.warnings.push(shared.warning);
   }
 
   yield { kind: "completed", data: output };
@@ -667,7 +762,205 @@ async function* modelScopedGet(
     }
   }
 
+  const replacement = replacementFor(
+    data,
+    {
+      modelType: modelType.normalized,
+      modelId: definition.id,
+      dataName: data.name,
+      version: data.version,
+    },
+    includeContent,
+    output.contentEncoding,
+  );
+  output.replacementQuery = replacement.query;
+  output.warnings = [deprecationWarning(replacement, version === undefined)];
+
   yield { kind: "completed", data: output };
+}
+
+/**
+ * The `swamp data query` command that reads the same item as a `data get`
+ * read, or why none can read it yet.
+ */
+type Replacement =
+  | { query: string; unavailable?: undefined }
+  | { query?: undefined; unavailable: string };
+
+/**
+ * Builds the replacement for `data`. A query returns content only for a
+ * textual content type, decoded as UTF-8, so a read whose content came back
+ * base64-encoded — binary, or text that is not UTF-8 — has none yet.
+ */
+function replacementFor(
+  data: DataItem,
+  target: DataQueryTarget,
+  includeContent: boolean,
+  contentEncoding?: ContentEncoding,
+): Replacement {
+  if (
+    includeContent &&
+    (!isTextContentType(data.contentType) || contentEncoding === "base64")
+  ) {
+    return {
+      unavailable: "data query returns content only as UTF-8 text, and this " +
+        "item's content is not (swamp-club#2959)",
+    };
+  }
+  return { query: dataQueryCommand(target, { includeContent }) };
+}
+
+/**
+ * The deprecation notice a `data get` read carries, naming the query that
+ * reads the same item. A read of the latest version is pinned to that
+ * version, so the notice says how to follow later versions instead.
+ */
+function deprecationWarning(
+  replacement: Replacement,
+  readLatest: boolean,
+): string {
+  if (replacement.unavailable !== undefined) {
+    return "swamp data get is deprecated, but no data query reads this item " +
+      `yet: ${replacement.unavailable}. Keep using data get for it.`;
+  }
+  const notice = "swamp data get is deprecated and will be removed in a " +
+    `future release. Read this item with: ${replacement.query}`;
+  return readLatest
+    ? `${notice} (to follow the latest version instead, drop the version ` +
+      "clause; if several workflow steps wrote this item, also narrow by " +
+      "stepName)"
+    : notice;
+}
+
+/**
+ * The query coordinates of a workflow-run item, from what the item itself
+ * records — the catalog indexes those fields, not the run's. Step output
+ * records its run, job and step. Report output records none, so it is named
+ * by its owner's type and id, its data name and version instead.
+ */
+function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
+  const owner = item.data.ownerDefinition;
+  const target: DataQueryTarget = {
+    dataName: item.data.name,
+    version: item.data.version,
+  };
+  if (owner.workflowRunId) {
+    target.workflowRunId = owner.workflowRunId;
+    if (owner.jobName) target.jobName = owner.jobName;
+    if (owner.stepName) target.stepName = owner.stepName;
+  } else {
+    target.modelType = item.modelType.normalized;
+    target.modelId = item.modelId;
+  }
+  return target;
+}
+
+/** Identifies the job, step and owning model that produced an item. */
+function producerKey(item: WorkflowDataItemInfo): string {
+  return JSON.stringify([
+    item.modelType.normalized,
+    item.modelId,
+    item.jobName ?? null,
+    item.stepName ?? null,
+  ]);
+}
+
+/**
+ * The producers in `location`'s run, other than the selected item's, whose
+ * data matches `dataName` under `version`.
+ */
+async function producersBesides(
+  deps: DataGetDeps,
+  location: WorkflowDataLocation,
+  dataName: string,
+  version: number | undefined,
+): Promise<WorkflowDataItemInfo[]> {
+  const match = await deps.findDataInWorkflowRun(
+    location.run,
+    dataName,
+    version,
+  );
+  if (!match) return [];
+  const selected = producerKey(location.item);
+  return [match.item, ...match.otherProducers].filter((candidate) =>
+    producerKey(candidate) !== selected
+  );
+}
+
+/** Names the producer of a workflow-run item for a warning. */
+function producerLabel(item: WorkflowDataItemInfo): string {
+  if (item.jobName === undefined && item.stepName === undefined) {
+    return item.modelName;
+  }
+  return `job ${item.jobName ?? "-"}, step ${
+    item.stepName ?? "-"
+  } (${item.modelName})`;
+}
+
+/**
+ * Whether the caller may read `item`'s owner. A failed check leaves the
+ * producer out: the warning is advisory and must not fail the read.
+ */
+async function isReadable(
+  item: WorkflowDataItemInfo,
+  canReadOwner: DataGetInput["canReadOwner"],
+): Promise<boolean> {
+  if (!canReadOwner) return true;
+  try {
+    return await canReadOwner({
+      modelType: item.modelType.normalized,
+      modelId: item.modelId,
+      modelName: item.modelName,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Notes that other producers in the run wrote data with the same name, so
+ * the item returned is one of several (swamp-club#2948), with the query that
+ * reads each of them. Only producers the caller may read are named or
+ * counted.
+ */
+async function sharedNameNotice(
+  location: WorkflowDataLocation,
+  canReadOwner: DataGetInput["canReadOwner"],
+  includeContent: boolean,
+): Promise<
+  { warning: string; alternatives: DataGetAlternative[] } | undefined
+> {
+  const readable: WorkflowDataItemInfo[] = [];
+  for (const other of location.otherProducers) {
+    if (await isReadable(other, canReadOwner)) readable.push(other);
+  }
+  if (readable.length === 0) return undefined;
+  const alternatives = readable.map((other): DataGetAlternative => ({
+    modelName: other.modelName,
+    modelType: other.modelType.normalized,
+    modelId: other.modelId,
+    jobName: other.jobName,
+    stepName: other.stepName,
+    version: other.data.version,
+    replacementQuery: replacementFor(
+      other.data,
+      workflowQueryTarget(other),
+      includeContent,
+    ).query,
+  }));
+  const others = readable.map((other, i) => {
+    const query = alternatives[i].replacementQuery;
+    return query
+      ? `${producerLabel(other)}, read with: ${query}`
+      : producerLabel(other);
+  });
+  const { item, run } = location;
+  return {
+    warning: `${readable.length + 1} items in run ${run.id} are named ` +
+      `"${item.data.name}"; data get returned the one from ` +
+      `${producerLabel(item)}. The others: ${others.join(" | ")}`,
+    alternatives,
+  };
 }
 
 /** Whether a located item is exactly the one a caller authorized. */

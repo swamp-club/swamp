@@ -831,9 +831,8 @@ re-inherit the parent's `SWAMP_*` vars behind the filter. A per-variable
 allowlist on `createSafeMethodEnv` lets a method pass specific vars through
 when a child needs them.
 
-The shell model passes `NESTED_SWAMP_ENV_VARS`: the two variables a nested
-`swamp` in a shell step needs from the swamp that started it. Neither is a
-credential.
+The shell model passes `NESTED_SWAMP_ENV_VARS`: the variables a nested `swamp`
+in a shell step needs from the swamp that started it. None is a credential.
 
 - `SWAMP_NESTED_GATE_PASS` lets the nested swamp pass the auth gate without a
   key ([auth gate](../surfaces/auth-gate.md#nested-runs)). It carries a signed
@@ -841,9 +840,9 @@ credential.
   parent's pid. The proof cannot call swamp-club, and the gate accepts it only
   from a live ancestor started before the proof expired. It does expose the
   proof's identity metadata (`sub`, `org`, `fpr`) to the child.
-- `SWAMP_LOCK_HOLDER_PID` lets the nested swamp skip the per-model locks its
-  parent holds ([datastores](datastores.md), "Parent-Process Lock
-  Awareness").
+- `SWAMP_LOCK_HOLDER_PID` and `SWAMP_LOCK_ANCESTOR_PIDS` let the nested swamp
+  skip the per-model locks held by its parent and every swamp above it
+  ([datastores](datastores.md), "Parent-Process Lock Awareness").
 
 `SWAMP_API_KEY`, `SWAMP_API_KEY_FILE`, `SWAMP_SIGNIN_TOKEN` and every other
 `SWAMP_*` variable stay stripped. `integration/nested_swamp_env_rules_test.ts`

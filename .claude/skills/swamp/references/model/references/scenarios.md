@@ -72,7 +72,7 @@ swamp model method run my-shell execute
 
 ```bash
 swamp model output get my-shell --json
-swamp data get my-shell result --json
+swamp data query 'modelName == "my-shell" && name == "result"' --select content --json
 ```
 
 ### CEL Paths Used

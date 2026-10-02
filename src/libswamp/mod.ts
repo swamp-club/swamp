@@ -404,8 +404,10 @@ export {
   type DataGetDeps,
   type DataGetEvent,
   type DataGetInput,
+  type DataOwnerInfo,
   resolveWorkflowData,
   type WorkflowDataLocation,
+  type WorkflowDataMatchInfo,
   type WorkflowDataPin,
   type WorkflowDataQuery,
 } from "./data/get.ts";

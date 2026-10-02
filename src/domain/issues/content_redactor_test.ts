@@ -334,6 +334,31 @@ Deno.test("redactIssueContent: replaces internal hostnames with stable placehold
   assertEquals(result.text.includes("db-prod.internal"), false);
 });
 
+Deno.test("redactIssueContent: file names with an internal-TLD label are not hostnames", () => {
+  const r1 = redactIssueContent(
+    "The hook lives in `.claude/settings.local.json`.",
+  );
+  assertEquals(r1.text, "The hook lives in `.claude/settings.local.json`.");
+  assertEquals(r1.summary.totalRedactions, 0);
+
+  const r2 = redactIssueContent("see config.internal.yaml for details");
+  assertEquals(r2.text, "see config.internal.yaml for details");
+  assertEquals(r2.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: internal hostname before a full stop is still redacted", () => {
+  const result = redactIssueContent("Could not reach db.internal. Retrying.");
+  assertEquals(result.text, "Could not reach [HOST-1]. Retrying.");
+});
+
+Deno.test("redactIssueContent: internal hostname followed by a non-extension label is still redacted", () => {
+  const r1 = redactIssueContent("nas.home.arpa is down");
+  assertEquals(r1.text, "[HOST-1].arpa is down");
+
+  const r2 = redactIssueContent("redis.internal.svc refused");
+  assertEquals(r2.text, "[HOST-1].svc refused");
+});
+
 Deno.test("redactIssueContent: replaces FQDNs with stable placeholders", () => {
   const result = redactIssueContent(
     "DNS lookup for api.acme-corp.prod.net failed",

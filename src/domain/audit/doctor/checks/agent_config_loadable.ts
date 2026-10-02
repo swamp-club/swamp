@@ -19,6 +19,13 @@
 
 import { join } from "@std/path";
 import type { CheckContext, CheckResult, PreflightCheck } from "../check.ts";
+import {
+  type AuditHookShape,
+  CLAUDE_AUDIT_HOOK_SHAPE,
+  COPILOT_AUDIT_HOOK_SHAPE,
+  countAuditHooks,
+  CURSOR_AUDIT_HOOK_SHAPE,
+} from "../../../repo/repo_service.ts";
 
 /**
  * Verifies the per-tool configuration swamp wrote at init time is still
@@ -39,6 +46,32 @@ const CONFIG_FILES: Record<string, string[]> = {
 async function readJsonFile(path: string): Promise<unknown> {
   const content = await Deno.readTextFile(path);
   return JSON.parse(content);
+}
+
+/**
+ * Fails when an event runs the swamp audit hook more than once — each copy
+ * records every tool call, so the audit log would hold every row twice.
+ */
+function duplicateAuditHookResult(
+  hooks: Record<string, unknown>,
+  events: string[],
+  shape: AuditHookShape,
+): CheckResult | undefined {
+  for (const event of events) {
+    const count = countAuditHooks(hooks[event], shape);
+    if (count > 1) {
+      return {
+        name: "agent-config-loadable",
+        status: "fail",
+        message:
+          `${event} runs \`${shape.marker}\` ${count} times, so every tool call is recorded ${count} times`,
+        hint:
+          `Keep a single \`${shape.marker}\` hook for ${event}. \`swamp repo upgrade\` removes a duplicate that swamp itself added.`,
+        details: { event, auditHooks: count },
+      };
+    }
+  }
+  return undefined;
 }
 
 async function checkKiro(ctx: CheckContext): Promise<CheckResult> {
@@ -143,6 +176,12 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
       hint: "Run `swamp init --tool claude --force` to rewrite the hooks.",
     };
   }
+  const duplicate = duplicateAuditHookResult(
+    hooks,
+    ["PostToolUse", "PostToolUseFailure"],
+    CLAUDE_AUDIT_HOOK_SHAPE,
+  );
+  if (duplicate) return duplicate;
   return {
     name: "agent-config-loadable",
     status: "pass",
@@ -196,6 +235,12 @@ async function checkCursor(ctx: CheckContext): Promise<CheckResult> {
       hint: "Run `swamp init --tool cursor --force` to rewrite the hooks.",
     };
   }
+  const duplicate = duplicateAuditHookResult(
+    hooks,
+    ["postToolUse", "postToolUseFailure"],
+    CURSOR_AUDIT_HOOK_SHAPE,
+  );
+  if (duplicate) return duplicate;
   return {
     name: "agent-config-loadable",
     status: "pass",
@@ -283,6 +328,12 @@ async function checkCopilot(ctx: CheckContext): Promise<CheckResult> {
       hint: "Run `swamp init --tool copilot --force` to rewrite the hooks.",
     };
   }
+  const duplicate = duplicateAuditHookResult(
+    hooks,
+    ["postToolUse", "postToolUseFailure"],
+    COPILOT_AUDIT_HOOK_SHAPE,
+  );
+  if (duplicate) return duplicate;
   return {
     name: "agent-config-loadable",
     status: "pass",
