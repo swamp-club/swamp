@@ -86,20 +86,14 @@ const arbInert = fc
     }
   });
 
-/** Identifiers that are not global-object names. */
+/**
+ * Identifiers that are never reserved words, global-object names, `eval` or
+ * `Function`: a fixed prefix keeps every generated case valid and
+ * single-finding, so the property is deterministic under `--repeats`.
+ */
 const arbObjectName = fc
-  .stringMatching(/^[a-z_$][a-zA-Z0-9_$]{0,10}$/)
-  .filter((name) =>
-    ![
-      "globalThis",
-      "window",
-      "self",
-      "global",
-      "frames",
-      "parent",
-      "top",
-    ].includes(name)
-  );
+  .stringMatching(/^[a-zA-Z0-9_$]{0,10}$/)
+  .map((suffix) => `o_${suffix}`);
 
 Deno.test("findDynamicCodeExecution property: never throws on any input", () => {
   fc.assert(

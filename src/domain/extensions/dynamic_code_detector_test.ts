@@ -36,7 +36,7 @@ const FLAGGED: Array<[string, string, DynamicCodeKind]> = [
   ["eval alias", "const e = eval;", "eval-reference"],
   ["shorthand property", "const o = { eval };", "eval-reference"],
   ["parameter pattern key", "function f({ eval: e }) {}", "eval-reference"],
-  ["array pattern", "[eval] = [x];", "eval-reference"],
+  ["array pattern", "const [g] = [eval];", "eval-reference"],
   ["spread", "const o = { ...eval };", "eval-reference"],
   ["ternary operand", "const f = c ? eval : g;", "eval-reference"],
   ["computed object key", "const o = { [eval(src)]: 1 };", "eval-reference"],
@@ -128,6 +128,10 @@ for (const [name, source, kind] of FLAGGED) {
 }
 
 const ADVERSARIAL: Array<[string, string]> = [
+  [
+    "HTML-like comment after a strict-mode error",
+    "type T = 010;\nlet a = 1, b = 2;\na <!--b; globalThis.eval(src)",
+  ],
   ["void object then slash", "x = void {} / '/' + eval(src) + '/';"],
   ["typeof object then slash", "x = typeof {} / '/' + eval(src) + '/';"],
   ["delete object then slash", "x = delete {} / '/' + eval(src) + '/';"],
@@ -464,3 +468,15 @@ for (const [name, source] of MEMBERS) {
     assertEquals(kinds(source), ["eval-member"]);
   });
 }
+
+Deno.test("findDynamicCodeExecution: an imported binding named Function is flagged", () => {
+  // The local binding shadows the global; flagging it errs toward safety.
+  assertEquals(kinds('import { Function } from "x";\nFunction("a");'), [
+    "function-constructor",
+    "function-constructor",
+  ]);
+});
+
+Deno.test("findDynamicCodeExecution: decorator auto-accessors parse", () => {
+  assertEquals(kinds("class A { accessor x = 1; }\ninterp.run();"), []);
+});

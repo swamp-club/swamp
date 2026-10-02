@@ -28,10 +28,11 @@
  * `Function` identifier is flagged unless its role is positively benign (a
  * class member or object-literal key, a label, a TypeScript type). A member
  * access named `eval` or `Function` is flagged on any receiver, because the
- * receiver may be the global object and no static check can rule that out. A file that does not parse falls back to the plain
- * text check (`eval(` or `new Function(`), so unparseable code is never
- * treated as safe. Aliases built at runtime (`globalThis["ev" + "al"]`)
- * cannot be caught statically.
+ * receiver may be the global object and no static check can rule that out.
+ * A file that does not parse as a module falls back to the old text check
+ * (`eval(` or `new Function(`), so it is held to at least the old standard.
+ * Aliases built at runtime (`globalThis["ev" + "al"]`) cannot be caught
+ * statically.
  *
  * The tree walk uses an explicit stack, because `extension pull` runs this
  * on untrusted archive sources.
@@ -146,6 +147,7 @@ const PLUGINS: ParserPlugin[] = [
   "typescript",
   "decorators-legacy",
   "explicitResourceManagement",
+  "decoratorAutoAccessors",
   "importAttributes",
 ];
 
@@ -163,26 +165,26 @@ function isTypeOnly(node: AstNode): boolean {
 }
 
 function parseSource(source: string): AstNode | null {
-  for (const sourceType of ["module", "script"] as const) {
-    try {
-      const file = parse(source, {
-        sourceType,
-        plugins: PLUGINS,
-        allowReturnOutsideFunction: true,
-        allowAwaitOutsideFunction: true,
-        allowImportExportEverywhere: true,
-        allowUndeclaredExports: true,
-        allowNewTargetOutsideFunction: true,
-        allowSuperOutsideMethod: true,
-        errorRecovery: false,
-      });
-      return file.program as unknown as AstNode;
-    } catch {
-      // Syntax errors, and stack overflow on extreme nesting, fall through
-      // to the next source type and finally to the text check.
-    }
+  // Module only: Deno runs extensions as modules. A script-mode retry would
+  // read `<!--` as a comment, which in a module is live code.
+  try {
+    const file = parse(source, {
+      sourceType: "module",
+      plugins: PLUGINS,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      allowImportExportEverywhere: true,
+      allowUndeclaredExports: true,
+      allowNewTargetOutsideFunction: true,
+      allowSuperOutsideMethod: true,
+      errorRecovery: false,
+    });
+    return file.program as unknown as AstNode;
+  } catch {
+    // Syntax errors, and stack overflow on extreme nesting, fall back to
+    // the text check.
+    return null;
   }
-  return null;
 }
 
 /** The old text check, used when the source does not parse. */
