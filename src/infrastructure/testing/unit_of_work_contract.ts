@@ -138,6 +138,7 @@ export async function assertUnitOfWorkContract(
       const message = error instanceof Error ? error.message : String(error);
       throw new AssertionError(
         `unit of work contract "${testCase.name}" failed: ${message}`,
+        { cause: error },
       );
     }
   }
