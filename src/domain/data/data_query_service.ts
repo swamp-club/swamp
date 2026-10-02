@@ -31,10 +31,12 @@ import {
   type ASTNode,
   collectRootIdentifiers,
   extractModelNameEquality,
+  extractStringEquality,
   HISTORY_OPT_IN_FIELDS,
   referencesAttributes,
   referencesContent,
   selectReadsContent,
+  specNameFallbackPredicate,
   validateFieldReferences,
 } from "./query_predicate.ts";
 import { isTextContentType } from "./content_type.ts";
@@ -43,6 +45,7 @@ import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
+import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -496,6 +499,22 @@ export class DataQueryService {
   }
 
   /**
+   * Returns the spec-name counterpart of a predicate that matches one data
+   * instance name exactly (see {@link specNameFallbackPredicate}), or null
+   * when the predicate has no such equality or does not parse. Callers run
+   * it to tell a user who queried by spec name where their data is.
+   */
+  specNameFallback(predicate: string): string | null {
+    try {
+      return specNameFallbackPredicate(
+        this.queryEnv.parse(predicate).ast as ASTNode,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
    * Attributes are returned as stored: vault references in sensitive fields
@@ -819,6 +838,12 @@ export class DataQueryService {
     if (modelNameLiteral !== null) {
       whereClauses.push("model_name = ?");
       whereParams.push(modelNameLiteral);
+    }
+
+    const specNameLiteral = extractStringEquality(userAst, "specName");
+    if (specNameLiteral !== null) {
+      whereClauses.push("spec_name = ?");
+      whereParams.push(specNameLiteral);
     }
 
     const rows = whereClauses.length > 0
@@ -1277,6 +1302,7 @@ export class DataQueryService {
       data_type: data.tags["type"] ?? "",
       content_type: data.contentType,
       lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,

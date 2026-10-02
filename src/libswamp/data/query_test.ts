@@ -45,6 +45,7 @@ function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
     dataType: "resource",
     contentType: "application/json",
     lifetime: "infinite",
+    garbageCollection: 10,
     ownerType: "model-method",
     streaming: false,
     size: 10,
@@ -435,4 +436,117 @@ Deno.test("requireSingleResult: treats a missing count as no match", () => {
     { predicate: "true" } as unknown as { predicate: string; total: number },
   );
   assertEquals(error?.code, "QUERY_NO_MATCH");
+});
+
+/** Deps whose fallback is fixed and whose query answers per predicate. */
+function fallbackDeps(
+  answers: Record<string, unknown[] | Error>,
+  calls: Array<{ predicate: string; options?: unknown }> = [],
+): DataQueryDeps {
+  return {
+    query: (predicate, options) => {
+      calls.push({ predicate, options });
+      const answer = answers[predicate] ?? [];
+      return answer instanceof Error
+        ? Promise.reject(answer)
+        : Promise.resolve(answer);
+    },
+    specNameFallback: (predicate) =>
+      predicate === 'name == "classification"'
+        ? 'specName == "classification"'
+        : null,
+  };
+}
+
+Deno.test("dataQuery: empty result whose spec-name fallback matches carries a hint", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const include = (_record: DataRecord) => Promise.resolve(true);
+  const deps = fallbackDeps(
+    { 'specName == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        include,
+      }),
+    ),
+  );
+
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, {
+    suggestedPredicate: 'specName == "classification"',
+  });
+  // The probe reads at most one record, through the caller's include filter.
+  assertEquals(calls[1], {
+    predicate: 'specName == "classification"',
+    options: { limit: 1, include },
+  });
+});
+
+Deno.test("dataQuery: projected empty result also carries the hint", async () => {
+  const deps = fallbackDeps({ 'specName == "classification"': ["x"] });
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        select: "name",
+      }),
+    ),
+  );
+
+  assertEquals(
+    data.specNameHint?.suggestedPredicate,
+    'specName == "classification"',
+  );
+});
+
+Deno.test("dataQuery: no hint when the fallback matches nothing", async () => {
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), fallbackDeps({}), {
+        predicate: 'name == "classification"',
+      }),
+    ),
+  );
+
+  assertEquals("specNameHint" in data, false);
+});
+
+Deno.test("dataQuery: no probe when the query matched", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'name == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+      }),
+    ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: a failed probe omits the hint without failing the query", async () => {
+  const deps = fallbackDeps({
+    'specName == "classification"': new Error("catalog unavailable"),
+  });
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "classification"',
+    }),
+  );
+
+  const data = completedOf(events);
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, undefined);
 });

@@ -495,6 +495,10 @@ export interface CatalogExportRow {
   data_type: string;
   content_type: string;
   lifetime: string;
+  /**
+   * Absent in exports written before the column existed; read as unknown.
+   */
+  garbage_collection?: string;
   owner_type: string;
   streaming: number;
   size: number;

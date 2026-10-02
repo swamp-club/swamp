@@ -377,6 +377,7 @@ export async function handleDataQuery(
     const queryService = ctx.repoContext.dataQueryService;
     const deps: DataQueryDeps = {
       query: (pred, opts) => queryService.query(pred, opts),
+      specNameFallback: (pred) => queryService.specNameFallback(pred),
     };
 
     const limit = Math.min(

@@ -22,7 +22,9 @@ import { Environment } from "cel-js";
 import {
   type ASTNode,
   extractModelNameEquality,
+  extractStringEquality,
   selectReadsContent,
+  specNameFallbackPredicate,
 } from "./query_predicate.ts";
 
 const env = new Environment({
@@ -102,4 +104,81 @@ Deno.test("selectReadsContent: false for other fields and string literals", () =
   assertEquals(selectReadsContent(ast("name")), false);
   assertEquals(selectReadsContent(ast("attributes.content")), false);
   assertEquals(selectReadsContent(ast('"content"')), false);
+});
+
+Deno.test("extractStringEquality: finds the named field among AND conjuncts", () => {
+  assertEquals(
+    extractStringEquality(
+      ast('modelName == "m" && specName == "s"'),
+      "specName",
+    ),
+    "s",
+  );
+});
+
+Deno.test("extractStringEquality: ignores a non-string literal", () => {
+  assertEquals(extractStringEquality(ast("specName == 3"), "specName"), null);
+});
+
+Deno.test("specNameFallbackPredicate: swaps a lone name equality", () => {
+  assertEquals(
+    specNameFallbackPredicate(ast('name == "classification"')),
+    'specName == "classification"',
+  );
+});
+
+Deno.test("specNameFallbackPredicate: keeps the workflow scoping conjuncts", () => {
+  assertEquals(
+    specNameFallbackPredicate(
+      ast(
+        'workflowRunId == "run-1" && jobName == "j" && stepName == "s" && "m" == modelName && name == "classification" && version == 3',
+      ),
+    ),
+    'workflowRunId == "run-1" && jobName == "j" && stepName == "s" && modelName == "m" && specName == "classification" && version == 3',
+  );
+});
+
+Deno.test("specNameFallbackPredicate: drops conjuncts that are not simple equalities", () => {
+  assertEquals(
+    specNameFallbackPredicate(
+      ast(
+        'name == "x" && size > 10 && tags.env == "prod" && !(stepName == "s")',
+      ),
+    ),
+    'specName == "x"',
+  );
+});
+
+Deno.test("specNameFallbackPredicate: quotes literals so they round-trip", () => {
+  const fallback = specNameFallbackPredicate(ast('name == "a\\"b\'c"'));
+  assertEquals(fallback, 'specName == "a\\"b\'c"');
+  assertEquals(extractStringEquality(ast(fallback!), "specName"), "a\"b'c");
+});
+
+Deno.test("specNameFallbackPredicate: null without a top-level name equality", () => {
+  assertEquals(specNameFallbackPredicate(ast('modelName == "m"')), null);
+  assertEquals(
+    specNameFallbackPredicate(ast('name == "a" || name == "b"')),
+    null,
+  );
+  assertEquals(specNameFallbackPredicate(ast('!(name == "a")')), null);
+  assertEquals(specNameFallbackPredicate(ast('name.startsWith("a")')), null);
+});
+
+Deno.test("specNameFallbackPredicate: null with two name equalities", () => {
+  assertEquals(
+    specNameFallbackPredicate(ast('name == "a" && name == "b"')),
+    null,
+  );
+});
+
+Deno.test("specNameFallbackPredicate: null when specName is already referenced", () => {
+  assertEquals(
+    specNameFallbackPredicate(ast('name == "a" && specName != "b"')),
+    null,
+  );
+});
+
+Deno.test("specNameFallbackPredicate: null when name is compared to a non-string", () => {
+  assertEquals(specNameFallbackPredicate(ast("name == 3")), null);
 });

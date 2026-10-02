@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { celString } from "./data_query_command.ts";
 
 /** Known root-level fields available in query predicates. */
 export const QUERY_FIELDS = new Set([
@@ -35,6 +36,7 @@ export const QUERY_FIELDS = new Set([
   "dataType",
   "contentType",
   "lifetime",
+  "garbageCollection",
   "ownerType",
   "streaming",
   "size",
@@ -199,36 +201,114 @@ export function selectReadsContent(node: ASTNode): boolean {
 }
 
 /**
+ * Reads a `field == literal` comparison, with the identifier on either side.
+ * Returns null for any other node.
+ */
+function equalityOperands(
+  node: ASTNode,
+): { field: string; value: unknown } | null {
+  if (node.op !== "==") return null;
+  const [left, right] = node.args as [ASTNode, ASTNode];
+  if (left.op === "id" && right.op === "value") {
+    return { field: left.args as string, value: right.args };
+  }
+  if (right.op === "id" && left.op === "value") {
+    return { field: right.args as string, value: left.args };
+  }
+  return null;
+}
+
+/**
+ * Flattens the top-level AND conjuncts of a predicate. Does not descend
+ * into OR branches or negations, so every conjunct returned must hold for
+ * a row to match.
+ */
+function topLevelConjuncts(ast: ASTNode): ASTNode[] {
+  if (ast.op !== "&&") return [ast];
+  const [left, right] = ast.args as [ASTNode, ASTNode];
+  return [...topLevelConjuncts(left), ...topLevelConjuncts(right)];
+}
+
+/**
+ * Extracts a string literal from a top-level `field == "literal"` equality
+ * in the AST. Walks through AND conjuncts but does not descend into OR
+ * branches. Returns null if no pushdown-eligible equality is found.
+ */
+export function extractStringEquality(
+  ast: ASTNode,
+  field: string,
+): string | null {
+  for (const conjunct of topLevelConjuncts(ast)) {
+    const eq = equalityOperands(conjunct);
+    if (eq?.field === field && typeof eq.value === "string") return eq.value;
+  }
+  return null;
+}
+
+/**
  * Extracts a string literal from a top-level `modelName == "literal"`
- * equality in the AST. Walks through AND conjuncts but does not descend
- * into OR branches. Returns null if no pushdown-eligible modelName
+ * equality in the AST. Returns null if no pushdown-eligible modelName
  * equality is found.
  */
 export function extractModelNameEquality(ast: ASTNode): string | null {
-  if (ast.op === "==") {
-    const [left, right] = ast.args as [ASTNode, ASTNode];
-    if (
-      left.op === "id" && left.args === "modelName" &&
-      right.op === "value" && typeof right.args === "string"
-    ) {
-      return right.args;
-    }
-    if (
-      right.op === "id" && right.args === "modelName" &&
-      left.op === "value" && typeof left.args === "string"
-    ) {
-      return left.args;
-    }
-    return null;
-  }
+  return extractStringEquality(ast, "modelName");
+}
 
-  if (ast.op === "&&") {
-    const [left, right] = ast.args as [ASTNode, ASTNode];
-    return extractModelNameEquality(left) ??
-      extractModelNameEquality(right);
-  }
+/**
+ * String fields a spec-name fallback carries over from the original
+ * predicate when they are compared to a string literal. Keeping them keeps
+ * the fallback scoped as the original was (the same model, run or step).
+ */
+const FALLBACK_STRING_FIELDS = new Set([
+  "id",
+  "modelName",
+  "modelId",
+  "modelType",
+  "dataType",
+  "contentType",
+  "lifetime",
+  "ownerType",
+  "ownerRef",
+  "workflowRunId",
+  "workflowName",
+  "jobName",
+  "stepName",
+  "source",
+  "ns",
+]);
 
-  return null;
+/**
+ * Builds the spec-name counterpart of a predicate that matches one data
+ * instance name exactly: the top-level `name == "x"` becomes
+ * `specName == "x"`, and every other top-level equality of a string field
+ * to a string literal, or of `version` to an int literal, is kept. Other
+ * conjuncts are dropped, so the result can match more than the original
+ * would have; callers verify it matches before suggesting it.
+ *
+ * Returns null when the predicate has no single top-level name equality,
+ * or already mentions specName.
+ */
+export function specNameFallbackPredicate(ast: ASTNode): string | null {
+  if (collectRootIdentifiers(ast).includes("specName")) return null;
+
+  const clauses: string[] = [];
+  let nameEqualities = 0;
+  for (const conjunct of topLevelConjuncts(ast)) {
+    const eq = equalityOperands(conjunct);
+    if (eq === null) continue;
+    if (eq.field === "name") {
+      if (typeof eq.value !== "string") return null;
+      nameEqualities++;
+      clauses.push(`specName == ${celString(eq.value)}`);
+    } else if (
+      FALLBACK_STRING_FIELDS.has(eq.field) && typeof eq.value === "string"
+    ) {
+      clauses.push(`${eq.field} == ${celString(eq.value)}`);
+    } else if (eq.field === "version" && typeof eq.value === "bigint") {
+      clauses.push(`version == ${eq.value}`);
+    }
+  }
+  return nameEqualities === 1 ? clauses.join(" && ") : null;
 }
 
 /**

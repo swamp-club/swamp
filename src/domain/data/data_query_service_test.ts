@@ -54,6 +54,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_type: "resource",
     content_type: "application/json",
     lifetime: "infinite",
+    garbage_collection: "10",
     owner_type: "model-method",
     streaming: 0,
     size: 256,
@@ -120,6 +121,62 @@ Deno.test("DataQueryService: compound predicate", () => {
   ) as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].specName, "result");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: garbageCollection filters count and duration policies", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "count", garbage_collection: "5" }));
+  catalog.upsert(
+    makeRow({
+      data_name: "duration",
+      garbage_collection: "7d",
+      id: "data-uuid-002",
+    }),
+  );
+
+  const names = (predicate: string) =>
+    (service.querySync(predicate) as DataRecord[]).map((r) => r.name).sort();
+
+  assertEquals(names("garbageCollection == 5"), ["count"]);
+  assertEquals(names('garbageCollection == "7d"'), ["duration"]);
+  // Ordering a duration row against an int throws, which skips that row;
+  // the type guard keeps the comparison to count policies.
+  assertEquals(
+    names("type(garbageCollection) != string && garbageCollection < 10"),
+    ["count"],
+  );
+  assertEquals(
+    service.querySync('name == "duration"', { select: "garbageCollection" }),
+    ["7d"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: specName equality filters through the SQL pushdown", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ spec_name: "result" }));
+  catalog.upsert(
+    makeRow({ data_name: "other", spec_name: "raw", id: "data-uuid-002" }),
+  );
+
+  const results = service.querySync(
+    'specName == "raw" && size > 0',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["other"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps scoping", () => {
+  const { catalog, service } = setupTest();
+  assertEquals(
+    service.specNameFallback(
+      'workflowRunId == "run-1" && name == "classification"',
+    ),
+    'workflowRunId == "run-1" && specName == "classification"',
+  );
+  assertEquals(service.specNameFallback('modelName == "m"'), null);
+  assertEquals(service.specNameFallback("name == "), null, "unparseable");
   catalog.close();
 });
 
@@ -543,6 +600,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const results = await service.query('modelName == "ingest"') as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
+  assertEquals(results[0].garbageCollection, 10, "backfill carries GC");
   assertEquals(catalog.isPopulated(), true);
   catalog.close();
 });
@@ -2651,6 +2709,7 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
     dataType: "dataType",
     contentType: "contentType",
     lifetime: "lifetime",
+    garbageCollection: "garbageCollection",
     ownerType: "ownerType",
     streaming: "streaming",
     size: "size",

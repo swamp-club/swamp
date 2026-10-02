@@ -91,6 +91,7 @@ export function renderRemoteQueryResponse(
     const error = requireSingleResult({
       predicate,
       total: matches?.length ?? 0,
+      specNameHint: data.specNameHint,
     });
     if (error) throw userErrorFromSwampError(error);
   }
@@ -202,6 +203,7 @@ export const dataQueryCommand = withRemoteOptions(
 
   const deps: DataQueryDeps = {
     query: (pred, opts) => queryService.query(pred, opts),
+    specNameFallback: (pred) => queryService.specNameFallback(pred),
   };
 
   // Interactive TUI when no predicate is given, TTY, and not --json mode

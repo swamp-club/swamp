@@ -454,6 +454,7 @@ export {
   type DataQueryInput,
   type ProjectedData,
   requireSingleResult,
+  type SpecNameHint,
 } from "./data/query.ts";
 export type { DataRecord } from "../domain/data/data_record.ts";
 

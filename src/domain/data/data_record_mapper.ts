@@ -27,6 +27,7 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
+import { garbageCollectionFromColumn } from "./data_metadata.ts";
 import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
@@ -194,6 +195,7 @@ export function fromRow(
     dataType: row.data_type,
     contentType: row.content_type,
     lifetime: row.lifetime,
+    garbageCollection: garbageCollectionFromColumn(row.garbage_collection),
     ownerType: row.owner_type,
     streaming: row.streaming === 1,
     size: row.size,
@@ -277,6 +279,7 @@ export async function fromData(
     dataType: data.tags["type"] ?? "",
     contentType: data.contentType,
     lifetime: data.lifetime,
+    garbageCollection: data.garbageCollection,
     ownerType: data.ownerDefinition.ownerType,
     streaming: data.streaming,
     size: data.size ?? 0,
@@ -368,6 +371,7 @@ export async function fromResourceHandle(
     dataType: handle.tags["type"] ?? "resource",
     contentType: handle.metadata.contentType,
     lifetime: handle.metadata.lifetime,
+    garbageCollection: handle.metadata.garbageCollection,
     ownerType: handle.metadata.ownerDefinition.ownerType,
     streaming: handle.metadata.streaming,
     size: handle.size,
