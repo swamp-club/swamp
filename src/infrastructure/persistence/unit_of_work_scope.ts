@@ -95,3 +95,25 @@ export async function signalChange(
   }
   await markDirty(change.kind === "bulk" ? undefined : change.path);
 }
+
+/**
+ * The {@link StagedChange} for a repository's `notifyDirty(relPath?)` call.
+ * Despite its historical name, `relPath` is the absolute path of the file or
+ * directory about to change (the composition root's hook makes it
+ * cache-relative). A path becomes `write`; no path becomes `bulk` with
+ * `reason`.
+ *
+ * `notifyDirty` cannot tell a write from a remove, so removals are staged as
+ * `write` too. The legacy adapter forwards both kinds identically, and a path
+ * absent on disk at push time is a delete, so nothing changes. Distinguishing
+ * them is the job of the Phase 1 repository moves, which change the call
+ * sites themselves.
+ */
+export function changeFor(
+  relPath: string | undefined,
+  reason: string,
+): StagedChange {
+  return relPath === undefined
+    ? { kind: "bulk", reason }
+    : { kind: "write", path: relPath };
+}

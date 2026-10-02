@@ -191,7 +191,9 @@ function unhookedWriters(files: readonly SourceFile[]): string[] {
 // ---------------------------------------------------------------------------
 
 const SCOPE_MODULE = "src/infrastructure/persistence/unit_of_work_scope.ts";
-const SCOPE_CALL = /\brunInUnitOfWork\s*(?:<[^>]*>)?\s*\(/g;
+// Any reference, not only a call: an import (aliased or not) is how a scope
+// would reach production code, so it counts too.
+const SCOPE_REFERENCE = /\brunInUnitOfWork\b/g;
 
 function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
   const keys: string[] = [];
@@ -199,7 +201,7 @@ function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
     if (rel === SCOPE_MODULE) continue;
     lines.forEach((line, i) => {
       if (isCommentLine(line)) return;
-      for (const _match of line.matchAll(SCOPE_CALL)) {
+      for (const _match of line.matchAll(SCOPE_REFERENCE)) {
         keys.push(`${rel}: ${owners[i]}`);
       }
     });
@@ -546,24 +548,28 @@ Deno.test("datastore write seams: production code opening a unit-of-work scope i
   assertPinnedSet(
     unitOfWorkScopes(files),
     PINNED_UNIT_OF_WORK_SCOPES,
-    "Production runInUnitOfWork callers",
+    "Production runInUnitOfWork references (calls and imports)",
     "Phase 1 keeps the ambient unit of work inert: no production code opens\n" +
       "a scope yet. Opening one is datastore rework Phase 2; if this is that\n" +
       "work, add the caller here with a reason.",
   );
 });
 
-Deno.test("datastore write seams: the unit-of-work scope scan finds a runInUnitOfWork call", () => {
+Deno.test("datastore write seams: the unit-of-work scope scan finds calls and aliased imports, not comments", () => {
   const probe: SourceFile = {
     rel: "src/libswamp/probe.ts",
     code: "",
     lines: [
+      'import { runInUnitOfWork as scope } from "../scope.ts";',
       "export async function probe() {",
       "  await runInUnitOfWork(uow, () => work());",
-      "  // runInUnitOfWork(uow, fn) in a comment is not a call",
+      "  // runInUnitOfWork(uow, fn) in a comment is not a reference",
       "}",
     ],
-    owners: ["probe", "probe", "probe", "probe"],
+    owners: ["<module>", "probe", "probe", "probe", "probe"],
   };
-  assertEquals(unitOfWorkScopes([probe]), ["src/libswamp/probe.ts: probe"]);
+  assertEquals(unitOfWorkScopes([probe]), [
+    "src/libswamp/probe.ts: <module>",
+    "src/libswamp/probe.ts: probe",
+  ]);
 });

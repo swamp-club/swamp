@@ -20,7 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { signalChange } from "./unit_of_work_scope.ts";
+import { changeFor, signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import {
@@ -94,9 +94,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async notifyDirty(relPath?: string): Promise<void> {
     await signalChange(
       this.markDirty,
-      relPath === undefined
-        ? { kind: "bulk", reason: "YamlWorkflowRunRepository.notifyDirty" }
-        : { kind: "write", path: relPath },
+      changeFor(relPath, "YamlWorkflowRunRepository.notifyDirty"),
     );
   }
 

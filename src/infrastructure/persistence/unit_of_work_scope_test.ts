@@ -25,6 +25,7 @@ import type {
 } from "../../domain/datastore/unit_of_work.ts";
 import { createLegacyUnitOfWork } from "./legacy_unit_of_work.ts";
 import {
+  changeFor,
   currentUnitOfWork,
   runInUnitOfWork,
   signalChange,
@@ -149,4 +150,15 @@ Deno.test("runInUnitOfWork: returns fn's value and rejects with fn's error", asy
   );
   assertStrictEquals(thrown, error);
   assertStrictEquals(currentUnitOfWork(), undefined);
+});
+
+Deno.test("changeFor: a path is a write of that path, and no path is bulk with the reason", () => {
+  assertEquals(changeFor("/cache/data/a/raw", "Repo.notifyDirty"), {
+    kind: "write",
+    path: "/cache/data/a/raw",
+  });
+  assertEquals(changeFor(undefined, "Repo.notifyDirty"), {
+    kind: "bulk",
+    reason: "Repo.notifyDirty",
+  });
 });
