@@ -128,7 +128,10 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
           SWAMP_CLUB_URL: undefined,
           [NESTED_GATE_PASS_ENV]: undefined,
           ...env,
-        }, () => runAuthGate(createAuthGateDeps({ liveChecks: true }))),
+        }, () =>
+          runAuthGate(
+            createAuthGateDeps({ liveChecks: true, canWrite: true }),
+          )),
       gateNested: (env, check) =>
         withMockedEnv({
           SWAMP_CONFIG_DIR: configDir,
@@ -140,7 +143,7 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
           [NESTED_GATE_PASS_ENV]: undefined,
           ...env,
         }, () => {
-          const deps = createAuthGateDeps({ liveChecks: true });
+          const deps = createAuthGateDeps({ liveChecks: true, canWrite: true });
           return runAuthGate({
             ...deps,
             nested: { ...deps.nested!, checkAncestor: check },
@@ -286,13 +289,17 @@ Deno.test("auth gate integration: without a proof a 429, a proxy 403 or no serve
         username: "gate-tester",
       }),
     );
-    const outcome = await withMockedEnv({
-      SWAMP_CONFIG_DIR: configDir,
-      SWAMP_HOME: undefined,
-      SWAMP_API_KEY: undefined,
-      SWAMP_API_KEY_FILE: undefined,
-      SWAMP_SIGNIN_TOKEN: undefined,
-    }, () => runAuthGate(createAuthGateDeps({ liveChecks: true })));
+    const outcome = await withMockedEnv(
+      {
+        SWAMP_CONFIG_DIR: configDir,
+        SWAMP_HOME: undefined,
+        SWAMP_API_KEY: undefined,
+        SWAMP_API_KEY_FILE: undefined,
+        SWAMP_SIGNIN_TOKEN: undefined,
+      },
+      () =>
+        runAuthGate(createAuthGateDeps({ liveChecks: true, canWrite: true })),
+    );
     assertEquals(outcome, {
       kind: "block",
       reason: {

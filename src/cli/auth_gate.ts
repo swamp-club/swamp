@@ -256,6 +256,10 @@ function fileMatches(
   return !payload || payload.fpr === activeFpr;
 }
 
+/**
+ * Record what a live check changed. Returns whether the fail-open window was
+ * recorded, so the warning can say when the 24-hour limit cannot apply.
+ */
 async function applyEffects(
   effects: GateEffects,
   deps: AuthGateDeps,
@@ -265,19 +269,22 @@ async function applyEffects(
     readonly fileProofIsActiveKeys: boolean;
     readonly now: number;
   },
-): Promise<void> {
-  if (deps.canWrite === false) return;
+): Promise<boolean> {
+  if (deps.canWrite === false) return false;
   const repo = deps.verificationRepo;
   const { response } = context;
   // Every write is best effort: a read-only config dir must not fail a run
   // the policy already decided. The decision never depends on a write.
-  const attempt = async (write: () => Promise<void>) => {
+  const attempt = async (write: () => Promise<void>): Promise<boolean> => {
     try {
       await write();
+      return true;
     } catch {
       // Best effort — see above.
+      return false;
     }
   };
+  let failOpenRecorded = false;
   if (
     effects.saveProof && response?.verificationProof &&
     response.verificationSignature && response.publicKeys
@@ -291,7 +298,7 @@ async function applyEffects(
     await attempt(() => repo.delete());
   }
   if (effects.markFailOpen) {
-    await attempt(() => repo.markFailOpenSince(context.now));
+    failOpenRecorded = await attempt(() => repo.markFailOpenSince(context.now));
   }
   if (effects.clearFailOpen) {
     await attempt(() => repo.clearFailOpen());
@@ -303,6 +310,7 @@ async function applyEffects(
   if (effects.clearTokenCheck) {
     await attempt(() => repo.clearTokenCheck());
   }
+  return failOpenRecorded;
 }
 
 /**
@@ -388,7 +396,7 @@ export async function runAuthGate(
     failOpenSince: await repo.readFailOpenSince(),
     now,
   });
-  await applyEffects(effects, deps, {
+  const failOpenRecorded = await applyEffects(effects, deps, {
     response: result.response,
     tokenFpr: assessment.tokenFpr,
     fileProofIsActiveKeys: assessment.fileProofIsActiveKeys,
@@ -407,7 +415,11 @@ export async function runAuthGate(
     liveResponse,
     handoff: liveProof(liveResponse) ?? assessment.handoffProof,
     warning: decision.authMode === "offline"
-      ? offlineWarning(result.outcome.kind, verdict.kind === "valid")
+      ? offlineWarning(
+        result.outcome.kind,
+        verdict.kind === "valid",
+        effects.markFailOpen && !failOpenRecorded,
+      )
       : undefined,
   };
 }
@@ -478,17 +490,35 @@ async function assessNestedPass(
   };
 }
 
+/** The manual page covering CI credentials and daemons. */
+const ACCOUNT_REQUIREMENT_URL =
+  "https://swamp-club.com/manual/reference/swamp-account-requirement";
+
+/**
+ * `windowUnrecorded` is true when this run should have started the 24-hour
+ * fail-open window but could not record it (a read-only config dir, or a
+ * process that does not own it). The run still passes — the stamp is not a
+ * security boundary (design/surfaces/auth-gate.md) — but the warning must not
+ * promise a limit that cannot apply.
+ */
 function offlineWarning(
   outcome: IdentityCheckResult["outcome"]["kind"],
   hasProof: boolean,
+  windowUnrecorded: boolean,
 ): string {
   const why = outcome === "server_error"
     ? "swamp-club.com is returning errors"
     : "could not reach swamp-club.com";
-  return hasProof
-    ? `Running offline (${why}); using your cached verification.`
-    : `Running unverified for up to 24 hours: ${why}. swamp will block once ` +
-      `it has been unable to verify you for a day.`;
+  if (hasProof) {
+    return `Running offline (${why}); using your cached verification.`;
+  }
+  if (windowUnrecorded) {
+    return `Running unverified: ${why}, and swamp cannot record when this ` +
+      `started because this process does not write its config dir. See ` +
+      `${ACCOUNT_REQUIREMENT_URL}`;
+  }
+  return `Running unverified for up to 24 hours: ${why}. swamp will block ` +
+    `once it has been unable to verify you for a day.`;
 }
 
 /**
@@ -529,7 +559,7 @@ export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
  * swamp-club unreachable, so only a locally valid proof lets the run through.
  */
 export function createAuthGateDeps(
-  options: { liveChecks: boolean },
+  options: { liveChecks: boolean; canWrite: boolean },
 ): AuthGateDeps {
   return {
     loadCredential: async () => {
@@ -566,7 +596,7 @@ export function createAuthGateDeps(
       return await client.verifyIdentity(credential.apiKey, signal);
     },
     now: () => Math.floor(Date.now() / 1000),
-    canWrite: ownsConfigDir(),
+    canWrite: options.canWrite,
     nested: {
       loadPass: () => {
         const value = Deno.env.get(NESTED_GATE_PASS_ENV);
@@ -591,24 +621,6 @@ export function createAuthGateDeps(
   };
 }
 
-/**
- * Whether this process owns the swamp config dir, or may create it. False
- * only when the dir exists and belongs to another user, as for a system
- * daemon pointed at the enabling user's dir. Platforms without uids
- * (Windows) always own it.
- */
-function ownsConfigDir(): boolean {
-  const uid = Deno.uid();
-  if (uid === null) return true;
-  try {
-    const owner = Deno.statSync(getSwampConfigDir()).uid;
-    return owner === null || owner === uid;
-  } catch {
-    // Missing (it will be created by this process) or no HOME at all.
-    return true;
-  }
-}
-
 function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
@@ -630,13 +642,9 @@ export function blockMessage(reason: BlockReason): string {
         "swamp requires a swamp-club.com account to run.",
         "",
         "  Run `swamp auth login` to create an account or sign in.",
-        "  It takes about 30 seconds.",
         "",
-        "  In CI, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN from a collective",
-        "  token created at swamp-club.com/collectives.",
-        "",
-        "  For a serve or worker daemon, sign in as the user that enabled it",
-        "  and re-run `swamp serve daemon enable` or `swamp worker daemon enable`.",
+        "  In CI, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN. For CI and daemons,",
+        `  see ${ACCOUNT_REQUIREMENT_URL}`,
       ].join("\n");
     case "revoked":
       return [
@@ -684,6 +692,8 @@ export function blockMessage(reason: BlockReason): string {
         "over 24 hours.",
         "",
         "  swamp runs unverified for at most a day. Please try again later.",
+        "  `swamp auth whoami` works without verification and shows what",
+        "  swamp-club.com returns.",
       ].join("\n");
   }
 }

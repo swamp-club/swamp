@@ -24,6 +24,7 @@ import {
   type UserIdentityData,
 } from "../../domain/identity/user_identity.ts";
 import { getSwampConfigDir } from "./paths.ts";
+import { ownsDirectory } from "./config_dir_ownership.ts";
 
 const IDENTITY_FILE = "identity.json";
 
@@ -34,20 +35,29 @@ const IDENTITY_FILE = "identity.json";
  */
 export class UserIdentityRepository {
   readonly #configDir: string | undefined;
+  readonly #ownsDir: (dir: string) => boolean;
 
   /**
    * @param configDir Directory holding `identity.json`. Defaults to the
    * environment-resolved swamp config dir; callers that own a directory
    * (tests above all) pass it explicitly rather than repointing `HOME` or
    * `XDG_CONFIG_HOME`, which are process-global and shared across the suite.
+   * @param options.ownsDir Whether this process owns a dir. Defaults to a
+   * uid check; tests inject it.
    */
-  constructor(configDir?: string) {
+  constructor(
+    configDir?: string,
+    options: { ownsDir?: (dir: string) => boolean } = {},
+  ) {
     this.#configDir = configDir;
+    this.#ownsDir = options.ownsDir ?? ((dir) => ownsDirectory(dir));
   }
 
   /**
    * Returns the user's persistent userId.
-   * Lazy-creates the identity file if it doesn't exist.
+   * Lazy-creates the identity file if it doesn't exist, unless the config dir
+   * belongs to another user (a system daemon running as root against the
+   * enabling user's dir), which would leave a root-owned file there.
    * Returns null on any error (permissions, missing HOME, etc.).
    */
   async getUserId(): Promise<string | null> {
@@ -69,6 +79,7 @@ export class UserIdentityRepository {
       }
 
       // Create new identity
+      if (!this.#ownsDir(configDir)) return null;
       const identity = createUserIdentity();
       await Deno.mkdir(configDir, { recursive: true });
       await atomicWriteTextFile(
