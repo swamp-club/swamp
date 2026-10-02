@@ -484,6 +484,7 @@ Deno.test("authGateBlockedError: carries the reason, the code and the design's m
     error.message,
     "swamp-club.com/manual/reference/swamp-account-requirement",
   );
+  assertStringIncludes(error.message, "SWAMP_SIGNIN_TOKEN");
   assertStringIncludes(blockMessage({ kind: "revoked" }), "revoked");
   assertStringIncludes(
     blockMessage({ kind: "unreachable_unverified", daysSinceVerification: 15 }),

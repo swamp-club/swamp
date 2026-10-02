@@ -490,6 +490,10 @@ async function assessNestedPass(
   };
 }
 
+/** The manual page covering CI credentials and daemons. */
+const ACCOUNT_REQUIREMENT_URL =
+  "https://swamp-club.com/manual/reference/swamp-account-requirement";
+
 /**
  * `windowUnrecorded` is true when this run should have started the 24-hour
  * fail-open window but could not record it (a read-only config dir, or a
@@ -510,8 +514,8 @@ function offlineWarning(
   }
   if (windowUnrecorded) {
     return `Running unverified: ${why}, and swamp cannot record when this ` +
-      `started because this process cannot write its config dir. Set ` +
-      `SWAMP_SIGNIN_TOKEN so runs can verify without swamp-club.com.`;
+      `started because this process cannot write its config dir. See ` +
+      `${ACCOUNT_REQUIREMENT_URL}`;
   }
   return `Running unverified for up to 24 hours: ${why}. swamp will block ` +
     `once it has been unable to verify you for a day.`;
@@ -630,10 +634,6 @@ function formatWait(seconds: number): string {
 
 const LOGIN_HINT = "Run `swamp auth login` to sign in again.";
 
-/** The manual page covering CI credentials and daemons. */
-const ACCOUNT_REQUIREMENT_URL =
-  "https://swamp-club.com/manual/reference/swamp-account-requirement";
-
 /** The message a blocked run exits with, per the design's user experience. */
 export function blockMessage(reason: BlockReason): string {
   switch (reason.kind) {
@@ -643,8 +643,8 @@ export function blockMessage(reason: BlockReason): string {
         "",
         "  Run `swamp auth login` to create an account or sign in.",
         "",
-        "  For CI and daemons, see",
-        `  ${ACCOUNT_REQUIREMENT_URL}`,
+        "  In CI, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN. For CI and daemons,",
+        `  see ${ACCOUNT_REQUIREMENT_URL}`,
       ].join("\n");
     case "revoked":
       return [
