@@ -43,6 +43,7 @@
     "@types/react": "npm:@types/react@^19.2.14",
     "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.1042.0",
     "cel-js": "npm:@marcbachmann/cel-js@7.6.1",
+    "@babel/parser": "npm:@babel/parser@^7.29.7",
     "croner": "npm:croner@^9.1.0",
     "fast-json-patch": "npm:fast-json-patch@^3.1.1",
     "fast-check": "npm:fast-check@^3.23.2",

@@ -59,6 +59,8 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     created_at: "2026-01-01T00:00:00.000Z",
     tags: '{"type":"resource","specName":"result"}',
     ...overrides,
+    // Rows default to a step latest exactly when they are latest.
+    is_step_latest: overrides.is_step_latest ?? overrides.is_latest ?? 1,
   };
 }
 
@@ -165,7 +167,14 @@ Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", 
   store.close();
 });
 
-Deno.test("CatalogStore: upsertNewVersion keeps independent latests for different workflow steps", () => {
+/** Returns `version:is_latest:is_step_latest` for every row, by version. */
+function flagsByVersion(store: CatalogStore): string[] {
+  return [...store.iterate()]
+    .sort((a, b) => a.version - b.version)
+    .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
+Deno.test("CatalogStore: upsertNewVersion keeps one latest across workflow steps and a step latest per step", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
@@ -176,14 +185,22 @@ Deno.test("CatalogStore: upsertNewVersion keeps independent latests for differen
     makeRow({ version: 2, step_name: "step-b" }),
   );
 
-  const rows = [...store.iterate()];
-  assertEquals(rows.length, 2);
-  const latestRows = rows.filter((r) => r.is_latest === 1);
-  assertEquals(latestRows.length, 2);
-  assertEquals(latestRows.map((r) => r.step_name).sort(), [
-    "step-a",
-    "step-b",
-  ]);
+  // swamp-club#2520: only v2 is latest; both stay their step's latest so
+  // findBySpec still sees each step's output (swamp-club#1761).
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  assertEquals(store.countDuplicateLatest(), 0);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion three steps across jobs leave one latest", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
+  store.upsertNewVersion(makeRow({ version: 3, step_name: "s3" }));
+
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:0:1", "3:1:1"]);
   store.close();
 });
 
@@ -226,6 +243,7 @@ Deno.test("CatalogStore: upsertNewVersion model-method demotes all step_names", 
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 3);
   assertEquals(latestRows[0].step_name, "");
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:0:0", "3:1:1"]);
   store.close();
 });
 
@@ -246,28 +264,83 @@ Deno.test("CatalogStore: upsertNewVersion workflow step demotes model-method row
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 2);
   assertEquals(latestRows[0].step_name, "approve");
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:1:1"]);
   store.close();
 });
 
-Deno.test("CatalogStore: upsertNewVersion workflow step does not demote other steps", () => {
+Deno.test("CatalogStore: upsertNewVersion workflow step does not demote other steps' step latest", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
-  store.upsertNewVersion(
-    makeRow({ version: 1, step_name: "step-a" }),
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "step-b" }));
+  store.upsertNewVersion(makeRow({ version: 3, step_name: "step-a" }));
+
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:0:1", "3:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion out-of-order promotion from parallel steps keeps the highest version latest", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // Parallel steps allocate v1 and v2, then promote in reverse order.
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "step-b" }));
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
+
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion lower step write below a model-method latest stays unflagged", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "" }));
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
+
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion lower model-method write below a step latest stays unflagged", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "step-a" }));
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "" }));
+
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion ignores a higher unpromoted deferred row", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // A deferred write lands with both flags 0 until it is promoted.
+  store.upsert(
+    makeRow({ version: 2, step_name: "step-b", is_latest: 0 }),
   );
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
+  assertEquals(flagsByVersion(store), ["1:1:1", "2:0:0"]);
+
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "step-b" }));
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion re-upserting the latest keeps its flags", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "step-b" }));
   store.upsertNewVersion(
-    makeRow({ version: 2, step_name: "step-b" }),
+    makeRow({ version: 2, step_name: "step-b", size: 999 }),
   );
 
-  const rows = [...store.iterate()];
-  assertEquals(rows.length, 2);
-  const latestRows = rows.filter((r) => r.is_latest === 1);
-  assertEquals(latestRows.length, 2);
-  assertEquals(latestRows.map((r) => r.step_name).sort(), [
-    "step-a",
-    "step-b",
-  ]);
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
   store.close();
 });
 
@@ -294,6 +367,7 @@ Deno.test("CatalogStore: upsertNewVersion model-method after workflow steps demo
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 4);
   assertEquals(latestRows[0].step_name, "");
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:0:0", "3:0:0", "4:1:1"]);
   store.close();
 });
 
@@ -933,6 +1007,65 @@ Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", ()
   store.close();
 });
 
+Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latests (swamp-club#2520)", () => {
+  const dbPath = makeTempDbPath();
+
+  // A v4 catalog: no is_step_latest column, and two workflow steps' versions
+  // of one data name both flagged is_latest.
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout=5000");
+  db.exec("PRAGMA journal_mode=WAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS catalog (
+      namespace       TEXT NOT NULL DEFAULT '',
+      type_normalized TEXT NOT NULL,
+      model_id        TEXT NOT NULL,
+      data_name       TEXT NOT NULL,
+      id              TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      is_latest       INTEGER NOT NULL DEFAULT 1,
+      model_name      TEXT NOT NULL,
+      spec_name       TEXT NOT NULL DEFAULT '',
+      data_type       TEXT NOT NULL DEFAULT '',
+      content_type    TEXT NOT NULL DEFAULT '',
+      lifetime        TEXT NOT NULL DEFAULT '',
+      owner_type      TEXT NOT NULL DEFAULT '',
+      streaming       INTEGER NOT NULL DEFAULT 0,
+      size            INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL,
+      tags            TEXT NOT NULL DEFAULT '{}',
+      owner_ref       TEXT NOT NULL DEFAULT '',
+      workflow_run_id TEXT NOT NULL DEFAULT '',
+      workflow_name   TEXT NOT NULL DEFAULT '',
+      job_name        TEXT NOT NULL DEFAULT '',
+      step_name       TEXT NOT NULL DEFAULT '',
+      source          TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
+    );
+    CREATE TABLE IF NOT EXISTS catalog_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, is_latest, model_name, created_at, step_name)
+      VALUES ('test-model', 'm1', 'item-b', 'id1', 1, 1, 'c1', '2026-01-01T00:00:00.000Z', 's1');
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, is_latest, model_name, created_at, step_name)
+      VALUES ('test-model', 'm1', 'item-b', 'id2', 2, 1, 'c1', '2026-01-01T00:00:01.000Z', 's2');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '4');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+  `);
+  db.close();
+
+  // Opening drops the stale rows and clears populated, so the next query
+  // rebuilds both flags from disk.
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "migration drops the per-step duplicates");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
 // ── Phase 6c: namespace-scoped backfill and foreign upsert ──────────────────
 
 Deno.test("latestRowCountsByType: counts latest rows per type within a namespace", () => {
@@ -1232,6 +1365,35 @@ Deno.test(
 );
 
 Deno.test(
+  "CatalogStore: findLatestRowsBySpecName returns one row when several steps wrote the name (swamp-club#2520)",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    // Two workflow steps write a data name equal to its spec name; before
+    // the fix both stayed latest and data.latest() reported ambiguity.
+    store.upsertNewVersion(makeRow({
+      model_name: "fleet",
+      spec_name: "result",
+      data_name: "result",
+      version: 1,
+      step_name: "s1",
+    }));
+    store.upsertNewVersion(makeRow({
+      model_name: "fleet",
+      spec_name: "result",
+      data_name: "result",
+      version: 2,
+      step_name: "s2",
+    }));
+
+    const rows = store.findLatestRowsBySpecName("fleet", "result");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].version, 2);
+
+    store.close();
+  },
+);
+
+Deno.test(
   "CatalogStore: findLatestRowsBySpecName returns empty for no match",
   () => {
     const store = new CatalogStore(makeTempDbPath());
@@ -1354,18 +1516,49 @@ Deno.test("enforceUniqueLatest: demotes stale is_latest rows", () => {
   store.close();
 });
 
-Deno.test("enforceUniqueLatest: respects step_name scoping", () => {
+Deno.test("enforceUniqueLatest: demotes is_latest across steps but keeps each step latest", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
+  // The shape a catalog written before swamp-club#2520 holds: one latest
+  // per workflow step.
   store.upsert(makeRow({ version: 3, is_latest: 1, step_name: "step-a" }));
   store.upsert(makeRow({ version: 4, is_latest: 1, step_name: "step-b" }));
 
+  assertEquals(store.countDuplicateLatest(), 1);
+
+  const changed = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(changed, 1);
   assertEquals(store.countDuplicateLatest(), 0);
+  assertEquals(flagsByVersion(store), ["3:0:1", "4:1:1"]);
 
-  const demoted = store.enforceUniqueLatest(computeLatestFlags);
-  assertEquals(demoted, 0);
+  store.close();
+});
 
+Deno.test("enforceUniqueLatest: promotes the highest step latest when no row is latest", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ version: 1, is_latest: 0, is_step_latest: 1 }));
+  store.upsert(
+    makeRow({ version: 2, is_latest: 0, is_step_latest: 1, step_name: "s" }),
+  );
+
+  const changed = store.enforceUniqueLatest(computeLatestFlags);
+  assertEquals(changed, 2);
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("enforceUniqueLatest: never promotes an unpromoted deferred row", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsert(makeRow({ version: 2, is_latest: 0 }));
+
+  assertEquals(store.enforceUniqueLatest(computeLatestFlags), 0);
+  assertEquals(flagsByVersion(store), ["1:1:1", "2:0:0"]);
   store.close();
 });
 

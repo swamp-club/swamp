@@ -28,6 +28,7 @@ import { NESTED_GATE_PASS_ENV } from "../src/domain/auth/nested_gate_pass.ts";
 import {
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
+  SWAMP_LOCK_HOLDER_TOKENS,
 } from "../src/domain/datastore/lock_holder_marker.ts";
 import {
   API_KEY_ENV,
@@ -38,8 +39,12 @@ import { SIGNIN_TOKEN_ENV } from "../src/infrastructure/persistence/auth_verific
 Deno.test("nested swamp env: the allow list names the nested pass and the lock markers", () => {
   assertEquals(
     [...NESTED_SWAMP_ENV_VARS].sort(),
-    [NESTED_GATE_PASS_ENV, SWAMP_LOCK_HOLDER_PID, SWAMP_LOCK_ANCESTOR_PIDS]
-      .sort(),
+    [
+      NESTED_GATE_PASS_ENV,
+      SWAMP_LOCK_HOLDER_PID,
+      SWAMP_LOCK_ANCESTOR_PIDS,
+      SWAMP_LOCK_HOLDER_TOKENS,
+    ].sort(),
   );
 });
 

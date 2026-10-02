@@ -51,7 +51,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assertEquals, equal } from "@std/assert";
+import { assert, assertEquals, equal } from "@std/assert";
 import { join } from "@std/path";
 import {
   createInMemoryRemote,
@@ -68,6 +68,8 @@ import {
   flushDatastoreSync,
   getRegisteredLockKeys,
 } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
+import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import {
   configureTestDatastore,
   registerTestDatastoreType,
@@ -1099,5 +1101,60 @@ for (const { label, twoPhaseSync } of FLUSH_MODES) {
       );
     });
     assertGaps(gaps, "s8");
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Ambient unit of work (swamp-club#2971, datastore rework Phase 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scenario s1 on fresh peers: B reads first, A saves `x` under the model
+ * lock (inside a legacy unit-of-work scope bound to A's own hook when
+ * `scoped`), then B pulls and observes with invalidation. Returns what the
+ * remote and B saw.
+ */
+async function s1Outcome(
+  twoPhaseSync: boolean,
+  modelId: string,
+  scoped: boolean,
+): Promise<{ ops: readonly unknown[]; remote: string[]; view: View }> {
+  let outcome:
+    | { ops: readonly unknown[]; remote: string[]; view: View }
+    | undefined;
+  await withPeers({ twoPhaseSync, instances: ["A", "B"] }, async (p) => {
+    await observeOn(p.repo.B, modelId, ["x"]);
+    await withModelLock(p.repo.A, modelId, async (ctx) => {
+      if (!scoped) return await save(ctx, modelId, "x", { v: 1 });
+      const hook = ctx.repoContext.markDirty;
+      assert(hook !== undefined, "expected A's composition-built mark hook");
+      const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+      const version = await runInUnitOfWork(
+        uow,
+        () => save(ctx, modelId, "x", { v: 1 }),
+      );
+      assert(uow.staged().length > 0, "expected A's save to stage");
+      return version;
+    });
+    const view = await observeOn(p.repo.B, modelId, ["x"]);
+    outcome = {
+      ops: p.remote.ops(),
+      remote: remoteData(p.remote, modelId),
+      view,
+    };
+  });
+  assert(outcome !== undefined);
+  return outcome;
+}
+
+for (const { label, twoPhaseSync } of FLUSH_MODES) {
+  Deno.test(`acquireModelLocks: s1 inside a legacy unit of work scope gives the remote and B exactly what s1 without one does (${label})`, async () => {
+    const modelId = crypto.randomUUID();
+    const unscoped = await s1Outcome(twoPhaseSync, modelId, false);
+    const scoped = await s1Outcome(twoPhaseSync, modelId, true);
+    assertEquals(unscoped.remote, ["x/1/metadata.yaml", "x/1/raw", "x/latest"]);
+    assertEquals(scoped.ops, unscoped.ops);
+    assertEquals(scoped.remote, unscoped.remote);
+    assertEquals(scoped.view, unscoped.view);
   });
 }

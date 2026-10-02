@@ -1092,6 +1092,7 @@ export class ModelResolver {
           loadAttributes: true,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          latestPerStep: true,
         }) as DataRecord[];
         return dropMissingPaths(deduplicateByName(results));
       },
@@ -1108,6 +1109,7 @@ export class ModelResolver {
           loadAttributes: true,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          latestPerStep: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawSpecModelName);

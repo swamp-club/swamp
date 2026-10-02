@@ -21,6 +21,8 @@ import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
 import { dirname, join, normalize, relative, SEPARATOR } from "@std/path";
+import { signalChange } from "./unit_of_work_scope.ts";
+import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -94,8 +96,8 @@ export class YamlOutputRepository implements OutputRepository {
     this.baseDir = baseDir ?? this.localOutputsDir;
   }
 
-  private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
+  private async stage(change: StagedChange): Promise<void> {
+    await signalChange(this.markDirty, change);
   }
 
   /**
@@ -387,7 +389,7 @@ export class YamlOutputRepository implements OutputRepository {
     output: ModelOutput,
   ): Promise<void> {
     const path = this.getPath(type, method, output);
-    await this.notifyDirty(path);
+    await this.stage({ kind: "write", path });
 
     const dir = this.getMethodDir(type, method);
     await assertSafePath(dir, this.baseDir);
@@ -416,7 +418,7 @@ export class YamlOutputRepository implements OutputRepository {
     // Find-then-act structure: the per-file try/catch wraps only the
     // search (readTextFile + parseYaml + match check) so a concurrent
     // delete of a non-target file doesn't abort the search before we
-    // reach the target. The destructive ops (notifyDirty + Deno.remove
+    // reach the target. The destructive ops (staged remove + Deno.remove
     // + cleanupEmptyParentDirs) run after the loop, still inside the
     // outer try/catch — preserving the existing semantic that a
     // NotFound from Deno.remove (race: target deleted concurrently) is
@@ -613,9 +615,9 @@ export class YamlOutputRepository implements OutputRepository {
     }
     if (dryRun) return bytes;
 
-    await this.notifyDirty(yamlPath);
+    await this.stage({ kind: "remove", path: yamlPath });
     if (logPath && logExists && this.inBaseDir(logPath)) {
-      await this.notifyDirty(logPath);
+      await this.stage({ kind: "remove", path: logPath });
     }
     try {
       await Deno.remove(yamlPath);
@@ -685,7 +687,7 @@ export class YamlOutputRepository implements OutputRepository {
         bytes += candidate.size;
         if (dryRun) continue;
         if (this.inBaseDir(candidate.path)) {
-          await this.notifyDirty(candidate.path);
+          await this.stage({ kind: "remove", path: candidate.path });
         }
         try {
           await Deno.remove(candidate.path);

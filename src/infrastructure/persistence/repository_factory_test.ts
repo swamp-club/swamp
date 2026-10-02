@@ -181,6 +181,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     id: "data-uuid-001",
     version: 1,
     is_latest: 1,
+    is_step_latest: 1,
     model_name: "test-model-name",
     spec_name: "result",
     data_type: "resource",

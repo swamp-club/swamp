@@ -58,6 +58,9 @@ Deprecated `data get` forms map to these queries:
 | `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 | `swamp data get --workflow <w> <n>`            | `swamp data query 'workflowRunId == latestRun("<w>") && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 
+Add `--single` to any of these to get one bare object under `--json`, as
+`data get --json` printed (see [Single result](#single-result---single)).
+
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. `latestRun("<w>")` follows a
 workflow's latest run, as `data get --workflow` does without `--run` (see
@@ -81,6 +84,21 @@ run id on the data, so the query leaves it out. `workflowName == "<w>"` is not
 the same read: it returns the latest version of each item the workflow wrote,
 which can come from different runs.
 
+`integration/data_query_get_parity_test.ts` holds the first two deprecated
+`data get` rows and the `data versions` row to their queries on the filesystem
+datastore, a full-hydration custom datastore and a hand-wired lazy-hydration
+setup, after a pull, an invalidate and a catalog rebuild. On a lazy datastore
+`data query` downloads a body it needs and does not yet have, as `data get`
+does (see [datastores.md](./datastores.md#getcontentsync-limitation)), so a
+broad attribute predicate downloads the body of every row that passes its
+metadata terms, and a query with no `select` downloads the body of every JSON
+row it returns, because results carry `attributes`. A `select` over metadata
+fields only downloads nothing. A failed download fails the query, as it fails
+`data get`. Two differences remain: a binary item's `content` is `""` in a
+query but base64 from `data get` (swamp-club#2959), and `data get` follows a
+renamed item's forward reference while a query by the old name matches nothing
+(swamp-club#2972).
+
 ### CEL shortcuts
 
 | Shortcut                      | Underlying query                                                           |
@@ -88,11 +106,11 @@ which can come from different runs.
 | `data.latest("m", "n")`       | `data.query('modelName == "m" && name == "n"')[0]`                         |
 | `data.version("m", "n", 2)`   | `data.query('modelName == "m" && name == "n" && version == 2')[0]`         |
 | `data.listVersions("m", "n")` | `data.query('modelName == "m" && name == "n" && version >= 0', 'version')` |
-| `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`                                              |
-| `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`                        |
+| `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`, latest per step                             |
+| `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`, latest per step       |
 
 A shortcut returns the same `DataRecord[]` type and fields as the equivalent
-`data.query()` call. Execution differs in three ways
+`data.query()` call. Execution differs in four ways
 (`src/domain/expressions/model_resolver.ts`):
 
 - `data.latest()` / `data.version()` without a `*:` wildcard look on the
@@ -102,6 +120,10 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
   the model name has a namespace prefix (`routeNamespace`).
 - `data.findBySpec()` and `data.findByTag()` keep only the newest record per
   `(modelName, name, stepName)` (`deduplicateByName`).
+- `data.findBySpec()` and `data.findByTag()` query with `latestPerStep`, so
+  they match each workflow step's latest version (`is_step_latest`) rather
+  than the single latest (`is_latest`). When several steps wrote one data
+  name, they return a record per step where `data.query()` returns one.
 
 **specName ambiguity detection:** `data.latest()` throws a `UserError` when its
 lookup argument equals a `specName` tag shared by several data items under the
@@ -293,21 +315,34 @@ No data access function scopes by workflow run. Only `data.query()` and
 `context.readModelData()` add an own-namespace filter (see above) and nothing
 else. Any other scoping must be written into the predicate.
 
-**Step-aware versioning:** the `is_latest` flag follows asymmetric demotion
-rules based on `step_name`:
+**Step-aware versioning:** the catalog keeps two latest flags per row
+(`CatalogStore.upsertNewVersion`, `computeLatestFlags`):
 
-- **Model-method writes** (`step_name = ""`) demote all prior latest rows for
-  the same `(model, data)`, whatever their `step_name`. A model-method write
-  always leaves exactly one latest.
-- **Workflow-step writes** (`step_name != ""`) demote prior rows with the same
-  `step_name` and prior model-method rows (`step_name = ""`). Other steps'
-  latest rows are untouched, so different workflow steps writing the same data
-  name keep independent version chains.
+- **`is_latest`** marks exactly one row per `(namespace, type, model, data)`:
+  the highest promoted version, whatever its `step_name`. It backs `isLatest`
+  and the implicit latest-only filter, so `data.query()`, `swamp data query`,
+  `swamp data search`, `context.readModelData()` and `context.queryData()`
+  return one version per data name even when several workflow steps wrote it
+  (swamp-club#2520).
+- **`is_step_latest`** marks each workflow step's latest version, with
+  asymmetric demotion rules based on `step_name`. A model-method write
+  (`step_name = ""`) demotes every lower row. A workflow-step write demotes
+  lower rows with the same `step_name` and lower model-method rows. Other
+  steps' rows are untouched, so different workflow steps writing the same data
+  name keep independent version chains (swamp-club#1761, swamp-club#1802). The
+  `is_latest` row is always also `is_step_latest`.
 
-Collection helpers (`findBySpec`, `findByTag`) return the latest version per
-step, so they may return several records for one data name written by
-different workflow steps. `data.latest()` returns the single most recently
-written record regardless of step.
+Version order, not arrival order, decides both flags, so parallel steps that
+promote out of order converge on the same flags a rebuild derives. Only the
+collection helpers (`findBySpec`, `findByTag`) read `is_step_latest`, so they
+may return several records for one data name written by different workflow
+steps; an older step's record reports `isLatest: false`. `data.latest()`
+returns the single latest record regardless of step.
+
+Known gap: deleting a version (`swamp data delete --version`, GC, the version
+cap, or rolling back an unpromoted deferred write) re-promotes only the
+surviving highest version. Another step whose latest was deleted keeps no
+`is_step_latest` row until the catalog is rebuilt.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
@@ -406,6 +441,7 @@ CREATE TABLE catalog (
   id              TEXT NOT NULL,
   version         INTEGER NOT NULL,
   is_latest       INTEGER NOT NULL DEFAULT 1,
+  is_step_latest  INTEGER NOT NULL DEFAULT 1,
   model_name      TEXT NOT NULL,
   spec_name       TEXT NOT NULL DEFAULT '',
   data_type       TEXT NOT NULL DEFAULT '',
@@ -434,6 +470,7 @@ CREATE INDEX idx_catalog_step_name       ON catalog(step_name);
 CREATE INDEX idx_namespace               ON catalog(namespace);
 CREATE INDEX idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
 CREATE INDEX idx_catalog_latest_lookup   ON catalog(model_name, data_name, is_latest, namespace);
+CREATE INDEX idx_catalog_step_latest     ON catalog(model_name, is_step_latest);
 
 CREATE TABLE catalog_meta (
   key   TEXT PRIMARY KEY,
@@ -548,6 +585,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | CEL pattern                 | SQL pushdown           | Notes                                                    |
 | --------------------------- | ---------------------- | -------------------------------------------------------- |
 | implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
+| implicit, with `latestPerStep` | `WHERE is_step_latest = 1` | `findBySpec`/`findByTag` only; no CEL `isLatest` term |
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
 | `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
 
@@ -746,6 +784,21 @@ columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
 `--select` composes with `--json`, which renders projected values as JSON
 instead of human-readable text. It also composes with `--limit`: the limit
 applies to matched rows, the projection to output.
+
+### Single result (`--single`)
+
+`--single` requires exactly one match. The libswamp generator queries without
+a limit and yields `QUERY_NO_MATCH` or `QUERY_MULTIPLE_MATCHES` instead of
+`completed` otherwise, so the command exits non-zero. It does not query with a
+limit of 2: an unfiltered query applies its limit before stale catalog rows are
+dropped, so two scanned rows could leave one live match and hide a second. With `--json` the renderer prints the one record (the object the
+envelope would carry as `results[0]`) or its projected value bare, without the
+`{results, total, limited}` envelope; log output is unchanged. `--single`
+conflicts with `--limit` and requires a predicate. Over `--server` the client
+sends `limit: 2` and applies the same `requireSingleResult` check to the
+records in the response, so the `data.query` protocol is unchanged. The limit is
+safe there because the server filters by read access, and a filtered query
+keeps matching until enough rows survive the stale-row check.
 
 ### Implementation
 

@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import type { DataRecord } from "../../libswamp/mod.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import type { DataQueryData, DataRecord } from "../../libswamp/mod.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   createDataQueryRenderer,
   renderQueryResultsMarkdown,
@@ -58,9 +59,7 @@ function makeRecord(
   };
 }
 
-function captureJsonOutput(
-  fn: () => void,
-): Record<string, unknown> {
+function captureJsonValue(fn: () => void): unknown {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
@@ -70,6 +69,12 @@ function captureJsonOutput(
     console.log = originalLog;
   }
   return JSON.parse(logs[0]);
+}
+
+function captureJsonOutput(
+  fn: () => void,
+): Record<string, unknown> {
+  return captureJsonValue(fn) as Record<string, unknown>;
 }
 
 Deno.test("renderJson: JSON record maps attributes to content", () => {
@@ -202,4 +207,95 @@ Deno.test("renderQueryResultsMarkdown: renders more list rows than fit in a spre
   const lines = md.split("\n");
   assertEquals(lines[0], "| 1 | 2 | 3 |");
   assertEquals(lines.length, count + 2);
+});
+
+function renderSingle(data: DataQueryData): unknown {
+  const handlers = createDataQueryRenderer("json", false, { single: true })
+    .handlers();
+  return captureJsonValue(() => {
+    handlers.completed({ kind: "completed", data });
+  });
+}
+
+Deno.test("renderJson: single prints the bare record that the envelope carries as results[0]", () => {
+  const record = makeRecord({ attributes: { hostname: "worker-01" } });
+  const data: DataQueryData = {
+    predicate: 'name == "result"',
+    results: [record],
+    total: 1,
+    limited: false,
+  };
+
+  const single = renderSingle(data);
+  const envelope = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data,
+    });
+  });
+
+  assertEquals(single, (envelope.results as unknown[])[0]);
+  assertEquals(
+    (single as Record<string, unknown>).content,
+    { hostname: "worker-01" },
+  );
+});
+
+Deno.test("renderJson: single prints a bare scalar projection", () => {
+  const output = renderSingle({
+    predicate: "true",
+    select: "name",
+    results: [],
+    projected: { shape: "scalar", values: ["result"] },
+    total: 1,
+    limited: false,
+  });
+
+  assertEquals(output, "result");
+});
+
+Deno.test("renderJson: single prints a bare map projection", () => {
+  const output = renderSingle({
+    predicate: "true",
+    select: "attributes",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["status"],
+      rows: [{ status: "ok" }],
+    },
+    total: 1,
+    limited: false,
+  });
+
+  assertEquals(output, { status: "ok" });
+});
+
+Deno.test("renderJson: single prints null when the one projection failed", () => {
+  const output = renderSingle({
+    predicate: "true",
+    select: "attributes.missing",
+    results: [],
+    projected: { shape: "scalar", values: [null] },
+    total: 1,
+    limited: false,
+  });
+
+  assertEquals(output, null);
+});
+
+Deno.test("createDataQueryRenderer: error throws UserError carrying the error code", () => {
+  const handlers = createDataQueryRenderer("json", false, { single: true })
+    .handlers();
+
+  const error = assertThrows(
+    () =>
+      handlers.error({
+        kind: "error",
+        error: { code: "QUERY_NO_MATCH", message: "no match" },
+      }),
+    UserError,
+    "no match",
+  );
+  assertEquals(error.code, "QUERY_NO_MATCH");
 });

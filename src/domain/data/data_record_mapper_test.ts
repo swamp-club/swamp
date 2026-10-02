@@ -44,6 +44,7 @@ function createRow(overrides?: Partial<CatalogRow>): CatalogRow {
     id: "data-id-1",
     version: 1,
     is_latest: 1,
+    is_step_latest: 1,
     model_name: "test-model",
     spec_name: "test-spec",
     data_type: "resource",
@@ -114,6 +115,50 @@ Deno.test("fromRow: skips content loading when both flags are false", () => {
 
   assertEquals(record.attributes, {});
   assertEquals(record.content, "");
+});
+
+Deno.test("fromRow: reports a needed body that is not on disk", () => {
+  let missing = 0;
+  const record = fromRow(
+    createRow(),
+    stubRepo(null),
+    true,
+    false,
+    false,
+    () => missing++,
+  );
+
+  assertEquals(missing, 1);
+  assertEquals(record.attributes, {});
+});
+
+Deno.test("fromRow: does not report a body that was read", () => {
+  let missing = 0;
+  fromRow(
+    createRow(),
+    stubRepo(encoder.encode("{}")),
+    true,
+    false,
+    false,
+    () => missing++,
+  );
+
+  assertEquals(missing, 0);
+});
+
+Deno.test("fromRow: does not report a body it did not need", () => {
+  let missing = 0;
+  fromRow(createRow(), stubRepo(null), false, false, false, () => missing++);
+  fromRow(
+    createRow({ content_type: "application/octet-stream" }),
+    stubRepo(null),
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+
+  assertEquals(missing, 0);
 });
 
 Deno.test("fromRow: handles invalid JSON content gracefully", () => {

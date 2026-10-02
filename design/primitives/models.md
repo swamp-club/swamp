@@ -764,10 +764,12 @@ methods: {
 With `rollbackOnFailure` true, writes use deferred-latest mode:
 
 1. **During execution**: data is written to disk but the `latest` marker does
-   not advance. The catalog row is written with `is_latest=0`. Concurrent
-   readers calling `data.latest()` see the previous version, or nothing.
-2. **On success**: all `latest` markers advance and catalog rows flip to
-   `is_latest=1`. Data becomes visible atomically.
+   not advance. The catalog row is written with `is_latest=0` and
+   `is_step_latest=0`. Concurrent readers calling `data.latest()` see the
+   previous version, or nothing.
+2. **On success**: all `latest` markers advance and each catalog row is
+   promoted through `upsertNewVersion`, which sets both flags by version
+   order. Data becomes visible atomically.
 3. **On failure**: version directories and catalog rows are removed. No trace of
    the failed writes remains.
 

@@ -35,6 +35,8 @@
 //   repository constructions:
 //     grep -rnE "new (YamlDefinition|FileSystemUnifiedData|YamlWorkflow|YamlWorkflowRun|YamlOutput|YamlEvaluatedWorkflow|YamlEvaluatedDefinition|YamlVaultConfig|JsonlAudit|JsonlVaultAudit|CompositeUnifiedData|Lockfile)Repository\b" src \
 //       --include='*.ts' | grep -v "_test.ts:" | grep -v repository_factory.ts
+//   staged changes (datastore-tier repository classes):
+//     grep -nE 'kind: (.*\? )?"(write|remove|bulk)"' src/infrastructure/persistence/*_repository.ts
 // The grep counts differ slightly from the scans below: the scans also skip
 // interface members and catch constructions split across lines.
 //
@@ -187,6 +189,61 @@ function unhookedWriters(files: readonly SourceFile[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 4: unit-of-work scopes
+// ---------------------------------------------------------------------------
+
+const SCOPE_MODULE = "src/infrastructure/persistence/unit_of_work_scope.ts";
+// Any reference, not only a call: an import (aliased or not) is how a scope
+// would reach production code, so it counts too.
+const SCOPE_REFERENCE = /\brunInUnitOfWork\b/g;
+
+function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    if (rel === SCOPE_MODULE) continue;
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+      for (const _match of line.matchAll(SCOPE_REFERENCE)) {
+        keys.push(`${rel}: ${owners[i]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+// ---------------------------------------------------------------------------
+// Rule 5: typed changes repositories stage
+// ---------------------------------------------------------------------------
+
+// The kind property of a StagedChange literal: a literal kind, or a ternary
+// between two literal kinds, keyed "write|remove" (a delete that stages a
+// write when it keeps the file, swamp-club#2980). Matched on its own, so a
+// call that deno fmt wraps over several lines still counts once. Any other
+// kind expression does not match, so the change goes missing from the pin.
+const STAGED_KIND =
+  /\bkind:\s*(?:"(write|remove|bulk)"|[^,}\n?"]+\?\s*"(write|remove|bulk)"\s*:\s*"(write|remove|bulk)")/g;
+
+/**
+ * One key per staged change inside a datastore-tier repository class, as
+ * "<file>: <class> <kind>". Scoped to those classes, so the StagedChange type
+ * union, changeFor and the legacy adapter never count.
+ */
+function stagedChanges(files: readonly SourceFile[]): string[] {
+  const repositories = new Set<string>(DATASTORE_TIER_REPOSITORIES);
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    lines.forEach((line, i) => {
+      if (isCommentLine(line) || !repositories.has(owners[i])) return;
+      for (const match of line.matchAll(STAGED_KIND)) {
+        const kind = match[1] ?? `${match[2]}|${match[3]}`;
+        keys.push(`${rel}: ${owners[i]} ${kind}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+// ---------------------------------------------------------------------------
 // Pinned lists
 // ---------------------------------------------------------------------------
 
@@ -208,14 +265,16 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // The mark hook itself, and the catalog export.
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
-  // Repositories notifying their mark hook after a write.
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository (x16)",
-  "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository (x4)",
-  "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts: YamlEvaluatedDefinitionRepository (x4)",
-  "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository (x6)",
-  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository (x5)",
-  "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository (x3)",
-  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository (x5)",
+  // The legacy unit of work forwarding staged changes to the mark hook
+  // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
+  // phases stage through the unit of work rather than adding calls here.
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
+  // The one routing helper the repositories' notifyDirty bodies delegate to:
+  // it stages into an ambient unit of work bound to the hook, or calls the
+  // hook (swamp-club#2971). Exactly one call.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+  // Repositories notifying their mark hook (through notifyDirty) before a write.
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository (x4)",
   // Use cases that mark directly.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
@@ -446,6 +505,35 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/workflows/evaluate.ts: createWorkflowEvaluateDeps: YamlEvaluatedWorkflowRepository",
 ];
 
+// Typed changes the moved repositories stage before each write or remove
+// (datastore rework Phase 1 repository moves). A write names a path that
+// exists after the operation, a remove one that is gone after it;
+// integration/repository_dirty_coverage_test.ts checks that against the disk.
+const PINNED_STAGED_CHANGES: readonly string[] = [
+  // swamp-club#2979, move A.
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x7)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x8)",
+  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
+  "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
+  // swamp-club#2980, move B. "write|remove" is a delete whose resolved path
+  // is kept when it holds another definition or workflow sharing the id.
+  "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository remove",
+  "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository write",
+  "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository write|remove",
+  "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts: YamlEvaluatedDefinitionRepository remove (x2)",
+  "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts: YamlEvaluatedDefinitionRepository write",
+  "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository remove (x3)",
+  "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository write (x2)",
+  "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write",
+  "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write|remove",
+];
+
+// Production code that opens an ambient unit of work. Empty in datastore
+// rework Phase 1 (swamp-club#2971): repositories can stage into a scope, but
+// nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
+// use cases here on purpose.
+const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [];
+
 const files = await sourceFiles();
 
 Deno.test("datastore write seams: direct mark calls are pinned (swamp-club#2856)", () => {
@@ -505,4 +593,87 @@ Deno.test("datastore write seams: hook argument positions match the constructors
         `"${params[index]}". Update HOOK_ARGUMENT.`,
     );
   }
+});
+
+Deno.test("datastore write seams: production code opening a unit-of-work scope is pinned (swamp-club#2971)", () => {
+  assertPinnedSet(
+    unitOfWorkScopes(files),
+    PINNED_UNIT_OF_WORK_SCOPES,
+    "Production runInUnitOfWork references (calls and imports)",
+    "Phase 1 keeps the ambient unit of work inert: no production code opens\n" +
+      "a scope yet. Opening one is datastore rework Phase 2; if this is that\n" +
+      "work, add the caller here with a reason.",
+  );
+});
+
+Deno.test("datastore write seams: the unit-of-work scope scan finds calls and aliased imports, not comments", () => {
+  const probe: SourceFile = {
+    rel: "src/libswamp/probe.ts",
+    code: "",
+    lines: [
+      'import { runInUnitOfWork as scope } from "../scope.ts";',
+      "export async function probe() {",
+      "  await runInUnitOfWork(uow, () => work());",
+      "  // runInUnitOfWork(uow, fn) in a comment is not a reference",
+      "}",
+    ],
+    owners: ["<module>", "probe", "probe", "probe", "probe"],
+  };
+  assertEquals(unitOfWorkScopes([probe]), [
+    "src/libswamp/probe.ts: <module>",
+    "src/libswamp/probe.ts: probe",
+  ]);
+});
+
+Deno.test("datastore write seams: typed changes repositories stage are pinned (swamp-club#2979)", () => {
+  assertPinnedSet(
+    stagedChanges(files),
+    PINNED_STAGED_CHANGES,
+    "Typed write / remove / bulk changes staged by datastore-tier repositories",
+    "A repository changed how it signals a write. Check each staged kind\n" +
+      "matches the disk after the operation (write: the path exists, remove:\n" +
+      "it is gone), then update the counts here.",
+  );
+});
+
+Deno.test("datastore write seams: the staged-change scan counts wrapped literals inside repository classes, not comments", () => {
+  const probe: SourceFile = {
+    rel: "src/infrastructure/persistence/probe.ts",
+    code: "",
+    lines: [
+      'const outside = { kind: "write", path: "/a" };',
+      "export class YamlOutputRepository {",
+      '  // { kind: "remove", path } in a comment is not a change',
+      '    await this.stage({ kind: "write", path });',
+      "    await this.stage({",
+      '      kind: "remove",',
+      "      path: this.pathFor(id),",
+      "    });",
+      "    await this.stage({",
+      '      kind: kept ? "write" : "remove",',
+      "      path,",
+      "    });",
+      "}",
+    ],
+    owners: [
+      "outside",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+      "YamlOutputRepository",
+    ],
+  };
+  assertEquals(stagedChanges([probe]), [
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository remove",
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository write",
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository write|remove",
+  ]);
 });

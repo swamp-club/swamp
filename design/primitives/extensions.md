@@ -1097,7 +1097,19 @@ Every TypeScript file in an extension is checked before push and after pull.
 - A single file over 1 MB
 - Total extension size over 10 MB
 - More than 150 files
-- Use of `eval()` or `new Function()` (code injection)
+- Dynamic code execution (code injection): the global `eval` in any form, the
+  `Function` constructor, `.constructor(...)` calls, and any member access
+  named `eval` or `Function` (`x.eval(...)`), because the receiver may be the
+  global object and no static check can rule that out. The source is parsed
+  with `@babel/parser` and the rules apply to the syntax tree, so method and
+  property *definitions* named `eval`, TypeScript types, and text in strings,
+  comments and regexes do not count
+  (`src/domain/extensions/dynamic_code_detector.ts`). A file that does not
+  parse falls back to the plain text check for `eval(` and `new Function(`.
+  Not caught: names assembled at runtime, a `.constructor` stored before it is
+  called (`const F = fn.constructor; F(src)`), and `new x.constructor(...)`
+  when `x` is not a function or class literal. The check is a hygiene gate,
+  not a sandbox.
 
 ### Warnings (prompt user)
 

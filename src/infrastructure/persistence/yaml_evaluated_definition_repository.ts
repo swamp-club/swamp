@@ -23,6 +23,7 @@ import {
 } from "../../domain/expressions/deferred_expression.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -99,10 +100,6 @@ export class YamlEvaluatedDefinitionRepository {
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.definitionsEvaluated);
-  }
-
-  private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
   }
 
   /**
@@ -358,7 +355,7 @@ export class YamlEvaluatedDefinitionRepository {
     writtenReferences: readonly WrittenReference[] = [],
   ): Promise<void> {
     const targetPath = this.resolveWritePath(type, definition);
-    await this.notifyDirty(targetPath);
+    await signalChange(this.markDirty, { kind: "write", path: targetPath });
 
     const dir = this.getTypeDir(type);
     await assertSafePath(dir, this.baseDir);
@@ -434,7 +431,7 @@ export class YamlEvaluatedDefinitionRepository {
 
     const resolvedPath = this.idToActualPath.get(id) ??
       this.getLegacyPath(type, id);
-    await this.notifyDirty(resolvedPath);
+    await signalChange(this.markDirty, { kind: "remove", path: resolvedPath });
 
     for (const path of pathsToTry) {
       try {
@@ -501,7 +498,7 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
-    await this.notifyDirty(this.baseDir);
+    await signalChange(this.markDirty, { kind: "remove", path: this.baseDir });
 
     const definitionsDir = this.baseDir;
     try {

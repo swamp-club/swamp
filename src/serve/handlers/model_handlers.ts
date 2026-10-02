@@ -94,7 +94,11 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
-import { acquireModelLocks } from "../../cli/repo_context.ts";
+import {
+  acquireModelLocks,
+  type ModelLockResult,
+  runUnderModelLocks,
+} from "../../cli/repo_context.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -317,6 +321,7 @@ export async function handleModelMethodRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let flushLocks: (() => Promise<void>) | null = null;
+    let modelLocks: ModelLockResult | undefined;
     let mutating = true;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
     const telemetry = createCommandTelemetry(
@@ -353,6 +358,7 @@ export async function handleModelMethodRun(
           );
           if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
           flushLocks = lockResult.flush;
+          modelLocks = lockResult;
         }
       }
 
@@ -413,9 +419,12 @@ export async function handleModelMethodRun(
         };
         if (payload.tracestate) headers.tracestate = payload.tracestate;
         const traceCtx = extractTraceContext(headers);
-        await runWithParentTrace(traceCtx, runMethod);
+        await runUnderModelLocks(
+          modelLocks,
+          () => runWithParentTrace(traceCtx, runMethod),
+        );
       } else {
-        await runMethod();
+        await runUnderModelLocks(modelLocks, runMethod);
       }
       if (ctx.syncService && !flushLocks && mutating) {
         const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
@@ -552,6 +561,7 @@ export async function handleModelMethodRun(
 
   (async () => {
     let flushLocks: (() => Promise<void>) | null = null;
+    let modelLocks: ModelLockResult | undefined;
     try {
       if (preResult && detachedMutating) {
         const lockResult = await acquireModelLocks(
@@ -568,6 +578,7 @@ export async function handleModelMethodRun(
         );
         if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
         flushLocks = lockResult.flush;
+        modelLocks = lockResult;
       }
 
       const isDirectExecution = payload.typeArg !== undefined;
@@ -623,9 +634,12 @@ export async function handleModelMethodRun(
         };
         if (payload.tracestate) headers.tracestate = payload.tracestate;
         const traceCtx = extractTraceContext(headers);
-        await runWithParentTrace(traceCtx, doRun);
+        await runUnderModelLocks(
+          modelLocks,
+          () => runWithParentTrace(traceCtx, doRun),
+        );
       } else {
-        await doRun();
+        await runUnderModelLocks(modelLocks, doRun);
       }
 
       if (ctx.syncService && !flushLocks && detachedMutating) {

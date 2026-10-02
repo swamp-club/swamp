@@ -180,6 +180,7 @@ Deno.test(
         data_name: record.data.name,
         version: 1,
         is_latest: 1,
+        is_step_latest: 1,
         spec_name: "result",
         data_type: "resource",
         content_type: "application/json",

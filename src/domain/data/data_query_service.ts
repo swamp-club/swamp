@@ -54,16 +54,19 @@ function latestRunUnavailable(): UserError {
 }
 
 /**
- * Sets `is_latest` on each row to match the demotion semantics of
- * `CatalogStore.upsertNewVersion`:
+ * Sets `is_latest` and `is_step_latest` on each row to match the semantics
+ * of `CatalogStore.upsertNewVersion`:
  *
- * - Model-method rows (step_name = "") are demoted by ANY later write
- *   (model-method or workflow-step), so they keep is_latest only when
- *   they are the absolute highest version in the group.
- * - Workflow-step rows (step_name != "") are demoted by later writes
- *   with the same step_name or by later model-method writes. Above
- *   the highest model-method version, each step_name gets its own
- *   latest.
+ * - `is_latest`: exactly one row per (namespace, type, model, name) group,
+ *   the highest version, whatever its step_name.
+ * - `is_step_latest`: model-method rows (step_name = "") are demoted by ANY
+ *   higher version (model-method or workflow-step), so they keep the flag
+ *   only when they are the absolute highest version in the group.
+ *   Workflow-step rows (step_name != "") are demoted by higher versions
+ *   with the same step_name or by higher model-method versions. Above the
+ *   highest model-method version, each step_name keeps its own latest.
+ *
+ * The highest row always gets both flags.
  */
 export function computeLatestFlags(rows: CatalogRow[]): void {
   const groups = new Map<string, CatalogRow[]>();
@@ -100,13 +103,14 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
     }
 
     for (const row of group) {
+      row.is_latest = row.version === overallMax ? 1 : 0;
       if (row.step_name === "") {
-        row.is_latest = row.version === overallMax ? 1 : 0;
+        row.is_step_latest = row.version === overallMax ? 1 : 0;
       } else if (row.version < globalMax) {
-        row.is_latest = 0;
+        row.is_step_latest = 0;
       } else {
         const maxForStep = maxVersionPerStep.get(row.step_name);
-        row.is_latest = row.version === maxForStep ? 1 : 0;
+        row.is_step_latest = row.version === maxForStep ? 1 : 0;
       }
     }
   }
@@ -132,6 +136,16 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * Replace the implicit latest-only filter with latest-per-step: when the
+   * predicate does not open history, match each workflow step's latest
+   * version of a data name (`is_step_latest`) instead of the single latest
+   * (`is_latest`). Only the CEL collection helpers `findBySpec` and
+   * `findByTag` set this, so every step's output stays visible
+   * (swamp-club#1761). Records of an older step's latest report
+   * `isLatest: false`.
+   */
+  latestPerStep?: boolean;
   /**
    * Populate each record's `path` with its local content path (default
    * false). Applied as each row's record is built, so predicates and select
@@ -184,6 +198,25 @@ export type ForeignContentFetcher = (
   namespace: string,
   relPath: string,
 ) => Promise<Uint8Array | null>;
+
+/** What {@link DataQueryService} matched for a predicate, before projection. */
+interface MatchResult {
+  records: DataRecord[];
+  selectParsed?: (ctx: Record<string, unknown>) => unknown;
+  /** Whether matching stopped at the limit, so more rows may match. */
+  hitLimit: boolean;
+}
+
+/** Identifies one version of one data item in the catalog. */
+function catalogRowKey(row: CatalogRow): string {
+  return [
+    row.namespace,
+    row.type_normalized,
+    row.model_id,
+    row.data_name,
+    row.version,
+  ].join("\0");
+}
 
 export interface DataQueryServiceOptions {
   filterStaleRows?: boolean;
@@ -319,6 +352,47 @@ export class DataQueryService {
       latest,
     );
     if (!data || data.isDeleted || data.isRenamed) return null;
+    // Rows above the marker whose version is gone from disk (another
+    // repository deleted it) would otherwise outrank the marker's version in
+    // upsertNewVersion, which orders by version (swamp-club#2520). A higher
+    // promoted version still on disk means the marker lags — the catalog row
+    // stands. An unpromoted deferred write (neither flag) does not count.
+    const higher = [
+      ...this.catalogStore.iterateFiltered(
+        "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?",
+        [
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          latest,
+        ],
+      ),
+    ];
+    let higherOnDisk = false;
+    for (const stale of higher) {
+      if (
+        this.dataRepo.findByNameSync(
+          type,
+          row.model_id,
+          row.data_name,
+          stale.version,
+        )
+      ) {
+        if (stale.is_latest === 1 || stale.is_step_latest === 1) {
+          higherOnDisk = true;
+        }
+        continue;
+      }
+      this.catalogStore.removeVersion(
+        stale.namespace,
+        stale.type_normalized,
+        stale.model_id,
+        stale.data_name,
+        stale.version,
+      );
+    }
+    if (higherOnDisk) return null;
     const current = this.toCatalogRow(data, type, row.model_id, true);
     this.catalogStore.upsertNewVersion(current);
     return current;
@@ -456,11 +530,18 @@ export class DataQueryService {
       const include = options.include;
       const limit = options.limit ?? Infinity;
       let batch = Number.isFinite(limit) ? limit * 4 : undefined;
+      // Shared across batches, so a row is downloaded at most once.
+      const tried = new Set<string>();
       while (true) {
-        const matched = this.executeMatch(predicate, {
-          ...options,
-          limit: batch,
-        }, latestRuns);
+        const matched = await this.matchWithHydration(
+          predicate,
+          {
+            ...options,
+            limit: batch,
+          },
+          latestRuns,
+          tried,
+        );
         const accepted: DataRecord[] = [];
         for (const record of matched.records) {
           if (accepted.length >= limit) break;
@@ -477,7 +558,12 @@ export class DataQueryService {
         batch *= 4;
       }
     } else {
-      results = this.executeQuery(predicate, options, latestRuns);
+      const matched = await this.matchWithHydration(
+        predicate,
+        options,
+        latestRuns,
+      );
+      results = this.project(matched.records, matched.selectParsed);
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.
@@ -549,9 +635,8 @@ export class DataQueryService {
   private executeQuery(
     predicate: string,
     options?: DataQueryOptions,
-    latestRuns: LatestRuns = NO_LATEST_RUNS,
   ): DataRecord[] | unknown[] {
-    const matched = this.executeMatch(predicate, options, latestRuns);
+    const matched = this.executeMatch(predicate, options);
     return this.project(matched.records, matched.selectParsed);
   }
 
@@ -610,23 +695,87 @@ export class DataQueryService {
   }
 
   /**
+   * {@link executeMatch} for the async query path, with lazy content
+   * hydrated. Matching is synchronous and reads bodies with getContentSync,
+   * which cannot download, so a lazily-synced row would evaluate and return
+   * with empty attributes where `data get` downloads its content. Each pass
+   * collects the own-namespace rows whose needed body was missing, downloads
+   * them through the async getContent, and matches again while a download
+   * succeeded. Rows `include` rejects are never downloaded, so a caller
+   * cannot make the server fetch content it may not read. A download error
+   * fails the query, as it fails `data get`.
+   *
+   * A row that matched while empty can stop matching once downloaded, so a
+   * later pass can reach rows a limit hid from an earlier one. Only then —
+   * a pass after a download reaching rows not yet tried — is the limit it
+   * collects under doubled, so a predicate like `!has(attributes.x)` takes
+   * log(rows / limit) passes rather than one per limit window. Bodies
+   * downloaded because their rows are returned leave the match set as it
+   * was, so a metadata predicate downloads only the rows within the limit.
+   * A pass that collected under a raised limit is followed by one at the
+   * caller's limit. Each row is tried once, so the loop ends.
+   */
+  private async matchWithHydration(
+    predicate: string,
+    options: DataQueryOptions | undefined,
+    latestRuns: LatestRuns,
+    tried = new Set<string>(),
+  ): Promise<MatchResult> {
+    let collectLimit = options?.limit;
+    let downloadedBefore = false;
+    while (true) {
+      const missing = new Map<string, CatalogRow>();
+      const matched = this.executeMatch(
+        predicate,
+        { ...options, limit: collectLimit },
+        missing,
+        latestRuns,
+      );
+      let hydrated = false;
+      for (const [key, row] of missing) {
+        if (tried.has(key)) continue;
+        tried.add(key);
+        if (
+          options?.include &&
+          !(await options.include(this.rowToRecord(row, false, false, false)))
+        ) continue;
+        if (await this.rowHasContent(row)) hydrated = true;
+      }
+      if (!hydrated) {
+        return collectLimit === options?.limit
+          ? matched
+          : this.executeMatch(predicate, options, undefined, latestRuns);
+      }
+      // This pass reached rows a previous download had not: the rows that
+      // download synced stopped matching, so widen the window.
+      if (downloadedBefore && collectLimit !== undefined) {
+        collectLimit = Math.max(collectLimit, 1) * 2;
+      }
+      downloadedBefore = true;
+    }
+  }
+
+  /**
    * Matches and hydrates records for a predicate, and parses the select
-   * expression — loading whatever it needs — without applying it.
+   * expression — loading whatever it needs — without applying it. Own-
+   * namespace rows whose needed body is not on local disk are added to
+   * `missingContent` when given.
    */
   private executeMatch(
     predicate: string,
     options?: DataQueryOptions,
+    missingContent?: Map<string, CatalogRow>,
     latestRuns: LatestRuns = NO_LATEST_RUNS,
-  ): {
-    records: DataRecord[];
-    selectParsed?: (ctx: Record<string, unknown>) => unknown;
-    /** Whether matching stopped at the limit, so more rows may match. */
-    hitLimit: boolean;
-  } {
+  ): MatchResult {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
     const includePath = options?.includeContentPath ?? false;
+    const ownNamespace = this.dataRepo.namespace;
+    const reportMissing = (row: CatalogRow) =>
+      missingContent && row.namespace === ownNamespace
+        ? () => missingContent.set(catalogRowKey(row), row)
+        : undefined;
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
@@ -652,11 +801,17 @@ export class DataQueryService {
     // 2`, `version >= 0`, `isLatest == false`). String literals like
     // `name == "version-report"` do not trigger the opt-out because
     // collectRootIdentifiers walks the AST rather than the source text.
+    // With latestPerStep the SQL pushdown below filters on is_step_latest
+    // instead, and the CEL `isLatest == true` term is left out because an
+    // older step's latest has isLatest false.
     const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
-    const effectivePredicate = opensHistory
+    const latestPerStep = options?.latestPerStep ?? false;
+    const effectivePredicate = opensHistory || latestPerStep
       ? predicate
       : `(${predicate}) && isLatest == true`;
-    const parsed = opensHistory ? userParsed : env.parse(effectivePredicate);
+    const parsed = opensHistory || latestPerStep
+      ? userParsed
+      : env.parse(effectivePredicate);
     const filterAst = parsed.ast as ASTNode;
 
     // Parse select expression if provided
@@ -688,7 +843,7 @@ export class DataQueryService {
     const whereParams: (string | number)[] = [];
 
     if (!opensHistory) {
-      whereClauses.push("is_latest = ?");
+      whereClauses.push(latestPerStep ? "is_step_latest = ?" : "is_latest = ?");
       whereParams.push(1);
     }
 
@@ -750,6 +905,7 @@ export class DataQueryService {
               needsAttributes,
               needsContent,
               includePath,
+              reportMissing(row),
             );
           } catch (error) {
             loadFailed = true;
@@ -805,7 +961,6 @@ export class DataQueryService {
     // selection (swamp-club#1737).
     if (needsHydration) {
       let writeIndex = 0;
-      const ownNamespace = this.dataRepo.namespace;
       for (let i = 0; i < results.length; i++) {
         const row = matchedRows[i];
         if (this.filterStaleRows && row.namespace === ownNamespace) {
@@ -828,6 +983,7 @@ export class DataQueryService {
           true,
           needsContent,
           includePath,
+          reportMissing(row),
         );
         writeIndex++;
       }
@@ -875,6 +1031,7 @@ export class DataQueryService {
     loadAttributes: boolean,
     loadContent: boolean,
     includeContentPath: boolean,
+    onMissingContent?: () => void,
   ): DataRecord {
     return fromRow(
       row,
@@ -882,6 +1039,7 @@ export class DataQueryService {
       loadAttributes,
       loadContent,
       includeContentPath,
+      onMissingContent,
     );
   }
 
@@ -1039,6 +1197,7 @@ export class DataQueryService {
       id: data.id,
       version: data.version,
       is_latest: isLatest ? 1 : 0,
+      is_step_latest: isLatest ? 1 : 0,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",

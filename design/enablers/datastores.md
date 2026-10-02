@@ -1063,6 +1063,48 @@ signal from `saveDeferred` / `finalizeVersionDeferred`
 Filesystem datastores have no fast path and no sync service, so markDirty is a
 no-op for them.
 
+**Unit of work (datastore rework Phase 1).** `UnitOfWork`
+(`src/domain/datastore/unit_of_work.ts`) is the seam later phases build on.
+Repositories stage each change (`write` or `remove` with an absolute path, or
+`bulk`) before writing, and a use case commits the unit once the operation is
+done. The legacy adapter (`src/infrastructure/persistence/legacy_unit_of_work.ts`)
+forwards each staged change to the dirty hook straight away, `markDirty(path)`
+for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
+and the order of bulk and per-path signals, and never batches or deduplicates.
+`commit` waits for any stage still in flight, runs once, and spends the unit
+even when it fails.
+
+Repositories route their signal through `signalChange`
+(`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
+repositories (swamp-club#2979) and the definition, workflow, evaluated
+definition and evaluated workflow repositories (swamp-club#2980) stage a typed
+change at each call site: `write` for a path that exists after the operation,
+`remove` for one that is gone after it. A definition or workflow `delete` that
+leaves its resolved path in place, because that file declares another entity
+sharing the id, stages a `write` of it. The workflow run repository still
+delegates to a private `notifyDirty`, which stages a path as `write` and a
+missing path as `bulk`. The legacy adapter forwards `write` and `remove` the
+same way, so the marks sent do not depend on the kind.
+
+A change is staged before its write, so its kind is the intended effect: a
+`remove` whose removal then fails (EACCES, say) names a file still on disk.
+That is harmless while the legacy adapter turns every kind into the same mark.
+When Phase 2 gives `remove` its own meaning, a use case must not commit a unit
+of work whose operation failed.
+
+When an operation runs inside `runInUnitOfWork`, the
+repository stages the change into that ambient unit of work, but only when the
+unit is a legacy adapter over the repository's own hook instance. A unit belongs
+to one repository context, so a second context in the same process (side-by-side
+repos, namespace migration) never hands it its changes. Otherwise the repository
+calls its hook as before, and with no hook (filesystem datastores) it does
+nothing. The scope is an `AsyncLocalStorage` store, so concurrent operations
+each see their own unit, and a promise started inside a scope keeps it after the
+scope returns. A write that lands after its unit committed is rejected. No
+production code opens a scope yet (pinned empty in
+`integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
+and behaviour is unchanged. Phase 2 opens scopes from use cases.
+
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
 workflow, data, output and definition repos) rely on the repositories' signals.
@@ -1147,7 +1189,9 @@ lockfile is uploaded either way.
 `integration/datastore_sync_rules_test.ts` enforces this at build time:
 
 - One rule rejects a bare `notifyDirty()` inside the per-path-wired
-  repositories.
+  repositories that still have one. Repositories that stage typed changes
+  instead must give every `bulk` change a non-empty reason, and their bulk
+  changes are pinned (none today).
 - Another rejects any bare `markDirty()` call in `src/serve` and
   `src/cli/commands/serve.ts`. It matches the `.markDirty()` and
   `.markDirty?.()` forms on any receiver, and names the top-level function that
@@ -1302,9 +1346,11 @@ content download waits until needed.
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
    locally, and downloads it. The existing Phase 2 scoped sync handles this; no
    new code is needed.
-3. **`data get` (read-only, no sync)**: `UnifiedDataRepository.getContent()`
-   tries to read `raw`. If it is missing and a `HydrateFileHook` is wired, it
-   calls the hook to download that file, then retries the read.
+3. **`data get` and `data query` (read-only, no sync)**:
+   `UnifiedDataRepository.getContent()` tries to read `raw`. If it is missing
+   and a `HydrateFileHook` is wired, it calls the hook to download that file,
+   then retries the read. `data query` reaches it through
+   `DataQueryService.query()` (see "`getContentSync` limitation" below).
 
 #### `HydrateFileHook` contract
 
@@ -1330,12 +1376,45 @@ convert paths themselves.
 `getContentSync()` is synchronous and cannot call the async `HydrateFileHook`.
 Its callers:
 
-- `data_record_mapper.ts`: loads attributes/content for query predicates during
-  `data query '<predicate>'`.
+- `data_record_mapper.ts` (`fromRow`): loads attributes/content for query
+  predicates, `select` projections and results.
 - `model_resolver.ts`: resolves CEL expressions during model runs.
 - The composite and in-memory repositories, which delegate to it.
 
-The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
+The async `DataQueryService.query()`, which backs `data query`, serve's
+`data.query` and extension `queryData`, works around it. `fromRow` reports a
+needed body that is not on local disk, and `query()` downloads those rows
+through the async `getContent()` and matches again, until no row is left
+untried (swamp-club#2962). Only own-namespace rows whose body the predicate,
+the `select` or the results needed are downloaded, and rows the caller's
+`include` filter rejects never are, and a row is downloaded at most once
+per query, across serve's `include` batches too. A row whose body is absent
+remotely too is returned with empty attributes, as `data get` returns that
+item without content. A download error fails the query, as it fails
+`data get`; before swamp-club#2962 such a row silently matched as empty.
+
+A downloaded row can stop matching a predicate it matched while empty (for
+example `!has(attributes.x)`), so under a limit a later pass can reach rows
+an earlier pass never evaluated. Only when a pass after a download reaches
+rows not yet tried does `query()` double the limit it collects under, then
+one last pass applies the caller's limit. That keeps such predicates to
+log(rows / limit) passes, with body reads linear in the rows scanned rather
+than one full rescan per limit window. Downloading the bodies of rows that
+are only being returned does not change which rows match, so it never widens
+the window: a metadata predicate under a limit downloads only the rows it
+returns (serve's `include` path matches in batches of four times the limit,
+so up to that many). `integration/data_query_get_parity_test.ts` holds
+`data query` to `data get` on filesystem, full-hydration and lazy
+datastores.
+
+The locked repo contexts wire `hydrateFile` for any custom datastore whose
+provider implements it, whatever its `hydrationStrategy`. On such a
+datastore, a catalog row whose body is gone locally (deleted, or a write
+that never finished; `filterStaleRows` is off) costs one remote lookup per
+query that needs its body, where before it matched as empty.
+
+`querySync()`, behind CEL `data.query()`, cannot download. The
+`model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
 → scoped pull, which downloads `raw` files before CEL evaluation.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks
@@ -1647,9 +1726,9 @@ A workflow shell step can run a nested `swamp` command (e.g.
 child's drain waited on that lock it would deadlock: the parent waits on the
 child, the child on the parent's lock.
 
-Every swamp hands two variables to the swamps it starts, through
+Every swamp hands three variables to the swamps it starts, through
 `LockHolderMarker` in `src/domain/datastore/lock_holder_marker.ts`. It never
-clears either:
+clears the first two from its own env:
 
 - `SWAMP_LOCK_ANCESTOR_PIDS`, published once at startup (`runInvocation`):
   the comma-separated pids of every swamp above it, followed by its own (at
@@ -1660,10 +1739,29 @@ clears either:
   Until then it keeps the value it inherited, so through a swamp that takes
   no locks (e.g. a read-only `model method run`) it still names the real lock
   holder.
+- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never in the process env:
+  comma-separated `<pid>:<nonce>+<nonce>` entries naming, for each swamp
+  above the child, the per-model locks it holds for the run that started the
+  child. A nonce is the one each lock file already records. The shell model
+  adds `LockHolderMarker.childLockEnv()` to the child's env: the inherited
+  entries plus one for its own pid. That entry lists the locks held by the
+  `runHolding` scope (an `AsyncLocalStorage` scope) the spawn runs in, and is
+  empty when that run holds none. Each locked execution runs in its scope: a
+  workflow step's method (`execution_service.ts`, from `StepLockHook`'s
+  `heldLockIds`; a hook that leaves them out runs the step outside any scope,
+  so its children fall back to the pid match rather than wait on the step's
+  own lock), and a CLI or `swamp serve` model method run
+  (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
+  `runModel()` and other in-process nesting carry the outer run's locks.
+  `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
 Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file when its `pid` is one of those
-ancestors and its `hostname` is this host. A process on another host sharing
+ancestors and its `hostname` is this host, and, if that ancestor has an entry
+in `SWAMP_LOCK_HOLDER_TOKENS`, its `nonce` is listed there. A lock whose
+ancestor has no entry (it was started outside any scope, e.g. by an extension
+using `Deno.Command`, or through an older swamp), or a lock file without a
+nonce, is matched on the pid alone, as before. A process on another host sharing
 the datastore (e.g. over NFS) can carry the same pid, so its lock is still
 waited on. A lock file with no `hostname` is matched on pid alone. The
 hostname is read when the drain runs. If the host is renamed after an ancestor
@@ -1673,12 +1771,30 @@ never skips its own pid, so a structural command still waits on in-flight
 writes by other runs in its own process.
 
 The skip is what avoids the deadlock: the run that started the child holds
-its lock until the child exits. But the marker names a process, not a run. A
-nested swamp under one `swamp serve` run, or under one of several parallel
-workflow steps, also skips locks the same process holds for unrelated runs.
-It can then race their in-flight writes (swamp-club#2955). A child left
-running in the background after its ancestors exit can likewise skip a lock
-taken by an unrelated process that reused an ancestor's pid on this host.
+its lock until the child exits. The nonce list narrows it from the process to
+the run (swamp-club#2955). A nested swamp under one `swamp serve` run, or
+under one of several parallel workflow steps, waits on the locks the same
+process holds for its other runs instead of racing their in-flight writes.
+When that wait times out, the `LockTimeoutError` names the locks held for an
+ancestor's other runs and says why.
+
+Known limits of the run-level match:
+
+- Two parallel steps or runs that each start a nested structural command
+  (e.g. `swamp data gc`) wait on each other: each holds its step lock until
+  its child exits. Both fail at `SWAMP_LOCK_TIMEOUT_MS`. Run such commands
+  one at a time or in a step of their own (fail-fast detection:
+  swamp-club#2981).
+- A step that calls back into the same `swamp serve` with `--server` starts
+  a server-side run in a new scope. A nested structural swamp under that run
+  waits on the calling step's lock, which process ancestry cannot connect
+  across the WebSocket (swamp-club#2982).
+- A step dispatched to a remote worker on the same host runs while serve
+  holds its lock, and the worker is not a descendant of serve, so a nested
+  structural swamp there waits on its own step's lock (swamp-club#2983).
+- A child left running in the background after its ancestors exit can skip a
+  lock taken by an unrelated process that reused an ancestor's pid on this
+  host.
 
 Keeping either value for the rest of the process's life is equivalent to
 keeping it while holding locks, because a lock file carrying a pid exists only
@@ -1701,6 +1817,10 @@ it that holds locks, as before this change:
   `SWAMP_LOCK_ANCESTOR_PIDS`, so the chain is dropped and the child skips
   only the holder. If the child inherits the env directly (an extension using
   `Deno.Command`), the chain survives and the child skips every ancestor.
+- An older child ignores `SWAMP_LOCK_HOLDER_TOKENS` and skips by pid. An
+  older swamp in the middle strips it from a shell step's env, so the child
+  matches every ancestor on the pid alone. Neither waits on a lock it skipped
+  before.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
