@@ -20,8 +20,14 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
-import { dataQuery, type DataQueryDeps, type DataQueryEvent } from "./query.ts";
+import {
+  dataQuery,
+  type DataQueryDeps,
+  type DataQueryEvent,
+  requireSingleResult,
+} from "./query.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+import type { SpecNameFallback } from "../../domain/data/query_predicate.ts";
 
 function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
   return {
@@ -40,6 +46,7 @@ function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
     dataType: "resource",
     contentType: "application/json",
     lifetime: "infinite",
+    garbageCollection: 10,
     ownerType: "model-method",
     streaming: false,
     size: 10,
@@ -304,37 +311,379 @@ Deno.test("dataQuery: stringifies non-Error throws in the error event", async ()
   });
 });
 
-Deno.test("dataQuery: reportUnresolvedModels turns each unresolved model() into a warning", async () => {
+Deno.test("dataQuery: single mode queries without a limit and completes on one match", async () => {
+  const record = makeRecord({ name: "only" });
+  const limits: Array<number | undefined> = [];
   const deps: DataQueryDeps = {
     query: (_predicate, options) => {
-      options?.onUnresolvedModel?.("missing");
+      limits.push(options?.limit);
+      return Promise.resolve([record]);
+    },
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "only"',
+      single: true,
+    }),
+  );
+
+  assertEquals(limits, [undefined]);
+  const data = completedOf(events);
+  assertEquals(data.results, [record]);
+  assertEquals(data.total, 1);
+});
+
+Deno.test("dataQuery: single mode yields QUERY_NO_MATCH when nothing matches", async () => {
+  const deps: DataQueryDeps = { query: () => Promise.resolve([]) };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "missing"',
+      single: true,
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const last = events[1] as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "QUERY_NO_MATCH");
+});
+
+Deno.test("dataQuery: single mode yields QUERY_MULTIPLE_MATCHES without emitting matches", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([makeRecord(), makeRecord()]),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'modelName == "my-model"',
+      single: true,
+    }),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["resolving", "error"]);
+  const last = events[1] as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "QUERY_MULTIPLE_MATCHES");
+});
+
+Deno.test("dataQuery: single mode completes with the one projected value", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([{ status: "ok" }]),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: "true",
+      select: "attributes",
+      single: true,
+    }),
+  );
+
+  const data = completedOf(events);
+  assertEquals(data.projected, {
+    shape: "map",
+    columns: ["status"],
+    rows: [{ status: "ok" }],
+  });
+});
+
+Deno.test("dataQuery: single mode with a limit yields validation_failed without querying", async () => {
+  let queried = false;
+  const deps: DataQueryDeps = {
+    query: () => {
+      queried = true;
       return Promise.resolve([]);
     },
   };
 
   const events = await collect<DataQueryEvent>(
     dataQuery(createLibSwampContext(), deps, {
-      predicate: 'model("missing")',
-      reportUnresolvedModels: true,
+      predicate: "true",
+      single: true,
+      limit: 5,
     }),
   );
-  const warnings = completedOf(events).warnings ?? [];
-  assertEquals(warnings.length, 1);
-  assertStringIncludes(warnings[0], 'model("missing"): no model definition');
+
+  assertEquals(queried, false);
+  const last = events[events.length - 1] as Extract<
+    DataQueryEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "validation_failed");
 });
 
-Deno.test("dataQuery: without reportUnresolvedModels no callback is passed and no warning is added", async () => {
-  let callbackPassed = false;
+Deno.test("requireSingleResult: accepts exactly one match", () => {
+  assertEquals(requireSingleResult({ predicate: "true", total: 1 }), undefined);
+});
+
+Deno.test("requireSingleResult: names the predicate when nothing matched", () => {
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
+  assertEquals(error?.code, "QUERY_NO_MATCH");
+  assertStringIncludes(error?.message ?? "", '\n  name == "x"\n');
+  assertStringIncludes(error?.message ?? "", "latest version");
+});
+
+Deno.test("requireSingleResult: rejects several matches", () => {
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 2 });
+  assertEquals(error?.code, "QUERY_MULTIPLE_MATCHES");
+  assertStringIncludes(error?.message ?? "", "More than one");
+  assertStringIncludes(error?.message ?? "", '\n  name == "x"\n');
+  assertStringIncludes(error?.message ?? "", "without --single");
+});
+
+Deno.test("requireSingleResult: treats a missing count as no match", () => {
+  const error = requireSingleResult(
+    { predicate: "true" } as unknown as { predicate: string; total: number },
+  );
+  assertEquals(error?.code, "QUERY_NO_MATCH");
+});
+
+/** Deps whose fallback is fixed and whose query answers per predicate. */
+function fallbackDeps(
+  answers: Record<string, unknown[] | Error>,
+  calls: Array<{ predicate: string; options?: unknown }> = [],
+): DataQueryDeps {
+  return {
+    query: (predicate, options) => {
+      calls.push({ predicate, options });
+      const answer = answers[predicate] ?? [];
+      return answer instanceof Error
+        ? Promise.reject(answer)
+        : Promise.resolve(answer);
+    },
+    specNameFallback: (predicate) => FALLBACKS[predicate] ?? null,
+  };
+}
+
+/** The domain fallback for each predicate these tests run. */
+const FALLBACKS: Record<string, SpecNameFallback> = {
+  'name == "classification"': {
+    specNamePredicate: 'specName == "classification"',
+    namePredicate: 'name == "classification"',
+    droppedConjuncts: false,
+  },
+  'name == "result" && tags.env == "prod"': {
+    specNamePredicate: 'specName == "result"',
+    namePredicate: 'name == "result"',
+    droppedConjuncts: true,
+  },
+};
+
+Deno.test("dataQuery: empty result whose spec-name fallback matches carries a hint", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const include = (_record: DataRecord) => Promise.resolve(true);
+  const deps = fallbackDeps(
+    { 'specName == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        include,
+      }),
+    ),
+  );
+
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, {
+    suggestedPredicate: 'specName == "classification"',
+    otherFiltersDropped: false,
+  });
+  // The probe reads at most one record, through the caller's include filter.
+  assertEquals(calls[1], {
+    predicate: 'specName == "classification"',
+    options: { limit: 1, include },
+  });
+});
+
+Deno.test("dataQuery: projected empty result also carries the hint", async () => {
+  const deps = fallbackDeps({ 'specName == "classification"': ["x"] });
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        select: "name",
+      }),
+    ),
+  );
+
+  assertEquals(
+    data.specNameHint?.suggestedPredicate,
+    'specName == "classification"',
+  );
+});
+
+Deno.test("dataQuery: no hint when the fallback matches nothing", async () => {
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), fallbackDeps({}), {
+        predicate: 'name == "classification"',
+      }),
+    ),
+  );
+
+  assertEquals("specNameHint" in data, false);
+});
+
+Deno.test("dataQuery: no probe when the query matched", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'name == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+      }),
+    ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: a failed probe omits the hint without failing the query", async () => {
+  const deps = fallbackDeps({
+    'specName == "classification"': new Error("catalog unavailable"),
+  });
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "classification"',
+    }),
+  );
+
+  const data = completedOf(events);
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: no hint when a dropped condition, not the name, excluded the data", async () => {
+  // Data named "result" (spec "result") exists, but not with tags.env prod.
+  const deps = fallbackDeps({
+    'name == "result"': [makeRecord({ name: "result" })],
+    'specName == "result"': [makeRecord({ name: "result" })],
+  });
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "result" && tags.env == "prod"',
+      }),
+    ),
+  );
+
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: a hint after dropped conditions says they were not carried over", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'specName == "result"': [makeRecord({ name: "result-main" })] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "result" && tags.env == "prod"',
+      }),
+    ),
+  );
+
+  assertEquals(data.specNameHint, {
+    suggestedPredicate: 'specName == "result"',
+    otherFiltersDropped: true,
+  });
+  assertEquals(calls.map((c) => c.predicate), [
+    'name == "result" && tags.env == "prod"',
+    'name == "result"',
+    'specName == "result"',
+  ]);
+});
+
+Deno.test("dataQuery: no probe with a zero limit", async () => {
+  const calls: Array<{ predicate: string; options?: unknown }> = [];
+  const deps = fallbackDeps(
+    { 'specName == "classification"': [makeRecord()] },
+    calls,
+  );
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+        limit: 0,
+      }),
+    ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: a throwing spec-name fallback omits the hint without failing the query", async () => {
   const deps: DataQueryDeps = {
-    query: (_predicate, options) => {
-      callbackPassed = options?.onUnresolvedModel !== undefined;
-      return Promise.resolve([]);
+    query: () => Promise.resolve([]),
+    specNameFallback: () => {
+      throw new Error("parser unavailable");
     },
   };
 
-  const events = await collect<DataQueryEvent>(
-    dataQuery(createLibSwampContext(), deps, { predicate: 'model("missing")' }),
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+      }),
+    ),
   );
-  assertEquals(callbackPassed, false);
-  assertEquals("warnings" in completedOf(events), false);
+
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, undefined);
+});
+
+Deno.test("dataQuery: single mode carries the spec-name hint into the no-match error", async () => {
+  const deps = fallbackDeps({ 'specName == "classification"': [makeRecord()] });
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "classification"',
+      single: true,
+    }),
+  );
+
+  const last = events.at(-1) as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "QUERY_NO_MATCH");
+  assertStringIncludes(
+    last.error.message,
+    "data with that spec name exists. Match it with:\n" +
+      '  specName == "classification"',
+  );
+});
+
+Deno.test("requireSingleResult: notes dropped conditions in the spec-name hint", () => {
+  const error = requireSingleResult({
+    predicate: 'name == "x" && size > 1',
+    total: 0,
+    specNameHint: {
+      suggestedPredicate: 'specName == "x"',
+      otherFiltersDropped: true,
+    },
+  });
+  assertStringIncludes(error?.message ?? "", '  specName == "x"');
+  assertStringIncludes(
+    error?.message ?? "",
+    "(some conditions from your query were not carried over)",
+  );
+});
+
+Deno.test("requireSingleResult: no hint text without a hint", () => {
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
+  assertEquals(error?.message.includes("spec name"), false);
 });

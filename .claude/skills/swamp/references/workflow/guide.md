@@ -62,6 +62,8 @@ skill.
 Read one step's data by run, job and step, since several steps can write the
 same data name:
 `swamp data query 'workflowRunId == "<id>" && jobName == "<job>" && stepName == "<step>" && name == "<data>" && version >= 0' --select content`.
+For the workflow's latest run, write `workflowRunId == latestRun("<workflow>")`
+in place of the run id.
 
 `--filter` accepts a CEL expression over run metadata (`status`, `inputs.*`,
 `tags.*`, `duration`, `startedAt`, `workflowName`, etc.). See

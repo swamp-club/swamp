@@ -17,23 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  DataQueryData,
-  DataQueryEvent,
-  DataRecord,
-  EventHandlers,
-  ProjectedData,
+import {
+  type DataQueryData,
+  type DataQueryEvent,
+  type DataRecord,
+  type EventHandlers,
+  type ProjectedData,
+  type SpecNameHint,
+  userErrorFromSwampError,
 } from "../../libswamp/mod.ts";
 import type { OutputMode } from "../output/output.ts";
-import { UserError } from "../../domain/errors.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import {
-  getSwampLogger,
-  writeOutput,
-} from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { Table } from "@cliffy/table";
-import { bold } from "@std/fmt/colors";
+import { bold, dim } from "@std/fmt/colors";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -220,9 +219,30 @@ function recordToJsonOutput(
 }
 
 /**
+ * Renders a single-result query's one match as a bare JSON value: the record
+ * (the same object the envelope carries as `results[0]`) or, with `--select`,
+ * its projected value.
+ */
+function renderSingleJson(data: DataQueryData): void {
+  let value: unknown;
+  if (data.projected) {
+    value = data.projected.shape === "scalar"
+      ? data.projected.values[0]
+      : data.projected.rows[0];
+  } else {
+    value = recordToJsonOutput(data.results[0]);
+  }
+  writeOutput(JSON.stringify(value ?? null, null, 2));
+}
+
+/**
  * Renders JSON output for the completed event.
  */
-function renderJson(data: DataQueryData): void {
+function renderJson(data: DataQueryData, single: boolean): void {
+  if (single) {
+    renderSingleJson(data);
+    return;
+  }
   if (data.projected) {
     const results = data.projected.shape === "scalar"
       ? data.projected.values
@@ -232,7 +252,7 @@ function renderJson(data: DataQueryData): void {
         results,
         total: data.total,
         limited: data.limited,
-        ...(data.warnings ? { warnings: data.warnings } : {}),
+        ...(data.specNameHint && { specNameHint: data.specNameHint }),
       },
       null,
       2,
@@ -244,7 +264,7 @@ function renderJson(data: DataQueryData): void {
         results: data.results.map(recordToJsonOutput),
         total: data.total,
         limited: data.limited,
-        ...(data.warnings ? { warnings: data.warnings } : {}),
+        ...(data.specNameHint && { specNameHint: data.specNameHint }),
       },
       null,
       2,
@@ -289,9 +309,28 @@ export function renderQueryResultsTerminal(
   return renderDefaultTable(data, showNamespace);
 }
 
+/**
+ * Renders the follow-up for a query that matched no instance name but
+ * whose spec-name counterpart matches: the reason, then the command to run.
+ */
+function renderSpecNameHint(hint: SpecNameHint): string {
+  const lines = [
+    "",
+    "No data matched that instance name, but data with that spec name exists. Query it with:",
+    `  swamp data query ${quoteShellWord(hint.suggestedPredicate)}`,
+  ];
+  if (hint.otherFiltersDropped) {
+    lines.push(
+      dim("  (some conditions from your query were not carried over)"),
+    );
+  }
+  return lines.join("\n");
+}
+
 export function createDataQueryRenderer(
   outputMode: OutputMode,
   showNamespace = false,
+  options: { single?: boolean } = {},
 ): { handlers: () => EventHandlers<DataQueryEvent> } {
   return {
     handlers: () => ({
@@ -300,19 +339,16 @@ export function createDataQueryRenderer(
       projected_match: () => {},
       completed: (event: DataQueryEvent & { kind: "completed" }) => {
         if (outputMode === "json") {
-          renderJson(event.data);
+          renderJson(event.data, options.single ?? false);
           return;
         }
-        const logger = getSwampLogger(["data", "query"]);
-        for (const warning of event.data.warnings ?? []) {
-          // Braces escaped so a reference containing {…} is printed, not
-          // read as a LogTape placeholder.
-          logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
-        }
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
+        if (event.data.specNameHint) {
+          writeOutput(renderSpecNameHint(event.data.specNameHint));
+        }
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
-        throw new UserError(event.error.message);
+        throw userErrorFromSwampError(event.error);
       },
     }),
   };

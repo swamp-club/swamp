@@ -300,6 +300,42 @@ export async function saveData(
 }
 
 /**
+ * Saves one version of a data item owned by `model` as step output of `run`,
+ * recording the run, job and step the catalog indexes for data query.
+ */
+export async function saveRunStepData(
+  repo: ServeRepo,
+  model: Definition,
+  run: WorkflowRun,
+  dataName: string,
+): Promise<Data> {
+  const data = Data.create({
+    name: dataName,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", modelName: model.name },
+    ownerDefinition: {
+      ownerType: "workflow-step",
+      ownerRef: `${repo.modelType.normalized}:${model.id}`,
+      workflowId: run.workflowId,
+      workflowRunId: run.id,
+      workflowName: run.workflowName,
+      jobName: "main",
+      stepName: "noop",
+      source: "step-output",
+    },
+  });
+  await repo.repoContext.unifiedDataRepo.save(
+    repo.modelType,
+    model.id,
+    data,
+    new TextEncoder().encode(JSON.stringify({ value: dataName })),
+  );
+  return data;
+}
+
+/**
  * Saves one version of a workflow-scope data item — as a workflow-scope
  * report writes one — stored under the workflow itself.
  */

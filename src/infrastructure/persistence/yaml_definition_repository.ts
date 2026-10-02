@@ -27,6 +27,7 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { isIoError } from "./io_errors.ts";
@@ -130,10 +131,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       ? undefined
       : (secondaryBaseDir ??
         swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions));
-  }
-
-  private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirtyHook) await this.markDirtyHook(relPath);
   }
 
   async findById(
@@ -745,7 +742,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(type, definition, writeBaseDir);
-    await this.notifyDirty(targetPath);
+    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
     const previousPath = this.idToActualPath.get(definition.id);
 
     // Check if this is a new definition or an update
@@ -967,7 +964,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
 
     const resolvedPath = cachedPath ?? this.getLegacyPath(type, id);
-    await this.notifyDirty(resolvedPath);
+    // A file here that declares another definition is kept, so the change is
+    // a write of this path rather than its removal.
+    const kept = await this.declaresOther(resolvedPath, id, name);
+    await signalChange(this.markDirtyHook, {
+      kind: kept ? "write" : "remove",
+      path: resolvedPath,
+    });
 
     let deleted = false;
     for (const path of pathsToTry) {
@@ -977,7 +980,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (await this.declaresOther(path, id, name)) continue;
       try {
         if (path !== resolvedPath && await this.exists(path)) {
-          await this.notifyDirty(path);
+          await signalChange(this.markDirtyHook, { kind: "remove", path });
         }
         await Deno.remove(path);
         deleted = true;

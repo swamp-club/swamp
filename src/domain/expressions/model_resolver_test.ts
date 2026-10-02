@@ -37,6 +37,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import type { DataRecord } from "../data/data_record.ts";
 import {
   createEphemeralStore,
   wrapWithEphemeral,
@@ -1098,6 +1099,98 @@ Deno.test("findBySpec: returns both records when same data name written by diffe
       (r) => (r.attributes as { exitCode: number }).exitCode,
     ).sort();
     assertEquals(exitCodes, [0, 7]);
+    catalog.close();
+  });
+});
+
+/**
+ * Writes `result` for model `probe` from two workflow steps, run-good
+ * (exitCode 0) then run-bad (exitCode 7), and returns a resolver context.
+ */
+async function buildTwoStepContext(repoDir: string) {
+  await setupRepoDir(repoDir);
+  const defRepo = new YamlDefinitionRepository(repoDir);
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    catalog,
+  );
+  const type = ModelType.create("test/model");
+  const model = Definition.create({ name: "probe", globalArguments: {} });
+  await defRepo.save(type, model);
+
+  for (const [stepName, exitCode] of [["run-good", 0], ["run-bad", 7]]) {
+    const data = Data.create({
+      name: "result",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "result",
+        modelName: "probe",
+        suite: "smoke",
+      },
+      ownerDefinition: { ...owner, stepName: stepName as string },
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ exitCode })),
+    );
+  }
+
+  const dqs = new DataQueryService(catalog, dataRepo);
+  await dqs.query('name == ""');
+  const resolver = new ModelResolver(defRepo, {
+    repoDir,
+    dataRepo,
+    dataQueryService: dqs,
+  });
+  const ctx = await resolver.buildContext(new RunSensitiveValues());
+  assertExists(ctx.data);
+  return { ctx, data: ctx.data, catalog };
+}
+
+Deno.test("findByTag: returns each step's latest when steps wrote the same data name", async () => {
+  await withTempDir(async (repoDir) => {
+    const { data, catalog } = await buildTwoStepContext(repoDir);
+
+    const results = await data.findByTag("suite", "smoke");
+    const exitCodes = results.map(
+      (r) => (r.attributes as { exitCode: number }).exitCode,
+    ).sort();
+    assertEquals(exitCodes, [0, 7]);
+    catalog.close();
+  });
+});
+
+Deno.test("data.query and data.latest return only the newest version when steps wrote the same name (swamp-club#2520)", async () => {
+  await withTempDir(async (repoDir) => {
+    const { data, catalog } = await buildTwoStepContext(repoDir);
+
+    const queried = await data.query(
+      'modelName == "probe" && name == "result"',
+    ) as DataRecord[];
+    assertEquals(queried.length, 1);
+    assertEquals(queried[0].version, 2);
+    assertEquals(queried[0].isLatest, true);
+
+    // The data name equals its spec name: two latest rows used to make
+    // this lookup ambiguous.
+    const latest = await data.latest("probe", "result");
+    assertEquals(
+      (latest?.attributes as { exitCode: number }).exitCode,
+      7,
+    );
+    const wildcard = await data.latest("*:probe", "result");
+    assertEquals(wildcard?.version, 2);
+
+    const bySpec = await data.findBySpec("probe", "result");
+    const older = bySpec.find((r) => r.version === 1);
+    assertEquals(older?.isLatest, false);
     catalog.close();
   });
 });

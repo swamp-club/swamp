@@ -110,6 +110,30 @@ export const GarbageCollectionSchema = z.union([
 export type GarbageCollectionPolicy = z.infer<typeof GarbageCollectionSchema>;
 
 /**
+ * Encodes a garbage collection policy for the catalog's TEXT column.
+ * A count policy becomes its digits; a duration is stored as is.
+ */
+export function garbageCollectionToColumn(
+  policy: GarbageCollectionPolicy,
+): string {
+  return String(policy);
+}
+
+/**
+ * Decodes a catalog garbage collection column back to the policy's own
+ * type: all digits is a count policy, anything else is a duration. The
+ * empty string means unknown (a row pulled from a catalog export written
+ * before the column existed) and stays empty. Rows pulled from a foreign
+ * export are not validated, so the result is typed as any number or string
+ * rather than a GarbageCollectionPolicy.
+ */
+export function garbageCollectionFromColumn(
+  column: string,
+): number | string {
+  return /^\d+$/.test(column) ? Number(column) : column;
+}
+
+/**
  * Normalizes zero-duration lifetime strings to "workflow".
  *
  * Zero-duration strings like "0h", "0d", "00w" produce 0ms when parsed,

@@ -324,3 +324,69 @@ Deno.test("ForEachExpansionService: a sensitive item never becomes part of a ste
   // The iteration variable keeps the real value for the step to use.
   assertEquals(expanded.get("deploy")![0].forEachVar.value, "Pl41n-s3cret");
 });
+
+Deno.test("ForEachExpansionService.expand: self._index names each array iteration by its position (swamp-club#2348)", async () => {
+  const service = new ForEachExpansionService(new CelEvaluator());
+  const step = Step.create({
+    name: "process-${{ self._index }}",
+    forEach: { item: "file", in: "${{ ['src/a.ts', 'src/b/c.ts'] }}" },
+    task: StepTask.model("processor", "run"),
+  });
+  const result = await service.expand(
+    makeJobWithSteps([step]),
+    makeExpressionContext(),
+    "unrestricted",
+  );
+
+  const expanded = result.get("process-${{ self._index }}");
+  assertEquals(expanded?.map((e) => e.expandedName), [
+    "process-0",
+    "process-1",
+  ]);
+});
+
+Deno.test("ForEachExpansionService.expand: self._index follows key order for object iteration (swamp-club#2348)", async () => {
+  const service = new ForEachExpansionService(new CelEvaluator());
+  const step = Step.create({
+    name: "deploy-${{ self.region.key }}-${{ self._index }}",
+    forEach: {
+      item: "region",
+      in: "${{ {'emea': 'eu-west-1', 'amer': 'us-east-1'} }}",
+    },
+    task: StepTask.model("deployer", "run"),
+  });
+  const result = await service.expand(
+    makeJobWithSteps([step]),
+    makeExpressionContext(),
+    "unrestricted",
+  );
+
+  const expanded = result.get(
+    "deploy-${{ self.region.key }}-${{ self._index }}",
+  );
+  assertEquals(
+    expanded?.map((e) => e.expandedName),
+    expanded?.map((e, i) =>
+      `deploy-${(e.forEachVar.value as { key: string }).key}-${i}`
+    ),
+  );
+});
+
+Deno.test("ForEachExpansionService.expand: an item named _index shadows the iteration index (swamp-club#2348)", async () => {
+  const service = new ForEachExpansionService(new CelEvaluator());
+  const step = Step.create({
+    name: "scan-${{ self._index }}",
+    forEach: { item: "_index", in: "${{ ['dev', 'prod'] }}" },
+    task: StepTask.model("scanner", "run"),
+  });
+  const result = await service.expand(
+    makeJobWithSteps([step]),
+    makeExpressionContext(),
+    "unrestricted",
+  );
+
+  assertEquals(
+    result.get("scan-${{ self._index }}")?.map((e) => e.expandedName),
+    ["scan-dev", "scan-prod"],
+  );
+});

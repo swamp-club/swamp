@@ -688,19 +688,22 @@ Deno.test("dataGet: the model-scoped query names the owner by id, not by a name 
   assertEquals(data.replacementQuery!.includes("modelName"), false);
 });
 
-Deno.test("dataGet: a binary item names no replacement query, since data query cannot return it yet", async () => {
+Deno.test("dataGet: a binary item names a query that selects its content encoding", async () => {
   const binary = { ...makeDataItem(), contentType: "image/png" };
   const data = await readCompleted(
     makeDeps({ findDataByName: () => Promise.resolve(binary) }),
     { modelIdOrName: "my-model", dataName: "output" },
   );
 
-  assertEquals(data.replacementQuery, undefined);
+  assertStringIncludes(
+    data.replacementQuery!,
+    `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
   assertEquals(data.warnings?.length, 1);
-  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
+  assertStringIncludes(data.warnings![0], data.replacementQuery!);
 });
 
-Deno.test("dataGet: text content that is not UTF-8 names no content query", async () => {
+Deno.test("dataGet: text content that is not UTF-8 names a query that selects its content encoding", async () => {
   const text = { ...makeDataItem(), contentType: "text/plain" };
   // A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
   const utf16 = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
@@ -713,8 +716,11 @@ Deno.test("dataGet: text content that is not UTF-8 names no content query", asyn
   );
 
   assertEquals(data.contentEncoding, "base64");
-  assertEquals(data.replacementQuery, undefined);
-  assertStringIncludes(data.warnings![0], "only as UTF-8 text");
+  assertStringIncludes(
+    data.replacementQuery!,
+    `--select '{"content": content, "contentEncoding": contentEncoding}' --json`,
+  );
+  assertStringIncludes(data.warnings![0], data.replacementQuery!);
 });
 
 Deno.test("dataGet: a metadata-only read of a binary item still names a query", async () => {
@@ -725,6 +731,7 @@ Deno.test("dataGet: a metadata-only read of a binary item still names a query", 
   );
 
   assertStringIncludes(data.replacementQuery!, 'name == "output"');
+  assertEquals(data.replacementQuery!.includes("--select"), false);
 });
 
 Deno.test("dataGet: workflow data that records no run is queried by its owner", async () => {
@@ -825,4 +832,125 @@ Deno.test("dataGet: a pinned read still warns about producers at another version
   assertEquals(versionsAsked, [PIN.version, undefined]);
   assertEquals(data.modelId, PIN.modelId);
   assertEquals(data.alternatives?.map((alt) => alt.stepName), ["lint"]);
+});
+
+// A workflow read without --run follows the latest run; its notice names
+// the query that follows it too (swamp-club#2957).
+
+const LATEST_RUN_NOTICE = "to follow the workflow's latest run instead";
+
+Deno.test("dataGet: a workflow read without --run names the query that follows the latest run", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(data.warnings?.length, 1);
+  assertStringIncludes(
+    data.warnings![0],
+    `${LATEST_RUN_NOTICE}, run: swamp data query 'workflowRunId == ` +
+      `latestRun("wf") && jobName == "main" && stepName == "build" && ` +
+      `name == "output" && version >= 0' --select content)`,
+  );
+});
+
+Deno.test("dataGet: a workflow read without --run carries the latest-run query as a field", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+  });
+
+  assertEquals(
+    data.latestRunQuery,
+    `swamp data query 'workflowRunId == latestRun("wf") && jobName == ` +
+      `"main" && stepName == "build" && name == "output" && version >= 0' ` +
+      `--select content`,
+  );
+  assertStringIncludes(data.warnings![0], data.latestRunQuery!);
+});
+
+Deno.test("dataGet: the latest-run query names the workflow as resolved, not as given", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "00000000-0000-4000-8000-0000000000aa",
+    dataName: "output",
+  });
+
+  assertStringIncludes(data.warnings![0], 'latestRun("wf")');
+});
+
+Deno.test("dataGet: the latest-run query keeps a requested version", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+    version: 1,
+  });
+
+  assertStringIncludes(
+    data.warnings![0],
+    `name == "output" && version == 1' --select content)`,
+  );
+  assertEquals(data.warnings![0].includes("version >= 0"), false);
+});
+
+Deno.test("dataGet: a read of a named run gets no latest-run query", async () => {
+  const data = await readCompleted(makeDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+    runId: "run-1",
+  });
+
+  assertEquals(data.warnings![0].includes(LATEST_RUN_NOTICE), false);
+  assertEquals(data.latestRunQuery, undefined);
+});
+
+Deno.test("dataGet: workflow data that records no run gets no latest-run query", async () => {
+  const report: WorkflowDataItemInfo = {
+    data: makeDataItem(),
+    modelType: makeModelType(),
+    modelId: "id-report",
+    modelName: "wf",
+    contentPath: "/abs/path/to/data",
+  };
+  const data = await readCompleted(
+    makeDeps({
+      findDataInWorkflowRun: () =>
+        Promise.resolve({ item: report, otherProducers: [] }),
+    }),
+    { workflowName: "wf", dataName: "output" },
+  );
+
+  assertEquals(data.warnings![0].includes(LATEST_RUN_NOTICE), false);
+});
+
+Deno.test("dataGet: a pinned read the caller sent without --run still names the latest-run query", async () => {
+  // Serve pins every authorized read to a run and version; the notice
+  // follows what the caller asked for.
+  const data = await readCompleted(pinnedDeps(), {
+    workflowName: "wf",
+    dataName: "output",
+    expectedOwner: PIN,
+  });
+
+  assertStringIncludes(data.warnings![0], LATEST_RUN_NOTICE);
+  assertStringIncludes(data.warnings![0], "version >= 0");
+});
+
+Deno.test("dataGet: a binary workflow read's latest-run query selects content with its encoding", async () => {
+  const binary = producedBy("main", "build", "my-model", "id-model");
+  binary.data = { ...binary.data, contentType: "image/png" };
+  const data = await readCompleted(
+    makeDeps({
+      findDataInWorkflowRun: () =>
+        Promise.resolve({ item: binary, otherProducers: [] }),
+    }),
+    { workflowName: "wf", dataName: "output" },
+  );
+
+  assertEquals(
+    data.latestRunQuery,
+    `swamp data query 'workflowRunId == latestRun("wf") && jobName == ` +
+      `"main" && stepName == "build" && name == "output" && version >= 0' ` +
+      `--select '{"content": content, "contentEncoding": contentEncoding}' ` +
+      `--json`,
+  );
 });

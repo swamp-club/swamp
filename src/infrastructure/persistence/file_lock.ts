@@ -239,6 +239,16 @@ export class FileLock implements DistributedLock {
     }
   }
 
+  /**
+   * The nonce written to the lock file while this instance holds it, or
+   * undefined when it does not (never acquired, released, or self-revoked
+   * after another process took the lock). It is fixed for the whole hold:
+   * the heartbeat rewrites the file with the same nonce.
+   */
+  get heldNonce(): string | undefined {
+    return this.held ? this.nonce : undefined;
+  }
+
   async inspect(): Promise<LockInfo | null> {
     return await this.readLockFile();
   }

@@ -170,3 +170,73 @@ Deno.test("workflowReject: byId does not fall back to a name lookup", async () =
     assertEquals(last.error.message.includes("Workflow not found"), true);
   }
 });
+
+/**
+ * Two parallel jobs, each suspended at its own gate, as in swamp-club#2899:
+ * rejecting one gate fails the run while the other gate still waits.
+ */
+function suspendAtParallelGates(): { workflow: Workflow; run: WorkflowRun } {
+  const workflow = Workflow.create({
+    name: "parallel",
+    jobs: ["side", "main"].map((jobName) =>
+      Job.create({
+        name: jobName,
+        steps: [
+          Step.create({
+            name: `${jobName}-gate`,
+            task: StepTask.manualApproval(`Approve ${jobName}`),
+          }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    const step = job.steps[0];
+    step.start();
+    step.waitForApproval();
+  }
+  run.suspend();
+  return { workflow, run };
+}
+
+Deno.test("workflowReject: a run failed by a rejected parallel gate names --from that gate", async () => {
+  const { workflow, run } = suspendAtParallelGates();
+  const deps: WorkflowRejectDeps = {
+    workflowRepo: {
+      findByName: (name: string) =>
+        Promise.resolve(name === workflow.name ? workflow : null),
+      findById: () => Promise.resolve(null),
+    } as unknown as WorkflowRejectDeps["workflowRepo"],
+    runRepo: {
+      findById: () => Promise.resolve(run),
+      findAllByWorkflowId: () => Promise.resolve([run]),
+      save: () => Promise.resolve(),
+    } as unknown as WorkflowRejectDeps["runRepo"],
+  };
+  const reject = async (stepName: string) =>
+    (await collect<WorkflowRejectEvent>(
+      workflowReject(createLibSwampContext(), deps, {
+        workflowIdOrName: "parallel",
+        stepName,
+        runId: run.id,
+        decidedBy: "approver",
+      }),
+    )).at(-1);
+
+  assertEquals((await reject("side-gate"))?.kind, "completed");
+  assertEquals(run.getJob("main")!.steps[0].status, "waiting_approval");
+
+  const last = await reject("main-gate");
+  if (last?.kind !== "error") {
+    throw new Error(`expected an error event, got ${last?.kind}`);
+  }
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(
+    last.error.message,
+    `Run ${run.id} is not suspended (status: failed). Ask again with ` +
+      `'swamp workflow resume parallel --run ${run.id} --from side-gate'.`,
+  );
+});

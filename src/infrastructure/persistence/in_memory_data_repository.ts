@@ -37,6 +37,7 @@ import {
 } from "../../domain/data/repositories.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 
 const SEP = "\0";
 
@@ -123,11 +124,13 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       id: data.id,
       version: data.version,
       is_latest: 1,
+      is_step_latest: 1,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",
       content_type: data.contentType,
       lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,

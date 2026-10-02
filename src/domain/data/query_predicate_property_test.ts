@@ -37,7 +37,7 @@ function ast(expr: string): ASTNode {
 }
 
 /** A model() call on any string, written as a CEL literal (JSON escapes). */
-const arbCall = fc.string({ maxLength: 12 }).map((ref) => ({
+const arbCall = fc.string({ minLength: 1, maxLength: 12 }).map((ref) => ({
   ref,
   expr: `model(${JSON.stringify(ref)})`,
 }));

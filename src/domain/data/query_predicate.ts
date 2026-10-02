@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { celString } from "./data_query_command.ts";
 
 /** Known root-level fields available in query predicates. */
 export const QUERY_FIELDS = new Set([
@@ -35,6 +36,7 @@ export const QUERY_FIELDS = new Set([
   "dataType",
   "contentType",
   "lifetime",
+  "garbageCollection",
   "ownerType",
   "streaming",
   "size",
@@ -175,6 +177,179 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
 }
 
 /**
+ * The query function that resolves a workflow's most recent run id, as
+ * `swamp data get --workflow` does without `--run` (swamp-club#2957).
+ */
+export const LATEST_RUN_FUNCTION = "latestRun";
+
+/** The AST nodes directly under `node`, in source order. */
+function childNodes(node: ASTNode): ASTNode[] {
+  const { op, args } = node;
+  switch (op) {
+    case "id":
+    case "value":
+      return [];
+    case ".":
+    case ".?":
+      return [(args as [ASTNode, string])[0]];
+    case "call":
+      return (args as [string, ASTNode[]])[1];
+    case "rcall": {
+      const [, receiver, callArgs] = args as [string, ASTNode, ASTNode[]];
+      return [receiver, ...callArgs];
+    }
+    case "!_":
+    case "-_":
+      return [args as ASTNode];
+    case "map":
+      return (args as Array<[ASTNode, ASTNode]>).flat();
+    default:
+      if (!Array.isArray(args)) return [];
+      return (args as unknown[]).filter((a): a is ASTNode =>
+        !!a && typeof a === "object" && "op" in a
+      );
+  }
+}
+
+/**
+ * Collects the distinct workflow arguments of every `latestRun(...)` call in
+ * the AST. Each call must take exactly one non-empty string literal, so the
+ * run can be resolved once per query rather than per row; anything else is
+ * a UserError.
+ */
+export function collectLatestRunWorkflows(node: ASTNode): string[] {
+  const workflows = new Set<string>();
+  const visit = (n: ASTNode) => {
+    if (!n || typeof n !== "object" || !("op" in n)) return;
+    if (n.op === "rcall" && (n.args as [string])[0] === LATEST_RUN_FUNCTION) {
+      throw new UserError(
+        `${LATEST_RUN_FUNCTION}() takes the workflow as its argument: ` +
+          `write ${LATEST_RUN_FUNCTION}("<workflow>")`,
+      );
+    }
+    if (n.op === "call" && (n.args as [string])[0] === LATEST_RUN_FUNCTION) {
+      const callArgs = (n.args as [string, ASTNode[]])[1];
+      const [arg] = callArgs;
+      if (
+        callArgs.length !== 1 || arg.op !== "value" ||
+        typeof arg.args !== "string" || arg.args === ""
+      ) {
+        throw new UserError(
+          `${LATEST_RUN_FUNCTION}() takes one workflow name or id as a ` +
+            `string literal, e.g. ${LATEST_RUN_FUNCTION}("deploy")`,
+        );
+      }
+      workflows.add(arg.args);
+      return;
+    }
+    for (const child of childNodes(n)) visit(child);
+  };
+  visit(node);
+  return [...workflows];
+}
+
+/**
+ * Extracts the workflow argument from a top-level
+ * `workflowRunId == latestRun("<workflow>")` equality in the AST, for SQL
+ * pushdown once the run is resolved. Walks through AND conjuncts but does
+ * not descend into OR branches. Returns null if there is none.
+ */
+export function extractWorkflowRunIdLatestRun(ast: ASTNode): string | null {
+  if (ast.op === "==") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return latestRunEquality(left, right) ?? latestRunEquality(right, left);
+  }
+
+  if (ast.op === "&&") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return extractWorkflowRunIdLatestRun(left) ??
+      extractWorkflowRunIdLatestRun(right);
+  }
+
+  return null;
+}
+
+function latestRunEquality(field: ASTNode, call: ASTNode): string | null {
+  if (field.op !== "id" || field.args !== "workflowRunId") return null;
+  if (call.op !== "call") return null;
+  const [name, callArgs] = call.args as [string, ASTNode[]];
+  if (name !== LATEST_RUN_FUNCTION || callArgs.length !== 1) return null;
+  const [arg] = callArgs;
+  return arg.op === "value" && typeof arg.args === "string" ? arg.args : null;
+}
+
+/**
+ * The query function that matches rows by model, resolving a model name or
+ * definition id as `swamp data get <model>` does (swamp-club#2960).
+ */
+export const MODEL_FUNCTION = "model";
+
+/**
+ * Most distinct models one query may name with `model()`. Each is a
+ * definition lookup, so a predicate cannot make the query do unbounded work.
+ */
+export const MAX_MODEL_REFERENCES = 32;
+
+/**
+ * Collects the distinct arguments of every `model(...)` call in the AST.
+ * Each call must take exactly one non-empty string literal, so the model can
+ * be resolved once per query rather than per row; anything else, or more
+ * than {@link MAX_MODEL_REFERENCES} distinct models, is a UserError.
+ */
+export function collectModelReferences(node: ASTNode): string[] {
+  const references = new Set<string>();
+  const visit = (n: ASTNode) => {
+    if (!n || typeof n !== "object" || !("op" in n)) return;
+    if (n.op === "rcall" && (n.args as [string])[0] === MODEL_FUNCTION) {
+      throw new UserError(
+        `${MODEL_FUNCTION}() takes the model as its argument: ` +
+          `write ${MODEL_FUNCTION}("<model>")`,
+      );
+    }
+    if (n.op === "call" && (n.args as [string])[0] === MODEL_FUNCTION) {
+      const callArgs = (n.args as [string, ASTNode[]])[1];
+      const [arg] = callArgs;
+      if (
+        callArgs.length !== 1 || arg.op !== "value" ||
+        typeof arg.args !== "string" || arg.args === ""
+      ) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() takes one model name or definition id as a ` +
+            `string literal, e.g. ${MODEL_FUNCTION}("my-model")`,
+        );
+      }
+      references.add(arg.args);
+      return;
+    }
+    for (const child of childNodes(n)) visit(child);
+  };
+  visit(node);
+  if (references.size > MAX_MODEL_REFERENCES) {
+    throw new UserError(
+      `A query may name at most ${MAX_MODEL_REFERENCES} models with ` +
+        `${MODEL_FUNCTION}(); this one names ${references.size}.`,
+    );
+  }
+  return [...references];
+}
+
+/**
+ * Extracts the argument of a top-level `model("<model>")` conjunct, for SQL
+ * pushdown once the model is resolved. Walks through AND conjuncts but does
+ * not descend into OR branches. Returns null if there is none.
+ */
+export function extractModelCall(ast: ASTNode): string | null {
+  for (const conjunct of topLevelConjuncts(ast)) {
+    if (conjunct.op !== "call") continue;
+    const [name, callArgs] = conjunct.args as [string, ASTNode[]];
+    if (name !== MODEL_FUNCTION || callArgs.length !== 1) continue;
+    const [arg] = callArgs;
+    if (arg.op === "value" && typeof arg.args === "string") return arg.args;
+  }
+  return null;
+}
+
+/**
  * Checks whether the AST references the `attributes` identifier at root level.
  */
 export function referencesAttributes(node: ASTNode): boolean {
@@ -189,135 +364,155 @@ export function referencesContent(node: ASTNode): boolean {
 }
 
 /**
+ * Checks whether a select expression reads an item's bytes: `content`, or
+ * `contentEncoding`, which exists only in a projection and says how
+ * `content` represents them.
+ */
+export function selectReadsContent(node: ASTNode): boolean {
+  const ids = collectRootIdentifiers(node);
+  return ids.includes("content") || ids.includes("contentEncoding");
+}
+
+/**
+ * Reads a `field == literal` comparison, with the identifier on either side.
+ * Returns null for any other node.
+ */
+function equalityOperands(
+  node: ASTNode,
+): { field: string; value: unknown } | null {
+  if (node.op !== "==") return null;
+  const [left, right] = node.args as [ASTNode, ASTNode];
+  if (left.op === "id" && right.op === "value") {
+    return { field: left.args as string, value: right.args };
+  }
+  if (right.op === "id" && left.op === "value") {
+    return { field: right.args as string, value: left.args };
+  }
+  return null;
+}
+
+/**
+ * Flattens the top-level AND conjuncts of a predicate. Does not descend
+ * into OR branches or negations, so every conjunct returned must hold for
+ * a row to match.
+ */
+function topLevelConjuncts(ast: ASTNode): ASTNode[] {
+  if (ast.op !== "&&") return [ast];
+  const [left, right] = ast.args as [ASTNode, ASTNode];
+  return [...topLevelConjuncts(left), ...topLevelConjuncts(right)];
+}
+
+/**
+ * Extracts a string literal from a top-level `field == "literal"` equality
+ * in the AST. Walks through AND conjuncts but does not descend into OR
+ * branches. Returns null if no pushdown-eligible equality is found.
+ */
+export function extractStringEquality(
+  ast: ASTNode,
+  field: string,
+): string | null {
+  for (const conjunct of topLevelConjuncts(ast)) {
+    const eq = equalityOperands(conjunct);
+    if (eq?.field === field && typeof eq.value === "string") return eq.value;
+  }
+  return null;
+}
+
+/**
  * Extracts a string literal from a top-level `modelName == "literal"`
- * equality in the AST. Walks through AND conjuncts but does not descend
- * into OR branches. Returns null if no pushdown-eligible modelName
+ * equality in the AST. Returns null if no pushdown-eligible modelName
  * equality is found.
  */
 export function extractModelNameEquality(ast: ASTNode): string | null {
-  return extractFieldEquality(ast, "modelName");
+  return extractStringEquality(ast, "modelName");
 }
 
 /**
- * Extracts a string literal from a top-level `name == "literal"` equality,
- * walking AND conjuncts only, exactly as {@link extractModelNameEquality}.
- * Data query follows rename forwards only for this form.
+ * String fields a spec-name fallback carries over from the original
+ * predicate when they are compared to a string literal. Keeping them keeps
+ * the fallback scoped as the original was (the same model, run or step).
  */
-export function extractNameEquality(ast: ASTNode): string | null {
-  return extractFieldEquality(ast, "name");
+const FALLBACK_STRING_FIELDS = new Set([
+  "id",
+  "modelName",
+  "modelId",
+  "modelType",
+  "dataType",
+  "contentType",
+  "lifetime",
+  "ownerType",
+  "ownerRef",
+  "workflowRunId",
+  "workflowName",
+  "jobName",
+  "stepName",
+  "source",
+  "ns",
+]);
+
+/**
+ * The spec-name counterpart of a predicate that matches one data instance
+ * name exactly, and the same scope matched by name.
+ */
+export interface SpecNameFallback {
+  /** The kept conjuncts with `name == "x"` as `specName == "x"`. */
+  specNamePredicate: string;
+  /** The kept conjuncts as they were, `name == "x"` included. */
+  namePredicate: string;
+  /** Whether conjuncts that are not simple equalities were left out. */
+  droppedConjuncts: boolean;
 }
 
-function extractFieldEquality(ast: ASTNode, field: string): string | null {
-  if (ast.op === "==") {
-    const [left, right] = ast.args as [ASTNode, ASTNode];
-    if (
-      left.op === "id" && left.args === field &&
-      right.op === "value" && typeof right.args === "string"
+/**
+ * Builds the spec-name counterpart of a predicate that matches one data
+ * instance name exactly: the top-level `name == "x"` becomes
+ * `specName == "x"`, and every other top-level equality of a string field
+ * to a string literal, or of `version` to an int literal, is kept. Other
+ * conjuncts are dropped, so the result can match more than the original
+ * would have; callers verify it matches before suggesting it, and check
+ * `namePredicate` to tell whether a dropped conjunct, not the name, is what
+ * excluded the data.
+ *
+ * Returns null when the predicate has no single top-level name equality,
+ * or already mentions specName.
+ */
+export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
+  if (collectRootIdentifiers(ast).includes("specName")) return null;
+
+  const kept: string[] = [];
+  const specNameClauses: string[] = [];
+  let nameEqualities = 0;
+  let droppedConjuncts = false;
+  for (const conjunct of topLevelConjuncts(ast)) {
+    const eq = equalityOperands(conjunct);
+    let clause: string | null = null;
+    if (eq?.field === "name") {
+      if (typeof eq.value !== "string") return null;
+      nameEqualities++;
+      kept.push(`name == ${celString(eq.value)}`);
+      specNameClauses.push(`specName == ${celString(eq.value)}`);
+      continue;
+    } else if (
+      eq && FALLBACK_STRING_FIELDS.has(eq.field) &&
+      typeof eq.value === "string"
     ) {
-      return right.args;
+      clause = `${eq.field} == ${celString(eq.value)}`;
+    } else if (eq?.field === "version" && typeof eq.value === "bigint") {
+      clause = `version == ${eq.value}`;
     }
-    if (
-      right.op === "id" && right.args === field &&
-      left.op === "value" && typeof left.args === "string"
-    ) {
-      return left.args;
+    if (clause === null) {
+      droppedConjuncts = true;
+    } else {
+      kept.push(clause);
+      specNameClauses.push(clause);
     }
-    return null;
   }
-
-  if (ast.op === "&&") {
-    const [left, right] = ast.args as [ASTNode, ASTNode];
-    return extractFieldEquality(left, field) ??
-      extractFieldEquality(right, field);
-  }
-
-  return null;
-}
-
-/** Name of the query function that matches rows by model reference. */
-export const MODEL_FUNCTION = "model";
-
-/**
- * Most distinct model references one predicate may hold. Each is a
- * definition lookup, so a predicate cannot make the query do unbounded work.
- */
-export const MAX_MODEL_REFERENCES = 32;
-
-function isASTNode(value: unknown): value is ASTNode {
-  return value !== null && typeof value === "object" && "op" in value;
-}
-
-/**
- * Returns the distinct arguments of every `model(...)` call in the AST, in
- * the order first seen. Each call must take exactly one string literal: the
- * references are resolved before evaluation, so a computed argument cannot
- * be supported. Throws UserError otherwise, or when the predicate holds more
- * than {@link MAX_MODEL_REFERENCES} distinct references.
- */
-export function collectModelReferences(ast: ASTNode): string[] {
-  const references = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    if (!isASTNode(value)) return;
-    if (value.op === "call") {
-      const [name, argNodes] = value.args as [string, ASTNode[]];
-      if (name === MODEL_FUNCTION) {
-        const arg = argNodes.length === 1 ? argNodes[0] : undefined;
-        if (arg?.op !== "value" || typeof arg.args !== "string") {
-          throw new UserError(
-            `${MODEL_FUNCTION}() takes exactly one string literal: a model name or definition id, e.g. ${MODEL_FUNCTION}("my-model").`,
-          );
-        }
-        references.add(arg.args);
-      }
-      visit(argNodes);
-      return;
-    }
-    if (value.op === "rcall") {
-      const [name] = value.args as [string, ASTNode, ASTNode[]];
-      if (name === MODEL_FUNCTION) {
-        throw new UserError(
-          `${MODEL_FUNCTION}() is a function, not a method: write ${MODEL_FUNCTION}("my-model").`,
-        );
-      }
-    }
-    visit(value.args);
+  if (nameEqualities !== 1) return null;
+  return {
+    specNamePredicate: specNameClauses.join(" && "),
+    namePredicate: kept.join(" && "),
+    droppedConjuncts,
   };
-  visit(ast);
-  if (references.size > MAX_MODEL_REFERENCES) {
-    throw new UserError(
-      `A query predicate may reference at most ${MAX_MODEL_REFERENCES} models with ${MODEL_FUNCTION}(); this one references ${references.size}.`,
-    );
-  }
-  return [...references];
-}
-
-/**
- * Extracts the argument of a top-level `model("literal")` conjunct, walking
- * AND conjuncts only, for SQL pushdown. Returns null when there is none.
- */
-export function extractModelCall(ast: ASTNode): string | null {
-  if (ast.op === "call") {
-    const [name, argNodes] = ast.args as [string, ASTNode[]];
-    const arg = argNodes[0];
-    if (
-      name === MODEL_FUNCTION && argNodes.length === 1 &&
-      arg.op === "value" && typeof arg.args === "string"
-    ) {
-      return arg.args;
-    }
-    return null;
-  }
-
-  if (ast.op === "&&") {
-    const [left, right] = ast.args as [ASTNode, ASTNode];
-    return extractModelCall(left) ?? extractModelCall(right);
-  }
-
-  return null;
 }
 
 /**
@@ -335,7 +530,8 @@ export function validateFieldReferences(identifiers: string[]): void {
       `Unknown field${unique.length > 1 ? "s" : ""} ${
         unique.map((f) => `"${f}"`).join(", ")
       } in query predicate.\nAvailable: ${available}\n` +
-        `Functions: ${MODEL_FUNCTION}("<model name or definition id>")`,
+        `Functions: ${LATEST_RUN_FUNCTION}("<workflow>"), ` +
+        `${MODEL_FUNCTION}("<model name or definition id>")`,
     );
   }
 }

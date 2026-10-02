@@ -23,6 +23,7 @@ import { walk } from "@std/fs/walk";
 import {
   assertPinnedSet,
   constructorArgs,
+  isCommentLine,
   TOP_LEVEL_DECLARATION,
 } from "./arch_fitness_helpers.ts";
 
@@ -38,68 +39,184 @@ function normalise(p: string): string {
   return SEPARATOR === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
-// Per-path-wired repositories must not call bare notifyDirty() (no path
-// argument). A bare call sets bulkInvalidated in the datastore extension,
-// forcing a full walk that skips deletion detection — silently dropping
-// remote object deletions (swamp-club#2273). See the "Serve handler
-// obligation" paragraph in design/enablers/datastores.md.
-const PER_PATH_WIRED_REPOS = [
-  "yaml_workflow_run_repository.ts",
+// Repositories that stage typed changes at each call site instead of through
+// a private notifyDirty (datastore rework Phase 1 repository moves). A bulk
+// change is their bare notifyDirty(): it must say why no single path covers
+// the change, and every one is pinned so a new one shows up in review.
+const MOVED_REPOS = [
+  // swamp-club#2979, move A.
   "unified_data_repository.ts",
+  "yaml_output_repository.ts",
+  // swamp-club#2980, move B.
+  "yaml_definition_repository.ts",
   "yaml_evaluated_definition_repository.ts",
   "yaml_evaluated_workflow_repository.ts",
-  "yaml_definition_repository.ts",
   "yaml_workflow_repository.ts",
-  "yaml_output_repository.ts",
+  // swamp-club#2992, move C1.
+  "yaml_workflow_run_repository.ts",
 ];
 
-// Matches `this.notifyDirty()` or `await this.notifyDirty()` with no
-// arguments — the bare/bulk form. Anchored to avoid matching the method
-// definition (`private async notifyDirty(...)`) or calls with arguments
-// (`this.notifyDirty(path)`).
-const BARE_NOTIFY_DIRTY = /(?:await\s+)?this\.notifyDirty\(\s*\)/;
+// The kind property of a bulk StagedChange literal, then its reason: a quoted
+// string (commas and braces inside it are fine), an expression such as
+// `this.reasonFor(id)`, or the shorthand `reason`. The reason must follow the
+// kind, as every StagedChange literal in src/ writes it.
+const BULK_CHANGE = /\bkind:\s*"bulk"/g;
+const BULK_REASON =
+  /^\s*,\s*reason(?:\s*:\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`|[\w.]+(?:\([^)\n]*\))?)|(?=\s*[,}\n]))/;
+const EMPTY_STRING = /^(?:""|''|``)$/;
 
-Deno.test("per-path-wired repos must not call bare notifyDirty()", async () => {
+/**
+ * Bulk changes staged in `code`, as "<rel>: bulk <reason>", and the ones whose
+ * reason is missing or an empty string literal.
+ */
+function bulkChanges(
+  rel: string,
+  code: string,
+): { changes: string[]; violations: string[] } {
+  const source = code
+    .split("\n")
+    .map((line) => isCommentLine(line) ? "" : line)
+    .join("\n");
+  const changes: string[] = [];
   const violations: string[] = [];
+  for (const match of source.matchAll(BULK_CHANGE)) {
+    const after = source.slice(match.index + match[0].length);
+    const found = after.match(BULK_REASON);
+    const reason = found ? found[1] ?? "reason" : undefined;
+    const line = source.slice(0, match.index).split("\n").length;
+    if (reason === undefined || EMPTY_STRING.test(reason)) {
+      violations.push(`${rel}:${line}: bulk change without a reason`);
+    }
+    changes.push(`${rel}: bulk ${reason ?? "<none>"}`);
+  }
+  return { changes, violations };
+}
 
-  for (const filename of PER_PATH_WIRED_REPOS) {
+const PINNED_MOVED_BULK_CHANGES: readonly string[] = [];
+
+Deno.test("moved repositories stage bulk changes only with a reason, and each is pinned (swamp-club#2979)", async () => {
+  const changes: string[] = [];
+  const violations: string[] = [];
+  for (const filename of MOVED_REPOS) {
     const filepath = join(PERSISTENCE_DIR, filename);
-    let content: string;
-    try {
-      content = await Deno.readTextFile(filepath);
-    } catch {
-      continue;
-    }
     const rel = normalise(relative(ROOT, filepath));
-    const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Skip the notifyDirty method definition itself
-      if (
-        line.includes("private") && line.includes("notifyDirty") &&
-        line.includes("relPath")
-      ) {
-        continue;
-      }
-      // Skip comments
-      if (line.trimStart().startsWith("//")) continue;
-      if (BARE_NOTIFY_DIRTY.test(line)) {
-        violations.push(`${rel}:${i + 1}: ${line.trim()}`);
-      }
+    const code = await Deno.readTextFile(filepath);
+    // A moved repository stages typed changes; notifyDirty must not return.
+    if (/\bnotifyDirty\b/.test(code)) {
+      violations.push(`${rel}: moved repository still uses notifyDirty`);
     }
+    const found = bulkChanges(rel, code);
+    changes.push(...found.changes);
+    violations.push(...found.violations);
   }
 
   assertEquals(
     violations,
     [],
-    "Per-path-wired repositories must call notifyDirty with a path " +
-      "argument, not bare notifyDirty(). A bare call sets " +
-      "bulkInvalidated in the datastore extension, forcing a full walk " +
-      "that skips deletion detection — silently dropping remote object " +
-      "deletions (swamp-club#2273). Use the directory path being " +
-      "removed as the argument.\n\nViolations:\n" +
+    "A bulk change makes the datastore extension walk the whole cache and " +
+      "skip deletion detection (swamp-club#2273). Stage a write or remove " +
+      "with the path instead; if no single path covers the change, give " +
+      "the bulk change a non-empty reason.\n\nViolations:\n" +
       violations.join("\n"),
   );
+  assertPinnedSet(
+    changes.sort(),
+    PINNED_MOVED_BULK_CHANGES,
+    "Bulk changes staged by moved repositories",
+    "A moved repository stages a bulk change. Prefer a write or remove with " +
+      "the path; if bulk is deliberate, pin it here with a reason.",
+  );
+});
+
+Deno.test("moved repositories: the bulk scan flags a missing or empty reason, not comments", () => {
+  const code = [
+    'await this.stage({ kind: "bulk", reason: "Repo.rebuildIndex" });',
+    "await this.stage({",
+    '  kind: "bulk",',
+    '  reason: "",',
+    "});",
+    'await this.stage({ kind: "bulk", reason: "rebuild {all}, then prune" });',
+    'await this.stage({ kind: "bulk", reason });',
+    'await this.stage({ kind: "bulk" } as StagedChange);',
+    '// await this.stage({ kind: "bulk", reason: "" }) in a comment',
+    'await this.stage({ kind: "write", path });',
+  ].join("\n");
+  assertEquals(bulkChanges("probe.ts", code), {
+    changes: [
+      'probe.ts: bulk "Repo.rebuildIndex"',
+      'probe.ts: bulk ""',
+      'probe.ts: bulk "rebuild {all}, then prune"',
+      "probe.ts: bulk reason",
+      "probe.ts: bulk <none>",
+    ],
+    violations: [
+      "probe.ts:3: bulk change without a reason",
+      "probe.ts:8: bulk change without a reason",
+    ],
+  });
+});
+
+// No persistence module defines a notifyDirty: every hooked repository stages
+// typed changes through signalChange at its call sites (swamp-club#2992). This
+// keeps the method from coming back in a repository that is not in
+// MOVED_REPOS, where the bulk rule above would not see it.
+const NOTIFY_DIRTY_DEFINITION =
+  /^\s*(?:(?:(?:private|protected|public|static|async|readonly|export|const|let|function)\s+)*notifyDirty\s*[(<:]|(?:(?:private|protected|public|static|readonly|export|const|let)\s+)*(?:this\.)?notifyDirty\s*=(?!=))/;
+
+/** Lines of `code` that define a notifyDirty, as "<rel>:<line>". */
+function notifyDirtyDefinitions(rel: string, code: string): string[] {
+  const found: string[] = [];
+  code.split("\n").forEach((line, i) => {
+    if (isCommentLine(line)) return;
+    if (NOTIFY_DIRTY_DEFINITION.test(line)) found.push(`${rel}:${i + 1}`);
+  });
+  return found;
+}
+
+const PINNED_NOTIFY_DIRTY_DEFINITIONS: readonly string[] = [];
+
+Deno.test("persistence: no module defines notifyDirty (swamp-club#2992)", async () => {
+  const found: string[] = [];
+  for await (
+    const entry of walk(PERSISTENCE_DIR, {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const rel = normalise(relative(ROOT, entry.path));
+    found.push(
+      ...notifyDirtyDefinitions(rel, await Deno.readTextFile(entry.path)),
+    );
+  }
+
+  assertPinnedSet(
+    found.sort(),
+    PINNED_NOTIFY_DIRTY_DEFINITIONS,
+    "notifyDirty definitions under src/infrastructure/persistence",
+    "Repositories stage a typed change with signalChange(this.markDirty, " +
+      "{ kind, path }) at each call site instead of a private notifyDirty.",
+  );
+});
+
+Deno.test("persistence: the notifyDirty scan finds definitions, not calls or comments", () => {
+  const code = [
+    "  private async notifyDirty(relPath?: string): Promise<void> {",
+    "  async notifyDirty(path: string) {",
+    "  private readonly notifyDirty = async (path?: string) => {};",
+    "function notifyDirty(path?: string): Promise<void> {",
+    "    this.notifyDirty = (path?: string) => markDirty(path);",
+    "    await this.notifyDirty(path);",
+    "   * The StagedChange for a repository's `notifyDirty(relPath?)` call.",
+    "  // private async notifyDirty(relPath?: string) in a comment",
+    '    await signalChange(this.markDirty, { kind: "write", path });',
+  ].join("\n");
+  assertEquals(notifyDirtyDefinitions("probe.ts", code), [
+    "probe.ts:1",
+    "probe.ts:2",
+    "probe.ts:3",
+    "probe.ts:4",
+    "probe.ts:5",
+  ]);
 });
 
 // Auto-definition repos that save to autoDefinitionsDir must pass markDirty

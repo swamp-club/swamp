@@ -27,6 +27,7 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
+import { garbageCollectionFromColumn } from "./data_metadata.ts";
 import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
@@ -136,6 +137,10 @@ async function resolveVaultRefs(
  *
  * Vault resolution is NOT performed here — callers that need it (e.g.
  * DataQueryService.query) handle it after the query loop.
+ *
+ * The read is synchronous and cannot hydrate lazily-synced content.
+ * `onMissingContent` is called when the body was needed but is not on local
+ * disk, so an async caller can hydrate it and map the row again.
  */
 export function fromRow(
   row: CatalogRow,
@@ -143,6 +148,7 @@ export function fromRow(
   loadAttributes: boolean,
   loadContent: boolean,
   includeContentPath = false,
+  onMissingContent?: () => void,
 ): DataRecord {
   const needsBytes = (loadAttributes &&
     row.content_type === "application/json") ||
@@ -156,6 +162,7 @@ export function fromRow(
       row.data_name,
       row.version,
     );
+    if (rawBytes === null) onMissingContent?.();
   }
 
   const { attributes, textContent } = parseContent(
@@ -188,6 +195,7 @@ export function fromRow(
     dataType: row.data_type,
     contentType: row.content_type,
     lifetime: row.lifetime,
+    garbageCollection: garbageCollectionFromColumn(row.garbage_collection),
     ownerType: row.owner_type,
     streaming: row.streaming === 1,
     size: row.size,
@@ -271,6 +279,7 @@ export async function fromData(
     dataType: data.tags["type"] ?? "",
     contentType: data.contentType,
     lifetime: data.lifetime,
+    garbageCollection: data.garbageCollection,
     ownerType: data.ownerDefinition.ownerType,
     streaming: data.streaming,
     size: data.size ?? 0,
@@ -362,6 +371,7 @@ export async function fromResourceHandle(
     dataType: handle.tags["type"] ?? "resource",
     contentType: handle.metadata.contentType,
     lifetime: handle.metadata.lifetime,
+    garbageCollection: handle.metadata.garbageCollection,
     ownerType: handle.metadata.ownerDefinition.ownerType,
     streaming: handle.metadata.streaming,
     size: handle.size,

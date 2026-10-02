@@ -69,6 +69,7 @@ import {
   saveModel,
   saveOutput,
   saveRun,
+  saveRunStepData,
   saveRunWithData,
   saveWorkflow,
   saveWorkflowData,
@@ -1817,46 +1818,105 @@ Deno.test("serve id-deny conformance: model.create with a type that does not par
   });
 });
 
-Deno.test("serve id-deny conformance: data.query model() never reveals a denied model, nor whether one exists (swamp-club#2960)", async () => {
-  await withFixtures(async (f) => {
-    const queryData = async (ctx: ConnectionContext, predicate: string) => {
-      const frames = await sendRequest(
-        ctx,
-        request("data.query", { predicate }),
-      );
-      assertAllowed(frames, "data.query");
-      const reply = frames.find((fr) => fr.type === "data.query") as {
-        payload?: {
-          data?: {
-            results?: Array<{ modelName: string }>;
-            warnings?: string[];
-          };
-        };
-      };
-      const data = reply.payload?.data ?? {};
-      return {
-        models: (data.results ?? []).map((r) => r.modelName),
-        warnings: data.warnings,
-      };
-    };
+// data.query's latestRun("<workflow>") resolves a workflow by name or id and
+// reads its latest run, so it is authorized as a history read of that run
+// (swamp-club#2957).
 
-    assertEquals(await queryData(f.ctx, 'model("dev-db")'), {
-      models: ["dev-db"],
-      warnings: undefined,
-    });
-    // A denied model and a model that does not exist look the same.
-    const denied = await queryData(f.ctx, 'model("prod-db")');
-    const missing = await queryData(f.ctx, 'model("no-such-db")');
-    assertEquals(denied, { models: [], warnings: undefined });
-    assertEquals(missing, denied);
+function latestRunQuery(workflow: string) {
+  return request("data.query", {
+    predicate: `workflowRunId == latestRun(${JSON.stringify(workflow)})`,
+  });
+}
+
+Deno.test("serve id-deny conformance: latestRun by a denied workflow's UUID is refused, naming only the UUID", async () => {
+  await withFixtures(async (f) => {
+    const run = await saveRun(f.repo, f.prodWorkflow);
+    await saveRunStepData(f.repo, f.devModel, run, "out");
+    const frames = await sendRequest(f.ctx, latestRunQuery(f.prodWorkflow.id));
+    const error = errorFrame(frames);
+    assertEquals(error?.error?.code, "data_query_failed");
     assertEquals(
-      await queryData(f.ctx, `model("${f.prodModel.id}")`),
-      denied,
-      "by definition id too",
+      error?.error?.message,
+      `Workflow not found: ${f.prodWorkflow.id}`,
     );
-    assertEquals((await queryData(f.admin, 'model("prod-db")')).models, [
-      "prod-db",
-    ]);
+    assert(!JSON.stringify(frames).includes(run.id));
+    // The dev workflow, by UUID, is allowed.
+    const devRun = await saveRun(f.repo, f.devWorkflow);
+    await saveRunStepData(f.repo, f.devModel, devRun, "out");
+    const allowed = await sendRequest(
+      f.ctx,
+      latestRunQuery(f.devWorkflow.id),
+    );
+    assertEquals(errorFrame(allowed), undefined, JSON.stringify(allowed));
+    assertStringIncludes(JSON.stringify(allowed), devRun.id);
+  });
+});
+
+Deno.test("serve id-deny conformance: latestRun by a copy's name is refused when the run was recorded by a denied workflow", async () => {
+  await withFixtures(async (f) => {
+    await copyWorkflowAs(f, "safe-flow");
+    const run = await saveRun(f.repo, f.prodWorkflow);
+    await saveRunStepData(f.repo, f.devModel, run, "out");
+    const ctx = createServeCtx(f.repo, GRANTS);
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    const frames = await sendRequest(ctx, latestRunQuery("safe-flow"));
+    const error = errorFrame(frames);
+    assertEquals(error?.error?.code, "data_query_failed");
+    assertEquals(error?.error?.message, "Workflow not found: safe-flow");
+    assert(!JSON.stringify(frames).includes(run.id));
+    assert(
+      audit.some((event) =>
+        event.outcome === "denied" && event.resourceKind === "workflow" &&
+        event.resourceName === "prod-flow"
+      ),
+      JSON.stringify(audit),
+    );
+  });
+});
+
+// data.query's model("<model>") resolves a model by name or id, so it is
+// authorized as a model-scoped data.get of that model is (swamp-club#2960).
+
+function modelQuery(model: string) {
+  return request("data.query", {
+    predicate: `model(${JSON.stringify(model)})`,
+  });
+}
+
+Deno.test("serve id-deny conformance: model() by a denied or missing model fails alike, naming only the argument", async () => {
+  await withFixtures(async (f) => {
+    const allowed = await sendRequest(f.ctx, modelQuery("dev-db"));
+    assertEquals(errorFrame(allowed), undefined, JSON.stringify(allowed));
+    assertStringIncludes(JSON.stringify(allowed), f.devModel.id);
+
+    for (
+      const [reference, label] of [
+        ["prod-db", "denied by name"],
+        [f.prodModel.id, "denied by id"],
+        ["no-such-db", "missing"],
+      ]
+    ) {
+      const frames = await sendRequest(f.ctx, modelQuery(reference));
+      const error = errorFrame(frames);
+      assertEquals(error?.error?.code, "data_query_failed", label);
+      assertEquals(
+        error?.error?.message,
+        `Model not found: ${reference}`,
+        label,
+      );
+      // Only the argument is echoed: the denied model's id never leaks
+      // through a by-name reference.
+      if (reference !== f.prodModel.id) {
+        assert(!JSON.stringify(frames).includes(f.prodModel.id), label);
+      }
+    }
+
+    const admin = await sendRequest(f.admin, modelQuery("prod-db"));
+    assertEquals(errorFrame(admin), undefined, JSON.stringify(admin));
+    assertStringIncludes(JSON.stringify(admin), f.prodModel.id);
   });
 });
 
@@ -1873,7 +1933,7 @@ Deno.test("serve id-deny conformance: data.query by a renamed item's old name st
         ctx,
         request("data.query", { predicate: 'name == "state"' }),
       );
-      assertAllowed(frames, "data.query");
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
       const reply = frames.find((fr) => fr.type === "data.query") as {
         payload?: {
           data?: { results?: Array<{ modelName: string; name: string }> };

@@ -80,12 +80,14 @@ named inputs into a suffix (`src/domain/workflows/data_suffix.ts`
 
 **`latest`.** Each name directory holds a plain-text `latest` file with the
 current version number. Reads without a version use it (`getLatestVersion`,
-falling back to a symlink for older layouts, then a directory scan). The catalog
-mirrors it as `is_latest`, and `upsertNewVersion` (`catalog_store.ts`) is
-step-aware. A model-method write (`step_name = ""`) demotes every prior latest
-row for the name; a workflow-step write demotes only rows with the same
-`step_name` or an empty one. That leaves one `is_latest=1` row per
-`(namespace, type, modelId, name, step_name)`
+falling back to a symlink for older layouts, then a directory scan). Promoting a
+version (`save`, `finalizeVersion`, deferred advance) only moves the marker
+forward (`advanceLatestMarker`), so parallel writers that finish out of order
+leave it on the highest version; delete, rename and GC set it explicitly. The
+catalog mirrors it as `is_latest`: one row per `(namespace, type, modelId,
+name)`, the highest promoted version. A second flag, `is_step_latest`, marks
+each workflow step's latest version for `findBySpec`/`findByTag`;
+`upsertNewVersion` (`catalog_store.ts`) maintains both by version order
 ([data-query.md §Step-aware versioning](../enablers/data-query.md#provenance-based-filtering)).
 
 **`ModelOutput`, the run-level record.** Every method call also writes a
@@ -295,8 +297,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   the local `data/` directory, so a shared datastore never carries it. On
   open, a `CATALOG_SCHEMA_VERSION` mismatch drops the table and clears the
   `populated` flag; the next query refills it from disk (`catalog_store.ts`
-  `migrateIfNeeded`). Every write path keeps one `is_latest=1` row per
-  `(name, step_name)` via `upsertNewVersion` ([`latest`](#the-record)).
+  `migrateIfNeeded`). Every write path keeps one `is_latest=1` row per name
+  and one `is_step_latest=1` row per `(name, step_name)` via
+  `upsertNewVersion` ([`latest`](#the-record)).
 - **Datastores and sync.** The repository writes wherever the
   `DatastorePathResolver` points. A remote backend (S3 extension) gets a
   `markDirty` hook on its changes, is pulled when a write command starts, and is
@@ -348,9 +351,10 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - Version numbers are allocated by `mkdir`, so two concurrent writers to one
   name get different versions.
 - Exactly one `latest` per name on disk, and exactly one `is_latest=1` row per
-  `(namespace, type, modelId, name, step_name)` in the catalog. Every mutating
-  path restores both before returning: `save`, `append`, `rename`, `delete`,
-  `collectGarbage` and deferred advance.
+  `(namespace, type, modelId, name)` in the catalog. Every mutating path
+  restores both before returning: `save`, `append`, `rename`, `delete`,
+  `collectGarbage` and deferred advance. The `is_latest` row is also
+  `is_step_latest`.
 - Only the owner (same `ownerType` and `ownerRef`) may add a version to an
   existing name (`Data.isOwnedBy`, enforced in `save` and `allocateVersion`).
 - `tags.type` is always present: writers set `resource` or `file`, and callers

@@ -29,34 +29,80 @@ import type { RenameForward, UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
+  buildSpecNameFallback,
+  collectLatestRunWorkflows,
   collectModelReferences,
   collectRootIdentifiers,
   extractModelCall,
   extractModelNameEquality,
-  extractNameEquality,
+  extractStringEquality,
+  extractWorkflowRunIdLatestRun,
   HISTORY_OPT_IN_FIELDS,
+  LATEST_RUN_FUNCTION,
   MODEL_FUNCTION,
   referencesAttributes,
   referencesContent,
+  selectReadsContent,
+  type SpecNameFallback,
   validateFieldReferences,
 } from "./query_predicate.ts";
+import { isTextContentType } from "./content_type.ts";
+import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
+import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
+import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
+function modelUnavailable(): UserError {
+  return new UserError(
+    `${MODEL_FUNCTION}() is only available in swamp data query; ` +
+      `here, match the model with modelId and modelType, e.g. ` +
+      `modelId == "<definition id>"`,
+  );
+}
+
+/** Rename hops data query follows, as an unversioned repository read does. */
+const MAX_RENAME_HOPS = 5;
+
+function renameKey(namespace: string, type: string, modelId: string): string {
+  return `${namespace}\0${type}\0${modelId}`;
+}
+
+/** Whether a select expression calls model() in any form. */
+function collectModelReferencesLenient(selectAst: ASTNode): boolean {
+  try {
+    return collectModelReferences(selectAst).length > 0;
+  } catch {
+    // A malformed model() call is still a model() call.
+    return true;
+  }
+}
+
+function latestRunUnavailable(): UserError {
+  return new UserError(
+    `${LATEST_RUN_FUNCTION}() is only available in swamp data query; ` +
+      `here, compare workflowRunId with the run id as a string, e.g. ` +
+      `workflowRunId == "<run-id>"`,
+  );
+}
+
 /**
- * Sets `is_latest` on each row to match the demotion semantics of
- * `CatalogStore.upsertNewVersion`:
+ * Sets `is_latest` and `is_step_latest` on each row to match the semantics
+ * of `CatalogStore.upsertNewVersion`:
  *
- * - Model-method rows (step_name = "") are demoted by ANY later write
- *   (model-method or workflow-step), so they keep is_latest only when
- *   they are the absolute highest version in the group.
- * - Workflow-step rows (step_name != "") are demoted by later writes
- *   with the same step_name or by later model-method writes. Above
- *   the highest model-method version, each step_name gets its own
- *   latest.
+ * - `is_latest`: exactly one row per (namespace, type, model, name) group,
+ *   the highest version, whatever its step_name.
+ * - `is_step_latest`: model-method rows (step_name = "") are demoted by ANY
+ *   higher version (model-method or workflow-step), so they keep the flag
+ *   only when they are the absolute highest version in the group.
+ *   Workflow-step rows (step_name != "") are demoted by higher versions
+ *   with the same step_name or by higher model-method versions. Above the
+ *   highest model-method version, each step_name keeps its own latest.
+ *
+ * The highest row always gets both flags.
  */
 export function computeLatestFlags(rows: CatalogRow[]): void {
   const groups = new Map<string, CatalogRow[]>();
@@ -93,17 +139,55 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
     }
 
     for (const row of group) {
+      row.is_latest = row.version === overallMax ? 1 : 0;
       if (row.step_name === "") {
-        row.is_latest = row.version === overallMax ? 1 : 0;
+        row.is_step_latest = row.version === overallMax ? 1 : 0;
       } else if (row.version < globalMax) {
-        row.is_latest = 0;
+        row.is_step_latest = 0;
       } else {
         const maxForStep = maxVersionPerStep.get(row.step_name);
-        row.is_latest = row.version === maxForStep ? 1 : 0;
+        row.is_step_latest = row.version === maxForStep ? 1 : 0;
       }
     }
   }
 }
+
+/**
+ * Resolves the workflow named in a `latestRun("<workflow>")` query call to
+ * the id of its most recent run, or null when it has no runs. Throws a
+ * UserError when the workflow is unknown or the caller may not read it.
+ */
+export type LatestWorkflowRunResolver = (
+  workflow: string,
+) => Promise<string | null>;
+
+/** The run each `latestRun` workflow resolved to for one query. */
+type LatestRuns = ReadonlyMap<string, string | null>;
+
+const NO_LATEST_RUNS: LatestRuns = new Map();
+
+/** The definition data is stored under, as a `model()` call resolved it. */
+export interface ResolvedModelReference {
+  /** The definition's normalized model type, as the catalog stores it. */
+  modelType: string;
+  /** The definition id. */
+  modelId: string;
+}
+
+/**
+ * Resolves the model named in a `model("<name or id>")` query call to the
+ * definition its data is stored under, as `swamp data get <model>` does.
+ * Throws a UserError when the model is unknown or the caller may not read
+ * it.
+ */
+export type ModelReferenceResolver = (
+  idOrName: string,
+) => Promise<ResolvedModelReference>;
+
+/** The definition each `model()` reference resolved to for one query. */
+type ResolvedModels = ReadonlyMap<string, ResolvedModelReference>;
+
+const NO_MODELS: ResolvedModels = new Map();
 
 export interface DataQueryOptions {
   limit?: number;
@@ -111,6 +195,16 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * Replace the implicit latest-only filter with latest-per-step: when the
+   * predicate does not open history, match each workflow step's latest
+   * version of a data name (`is_step_latest`) instead of the single latest
+   * (`is_latest`). Only the CEL collection helpers `findBySpec` and
+   * `findByTag` set this, so every step's output stays visible
+   * (swamp-club#1761). Records of an older step's latest report
+   * `isLatest: false`.
+   */
+  latestPerStep?: boolean;
   /**
    * Populate each record's `path` with its local content path (default
    * false). Applied as each row's record is built, so predicates and select
@@ -133,42 +227,17 @@ export interface DataQueryOptions {
    */
   excludeModelTypes?: readonly string[];
   /**
-   * Called once for each `model(...)` reference that resolves to no
-   * definition. Such a reference matches no rows rather than failing, so a
-   * caller that may not learn whether a definition exists (serve) simply
-   * leaves this unset.
+   * Resolves `latestRun("<workflow>")` calls in the predicate and select.
+   * Passed per call, so each caller decides whose workflows may be resolved;
+   * without it a query that calls latestRun fails (swamp-club#2957).
    */
-  onUnresolvedModel?: (reference: string) => void;
-}
-
-/** What a `model(...)` reference resolved to. */
-export interface ResolvedModelReference {
-  /** The definition's normalized model type, as stored in the catalog. */
-  modelType: string;
-  /** The definition id. */
-  modelId: string;
-}
-
-/**
- * Resolves a model name or definition id to the definition data is stored
- * under, or null when there is none. Wired at the composition root to the
- * same lookup `data get` uses.
- */
-export type ModelReferenceResolver = (
-  idOrName: string,
-) => Promise<ResolvedModelReference | null>;
-
-/** Rename hops data query follows, matching the repository's unversioned reads. */
-const MAX_RENAME_HOPS = 5;
-
-function renameKey(namespace: string, type: string, modelId: string): string {
-  return `${namespace}\0${type}\0${modelId}`;
-}
-
-function modelFunctionUnavailable(): UserError {
-  return new UserError(
-    `${MODEL_FUNCTION}() is available in swamp data query only. Match the model with modelId and modelType instead.`,
-  );
+  latestRunResolver?: LatestWorkflowRunResolver;
+  /**
+   * Resolves `model("<name or id>")` calls in the predicate. Passed per
+   * call, so each caller decides whose models may be resolved; without it a
+   * query that calls model fails (swamp-club#2960).
+   */
+  modelResolver?: ModelReferenceResolver;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -195,19 +264,42 @@ export type ForeignContentFetcher = (
   relPath: string,
 ) => Promise<Uint8Array | null>;
 
-export interface DataQueryServiceOptions {
-  filterStaleRows?: boolean;
+/** What {@link DataQueryService} matched for a predicate, before projection. */
+interface MatchResult {
+  records: DataRecord[];
+  selectParsed?: (ctx: Record<string, unknown>) => unknown;
+  /** Whether the select expression reads the items' bytes. */
+  selectReadsContent: boolean;
   /**
-   * Resolves `model(...)` references in query predicates. Without it, a
-   * predicate that uses `model()` is rejected.
+   * Rows whose predicate read `content` although their content type is not
+   * text, as metadata-only records, in evaluation order. `matchesBefore`
+   * counts the records matched before the row. They are never matches; the
+   * caller raises {@link BinaryContentPredicateError} for one it may read.
    */
-  resolveModel?: ModelReferenceResolver;
+  violations: Array<{ record: DataRecord; matchesBefore: number }>;
+  /** Whether matching stopped at the limit, so more rows may match. */
+  hitLimit: boolean;
 }
 
-/** Per-query state the `model()` function reads while rows are matched. */
-interface ModelMatchState {
-  resolved: ReadonlyMap<string, ResolvedModelReference | null>;
-  row: CatalogRow | null;
+/** A record's content as a projection sees it; see `projectedContent`. */
+interface ProjectedContent {
+  content: unknown;
+  contentEncoding: ContentEncoding | null;
+}
+
+/** Identifies one version of one data item in the catalog. */
+function catalogRowKey(row: CatalogRow): string {
+  return [
+    row.namespace,
+    row.type_normalized,
+    row.model_id,
+    row.data_name,
+    row.version,
+  ].join("\0");
+}
+
+export interface DataQueryServiceOptions {
+  filterStaleRows?: boolean;
 }
 
 export class DataQueryService {
@@ -216,12 +308,6 @@ export class DataQueryService {
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
   private backfillPromise: Promise<void> | null = null;
   private readonly filterStaleRows: boolean;
-  private readonly resolveModel?: ModelReferenceResolver;
-  /**
-   * Set only while one query's rows are matched. Matching is synchronous, so
-   * no other query can observe it.
-   */
-  private modelMatch: ModelMatchState | null = null;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -229,21 +315,10 @@ export class DataQueryService {
     options?: DataQueryServiceOptions,
   ) {
     this.filterStaleRows = options?.filterStaleRows ?? false;
-    this.resolveModel = options?.resolveModel;
     this.queryEnv = new Environment({
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
     });
-    this.queryEnv.registerFunction(
-      `${MODEL_FUNCTION}(string): bool`,
-      (reference: string) => {
-        const state = this.modelMatch;
-        const resolved = state?.resolved.get(reference);
-        return !!state?.row && !!resolved &&
-          state.row.type_normalized === resolved.modelType &&
-          state.row.model_id === resolved.modelId;
-      },
-    );
   }
 
   /**
@@ -357,6 +432,47 @@ export class DataQueryService {
       latest,
     );
     if (!data || data.isDeleted || data.isRenamed) return null;
+    // Rows above the marker whose version is gone from disk (another
+    // repository deleted it) would otherwise outrank the marker's version in
+    // upsertNewVersion, which orders by version (swamp-club#2520). A higher
+    // promoted version still on disk means the marker lags — the catalog row
+    // stands. An unpromoted deferred write (neither flag) does not count.
+    const higher = [
+      ...this.catalogStore.iterateFiltered(
+        "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?",
+        [
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          latest,
+        ],
+      ),
+    ];
+    let higherOnDisk = false;
+    for (const stale of higher) {
+      if (
+        this.dataRepo.findByNameSync(
+          type,
+          row.model_id,
+          row.data_name,
+          stale.version,
+        )
+      ) {
+        if (stale.is_latest === 1 || stale.is_step_latest === 1) {
+          higherOnDisk = true;
+        }
+        continue;
+      }
+      this.catalogStore.removeVersion(
+        stale.namespace,
+        stale.type_normalized,
+        stale.model_id,
+        stale.data_name,
+        stale.version,
+      );
+    }
+    if (higherOnDisk) return null;
     const current = this.toCatalogRow(data, type, row.model_id, true);
     this.catalogStore.upsertNewVersion(current);
     return current;
@@ -472,6 +588,22 @@ export class DataQueryService {
   }
 
   /**
+   * Returns the spec-name counterpart of a predicate that matches one data
+   * instance name exactly (see {@link buildSpecNameFallback}), or null when
+   * the predicate has no such equality or does not parse. Callers run it to
+   * tell a user who queried by spec name where their data is.
+   */
+  specNameFallback(predicate: string): SpecNameFallback | null {
+    try {
+      return buildSpecNameFallback(
+        this.queryEnv.parse(predicate).ast as ASTNode,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
    * Attributes are returned as stored: vault references in sensitive fields
@@ -482,11 +614,11 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
+    // Resolved before the catalog is touched, so a query that cannot
+    // resolve its runs fails without a backfill.
+    const latestRuns = await this.resolveLatestRuns(predicate, options);
+    const models = await this.resolveModels(predicate, options);
     await this.ensurePopulated();
-    const resolvedModels = await this.resolveModelReferences(
-      predicate,
-      options,
-    );
     let results: DataRecord[] | unknown[];
     if (options?.include) {
       // Apply the limit to accepted records, so hidden records never shorten
@@ -495,28 +627,79 @@ export class DataQueryService {
       const include = options.include;
       const limit = options.limit ?? Infinity;
       let batch = Number.isFinite(limit) ? limit * 4 : undefined;
+      // Shared across batches, so a row is downloaded at most once.
+      const tried = new Set<string>();
       while (true) {
-        const matched = this.executeMatch(predicate, {
-          ...options,
-          limit: batch,
-        }, resolvedModels);
+        const matched = await this.matchWithHydration(
+          predicate,
+          {
+            ...options,
+            limit: batch,
+          },
+          latestRuns,
+          tried,
+          models,
+        );
+        // Walk violations and matches in the order they were evaluated, and
+        // stop where the accepted page fills, so a violation is raised only
+        // where a query without include would have reached it. A violation
+        // the caller may not read is dropped like any other hidden record,
+        // so the error never names, or reveals, an item outside the caller's
+        // reach.
         const accepted: DataRecord[] = [];
-        for (const record of matched.records) {
-          if (accepted.length >= limit) break;
-          if (await include(record)) accepted.push(record);
+        let nextViolation = 0;
+        for (
+          let i = 0;
+          i <= matched.records.length && accepted.length < limit;
+          i++
+        ) {
+          for (
+            ;
+            nextViolation < matched.violations.length &&
+            matched.violations[nextViolation].matchesBefore <= i;
+            nextViolation++
+          ) {
+            const { record } = matched.violations[nextViolation];
+            if (await include(record)) {
+              throw new BinaryContentPredicateError(record);
+            }
+          }
+          const record = matched.records[i];
+          if (record && await include(record)) accepted.push(record);
         }
         // Stale rows dropped during hydration can shorten a batch, so only
         // stopping short of the batch limit means the matches ran out.
         if (
           accepted.length >= limit || batch === undefined || !matched.hitLimit
         ) {
-          results = this.project(accepted, matched.selectParsed);
+          results = this.project(
+            accepted,
+            matched.selectParsed,
+            await this.projectedContents(accepted, matched.selectReadsContent),
+          );
           break;
         }
         batch *= 4;
       }
     } else {
-      results = this.executeQuery(predicate, options, resolvedModels);
+      const matched = await this.matchWithHydration(
+        predicate,
+        options,
+        latestRuns,
+        undefined,
+        models,
+      );
+      if (matched.violations.length > 0) {
+        throw new BinaryContentPredicateError(matched.violations[0].record);
+      }
+      results = this.project(
+        matched.records,
+        matched.selectParsed,
+        await this.projectedContents(
+          matched.records,
+          matched.selectReadsContent,
+        ),
+      );
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.
@@ -588,34 +771,94 @@ export class DataQueryService {
   private executeQuery(
     predicate: string,
     options?: DataQueryOptions,
-    resolvedModels?: ReadonlyMap<string, ResolvedModelReference | null>,
   ): DataRecord[] | unknown[] {
-    const matched = this.executeMatch(predicate, options, resolvedModels);
-    return this.project(matched.records, matched.selectParsed);
+    const matched = this.executeMatch(predicate, options);
+    if (matched.violations.length > 0) {
+      throw new BinaryContentPredicateError(matched.violations[0].record);
+    }
+    return this.project(
+      matched.records,
+      matched.selectParsed,
+      matched.selectReadsContent
+        ? new Map(matched.records.map((r) => [r, this.projectedContent(r)]))
+        : undefined,
+    );
   }
 
   /**
-   * Resolves every `model(...)` reference in the predicate through the
-   * configured resolver. Returns undefined when the predicate has none.
-   * A reference with no definition maps to null and matches no rows.
+   * Resolves each distinct workflow the predicate and select pass to
+   * `latestRun`, once per query, through the caller's resolver.
    */
-  private async resolveModelReferences(
+  private async resolveLatestRuns(
     predicate: string,
     options?: DataQueryOptions,
-  ): Promise<Map<string, ResolvedModelReference | null> | undefined> {
+  ): Promise<LatestRuns> {
+    const workflows = this.latestRunWorkflows(
+      this.queryEnv.parse(predicate).ast as ASTNode,
+      options?.select,
+    );
+    if (workflows.length === 0) return NO_LATEST_RUNS;
+    const resolver = options?.latestRunResolver;
+    if (!resolver) throw latestRunUnavailable();
+    const latestRuns = new Map<string, string | null>();
+    for (const workflow of workflows) {
+      latestRuns.set(workflow, await resolver(workflow));
+    }
+    return latestRuns;
+  }
+
+  /** The workflows `latestRun` is called with in a predicate and select. */
+  private latestRunWorkflows(predicateAst: ASTNode, select?: string): string[] {
+    const workflows = new Set(collectLatestRunWorkflows(predicateAst));
+    if (select) {
+      const selectAst = this.queryEnv.parse(select).ast as ASTNode;
+      for (const workflow of collectLatestRunWorkflows(selectAst)) {
+        workflows.add(workflow);
+      }
+    }
+    return [...workflows];
+  }
+
+  /**
+   * An environment where `latestRun` returns the runs resolved for this
+   * query. A clone, so the shared environment — and every concurrent
+   * query — never sees another query's runs.
+   */
+  private latestRunEnv(
+    workflows: string[],
+    latestRuns: LatestRuns,
+  ): Environment {
+    // Every call must have been resolved: an unregistered call would fail
+    // on each row, and per-row failures are skipped, not reported.
+    if (workflows.some((workflow) => !latestRuns.has(workflow))) {
+      throw latestRunUnavailable();
+    }
+    return this.queryEnv.clone().registerFunction(
+      `${LATEST_RUN_FUNCTION}(string): dyn`,
+      (workflow: string) => latestRuns.get(workflow) ?? null,
+    );
+  }
+
+  /**
+   * Resolves each distinct model the predicate passes to `model`, once per
+   * query, through the caller's resolver. Field references are validated
+   * first, so an invalid predicate never costs a definition lookup.
+   */
+  private async resolveModels(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<ResolvedModels> {
     const ast = this.queryEnv.parse(predicate).ast as ASTNode;
-    // Reject unknown fields before any definition lookup.
     validateFieldReferences(collectRootIdentifiers(ast));
     const references = collectModelReferences(ast);
-    if (references.length === 0) return undefined;
-    if (!this.resolveModel) throw modelFunctionUnavailable();
-    const resolved = new Map<string, ResolvedModelReference | null>();
+    if (references.length === 0) return NO_MODELS;
+    const resolver = options?.modelResolver;
+    if (!resolver) throw modelUnavailable();
+    const models = new Map<string, ResolvedModelReference>();
     for (const reference of references) {
-      const target = await this.resolveModel(reference);
-      if (!target) options?.onUnresolvedModel?.(reference);
-      resolved.set(reference, target);
+      models.set(reference, await resolver(reference));
     }
-    return resolved;
+    return models;
   }
 
   /**
@@ -696,35 +939,146 @@ export class DataQueryService {
   }
 
   /**
+   * {@link executeMatch} for the async query path, with lazy content
+   * hydrated. Matching is synchronous and reads bodies with getContentSync,
+   * which cannot download, so a lazily-synced row would evaluate and return
+   * with empty attributes where `data get` downloads its content. Each pass
+   * collects the own-namespace rows whose needed body was missing, downloads
+   * them through the async getContent, and matches again while a download
+   * succeeded. Rows `include` rejects are never downloaded, so a caller
+   * cannot make the server fetch content it may not read. A download error
+   * fails the query, as it fails `data get`.
+   *
+   * A row that matched while empty can stop matching once downloaded, so a
+   * later pass can reach rows a limit hid from an earlier one. Only then —
+   * a pass after a download reaching rows not yet tried — is the limit it
+   * collects under doubled, so a predicate like `!has(attributes.x)` takes
+   * log(rows / limit) passes rather than one per limit window. Bodies
+   * downloaded because their rows are returned leave the match set as it
+   * was, so a metadata predicate downloads only the rows within the limit.
+   * A pass that collected under a raised limit is followed by one at the
+   * caller's limit. Each row is tried once, so the loop ends.
+   */
+  private async matchWithHydration(
+    predicate: string,
+    options: DataQueryOptions | undefined,
+    latestRuns: LatestRuns,
+    tried = new Set<string>(),
+    models: ResolvedModels = NO_MODELS,
+  ): Promise<MatchResult> {
+    let collectLimit = options?.limit;
+    let downloadedBefore = false;
+    while (true) {
+      const missing = new Map<string, CatalogRow>();
+      const matched = this.executeMatch(
+        predicate,
+        { ...options, limit: collectLimit },
+        missing,
+        latestRuns,
+        models,
+      );
+      let hydrated = false;
+      for (const [key, row] of missing) {
+        if (tried.has(key)) continue;
+        tried.add(key);
+        if (
+          options?.include &&
+          !(await options.include(this.rowToRecord(row, false, false, false)))
+        ) continue;
+        if (await this.rowHasContent(row)) hydrated = true;
+      }
+      if (!hydrated) {
+        return collectLimit === options?.limit ? matched : this.executeMatch(
+          predicate,
+          options,
+          undefined,
+          latestRuns,
+          models,
+        );
+      }
+      // This pass reached rows a previous download had not: the rows that
+      // download synced stopped matching, so widen the window.
+      if (downloadedBefore && collectLimit !== undefined) {
+        collectLimit = Math.max(collectLimit, 1) * 2;
+      }
+      downloadedBefore = true;
+    }
+  }
+
+  /**
    * Matches and hydrates records for a predicate, and parses the select
-   * expression — loading whatever it needs — without applying it.
+   * expression — loading whatever it needs — without applying it. Own-
+   * namespace rows whose needed body is not on local disk are added to
+   * `missingContent` when given.
    */
   private executeMatch(
     predicate: string,
     options?: DataQueryOptions,
-    resolvedModels?: ReadonlyMap<string, ResolvedModelReference | null>,
-  ): {
-    records: DataRecord[];
-    selectParsed?: (ctx: Record<string, unknown>) => unknown;
-    /** Whether matching stopped at the limit, so more rows may match. */
-    hitLimit: boolean;
-  } {
+    missingContent?: Map<string, CatalogRow>,
+    latestRuns: LatestRuns = NO_LATEST_RUNS,
+    models: ResolvedModels = NO_MODELS,
+  ): MatchResult {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
     const limit = options?.limit ?? Infinity;
     const includePath = options?.includeContentPath ?? false;
+    const ownNamespace = this.dataRepo.namespace;
+    const reportMissing = (row: CatalogRow) =>
+      missingContent && row.namespace === ownNamespace
+        ? () => missingContent.set(catalogRowKey(row), row)
+        : undefined;
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
-    const userParsed = this.queryEnv.parse(predicate);
+    let userParsed = this.queryEnv.parse(predicate);
     const userAst = userParsed.ast as ASTNode;
     const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
-    // model() references are resolved asynchronously before matching, so a
-    // synchronous query (CEL data.query) cannot use them. Rejected here,
-    // since an error inside the function would only skip each row.
-    if (!resolvedModels && collectModelReferences(userAst).length > 0) {
-      throw modelFunctionUnavailable();
+
+    // A query calling latestRun parses in an environment that has it.
+    let env = this.queryEnv;
+    const latestRunWorkflows = this.latestRunWorkflows(
+      userAst,
+      options?.select,
+    );
+    if (latestRunWorkflows.length > 0) {
+      env = this.latestRunEnv(latestRunWorkflows, latestRuns);
+      userParsed = env.parse(predicate);
+    }
+
+    // A query calling model parses in an environment where model() matches
+    // the row being evaluated against its resolved definition. The row is
+    // local to this call, so concurrent queries never see each other's.
+    let currentRow: CatalogRow | null = null;
+    const modelReferences = collectModelReferences(userAst);
+    if (options?.select) {
+      if (
+        collectModelReferencesLenient(
+          this.queryEnv.parse(options.select).ast as ASTNode,
+        )
+      ) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() can only be used in the query predicate, ` +
+            `not in --select`,
+        );
+      }
+    }
+    if (modelReferences.length > 0) {
+      // Every call must have been resolved: an unregistered call would fail
+      // on each row, and per-row failures are skipped, not reported.
+      if (modelReferences.some((reference) => !models.has(reference))) {
+        throw modelUnavailable();
+      }
+      env = (env === this.queryEnv ? env.clone() : env).registerFunction(
+        `${MODEL_FUNCTION}(string): bool`,
+        (reference: string) => {
+          const target = models.get(reference);
+          return !!currentRow && !!target &&
+            currentRow.type_normalized === target.modelType &&
+            currentRow.model_id === target.modelId;
+        },
+      );
+      userParsed = env.parse(predicate);
     }
 
     // Implicit latest-only: unless the predicate references `version` or
@@ -733,47 +1087,42 @@ export class DataQueryService {
     // 2`, `version >= 0`, `isLatest == false`). String literals like
     // `name == "version-report"` do not trigger the opt-out because
     // collectRootIdentifiers walks the AST rather than the source text.
+    // With latestPerStep the SQL pushdown below filters on is_step_latest
+    // instead, and the CEL `isLatest == true` term is left out because an
+    // older step's latest has isLatest false.
     const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
-    const effectivePredicate = opensHistory
+    const latestPerStep = options?.latestPerStep ?? false;
+    const effectivePredicate = opensHistory || latestPerStep
       ? predicate
       : `(${predicate}) && isLatest == true`;
-    const parsed = opensHistory
+    const parsed = opensHistory || latestPerStep
       ? userParsed
-      : this.queryEnv.parse(effectivePredicate);
+      : env.parse(effectivePredicate);
     const filterAst = parsed.ast as ASTNode;
 
     // Parse select expression if provided
     let selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined;
     if (options?.select) {
-      selectParsed = this.queryEnv.parse(options.select) as unknown as (
+      selectParsed = env.parse(options.select) as unknown as (
         ctx: Record<string, unknown>,
       ) => unknown;
-      const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
-      let selectUsesModel: boolean;
-      try {
-        selectUsesModel = collectModelReferences(selectAst).length > 0;
-      } catch {
-        // A malformed model() call is still a model() call.
-        selectUsesModel = true;
-      }
-      if (selectUsesModel) {
-        throw new UserError(
-          `${MODEL_FUNCTION}() can only be used in the query predicate, not in --select.`,
-        );
-      }
     }
 
     // Detect attributes and content usage — union filter and select expression.
     // content is aliased to attributes for JSON records in the CEL context,
-    // so referencing content also requires loading attributes.
-    let needsContent = referencesContent(filterAst);
+    // so referencing content also requires loading attributes. Only the
+    // filter needs content loaded while matching: a select that reads it gets
+    // the bytes in project(), after the caller's include has run.
+    const needsContent = referencesContent(filterAst);
     let needsAttributes = options?.loadAttributes ??
       (referencesAttributes(filterAst) || needsContent);
+    let readsContentInSelect = false;
     if (options?.select) {
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
-      if (!needsContent) needsContent = referencesContent(selectAst);
+      readsContentInSelect = selectReadsContent(selectAst);
       if (!needsAttributes) {
-        needsAttributes = referencesAttributes(selectAst) || needsContent;
+        needsAttributes = referencesAttributes(selectAst) ||
+          readsContentInSelect;
       }
     }
 
@@ -784,7 +1133,7 @@ export class DataQueryService {
     const whereParams: (string | number)[] = [];
 
     if (!opensHistory) {
-      whereClauses.push("is_latest = ?");
+      whereClauses.push(latestPerStep ? "is_step_latest = ?" : "is_latest = ?");
       whereParams.push(1);
     }
 
@@ -805,25 +1154,45 @@ export class DataQueryService {
       whereParams.push(modelNameLiteral);
     }
 
+    const specNameLiteral = extractStringEquality(userAst, "specName");
+    if (specNameLiteral !== null) {
+      whereClauses.push("spec_name = ?");
+      whereParams.push(specNameLiteral);
+    }
+
     const modelCall = extractModelCall(userAst);
-    if (modelCall !== null && resolvedModels) {
-      const target = resolvedModels.get(modelCall);
-      if (target) {
-        whereClauses.push("type_normalized = ?", "model_id = ?");
-        whereParams.push(target.modelType, target.modelId);
-      } else {
-        // An unresolved reference matches nothing.
-        whereClauses.push("0 = 1");
-      }
+    const modelTarget = modelCall === null ? undefined : models.get(modelCall);
+    if (modelTarget) {
+      whereClauses.push("type_normalized = ?", "model_id = ?");
+      whereParams.push(modelTarget.modelType, modelTarget.modelId);
     }
 
     // A latest-only read by exact name follows rename forwards, as an
     // unversioned `data get` does: rows the old name forwards to are
     // evaluated as if they still carried it.
-    const nameLiteral = opensHistory ? null : extractNameEquality(userAst);
+    const nameLiteral = opensHistory
+      ? null
+      : extractStringEquality(userAst, "name");
     const renameTargets = nameLiteral === null
       ? new Map<string, string>()
       : this.resolveRenameForwards(nameLiteral);
+
+    const latestRunWorkflow = extractWorkflowRunIdLatestRun(userAst);
+    if (latestRunWorkflow !== null) {
+      const runId = latestRuns.get(latestRunWorkflow) ?? null;
+      // A workflow with no runs: no row can equal its latest run.
+      if (runId === null) {
+        return {
+          records: [],
+          selectParsed,
+          selectReadsContent: readsContentInSelect,
+          violations: [],
+          hitLimit: false,
+        };
+      }
+      whereClauses.push("workflow_run_id = ?");
+      whereParams.push(runId);
+    }
 
     const rows = whereClauses.length > 0
       ? this.catalogStore.iterateFiltered(
@@ -836,87 +1205,99 @@ export class DataQueryService {
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
+    const violations: Array<{ record: DataRecord; matchesBefore: number }> = [];
     let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
-    this.modelMatch = resolvedModels
-      ? { resolved: resolvedModels, row: null }
-      : null;
-    try {
-      for (const row of rows) {
-        const record = this.rowToRecord(row, false, false, includePath);
-        // attributes/content are read from disk only when evaluation touches
-        // them or the row matches, so rows rejected by metadata terms never
-        // read their body (swamp-club#2122). The load outcome — record or
-        // error — is memoized per row; nothing is cached across queries.
-        let full: DataRecord | undefined;
-        let loadFailed = false;
-        let loadError: unknown;
-        const load = (): DataRecord => {
-          if (loadFailed) throw loadError;
-          if (!full) {
-            try {
-              full = this.rowToRecord(
-                row,
-                needsAttributes,
-                needsContent,
-                includePath,
-              );
-            } catch (error) {
-              loadFailed = true;
-              loadError = error;
-              throw error;
-            }
+    for (const row of rows) {
+      const record = this.rowToRecord(row, false, false, includePath);
+      // attributes/content are read from disk only when evaluation touches
+      // them or the row matches, so rows rejected by metadata terms never
+      // read their body (swamp-club#2122). The load outcome — record or
+      // error — is memoized per row; nothing is cached across queries.
+      let full: DataRecord | undefined;
+      let loadFailed = false;
+      let loadError: unknown;
+      const load = (): DataRecord => {
+        if (loadFailed) throw loadError;
+        if (!full) {
+          try {
+            full = this.rowToRecord(
+              row,
+              needsAttributes,
+              needsContent,
+              includePath,
+              reportMissing(row),
+            );
+          } catch (error) {
+            loadFailed = true;
+            loadError = error;
+            throw error;
           }
-          return full;
-        };
-        const ctx = Object.create(
-          record as unknown as Record<string, unknown>,
-        ) as Record<string, unknown>;
-        ctx["ns"] = record.namespace;
-        if (
-          nameLiteral !== null &&
-          renameTargets.get(
-              renameKey(row.namespace, row.type_normalized, row.model_id),
-            ) === row.data_name
-        ) {
-          ctx["name"] = nameLiteral;
         }
-        Object.defineProperties(ctx, {
-          attributes: { get: () => load().attributes },
-          content: {
-            get: () => {
-              const loaded = load();
-              return loaded.contentType === "application/json"
-                ? loaded.attributes
-                : loaded.content;
-            },
-          },
-        });
-        if (this.modelMatch) this.modelMatch.row = row;
-        try {
-          const match = parsed(ctx);
-          if (match === true) {
-            // Materialize as a plain record; a read error absorbed by CEL
-            // (e.g. `<read error> || true`) resurfaces here.
-            results.push(needsHydration ? record : load());
-            if (needsHydration) matchedRows.push(row);
-            if (results.length >= limit) {
-              hitLimit = true;
-              break;
-            }
-          }
-        } catch (error) {
-          // Required body reads must fail the query, not skip the row.
-          if (loadFailed) throw loadError;
-          logger
-            .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
-            String(error)
-          }`;
-        }
+        return full;
+      };
+      // `content` in a predicate is text; reading it on a binary item is an
+      // error (swamp-club#2959). The check uses the catalog's content type, so
+      // no bytes are read to make it.
+      let readBinaryContent = false;
+      const ctx = Object.create(
+        record as unknown as Record<string, unknown>,
+      ) as Record<string, unknown>;
+      ctx["ns"] = record.namespace;
+      if (
+        nameLiteral !== null &&
+        renameTargets.get(
+            renameKey(row.namespace, row.type_normalized, row.model_id),
+          ) === row.data_name
+      ) {
+        ctx["name"] = nameLiteral;
       }
-    } finally {
-      this.modelMatch = null;
+      currentRow = row;
+      Object.defineProperties(ctx, {
+        attributes: { get: () => load().attributes },
+        content: {
+          get: () => {
+            if (!isTextContentType(record.contentType)) {
+              readBinaryContent = true;
+              throw new Error("content of a non-text item");
+            }
+            const loaded = load();
+            return loaded.contentType === "application/json"
+              ? loaded.attributes
+              : loaded.content;
+          },
+        },
+      });
+      try {
+        const match = parsed(ctx);
+        // Also when CEL absorbed the read, as in `content == "x" || true`.
+        if (readBinaryContent) {
+          violations.push({ record, matchesBefore: results.length });
+          continue;
+        }
+        if (match === true) {
+          // Materialize as a plain record; a read error absorbed by CEL
+          // (e.g. `<read error> || true`) resurfaces here.
+          results.push(needsHydration ? record : load());
+          if (needsHydration) matchedRows.push(row);
+          if (results.length >= limit) {
+            hitLimit = true;
+            break;
+          }
+        }
+      } catch (error) {
+        // Required body reads must fail the query, not skip the row.
+        if (loadFailed) throw loadError;
+        if (readBinaryContent) {
+          violations.push({ record, matchesBefore: results.length });
+          continue;
+        }
+        logger
+          .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
+          String(error)
+        }`;
+      }
     }
 
     // Hydrate matched records with attributes when the predicate didn't
@@ -928,8 +1309,11 @@ export class DataQueryService {
     // selection (swamp-club#1737).
     if (needsHydration) {
       let writeIndex = 0;
-      const ownNamespace = this.dataRepo.namespace;
+      // keptBefore[i] counts the records kept before results[i], so a
+      // violation's position survives the stale rows dropped here.
+      const keptBefore: number[] = [];
       for (let i = 0; i < results.length; i++) {
+        keptBefore.push(writeIndex);
         const row = matchedRows[i];
         if (this.filterStaleRows && row.namespace === ownNamespace) {
           const contentPath = this.dataRepo.getContentPath(
@@ -951,13 +1335,24 @@ export class DataQueryService {
           true,
           needsContent,
           includePath,
+          reportMissing(row),
         );
         writeIndex++;
+      }
+      keptBefore.push(writeIndex);
+      for (const violation of violations) {
+        violation.matchesBefore = keptBefore[violation.matchesBefore];
       }
       results.length = writeIndex;
     }
 
-    return { records: results, selectParsed, hitLimit };
+    return {
+      records: results,
+      selectParsed,
+      selectReadsContent: readsContentInSelect,
+      violations,
+      hitLimit,
+    };
   }
 
   /**
@@ -968,6 +1363,7 @@ export class DataQueryService {
   private project(
     results: DataRecord[],
     selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
+    contents: Map<DataRecord, ProjectedContent> | undefined,
   ): DataRecord[] | unknown[] {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
@@ -980,7 +1376,11 @@ export class DataQueryService {
             r as unknown as Record<string, unknown>,
           ) as Record<string, unknown>;
           selectCtx["ns"] = r.namespace;
-          if (r.contentType === "application/json") {
+          const projected = contents?.get(r);
+          if (projected) {
+            selectCtx["content"] = projected.content;
+            selectCtx["contentEncoding"] = projected.contentEncoding;
+          } else if (r.contentType === "application/json") {
             selectCtx["content"] = r.attributes;
           }
           return coerceBigInts(selectParsed(selectCtx));
@@ -993,11 +1393,101 @@ export class DataQueryService {
     return results;
   }
 
+  /**
+   * A record's content as a projection sees it (swamp-club#2959): JSON as its
+   * parsed attributes, anything else as UTF-8 text when the bytes are valid
+   * UTF-8 and base64 otherwise, the same representation `data get` returns
+   * (a leading UTF-8 byte-order mark is dropped, as there). Content whose
+   * bytes are not on this host — any item from another namespace in a shared
+   * datastore, or a non-JSON item whose body cannot be read — is null, so it
+   * is never mistaken for empty content. A row stamped with the empty
+   * namespace (written before the repository set one) is this repository's
+   * own, and is read like any other.
+   *
+   * Returns undefined when the answer needs the item's bytes.
+   */
+  private projectedContentWithoutBytes(
+    record: DataRecord,
+  ): ProjectedContent | undefined {
+    if (
+      record.namespace !== "" && record.namespace !== this.dataRepo.namespace
+    ) {
+      return { content: null, contentEncoding: null };
+    }
+    if (record.contentType === "application/json") {
+      return { content: record.attributes, contentEncoding: "utf-8" };
+    }
+    return undefined;
+  }
+
+  /** Represents read bytes, or their absence, as projected content. */
+  private encodeProjected(bytes: Uint8Array | null): ProjectedContent {
+    return bytes
+      ? encodeContent(bytes)
+      : { content: null, contentEncoding: null };
+  }
+
+  /**
+   * The projected content of `record`, read synchronously from local disk
+   * (the querySync path, which cannot download lazily-synced bodies).
+   */
+  private projectedContent(record: DataRecord): ProjectedContent {
+    const known = this.projectedContentWithoutBytes(record);
+    if (known) return known;
+    let bytes: Uint8Array | null = null;
+    try {
+      bytes = this.dataRepo.getContentSync(
+        ModelType.create(record.modelType),
+        record.modelId,
+        record.name,
+        record.version,
+      );
+    } catch (error) {
+      logger
+        .debug`Projection could not read content of ${record.modelName}/${record.name}@v${record.version}: ${
+        String(error)
+      }`;
+    }
+    return this.encodeProjected(bytes);
+  }
+
+  /**
+   * The projected content of each record a select that reads content will
+   * see, for the async query path. Bodies are read with the async getContent,
+   * which downloads a lazily-synced body the way `data get` does
+   * (swamp-club#2962). Only records that passed the caller's include reach
+   * here, so no body is read or downloaded for one the caller may not read.
+   * A download error fails the query, as it fails `data get`.
+   */
+  private async projectedContents(
+    records: DataRecord[],
+    readsContent: boolean,
+  ): Promise<Map<DataRecord, ProjectedContent> | undefined> {
+    if (!readsContent) return undefined;
+    const contents = new Map<DataRecord, ProjectedContent>();
+    for (const record of records) {
+      const known = this.projectedContentWithoutBytes(record);
+      contents.set(
+        record,
+        known ?? this.encodeProjected(
+          await this.dataRepo.getContent(
+            ModelType.create(record.modelType),
+            record.modelId,
+            record.name,
+            record.version,
+          ),
+        ),
+      );
+    }
+    return contents;
+  }
+
   private rowToRecord(
     row: CatalogRow,
     loadAttributes: boolean,
     loadContent: boolean,
     includeContentPath: boolean,
+    onMissingContent?: () => void,
   ): DataRecord {
     return fromRow(
       row,
@@ -1005,6 +1495,7 @@ export class DataQueryService {
       loadAttributes,
       loadContent,
       includeContentPath,
+      onMissingContent,
     );
   }
 
@@ -1180,11 +1671,13 @@ export class DataQueryService {
       id: data.id,
       version: data.version,
       is_latest: isLatest ? 1 : 0,
+      is_step_latest: isLatest ? 1 : 0,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",
       content_type: data.contentType,
       lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,

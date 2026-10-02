@@ -111,7 +111,11 @@ set, and the shortcut mapping table.
 
 `self` refers to your own model (`id`, `name`, `version`, `tags`,
 `globalArguments`). Inside a forEach step it also carries the iteration
-variable.
+variable and `self._index`, the zero-based iteration index in the order the
+iterations run (array order, or object entry order). The index gives each
+iteration a slug-safe identifier, such as a per-iteration model name, when the
+item is not one. It follows position, not the item, so names built from it
+should be scoped to a run. An iteration variable named `_index` shadows it.
 
 A model can also be referenced by its uuid instead of its name. There is no
 `workflow.*` namespace; workflows are not addressable from expressions.
@@ -480,8 +484,10 @@ the catalog. To scope to the current run, add a `workflowRunId` predicate via
 
 If different workflow steps invoke the same model and write the same
 spec/instance name, each step's output is a distinct record with its own latest
-version. Step A's latest and step B's latest are both returned. A standalone
-model-method write to the same data name demotes all prior step outputs.
+version. Step A's latest and step B's latest are both returned, and the older
+one reports `isLatest: false`. `data.query()`, `data.latest()` and
+`context.readModelData()` return only the newest. A standalone model-method
+write to the same data name demotes all prior step outputs.
 
 ### data.findByTag(tagKey, tagValue)
 

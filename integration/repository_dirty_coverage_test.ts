@@ -64,6 +64,7 @@ import {
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
+import type { StagedChange } from "../src/domain/datastore/unit_of_work.ts";
 import type { MarkDirtyHook } from "../src/domain/datastore/datastore_sync_service.ts";
 import { Data } from "../src/domain/data/data.ts";
 import {
@@ -82,10 +83,13 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
+import { pathExists } from "../src/infrastructure/persistence/test_helpers/staged_change_helpers.ts";
+import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 
@@ -186,6 +190,8 @@ interface Harness extends Repos {
   cacheRoot: string;
   definitionsDir: string;
   workflowsDir: string;
+  /** The recording hook every repository in this harness was built with. */
+  markDirty: MarkDirtyHook;
   /** A cold second context on the same repo and cache, same hook. */
   fresh(): Repos;
 }
@@ -198,6 +204,12 @@ interface Row {
   /** False for rows that must leave the cache untouched (dry runs). */
   changesCache?: boolean;
   autoGc?: boolean;
+  /**
+   * The act marks from parallel tasks, so its mark order varies from run to
+   * run (collectGarbage removes versions in Promise.allSettled batches,
+   * src/infrastructure/persistence/unified_data_repository.ts:1821).
+   */
+  parallelMarks?: boolean;
 }
 
 /** What the hook saw (absolute paths) and what it forwarded (relPaths). */
@@ -267,6 +279,7 @@ async function withHarness(
         cacheRoot,
         definitionsDir,
         workflowsDir,
+        markDirty,
         fresh: build,
       }, { abs, forwarded });
     } finally {
@@ -646,6 +659,7 @@ const unifiedDataRows: Row[] = [
   {
     repo: "UnifiedData",
     method: "collectGarbage(numeric)",
+    parallelMarks: true,
     prepare: async (h) => {
       const modelId = crypto.randomUUID();
       const repo = h.ctx.unifiedDataRepo;
@@ -662,6 +676,7 @@ const unifiedDataRows: Row[] = [
   {
     repo: "UnifiedData",
     method: "collectGarbage(duration)",
+    parallelMarks: true,
     prepare: async (h) => {
       const modelId = crypto.randomUUID();
       const repo = h.ctx.unifiedDataRepo;
@@ -1368,4 +1383,140 @@ Deno.test("markDirty: every cache file a hooked repository changes is covered by
       "path (or an ancestor directory) before the write or delete. Pin it in " +
       "KNOWN_UNMARKED, with the source line, only if the gap is deliberate.",
   );
+});
+
+/** A mark's absolute path made comparable across harnesses; null is bare. */
+function comparableMark(h: Harness, mark: string | undefined): string | null {
+  if (mark === undefined) return null;
+  const rel = relative(dirname(h.cacheRoot), mark).split(SEPARATOR).join("/");
+  return normalise(rel);
+}
+
+/** The marks one run of `row`'s act sends, and what a scope staged. */
+async function marksOf(
+  row: Row,
+  scoped: boolean,
+): Promise<{ marks: (string | null)[]; staged: (string | null)[] }> {
+  let marks: (string | null)[] = [];
+  let staged: (string | null)[] = [];
+  await withHarness(row.autoGc ?? false, async (h, recorded) => {
+    const act = await row.prepare(h);
+    recorded.abs.length = 0;
+    if (scoped) {
+      const uow = createLegacyUnitOfWork(h.markDirty, { flush: undefined });
+      await runInUnitOfWork(uow, act);
+      staged = uow.staged().map((change: StagedChange) =>
+        comparableMark(h, change.kind === "bulk" ? undefined : change.path)
+      );
+    } else {
+      await act();
+    }
+    marks = recorded.abs.map((mark) => comparableMark(h, mark));
+  });
+  return { marks, staged };
+}
+
+Deno.test("unit of work: every repository sends the same marks inside a legacy unit of work scope as without one (swamp-club#2971)", async (t) => {
+  for (const row of ROWS) {
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      const unscoped = await marksOf(row, false);
+      const scoped = await marksOf(row, true);
+      if (row.parallelMarks) {
+        assertEquals(
+          [...scoped.marks].sort(),
+          [...unscoped.marks].sort(),
+          "expected the same marks (in any order: they come from parallel tasks)",
+        );
+      } else {
+        assertEquals(
+          scoped.marks,
+          unscoped.marks,
+          "expected the same marks in the same order",
+        );
+      }
+      // Within one run, the unit records each change just before it marks.
+      assertEquals(
+        scoped.staged,
+        scoped.marks,
+        "expected one staged change per mark, in order",
+      );
+    });
+  }
+});
+
+/**
+ * Repositories that stage typed changes at each call site rather than through
+ * a private notifyDirty (datastore rework Phase 1 repository moves). Every
+ * repository with rows here is listed; a row of an unlisted one is skipped
+ * below.
+ */
+const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
+  // swamp-club#2979, move A.
+  "UnifiedData",
+  "Output",
+  // swamp-club#2980, move B.
+  "Definition",
+  "Workflow",
+  "EvaluatedDefinition",
+  "EvaluatedWorkflow",
+  // swamp-club#2992, move C1.
+  "WorkflowRun",
+]);
+
+/**
+ * Moved-repository rows whose act changes the cache but marks nothing, so
+ * they stage nothing either. Each is a KNOWN_UNMARKED gap this move must not
+ * fix; fixing one makes the row stage a change and this entry must go.
+ */
+const UNSTAGED_ROWS: ReadonlySet<string> = new Set([
+  "UnifiedData.advanceLatestMarkers",
+  "UnifiedData.rollbackVersions",
+]);
+
+Deno.test("unit of work: each change a moved repository stages matches the disk after the act (swamp-club#2979)", async (t) => {
+  for (const row of ROWS) {
+    if (!MOVED_REPOSITORIES.has(row.repo)) continue;
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      await withHarness(row.autoGc ?? false, async (h) => {
+        const act = await row.prepare(h);
+        const uow = createLegacyUnitOfWork(h.markDirty, { flush: undefined });
+        await runInUnitOfWork(uow, act);
+        const staged = uow.staged();
+        // Without this the loop below passes vacuously on a row that
+        // stages nothing.
+        if (row.changesCache === false) {
+          assertEquals(staged, [], "expected a dry run to stage nothing");
+        } else if (UNSTAGED_ROWS.has(`${row.repo}.${row.method}`)) {
+          assertEquals(
+            staged,
+            [],
+            "expected this KNOWN_UNMARKED row to stage nothing; if it now " +
+              "stages a change, remove it from UNSTAGED_ROWS",
+          );
+        } else {
+          assert(staged.length > 0, "expected at least one staged change");
+        }
+        for (const change of staged) {
+          if (change.kind === "bulk") {
+            throw new Error(
+              `expected no bulk change, got reason ${change.reason}`,
+            );
+          }
+          const shown = comparableMark(h, change.path);
+          const exists = await pathExists(change.path);
+          if (change.kind === "write") {
+            assert(
+              exists,
+              `expected staged write ${shown} to exist after the act`,
+            );
+          } else {
+            assert(
+              !exists,
+              `expected staged remove ${shown} to be gone after the act`,
+            );
+          }
+        }
+      });
+    });
+  }
 });

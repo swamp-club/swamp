@@ -484,11 +484,21 @@ export interface CatalogExportRow {
   id: string;
   version: number;
   is_latest: number;
+  /**
+   * Whether this row is its workflow step's latest version of the data
+   * name. Absent from exports written before swamp-club#2520, whose
+   * `is_latest` has that meaning instead.
+   */
+  is_step_latest?: number;
   model_name: string;
   spec_name: string;
   data_type: string;
   content_type: string;
   lifetime: string;
+  /**
+   * Absent in exports written before the column existed; read as unknown.
+   */
+  garbage_collection?: string;
   owner_type: string;
   streaming: number;
   size: number;

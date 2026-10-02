@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -33,12 +35,15 @@ import {
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import {
   computeLatestFlags,
+  type DataQueryOptions,
   DataQueryService,
+  type ModelReferenceResolver,
   type ResolvedModelReference,
 } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
+import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import { Data } from "./data.ts";
 
@@ -56,6 +61,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_type: "resource",
     content_type: "application/json",
     lifetime: "infinite",
+    garbage_collection: "10",
     owner_type: "model-method",
     streaming: 0,
     size: 256,
@@ -68,6 +74,8 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     step_name: "",
     source: "",
     ...overrides,
+    // Rows default to a step latest exactly when they are latest.
+    is_step_latest: overrides.is_step_latest ?? overrides.is_latest ?? 1,
   };
 }
 
@@ -120,6 +128,67 @@ Deno.test("DataQueryService: compound predicate", () => {
   ) as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].specName, "result");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: garbageCollection filters count and duration policies", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "count", garbage_collection: "5" }));
+  catalog.upsert(
+    makeRow({
+      data_name: "duration",
+      garbage_collection: "7d",
+      id: "data-uuid-002",
+    }),
+  );
+
+  const names = (predicate: string) =>
+    (service.querySync(predicate) as DataRecord[]).map((r) => r.name).sort();
+
+  assertEquals(names("garbageCollection == 5"), ["count"]);
+  assertEquals(names('garbageCollection == "7d"'), ["duration"]);
+  // Ordering a duration row against an int throws, which skips that row;
+  // the type guard keeps the comparison to count policies.
+  assertEquals(
+    names("type(garbageCollection) != string && garbageCollection < 10"),
+    ["count"],
+  );
+  assertEquals(
+    service.querySync('name == "duration"', { select: "garbageCollection" }),
+    ["7d"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: specName equality filters through the SQL pushdown", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ spec_name: "result" }));
+  catalog.upsert(
+    makeRow({ data_name: "other", spec_name: "raw", id: "data-uuid-002" }),
+  );
+
+  const results = service.querySync(
+    'specName == "raw" && size > 0',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["other"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps scoping", () => {
+  const { catalog, service } = setupTest();
+  assertEquals(
+    service.specNameFallback(
+      'workflowRunId == "run-1" && name == "classification"',
+    ),
+    {
+      specNamePredicate:
+        'workflowRunId == "run-1" && specName == "classification"',
+      namePredicate: 'workflowRunId == "run-1" && name == "classification"',
+      droppedConjuncts: false,
+    },
+  );
+  assertEquals(service.specNameFallback('modelName == "m"'), null);
+  assertEquals(service.specNameFallback("name == "), null, "unparseable");
   catalog.close();
 });
 
@@ -543,6 +612,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const results = await service.query('modelName == "ingest"') as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
+  assertEquals(results[0].garbageCollection, 10, "backfill carries GC");
   assertEquals(catalog.isPopulated(), true);
   catalog.close();
 });
@@ -1963,6 +2033,11 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
 
 // --- computeLatestFlags tests ---
 
+/** Returns `version:is_latest:is_step_latest` for each row, in input order. */
+function flags(rows: CatalogRow[]): string[] {
+  return rows.map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
 Deno.test("computeLatestFlags: model-method write demotes all prior step outputs", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "step-a" }),
@@ -1971,12 +2046,10 @@ Deno.test("computeLatestFlags: model-method write demotes all prior step outputs
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 0);
-  assertEquals(rows[2].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:0", "3:1:1"]);
 });
 
-Deno.test("computeLatestFlags: different workflow steps keep independent latests above watermark", () => {
+Deno.test("computeLatestFlags: different workflow steps keep independent step latests above watermark", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "" }),
     makeRow({ version: 2, step_name: "step-a" }),
@@ -1984,9 +2057,8 @@ Deno.test("computeLatestFlags: different workflow steps keep independent latests
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 1);
-  assertEquals(rows[2].is_latest, 1);
+  // swamp-club#2520: one is_latest per name; each step keeps its latest.
+  assertEquals(flags(rows), ["1:0:0", "2:0:1", "3:1:1"]);
 });
 
 Deno.test("computeLatestFlags: rows below global watermark are demoted", () => {
@@ -1998,13 +2070,10 @@ Deno.test("computeLatestFlags: rows below global watermark are demoted", () => {
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 0);
-  assertEquals(rows[2].is_latest, 0);
-  assertEquals(rows[3].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:0", "3:0:0", "4:1:1"]);
 });
 
-Deno.test("computeLatestFlags: no model-method rows means each step gets own latest", () => {
+Deno.test("computeLatestFlags: no model-method rows means each step gets own step latest", () => {
   const rows: CatalogRow[] = [
     makeRow({ version: 1, step_name: "step-a" }),
     makeRow({ version: 2, step_name: "step-a" }),
@@ -2012,9 +2081,7 @@ Deno.test("computeLatestFlags: no model-method rows means each step gets own lat
   ];
   computeLatestFlags(rows);
 
-  assertEquals(rows[0].is_latest, 0);
-  assertEquals(rows[1].is_latest, 1);
-  assertEquals(rows[2].is_latest, 1);
+  assertEquals(flags(rows), ["1:0:0", "2:0:1", "3:1:1"]);
 });
 
 Deno.test("computeLatestFlags: model-method as latest version demotes everything", () => {
@@ -2029,6 +2096,7 @@ Deno.test("computeLatestFlags: model-method as latest version demotes everything
   assertEquals(latestRows.length, 1);
   assertEquals(latestRows[0].version, 3);
   assertEquals(latestRows[0].step_name, "");
+  assertEquals(rows.filter((r) => r.is_step_latest === 1).length, 1);
 });
 
 Deno.test("computeLatestFlags: different namespaces keep independent is_latest", () => {
@@ -2653,6 +2721,7 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
     dataType: "dataType",
     contentType: "contentType",
     lifetime: "lifetime",
+    garbageCollection: "garbageCollection",
     ownerType: "ownerType",
     streaming: "streaming",
     size: "size",
@@ -2721,6 +2790,97 @@ Deno.test("getLatestRecord: an unpopulated row behind the on-disk latest marker 
   }
 });
 
+Deno.test("getLatestRecord: an unpopulated row ahead of the on-disk latest marker whose version was deleted yields to the marker (swamp-club#2520)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1-v3; another repository sharing the datastore has
+    // since deleted v3, leaving the marker on v2.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    for (const version of [1, 2, 3]) {
+      catalog.upsertNewVersion(makeRow({ version }));
+    }
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+    assertEquals(
+      [...catalog.iterate()].map((r) => r.version).sort(),
+      [1, 2],
+      "the deleted version's row is dropped",
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: an unpopulated row ahead of a lagging on-disk latest marker stays latest (swamp-club#2520)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // v2 still exists on disk, but the marker was left on v1 by an
+    // out-of-order write from an older build.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    catalog.upsertNewVersion(makeRow({ version: 2 }));
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals([record?.version, record?.isLatest], [2, true]);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: an unpromoted deferred version above the marker does not stop the refresh (swamp-club#2520)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1 and an in-flight deferred v3; another writer has
+    // since written v2 and moved the marker to it.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 3);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    catalog.upsert(makeRow({ version: 3, is_latest: 0 }));
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("getLatestRecord: a row from another namespace is never refreshed from this repository's layout", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-foreign-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
@@ -2776,6 +2936,1056 @@ Deno.test("DataQueryService: a backfill that started before an invalidate does n
   }
 });
 
+// latestRun("<workflow>") (swamp-club#2957)
+
+/** Two runs of "deploy" that wrote "out", and one model-method item. */
+function setupLatestRunTest() {
+  const ctx = setupTest();
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a1",
+    model_id: "model-new",
+    data_name: "out",
+    workflow_run_id: "run-new",
+    workflow_name: "deploy",
+    job_name: "main",
+    step_name: "build",
+  }));
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a2",
+    model_id: "model-old",
+    data_name: "out",
+    workflow_run_id: "run-old",
+    workflow_name: "deploy",
+    job_name: "main",
+    step_name: "build",
+  }));
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a3",
+    model_id: "model-direct",
+    data_name: "out",
+  }));
+  return ctx;
+}
+
+function resolverOf(runs: Record<string, string | null>) {
+  const calls: string[] = [];
+  const resolve = (workflow: string): Promise<string | null> => {
+    calls.push(workflow);
+    if (!(workflow in runs)) {
+      return Promise.reject(new UserError(`Workflow not found: ${workflow}`));
+    }
+    return Promise.resolve(runs[workflow]);
+  };
+  return { calls, resolve };
+}
+
+function runIds(results: unknown[]): string[] {
+  return (results as DataRecord[]).map((r) => r.workflowRunId).sort();
+}
+
+Deno.test("DataQueryService.query: latestRun selects the resolved run, without include", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const resolver = resolverOf({ deploy: "run-new" });
+  const results = await service.query(
+    'workflowRunId == latestRun("deploy") && name == "out"',
+    { latestRunResolver: resolver.resolve },
+  );
+  assertEquals(runIds(results), ["run-new"]);
+  assertEquals(resolver.calls, ["deploy"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun is resolved once across include batches", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  for (let i = 0; i < 5; i++) {
+    catalog.upsert(makeRow({
+      id: `00000000-0000-1000-8000-0000000000b${i}`,
+      model_id: `model-extra-${i}`,
+      data_name: i === 4 ? "target" : "out",
+      workflow_run_id: "run-new",
+    }));
+  }
+  const resolver = resolverOf({ deploy: "run-new" });
+  let included = 0;
+  // Only the last matching row is accepted, so the first batch of four
+  // matches holds none and the batch has to grow.
+  const results = await service.query(
+    'workflowRunId == latestRun("deploy")',
+    {
+      limit: 1,
+      include: (record) => {
+        included++;
+        return Promise.resolve(record.name === "target");
+      },
+      latestRunResolver: resolver.resolve,
+    },
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["target"]);
+  assert(included > 4, `expected more than one batch, saw ${included}`);
+  assertEquals(resolver.calls, ["deploy"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: a workflow with no runs matches nothing with ==, inside an OR too, and everything with !=", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const latestRunResolver = resolverOf({ deploy: null }).resolve;
+  assertEquals(
+    await service.query('workflowRunId == latestRun("deploy")', {
+      latestRunResolver,
+    }),
+    [],
+  );
+  assertEquals(
+    await service.query(
+      'workflowRunId == latestRun("deploy") || name == "none"',
+      { latestRunResolver },
+    ),
+    [],
+  );
+  assertEquals(
+    runIds(
+      await service.query('workflowRunId != latestRun("deploy")', {
+        latestRunResolver,
+      }),
+    ),
+    ["", "run-new", "run-old"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun without a resolver is a UserError, raised before backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+  await assertRejects(
+    () => service.query('workflowRunId == latestRun("deploy")'),
+    UserError,
+    "latestRun() is only available in swamp data query",
+  );
+  assertEquals(catalog.isPopulated(), false);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.querySync: latestRun is a UserError, not an empty result", () => {
+  const { catalog, service } = setupLatestRunTest();
+  assertThrows(
+    () => service.querySync('workflowRunId == latestRun("deploy")'),
+    UserError,
+    "latestRun() is only available in swamp data query; here, compare " +
+      'workflowRunId with the run id as a string, e.g. workflowRunId == "<run-id>"',
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun may be called in select alone", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const resolver = resolverOf({ deploy: "run-new" });
+  const results = await service.query('workflowRunId == "run-old"', {
+    select: 'latestRun("deploy")',
+    latestRunResolver: resolver.resolve,
+  });
+  assertEquals(results, ["run-new"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: concurrent queries keep their own latest runs", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const predicate = 'workflowRunId == latestRun("deploy")';
+  const [newer, older] = await Promise.all([
+    service.query(predicate, {
+      latestRunResolver: async () => {
+        await Promise.resolve();
+        return "run-new";
+      },
+    }),
+    service.query(predicate, {
+      latestRunResolver: () => Promise.resolve("run-old"),
+    }),
+  ]);
+  assertEquals(runIds(newer), ["run-new"]);
+  assertEquals(runIds(older), ["run-old"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: the resolver's error for an unknown workflow propagates", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  await assertRejects(
+    () =>
+      service.query('workflowRunId == latestRun("nope")', {
+        latestRunResolver: resolverOf({}).resolve,
+      }),
+    UserError,
+    "Workflow not found: nope",
+  );
+  catalog.close();
+});
+
+// ============================================================================
+// Lazy content hydration in query() (swamp-club#2962): a lazy-hydration
+// datastore syncs metadata only, so a matched row's raw file may be absent
+// until something downloads it. data get downloads it; query() must too.
+// ============================================================================
+
+interface RemoteBody {
+  name: string;
+  specName?: string;
+  body: unknown;
+  /** Stored bytes, instead of `body` as JSON. */
+  bytes?: Uint8Array;
+  /** Defaults to application/json. */
+  contentType?: string;
+  /** Write the body locally too, as if already hydrated. */
+  local?: boolean;
+  /** The remote does not have the body either. */
+  remoteMissing?: boolean;
+  namespace?: string;
+}
+
+function setupHydrationTest(bodies: RemoteBody[]): {
+  service: DataQueryService;
+  hydrated: string[];
+  dataRepo: TracingDataRepository;
+  cleanup: () => void;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-hydrate-lazy-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const remote = new Map<string, Uint8Array>();
+  const hydrated: string[] = [];
+  const names = new Map<string, string>();
+  const dataRepo = new TracingDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    async (absPath: string) => {
+      hydrated.push(names.get(absPath) ?? absPath);
+      const bytes = remote.get(absPath);
+      if (!bytes) return false;
+      await Deno.writeFile(absPath, bytes);
+      return true;
+    },
+  );
+  for (const entry of bodies) {
+    const path = dataRepo.getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      entry.name,
+      1,
+    );
+    names.set(path, entry.name);
+    const bytes = entry.bytes ??
+      new TextEncoder().encode(JSON.stringify(entry.body));
+    if (!entry.remoteMissing) remote.set(path, bytes);
+    // A lazy pull creates the version directory but skips raw.
+    ensureDirSync(dirname(path));
+    if (entry.local) Deno.writeFileSync(path, bytes);
+    catalog.upsert(
+      makeRow({
+        data_name: entry.name,
+        id: crypto.randomUUID(),
+        spec_name: entry.specName ?? "result",
+        namespace: entry.namespace ?? "",
+        content_type: entry.contentType ?? "application/json",
+      }),
+    );
+  }
+  return {
+    service: new DataQueryService(catalog, dataRepo),
+    hydrated,
+    dataRepo,
+    cleanup: () => {
+      catalog.close();
+      Deno.removeSync(dir, { recursive: true });
+    },
+  };
+}
+
+Deno.test("DataQueryService.query: select content downloads a lazily-synced body", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query(
+      'modelName == "ingest" && name == "a"',
+      { select: "content" },
+    );
+    assertEquals(results, [{ value: 1 }]);
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: select content downloads a lazily-synced binary or text body", async () => {
+  // swamp-club#2959 reads projected content after include; the read still
+  // downloads a body a lazy pull skipped, as data get does.
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "logo", body: null, bytes: png, contentType: "image/png" },
+    {
+      name: "notes",
+      body: null,
+      bytes: new TextEncoder().encode("hello"),
+      contentType: "text/plain",
+    },
+  ]);
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      select: '{"content": content, "contentEncoding": contentEncoding}',
+    });
+    assertEquals(results, [
+      { content: png.toBase64(), contentEncoding: "base64" },
+      { content: "hello", contentEncoding: "utf-8" },
+    ]);
+    assertEquals(hydrated.sort(), ["logo", "notes"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: select content never downloads a body include rejects", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    {
+      name: "logo",
+      body: null,
+      bytes: new Uint8Array([0x89, 0x50]),
+      contentType: "image/png",
+    },
+    {
+      name: "notes",
+      body: null,
+      bytes: new TextEncoder().encode("hello"),
+      contentType: "text/plain",
+    },
+  ]);
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      select: "content",
+      include: (record) => Promise.resolve(record.name === "notes"),
+    });
+    assertEquals(results, ["hello"]);
+    assertEquals(hydrated, ["notes"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: an attribute predicate matches a lazily-synced row", async () => {
+  const { service, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query(
+      "attributes.value == 2",
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: default results carry downloaded attributes", async () => {
+  const { service, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].attributes, { value: 1 });
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: rows rejected by a metadata term are never downloaded", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "report-a", specName: "report", body: { value: 10 } },
+    { name: "question", specName: "question", body: { value: 1 } },
+  ]);
+  try {
+    const results = await service.query(
+      'specName == "question" && attributes.value > 0',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["question"]);
+    assertEquals(hydrated, ["question"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a metadata-only select downloads nothing", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("true", {
+      select: "[modelId, name]",
+    });
+    assertEquals(results, [["model-001", "a"], ["model-001", "b"]]);
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body missing remotely too leaves empty attributes", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, remoteMissing: true },
+  ]);
+  try {
+    const results = await service.query('name == "a"', {
+      select: "content",
+    });
+    assertEquals(results, [{}]);
+    // Tried once, then no further pass.
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a foreign-namespace row is never sent to the hydrate hook", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, namespace: "infra" },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].attributes, {});
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a row reached only on a later pass is downloaded too", async () => {
+  // With an empty body "a" matches and fills the limit; once downloaded it
+  // no longer matches, so the next pass reaches "b", also not yet synced.
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { flag: true } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("!has(attributes.flag)", {
+      limit: 1,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+    assertEquals(hydrated, ["a", "b"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: rows include rejects are never downloaded", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+    { name: "b", body: { value: 2 } },
+  ]);
+  try {
+    const results = await service.query("attributes.value > 0", {
+      include: (record) => Promise.resolve(record.name !== "a"),
+      limit: 10,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["b"]);
+    assertEquals(results[0].attributes, { value: 2 });
+    assertEquals(hydrated, ["b"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: locally present bodies are read without the hook", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 }, local: true },
+  ]);
+  try {
+    const results = await service.query('name == "a"') as DataRecord[];
+    assertEquals(results[0].attributes, { value: 1 });
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.querySync: does not download lazily-synced bodies", () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1 } },
+  ]);
+  try {
+    const results = service.querySync('name == "a"') as DataRecord[];
+    assertEquals(results[0].attributes, {});
+    assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: later passes under a limit stay linear in body reads", async () => {
+  // Every row matches while empty and stops matching once downloaded, so
+  // each pass can only find new rows past what it already downloaded.
+  const count = 32;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    const results = await service.query("!has(attributes.flag)", {
+      limit: 1,
+    });
+    assertEquals(results, []);
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    // Doubling passes read about 5 bodies per row (misses and the final
+    // pass at the caller's limit included); one rescan per downloaded row
+    // would be about count * count / 2.
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body missing remotely is requested once across include batches", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "gone", body: {}, remoteMissing: true },
+    ...Array.from({ length: 9 }, (_, i) => ({
+      name: `r${i + 1}`,
+      body: { v: i + 1 },
+      local: true,
+    })),
+  ]);
+  try {
+    // The first batch accepts only "gone", so the query grows the batch.
+    const results = await service.query(
+      'attributes.v > 0 || name == "gone"',
+      {
+        include: (record) =>
+          Promise.resolve(record.name === "gone" || record.name === "r9"),
+        limit: 2,
+      },
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["gone", "r9"]);
+    assertEquals(hydrated, ["gone"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a metadata predicate under a limit downloads only the returned rows", async () => {
+  const rows = Array.from({ length: 64 }, (_, i) => ({
+    name: `row-${String(i).padStart(2, "0")}`,
+    body: { v: i },
+  }));
+  for (const select of [undefined, "content"]) {
+    const { service, hydrated, cleanup } = setupHydrationTest(rows);
+    try {
+      const results = await service.query('modelName == "ingest"', {
+        limit: 2,
+        select,
+      });
+      assertEquals(results.length, 2, `select=${select}`);
+      assertEquals(hydrated, ["row-00", "row-01"], `select=${select}`);
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+Deno.test("DataQueryService.query: with include, a metadata predicate downloads only the first batch", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest(
+    Array.from({ length: 64 }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { v: i },
+    })),
+  );
+  try {
+    const results = await service.query('modelName == "ingest"', {
+      include: () => Promise.resolve(true),
+      limit: 2,
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["row-00", "row-01"]);
+    // The include path matches in batches of four times the limit.
+    assertEquals(hydrated.length, 8);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: limit 0 still widens when downloaded rows stop matching", async () => {
+  const count = 16;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    await service.query("!has(attributes.flag)", { limit: 0 });
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Latest across workflow steps (swamp-club#2520) ---
+
+function writeStepVersions(catalog: CatalogStore, steps: string[]): void {
+  steps.forEach((step, i) => {
+    catalog.upsertNewVersion(makeRow({
+      version: i + 1,
+      id: `00000000-0000-1000-8000-00000000010${i}`,
+      step_name: step,
+    }));
+  });
+}
+
+Deno.test("DataQueryService: implicit latest returns one version when workflow steps wrote the same name", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  const results = service.querySync(
+    'modelName == "ingest" && name == "my-data"',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => [r.version, r.isLatest]), [[2, true]]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: three steps across jobs return only the newest version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s3"]);
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.map((r) => r.version), [3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: history query reports older step versions as not latest", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  const results = service.querySync(
+    'modelName == "ingest" && version >= 0',
+  ) as DataRecord[];
+  assertEquals(
+    results.map((r) => [r.version, r.isLatest]).sort(),
+    [[1, false], [2, true]],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: latestPerStep returns each step's latest version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s1"]);
+
+  const results = service.querySync('modelName == "ingest"', {
+    latestPerStep: true,
+  }) as DataRecord[];
+  assertEquals(
+    results.map((r) => [r.stepName, r.version, r.isLatest]).sort(),
+    [["s1", 3, true], ["s2", 2, false]],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: latestPerStep with a history predicate returns every version", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2", "s1"]);
+
+  const results = service.querySync('modelName == "ingest" && version >= 0', {
+    latestPerStep: true,
+  }) as DataRecord[];
+  assertEquals(results.map((r) => r.version).sort(), [1, 2, 3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.latestDataNamesForSpec: lists a name once when several steps wrote it", () => {
+  const { catalog, service } = setupTest();
+  writeStepVersions(catalog, ["s1", "s2"]);
+
+  assertEquals(service.latestDataNamesForSpec("ingest", "result"), [
+    "my-data",
+  ]);
+  catalog.close();
+});
+
+// ============================================================================
+// Binary content (swamp-club#2959): a projection reads any item's bytes
+// without loss, and a predicate reading `content` on a non-text item fails.
+// ============================================================================
+
+/** Writes one stored item with raw bytes and indexes it in the catalog. */
+function writeContentItem(
+  dir: string,
+  catalog: CatalogStore,
+  item: { name: string; id: string; contentType: string; bytes: Uint8Array },
+): void {
+  const itemDir = join(dir, ".swamp", "data", "test-model", "model-001");
+  const dataDir = join(itemDir, item.name, "1");
+  ensureDirSync(dataDir);
+  Deno.writeFileSync(join(dataDir, "raw"), item.bytes);
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: item.name,
+      id: item.id,
+      version: 1,
+      contentType: item.contentType,
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(join(itemDir, item.name, "latest"), "1");
+  catalog.upsert(makeRow({
+    data_name: item.name,
+    id: item.id,
+    content_type: item.contentType,
+  }));
+}
+
+// A PNG signature: 0x89 is never a valid leading UTF-8 byte.
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a]);
+// A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
+const UTF16_BYTES = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
+
+/**
+ * Runs `fn` against a query service over a repo holding, in catalog order,
+ * UTF-8 text (`notes`), a binary item (`logo`), text whose bytes are not
+ * UTF-8 (`legacy`) and JSON (`info`). `reads` lists the data names whose
+ * bytes were read, by either the sync or the async read. The rows carry the empty namespace; `namespace` sets
+ * the repository's own. The repo is removed afterwards, pass or fail.
+ */
+async function withContentItems(
+  fn: (
+    ctx: {
+      dir: string;
+      catalog: CatalogStore;
+      service: DataQueryService;
+      reads: string[];
+    },
+  ) => void | Promise<void>,
+  options: { namespace?: string } = {},
+): Promise<void> {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-binary-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    catalog.markPopulated();
+    writeContentItem(dir, catalog, {
+      name: "notes",
+      id: "00000000-0000-1000-8000-000000000011",
+      contentType: "text/plain",
+      bytes: new TextEncoder().encode("hello world"),
+    });
+    writeContentItem(dir, catalog, {
+      name: "logo",
+      id: "00000000-0000-1000-8000-000000000012",
+      contentType: "image/png",
+      bytes: PNG_BYTES,
+    });
+    writeContentItem(dir, catalog, {
+      name: "legacy",
+      id: "00000000-0000-1000-8000-000000000013",
+      contentType: "text/plain",
+      bytes: UTF16_BYTES,
+    });
+    writeContentItem(dir, catalog, {
+      name: "info",
+      id: "00000000-0000-1000-8000-000000000014",
+      contentType: "application/json",
+      bytes: new TextEncoder().encode('{"kernel":"6.1"}'),
+    });
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+      undefined,
+      undefined,
+      options.namespace === undefined
+        ? undefined
+        : createNamespace(options.namespace),
+    );
+    const reads: string[] = [];
+    const getContentSync = dataRepo.getContentSync.bind(dataRepo);
+    dataRepo.getContentSync = (type, modelId, dataName, version) => {
+      reads.push(dataName);
+      return getContentSync(type, modelId, dataName, version);
+    };
+    // query() reads projected content through the async getContent, which
+    // can download a lazily-synced body (swamp-club#2962).
+    const getContent = dataRepo.getContent.bind(dataRepo);
+    dataRepo.getContent = (type, modelId, dataName, version) => {
+      reads.push(dataName);
+      return getContent(type, modelId, dataName, version);
+    };
+    await fn({
+      dir,
+      catalog,
+      service: new DataQueryService(catalog, dataRepo),
+      reads,
+    });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const ENCODED_SELECT =
+  '{"content": content, "contentEncoding": contentEncoding}';
+
+Deno.test("DataQueryService: select content returns binary bytes base64-encoded", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "logo"', { select: ENCODED_SELECT }),
+      [{ content: PNG_BYTES.toBase64(), contentEncoding: "base64" }],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content base64-encodes text whose bytes are not UTF-8", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "legacy"', { select: ENCODED_SELECT }),
+      [{ content: UTF16_BYTES.toBase64(), contentEncoding: "base64" }],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content returns UTF-8 text and JSON attributes as before", async () => {
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "notes"', { select: ENCODED_SELECT }),
+      [{ content: "hello world", contentEncoding: "utf-8" }],
+    );
+    assertEquals(
+      service.querySync('name == "info"', { select: ENCODED_SELECT }),
+      [{ content: { kernel: "6.1" }, contentEncoding: "utf-8" }],
+    );
+    assertEquals(
+      service.querySync('name == "notes"', { select: "content" }),
+      ["hello world"],
+    );
+  });
+});
+
+Deno.test("DataQueryService: select contentEncoding alone reads the bytes", async () => {
+  await withContentItems(({ service, reads }) => {
+    assertEquals(
+      service.querySync('name == "logo"', { select: "contentEncoding" }),
+      ["base64"],
+    );
+    assertEquals(reads, ["logo"]);
+  });
+});
+
+Deno.test("DataQueryService: select content is null when the bytes are not on this host", async () => {
+  await withContentItems(({ catalog, service }) => {
+    // Indexed, but no stored body: a missing file.
+    catalog.upsert(makeRow({
+      data_name: "gone",
+      id: "00000000-0000-1000-8000-000000000015",
+      content_type: "image/png",
+    }));
+    // Another namespace's items in a shared datastore, JSON included.
+    catalog.upsert(makeRow({
+      namespace: "other-repo",
+      data_name: "theirs",
+      id: "00000000-0000-1000-8000-000000000016",
+      content_type: "image/png",
+    }));
+    catalog.upsert(makeRow({
+      namespace: "other-repo",
+      data_name: "their-state",
+      id: "00000000-0000-1000-8000-000000000017",
+      content_type: "application/json",
+    }));
+    assertEquals(
+      service.querySync(
+        'name == "gone" || name == "theirs" || name == "their-state"',
+        { select: ENCODED_SELECT },
+      ),
+      [
+        { content: null, contentEncoding: null },
+        { content: null, contentEncoding: null },
+        { content: null, contentEncoding: null },
+      ],
+    );
+  });
+});
+
+Deno.test("DataQueryService: a predicate reading content on a binary item fails, naming it", async () => {
+  await withContentItems(({ service, reads }) => {
+    const error = assertThrows(
+      () => service.querySync('content.contains("PNG")'),
+      BinaryContentPredicateError,
+    );
+    assertEquals(error.item.name, "logo");
+    assertEquals(error.item.contentType, "image/png");
+    assertStringIncludes(error.message, "ingest/logo version 1");
+    assertStringIncludes(error.message, 'contentType.startsWith("text/")');
+    // The guard it suggests covers text/*; it names the other text types.
+    assertStringIncludes(error.message, "JSON, YAML, XML or TOML");
+    // The check uses the catalog's content type, never the binary's bytes.
+    assertEquals(reads.includes("logo"), false);
+  });
+});
+
+Deno.test("DataQueryService: the async query fails the same way", async () => {
+  await withContentItems(async ({ service }) => {
+    await assertRejects(
+      () => service.query('content == "x"'),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: a binary content read absorbed by CEL still fails", async () => {
+  await withContentItems(({ service }) => {
+    assertThrows(
+      () => service.querySync('content == "x" || true'),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: a contentType guard keeps a content predicate off binary items", async () => {
+  await withContentItems(({ service, reads }) => {
+    const results = service.querySync(
+      'contentType.startsWith("text/") && content.contains("hello")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["notes"]);
+    assertEquals(reads.includes("logo"), false);
+  });
+});
+
+Deno.test("DataQueryService: a text content predicate still decodes leniently", async () => {
+  await withContentItems(({ service }) => {
+    const results = service.querySync(
+      'name == "legacy" && content.contains("h")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["legacy"]);
+  });
+});
+
+Deno.test("DataQueryService: an unreadable binary item is dropped, not reported", async () => {
+  await withContentItems(async ({ service }) => {
+    const results = await service.query('content.contains("hello")', {
+      include: (record) => Promise.resolve(record.name !== "logo"),
+    }) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: a readable binary item fails the query under include", async () => {
+  await withContentItems(async ({ service }) => {
+    const error = await assertRejects(
+      () =>
+        service.query('content.contains("hello")', {
+          include: () => Promise.resolve(true),
+        }),
+      BinaryContentPredicateError,
+    );
+    assertEquals(error.item.name, "logo");
+  });
+});
+
+Deno.test("DataQueryService: a binary item past the limit fails neither with nor without include", async () => {
+  await withContentItems(async ({ service }) => {
+    // `notes` matches first and fills the page; `logo` comes after it.
+    const predicate = 'content.contains("hello")';
+    const local = service.querySync(predicate, { limit: 1 }) as DataRecord[];
+    assertEquals(local.map((r) => r.name), ["notes"]);
+    // With include, matching runs ahead in batches and reaches `logo`, but
+    // the page is already full there, so the outcome is the same.
+    const served = await service.query(predicate, {
+      limit: 1,
+      include: () => Promise.resolve(true),
+    }) as DataRecord[];
+    assertEquals(served.map((r) => r.name), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: under include, a binary item before the page fills still fails", async () => {
+  await withContentItems(async ({ service }) => {
+    // `notes` is rejected, so the page is still empty when `logo` is reached.
+    await assertRejects(
+      () =>
+        service.query('content.contains("hello")', {
+          limit: 1,
+          include: (record) => Promise.resolve(record.name !== "notes"),
+        }),
+      BinaryContentPredicateError,
+    );
+  });
+});
+
+Deno.test("DataQueryService: include decides before select reads any bytes", async () => {
+  await withContentItems(async ({ service, reads }) => {
+    const results = await service.query("true", {
+      select: ENCODED_SELECT,
+      include: (record) => Promise.resolve(record.name === "notes"),
+    });
+    assertEquals(results, [{
+      content: "hello world",
+      contentEncoding: "utf-8",
+    }]);
+    // JSON attributes load while matching, as before; no other body is read
+    // for a record include rejects.
+    assertEquals(reads.filter((name) => name !== "info"), ["notes"]);
+  });
+});
+
+Deno.test("DataQueryService: contentEncoding is not a predicate field", async () => {
+  await withContentItems(({ service }) => {
+    assertThrows(
+      () => service.querySync('contentEncoding == "base64"'),
+      UserError,
+      "contentEncoding",
+    );
+  });
+});
+
+Deno.test("DataQueryService: select content reads a legacy row stamped with the empty namespace", async () => {
+  // Rows written before the repository set a namespace keep "", but their
+  // bytes are this repository's own.
+  await withContentItems(({ service }) => {
+    assertEquals(
+      service.querySync('name == "notes"', { select: ENCODED_SELECT }),
+      [{ content: "hello world", contentEncoding: "utf-8" }],
+    );
+  }, { namespace: "infra" });
+});
+
+Deno.test("DataQueryService: a content predicate reads text types beyond text/*", async () => {
+  await withContentItems(({ dir, catalog, service }) => {
+    writeContentItem(dir, catalog, {
+      name: "manifest",
+      id: "00000000-0000-1000-8000-000000000018",
+      contentType: "application/xml; charset=utf-8",
+      bytes: new TextEncoder().encode("<hello/>"),
+    });
+    const results = service.querySync(
+      'name == "manifest" && content.contains("hello")',
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["manifest"]);
+  });
+});
+
 // ── model() references (swamp-club#2960) ────────────────────────────────────
 
 const OLD_ID = "11111111-1111-4111-8111-111111111111";
@@ -2786,46 +3996,46 @@ function setupModelTest(
     ingest: { modelType: "test-model", modelId: NEW_ID },
     [NEW_ID]: { modelType: "test-model", modelId: NEW_ID },
   },
-): {
-  catalog: CatalogStore;
-  service: DataQueryService;
-  lookups: string[];
-} {
+) {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
   catalog.markPopulated();
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const lookups: string[] = [];
-  const service = new DataQueryService(catalog, dataRepo, {
-    resolveModel: (idOrName) => {
-      lookups.push(idOrName);
-      return Promise.resolve(definitions[idOrName] ?? null);
-    },
-  });
+  const service = new DataQueryService(catalog, dataRepo);
+  const modelResolver: ModelReferenceResolver = (idOrName) => {
+    lookups.push(idOrName);
+    const found = definitions[idOrName];
+    return found
+      ? Promise.resolve(found)
+      : Promise.reject(new UserError(`Model not found: ${idOrName}`));
+  };
+  const query = (predicate: string, options: DataQueryOptions = {}) =>
+    service.query(predicate, { ...options, modelResolver });
   // A model deleted and recreated under the same name: both ids carry the
   // modelName tag "ingest", and only NEW_ID is the current definition.
   catalog.upsert(makeRow({ model_id: OLD_ID, id: "old-data" }));
   catalog.upsert(makeRow({ model_id: NEW_ID, id: "new-data" }));
-  return { catalog, service, lookups };
+  return { catalog, service, query, lookups };
 }
 
 Deno.test("DataQueryService model(): matches the resolved definition, not every row tagged with its name", async () => {
-  const { catalog, service } = setupModelTest();
-  const byTag = await service.query('modelName == "ingest"') as DataRecord[];
+  const { catalog, query } = setupModelTest();
+  const byTag = await query('modelName == "ingest"') as DataRecord[];
   assertEquals(byTag.length, 2);
 
-  const byName = await service.query(
+  const byName = await query(
     'model("ingest") && name == "my-data"',
   ) as DataRecord[];
   assertEquals(byName.map((r) => r.id), ["new-data"]);
 
-  const byId = await service.query(`model("${NEW_ID}")`) as DataRecord[];
+  const byId = await query(`model("${NEW_ID}")`) as DataRecord[];
   assertEquals(byId.map((r) => r.id), ["new-data"]);
   catalog.close();
 });
 
 Deno.test("DataQueryService model(): matches data whose modelName tag differs or is empty", async () => {
-  const { catalog, service } = setupModelTest();
+  const { catalog, query } = setupModelTest();
   // Written before a model rename, and before the modelName tag existed.
   catalog.upsert(
     makeRow({ model_id: NEW_ID, data_name: "pre-rename", model_name: "old" }),
@@ -2833,7 +4043,7 @@ Deno.test("DataQueryService model(): matches data whose modelName tag differs or
   catalog.upsert(
     makeRow({ model_id: NEW_ID, data_name: "untagged", model_name: "" }),
   );
-  const results = await service.query('model("ingest")') as DataRecord[];
+  const results = await query('model("ingest")') as DataRecord[];
   assertEquals(results.map((r) => r.name).sort(), [
     "my-data",
     "pre-rename",
@@ -2843,41 +4053,52 @@ Deno.test("DataQueryService model(): matches data whose modelName tag differs or
 });
 
 Deno.test("DataQueryService model(): requires the definition's model type too", async () => {
-  const { catalog, service } = setupModelTest();
+  const { catalog, query } = setupModelTest();
   catalog.upsert(
     makeRow({ type_normalized: "other-type", model_id: NEW_ID, id: "x" }),
   );
-  const results = await service.query('model("ingest")') as DataRecord[];
+  const results = await query('model("ingest")') as DataRecord[];
   assertEquals(results.map((r) => r.id), ["new-data"]);
   catalog.close();
 });
 
-Deno.test("DataQueryService model(): an unresolved reference matches nothing and is reported", async () => {
-  const { catalog, service } = setupModelTest();
-  const unresolved: string[] = [];
-  const results = await service.query(
-    'model("missing") || model("ingest")',
-    { onUnresolvedModel: (ref) => unresolved.push(ref) },
-  ) as DataRecord[];
-  assertEquals(results.map((r) => r.id), ["new-data"]);
-  assertEquals(unresolved, ["missing"]);
-
-  const none = await service.query('model("missing")') as DataRecord[];
-  assertEquals(none, []);
+Deno.test("DataQueryService model(): an unknown model fails the query, before the catalog is read", async () => {
+  const { catalog, query } = setupModelTest();
+  catalog.invalidate();
+  await assertRejects(
+    () => query('model("missing") || model("ingest")'),
+    UserError,
+    "Model not found: missing",
+  );
+  assertEquals(catalog.isPopulated(), false, "no backfill ran");
   catalog.close();
 });
 
 Deno.test("DataQueryService model(): resolves each distinct reference once", async () => {
-  const { catalog, service, lookups } = setupModelTest();
-  await service.query('model("ingest") && (model("ingest") || !model("x"))');
+  const { catalog, query, lookups } = setupModelTest({
+    ingest: { modelType: "test-model", modelId: NEW_ID },
+    x: { modelType: "test-model", modelId: OLD_ID },
+  });
+  await query('model("ingest") && (model("ingest") || !model("x"))');
   assertEquals(lookups, ["ingest", "x"]);
   catalog.close();
 });
 
+Deno.test("DataQueryService model(): an unknown field fails before any model lookup", async () => {
+  const { catalog, query, lookups } = setupModelTest();
+  await assertRejects(
+    () => query('model("ingest") && bogus == 1'),
+    UserError,
+    "Unknown field",
+  );
+  assertEquals(lookups, []);
+  catalog.close();
+});
+
 Deno.test("DataQueryService model(): composes with include and limit", async () => {
-  const { catalog, service } = setupModelTest();
+  const { catalog, query } = setupModelTest();
   catalog.upsert(makeRow({ model_id: NEW_ID, data_name: "second" }));
-  const results = await service.query('model("ingest")', {
+  const results = await query('model("ingest")', {
     limit: 1,
     include: (record) => Promise.resolve(record.name === "second"),
   }) as DataRecord[];
@@ -2886,17 +4107,17 @@ Deno.test("DataQueryService model(): composes with include and limit", async () 
 });
 
 Deno.test("DataQueryService model(): concurrent queries keep their own resolutions", async () => {
-  const { catalog, service } = setupModelTest({
+  const { catalog, service, query } = setupModelTest({
     ingest: { modelType: "test-model", modelId: NEW_ID },
     old: { modelType: "test-model", modelId: OLD_ID },
   });
   const [a, b] = await Promise.all([
-    service.query('model("ingest")'),
-    service.query('model("old")'),
+    query('model("ingest")'),
+    query('model("old")'),
   ]) as [DataRecord[], DataRecord[]];
   assertEquals(a.map((r) => r.id), ["new-data"]);
   assertEquals(b.map((r) => r.id), ["old-data"]);
-  // State does not leak into a later query that uses no model() at all.
+  // Nothing leaks into a later query that uses no model() at all.
   assertEquals(
     (service.querySync('modelName == "ingest"') as DataRecord[]).length,
     2,
@@ -2904,39 +4125,34 @@ Deno.test("DataQueryService model(): concurrent queries keep their own resolutio
   catalog.close();
 });
 
-Deno.test("DataQueryService model(): querySync and a service without a resolver reject it", async () => {
+Deno.test("DataQueryService model(): querySync and a query without a resolver reject it", async () => {
   const { catalog, service } = setupModelTest();
   assertThrows(
     () => service.querySync('model("ingest")'),
     UserError,
-    "available in swamp data query only",
+    "only available in swamp data query",
   );
-  const bare = setupTest();
   await assertRejects(
-    () => bare.service.query('model("ingest")'),
+    () => service.query('model("ingest")'),
     UserError,
-    "available in swamp data query only",
+    "only available in swamp data query",
   );
-  bare.catalog.close();
   catalog.close();
 });
 
-Deno.test("DataQueryService model(): rejected in --select and with a computed argument", async () => {
-  const { catalog, service } = setupModelTest();
+Deno.test("DataQueryService model(): rejected in --select, malformed or not", async () => {
+  const { catalog, query } = setupModelTest();
+  for (const select of ['model("ingest")', "model(name)"]) {
+    await assertRejects(
+      () => query('name == "my-data"', { select }),
+      UserError,
+      "not in --select",
+    );
+  }
   await assertRejects(
-    () => service.query('name == "my-data"', { select: 'model("ingest")' }),
+    () => query("model(name)"),
     UserError,
-    "not in --select",
-  );
-  await assertRejects(
-    () => service.query('name == "my-data"', { select: "model(name)" }),
-    UserError,
-    "not in --select",
-  );
-  await assertRejects(
-    () => service.query("model(name)"),
-    UserError,
-    "exactly one string literal",
+    "one model name or definition id",
   );
   catalog.close();
 });

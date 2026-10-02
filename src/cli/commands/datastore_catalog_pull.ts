@@ -33,6 +33,7 @@ import { createCatalogStore } from "../../infrastructure/persistence/repository_
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
 import type { CatalogExportRow } from "../../domain/datastore/datastore_sync_service.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -46,11 +47,15 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
     id: row.id,
     version: row.version,
     is_latest: row.is_latest,
+    // Exports from before swamp-club#2520 have no is_step_latest, and their
+    // is_latest already means latest-per-step.
+    is_step_latest: row.is_step_latest ?? row.is_latest,
     model_name: row.model_name,
     spec_name: row.spec_name,
     data_type: row.data_type,
     content_type: row.content_type,
     lifetime: row.lifetime,
+    garbage_collection: row.garbage_collection ?? "",
     owner_type: row.owner_type,
     streaming: row.streaming,
     size: row.size,
@@ -63,6 +68,23 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
     step_name: row.step_name,
     source: row.source,
   };
+}
+
+/**
+ * Converts a foreign namespace's catalog export into catalog rows and
+ * recomputes both latest flags over the rows the export flagged, so an
+ * export from an older swamp version — one is_latest per workflow step —
+ * imports with a single is_latest per data name (swamp-club#2520). Rows the
+ * export left unflagged stay unflagged.
+ */
+export function exportRowsToCatalogRows(
+  rows: readonly CatalogExportRow[],
+): CatalogRow[] {
+  const catalogRows = rows.map(exportRowToCatalogRow);
+  computeLatestFlags(
+    catalogRows.filter((r) => r.is_latest === 1 || r.is_step_latest === 1),
+  );
+  return catalogRows;
 }
 
 export const datastoreCatalogPullCommand = new Command()
@@ -151,7 +173,7 @@ export const datastoreCatalogPullCommand = new Command()
 
     let totalRows = 0;
     for (const entry of entries) {
-      const catalogRows = entry.rows.map(exportRowToCatalogRow);
+      const catalogRows = exportRowsToCatalogRows(entry.rows);
       catalogStore.bulkUpsertForeign(entry.namespace, catalogRows);
       totalRows += catalogRows.length;
       cliCtx.logger.info(

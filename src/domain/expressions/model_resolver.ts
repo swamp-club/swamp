@@ -1092,6 +1092,7 @@ export class ModelResolver {
           loadAttributes: true,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          latestPerStep: true,
         }) as DataRecord[];
         return dropMissingPaths(deduplicateByName(results));
       },
@@ -1108,6 +1109,7 @@ export class ModelResolver {
           loadAttributes: true,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          latestPerStep: true,
         }) as DataRecord[];
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawSpecModelName);
@@ -1300,6 +1302,7 @@ export class ModelResolver {
       dataType: data.tags["type"] ?? "",
       contentType: data.contentType,
       lifetime: data.lifetime,
+      garbageCollection: data.garbageCollection,
       ownerType: data.ownerDefinition.ownerType,
       streaming: data.streaming,
       size: data.size ?? 0,

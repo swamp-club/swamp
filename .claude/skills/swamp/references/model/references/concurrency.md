@@ -26,12 +26,15 @@ before execution and releases it after the step completes. This means:
 - Parallel steps on **different models** lock independently and run concurrently
 - Parallel steps on the **same model** serialize at the lock (correct —
   concurrent writes to the same model are unsafe)
-- Nested processes don't deadlock: a child `swamp` command (e.g. run from a
-  shell step) skips per-model locks held by any swamp above it on the same host.
-  swamp passes these down as `SWAMP_LOCK_ANCESTOR_PIDS`, and as
-  `SWAMP_LOCK_HOLDER_PID` for older binaries. Don't set or unset them by hand.
-  The skip matches a process, not a run, so a nested structural command under
-  `swamp serve` or a parallel step can also skip a sibling run's lock
+- Nested processes don't deadlock: a child `swamp` command run from a shell step
+  skips the per-model locks held for the run that started it.
+  `SWAMP_LOCK_ANCESTOR_PIDS`, `SWAMP_LOCK_HOLDER_PID` and
+  `SWAMP_LOCK_HOLDER_TOKENS` carry this; don't set or unset them by hand. It
+  still waits on locks the same swamp holds for other runs (parallel steps,
+  other `swamp serve` runs)
+- Don't run nested structural commands (e.g. `swamp data gc`) from parallel
+  steps: each waits on the other's step lock until `SWAMP_LOCK_TIMEOUT_MS`. Run
+  them one at a time or in a step of their own
 
 ## Global Datastore Lock
 

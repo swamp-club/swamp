@@ -20,9 +20,19 @@ swamp data query 'attributes.status == "failed"' --select 'name'
 # History — all versions of a specific data item
 swamp data query 'modelName == "my-model" && name == "state" && version >= 0' --select 'version'
 
+# Exactly one match, printed as a bare object (fails on zero or several)
+swamp data query 'modelName == "my-model" && name == "state"' --single --json
+
 # Interactive mode — TUI with live autocomplete, no predicate needed
 swamp data query
 ```
+
+`--single` cannot be combined with `--limit` and needs a predicate. Its object
+is the same record that `--json` otherwise lists under `results`: the payload is
+in `content`, and provenance fields (`workflowRunId`, `stepName`, ...) are
+included. Unlike `data get --json` it has no `ownerDefinition`,
+`garbageCollection`, `checksum`, `contentPath`, or `contentEncoding`. With
+`--select`, a match whose projection fails prints `null`.
 
 ## List Model Data
 
@@ -60,8 +70,8 @@ swamp data query 'model("my-model") && name == "execution-log"' --json
 ```
 
 `model("my-model")` takes a model name or definition id and resolves it as
-`data get` does, so it finds the data after a model rename. A model with no
-definition matches nothing, with a warning.
+`data get` does, so it finds the data after a model rename. An unknown model is
+an error, as in `data get`.
 
 **Output shape:** `--json` returns
 `{"results": [...], "total": N, "limited":
@@ -69,20 +79,34 @@ bool}`. With `--select content` each
 result is the content (JSON content is the parsed object), so read `results[0]`;
 without `--select` each result is the item's metadata record. An empty `results`
 array means no such item. The query matches the instance `name` exactly; to
-match a spec name use `specName == "<spec>"`.
+match a spec name use `specName == "<spec>"`. When a `name == "..."` query finds
+nothing but data with that spec name exists, the output also carries
+`specNameHint.suggestedPredicate`, a verified spec-name predicate keeping the
+query's other equalities (log mode prints it as a command);
+`specNameHint.otherFiltersDropped` is true when other conditions were left out.
 
-**Binary content:** When the stored bytes are valid UTF-8, `contentEncoding` is
-`"utf-8"` and `content` is the text (a leading byte-order mark is dropped), or
-the parsed value for `application/json` content that parses. Otherwise (an
-image, an archive) `contentEncoding` is `"base64"` and `content` is the
-base64-encoded bytes, so no byte is lost. Without `--json`, binary data prints a
-one-line notice instead of the bytes. `data query` returns `content` only for
-text content types (`text/*`, JSON, YAML), so saving a binary artifact still
-goes through the deprecated `data get`:
+**Binary content:** A `--select` that names `content` returns every byte (a
+leading UTF-8 byte-order mark is dropped). When the stored bytes are valid
+UTF-8, `content` is the text (or the parsed object for JSON) and
+`contentEncoding` is `"utf-8"`. Otherwise (an image, an archive, text that is
+not UTF-8) `content` is the base64-encoded bytes and `contentEncoding` is
+`"base64"`. Select both, since a binary type can hold valid UTF-8:
 
 ```bash
-swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png
+swamp data query 'modelName == "my-model" && name == "logo"' \
+  --select '{"content": content, "contentEncoding": contentEncoding}' --json \
+  | jq -r '.results[0].content' | base64 -d > logo.png
 ```
+
+`contentEncoding` exists only in `--select`. `content` is `null` when the bytes
+are not on this host (another namespace's item in a shared datastore).
+
+**Content in a predicate is text.** Reading `content` in the predicate on an
+item whose `contentType` is not text fails the query, naming the item. Text
+types are `text/*`, text-based types such as JSON, YAML, XML and TOML, and
+`+json` / `+xml` / `+yaml` types; `; charset=...` is ignored. Guard the
+condition with the type, adding the other text types when they should match:
+`contentType.startsWith("text/") && content.contains("error")`.
 
 ## Workflow-Scoped Data Access
 
@@ -98,13 +122,18 @@ swamp data list --workflow test-data-fetch --run <run_id> --json
 # Read one step's output; name the job and step, since several steps can
 # write data with the same name
 swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName == "<step>" && name == "output" && version >= 0' --select content
+
+# The same read from the workflow's latest run, without looking the run id up
+swamp data query 'workflowRunId == latestRun("test-data-fetch") && jobName == "<job>" && stepName == "<step>" && name == "output" && version >= 0' --select content
 ```
 
-A query has no "latest run" shortcut: get the run id from
-`swamp workflow history get <workflow>` or the `data list --workflow` output.
-When several steps wrote the name, the deprecated `swamp data get --workflow`
-returns the highest-versioned match (the first step on a tie) and warns with the
-other matches.
+`latestRun("<workflow>")` resolves to the workflow's most recent run, the run
+`data list --workflow` reads. An unknown workflow is an error; a workflow with
+no runs matches nothing. `workflowName == "<w>"` is not the same: it returns
+each item's latest version, which can come from different runs. When several
+steps wrote the name, the deprecated `swamp data get --workflow` returns the
+highest-versioned match (the first step on a tie) and warns with the other
+matches.
 
 ## View Version History
 

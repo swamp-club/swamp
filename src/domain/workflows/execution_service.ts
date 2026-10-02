@@ -85,6 +85,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
+import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
@@ -564,6 +565,8 @@ export interface StepExecutionContext {
   mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
+  /** Zero-based forEach iteration index, exposed as self._index */
+  forEachIndex?: number;
   /**
    * Expressions written in the workflow source, unioned with the executing
    * model's own source definition before every post-substitution pass.
@@ -987,6 +990,15 @@ export type DirectTypeResolver = (
 
 export interface StepLockResult {
   flush: () => Promise<void>;
+  /**
+   * The nonces of the lock files the hook took. The step runs inside
+   * `processLockHolderMarker.runHolding` with them, so a swamp the step
+   * starts skips these locks and not those of parallel steps. A hook that
+   * leaves it out runs the step outside any scope, so that swamp matches
+   * this process's locks on the pid alone and never waits on the step's
+   * own lock.
+   */
+  heldLockIds?: readonly string[];
 }
 
 export type StepLockHook = (
@@ -1691,6 +1703,9 @@ export class DefaultStepExecutor implements StepExecutor {
       // Preserve any forEach variables that were set by the workflow engine
       const forEachVars: Record<string, unknown> = {};
       if (ctx.forEachVariable && ctx.forEachVariable.name) {
+        if (ctx.forEachIndex !== undefined) {
+          forEachVars._index = ctx.forEachIndex;
+        }
         forEachVars[ctx.forEachVariable.name] = ctx.forEachVariable.value;
       }
       ctx.expressionContext.self = {
@@ -1761,12 +1776,15 @@ export class DefaultStepExecutor implements StepExecutor {
     // datastore. Taking it first also means a lock timeout fails the step
     // before any record is left at running.
     let flushLock: (() => Promise<void>) | null = null;
+    // Undefined when a hook took locks without naming them.
+    let heldLockIds: readonly string[] | undefined = [];
     if (this.stepLockHook) {
       const lockResult = await this.stepLockHook(
         modelType.normalized,
         originalDefinition.id,
       );
       flushLock = lockResult.flush;
+      heldLockIds = lockResult.heldLockIds;
     }
     try {
       // Save evaluated definition (with vault expressions still raw) for
@@ -1902,22 +1920,28 @@ export class DefaultStepExecutor implements StepExecutor {
         inputs?: Record<string, unknown>;
       };
       try {
-        const result = await this.invokeMethod({
-          task: narrowedTask,
-          ctx,
-          executionService,
-          unifiedDataRepo,
-          definitionRepo,
-          dataQueryService,
-          vaultService,
-          modelType,
-          modelDef,
-          originalDefinition,
-          evaluatedDefinition,
-          runLogger,
-          secretBag,
-          resolvedPlacement,
-        });
+        // A swamp the method starts skips this step's lock, and still
+        // waits on the locks parallel steps hold in this process.
+        const invoke = () =>
+          this.invokeMethod({
+            task: narrowedTask,
+            ctx,
+            executionService,
+            unifiedDataRepo,
+            definitionRepo,
+            dataQueryService,
+            vaultService,
+            modelType,
+            modelDef,
+            originalDefinition,
+            evaluatedDefinition,
+            runLogger,
+            secretBag,
+            resolvedPlacement,
+          });
+        const result = heldLockIds === undefined
+          ? await invoke()
+          : await processLockHolderMarker.runHolding(heldLockIds, invoke);
 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (runTracker) runTracker.complete(output.id, "completed");
@@ -4493,6 +4517,7 @@ export class WorkflowExecutionService {
         ...stepExprContext,
         self: {
           ...baseSelf,
+          ...(forEachIndex !== undefined ? { _index: forEachIndex } : {}),
           [forEachVar.name]: forEachVar.value,
         },
       };
@@ -4877,6 +4902,7 @@ export class WorkflowExecutionService {
           step,
           mode: options.lastEvaluated ? "lastEvaluated" : "fresh",
           forEachVariable: forEachVar,
+          forEachIndex,
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,

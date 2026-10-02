@@ -26,22 +26,39 @@ import {
   type DataQueryTarget,
 } from "./data_query_command.ts";
 
-// The same options DataQueryService parses predicates with.
+/** The run id the stub `latestRun` resolves `workflow` to. */
+function latestRunOf(workflow: string): string {
+  return `latest-run-of:${workflow}`;
+}
+
+// The same options DataQueryService parses predicates with, and a
+// latestRun as a query that resolved its runs has it.
 const env = new Environment({
   unlistedVariablesAreDyn: true,
   homogeneousAggregateLiterals: false,
-});
+}).registerFunction("latestRun(string): dyn", latestRunOf);
 
-const arbTarget: fc.Arbitrary<DataQueryTarget> = fc.record({
-  dataName: fc.string({ minLength: 1 }),
-  version: fc.option(fc.integer({ min: 1, max: 1000 }), { nil: undefined }),
-  modelType: fc.option(fc.string(), { nil: undefined }),
-  modelId: fc.option(fc.uuid(), { nil: undefined }),
-  modelName: fc.option(fc.string(), { nil: undefined }),
-  workflowRunId: fc.option(fc.uuid(), { nil: undefined }),
-  jobName: fc.option(fc.string(), { nil: undefined }),
-  stepName: fc.option(fc.string(), { nil: undefined }),
-});
+/** No run, a pinned run id, or the latest run of a workflow. */
+const arbRunSelector: fc.Arbitrary<
+  { workflowRunId?: string } | { latestRunWorkflow: string }
+> = fc.oneof(
+  fc.constant({}),
+  fc.record({ workflowRunId: fc.uuid() }),
+  fc.record({ latestRunWorkflow: fc.string() }),
+);
+
+const arbTarget: fc.Arbitrary<DataQueryTarget> = fc.tuple(
+  fc.record({
+    dataName: fc.string({ minLength: 1 }),
+    version: fc.option(fc.integer({ min: 1, max: 1000 }), { nil: undefined }),
+    modelType: fc.option(fc.string(), { nil: undefined }),
+    modelId: fc.option(fc.uuid(), { nil: undefined }),
+    modelName: fc.option(fc.string(), { nil: undefined }),
+    jobName: fc.option(fc.string(), { nil: undefined }),
+    stepName: fc.option(fc.string(), { nil: undefined }),
+  }),
+  arbRunSelector,
+).map(([fields, run]) => ({ ...fields, ...run }));
 
 /** The record fields a predicate built from `target` reads. */
 function recordFor(target: DataQueryTarget): Record<string, unknown> {
@@ -51,7 +68,9 @@ function recordFor(target: DataQueryTarget): Record<string, unknown> {
     modelType: target.modelType ?? "",
     modelId: target.modelId ?? "",
     modelName: target.modelName ?? "",
-    workflowRunId: target.workflowRunId ?? "",
+    workflowRunId: target.latestRunWorkflow !== undefined
+      ? latestRunOf(target.latestRunWorkflow)
+      : target.workflowRunId ?? "",
     jobName: target.jobName ?? "",
     stepName: target.stepName ?? "",
   };
@@ -96,6 +115,17 @@ Deno.test("dataQueryCommand: the shell reads back the exact predicate", () => {
       assert(command.endsWith(suffix));
       const word = command.slice(prefix.length, command.length - suffix.length);
       assertEquals(unquoteShellWord(word), dataQueryPredicate(target));
+    }),
+    { numRuns: 300 },
+  );
+});
+
+Deno.test("dataQueryPredicate: a latest-run target does not match another run's record", () => {
+  fc.assert(
+    fc.property(arbTarget, fc.uuid(), (target, otherRun) => {
+      fc.pre(target.latestRunWorkflow !== undefined);
+      const record = { ...recordFor(target), workflowRunId: otherRun };
+      assertEquals(env.evaluate(dataQueryPredicate(target), record), false);
     }),
     { numRuns: 300 },
   );

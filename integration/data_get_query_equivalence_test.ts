@@ -26,7 +26,12 @@
  * with the same name.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -36,16 +41,23 @@ import {
   type DataGetData,
   type DataGetEvent,
   type DataGetInput,
+  dataQuery,
+  type DataQueryDeps,
+  type DataQueryEvent,
   type DataRecord,
 } from "../src/libswamp/mod.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { UserError } from "../src/domain/errors.ts";
+import { createModelReferenceResolver } from "../src/domain/models/model_lookup.ts";
+import type { GarbageCollectionPolicy } from "../src/domain/data/data_metadata.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { createLatestRunResolver } from "../src/domain/workflows/workflow_lookup.ts";
 import {
   saveData,
   saveModel,
@@ -66,13 +78,22 @@ async function saveStepResult(
   jobName: string,
   stepName: string,
   value: string,
+  item: {
+    name?: string;
+    specName?: string;
+    garbageCollection?: GarbageCollectionPolicy;
+  } = {},
 ): Promise<{ id: string; name: string; version: number; data: Data }> {
   const data = Data.create({
-    name: "result",
+    name: item.name ?? "result",
     contentType: "application/json",
     lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "resource", specName: "result", modelName: model.name },
+    garbageCollection: item.garbageCollection ?? 10,
+    tags: {
+      type: "resource",
+      specName: item.specName ?? "result",
+      modelName: model.name,
+    },
     ownerDefinition: {
       ownerType: "model-method",
       ownerRef: `${repo.modelType.normalized}:${model.id}`,
@@ -313,6 +334,201 @@ Deno.test("data get: report output, which records no run on the data, gets a rep
   });
 });
 
+Deno.test("data query: garbageCollection matches what data get returns, for count and duration policies", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "gc-model");
+    const run = { id: crypto.randomUUID(), workflowName: "gc" };
+
+    for (const policy of [10, "30d"] as const) {
+      const saved = await saveStepResult(repo, model, run, "j", "s", "v", {
+        name: `gc-${policy}`,
+        garbageCollection: policy,
+      });
+      const data = await read(repo, {
+        modelIdOrName: "gc-model",
+        dataName: saved.name,
+      });
+      assertEquals(data.garbageCollection, policy);
+
+      const records = await queryReplacement(repo, data);
+      assertEquals(records.map((r) => r.garbageCollection), [policy]);
+    }
+  });
+});
+
+Deno.test("data query: a run-scoped query by spec name gets a hint scoped to the same run", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "classify-model");
+    const runId = crypto.randomUUID();
+    const saved = await saveStepResult(
+      repo,
+      model,
+      { id: runId, workflowName: "classify" },
+      "j",
+      "s",
+      "v",
+      { name: "classification-main", specName: "classification" },
+    );
+
+    const queryService = repo.repoContext.dataQueryService;
+    const deps: DataQueryDeps = {
+      query: (pred, opts) => queryService.query(pred, opts),
+      specNameFallback: (pred) => queryService.specNameFallback(pred),
+    };
+    const run = async (predicate: string) => {
+      const events = await collect<DataQueryEvent>(
+        dataQuery(createLibSwampContext(), deps, { predicate }),
+      );
+      const last = events.at(-1);
+      assert(last?.kind === "completed", JSON.stringify(last));
+      return last.data;
+    };
+
+    const missed = await run(
+      `workflowRunId == "${runId}" && name == "classification"`,
+    );
+    assertEquals(missed.total, 0);
+    const suggested = missed.specNameHint?.suggestedPredicate;
+    assertEquals(
+      suggested,
+      `workflowRunId == "${runId}" && specName == "classification"`,
+    );
+    const followed = await queryService.query(suggested!) as DataRecord[];
+    assertEquals(followed.map((r) => r.id), [saved.id]);
+
+    // The same spec name in another run is not this run's data: no hint.
+    const otherRun = await run(
+      `workflowRunId == "${crypto.randomUUID()}" && name == "classification"`,
+    );
+    assertEquals(otherRun.specNameHint, undefined);
+
+    // Data whose name equals its spec name, excluded by a condition the
+    // fallback cannot carry: the name was never the problem, so no hint.
+    await saveStepResult(
+      repo,
+      model,
+      { id: runId, workflowName: "classify" },
+      "j",
+      "s",
+      "v",
+      { name: "summary", specName: "summary" },
+    );
+    const filtered = await run(
+      `workflowRunId == "${runId}" && name == "summary" && size > 1000000`,
+    );
+    assertEquals(filtered.total, 0);
+    assertEquals(filtered.specNameHint, undefined);
+  });
+});
+
+// A read without --run follows the workflow's latest run; data query
+// follows it with latestRun("<workflow>") (swamp-club#2957).
+
+/**
+ * Saves two runs of `two-runs`, each with one step that wrote `result`. The
+ * newer run's step wrote first, so the older run holds the higher version
+ * and, by version, the latest `result`.
+ */
+async function twoRuns(repo: ServeRepo) {
+  const model = await saveModel(repo, "deploy-model");
+  const workflow = Workflow.create({
+    name: "two-runs",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "build",
+        task: StepTask.modelMethod(model.name, "noop"),
+      })],
+    })],
+  });
+  await repo.repoContext.workflowRepo.save(workflow);
+
+  const saveRun = async (startedAt: string, value: string) => {
+    const created = WorkflowRun.create(workflow).toData();
+    const saved = await saveStepResult(
+      repo,
+      model,
+      { id: created.id, workflowName: workflow.name },
+      "main",
+      "build",
+      value,
+    );
+    const run = WorkflowRun.fromData({
+      ...created,
+      status: "succeeded",
+      startedAt,
+      jobs: created.jobs.map((job) => ({
+        ...job,
+        status: "succeeded",
+        steps: job.steps.map((step) => ({
+          ...step,
+          status: "succeeded",
+          dataArtifacts: [{
+            dataId: saved.id,
+            name: saved.name,
+            version: saved.version,
+            tags: { ...saved.data.tags },
+          }],
+        })),
+      })),
+    });
+    await repo.repoContext.workflowRunRepo.save(workflow.id, run);
+    return { run, saved };
+  };
+  const newer = await saveRun("2026-02-01T00:00:00.000Z", "newer");
+  const older = await saveRun("2026-01-01T00:00:00.000Z", "older");
+  return { newer, older };
+}
+
+/** Runs `predicate` the way swamp data query does on the command line. */
+async function queryAsCli(
+  repo: ServeRepo,
+  predicate: string,
+): Promise<DataRecord[]> {
+  return await repo.repoContext.dataQueryService.query(predicate, {
+    latestRunResolver: createLatestRunResolver(
+      repo.repoContext.workflowRepo,
+      repo.repoContext.workflowRunRepo,
+    ),
+  }) as DataRecord[];
+}
+
+Deno.test("data query: latestRun selects what data get reads without --run, where workflowName does not", async () => {
+  await withServeRepo(async (repo) => {
+    const { newer, older } = await twoRuns(repo);
+    assert(older.saved.version > newer.saved.version);
+
+    const data = await read(repo, {
+      workflowName: "two-runs",
+      dataName: "result",
+    });
+    assertEquals(data.id, newer.saved.id);
+    assertEquals(data.version, newer.saved.version);
+
+    // By version, the older run's item is the latest.
+    const byName = await queryAsCli(
+      repo,
+      'workflowName == "two-runs" && name == "result"',
+    );
+    assertEquals(byName.map((r) => r.workflowRunId), [older.run.id]);
+
+    const latest = await queryAsCli(
+      repo,
+      'workflowRunId == latestRun("two-runs") && jobName == "main" && ' +
+        'stepName == "build" && name == "result" && version >= 0',
+    );
+    assertSameItem(latest, data);
+    assertEquals(latest[0].workflowRunId, newer.run.id);
+
+    // The query data get's notice names follows the same run.
+    const notice = data.warnings![0].match(
+      /latest run instead, run: (swamp data query .*)\)$/,
+    );
+    assert(notice, data.warnings![0]);
+    assertSameItem(await queryAsCli(repo, predicateOf(notice[1])), data);
+  });
+});
+
 // ── The documented model-scoped equivalent (swamp-club#2960, #2968) ─────────
 //
 // `model("<m>") && name == "<n>"` must select what `data get <m> <n>` returns,
@@ -326,6 +542,11 @@ async function queryDocumented(
 ): Promise<DataRecord[]> {
   return await repo.repoContext.dataQueryService.query(
     `model(${JSON.stringify(model)}) && name == ${JSON.stringify(dataName)}`,
+    {
+      modelResolver: createModelReferenceResolver(
+        repo.repoContext.definitionRepo,
+      ),
+    },
   ) as DataRecord[];
 }
 
@@ -422,15 +643,13 @@ Deno.test("data query model(): after delete and recreate under one name, selects
   });
 });
 
-Deno.test("data query model(): a model with no definition matches nothing", async () => {
+Deno.test("data query model(): a model with no definition fails as data get does", async () => {
   await withServeRepo(async (repo) => {
-    const unresolved: string[] = [];
-    const records = await repo.repoContext.dataQueryService.query(
-      'model("no-such-model")',
-      { onUnresolvedModel: (ref) => unresolved.push(ref) },
+    await assertRejects(
+      () => queryDocumented(repo, "no-such-model", "result"),
+      UserError,
+      "Model not found: no-such-model",
     );
-    assertEquals(records, []);
-    assertEquals(unresolved, ["no-such-model"]);
   });
 });
 
@@ -458,6 +677,11 @@ Deno.test("data query: a read by a renamed data item's old name selects what dat
     assertEquals(
       await repo.repoContext.dataQueryService.query(
         'model("renamer") && name == "x" && version >= 0',
+        {
+          modelResolver: createModelReferenceResolver(
+            repo.repoContext.definitionRepo,
+          ),
+        },
       ),
       [],
     );

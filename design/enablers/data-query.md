@@ -43,8 +43,11 @@ run wrote the same data name
 `workflowRunId`, `jobName` and `stepName` selects one item.
 The printed `replacementQuery` names a model's data by `modelType` and
 `modelId`, which survive a rename, and report output (which records no run) the
-same way. A read whose content is not UTF-8 text has no replacement yet
-(swamp-club#2959). The CLI appends its own `--server` / `--repo-dir` to every
+same way. A read whose content may not be UTF-8 text (a non-text content type,
+or text that came back base64-encoded) is replaced by a query that selects
+`{"content": content, "contentEncoding": contentEncoding}` instead of
+`content` alone, with `--json`, since base64 is read from the JSON result.
+The CLI appends its own `--server` / `--repo-dir` to every
 printed query.
 
 ### CLI shortcuts
@@ -56,20 +59,40 @@ Deprecated `data get` forms map to these queries:
 | `swamp data get <m> <n>`                       | `swamp data query 'model("<m>") && name == "<n>"' --select content`                                                                     |
 | `swamp data get <m> <n> --version 2`           | `swamp data query 'model("<m>") && name == "<n>" && version == 2' --select content`                                                     |
 | `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
+| `swamp data get --workflow <w> <n>`            | `swamp data query 'workflowRunId == latestRun("<w>") && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
+
+Add `--single` to any of these to get one bare object under `--json`, as
+`data get --json` printed (see [Single result](#single-result---single)).
+
+`model("<m>")` resolves `<m>` as `data get` does and matches rows by the
+resolved definition's `modelType` and `modelId` (see
+[Model of a data item](#model-of-a-data-item)). `modelName` is the name stamped
+on the data when it was written, so `modelName == "<m>"` differs from
+`data get` after a model rename, for data with no `modelName` tag, and after a
+model is deleted and recreated under the same name. A `--version` read of a data
+name that was since renamed has no query equivalent: the rename drops the old
+name's catalog rows (see [Rename Forwards](#rename-forwards)).
 
 A query matches the instance `name` exactly, where `data get` fell back to the
-spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
-a workflow" form: look the run id up with
-`swamp workflow history get <workflow>` first.
-
-`model("<m>")` resolves `<m>` with the lookup `data get` uses
-(`findDefinitionByIdOrName`: definition name first, then exact definition id)
-and matches rows by the resolved definition's `modelType` and `modelId`
-(swamp-club#2960). `modelName` is the name stamped on the data when it was
-written, so `modelName == "<m>"` differs from `data get` after a model rename,
-for data with no `modelName` tag, and after a model is deleted and recreated
-under the same name. See [model references](#model-references) and
-[rename forwards](#rename-forwards).
+spec name; match a spec with `specName == "<s>"`. For a binary item, select
+`{"content": content, "contentEncoding": contentEncoding}` so a base64 body can
+be told from text (see [Binary content](#binary-content)). When a query with a top-level
+`name == "<n>"` matches nothing, swamp builds its spec-name counterpart
+(`buildSpecNameFallback` in `query_predicate.ts`): `name` becomes `specName`,
+the other top-level string and `version` equalities are kept, and anything else
+is dropped. If something was dropped, it first runs the kept equalities with
+`name` (limit 1): a match there means a dropped condition excluded the data,
+not the name, so there is no hint. Otherwise it runs the spec-name predicate
+(limit 1) and on a match returns `specNameHint` with `suggestedPredicate` and
+`otherFiltersDropped` (log mode prints the command, and notes the dropped
+conditions). Both probes use the caller's `include` filter, so the hint never
+reveals data the caller may not read; a failed probe only omits it, and the
+interactive TUI does not probe. With `--single`, where no match is an error,
+the hint is appended to the `QUERY_NO_MATCH` message. `latestRun("<w>")` follows
+a workflow's latest run, as `data get --workflow` does without `--run` (see
+[Latest run of a workflow](#latest-run-of-a-workflow)). A workflow read without
+`--run` also names this latest-run query, in its deprecation warning and as
+`latestRunQuery` in `--json` output.
 
 The remaining read subcommands are shortcuts:
 
@@ -77,10 +100,31 @@ The remaining read subcommands are shortcuts:
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
-| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowRunId == latestRun("<w>") && version >= 0'`                      |
 | `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>" && version >= 0'`                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
+
+`data list --workflow` also lists the run's report output, which records no
+run id on the data, so the query leaves it out. `workflowName == "<w>"` is not
+the same read: it returns the latest version of each item the workflow wrote,
+which can come from different runs.
+
+`integration/data_query_get_parity_test.ts` holds the first two deprecated
+`data get` rows and the `data versions` row to their queries on the filesystem
+datastore, a full-hydration custom datastore and a hand-wired lazy-hydration
+setup, after a pull, an invalidate and a catalog rebuild. On a lazy datastore
+`data query` downloads a body it needs and does not yet have, as `data get`
+does (see [datastores.md](./datastores.md#getcontentsync-limitation)), so a
+broad attribute predicate downloads the body of every row that passes its
+metadata terms, and a query with no `select` downloads the body of every JSON
+row it returns, because results carry `attributes`. A `select` that reads
+`content` downloads the body of each item it returns, after `include` has run,
+whatever its content type (see [Binary content](#binary-content)). A `select`
+over metadata fields only downloads nothing. A failed download fails the query,
+as it fails `data get`. One difference remains: `data get` follows a renamed
+item's forward reference while a query by the old name matches nothing
+(swamp-club#2972).
 
 ### CEL shortcuts
 
@@ -89,11 +133,11 @@ The remaining read subcommands are shortcuts:
 | `data.latest("m", "n")`       | `data.query('modelName == "m" && name == "n"')[0]`                         |
 | `data.version("m", "n", 2)`   | `data.query('modelName == "m" && name == "n" && version == 2')[0]`         |
 | `data.listVersions("m", "n")` | `data.query('modelName == "m" && name == "n" && version >= 0', 'version')` |
-| `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`                                              |
-| `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`                        |
+| `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`, latest per step                             |
+| `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`, latest per step       |
 
 A shortcut returns the same `DataRecord[]` type and fields as the equivalent
-`data.query()` call. Execution differs in three ways
+`data.query()` call. Execution differs in four ways
 (`src/domain/expressions/model_resolver.ts`):
 
 - `data.latest()` / `data.version()` without a `*:` wildcard look on the
@@ -103,6 +147,10 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
   the model name has a namespace prefix (`routeNamespace`).
 - `data.findBySpec()` and `data.findByTag()` keep only the newest record per
   `(modelName, name, stepName)` (`deduplicateByName`).
+- `data.findBySpec()` and `data.findByTag()` query with `latestPerStep`, so
+  they match each workflow step's latest version (`is_step_latest`) rather
+  than the single latest (`is_latest`). When several steps wrote one data
+  name, they return a record per step where `data.query()` returns one.
 
 **specName ambiguity detection:** `data.latest()` throws a `UserError` when its
 lookup argument equals a `specName` tag shared by several data items under the
@@ -185,6 +233,8 @@ interface DataRecord {
   dataType: string;
   contentType: string;
   lifetime: string;
+  // Version retention: a count, or a duration such as "30d"; "" when unknown
+  garbageCollection: number | string;
   ownerType: string;
   streaming: boolean;
   size: number;
@@ -252,10 +302,11 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `dataType` | string | `"resource"` or `"file"` |
 | `contentType` | string | MIME type |
 | `lifetime` | string | Lifetime policy |
+| `garbageCollection` | int or string | Retention policy: a version count, or a duration such as `"30d"`; `""` when unknown (a foreign row from an export older than the field) |
 | `ownerType` | string | `"model-method"`, `"workflow-step"`, or `"manual"` |
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
-| `content` | dyn | Parsed object for JSON, raw text for other text types (lazy-loaded) |
+| `content` | dyn | Parsed object for JSON, raw text for other text types (lazy-loaded); reading it on a non-text item is an error — see [Binary content](#binary-content) |
 | `ownerRef` | string | Model definition ID that owns this data |
 | `workflowRunId` | string | Workflow run ID (`""` outside workflows) |
 | `workflowName` | string | Workflow name (`""` outside workflows) |
@@ -270,12 +321,67 @@ touches them (a metadata term earlier in `&&` skips the read), or when a
 matching row's result or `select` projection needs them. If a body read fails
 for a matching row, the query fails instead of silently skipping the row.
 
-`attributes` holds parsed JSON (for `application/json` only). `content` is the
-raw text string for `text/*`, `application/yaml` and `application/x-yaml`
-(`src/domain/data/content_type.ts` `isTextContentType`). For
-`application/json` it is the same parsed object as `attributes`
-(`src/domain/data/data_record_mapper.ts` `parseContent`). For binary content
-types, `content` is `""`.
+`attributes` holds parsed JSON (for `application/json` only). In a predicate,
+`content` is the raw text string for a text content type, decoded leniently.
+The text types (`src/domain/data/content_type.ts` `isTextContentType`) are
+`text/*`; the text-based `application/*` types JSON, NDJSON, YAML
+(`application/yaml`, `application/x-yaml`), XML, TOML, JavaScript,
+ECMAScript, shell, SQL and GraphQL; and any type with a `+json`, `+xml` or
+`+yaml` structured-syntax suffix. Parameters (`; charset=utf-8`) and case are
+ignored. For `application/json` it is the same parsed object as
+`attributes` (`src/domain/data/data_record_mapper.ts` `parseContent`). A
+`select` projection reads `content` for every content type without losing a
+byte (a leading UTF-8 byte-order mark is dropped, as `data get` drops it); see
+[Binary content](#binary-content).
+
+### Binary content
+
+`content` is a text concept in a predicate: binary bytes have no text to match
+against. A predicate that reads `content` on an item whose content type is not
+text fails the query with `BinaryContentPredicateError`
+(`src/domain/data/binary_content_predicate_error.ts`), naming the item, rather
+than silently skipping it (swamp-club#2959). The check uses the catalog's
+`contentType`, so no bytes are read to make it, and it applies even when CEL
+would absorb the error (`content == "x" || true`). Guard the content condition
+with the type, which `&&` short-circuits. This guard covers `text/*`; add the
+other text types when they should match too:
+
+```cel
+contentType.startsWith("text/") && content.contains("error")
+```
+
+With an `include` callback (`swamp serve`), a violating item goes through
+`include` like any match, and only one the caller may read raises the error;
+others are dropped as non-matches, so neither the error nor its absence
+reveals an unreadable item. Either way, only a violation evaluated before the
+query's limit was reached counts: with `include`, matching runs ahead in
+batches, so violations are walked in evaluation order with the matches and
+ignored once the accepted page is full. A query that stops at its limit first
+does not fail, with or without `include`.
+
+A `select` that references `content` or `contentEncoding` reads each item's
+bytes in the projection step, after `include` has run
+(`DataQueryService.projectedContents`). The async `query()` reads them with
+`getContent`, so a lazily-synced body is downloaded as `data get` downloads it;
+`querySync` (CEL `data.query()`) reads local disk only. Bytes are represented as `data get`
+represents them (`src/domain/data/content_encoding.ts` `encodeContent`): UTF-8
+text when the bytes are valid UTF-8, otherwise base64. `contentEncoding`
+(`utf-8` or `base64`) says which, and exists only in a projection — naming it
+in a predicate is an unknown-field error, since answering it would read every
+candidate's bytes. JSON items keep `content` as the parsed attributes, with
+`contentEncoding` `utf-8`. An item whose bytes are not on this host (any item
+from another namespace in a shared datastore, or a non-JSON item whose file is
+missing) projects `content` and `contentEncoding` as `null`, never as empty
+content. A leading UTF-8 byte-order mark is dropped from `utf-8` content, as
+`data get` drops it. The same rules apply
+to `data.query()` in CEL expressions.
+
+```bash
+# Download a binary item
+swamp data query 'modelName == "site" && name == "logo"' \
+  --select '{"content": content, "contentEncoding": contentEncoding}' --json \
+  | jq -r '.results[0].content' | base64 -d > logo.png
+```
 
 ## Provenance-Based Filtering
 
@@ -294,21 +400,34 @@ No data access function scopes by workflow run. Only `data.query()` and
 `context.readModelData()` add an own-namespace filter (see above) and nothing
 else. Any other scoping must be written into the predicate.
 
-**Step-aware versioning:** the `is_latest` flag follows asymmetric demotion
-rules based on `step_name`:
+**Step-aware versioning:** the catalog keeps two latest flags per row
+(`CatalogStore.upsertNewVersion`, `computeLatestFlags`):
 
-- **Model-method writes** (`step_name = ""`) demote all prior latest rows for
-  the same `(model, data)`, whatever their `step_name`. A model-method write
-  always leaves exactly one latest.
-- **Workflow-step writes** (`step_name != ""`) demote prior rows with the same
-  `step_name` and prior model-method rows (`step_name = ""`). Other steps'
-  latest rows are untouched, so different workflow steps writing the same data
-  name keep independent version chains.
+- **`is_latest`** marks exactly one row per `(namespace, type, model, data)`:
+  the highest promoted version, whatever its `step_name`. It backs `isLatest`
+  and the implicit latest-only filter, so `data.query()`, `swamp data query`,
+  `swamp data search`, `context.readModelData()` and `context.queryData()`
+  return one version per data name even when several workflow steps wrote it
+  (swamp-club#2520).
+- **`is_step_latest`** marks each workflow step's latest version, with
+  asymmetric demotion rules based on `step_name`. A model-method write
+  (`step_name = ""`) demotes every lower row. A workflow-step write demotes
+  lower rows with the same `step_name` and lower model-method rows. Other
+  steps' rows are untouched, so different workflow steps writing the same data
+  name keep independent version chains (swamp-club#1761, swamp-club#1802). The
+  `is_latest` row is always also `is_step_latest`.
 
-Collection helpers (`findBySpec`, `findByTag`) return the latest version per
-step, so they may return several records for one data name written by
-different workflow steps. `data.latest()` returns the single most recently
-written record regardless of step.
+Version order, not arrival order, decides both flags, so parallel steps that
+promote out of order converge on the same flags a rebuild derives. Only the
+collection helpers (`findBySpec`, `findByTag`) read `is_step_latest`, so they
+may return several records for one data name written by different workflow
+steps; an older step's record reports `isLatest: false`. `data.latest()`
+returns the single latest record regardless of step.
+
+Known gap: deleting a version (`swamp data delete --version`, GC, the version
+cap, or rolling back an unpromoted deferred write) re-promotes only the
+surviving highest version. Another step whose latest was deleted keeps no
+`is_step_latest` row until the catalog is rebuilt.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
@@ -320,6 +439,61 @@ value in the run's `RunSensitiveValues`, and `readResource()` and
 `readModelData()` in extension methods. `data.latest()` with a wildcard model
 name goes through the query service and returns the stored reference. See
 "Read-Side Resolution" in `design/primitives/vaults.md`.
+
+### Latest run of a workflow
+
+`latestRun("<workflow>")` returns the id of a workflow's most recent run, so
+`workflowRunId == latestRun("deploy")` selects the data that run wrote
+(swamp-club#2957). Latest is the run with the most recent `startedAt`, whatever
+its status, the same run `data get --workflow` and `data list --workflow` read
+without `--run` (`WorkflowRunRepository.findLatestByWorkflowId`).
+
+- The argument is a workflow name or id, as a string literal. Each workflow is
+  resolved once per query, before any row is read
+  (`src/domain/data/query_predicate.ts` `collectLatestRunWorkflows`); a
+  per-row argument such as `latestRun(workflowName)` is an error.
+- An unknown workflow is an error. A workflow with no runs resolves to `null`,
+  so `workflowRunId == latestRun("<w>")` matches nothing and
+  `workflowRunId != latestRun("<w>")` matches every latest row (every version,
+  with `version >= 0`).
+- Add `version >= 0`, as for any read by `workflowRunId`: a later write
+  elsewhere can demote the run's item from latest, and the run still holds it.
+  A step that wrote the same name twice in one run then returns both versions.
+- It is available in `swamp data query` only. The caller passes the resolver
+  per query (`DataQueryOptions.latestRunResolver`); `data.query()` in CEL and
+  `context.queryData()` pass none, and a query there that calls `latestRun`
+  fails.
+- Over `swamp serve`, `latestRun` needs `read` on the workflow and on every
+  workflow its latest run is recorded under, as a history read of that run
+  does. A refusal is audited and fails exactly as an unknown workflow does,
+  naming only the argument.
+
+### Model of a data item
+
+`model("<model>")` is true for the rows stored under a model's current
+definition, so `model("scanner") && name == "result"` reads what
+`data get scanner result` reads (swamp-club#2960). The argument resolves as
+`data get`'s model argument does: definition name first, then exact definition
+id (`findDefinitionByIdOrName`), and rows match on the resolved definition's
+`modelType` and `modelId`, not on the `modelName` tag.
+
+- The argument is a model name or definition id, as a non-empty string literal.
+  Each model is resolved once per query, before any row is read
+  (`src/domain/data/query_predicate.ts` `collectModelReferences`), and a
+  predicate may name at most 32 distinct models (`MAX_MODEL_REFERENCES`); a
+  per-row argument such as `model(modelName)` is an error.
+- An unknown model is an error (`Model not found`), as in `data get`.
+- The caller passes the resolver per query (`DataQueryOptions.modelResolver`).
+  The CLI and TUI pass `createModelReferenceResolver`
+  (`src/domain/models/model_lookup.ts`); `data.query()` in CEL and
+  `context.queryData()` pass none, and a query there that calls `model`
+  fails. It is rejected in `--select`.
+- Matching evaluates in a cloned environment whose `model()` reads the row
+  being evaluated from a variable local to the match, so concurrent queries
+  never see each other's resolutions.
+- Over `swamp serve`, `model` needs `read` on the data of the model it resolves
+  to, as a model-scoped `data.get` does. A refusal is audited and fails exactly
+  as an unknown model does, naming only the argument.
 
 ## Predicate Syntax
 
@@ -349,45 +523,12 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 
 ```
 Error: Unknown field "model" in query predicate.
-Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
-  jobName, lifetime, modelId, modelName, modelType, name, ns, ownerRef,
-  ownerType, size,
-  source, specName, stepName, streaming, tags, version, workflowName,
-  workflowRunId
-Functions: model("<model name or definition id>")
+Available: attributes, content, contentType, createdAt, dataType,
+  garbageCollection, id, isLatest, jobName, lifetime, modelId, modelName,
+  modelType, name, ns, ownerRef, ownerType, size, source, specName, stepName,
+  streaming, tags, version, workflowName, workflowRunId
+Functions: latestRun("<workflow>"), model("<model name or definition id>")
 ```
-
-Function names are not identifiers, so `model(...)` passes this check; its
-arguments are validated separately (see [model references](#model-references)).
-
-### Model References
-
-`model("<name or id>")` is the one query function
-(`src/domain/data/query_predicate.ts` `collectModelReferences`,
-`src/domain/data/data_query_service.ts`):
-
-- `DataQueryService.query()` collects every `model(...)` argument before
-  matching and resolves each distinct one once through the
-  `ModelReferenceResolver` port (`DataQueryServiceOptions.resolveModel`). The
-  composition root (`repository_factory.ts`) wires it to
-  `findDefinitionByIdOrName`, so the CLI and serve's `data.query` resolve as
-  `data get` does. The domain service never depends on the definition
-  repository.
-- Each argument must be a string literal, and a predicate may name at most 32
-  distinct models (`MAX_MODEL_REFERENCES`), bounding the lookups a serve
-  client can cause.
-- Matching is synchronous; the resolutions are held in per-query state that is
-  set and cleared within the matching loop, so concurrent queries on one
-  service never see each other's resolutions.
-- A reference with no definition matches no rows. It is reported through
-  `DataQueryOptions.onUnresolvedModel`, which only the CLI wires (libswamp
-  `reportUnresolvedModels`, rendered as `warnings`). Serve leaves it unset, so
-  a client cannot tell a missing model from one it may not read.
-- Only the repository's query service (`RepositoryContext.dataQueryService`,
-  used by `swamp data query` and serve's `data.query`) has a resolver.
-  `querySync()`, query services built without one (including the composite
-  service CEL `data.query()` uses during model and workflow runs), and
-  `--select` expressions reject `model()`.
 
 ## Catalog
 
@@ -413,11 +554,13 @@ CREATE TABLE catalog (
   id              TEXT NOT NULL,
   version         INTEGER NOT NULL,
   is_latest       INTEGER NOT NULL DEFAULT 1,
+  is_step_latest  INTEGER NOT NULL DEFAULT 1,
   model_name      TEXT NOT NULL,
   spec_name       TEXT NOT NULL DEFAULT '',
   data_type       TEXT NOT NULL DEFAULT '',
   content_type    TEXT NOT NULL DEFAULT '',
   lifetime        TEXT NOT NULL DEFAULT '',
+  garbage_collection TEXT NOT NULL DEFAULT '',
   owner_type      TEXT NOT NULL DEFAULT '',
   streaming       INTEGER NOT NULL DEFAULT 0,
   size            INTEGER NOT NULL DEFAULT 0,
@@ -441,6 +584,7 @@ CREATE INDEX idx_catalog_step_name       ON catalog(step_name);
 CREATE INDEX idx_namespace               ON catalog(namespace);
 CREATE INDEX idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
 CREATE INDEX idx_catalog_latest_lookup   ON catalog(model_name, data_name, is_latest, namespace);
+CREATE INDEX idx_catalog_step_latest     ON catalog(model_name, is_step_latest);
 
 CREATE TABLE catalog_renames (
   namespace       TEXT NOT NULL DEFAULT '',
@@ -460,8 +604,8 @@ CREATE TABLE catalog_meta (
 ```
 
 `catalog_meta` holds a `schema_version` key. When the version changes, the
-`catalog` and `catalog_renames` tables are dropped and rebuilt by self-healing
-backfill on the next query.
+`catalog` and `catalog_renames` tables are dropped and rebuilt by self-healing backfill on the next
+query.
 
 Content is not stored in the catalog. It stays on disk in the existing
 versioned file layout.
@@ -542,7 +686,8 @@ an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
   here or on another machine, therefore matches nothing, and a chain the
   catalog only partly knows is still followed to its end. Rows the chain ends
   at are evaluated with `name` overlaid to the literal; the returned record
-  keeps its real name, and the caller's `include` filter still applies.
+  keeps its real name, and the caller's `include` filter still applies. A model
+  whose marker cannot be read is skipped (logged at debug), not the query.
 - **Not followed**: versioned or `isLatest` predicates (as `data get --version`
   does not follow), `name in [...]` or a name test under `||` or `!`, and
   renames in other namespaces: `.catalog-export.json` carries rows, not
@@ -598,8 +743,11 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | CEL pattern                 | SQL pushdown           | Notes                                                    |
 | --------------------------- | ---------------------- | -------------------------------------------------------- |
 | implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
+| implicit, with `latestPerStep` | `WHERE is_step_latest = 1` | `findBySpec`/`findByTag` only; no CEL `isLatest` term |
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
-| `model("<literal>")`        | `WHERE type_normalized = ? AND model_id = ?` (or no rows when unresolved) | Top-level AND conjuncts only |
+| `model("<literal>")` | `WHERE type_normalized = ? AND model_id = ?` | Top-level AND conjuncts only, with the resolved definition |
+| `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
+| `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
 expressions, comparisons, tag filters, `attributes` references, and complex
@@ -615,8 +763,8 @@ in CEL.
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Extract SQL pushdown clauses (isLatest, modelName equality, model());
-   resolve rename forwards for a latest-only `name == "<literal>"`
+3. Extract SQL pushdown clauses (isLatest, modelName and specName equality,
+   model()); resolve rename forwards for a latest-only `name == "<literal>"`
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown
@@ -624,12 +772,16 @@ in CEL.
    a column, so this is metadata only)
 6. For each row:
    a. Project row into query record
-   b. If step 4 found a content reference:
-      load content from disk for this row
+   b. If step 4 found a content reference in the filter:
+      load content from disk for this row (a non-text row records a
+      violation instead, without reading its bytes)
    c. Evaluate full CEL predicate against query record
    d. If true: add to results
    e. If results.length >= limit: stop
-7. Return results
+7. Raise BinaryContentPredicateError for a violation the caller may read
+8. Project: a select that references content or contentEncoding reads and
+   encodes each remaining record's bytes
+9. Return results
 ```
 
 Iteration uses paged `stmt.all()` with `LIMIT/OFFSET`, so rows arrive in
@@ -798,11 +950,27 @@ columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
 instead of human-readable text. It also composes with `--limit`: the limit
 applies to matched rows, the projection to output.
 
+### Single result (`--single`)
+
+`--single` requires exactly one match. The libswamp generator queries without
+a limit and yields `QUERY_NO_MATCH` or `QUERY_MULTIPLE_MATCHES` instead of
+`completed` otherwise, so the command exits non-zero. It does not query with a
+limit of 2: an unfiltered query applies its limit before stale catalog rows are
+dropped, so two scanned rows could leave one live match and hide a second. With `--json` the renderer prints the one record (the object the
+envelope would carry as `results[0]`) or its projected value bare, without the
+`{results, total, limited}` envelope; log output is unchanged. `--single`
+conflicts with `--limit` and requires a predicate. Over `--server` the client
+sends `limit: 2` and applies the same `requireSingleResult` check to the
+records in the response, so the `data.query` protocol is unchanged. The limit is
+safe there because the server filters by read access, and a filtered query
+keeps matching until enough rows survive the stale-row check.
+
 ### Implementation
 
 Projection is a domain/application concern. `DataQueryService` still returns
 `DataRecord[]`, but accepts a `select` option so it loads
-`attributes`/`content` from disk when the projection references them. The
+`attributes`/`content` from disk when the projection references them (content
+in the projection step, after `include`; see [Binary content](#binary-content)). The
 libswamp generator evaluates the projection on each result, classifies the
 output shape, and yields typed events. On the `--select` path the renderer
 builds markdown from the event data and passes it through

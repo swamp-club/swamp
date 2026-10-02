@@ -65,6 +65,62 @@ Deno.test("FileLock - acquire and release", async () => {
   });
 });
 
+Deno.test("FileLock.heldNonce: names the lock file's nonce only while held", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    assertEquals(lock.heldNonce, undefined);
+
+    await lock.acquire();
+    const info = await lock.inspect();
+    assert(info?.nonce);
+    assertEquals(lock.heldNonce, info.nonce);
+
+    await lock.release();
+    assertEquals(lock.heldNonce, undefined);
+  });
+});
+
+Deno.test("FileLock.heldNonce: stays the same across heartbeat rewrites", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 300 });
+    await lock.acquire();
+    try {
+      const first = await lock.inspect();
+      assert(first);
+      await waitFor(
+        async () => (await lock.inspect())?.acquiredAt !== first.acquiredAt,
+        "heartbeat rewrites the lock file",
+      );
+      const rewritten = await lock.inspect();
+      assertEquals(rewritten?.nonce, first.nonce);
+      assertEquals(lock.heldNonce, first.nonce);
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("FileLock.heldNonce: clears when the heartbeat finds another holder's nonce", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 300 });
+    await lock.acquire();
+    try {
+      const info = await lock.inspect();
+      assert(info);
+      await Deno.writeTextFile(
+        join(dir, ".datastore.lock"),
+        JSON.stringify({ ...info, nonce: crypto.randomUUID() }),
+      );
+      await waitFor(
+        () => lock.heldNonce === undefined,
+        "heartbeat self-revokes the lock",
+      );
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
 Deno.test("FileLock - release is idempotent", async () => {
   await withTempDir(async (dir) => {
     const lock = new FileLock(dir, { ttlMs: 5000 });

@@ -80,7 +80,6 @@ import {
   SharedDatastoreWriteTracker,
 } from "./shared_datastore_write_tracker.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { dirname, join, resolve } from "@std/path";
 
 // =============================================================================
@@ -533,13 +532,6 @@ export function createRepositoryContext(
   // catalog handle as an infrastructure detail of the composition root.
   const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo, {
     filterStaleRows: config.filterStaleRows ?? true,
-    // model() in data query resolves exactly as `data get <model>` does.
-    resolveModel: async (idOrName) => {
-      const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
-      return found
-        ? { modelType: found.type.normalized, modelId: found.definition.id }
-        : null;
-    },
   });
   const outputRepo = new YamlOutputRepository(
     repoDir,

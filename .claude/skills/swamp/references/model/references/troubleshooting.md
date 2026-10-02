@@ -428,7 +428,6 @@ different storage areas.
 # List all versions
 swamp data versions <model-name> <data-name> --json
 
-# Check GC settings haven't pruned them: the garbageCollection field is only
-# in the deprecated `data get` output
-swamp data get <model-name> <data-name> --json
+# Check GC settings haven't pruned them
+swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select garbageCollection
 ```

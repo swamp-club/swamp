@@ -19,9 +19,11 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  nextActionForStatus,
   resolveResumableRun,
   resolveSuspendedRun,
 } from "./suspended_run_resolver.ts";
+import { UserError } from "../errors.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -163,13 +165,132 @@ Deno.test("resolveSuspendedRun: --run rejects non-suspended run", async () => {
   const wf = createWorkflow("test-wf");
   const run = WorkflowRun.create(wf);
   run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].succeed();
   run.complete();
   const { workflowRepo, runRepo } = stubRepos(wf, [run]);
 
-  await assertRejects(
+  const error = await assertRejects(
     () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
-    Error,
-    "not suspended",
+    UserError,
+    `Run ${run.id} is not suspended (status: succeeded).`,
+  );
+  assertStringIncludes(error.message, "swamp workflow history test-wf");
+});
+
+/**
+ * A run failed by rejecting `gate`, with `other` (in its own job) still
+ * waiting for approval — swamp-club#2899's scenario.
+ */
+function createRejectedGateRun(): { workflow: Workflow; run: WorkflowRun } {
+  const workflow = Workflow.create({
+    name: "test-wf",
+    jobs: ["gate", "other"].map((name) =>
+      Job.create({
+        name: `${name}-job`,
+        steps: [
+          Step.create({ name, task: StepTask.manualApproval(`${name}?`) }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    job.steps[0].start();
+    job.steps[0].waitForApproval();
+  }
+  run.suspend();
+  const rejected = run.getJob("gate-job")!.steps[0];
+  rejected.recordApprovalDecision({
+    approved: false,
+    decidedBy: "approver",
+    decidedAt: new Date().toISOString(),
+  });
+  rejected.fail("Approval rejected");
+  run.getJob("gate-job")!.fail();
+  run.complete();
+  return { workflow, run };
+}
+
+Deno.test("resolveSuspendedRun: --run on a run failed by a rejected gate names --from that gate", async () => {
+  const { workflow, run } = createRejectedGateRun();
+  const { workflowRepo, runRepo } = stubRepos(workflow, [run]);
+
+  const error = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
+    UserError,
+  );
+  assertEquals(
+    error.message,
+    `Run ${run.id} is not suspended (status: failed). Ask again with ` +
+      `'swamp workflow resume test-wf --run ${run.id} --from gate'.`,
+  );
+});
+
+Deno.test("resolveSuspendedRun: names the same gate resume refuses to retry", async () => {
+  const { workflow, run } = createRejectedGateRun();
+  const { workflowRepo, runRepo } = stubRepos(workflow, [run]);
+
+  const approveError = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
+    UserError,
+  );
+  const resumeError = await assertRejects(
+    () => resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id),
+    UserError,
+  );
+  assertStringIncludes(approveError.message, "--from gate'");
+  assertStringIncludes(resumeError.message, "Add --from gate to ask again");
+});
+
+Deno.test("resolveSuspendedRun: without --run, a latest run failed by a rejected gate names --from that gate", async () => {
+  const { workflow, run } = createRejectedGateRun();
+  const { workflowRepo, runRepo } = stubRepos(workflow, [run]);
+
+  const error = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf"),
+    UserError,
+    "No suspended runs found",
+  );
+  assertStringIncludes(
+    error.message,
+    `'swamp workflow resume test-wf --run ${run.id} --from gate'`,
+  );
+});
+
+Deno.test("resolveSuspendedRun: --run on a run failed by a step keeps the plain retry hint", async () => {
+  const wf = createWorkflow("test-wf");
+  const run = createFailedRun(wf);
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  const error = await assertRejects(
+    () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
+    UserError,
+  );
+  assertEquals(
+    error.message,
+    `Run ${run.id} is not suspended (status: failed). Retry it with ` +
+      `'swamp workflow resume test-wf --run ${run.id}'.`,
+  );
+});
+
+// ── nextActionForStatus ─────────────────────────────────────────────
+
+Deno.test("nextActionForStatus: a failed run with a rejected step resumes from it, shell-quoted", () => {
+  assertEquals(
+    nextActionForStatus("failed", "wf", "r1", { rejectedStep: "my gate" }),
+    " Ask again with 'swamp workflow resume wf --run r1 --from 'my gate''.",
+  );
+});
+
+Deno.test("nextActionForStatus: rejectedStep is ignored for a run that is not failed", () => {
+  assertEquals(
+    nextActionForStatus("succeeded", "wf", "r1", { rejectedStep: "gate" }),
+    nextActionForStatus("succeeded", "wf", "r1"),
   );
 });
 
