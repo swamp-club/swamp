@@ -22,16 +22,27 @@
 
 ## Content Fields (loaded from disk on demand)
 
-| Field        | Type   | Notes                                                                                                                                  |
-| ------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `attributes` | map    | Parsed JSON content. Only loaded when referenced. Empty `{}` for non-JSON types.                                                       |
-| `content`    | string | Raw text content. Only loaded when referenced. Empty `""` for binary types. Available for text/\*, application/json, application/yaml. |
+| Field        | Type   | Notes                                                                                                                                     |
+| ------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `attributes` | map    | Parsed JSON content. Only loaded when referenced. Empty `{}` for non-JSON types.                                                          |
+| `content`    | string | Raw text content. Only loaded when referenced. Available for text types: text/\*, JSON, YAML, XML, TOML and `+json`/`+xml`/`+yaml` types. |
 
-These fields describe the record that CEL and `swamp data query` see. To read a
-binary artifact's bytes, use the deprecated
-`swamp data get <model> <name>
---json` (no `data query` equivalent yet): its
-`content` is base64 when `contentEncoding` is `"base64"`.
+In a predicate, `content` is text: reading it on an item whose `contentType` is
+not text fails the query, naming the item. Guard it with the type, for example
+`contentType.startsWith("text/") && ...`, adding the other text types when they
+should match.
+
+In `--select`, `content` holds any item's bytes (a leading UTF-8 byte-order mark
+is dropped), and the select-only field `contentEncoding` says how: `"utf-8"`
+(text, or the parsed object for JSON) or `"base64"` (binary, or text that is not
+UTF-8). Both are `null` when the bytes are not on this host. To save a binary
+artifact:
+
+```bash
+swamp data query 'modelName == "<model>" && name == "<name>"' \
+  --select '{"content": content, "contentEncoding": contentEncoding}' --json \
+  | jq -r '.results[0].content' | base64 -d > out.bin
+```
 
 ## CEL Operators
 

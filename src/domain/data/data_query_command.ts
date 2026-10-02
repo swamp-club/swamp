@@ -75,18 +75,31 @@ export function dataQueryPredicate(target: DataQueryTarget): string {
 }
 
 /**
+ * The projection that reads an item's content together with how it is
+ * represented: UTF-8 text, or base64 when the bytes are not valid UTF-8.
+ */
+const ENCODED_CONTENT_SELECT =
+  '{"content": content, "contentEncoding": contentEncoding}';
+
+/**
  * Builds the `swamp data query` command a user can paste into a POSIX shell
  * to read `target`. With `includeContent`, the command selects the content,
  * as `swamp data get` prints it; without, it lists the item's metadata.
+ * `withEncoding` also selects `contentEncoding`, for content that may come
+ * back base64-encoded, and asks for `--json`: base64 is read from the JSON
+ * result, where log output would render it as one huge table cell.
  */
 export function dataQueryCommand(
   target: DataQueryTarget,
-  options: { includeContent: boolean },
+  options: { includeContent: boolean; withEncoding?: boolean },
 ): string {
   const command = `swamp data query ${
     quoteShellWord(dataQueryPredicate(target))
   }`;
-  return options.includeContent ? `${command} --select content` : command;
+  if (!options.includeContent) return command;
+  return options.withEncoding
+    ? `${command} --select ${quoteShellWord(ENCODED_CONTENT_SELECT)} --json`
+    : `${command} --select content`;
 }
 
 /** One version of a data item a retrieval hint points at. */
@@ -97,21 +110,18 @@ export interface RetrievalData {
 }
 
 /**
- * The command that reads `data` back. `swamp data query` cannot return
- * binary content yet (swamp-club#2959), so a binary item keeps the
- * deprecated `swamp data get`, the one command that returns its bytes.
+ * The command that reads `data` back. Content that may not be UTF-8 text —
+ * any non-text content type — is selected with its `contentEncoding`, so a
+ * base64-encoded body can be told apart from text.
  */
 function retrievalCommand(
-  modelName: string,
   data: RetrievalData,
   target: DataQueryTarget,
 ): string {
-  if (!isTextContentType(data.contentType)) {
-    return `swamp data get ${quoteShellWord(modelName)} ${
-      quoteShellWord(data.name)
-    } --version ${data.version}`;
-  }
-  return dataQueryCommand(target, { includeContent: true });
+  return dataQueryCommand(target, {
+    includeContent: true,
+    withEncoding: !isTextContentType(data.contentType),
+  });
 }
 
 /** The command that reads one version of a model's data. */
@@ -119,7 +129,7 @@ export function modelRetrievalCommand(
   modelName: string,
   data: RetrievalData,
 ): string {
-  return retrievalCommand(modelName, data, {
+  return retrievalCommand(data, {
     modelName,
     dataName: data.name,
     version: data.version,
@@ -132,10 +142,10 @@ export function modelRetrievalCommand(
  */
 export function stepRetrievalCommand(
   workflowRunId: string,
-  step: { jobName: string; stepName: string; modelName: string },
+  step: { jobName: string; stepName: string },
   data: RetrievalData,
 ): string {
-  return retrievalCommand(step.modelName, data, {
+  return retrievalCommand(data, {
     workflowRunId,
     jobName: step.jobName,
     stepName: step.stepName,

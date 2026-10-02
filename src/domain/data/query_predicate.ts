@@ -189,6 +189,16 @@ export function referencesContent(node: ASTNode): boolean {
 }
 
 /**
+ * Checks whether a select expression reads an item's bytes: `content`, or
+ * `contentEncoding`, which exists only in a projection and says how
+ * `content` represents them.
+ */
+export function selectReadsContent(node: ASTNode): boolean {
+  const ids = collectRootIdentifiers(node);
+  return ids.includes("content") || ids.includes("contentEncoding");
+}
+
+/**
  * Extracts a string literal from a top-level `modelName == "literal"`
  * equality in the AST. Walks through AND conjuncts but does not descend
  * into OR branches. Returns null if no pushdown-eligible modelName

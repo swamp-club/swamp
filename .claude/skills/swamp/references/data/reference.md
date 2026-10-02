@@ -77,18 +77,28 @@ without `--select` each result is the item's metadata record. An empty `results`
 array means no such item. The query matches the instance `name` exactly; to
 match a spec name use `specName == "<spec>"`.
 
-**Binary content:** When the stored bytes are valid UTF-8, `contentEncoding` is
-`"utf-8"` and `content` is the text (a leading byte-order mark is dropped), or
-the parsed value for `application/json` content that parses. Otherwise (an
-image, an archive) `contentEncoding` is `"base64"` and `content` is the
-base64-encoded bytes, so no byte is lost. Without `--json`, binary data prints a
-one-line notice instead of the bytes. `data query` returns `content` only for
-text content types (`text/*`, JSON, YAML), so saving a binary artifact still
-goes through the deprecated `data get`:
+**Binary content:** A `--select` that names `content` returns every byte (a
+leading UTF-8 byte-order mark is dropped). When the stored bytes are valid
+UTF-8, `content` is the text (or the parsed object for JSON) and
+`contentEncoding` is `"utf-8"`. Otherwise (an image, an archive, text that is
+not UTF-8) `content` is the base64-encoded bytes and `contentEncoding` is
+`"base64"`. Select both, since a binary type can hold valid UTF-8:
 
 ```bash
-swamp data get my-model logo --json | jq -r .content | base64 -d > logo.png
+swamp data query 'modelName == "my-model" && name == "logo"' \
+  --select '{"content": content, "contentEncoding": contentEncoding}' --json \
+  | jq -r '.results[0].content' | base64 -d > logo.png
 ```
+
+`contentEncoding` exists only in `--select`. `content` is `null` when the bytes
+are not on this host (another namespace's item in a shared datastore).
+
+**Content in a predicate is text.** Reading `content` in the predicate on an
+item whose `contentType` is not text fails the query, naming the item. Text
+types are `text/*`, text-based types such as JSON, YAML, XML and TOML, and
+`+json` / `+xml` / `+yaml` types; `; charset=...` is ignored. Guard the
+condition with the type, adding the other text types when they should match:
+`contentType.startsWith("text/") && content.contains("error")`.
 
 ## Workflow-Scoped Data Access
 

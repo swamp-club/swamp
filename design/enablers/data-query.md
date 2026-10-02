@@ -43,8 +43,11 @@ run wrote the same data name
 `workflowRunId`, `jobName` and `stepName` selects one item.
 The printed `replacementQuery` names a model's data by `modelType` and
 `modelId`, which survive a rename, and report output (which records no run) the
-same way. A read whose content is not UTF-8 text has no replacement yet
-(swamp-club#2959). The CLI appends its own `--server` / `--repo-dir` to every
+same way. A read whose content may not be UTF-8 text (a non-text content type,
+or text that came back base64-encoded) is replaced by a query that selects
+`{"content": content, "contentEncoding": contentEncoding}` instead of
+`content` alone, with `--json`, since base64 is read from the JSON result.
+The CLI appends its own `--server` / `--repo-dir` to every
 printed query.
 
 ### CLI shortcuts
@@ -61,7 +64,9 @@ Add `--single` to any of these to get one bare object under `--json`, as
 `data get --json` printed (see [Single result](#single-result---single)).
 
 A query matches the instance `name` exactly, where `data get` fell back to the
-spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
+spec name; match a spec with `specName == "<s>"`. For a binary item, select
+`{"content": content, "contentEncoding": contentEncoding}` so a base64 body can
+be told from text (see [Binary content](#binary-content)). A query has no "latest run of
 a workflow" form: look the run id up with
 `swamp workflow history get <workflow>` first.
 
@@ -84,11 +89,12 @@ setup, after a pull, an invalidate and a catalog rebuild. On a lazy datastore
 does (see [datastores.md](./datastores.md#getcontentsync-limitation)), so a
 broad attribute predicate downloads the body of every row that passes its
 metadata terms, and a query with no `select` downloads the body of every JSON
-row it returns, because results carry `attributes`. A `select` over metadata
-fields only downloads nothing. A failed download fails the query, as it fails
-`data get`. Two differences remain: a binary item's `content` is `""` in a
-query but base64 from `data get` (swamp-club#2959), and `data get` follows a
-renamed item's forward reference while a query by the old name matches nothing
+row it returns, because results carry `attributes`. A `select` that reads
+`content` downloads the body of each item it returns, after `include` has run,
+whatever its content type (see [Binary content](#binary-content)). A `select`
+over metadata fields only downloads nothing. A failed download fails the query,
+as it fails `data get`. One difference remains: `data get` follows a renamed
+item's forward reference while a query by the old name matches nothing
 (swamp-club#2972).
 
 ### CEL shortcuts
@@ -268,7 +274,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `ownerType` | string | `"model-method"`, `"workflow-step"`, or `"manual"` |
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
-| `content` | dyn | Parsed object for JSON, raw text for other text types (lazy-loaded) |
+| `content` | dyn | Parsed object for JSON, raw text for other text types (lazy-loaded); reading it on a non-text item is an error — see [Binary content](#binary-content) |
 | `ownerRef` | string | Model definition ID that owns this data |
 | `workflowRunId` | string | Workflow run ID (`""` outside workflows) |
 | `workflowName` | string | Workflow name (`""` outside workflows) |
@@ -283,12 +289,67 @@ touches them (a metadata term earlier in `&&` skips the read), or when a
 matching row's result or `select` projection needs them. If a body read fails
 for a matching row, the query fails instead of silently skipping the row.
 
-`attributes` holds parsed JSON (for `application/json` only). `content` is the
-raw text string for `text/*`, `application/yaml` and `application/x-yaml`
-(`src/domain/data/content_type.ts` `isTextContentType`). For
-`application/json` it is the same parsed object as `attributes`
-(`src/domain/data/data_record_mapper.ts` `parseContent`). For binary content
-types, `content` is `""`.
+`attributes` holds parsed JSON (for `application/json` only). In a predicate,
+`content` is the raw text string for a text content type, decoded leniently.
+The text types (`src/domain/data/content_type.ts` `isTextContentType`) are
+`text/*`; the text-based `application/*` types JSON, NDJSON, YAML
+(`application/yaml`, `application/x-yaml`), XML, TOML, JavaScript,
+ECMAScript, shell, SQL and GraphQL; and any type with a `+json`, `+xml` or
+`+yaml` structured-syntax suffix. Parameters (`; charset=utf-8`) and case are
+ignored. For `application/json` it is the same parsed object as
+`attributes` (`src/domain/data/data_record_mapper.ts` `parseContent`). A
+`select` projection reads `content` for every content type without losing a
+byte (a leading UTF-8 byte-order mark is dropped, as `data get` drops it); see
+[Binary content](#binary-content).
+
+### Binary content
+
+`content` is a text concept in a predicate: binary bytes have no text to match
+against. A predicate that reads `content` on an item whose content type is not
+text fails the query with `BinaryContentPredicateError`
+(`src/domain/data/binary_content_predicate_error.ts`), naming the item, rather
+than silently skipping it (swamp-club#2959). The check uses the catalog's
+`contentType`, so no bytes are read to make it, and it applies even when CEL
+would absorb the error (`content == "x" || true`). Guard the content condition
+with the type, which `&&` short-circuits. This guard covers `text/*`; add the
+other text types when they should match too:
+
+```cel
+contentType.startsWith("text/") && content.contains("error")
+```
+
+With an `include` callback (`swamp serve`), a violating item goes through
+`include` like any match, and only one the caller may read raises the error;
+others are dropped as non-matches, so neither the error nor its absence
+reveals an unreadable item. Either way, only a violation evaluated before the
+query's limit was reached counts: with `include`, matching runs ahead in
+batches, so violations are walked in evaluation order with the matches and
+ignored once the accepted page is full. A query that stops at its limit first
+does not fail, with or without `include`.
+
+A `select` that references `content` or `contentEncoding` reads each item's
+bytes in the projection step, after `include` has run
+(`DataQueryService.projectedContents`). The async `query()` reads them with
+`getContent`, so a lazily-synced body is downloaded as `data get` downloads it;
+`querySync` (CEL `data.query()`) reads local disk only. Bytes are represented as `data get`
+represents them (`src/domain/data/content_encoding.ts` `encodeContent`): UTF-8
+text when the bytes are valid UTF-8, otherwise base64. `contentEncoding`
+(`utf-8` or `base64`) says which, and exists only in a projection — naming it
+in a predicate is an unknown-field error, since answering it would read every
+candidate's bytes. JSON items keep `content` as the parsed attributes, with
+`contentEncoding` `utf-8`. An item whose bytes are not on this host (any item
+from another namespace in a shared datastore, or a non-JSON item whose file is
+missing) projects `content` and `contentEncoding` as `null`, never as empty
+content. A leading UTF-8 byte-order mark is dropped from `utf-8` content, as
+`data get` drops it. The same rules apply
+to `data.query()` in CEL expressions.
+
+```bash
+# Download a binary item
+swamp data query 'modelName == "site" && name == "logo"' \
+  --select '{"content": content, "contentEncoding": contentEncoding}' --json \
+  | jq -r '.results[0].content' | base64 -d > logo.png
+```
 
 ## Provenance-Based Filtering
 
@@ -575,12 +636,16 @@ in CEL.
    a column, so this is metadata only)
 6. For each row:
    a. Project row into query record
-   b. If step 4 found a content reference:
-      load content from disk for this row
+   b. If step 4 found a content reference in the filter:
+      load content from disk for this row (a non-text row records a
+      violation instead, without reading its bytes)
    c. Evaluate full CEL predicate against query record
    d. If true: add to results
    e. If results.length >= limit: stop
-7. Return results
+7. Raise BinaryContentPredicateError for a violation the caller may read
+8. Project: a select that references content or contentEncoding reads and
+   encodes each remaining record's bytes
+9. Return results
 ```
 
 Iteration uses paged `stmt.all()` with `LIMIT/OFFSET`, so rows arrive in
@@ -768,7 +833,8 @@ keeps matching until enough rows survive the stale-row check.
 
 Projection is a domain/application concern. `DataQueryService` still returns
 `DataRecord[]`, but accepts a `select` option so it loads
-`attributes`/`content` from disk when the projection references them. The
+`attributes`/`content` from disk when the projection references them (content
+in the projection step, after `include`; see [Binary content](#binary-content)). The
 libswamp generator evaluates the projection on each result, classifies the
 output shape, and yields typed events. On the `--select` path the renderer
 builds markdown from the event data and passes it through
