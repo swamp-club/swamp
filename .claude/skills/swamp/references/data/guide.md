@@ -29,6 +29,13 @@ read `results[0]` (JSON content comes back parsed). An empty `results` means no
 such item. The query matches the instance `name` exactly (use
 `specName == "<spec>"` for a spec name).
 
+Add `--single` to require exactly one match. With `--json` it prints that record
+(or its `--select` value) on its own instead of the envelope, so scripts that
+parsed `data get --json` keep parsing one object; zero or several matches exit
+non-zero with code `QUERY_NO_MATCH` or `QUERY_MULTIPLE_MATCHES` instead of
+reading the wrong `results[0]`. See [reference.md](reference.md#query-data) for
+the fields `data get --json` has that the query record lacks.
+
 A query returns only each item's latest version unless the predicate names
 `version`, and "latest" is kept per workflow step. So:
 

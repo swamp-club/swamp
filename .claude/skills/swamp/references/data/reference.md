@@ -20,9 +20,19 @@ swamp data query 'attributes.status == "failed"' --select 'name'
 # History — all versions of a specific data item
 swamp data query 'modelName == "my-model" && name == "state" && version >= 0' --select 'version'
 
+# Exactly one match, printed as a bare object (fails on zero or several)
+swamp data query 'modelName == "my-model" && name == "state"' --single --json
+
 # Interactive mode — TUI with live autocomplete, no predicate needed
 swamp data query
 ```
+
+`--single` cannot be combined with `--limit` and needs a predicate. Its object
+is the same record that `--json` otherwise lists under `results`: the payload is
+in `content`, and provenance fields (`workflowRunId`, `stepName`, ...) are
+included. Unlike `data get --json` it has no `ownerDefinition`,
+`garbageCollection`, `checksum`, `contentPath`, or `contentEncoding`. With
+`--select`, a match whose projection fails prints `null`.
 
 ## List Model Data
 

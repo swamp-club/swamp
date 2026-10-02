@@ -453,6 +453,7 @@ export {
   type DataQueryEvent,
   type DataQueryInput,
   type ProjectedData,
+  requireSingleResult,
 } from "./data/query.ts";
 export type { DataRecord } from "../domain/data/data_record.ts";
 

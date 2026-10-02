@@ -57,6 +57,9 @@ Deprecated `data get` forms map to these queries:
 | `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
 | `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 
+Add `--single` to any of these to get one bare object under `--json`, as
+`data get --json` printed (see [Single result](#single-result---single)).
+
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
 a workflow" form: look the run id up with
@@ -730,6 +733,21 @@ columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
 `--select` composes with `--json`, which renders projected values as JSON
 instead of human-readable text. It also composes with `--limit`: the limit
 applies to matched rows, the projection to output.
+
+### Single result (`--single`)
+
+`--single` requires exactly one match. The libswamp generator queries without
+a limit and yields `QUERY_NO_MATCH` or `QUERY_MULTIPLE_MATCHES` instead of
+`completed` otherwise, so the command exits non-zero. It does not query with a
+limit of 2: an unfiltered query applies its limit before stale catalog rows are
+dropped, so two scanned rows could leave one live match and hide a second. With `--json` the renderer prints the one record (the object the
+envelope would carry as `results[0]`) or its projected value bare, without the
+`{results, total, limited}` envelope; log output is unchanged. `--single`
+conflicts with `--limit` and requires a predicate. Over `--server` the client
+sends `limit: 2` and applies the same `requireSingleResult` check to the
+records in the response, so the `data.query` protocol is unchanged. The limit is
+safe there because the server filters by read access, and a filtered query
+keeps matching until enough rows survive the stale-row check.
 
 ### Implementation
 

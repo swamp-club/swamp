@@ -24,6 +24,8 @@ import {
   dataQuery,
   type DataQueryData,
   type DataQueryDeps,
+  requireSingleResult,
+  userErrorFromSwampError,
 } from "../../libswamp/mod.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
@@ -40,10 +42,63 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { DataQueryResponse } from "../../serve/protocol.ts";
+import type {
+  DataQueryPayload,
+  DataQueryResponse,
+} from "../../serve/protocol.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Builds the `data.query` request sent with `--server`. A single-result query
+ * asks for two matches, enough to tell one from several. That limit is safe
+ * remotely because the server filters every query by read access, and the
+ * query service fills a filtered limit from records that survive its stale-row
+ * check. The check itself runs on the client (renderRemoteQueryResponse) so
+ * older servers need no protocol change.
+ */
+export function remoteQueryPayload(
+  predicate: string,
+  options: { limit?: number; select?: string; single: boolean },
+): DataQueryPayload {
+  return {
+    predicate,
+    limit: options.single ? 2 : options.limit,
+    select: options.select,
+  };
+}
+
+/**
+ * Applies `--single` to a `--server` query response, then renders it. The
+ * match count comes from the records the response carries rather than its
+ * `total`, so a malformed response fails as a clear error instead of crashing
+ * the renderer.
+ */
+export function renderRemoteQueryResponse(
+  predicate: string,
+  data: DataQueryData,
+  outputMode: OutputMode,
+  single: boolean,
+): void {
+  if (single) {
+    const matches = data.projected
+      ? data.projected.shape === "scalar"
+        ? data.projected.values
+        : data.projected.rows
+      : data.results;
+    const error = requireSingleResult({
+      predicate,
+      total: matches?.length ?? 0,
+    });
+    if (error) throw userErrorFromSwampError(error);
+  }
+  createDataQueryRenderer(outputMode, false, { single }).handlers().completed({
+    kind: "completed",
+    data,
+  });
+}
 
 export const dataQueryCommand = withRemoteOptions(
   new Command()
@@ -64,6 +119,11 @@ export const dataQueryCommand = withRemoteOptions(
       "--select <expr:string>",
       "CEL expression to extract fields from matching records (e.g. data.name)",
     )
+    .option(
+      "--single",
+      "Require exactly one match; with --json, print the match (or its --select value) on its own instead of a results list",
+      { conflicts: ["limit"] },
+    )
     .example(
       "Interactive mode",
       "swamp data query",
@@ -76,9 +136,21 @@ export const dataQueryCommand = withRemoteOptions(
     .example(
       "Project a single field",
       "swamp data query 'dataType == \"resource\"' --select data.name",
+    )
+    .example(
+      "Get exactly one record as an object",
+      'swamp data query \'modelName == "scanner" && name == "state"\' --single --json',
     ),
 ).action(async function (options: AnyOptions, predicate?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "query"]);
+  const single = options.single === true;
+
+  if (single && !predicate) {
+    throw new UserError(
+      "A CEL predicate is required with --single.\n" +
+        'Usage: swamp data query \'modelName == "scanner" && name == "state"\' --single',
+    );
+  }
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -97,18 +169,19 @@ export const dataQueryCommand = withRemoteOptions(
       { server, token },
       {
         type: "data.query",
-        payload: {
-          predicate,
+        payload: remoteQueryPayload(predicate, {
           limit: options.limit as number | undefined,
           select: options.select as string | undefined,
-        },
+          single,
+        }),
       },
     );
-    const renderer = createDataQueryRenderer(ctx.outputMode, false);
-    renderer.handlers().completed({
-      kind: "completed",
-      data: response.data as unknown as DataQueryData,
-    });
+    renderRemoteQueryResponse(
+      predicate,
+      response.data as unknown as DataQueryData,
+      ctx.outputMode,
+      single,
+    );
     return;
   }
 
@@ -157,12 +230,15 @@ export const dataQueryCommand = withRemoteOptions(
 
   const libCtx = createLibSwampContext();
 
-  const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace);
+  const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace, {
+    single,
+  });
   await consumeStream(
     dataQuery(libCtx, deps, {
       predicate,
       select: options.select as string | undefined,
       limit: options.limit as number | undefined,
+      single,
     }),
     renderer.handlers(),
   );
