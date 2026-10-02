@@ -402,7 +402,7 @@ Deno.test("createDataQueryRenderer: log mode notes conditions that were not carr
 
   assertStringIncludes(
     output,
-    "(conditions other than equality checks were not carried over)",
+    "(some conditions from your query were not carried over)",
   );
 });
 

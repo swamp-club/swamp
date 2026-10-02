@@ -154,12 +154,12 @@ async function findSpecNameHint(
   deps: DataQueryDeps,
   input: DataQueryInput,
 ): Promise<SpecNameHint | undefined> {
-  const fallback = deps.specNameFallback?.(input.predicate);
-  if (!fallback) return undefined;
   const matches = async (predicate: string) =>
     (await deps.query(predicate, { limit: 1, include: input.include }))
       .length > 0;
   try {
+    const fallback = deps.specNameFallback?.(input.predicate);
+    if (!fallback) return undefined;
     // Data with this instance name in the same scope means a dropped
     // condition excluded it, not the name: a spec-name hint would mislead.
     if (fallback.droppedConjuncts && await matches(fallback.namePredicate)) {

@@ -215,6 +215,8 @@ interface DataRecord {
   dataType: string;
   contentType: string;
   lifetime: string;
+  // Version retention: a count, or a duration such as "30d"; "" when unknown
+  garbageCollection: number | string;
   ownerType: string;
   streaming: boolean;
   size: number;

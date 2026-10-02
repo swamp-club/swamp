@@ -321,7 +321,7 @@ function renderSpecNameHint(hint: SpecNameHint): string {
   ];
   if (hint.otherFiltersDropped) {
     lines.push(
-      dim("  (conditions other than equality checks were not carried over)"),
+      dim("  (some conditions from your query were not carried over)"),
     );
   }
   return lines.join("\n");

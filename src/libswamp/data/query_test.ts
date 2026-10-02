@@ -627,3 +627,23 @@ Deno.test("dataQuery: no probe with a zero limit", async () => {
   assertEquals(calls.length, 1);
   assertEquals(data.specNameHint, undefined);
 });
+
+Deno.test("dataQuery: a throwing spec-name fallback omits the hint without failing the query", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([]),
+    specNameFallback: () => {
+      throw new Error("parser unavailable");
+    },
+  };
+
+  const data = completedOf(
+    await collect<DataQueryEvent>(
+      dataQuery(createLibSwampContext(), deps, {
+        predicate: 'name == "classification"',
+      }),
+    ),
+  );
+
+  assertEquals(data.total, 0);
+  assertEquals(data.specNameHint, undefined);
+});
