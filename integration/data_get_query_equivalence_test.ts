@@ -50,6 +50,7 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { createLatestRunResolver } from "../src/domain/workflows/workflow_lookup.ts";
 import {
   saveData,
   saveModel,
@@ -410,5 +411,113 @@ Deno.test("data query: a run-scoped query by spec name gets a hint scoped to the
     );
     assertEquals(filtered.total, 0);
     assertEquals(filtered.specNameHint, undefined);
+  });
+});
+
+// A read without --run follows the workflow's latest run; data query
+// follows it with latestRun("<workflow>") (swamp-club#2957).
+
+/**
+ * Saves two runs of `two-runs`, each with one step that wrote `result`. The
+ * newer run's step wrote first, so the older run holds the higher version
+ * and, by version, the latest `result`.
+ */
+async function twoRuns(repo: ServeRepo) {
+  const model = await saveModel(repo, "deploy-model");
+  const workflow = Workflow.create({
+    name: "two-runs",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "build",
+        task: StepTask.modelMethod(model.name, "noop"),
+      })],
+    })],
+  });
+  await repo.repoContext.workflowRepo.save(workflow);
+
+  const saveRun = async (startedAt: string, value: string) => {
+    const created = WorkflowRun.create(workflow).toData();
+    const saved = await saveStepResult(
+      repo,
+      model,
+      { id: created.id, workflowName: workflow.name },
+      "main",
+      "build",
+      value,
+    );
+    const run = WorkflowRun.fromData({
+      ...created,
+      status: "succeeded",
+      startedAt,
+      jobs: created.jobs.map((job) => ({
+        ...job,
+        status: "succeeded",
+        steps: job.steps.map((step) => ({
+          ...step,
+          status: "succeeded",
+          dataArtifacts: [{
+            dataId: saved.id,
+            name: saved.name,
+            version: saved.version,
+            tags: { ...saved.data.tags },
+          }],
+        })),
+      })),
+    });
+    await repo.repoContext.workflowRunRepo.save(workflow.id, run);
+    return { run, saved };
+  };
+  const newer = await saveRun("2026-02-01T00:00:00.000Z", "newer");
+  const older = await saveRun("2026-01-01T00:00:00.000Z", "older");
+  return { newer, older };
+}
+
+/** Runs `predicate` the way swamp data query does on the command line. */
+async function queryAsCli(
+  repo: ServeRepo,
+  predicate: string,
+): Promise<DataRecord[]> {
+  return await repo.repoContext.dataQueryService.query(predicate, {
+    latestRunResolver: createLatestRunResolver(
+      repo.repoContext.workflowRepo,
+      repo.repoContext.workflowRunRepo,
+    ),
+  }) as DataRecord[];
+}
+
+Deno.test("data query: latestRun selects what data get reads without --run, where workflowName does not", async () => {
+  await withServeRepo(async (repo) => {
+    const { newer, older } = await twoRuns(repo);
+    assert(older.saved.version > newer.saved.version);
+
+    const data = await read(repo, {
+      workflowName: "two-runs",
+      dataName: "result",
+    });
+    assertEquals(data.id, newer.saved.id);
+    assertEquals(data.version, newer.saved.version);
+
+    // By version, the older run's item is the latest.
+    const byName = await queryAsCli(
+      repo,
+      'workflowName == "two-runs" && name == "result"',
+    );
+    assertEquals(byName.map((r) => r.workflowRunId), [older.run.id]);
+
+    const latest = await queryAsCli(
+      repo,
+      'workflowRunId == latestRun("two-runs") && jobName == "main" && ' +
+        'stepName == "build" && name == "result" && version >= 0',
+    );
+    assertSameItem(latest, data);
+    assertEquals(latest[0].workflowRunId, newer.run.id);
+
+    // The query data get's notice names follows the same run.
+    const notice = data.warnings![0].match(
+      /latest run instead, run: (swamp data query .*)\)$/,
+    );
+    assert(notice, data.warnings![0]);
+    assertSameItem(await queryAsCli(repo, predicateOf(notice[1])), data);
   });
 });

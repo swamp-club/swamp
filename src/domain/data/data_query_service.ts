@@ -30,10 +30,13 @@ import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
+  collectLatestRunWorkflows,
   collectRootIdentifiers,
   extractModelNameEquality,
   extractStringEquality,
+  extractWorkflowRunIdLatestRun,
   HISTORY_OPT_IN_FIELDS,
+  LATEST_RUN_FUNCTION,
   referencesAttributes,
   referencesContent,
   selectReadsContent,
@@ -49,6 +52,14 @@ import { fromRow } from "./data_record_mapper.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
+
+function latestRunUnavailable(): UserError {
+  return new UserError(
+    `${LATEST_RUN_FUNCTION}() is only available in swamp data query; ` +
+      `here, compare workflowRunId with the run id as a string, e.g. ` +
+      `workflowRunId == "<run-id>"`,
+  );
+}
 
 /**
  * Sets `is_latest` and `is_step_latest` on each row to match the semantics
@@ -113,6 +124,20 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
   }
 }
 
+/**
+ * Resolves the workflow named in a `latestRun("<workflow>")` query call to
+ * the id of its most recent run, or null when it has no runs. Throws a
+ * UserError when the workflow is unknown or the caller may not read it.
+ */
+export type LatestWorkflowRunResolver = (
+  workflow: string,
+) => Promise<string | null>;
+
+/** The run each `latestRun` workflow resolved to for one query. */
+type LatestRuns = ReadonlyMap<string, string | null>;
+
+const NO_LATEST_RUNS: LatestRuns = new Map();
+
 export interface DataQueryOptions {
   limit?: number;
   /** CEL projection expression. When set, results are projected and returned as unknown[]. */
@@ -150,6 +175,12 @@ export interface DataQueryOptions {
    * control-plane records (swamp-club#2756).
    */
   excludeModelTypes?: readonly string[];
+  /**
+   * Resolves `latestRun("<workflow>")` calls in the predicate and select.
+   * Passed per call, so each caller decides whose workflows may be resolved;
+   * without it a query that calls latestRun fails (swamp-club#2957).
+   */
+  latestRunResolver?: LatestWorkflowRunResolver;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -526,6 +557,9 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
+    // Resolved before the catalog is touched, so a query that cannot
+    // resolve its runs fails without a backfill.
+    const latestRuns = await this.resolveLatestRuns(predicate, options);
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
     if (options?.include) {
@@ -538,10 +572,15 @@ export class DataQueryService {
       // Shared across batches, so a row is downloaded at most once.
       const tried = new Set<string>();
       while (true) {
-        const matched = await this.matchWithHydration(predicate, {
-          ...options,
-          limit: batch,
-        }, tried);
+        const matched = await this.matchWithHydration(
+          predicate,
+          {
+            ...options,
+            limit: batch,
+          },
+          latestRuns,
+          tried,
+        );
         // Walk violations and matches in the order they were evaluated, and
         // stop where the accepted page fills, so a violation is raised only
         // where a query without include would have reached it. A violation
@@ -584,7 +623,11 @@ export class DataQueryService {
         batch *= 4;
       }
     } else {
-      const matched = await this.matchWithHydration(predicate, options);
+      const matched = await this.matchWithHydration(
+        predicate,
+        options,
+        latestRuns,
+      );
       if (matched.violations.length > 0) {
         throw new BinaryContentPredicateError(matched.violations[0].record);
       }
@@ -682,6 +725,60 @@ export class DataQueryService {
   }
 
   /**
+   * Resolves each distinct workflow the predicate and select pass to
+   * `latestRun`, once per query, through the caller's resolver.
+   */
+  private async resolveLatestRuns(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<LatestRuns> {
+    const workflows = this.latestRunWorkflows(
+      this.queryEnv.parse(predicate).ast as ASTNode,
+      options?.select,
+    );
+    if (workflows.length === 0) return NO_LATEST_RUNS;
+    const resolver = options?.latestRunResolver;
+    if (!resolver) throw latestRunUnavailable();
+    const latestRuns = new Map<string, string | null>();
+    for (const workflow of workflows) {
+      latestRuns.set(workflow, await resolver(workflow));
+    }
+    return latestRuns;
+  }
+
+  /** The workflows `latestRun` is called with in a predicate and select. */
+  private latestRunWorkflows(predicateAst: ASTNode, select?: string): string[] {
+    const workflows = new Set(collectLatestRunWorkflows(predicateAst));
+    if (select) {
+      const selectAst = this.queryEnv.parse(select).ast as ASTNode;
+      for (const workflow of collectLatestRunWorkflows(selectAst)) {
+        workflows.add(workflow);
+      }
+    }
+    return [...workflows];
+  }
+
+  /**
+   * An environment where `latestRun` returns the runs resolved for this
+   * query. A clone, so the shared environment — and every concurrent
+   * query — never sees another query's runs.
+   */
+  private latestRunEnv(
+    workflows: string[],
+    latestRuns: LatestRuns,
+  ): Environment {
+    // Every call must have been resolved: an unregistered call would fail
+    // on each row, and per-row failures are skipped, not reported.
+    if (workflows.some((workflow) => !latestRuns.has(workflow))) {
+      throw latestRunUnavailable();
+    }
+    return this.queryEnv.clone().registerFunction(
+      `${LATEST_RUN_FUNCTION}(string): dyn`,
+      (workflow: string) => latestRuns.get(workflow) ?? null,
+    );
+  }
+
+  /**
    * {@link executeMatch} for the async query path, with lazy content
    * hydrated. Matching is synchronous and reads bodies with getContentSync,
    * which cannot download, so a lazily-synced row would evaluate and return
@@ -704,7 +801,8 @@ export class DataQueryService {
    */
   private async matchWithHydration(
     predicate: string,
-    options?: DataQueryOptions,
+    options: DataQueryOptions | undefined,
+    latestRuns: LatestRuns,
     tried = new Set<string>(),
   ): Promise<MatchResult> {
     let collectLimit = options?.limit;
@@ -715,6 +813,7 @@ export class DataQueryService {
         predicate,
         { ...options, limit: collectLimit },
         missing,
+        latestRuns,
       );
       let hydrated = false;
       for (const [key, row] of missing) {
@@ -729,7 +828,7 @@ export class DataQueryService {
       if (!hydrated) {
         return collectLimit === options?.limit
           ? matched
-          : this.executeMatch(predicate, options);
+          : this.executeMatch(predicate, options, undefined, latestRuns);
       }
       // This pass reached rows a previous download had not: the rows that
       // download synced stopped matching, so widen the window.
@@ -750,6 +849,7 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
     missingContent?: Map<string, CatalogRow>,
+    latestRuns: LatestRuns = NO_LATEST_RUNS,
   ): MatchResult {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
@@ -763,10 +863,21 @@ export class DataQueryService {
 
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
-    const userParsed = this.queryEnv.parse(predicate);
+    let userParsed = this.queryEnv.parse(predicate);
     const userAst = userParsed.ast as ASTNode;
     const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
+
+    // A query calling latestRun parses in an environment that has it.
+    let env = this.queryEnv;
+    const latestRunWorkflows = this.latestRunWorkflows(
+      userAst,
+      options?.select,
+    );
+    if (latestRunWorkflows.length > 0) {
+      env = this.latestRunEnv(latestRunWorkflows, latestRuns);
+      userParsed = env.parse(predicate);
+    }
 
     // Implicit latest-only: unless the predicate references `version` or
     // `isLatest` at root, restrict results to rows where is_latest is true.
@@ -784,13 +895,13 @@ export class DataQueryService {
       : `(${predicate}) && isLatest == true`;
     const parsed = opensHistory || latestPerStep
       ? userParsed
-      : this.queryEnv.parse(effectivePredicate);
+      : env.parse(effectivePredicate);
     const filterAst = parsed.ast as ASTNode;
 
     // Parse select expression if provided
     let selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined;
     if (options?.select) {
-      selectParsed = this.queryEnv.parse(options.select) as unknown as (
+      selectParsed = env.parse(options.select) as unknown as (
         ctx: Record<string, unknown>,
       ) => unknown;
     }
@@ -845,6 +956,23 @@ export class DataQueryService {
     if (specNameLiteral !== null) {
       whereClauses.push("spec_name = ?");
       whereParams.push(specNameLiteral);
+    }
+
+    const latestRunWorkflow = extractWorkflowRunIdLatestRun(userAst);
+    if (latestRunWorkflow !== null) {
+      const runId = latestRuns.get(latestRunWorkflow) ?? null;
+      // A workflow with no runs: no row can equal its latest run.
+      if (runId === null) {
+        return {
+          records: [],
+          selectParsed,
+          selectReadsContent: readsContentInSelect,
+          violations: [],
+          hitLimit: false,
+        };
+      }
+      whereClauses.push("workflow_run_id = ?");
+      whereParams.push(runId);
     }
 
     const rows = whereClauses.length > 0

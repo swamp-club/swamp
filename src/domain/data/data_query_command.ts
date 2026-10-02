@@ -24,18 +24,24 @@ import { isTextContentType } from "./content_type.ts";
  * The coordinates of one stored data item, as a `swamp data query` predicate
  * selects it. Set the fields that identify the item for the read being
  * replaced: a model-scoped read names the model, a workflow-scoped read names
- * the run, job and step that produced it.
+ * the run, job and step that produced it. The run is either pinned by its id
+ * or, with `latestRunWorkflow`, followed as that workflow's latest run
+ * (swamp-club#2957) — never both.
  */
-export interface DataQueryTarget {
-  dataName: string;
-  version?: number;
-  modelType?: string;
-  modelId?: string;
-  modelName?: string;
-  workflowRunId?: string;
-  jobName?: string;
-  stepName?: string;
-}
+export type DataQueryTarget =
+  & {
+    dataName: string;
+    version?: number;
+    modelType?: string;
+    modelId?: string;
+    modelName?: string;
+    jobName?: string;
+    stepName?: string;
+  }
+  & (
+    | { workflowRunId?: string; latestRunWorkflow?: never }
+    | { latestRunWorkflow: string; workflowRunId?: never }
+  );
 
 /** Writes a value as a CEL string literal; JSON escapes are valid CEL. */
 export function celString(value: string): string {
@@ -45,11 +51,17 @@ export function celString(value: string): string {
 /**
  * Builds the CEL predicate that selects `target`. Naming the version also
  * opts the query into history, so a version that is no longer the latest is
- * still found.
+ * still found. A latest-run target without a version opts in with
+ * `version >= 0`: a later write elsewhere can demote the run's item from
+ * latest, and the run still holds it.
  */
 export function dataQueryPredicate(target: DataQueryTarget): string {
   const clauses: string[] = [];
-  if (target.workflowRunId !== undefined) {
+  if (target.latestRunWorkflow !== undefined) {
+    clauses.push(
+      `workflowRunId == latestRun(${celString(target.latestRunWorkflow)})`,
+    );
+  } else if (target.workflowRunId !== undefined) {
     clauses.push(`workflowRunId == ${celString(target.workflowRunId)}`);
   }
   if (target.jobName !== undefined) {
@@ -70,6 +82,8 @@ export function dataQueryPredicate(target: DataQueryTarget): string {
   clauses.push(`name == ${celString(target.dataName)}`);
   if (target.version !== undefined) {
     clauses.push(`version == ${target.version}`);
+  } else if (target.latestRunWorkflow !== undefined) {
+    clauses.push("version >= 0");
   }
   return clauses.join(" && ");
 }

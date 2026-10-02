@@ -38,6 +38,8 @@ import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -47,6 +49,7 @@ import {
   saveModel,
   saveOutput,
   saveRun,
+  saveRunStepData,
   saveWorkflow,
   sendRequest,
   type ServeRepo,
@@ -608,5 +611,88 @@ Deno.test("serve condition-fields conformance: data.query's page size says nothi
       assertEquals(body.payload?.data?.total, 0, `select=${select}`);
       assertEquals(body.payload?.data?.limited, false, `select=${select}`);
     }
+  });
+});
+
+/** Saves a run of `workflow` started after every fixture run. */
+async function saveLatestRun(
+  f: Fixtures,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const run = WorkflowRun.fromData({
+    ...WorkflowRun.create(workflow).toData(),
+    startedAt: new Date().toISOString(),
+  });
+  await f.repo.repoContext.workflowRunRepo.save(workflow.id, run);
+  return run;
+}
+
+function queryError(frames: Frame[]): string {
+  const error = errorFrame(frames);
+  assertEquals(error?.error?.code, "data_query_failed", JSON.stringify(frames));
+  return error!.error!.message;
+}
+
+Deno.test("serve condition-fields conformance: data.query's latestRun needs read on the workflow, and a refusal reads as not found", async () => {
+  await withFixtures(async (f) => {
+    // Step output readable as dev-db's data, from each workflow's latest
+    // run. Distinct names, so neither write demotes the other's latest.
+    const prodRun = await saveLatestRun(f, f.prodWorkflow);
+    await saveRunStepData(f.repo, f.devModel, prodRun, "prod-out");
+    const devRun = await saveLatestRun(f, f.devWorkflow);
+    await saveRunStepData(f.repo, f.devModel, devRun, "dev-out");
+
+    const ctx = createServeCtx(f.repo, TAG_GRANTS);
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    const query = (payload: Record<string, unknown>, on = ctx) =>
+      sendRequest(on, request("data.query", payload));
+
+    // A denied workflow fails exactly as one that does not exist.
+    const denied = queryError(
+      await query({ predicate: 'workflowRunId == latestRun("prod-flow")' }),
+    );
+    const missing = queryError(
+      await query({ predicate: 'workflowRunId == latestRun("no-flow")' }),
+    );
+    assertEquals(denied, "Workflow not found: prod-flow");
+    assertEquals(missing, "Workflow not found: no-flow");
+    assert(
+      audit.some((event) =>
+        event.outcome === "denied" && event.resourceKind === "workflow" &&
+        event.resourceName === "prod-flow"
+      ),
+      JSON.stringify(audit),
+    );
+
+    // Selecting latestRun over readable data does not reveal the run id.
+    const selected = await query({
+      predicate: 'modelName == "dev-db"',
+      select: 'latestRun("prod-flow")',
+    });
+    queryError(selected);
+    assert(!JSON.stringify(selected).includes(prodRun.id));
+
+    // A readable workflow's latest run is selected.
+    const dev = reply(
+      await query({
+        predicate: 'workflowRunId == latestRun("dev-flow")',
+      }),
+      "data.query",
+    );
+    assert(dev.includes(devRun.id), dev);
+    assert(!dev.includes(prodRun.id), dev);
+
+    // Without the deny the prod run is selected, so the gate refused it.
+    const open = reply(
+      await query(
+        { predicate: 'workflowRunId == latestRun("prod-flow")' },
+        openCtx(f),
+      ),
+      "data.query",
+    );
+    assert(open.includes(prodRun.id), open);
   });
 });

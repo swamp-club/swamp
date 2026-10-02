@@ -18,9 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Workflow } from "./workflow.ts";
-import type { WorkflowRepository } from "./repositories.ts";
+import type { WorkflowRun } from "./workflow_run.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "./repositories.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import { isUuid } from "../models/model_lookup.ts";
+import { UserError } from "../errors.ts";
 
 /**
  * Finds a workflow by name, then by exact id — the one lookup precedence for
@@ -60,4 +65,39 @@ export async function findWorkflowById(
     return byName?.id === id ? byName : null;
   }
   return await workflowRepo.findById(createWorkflowId(id));
+}
+
+/**
+ * The most recent run of the workflow with id `workflowId` — latest by
+ * `startedAt`, whatever its status, as `swamp data get --workflow` and
+ * `swamp data list --workflow` read it. Null when the workflow has no runs,
+ * or when `workflowId` is not a UUID, so an unvalidated id never names a
+ * runs directory.
+ */
+export async function latestRunForWorkflow(
+  workflowRunRepo: Pick<WorkflowRunRepository, "findLatestByWorkflowId">,
+  workflowId: string,
+): Promise<WorkflowRun | null> {
+  if (!isUuid(workflowId)) return null;
+  return await workflowRunRepo.findLatestByWorkflowId(
+    createWorkflowId(workflowId),
+  );
+}
+
+/**
+ * Builds the resolver behind the `latestRun("<workflow>")` query function
+ * for a local caller, who may read every workflow: it finds the workflow by
+ * name, then by UUID, and returns its latest run's id, or null when it has
+ * no runs. An unknown workflow is a UserError.
+ */
+export function createLatestRunResolver(
+  workflowRepo: Pick<WorkflowRepository, "findByName" | "findById">,
+  workflowRunRepo: Pick<WorkflowRunRepository, "findLatestByWorkflowId">,
+): (workflow: string) => Promise<string | null> {
+  return async (idOrName) => {
+    const workflow = await findWorkflowByIdOrName(workflowRepo, idOrName);
+    if (!workflow) throw new UserError(`Workflow not found: ${idOrName}`);
+    const run = await latestRunForWorkflow(workflowRunRepo, workflow.id);
+    return run?.id ?? null;
+  };
 }

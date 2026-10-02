@@ -299,6 +299,24 @@ Deno.test("withCommandTarget: appends the target to every query the read names",
   ]);
 });
 
+Deno.test("withCommandTarget: appends the target to the latest-run query, in the field and the warning", () => {
+  const pinned = `swamp data query 'workflowRunId == "run-1" && version == 1'`;
+  const latest =
+    `swamp data query 'workflowRunId == latestRun("wf") && version >= 0'`;
+  const data = withCommandTarget({
+    ...testData,
+    replacementQuery: pinned,
+    latestRunQuery: latest,
+    warnings: [`Read this item with: ${pinned} (to follow, run: ${latest})`],
+  }, " --server wss://host");
+
+  assertEquals(data.latestRunQuery, `${latest} --server wss://host`);
+  assertEquals(data.warnings, [
+    `Read this item with: ${pinned} --server wss://host ` +
+    `(to follow, run: ${latest} --server wss://host)`,
+  ]);
+});
+
 Deno.test("withCommandTarget: a query that prefixes another is not matched inside it", () => {
   const short = `swamp data query 'name == "a"'`;
   const long = `${short} --select content`;

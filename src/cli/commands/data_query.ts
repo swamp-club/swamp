@@ -36,6 +36,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createLatestRunResolver } from "../../domain/workflows/workflow_lookup.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -141,6 +142,10 @@ export const dataQueryCommand = withRemoteOptions(
     .example(
       "Get exactly one record as an object",
       'swamp data query \'modelName == "scanner" && name == "state"\' --single --json',
+    )
+    .example(
+      "Read from a workflow's latest run",
+      "swamp data query 'workflowRunId == latestRun(\"deploy\") && version >= 0'",
     ),
 ).action(async function (options: AnyOptions, predicate?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "query"]);
@@ -200,9 +205,14 @@ export const dataQueryCommand = withRemoteOptions(
   }
 
   const queryService = repoContext.dataQueryService;
+  const latestRunResolver = createLatestRunResolver(
+    repoContext.workflowRepo,
+    repoContext.workflowRunRepo,
+  );
 
   const deps: DataQueryDeps = {
-    query: (pred, opts) => queryService.query(pred, opts),
+    query: (pred, opts) =>
+      queryService.query(pred, { ...opts, latestRunResolver }),
     specNameFallback: (pred) => queryService.specNameFallback(pred),
   };
 

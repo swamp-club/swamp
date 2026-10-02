@@ -59,6 +59,7 @@ Deprecated `data get` forms map to these queries:
 | `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                               |
 | `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
 | `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
+| `swamp data get --workflow <w> <n>`            | `swamp data query 'workflowRunId == latestRun("<w>") && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 
 Add `--single` to any of these to get one bare object under `--json`, as
 `data get --json` printed (see [Single result](#single-result---single)).
@@ -78,9 +79,11 @@ not the name, so there is no hint. Otherwise it runs the spec-name predicate
 conditions). Both probes use the caller's `include` filter, so the hint never
 reveals data the caller may not read; a failed probe only omits it, and the
 interactive TUI does not probe. With `--single`, where no match is an error,
-the hint is appended to the `QUERY_NO_MATCH` message. A query has no "latest run of
-a workflow" form: look the run id up with
-`swamp workflow history get <workflow>` first.
+the hint is appended to the `QUERY_NO_MATCH` message. `latestRun("<w>")` follows
+a workflow's latest run, as `data get --workflow` does without `--run` (see
+[Latest run of a workflow](#latest-run-of-a-workflow)). A workflow read without
+`--run` also names this latest-run query, in its deprecation warning and as
+`latestRunQuery` in `--json` output.
 
 The remaining read subcommands are shortcuts:
 
@@ -88,10 +91,15 @@ The remaining read subcommands are shortcuts:
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
-| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowRunId == latestRun("<w>") && version >= 0'`                      |
 | `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>" && version >= 0'`                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
+
+`data list --workflow` also lists the run's report output, which records no
+run id on the data, so the query leaves it out. `workflowName == "<w>"` is not
+the same read: it returns the latest version of each item the workflow wrote,
+which can come from different runs.
 
 `integration/data_query_get_parity_test.ts` holds the first two deprecated
 `data get` rows and the `data versions` row to their queries on the filesystem
@@ -423,6 +431,34 @@ value in the run's `RunSensitiveValues`, and `readResource()` and
 name goes through the query service and returns the stored reference. See
 "Read-Side Resolution" in `design/primitives/vaults.md`.
 
+### Latest run of a workflow
+
+`latestRun("<workflow>")` returns the id of a workflow's most recent run, so
+`workflowRunId == latestRun("deploy")` selects the data that run wrote
+(swamp-club#2957). Latest is the run with the most recent `startedAt`, whatever
+its status, the same run `data get --workflow` and `data list --workflow` read
+without `--run` (`WorkflowRunRepository.findLatestByWorkflowId`).
+
+- The argument is a workflow name or id, as a string literal. Each workflow is
+  resolved once per query, before any row is read
+  (`src/domain/data/query_predicate.ts` `collectLatestRunWorkflows`); a
+  per-row argument such as `latestRun(workflowName)` is an error.
+- An unknown workflow is an error. A workflow with no runs resolves to `null`,
+  so `workflowRunId == latestRun("<w>")` matches nothing and
+  `workflowRunId != latestRun("<w>")` matches every latest row (every version,
+  with `version >= 0`).
+- Add `version >= 0`, as for any read by `workflowRunId`: a later write
+  elsewhere can demote the run's item from latest, and the run still holds it.
+  A step that wrote the same name twice in one run then returns both versions.
+- It is available in `swamp data query` only. The caller passes the resolver
+  per query (`DataQueryOptions.latestRunResolver`); `data.query()` in CEL and
+  `context.queryData()` pass none, and a query there that calls `latestRun`
+  fails.
+- Over `swamp serve`, `latestRun` needs `read` on the workflow and on every
+  workflow its latest run is recorded under, as a history read of that run
+  does. A refusal is audited and fails exactly as an unknown workflow does,
+  naming only the argument.
+
 ## Predicate Syntax
 
 Predicates are standard CEL expressions that return a boolean. Any CEL
@@ -629,6 +665,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | implicit, with `latestPerStep` | `WHERE is_step_latest = 1` | `findBySpec`/`findByTag` only; no CEL `isLatest` term |
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
 | `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
+| `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
 expressions, comparisons, tag filters, `attributes` references, and complex

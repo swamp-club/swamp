@@ -69,6 +69,7 @@ import {
   saveModel,
   saveOutput,
   saveRun,
+  saveRunStepData,
   saveRunWithData,
   saveWorkflow,
   saveWorkflowData,
@@ -1814,5 +1815,64 @@ Deno.test("serve id-deny conformance: model.create with a type that does not par
     const error = errorFrame(frames);
     assert(error, `an error frame: ${JSON.stringify(frames)}`);
     assertNotEquals(error.error?.code, "unauthorized");
+  });
+});
+
+// data.query's latestRun("<workflow>") resolves a workflow by name or id and
+// reads its latest run, so it is authorized as a history read of that run
+// (swamp-club#2957).
+
+function latestRunQuery(workflow: string) {
+  return request("data.query", {
+    predicate: `workflowRunId == latestRun(${JSON.stringify(workflow)})`,
+  });
+}
+
+Deno.test("serve id-deny conformance: latestRun by a denied workflow's UUID is refused, naming only the UUID", async () => {
+  await withFixtures(async (f) => {
+    const run = await saveRun(f.repo, f.prodWorkflow);
+    await saveRunStepData(f.repo, f.devModel, run, "out");
+    const frames = await sendRequest(f.ctx, latestRunQuery(f.prodWorkflow.id));
+    const error = errorFrame(frames);
+    assertEquals(error?.error?.code, "data_query_failed");
+    assertEquals(
+      error?.error?.message,
+      `Workflow not found: ${f.prodWorkflow.id}`,
+    );
+    assert(!JSON.stringify(frames).includes(run.id));
+    // The dev workflow, by UUID, is allowed.
+    const devRun = await saveRun(f.repo, f.devWorkflow);
+    await saveRunStepData(f.repo, f.devModel, devRun, "out");
+    const allowed = await sendRequest(
+      f.ctx,
+      latestRunQuery(f.devWorkflow.id),
+    );
+    assertEquals(errorFrame(allowed), undefined, JSON.stringify(allowed));
+    assertStringIncludes(JSON.stringify(allowed), devRun.id);
+  });
+});
+
+Deno.test("serve id-deny conformance: latestRun by a copy's name is refused when the run was recorded by a denied workflow", async () => {
+  await withFixtures(async (f) => {
+    await copyWorkflowAs(f, "safe-flow");
+    const run = await saveRun(f.repo, f.prodWorkflow);
+    await saveRunStepData(f.repo, f.devModel, run, "out");
+    const ctx = createServeCtx(f.repo, GRANTS);
+    const audit: AuditEvent[] = [];
+    (ctx as { auditEmitter?: unknown }).auditEmitter = {
+      emit: (event: AuditEvent) => audit.push(event),
+    };
+    const frames = await sendRequest(ctx, latestRunQuery("safe-flow"));
+    const error = errorFrame(frames);
+    assertEquals(error?.error?.code, "data_query_failed");
+    assertEquals(error?.error?.message, "Workflow not found: safe-flow");
+    assert(!JSON.stringify(frames).includes(run.id));
+    assert(
+      audit.some((event) =>
+        event.outcome === "denied" && event.resourceKind === "workflow" &&
+        event.resourceName === "prod-flow"
+      ),
+      JSON.stringify(audit),
+    );
   });
 });

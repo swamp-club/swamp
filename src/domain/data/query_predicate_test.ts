@@ -17,13 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { Environment } from "cel-js";
+import { UserError } from "../errors.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
+  collectLatestRunWorkflows,
   extractModelNameEquality,
   extractStringEquality,
+  extractWorkflowRunIdLatestRun,
   selectReadsContent,
 } from "./query_predicate.ts";
 
@@ -208,4 +211,108 @@ Deno.test("buildSpecNameFallback: droppedConjuncts is false when every conjunct 
       ?.droppedConjuncts,
     false,
   );
+});
+
+Deno.test("collectLatestRunWorkflows: returns the literal argument", () => {
+  assertEquals(
+    collectLatestRunWorkflows(ast('workflowRunId == latestRun("deploy")')),
+    ["deploy"],
+  );
+});
+
+Deno.test("collectLatestRunWorkflows: returns each workflow once", () => {
+  assertEquals(
+    collectLatestRunWorkflows(
+      ast(
+        'workflowRunId == latestRun("a") || workflowRunId == latestRun("b") || workflowRunId == latestRun("a")',
+      ),
+    ),
+    ["a", "b"],
+  );
+});
+
+Deno.test("collectLatestRunWorkflows: finds calls under NOT, ternaries, lists, maps and macros", () => {
+  for (
+    const expr of [
+      '!(workflowRunId == latestRun("w"))',
+      'true ? workflowRunId == latestRun("w") : false',
+      'workflowRunId in [latestRun("w")]',
+      '{"k": latestRun("w")}.k == workflowRunId',
+      'tags.all(k, workflowRunId == latestRun("w"))',
+      'size(latestRun("w")) > 0',
+    ]
+  ) {
+    assertEquals(collectLatestRunWorkflows(ast(expr)), ["w"], expr);
+  }
+});
+
+Deno.test("collectLatestRunWorkflows: returns nothing when latestRun is not called", () => {
+  assertEquals(
+    collectLatestRunWorkflows(ast('name == "latestRun" && latestRun == 1')),
+    [],
+  );
+});
+
+Deno.test("collectLatestRunWorkflows: rejects an argument that is not one non-empty string literal", () => {
+  for (
+    const expr of [
+      "workflowRunId == latestRun(workflowName)",
+      "workflowRunId == latestRun()",
+      'workflowRunId == latestRun("a", "b")',
+      "workflowRunId == latestRun(1)",
+      'workflowRunId == latestRun("")',
+      'workflowRunId == latestRun(latestRun("a"))',
+    ]
+  ) {
+    assertThrows(
+      () => collectLatestRunWorkflows(ast(expr)),
+      UserError,
+      "string literal",
+      expr,
+    );
+  }
+});
+
+Deno.test("collectLatestRunWorkflows: rejects the receiver form", () => {
+  assertThrows(
+    () => collectLatestRunWorkflows(ast('workflowRunId == "w".latestRun()')),
+    UserError,
+    'latestRun("<workflow>")',
+  );
+});
+
+Deno.test("extractWorkflowRunIdLatestRun: equality in either operand order", () => {
+  assertEquals(
+    extractWorkflowRunIdLatestRun(ast('workflowRunId == latestRun("w")')),
+    "w",
+  );
+  assertEquals(
+    extractWorkflowRunIdLatestRun(ast('latestRun("w") == workflowRunId')),
+    "w",
+  );
+});
+
+Deno.test("extractWorkflowRunIdLatestRun: nested in AND", () => {
+  assertEquals(
+    extractWorkflowRunIdLatestRun(
+      ast(
+        'name == "out" && (stepName == "s" && workflowRunId == latestRun("w"))',
+      ),
+    ),
+    "w",
+  );
+});
+
+Deno.test("extractWorkflowRunIdLatestRun: never descends into OR or NOT", () => {
+  for (
+    const expr of [
+      'workflowRunId == latestRun("w") || name == "out"',
+      '!(workflowRunId == latestRun("w"))',
+      'workflowRunId != latestRun("w")',
+      'stepName == latestRun("w")',
+      'workflowRunId == "run-1"',
+    ]
+  ) {
+    assertEquals(extractWorkflowRunIdLatestRun(ast(expr)), null, expr);
+  }
 });

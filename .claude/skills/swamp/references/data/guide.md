@@ -17,12 +17,13 @@ shortcuts for common queries; prefer them when your intent matches.
 
 ### Reading one item
 
-| Read                     | Query                                                                                                                                   |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Latest content           | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                               |
-| A specific version       | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
-| A workflow step's output | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
-| Metadata only            | `swamp data query 'modelName == "<m>" && name == "<n>"'` (no `--select`)                                                                |
+| Read                     | Query                                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Latest content           | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                                         |
+| A specific version       | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                                         |
+| A workflow step's output | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content`           |
+| From the latest run      | `swamp data query 'workflowRunId == latestRun("<w>") && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
+| Metadata only            | `swamp data query 'modelName == "<m>" && name == "<n>"'` (no `--select`)                                                                          |
 
 With `--json` the output is `{"results": [...], "total": N, "limited": bool}`;
 read `results[0]` (JSON content comes back parsed). For a binary item, select
@@ -40,13 +41,14 @@ reading the wrong `results[0]`. See [reference.md](reference.md#query-data) for
 the fields `data get --json` has that the query record lacks.
 
 A query returns only each item's latest version unless the predicate names
-`version`, and "latest" is kept per workflow step. So:
+`version`. An item is one model's data name, and its latest version is the
+newest one, whichever run or step wrote it. So:
 
-- Add `version >= 0` when reading by `workflowRunId`, or a run that was later
-  re-run finds nothing.
-- Without a version, a model's name can match one row per step that wrote it
-  through that model; narrow by `stepName` or pin `version` before reading
-  `results[0]`.
+- Add `version >= 0` when reading by `workflowRunId`, or a run whose item was
+  written again later, by any run or step, finds nothing.
+- `latestRun("<workflow>")` takes a workflow name or id as a string literal and
+  resolves to its most recent run, as `data list --workflow` reads it. It works
+  in `swamp data query` only, not in `data.query()` expressions.
 
 ### CLI shortcut mapping
 
@@ -54,7 +56,7 @@ A query returns only each item's latest version unless the predicate names
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
-| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowRunId == latestRun("<w>") && version >= 0'`                      |
 | `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>" && version >= 0'`                                |
 | `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |

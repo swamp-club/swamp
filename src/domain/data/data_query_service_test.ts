@@ -2929,6 +2929,191 @@ Deno.test("DataQueryService: a backfill that started before an invalidate does n
   }
 });
 
+// latestRun("<workflow>") (swamp-club#2957)
+
+/** Two runs of "deploy" that wrote "out", and one model-method item. */
+function setupLatestRunTest() {
+  const ctx = setupTest();
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a1",
+    model_id: "model-new",
+    data_name: "out",
+    workflow_run_id: "run-new",
+    workflow_name: "deploy",
+    job_name: "main",
+    step_name: "build",
+  }));
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a2",
+    model_id: "model-old",
+    data_name: "out",
+    workflow_run_id: "run-old",
+    workflow_name: "deploy",
+    job_name: "main",
+    step_name: "build",
+  }));
+  ctx.catalog.upsert(makeRow({
+    id: "00000000-0000-1000-8000-0000000000a3",
+    model_id: "model-direct",
+    data_name: "out",
+  }));
+  return ctx;
+}
+
+function resolverOf(runs: Record<string, string | null>) {
+  const calls: string[] = [];
+  const resolve = (workflow: string): Promise<string | null> => {
+    calls.push(workflow);
+    if (!(workflow in runs)) {
+      return Promise.reject(new UserError(`Workflow not found: ${workflow}`));
+    }
+    return Promise.resolve(runs[workflow]);
+  };
+  return { calls, resolve };
+}
+
+function runIds(results: unknown[]): string[] {
+  return (results as DataRecord[]).map((r) => r.workflowRunId).sort();
+}
+
+Deno.test("DataQueryService.query: latestRun selects the resolved run, without include", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const resolver = resolverOf({ deploy: "run-new" });
+  const results = await service.query(
+    'workflowRunId == latestRun("deploy") && name == "out"',
+    { latestRunResolver: resolver.resolve },
+  );
+  assertEquals(runIds(results), ["run-new"]);
+  assertEquals(resolver.calls, ["deploy"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun is resolved once across include batches", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  for (let i = 0; i < 5; i++) {
+    catalog.upsert(makeRow({
+      id: `00000000-0000-1000-8000-0000000000b${i}`,
+      model_id: `model-extra-${i}`,
+      data_name: i === 4 ? "target" : "out",
+      workflow_run_id: "run-new",
+    }));
+  }
+  const resolver = resolverOf({ deploy: "run-new" });
+  let included = 0;
+  // Only the last matching row is accepted, so the first batch of four
+  // matches holds none and the batch has to grow.
+  const results = await service.query(
+    'workflowRunId == latestRun("deploy")',
+    {
+      limit: 1,
+      include: (record) => {
+        included++;
+        return Promise.resolve(record.name === "target");
+      },
+      latestRunResolver: resolver.resolve,
+    },
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["target"]);
+  assert(included > 4, `expected more than one batch, saw ${included}`);
+  assertEquals(resolver.calls, ["deploy"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: a workflow with no runs matches nothing with ==, inside an OR too, and everything with !=", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const latestRunResolver = resolverOf({ deploy: null }).resolve;
+  assertEquals(
+    await service.query('workflowRunId == latestRun("deploy")', {
+      latestRunResolver,
+    }),
+    [],
+  );
+  assertEquals(
+    await service.query(
+      'workflowRunId == latestRun("deploy") || name == "none"',
+      { latestRunResolver },
+    ),
+    [],
+  );
+  assertEquals(
+    runIds(
+      await service.query('workflowRunId != latestRun("deploy")', {
+        latestRunResolver,
+      }),
+    ),
+    ["", "run-new", "run-old"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun without a resolver is a UserError, raised before backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+  await assertRejects(
+    () => service.query('workflowRunId == latestRun("deploy")'),
+    UserError,
+    "latestRun() is only available in swamp data query",
+  );
+  assertEquals(catalog.isPopulated(), false);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.querySync: latestRun is a UserError, not an empty result", () => {
+  const { catalog, service } = setupLatestRunTest();
+  assertThrows(
+    () => service.querySync('workflowRunId == latestRun("deploy")'),
+    UserError,
+    "latestRun() is only available in swamp data query; here, compare " +
+      'workflowRunId with the run id as a string, e.g. workflowRunId == "<run-id>"',
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: latestRun may be called in select alone", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const resolver = resolverOf({ deploy: "run-new" });
+  const results = await service.query('workflowRunId == "run-old"', {
+    select: 'latestRun("deploy")',
+    latestRunResolver: resolver.resolve,
+  });
+  assertEquals(results, ["run-new"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: concurrent queries keep their own latest runs", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  const predicate = 'workflowRunId == latestRun("deploy")';
+  const [newer, older] = await Promise.all([
+    service.query(predicate, {
+      latestRunResolver: async () => {
+        await Promise.resolve();
+        return "run-new";
+      },
+    }),
+    service.query(predicate, {
+      latestRunResolver: () => Promise.resolve("run-old"),
+    }),
+  ]);
+  assertEquals(runIds(newer), ["run-new"]);
+  assertEquals(runIds(older), ["run-old"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService.query: the resolver's error for an unknown workflow propagates", async () => {
+  const { catalog, service } = setupLatestRunTest();
+  await assertRejects(
+    () =>
+      service.query('workflowRunId == latestRun("nope")', {
+        latestRunResolver: resolverOf({}).resolve,
+      }),
+    UserError,
+    "Workflow not found: nope",
+  );
+  catalog.close();
+});
+
 // ============================================================================
 // Lazy content hydration in query() (swamp-club#2962): a lazy-hydration
 // datastore syncs metadata only, so a matched row's raw file may be absent

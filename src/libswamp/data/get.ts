@@ -97,6 +97,12 @@ export interface DataGetData {
    * run, job and step that produced the item.
    */
   replacementQuery?: string;
+  /**
+   * For a workflow-scoped read without `--run`, the `swamp data query`
+   * command that follows the workflow's latest run, as this read did, where
+   * `replacementQuery` pins the run it found (swamp-club#2957).
+   */
+  latestRunQuery?: string;
   /** Notices about this read, such as the deprecation of `data get`. */
   warnings?: string[];
   /**
@@ -654,7 +660,14 @@ async function* workflowScopedGet(
     output.contentEncoding,
   );
   output.replacementQuery = replacement;
-  output.warnings = [deprecationWarning(replacement, false)];
+  output.latestRunQuery = latestRunCommand(
+    input,
+    located.location,
+    output.contentEncoding,
+  );
+  output.warnings = [
+    deprecationWarning(replacement, false, output.latestRunQuery),
+  ];
   const shared = await sharedNameNotice(
     located.location,
     input.canReadOwner,
@@ -803,9 +816,17 @@ function replacementFor(
  * reads the same item. A read of the latest version is pinned to that
  * version, so the notice says how to follow later versions instead.
  */
-function deprecationWarning(query: string, readLatest: boolean): string {
+function deprecationWarning(
+  query: string,
+  readLatest: boolean,
+  latestRun?: string,
+): string {
   const notice = "swamp data get is deprecated and will be removed in a " +
     `future release. Read this item with: ${query}`;
+  if (latestRun !== undefined) {
+    return `${notice} (to follow the workflow's latest run instead, run: ` +
+      `${latestRun})`;
+  }
   return readLatest
     ? `${notice} (to follow the latest version instead, drop the version ` +
       "clause; if several workflow steps wrote this item, also narrow by " +
@@ -834,6 +855,35 @@ function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
     target.modelId = item.modelId;
   }
   return target;
+}
+
+/**
+ * The query that follows the workflow's latest run, as a read without
+ * `--run` does, for an item its run recorded. Decided from what the caller
+ * asked for, never the authorized pin, which always names a run and
+ * version. A requested version is kept; without one the query reads the
+ * run's item whatever its version.
+ */
+function latestRunCommand(
+  input: DataGetInput,
+  location: WorkflowDataLocation,
+  contentEncoding?: ContentEncoding,
+): string | undefined {
+  if (input.runId !== undefined) return undefined;
+  const { workflowRunId: pinnedRun, ...target } = workflowQueryTarget(
+    location.item,
+  );
+  if (pinnedRun === undefined) return undefined;
+  return replacementFor(
+    location.item.data,
+    {
+      ...target,
+      latestRunWorkflow: location.workflow.name,
+      version: input.version,
+    },
+    input.includeContent,
+    contentEncoding,
+  );
 }
 
 /** Identifies the job, step and owning model that produced an item. */
