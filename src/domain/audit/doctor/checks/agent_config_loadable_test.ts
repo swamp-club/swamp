@@ -349,3 +349,133 @@ Deno.test("agentConfigLoadable: antigravity fails when hooks.json does not refer
     assertStringIncludes(result.message, "swamp audit record");
   });
 });
+
+// Duplicate audit hooks (swamp-club#2881): each copy records every tool call.
+
+const CLAUDE_AUDIT = "swamp audit record --from-hook";
+const BACKGROUNDED_AUDIT =
+  "payload=$(cat); (printf '%s' \"$payload\" | swamp audit record --from-hook >/dev/null 2>&1 &)";
+
+function claudeEntry(command: string, matcher = "Bash") {
+  return { matcher, hooks: [{ type: "command", command }] };
+}
+
+async function claudeResult(hooks: unknown) {
+  return await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".claude/settings.local.json"), { hooks });
+    return await agentConfigLoadableCheck.run(makeCtx(repo, "claude"));
+  });
+}
+
+Deno.test("agentConfigLoadable: claude fails when PostToolUse runs the audit hook twice", async () => {
+  const result = await claudeResult({
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT), claudeEntry(CLAUDE_AUDIT)],
+    PostToolUseFailure: [
+      claudeEntry(BACKGROUNDED_AUDIT),
+      claudeEntry(CLAUDE_AUDIT),
+    ],
+  });
+  assertEquals(result.status, "fail");
+  assertStringIncludes(result.message, "PostToolUse runs");
+  assertEquals(result.details, { event: "PostToolUse", auditHooks: 2 });
+});
+
+Deno.test("agentConfigLoadable: claude fails when only PostToolUseFailure runs the audit hook twice", async () => {
+  const result = await claudeResult({
+    PostToolUse: [claudeEntry(CLAUDE_AUDIT)],
+    PostToolUseFailure: [
+      claudeEntry(CLAUDE_AUDIT),
+      claudeEntry(BACKGROUNDED_AUDIT, "*"),
+    ],
+  });
+  assertEquals(result.status, "fail");
+  assertEquals(result.details, { event: "PostToolUseFailure", auditHooks: 2 });
+});
+
+Deno.test("agentConfigLoadable: claude passes for a single backgrounded audit hook", async () => {
+  const result = await claudeResult({
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT)],
+  });
+  assertEquals(result.status, "pass");
+});
+
+Deno.test("agentConfigLoadable: claude still passes when the audit hook is under a non-Bash matcher", async () => {
+  const result = await claudeResult({
+    PostToolUse: [claudeEntry(CLAUDE_AUDIT, "Edit")],
+    PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, "Edit")],
+  });
+  assertEquals(result.status, "pass");
+});
+
+Deno.test("agentConfigLoadable: claude passes with malformed entries beside one audit hook", async () => {
+  const result = await claudeResult({
+    PostToolUse: [
+      "junk",
+      null,
+      { matcher: "Bash", hooks: "x" },
+      claudeEntry(CLAUDE_AUDIT),
+    ],
+    PostToolUseFailure: [{ matcher: 7 }, claudeEntry(CLAUDE_AUDIT)],
+  });
+  assertEquals(result.status, "pass");
+});
+
+for (
+  const { tool, file, entry } of [
+    {
+      tool: "cursor" as const,
+      file: ".cursor/hooks.json",
+      entry: { command: "swamp audit record --from-hook --tool cursor" },
+    },
+    {
+      tool: "copilot" as const,
+      file: ".github/hooks/swamp-audit.json",
+      entry: {
+        type: "command",
+        command: "swamp audit record --from-hook --tool copilot",
+      },
+    },
+  ]
+) {
+  const variant = { ...entry, timeout: 5 };
+  const result = (hooks: unknown) =>
+    withTempRepo(async (repo) => {
+      await writeJson(join(repo, file), { version: 1, hooks });
+      return await agentConfigLoadableCheck.run(makeCtx(repo, tool));
+    });
+
+  Deno.test(`agentConfigLoadable: ${tool} fails when postToolUse runs the audit hook twice`, async () => {
+    const r = await result({
+      postToolUse: [variant, entry],
+      postToolUseFailure: [entry],
+    });
+    assertEquals(r.status, "fail");
+    assertEquals(r.details, { event: "postToolUse", auditHooks: 2 });
+  });
+
+  Deno.test(`agentConfigLoadable: ${tool} fails when only postToolUseFailure runs the audit hook twice`, async () => {
+    const r = await result({
+      postToolUse: [entry],
+      postToolUseFailure: [entry, variant],
+    });
+    assertEquals(r.status, "fail");
+    assertEquals(r.details, { event: "postToolUseFailure", auditHooks: 2 });
+  });
+
+  Deno.test(`agentConfigLoadable: ${tool} passes for a single audit hook variant`, async () => {
+    const r = await result({
+      postToolUse: [variant],
+      postToolUseFailure: [variant],
+    });
+    assertEquals(r.status, "pass");
+  });
+
+  Deno.test(`agentConfigLoadable: ${tool} passes with malformed entries beside one audit hook`, async () => {
+    const r = await result({
+      postToolUse: ["junk", null, { command: 3 }, entry],
+      postToolUseFailure: [entry],
+    });
+    assertEquals(r.status, "pass");
+  });
+}

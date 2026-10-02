@@ -272,6 +272,129 @@ export interface RepoServiceUserDirs {
 }
 
 /**
+ * How one AI tool's hook config is laid out, as far as finding the swamp
+ * audit hook in it goes. Claude nests commands under matcher entries; Cursor
+ * and Copilot list flat `{ command }` entries with no matcher.
+ */
+export interface AuditHookShape {
+  /** Substring that marks a hook command as the swamp audit hook. */
+  marker: string;
+  /** The hook command strings one entry runs. */
+  commandsOf(entry: Record<string, unknown>): string[];
+  /** Whether the entry fires for the tool calls swamp records. */
+  applies(entry: Record<string, unknown>): boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Claude Code matchers are a tool name or a regex; empty, absent and `*`
+ * match every tool.
+ */
+function claudeMatcherCoversBash(matcher: unknown): boolean {
+  if (matcher === undefined || matcher === "" || matcher === "*") return true;
+  if (typeof matcher !== "string") return false;
+  try {
+    return new RegExp(`^(?:${matcher})$`).test("Bash");
+  } catch {
+    return matcher === "Bash";
+  }
+}
+
+function flatAuditHookShape(marker: string): AuditHookShape {
+  return {
+    marker,
+    commandsOf: (entry) =>
+      typeof entry.command === "string" ? [entry.command] : [],
+    applies: () => true,
+  };
+}
+
+export const CLAUDE_AUDIT_HOOK_SHAPE: AuditHookShape = {
+  marker: "swamp audit record --from-hook",
+  commandsOf: (entry) =>
+    Array.isArray(entry.hooks)
+      ? entry.hooks
+        .filter(isRecord)
+        .map((hook) => hook.command)
+        .filter((command): command is string => typeof command === "string")
+      : [],
+  applies: (entry) => claudeMatcherCoversBash(entry.matcher),
+};
+
+export const CURSOR_AUDIT_HOOK_SHAPE: AuditHookShape = flatAuditHookShape(
+  "swamp audit record --from-hook --tool cursor",
+);
+
+export const COPILOT_AUDIT_HOOK_SHAPE: AuditHookShape = flatAuditHookShape(
+  "swamp audit record --from-hook --tool copilot",
+);
+
+/**
+ * Counts the swamp audit hooks among one event's hook entries. The config is
+ * repo-controlled, so entries of an unexpected shape are skipped, never
+ * thrown on.
+ */
+export function countAuditHooks(
+  entries: unknown,
+  shape: AuditHookShape,
+): number {
+  if (!Array.isArray(entries)) return 0;
+  let count = 0;
+  for (const entry of entries) {
+    if (!isRecord(entry) || !shape.applies(entry)) continue;
+    count += shape.commandsOf(entry).filter((command) =>
+      command.includes(shape.marker)
+    ).length;
+  }
+  return count;
+}
+
+/**
+ * Merges swamp's audit hook entries into an existing hooks config.
+ *
+ * An event that already runs the audit hook in any form keeps it, and swamp's
+ * own entry is not added beside it — two hooks would record every tool call
+ * twice. Where an earlier upgrade did add swamp's entry next to a user's
+ * variant, swamp's entry is removed again; a repeated copy of swamp's entry
+ * is collapsed to one. Only entries byte-identical to swamp's are ever
+ * removed, and all other entries keep their content and order.
+ */
+export function mergeAuditHooks(
+  existing: Record<string, unknown>,
+  ours: Record<string, unknown[]>,
+  shape: AuditHookShape,
+): Record<string, unknown> {
+  const merged = { ...existing };
+
+  for (const [event, ourEntries] of Object.entries(ours)) {
+    let entries = Array.isArray(merged[event]) ? merged[event] : [];
+
+    for (const ourEntry of ourEntries) {
+      const ourJson = JSON.stringify(ourEntry);
+      const isOurs = (entry: unknown) => JSON.stringify(entry) === ourJson;
+      const auditHooks = countAuditHooks(entries, shape);
+      const ourCopies = entries.filter(isOurs).length;
+
+      if (auditHooks === 0) {
+        entries = [...entries, ourEntry];
+      } else if (auditHooks > ourCopies) {
+        entries = entries.filter((entry) => !isOurs(entry));
+      } else if (ourCopies > 1) {
+        const first = entries.findIndex(isOurs);
+        entries = entries.filter((entry, i) => i === first || !isOurs(entry));
+      }
+    }
+
+    merged[event] = entries;
+  }
+
+  return merged;
+}
+
+/**
  * RepoService handles repository initialization and upgrade operations.
  */
 export class RepoService {
@@ -1662,9 +1785,10 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
 
     // Merge hooks
     const ourHooks = this.getClaudeHooks();
-    const mergedHooks = this.mergeHooks(
+    const mergedHooks = mergeAuditHooks(
       existingSettings.hooks ?? {},
       ourHooks,
+      CLAUDE_AUDIT_HOOK_SHAPE,
     );
 
     // Check if anything changed
@@ -1911,9 +2035,10 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       ],
     };
 
-    const mergedHooks = this.mergeHooks(
+    const mergedHooks = mergeAuditHooks(
       existingHooks.hooks ?? {},
       ourHooks,
+      CURSOR_AUDIT_HOOK_SHAPE,
     );
 
     const hooksChanged = JSON.stringify(existingHooks.hooks ?? {}) !==
@@ -2080,9 +2205,10 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       ],
     };
 
-    const mergedHooks = this.mergeHooks(
+    const mergedHooks = mergeAuditHooks(
       existingHooks.hooks ?? {},
       ourHooks,
+      COPILOT_AUDIT_HOOK_SHAPE,
     );
 
     const hooksChanged = JSON.stringify(existingHooks.hooks ?? {}) !==
@@ -2446,35 +2572,6 @@ export default function swampAudit(pi) {
     await ensureDir(join(repoPath.value, ".agents"));
     await atomicWriteTextFile(hooksPath, mergedStr);
     return true;
-  }
-
-  /**
-   * Merges hook configurations, adding our hooks without duplicating.
-   */
-  private mergeHooks(
-    existing: Record<string, unknown[]>,
-    ours: Record<string, unknown[]>,
-  ): Record<string, unknown[]> {
-    const merged = { ...existing };
-
-    for (const [event, ourEntries] of Object.entries(ours)) {
-      const existingEntries = merged[event] ?? [];
-      const mergedEntries = [...existingEntries];
-
-      for (const ourEntry of ourEntries) {
-        const ourJson = JSON.stringify(ourEntry);
-        const alreadyExists = mergedEntries.some(
-          (e) => JSON.stringify(e) === ourJson,
-        );
-        if (!alreadyExists) {
-          mergedEntries.push(ourEntry);
-        }
-      }
-
-      merged[event] = mergedEntries;
-    }
-
-    return merged;
   }
 
   /**
