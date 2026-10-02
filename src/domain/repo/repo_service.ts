@@ -290,16 +290,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Claude Code matchers are a tool name or a regex; empty, absent and `*`
- * match every tool.
+ * Follows Claude Code's matcher rules: empty, absent and `*` match every
+ * tool; a matcher of only letters, digits, `_`, `-`, spaces, `,` and `|` is
+ * a list of exact tool names; anything else is an unanchored regex.
  */
 function claudeMatcherCoversBash(matcher: unknown): boolean {
   if (matcher === undefined || matcher === "" || matcher === "*") return true;
   if (typeof matcher !== "string") return false;
+  if (/^[A-Za-z0-9_\- ,|]+$/.test(matcher)) {
+    return matcher.split(/[|,]/).some((name) => name.trim() === "Bash");
+  }
   try {
-    return new RegExp(`^(?:${matcher})$`).test("Bash");
+    return new RegExp(matcher).test("Bash");
   } catch {
-    return matcher === "Bash";
+    return false;
   }
 }
 
@@ -359,8 +363,8 @@ export function countAuditHooks(
  * own entry is not added beside it — two hooks would record every tool call
  * twice. Where an earlier upgrade did add swamp's entry next to a user's
  * variant, swamp's entry is removed again; a repeated copy of swamp's entry
- * is collapsed to one. Only entries byte-identical to swamp's are ever
- * removed, and all other entries keep their content and order.
+ * is collapsed to one. Only entries whose serialised JSON equals swamp's
+ * are ever removed, and all other entries keep their content and order.
  */
 export function mergeAuditHooks(
   existing: Record<string, unknown>,

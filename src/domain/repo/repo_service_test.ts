@@ -645,6 +645,29 @@ Deno.test("RepoService.upgrade treats a Claude audit hook under matcher * as pre
   assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
 });
 
+Deno.test("RepoService.upgrade treats a Claude audit hook under a matcher list or unanchored regex as present", async () => {
+  for (const matcher of ["Bash, Edit", "Edit | Bash", "^Bas", "B.sh"]) {
+    const hooks = {
+      PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT, matcher)],
+      PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT, matcher)],
+    };
+    assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
+  }
+});
+
+Deno.test("RepoService.upgrade adds swamp's Claude audit hook when a matcher list names other tools", async () => {
+  for (const matcher of ["Bashful", "Edit, Write", "Bas"]) {
+    const { first } = await claudeHooksAfterUpgrade({
+      PostToolUse: [claudeEntry(CLAUDE_AUDIT, matcher)],
+      PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, matcher)],
+    });
+    assertEquals(first.PostToolUse, [
+      claudeEntry(CLAUDE_AUDIT, matcher),
+      CLAUDE_SWAMP_ENTRY,
+    ]);
+  }
+});
+
 Deno.test("RepoService.upgrade adds swamp's Claude audit hook when the only one does not match Bash", async () => {
   const { first } = await claudeHooksAfterUpgrade({
     PostToolUse: [claudeEntry(CLAUDE_AUDIT, "Edit")],

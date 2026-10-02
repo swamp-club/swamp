@@ -392,6 +392,18 @@ Deno.test("agentConfigLoadable: claude fails when only PostToolUseFailure runs t
   assertEquals(result.details, { event: "PostToolUseFailure", auditHooks: 2 });
 });
 
+Deno.test("agentConfigLoadable: claude counts an audit hook under a matcher list", async () => {
+  const result = await claudeResult({
+    PostToolUse: [
+      claudeEntry(CLAUDE_AUDIT),
+      claudeEntry(BACKGROUNDED_AUDIT, "Edit, Bash"),
+    ],
+    PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT)],
+  });
+  assertEquals(result.status, "fail");
+  assertEquals(result.details, { event: "PostToolUse", auditHooks: 2 });
+});
+
 Deno.test("agentConfigLoadable: claude passes for a single backgrounded audit hook", async () => {
   const result = await claudeResult({
     PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
