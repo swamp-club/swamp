@@ -686,8 +686,11 @@ an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
   here or on another machine, therefore matches nothing, and a chain the
   catalog only partly knows is still followed to its end. Rows the chain ends
   at are evaluated with `name` overlaid to the literal; the returned record
-  keeps its real name, and the caller's `include` filter still applies. A model
-  whose marker cannot be read is skipped (logged at debug), not the query.
+  keeps its real name, and the caller's `include` filter still applies. A row
+  still under the old name in a model whose forward is confirmed (left by a
+  sync or a failed catalog write) is not returned: the marker shows it is not
+  the latest version. A model whose marker cannot be read is skipped (logged at
+  debug), not the query.
 - **Not followed**: versioned or `isLatest` predicates (as `data get --version`
   does not follow), `name in [...]` or a name test under `||` or `!`, and
   renames in other namespaces: `.catalog-export.json` carries rows, not

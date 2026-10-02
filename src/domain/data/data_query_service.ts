@@ -1218,6 +1218,15 @@ export class DataQueryService {
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
+      // The old name's latest version is a confirmed rename marker, so a row
+      // still under that name (left by a sync or a failed catalog write) is
+      // not its latest version: data get reads the forwarded item instead.
+      if (
+        nameLiteral !== null && row.data_name === nameLiteral &&
+        renameTargets.has(
+          renameKey(row.namespace, row.type_normalized, row.model_id),
+        )
+      ) continue;
       const record = this.rowToRecord(row, false, false, includePath);
       // attributes/content are read from disk only when evaluation touches
       // them or the row matches, so rows rejected by metadata terms never

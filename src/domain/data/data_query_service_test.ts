@@ -4405,3 +4405,42 @@ Deno.test("DataQueryService rename forwards: a model() scope reads no other mode
   assertEquals(reads.includes(other), false);
   catalog.close();
 });
+
+Deno.test("DataQueryService rename forwards: a stale catalog row under the old name is not returned beside the forwarded item", async () => {
+  const { catalog, service, type, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  const original = await save("old", modelId);
+  await rename(modelId, "old", "new");
+  // As a rename synced from another machine leaves it: the old name's row is
+  // still latest in this catalog, though the marker on disk forwards it.
+  catalog.upsert({
+    namespace: "",
+    type_normalized: type.normalized,
+    model_id: modelId,
+    data_name: "old",
+    id: original.id,
+    version: 1,
+    is_latest: 1,
+    is_step_latest: 1,
+    model_name: "ingest",
+    spec_name: "",
+    data_type: "resource",
+    content_type: "text/plain",
+    lifetime: "infinite",
+    garbage_collection: "10",
+    owner_type: "model-method",
+    streaming: 0,
+    size: 3,
+    created_at: "2026-01-01T00:00:00.000Z",
+    tags: "{}",
+    owner_ref: "test",
+    workflow_run_id: "",
+    workflow_name: "",
+    job_name: "",
+    step_name: "",
+    source: "",
+  });
+
+  assertEquals(names(service.querySync('name == "old"')), ["new"]);
+  catalog.close();
+});
