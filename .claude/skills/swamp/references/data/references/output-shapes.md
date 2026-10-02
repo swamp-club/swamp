@@ -74,6 +74,9 @@ JSON output shapes for `swamp data` commands when using `--json`.
 }
 ```
 
+`definitionHash` appears only on data written by older versions. It is legacy
+and never checked: ownership is `ownerType` + `ownerRef`.
+
 `contentEncoding` is `"utf-8"` when the stored bytes are valid UTF-8 and
 `"base64"` otherwise, e.g. an image (`content` is then the base64-encoded
 bytes). With `"utf-8"`, `content` is the text without any leading byte-order

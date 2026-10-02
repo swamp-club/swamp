@@ -47,6 +47,7 @@ export interface CatalogRow {
   data_type: string;
   content_type: string;
   lifetime: string;
+  garbage_collection: string;
   owner_type: string;
   streaming: number;
   size: number;
@@ -87,7 +88,7 @@ export interface CatalogCheckpointStats {
  * On startup, if the stored version differs, the catalog is dropped and
  * rebuilt via self-healing backfill.
  */
-export const CATALOG_SCHEMA_VERSION = "5";
+export const CATALOG_SCHEMA_VERSION = "6";
 
 /**
  * A value SQLite can round-trip when copying rows generically during
@@ -197,6 +198,7 @@ export class CatalogStore {
         data_type       TEXT NOT NULL DEFAULT '',
         content_type    TEXT NOT NULL DEFAULT '',
         lifetime        TEXT NOT NULL DEFAULT '',
+        garbage_collection TEXT NOT NULL DEFAULT '',
         owner_type      TEXT NOT NULL DEFAULT '',
         streaming       INTEGER NOT NULL DEFAULT 0,
         size            INTEGER NOT NULL DEFAULT 0,
@@ -264,10 +266,10 @@ export class CatalogStore {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO catalog (
         namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
-        spec_name, data_type, content_type, lifetime, owner_type,
+        spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
         streaming, size, created_at, tags,
         owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.namespace,
@@ -283,6 +285,7 @@ export class CatalogStore {
       row.data_type,
       row.content_type,
       row.lifetime,
+      row.garbage_collection,
       row.owner_type,
       row.streaming,
       row.size,
@@ -384,10 +387,10 @@ export class CatalogStore {
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
-          spec_name, data_type, content_type, lifetime, owner_type,
+          spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -404,6 +407,7 @@ export class CatalogStore {
           row.data_type,
           row.content_type,
           row.lifetime,
+          row.garbage_collection,
           row.owner_type,
           row.streaming,
           row.size,
@@ -439,10 +443,10 @@ export class CatalogStore {
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
-          spec_name, data_type, content_type, lifetime, owner_type,
+          spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -459,6 +463,7 @@ export class CatalogStore {
           row.data_type,
           row.content_type,
           row.lifetime,
+          row.garbage_collection,
           row.owner_type,
           row.streaming,
           row.size,

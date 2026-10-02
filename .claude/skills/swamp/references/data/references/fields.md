@@ -2,23 +2,47 @@
 
 ## Metadata Fields (always available, no disk read)
 
-| Field         | Type   | Values                                                                              |
-| ------------- | ------ | ----------------------------------------------------------------------------------- |
-| `id`          | string | UUID of the data artifact                                                           |
-| `name`        | string | Human-readable data name                                                            |
-| `version`     | int    | Latest version number                                                               |
-| `createdAt`   | string | ISO-8601 timestamp                                                                  |
-| `modelName`   | string | Owning model name                                                                   |
-| `modelId`     | string | Owning model id (definition id; workflow id for workflow-scope data)                |
-| `modelType`   | string | Owning model type (normalized)                                                      |
-| `specName`    | string | Output spec name                                                                    |
-| `dataType`    | string | `"resource"` or `"file"`                                                            |
-| `contentType` | string | MIME type (e.g., `"application/json"`)                                              |
-| `lifetime`    | string | `"infinite"`, `"ephemeral"`, `"job"`, `"workflow"`, or duration like `"1h"`, `"7d"` |
-| `ownerType`   | string | `"model-method"`, `"workflow-step"`, or `"manual"`                                  |
-| `streaming`   | bool   | `true` if append-only                                                               |
-| `size`        | int    | Content size in bytes                                                               |
-| `tags`        | map    | Arbitrary string key-value pairs                                                    |
+| Field               | Type             | Values                                                                              |
+| ------------------- | ---------------- | ----------------------------------------------------------------------------------- |
+| `id`                | string           | UUID of the data artifact                                                           |
+| `name`              | string           | Data instance name (e.g. `classification-main`)                                     |
+| `version`           | int              | Version number of this record                                                       |
+| `isLatest`          | bool             | `true` for the newest version of each item                                          |
+| `createdAt`         | string           | ISO-8601 timestamp                                                                  |
+| `modelName`         | string           | Owning model name                                                                   |
+| `modelId`           | string           | Owning model id (definition id; workflow id for workflow-scope data)                |
+| `modelType`         | string           | Owning model type (normalized)                                                      |
+| `specName`          | string           | Output spec name (e.g. `classification`)                                            |
+| `dataType`          | string           | `"resource"` or `"file"`                                                            |
+| `contentType`       | string           | MIME type (e.g., `"application/json"`)                                              |
+| `lifetime`          | string           | `"infinite"`, `"ephemeral"`, `"job"`, `"workflow"`, or duration like `"1h"`, `"7d"` |
+| `garbageCollection` | number or string | Versions kept: a count (`10`) or a duration (`"30d"`); `""` if unknown              |
+| `ownerType`         | string           | `"model-method"`, `"workflow-step"`, or `"manual"`                                  |
+| `ownerRef`          | string           | Owning entity; with `ownerType`, what ownership is checked on                       |
+| `workflowRunId`     | string           | Run that wrote the data (empty outside workflows)                                   |
+| `workflowName`      | string           | Workflow that wrote the data (empty outside workflows)                              |
+| `jobName`           | string           | Job that wrote the data (empty outside workflows)                                   |
+| `stepName`          | string           | Step that wrote the data (empty outside workflows)                                  |
+| `source`            | string           | Provenance source (e.g. `"step-output"`, `""`)                                      |
+| `ns`                | string           | Namespace that produced the data in a shared datastore                              |
+| `streaming`         | bool             | `true` if append-only                                                               |
+| `size`              | int              | Content size in bytes                                                               |
+| `tags`              | map              | Arbitrary string key-value pairs                                                    |
+
+A query matches `name` exactly. To find data by its spec name, match `specName`;
+when a `name == "..."` query finds nothing but data with that spec name exists,
+`swamp data query` prints the spec-name query to run instead (`specNameHint` in
+`--json`; with `--single` it is part of the no-match error).
+
+`garbageCollection` is a number for a count policy and a string for a duration.
+Equality across the two types is simply false, but an ordering comparison
+against a duration row errors and that row is skipped, so guard it:
+
+```cel
+garbageCollection == 10
+garbageCollection == "30d"
+type(garbageCollection) != string && garbageCollection < 5
+```
 
 ## Content Fields (loaded from disk on demand)
 

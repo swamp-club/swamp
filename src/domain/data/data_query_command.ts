@@ -38,7 +38,7 @@ export interface DataQueryTarget {
 }
 
 /** Writes a value as a CEL string literal; JSON escapes are valid CEL. */
-function celString(value: string): string {
+export function celString(value: string): string {
   return JSON.stringify(value);
 }
 

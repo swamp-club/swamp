@@ -1302,6 +1302,7 @@ export class ModelResolver {
       dataType: data.tags["type"] ?? "",
       contentType: data.contentType,
       lifetime: data.lifetime,
+      garbageCollection: data.garbageCollection,
       ownerType: data.ownerDefinition.ownerType,
       streaming: data.streaming,
       size: data.size ?? 0,

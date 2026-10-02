@@ -66,7 +66,19 @@ Add `--single` to any of these to get one bare object under `--json`, as
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. For a binary item, select
 `{"content": content, "contentEncoding": contentEncoding}` so a base64 body can
-be told from text (see [Binary content](#binary-content)). A query has no "latest run of
+be told from text (see [Binary content](#binary-content)). When a query with a top-level
+`name == "<n>"` matches nothing, swamp builds its spec-name counterpart
+(`buildSpecNameFallback` in `query_predicate.ts`): `name` becomes `specName`,
+the other top-level string and `version` equalities are kept, and anything else
+is dropped. If something was dropped, it first runs the kept equalities with
+`name` (limit 1): a match there means a dropped condition excluded the data,
+not the name, so there is no hint. Otherwise it runs the spec-name predicate
+(limit 1) and on a match returns `specNameHint` with `suggestedPredicate` and
+`otherFiltersDropped` (log mode prints the command, and notes the dropped
+conditions). Both probes use the caller's `include` filter, so the hint never
+reveals data the caller may not read; a failed probe only omits it, and the
+interactive TUI does not probe. With `--single`, where no match is an error,
+the hint is appended to the `QUERY_NO_MATCH` message. A query has no "latest run of
 a workflow" form: look the run id up with
 `swamp workflow history get <workflow>` first.
 
@@ -204,6 +216,8 @@ interface DataRecord {
   dataType: string;
   contentType: string;
   lifetime: string;
+  // Version retention: a count, or a duration such as "30d"; "" when unknown
+  garbageCollection: number | string;
   ownerType: string;
   streaming: boolean;
   size: number;
@@ -271,6 +285,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `dataType` | string | `"resource"` or `"file"` |
 | `contentType` | string | MIME type |
 | `lifetime` | string | Lifetime policy |
+| `garbageCollection` | int or string | Retention policy: a version count, or a duration such as `"30d"`; `""` when unknown (a foreign row from an export older than the field) |
 | `ownerType` | string | `"model-method"`, `"workflow-step"`, or `"manual"` |
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
@@ -436,11 +451,10 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 
 ```
 Error: Unknown field "model" in query predicate.
-Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
-  jobName, lifetime, modelId, modelName, modelType, name, ns, ownerRef,
-  ownerType, size,
-  source, specName, stepName, streaming, tags, version, workflowName,
-  workflowRunId
+Available: attributes, content, contentType, createdAt, dataType,
+  garbageCollection, id, isLatest, jobName, lifetime, modelId, modelName,
+  modelType, name, ns, ownerRef, ownerType, size, source, specName, stepName,
+  streaming, tags, version, workflowName, workflowRunId
 ```
 
 ## Catalog
@@ -473,6 +487,7 @@ CREATE TABLE catalog (
   data_type       TEXT NOT NULL DEFAULT '',
   content_type    TEXT NOT NULL DEFAULT '',
   lifetime        TEXT NOT NULL DEFAULT '',
+  garbage_collection TEXT NOT NULL DEFAULT '',
   owner_type      TEXT NOT NULL DEFAULT '',
   streaming       INTEGER NOT NULL DEFAULT 0,
   size            INTEGER NOT NULL DEFAULT 0,
@@ -613,6 +628,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
 | implicit, with `latestPerStep` | `WHERE is_step_latest = 1` | `findBySpec`/`findByTag` only; no CEL `isLatest` term |
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
+| `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
 expressions, comparisons, tag filters, `attributes` references, and complex
@@ -628,7 +644,7 @@ in CEL.
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Extract SQL pushdown clauses (isLatest, modelName equality)
+3. Extract SQL pushdown clauses (isLatest, modelName and specName equality)
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown
