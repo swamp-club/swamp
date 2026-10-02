@@ -72,6 +72,7 @@ Deno.test("renderRemoteQueryResponse: --single prints the one match as an object
   console.log = (msg: string) => lines.push(msg);
   try {
     renderRemoteQueryResponse(
+      "true",
       {
         predicate: "true",
         results: [{
@@ -99,12 +100,21 @@ Deno.test("renderRemoteQueryResponse: --single rejects several matches with thei
   const error = assertThrows(
     () =>
       renderRemoteQueryResponse(
-        { predicate: "true", results: [], total: 2, limited: true },
+        "true",
+        {
+          predicate: "true",
+          results: [
+            { id: "a" } as unknown as DataRecord,
+            { id: "b" } as unknown as DataRecord,
+          ],
+          total: 2,
+          limited: true,
+        },
         "json",
         true,
       ),
     UserError,
-    "more than one",
+    "More than one",
   );
   assertEquals(error.code, "QUERY_MULTIPLE_MATCHES");
 });
@@ -114,6 +124,7 @@ Deno.test("renderRemoteQueryResponse: --single rejects a response with no count"
   const error = assertThrows(
     () =>
       renderRemoteQueryResponse(
+        "true",
         {} as unknown as DataQueryData,
         "json",
         true,
@@ -121,4 +132,45 @@ Deno.test("renderRemoteQueryResponse: --single rejects a response with no count"
     UserError,
   );
   assertEquals(error.code, "QUERY_NO_MATCH");
+});
+
+Deno.test("renderRemoteQueryResponse: --single rejects a count of one that carries no record", async () => {
+  const { renderRemoteQueryResponse } = await import("./data_query.ts");
+  const error = assertThrows(
+    () =>
+      renderRemoteQueryResponse(
+        "true",
+        { predicate: "true", results: [], total: 1, limited: false },
+        "json",
+        true,
+      ),
+    UserError,
+    "No data artifact matched",
+  );
+  assertEquals(error.code, "QUERY_NO_MATCH");
+});
+
+Deno.test("renderRemoteQueryResponse: --single counts projected values", async () => {
+  const { renderRemoteQueryResponse } = await import("./data_query.ts");
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => lines.push(msg);
+  try {
+    renderRemoteQueryResponse(
+      "true",
+      {
+        predicate: "true",
+        select: "name",
+        results: [],
+        projected: { shape: "scalar", values: ["state"] },
+        total: 1,
+        limited: false,
+      },
+      "json",
+      true,
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  assertEquals(JSON.parse(lines[0]), "state");
 });

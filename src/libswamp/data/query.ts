@@ -92,16 +92,19 @@ export function requireSingleResult(
   if (data.total > 1) {
     return {
       code: "QUERY_MULTIPLE_MATCHES",
-      message:
-        `Expected exactly one data artifact to match ${data.predicate}, but more than one did. ` +
-        "Narrow the predicate, for example by name or version.",
+      message: "More than one data artifact matched the predicate:\n" +
+        `  ${data.predicate}\n` +
+        "Narrow it to one, for example by adding the data name or a version, " +
+        "or run the query without --single to see the matches.",
     };
   }
   // Zero, or a count missing from a malformed server response.
   return {
     code: "QUERY_NO_MATCH",
-    message:
-      `Expected exactly one data artifact to match ${data.predicate}, but none did.`,
+    message: "No data artifact matched the predicate:\n" +
+      `  ${data.predicate}\n` +
+      "Check the names and values in it. Only each artifact's latest version " +
+      "is matched unless the predicate names version or isLatest.",
   };
 }
 

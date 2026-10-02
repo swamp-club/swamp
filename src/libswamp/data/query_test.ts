@@ -418,13 +418,16 @@ Deno.test("requireSingleResult: accepts exactly one match", () => {
 Deno.test("requireSingleResult: names the predicate when nothing matched", () => {
   const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
   assertEquals(error?.code, "QUERY_NO_MATCH");
-  assertStringIncludes(error?.message ?? "", 'name == "x"');
+  assertStringIncludes(error?.message ?? "", '\n  name == "x"\n');
+  assertStringIncludes(error?.message ?? "", "latest version");
 });
 
 Deno.test("requireSingleResult: rejects several matches", () => {
-  const error = requireSingleResult({ predicate: "true", total: 2 });
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 2 });
   assertEquals(error?.code, "QUERY_MULTIPLE_MATCHES");
-  assertStringIncludes(error?.message ?? "", "more than one");
+  assertStringIncludes(error?.message ?? "", "More than one");
+  assertStringIncludes(error?.message ?? "", '\n  name == "x"\n');
+  assertStringIncludes(error?.message ?? "", "without --single");
 });
 
 Deno.test("requireSingleResult: treats a missing count as no match", () => {

@@ -68,14 +68,28 @@ export function remoteQueryPayload(
   };
 }
 
-/** Applies `--single` to a `--server` query response, then renders it. */
+/**
+ * Applies `--single` to a `--server` query response, then renders it. The
+ * match count comes from the records the response carries rather than its
+ * `total`, so a malformed response fails as a clear error instead of crashing
+ * the renderer.
+ */
 export function renderRemoteQueryResponse(
+  predicate: string,
   data: DataQueryData,
   outputMode: OutputMode,
   single: boolean,
 ): void {
   if (single) {
-    const error = requireSingleResult(data);
+    const matches = data.projected
+      ? data.projected.shape === "scalar"
+        ? data.projected.values
+        : data.projected.rows
+      : data.results;
+    const error = requireSingleResult({
+      predicate,
+      total: matches?.length ?? 0,
+    });
     if (error) throw userErrorFromSwampError(error);
   }
   createDataQueryRenderer(outputMode, false, { single }).handlers().completed({
@@ -105,7 +119,7 @@ export const dataQueryCommand = withRemoteOptions(
     )
     .option(
       "--single",
-      "Require exactly one match; with --json, print it as a single object instead of a results list",
+      "Require exactly one match; with --json, print the match (or its --select value) on its own instead of a results list",
       { conflicts: ["limit"] },
     )
     .example(
@@ -161,6 +175,7 @@ export const dataQueryCommand = withRemoteOptions(
       },
     );
     renderRemoteQueryResponse(
+      predicate,
       response.data as unknown as DataQueryData,
       ctx.outputMode,
       single,
