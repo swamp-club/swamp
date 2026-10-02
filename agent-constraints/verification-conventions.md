@@ -493,7 +493,10 @@ the start of a line. Nothing is inferred:
 
 - **Provider errors** (usage-limit, rate-limit, auth, or overload messages) mean
   no review ran, and are detected before any marker — a provider error that
-  happens to carry a marker still fails.
+  happens to carry a marker still fails. Text inside markdown code (backtick
+  spans and fenced blocks) is not matched: there a reviewer is quoting code,
+  such as swamp's own `invalid_api_key` error code, and the provider never
+  formats its errors that way.
 - **A missing marker fails the step.** A reviewer that does not answer in the
   required format is precisely when a human should look, so the verdict is
   recorded as `missing` rather than guessed in either direction. Empty or

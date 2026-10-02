@@ -56,6 +56,16 @@ const PROVIDER_ERROR_PATTERN =
   /hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota/i;
 
 /**
+ * Markdown code: fenced blocks, then inline spans on a single line.
+ *
+ * A reviewer quotes code in these — including swamp's own error codes, such
+ * as `invalid_api_key`, when it reviews an auth change. The provider writes
+ * its errors as raw text, never as markdown code, so a pattern match inside
+ * quoted code is the review talking about the code, not a failed provider.
+ */
+const QUOTED_CODE_PATTERN = /```[\s\S]*?```|`[^`\n]+`/g;
+
+/**
  * The verdict marker, anchored to the start of a line.
  *
  * Anchoring is load-bearing. The reviewer is told to begin its response with
@@ -85,7 +95,7 @@ function byteLength(text: string): number {
  * touches the filesystem.
  */
 export function determineVerdict(output: string): ReviewVerdict {
-  if (PROVIDER_ERROR_PATTERN.test(output)) {
+  if (PROVIDER_ERROR_PATTERN.test(output.replace(QUOTED_CODE_PATTERN, ""))) {
     return { kind: "provider-error" };
   }
 
