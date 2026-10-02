@@ -454,3 +454,63 @@ export async function settleDeadOwnerMethodRuns(
   }
   return running;
 }
+
+/** How a cancel's attempt to cancel stopped method runs' outputs went. */
+export interface MethodRunCancellation {
+  /** Rows whose output was cancelled, or had nothing left to cancel. */
+  readonly closed: ActiveRun[];
+  /** Rows whose output could not be read or saved; still `running`. */
+  readonly failed: ActiveRun[];
+  readonly errors: unknown[];
+}
+
+/**
+ * Cancels the outputs a stopped owner left `running` for `rows`, with
+ * `reason`, one model type and method at a time. A failed read or save is
+ * collected, not thrown, so the cancel can still settle its run; the caller
+ * leaves a failed row `interrupted` for `run doctor --fix`.
+ */
+export async function cancelOrphanedMethodRuns(
+  outputRepo: MethodRunOutputs,
+  rows: readonly ActiveRun[],
+  reason: string,
+): Promise<MethodRunCancellation> {
+  let match: MethodRunMatch;
+  try {
+    match = await matchMethodRunOutputs(outputRepo, rows);
+  } catch (error) {
+    return { closed: [], failed: [...rows], errors: [error] };
+  }
+  const closed = [...match.done];
+  const failed: ActiveRun[] = [];
+  const errors: unknown[] = [];
+  for (const orphan of match.running) {
+    try {
+      await settleOrphanedMethodRun(outputRepo, orphan, reason);
+      closed.push(orphan.row);
+    } catch (error) {
+      failed.push(orphan.row);
+      errors.push(error);
+    }
+  }
+  return { closed, failed, errors };
+}
+
+/**
+ * Logs that `count` method runs were left `interrupted` for
+ * `run doctor --fix` because their outputs could not be read or saved.
+ */
+export function warnUnsettledMethodRuns(
+  count: number,
+  errors: readonly unknown[],
+): void {
+  if (count === 0) return;
+  const first = errors[0];
+  logger.warn(
+    "Could not cancel {count} method run(s) whose owner stopped ({error}); run 'swamp run doctor --fix' to settle them",
+    {
+      count,
+      error: first instanceof Error ? first.message : String(first),
+    },
+  );
+}

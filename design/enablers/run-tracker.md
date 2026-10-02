@@ -131,8 +131,12 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    method, `OutputRepository.findByIds`). The row is marked `interrupted`,
    the output saved with the owner-exited error, and only then the row
    settled; a row whose output is missing or finished is settled too, and a
-   settled row is not read again. For `settleDeadOwnerRun` and serve boot
-   this is best-effort: a failure is logged and the row kept. Serve
+   settled row is not read again. Settling outputs never blocks the command
+   around it: `settleDeadOwnerRun` and serve boot log a failure and keep the
+   row; `run doctor` reports it (`orphanedMethodError`) and still diagnoses
+   workflow runs; `workflow cancel` and `model cancel` still settle their
+   runs and leave a row whose output failed `interrupted` for
+   `run doctor --fix`. Serve
    boot judges these rows on host and pid, not instance id, since its own
    instance id is new each start. `swamp workflow cancel` and
    `swamp model cancel` cancel the outputs of an owner they killed after its

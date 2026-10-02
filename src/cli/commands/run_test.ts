@@ -406,3 +406,33 @@ Deno.test(
     assertEquals(run.status, "interrupted");
   }),
 );
+
+Deno.test(
+  "diagnoseLocalRuns: an unreadable method-run record is reported and the workflow pass still runs",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.register(
+      trackerRow(crypto.randomUUID(), DEAD_PID, "model_method"),
+    );
+    const { runRepo, saved } = runRepoOf([run]);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      {
+        findByIds: () => Promise.reject(new Error("permission denied")),
+        save: () => Promise.reject(new Error("unexpected output save")),
+      },
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.orphanedMethodError, "permission denied");
+    assertEquals(result.orphanedMethodRuns, 0);
+    assertEquals(result.orphanedReaped, 1);
+    assertEquals(run.status, "interrupted");
+    assertEquals(saved, [run.id]);
+  }),
+);

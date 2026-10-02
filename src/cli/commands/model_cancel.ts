@@ -46,10 +46,10 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
 import {
-  matchMethodRunOutputs,
+  cancelOrphanedMethodRuns,
   type MethodRunOutputs,
   type OwnerLiveness,
-  settleOrphanedMethodRun,
+  warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
@@ -164,10 +164,15 @@ export async function cancelModelMethodRuns(
     liveness.isDead(run.pid) &&
     tracker.findById(run.id)?.status === "running"
   );
-  const { running } = await matchMethodRunOutputs(outputRepo, abandoned);
-  for (const orphan of running) {
-    await settleOrphanedMethodRun(outputRepo, orphan, OWNER_STOPPED_STEP_ERROR);
-  }
+  // A record that cannot be read or saved does not stop the cancel: its row
+  // is marked interrupted, so run doctor --fix settles it later.
+  const { failed, errors: outputErrors } = await cancelOrphanedMethodRuns(
+    outputRepo,
+    abandoned,
+    OWNER_STOPPED_STEP_ERROR,
+  );
+  warnUnsettledMethodRuns(failed.length, outputErrors);
+  for (const run of failed) tracker.complete(run.id, "interrupted");
 
   const outcomes = stopped.map((run) => {
     tracker.complete(run.id, "cancelled", reason);

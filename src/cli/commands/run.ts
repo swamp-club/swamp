@@ -33,6 +33,7 @@ import {
 import {
   findDeadOwnerMethodRuns,
   type MethodRunOutputs,
+  type OrphanedMethodRun,
   type OwnerLiveness,
   runHasDeadOwner,
   settleDeadOwnerMethodRuns,
@@ -182,6 +183,8 @@ export interface LocalRunDiagnosis {
   readonly orphanedReaped: number;
   readonly orphanedMethodRuns: number;
   readonly orphanedMethodReaped: number;
+  /** Why method runs could not be checked or settled, if they could not. */
+  readonly orphanedMethodError?: string;
 }
 
 /**
@@ -227,10 +230,19 @@ export async function diagnoseLocalRuns(
   }
 
   // Method runs first, so the step method runs a settled workflow run takes
-  // with it are counted here too.
-  const orphanedMethods = fix
-    ? await settleDeadOwnerMethodRuns(outputRepo, tracker, liveness)
-    : (await findDeadOwnerMethodRuns(outputRepo, tracker, liveness)).running;
+  // with it are counted here too. A failure is reported, not thrown, so the
+  // workflow runs are still diagnosed.
+  let orphanedMethods: OrphanedMethodRun[] = [];
+  let orphanedMethodError: string | undefined;
+  try {
+    orphanedMethods = fix
+      ? await settleDeadOwnerMethodRuns(outputRepo, tracker, liveness)
+      : (await findDeadOwnerMethodRuns(outputRepo, tracker, liveness)).running;
+  } catch (error) {
+    orphanedMethodError = error instanceof Error
+      ? error.message
+      : String(error);
+  }
 
   let orphanedWorkflowRuns = 0;
   let orphanedReaped = 0;
@@ -279,6 +291,7 @@ export async function diagnoseLocalRuns(
     orphanedReaped,
     orphanedMethodRuns: orphanedMethods.length,
     orphanedMethodReaped: fix ? orphanedMethods.length : 0,
+    ...(orphanedMethodError !== undefined ? { orphanedMethodError } : {}),
   };
 }
 
@@ -381,6 +394,7 @@ const runDoctorCommand = withRemoteOptions(
             result.orphanedReaped,
             result.orphanedMethodRuns,
             result.orphanedMethodReaped,
+            result.orphanedMethodError,
           );
         } else {
           writeDoctorRunsLog(
@@ -392,6 +406,7 @@ const runDoctorCommand = withRemoteOptions(
             result.orphanedReaped,
             result.orphanedMethodRuns,
             result.orphanedMethodReaped,
+            result.orphanedMethodError,
           );
         }
       } finally {

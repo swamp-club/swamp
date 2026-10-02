@@ -76,3 +76,20 @@ Deno.test("writeDoctorRunsLog: no orphans or runs reads as nothing to report", (
   );
   assertEquals(output, "No active or stale runs.");
 });
+
+Deno.test("writeDoctorRunsJson and writeDoctorRunsLog: report a method-run check that failed", () => {
+  const parsed = JSON.parse(
+    captureLogs(() =>
+      writeDoctorRunsJson(0, [], [], 0, 0, 0, 0, 0, "permission denied")
+    ),
+  );
+  assertEquals(parsed.orphanedMethodError, "permission denied");
+
+  const output = captureLogs(() =>
+    writeDoctorRunsLog([], [], 0, true, 0, 0, 0, 0, "permission denied")
+  );
+  assertStringIncludes(
+    output,
+    "Could not check method runs for a gone owner: permission denied",
+  );
+});

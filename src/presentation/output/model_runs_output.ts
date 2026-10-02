@@ -139,11 +139,13 @@ export function writeDoctorRunsLog(
   orphanedReaped?: number,
   orphanedMethodRuns?: number,
   orphanedMethodReaped?: number,
+  orphanedMethodError?: string,
 ): void {
   if (
     active.length === 0 && stale.length === 0 &&
     (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0) &&
-    (!orphanedMethodRuns || orphanedMethodRuns === 0)
+    (!orphanedMethodRuns || orphanedMethodRuns === 0) &&
+    orphanedMethodError === undefined
   ) {
     writeOutput("No active or stale runs.");
     return;
@@ -239,6 +241,15 @@ export function writeDoctorRunsLog(
     }
   }
 
+  if (orphanedMethodError !== undefined) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      red(
+        `Could not check method runs for a gone owner: ${orphanedMethodError}`,
+      ),
+    );
+  }
+
   writeOutput(lines.join("\n"));
 }
 
@@ -251,6 +262,7 @@ export function writeDoctorRunsJson(
   orphanedReaped?: number,
   orphanedMethodRuns?: number,
   orphanedMethodReaped?: number,
+  orphanedMethodError?: string,
 ): void {
   // A run is stale because doctor listed it as stale: an expired heartbeat,
   // or an owner process that is gone while its heartbeat is still fresh.
@@ -281,6 +293,7 @@ export function writeDoctorRunsJson(
         orphanedMethodReaped: orphanedMethodReaped ?? 0,
       }
       : {}),
+    ...(orphanedMethodError !== undefined ? { orphanedMethodError } : {}),
     activeRuns: activeRuns.map(mapRun(false)),
     staleRuns: staleRuns.map(mapRun(true)),
   }));

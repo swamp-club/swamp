@@ -943,3 +943,47 @@ Deno.test("cancelLocalRun: keeps the row of another run the killed owner drove, 
     },
   );
 });
+
+/** An output repository whose reads fail, as an unreadable directory does. */
+const unreadableOutputs = {
+  findByIds: () => Promise.reject(new Error("permission denied")),
+  save: () => Promise.reject(new Error("unexpected output save")),
+} as MethodRunOutputs;
+
+Deno.test("cancelLocalRun: an unreadable method-run record still lets the cancel settle the run", async () => {
+  await withKilledOwner(async ({ runRepo, tracker, run, step }) => {
+    const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runTracker: tracker,
+      outputRepo: unreadableOutputs,
+      liveness: ownerGone,
+      killProcess: () => Promise.resolve(true),
+    });
+
+    assertEquals(result?.status, "cancelled");
+    assertEquals(tracker.findById(run.id)?.status, "cancelled");
+    // Left for run doctor --fix, which settles an interrupted dead-pid row.
+    assertEquals(tracker.findById(step.id)?.status, "interrupted");
+  });
+});
+
+Deno.test("cancelAllLocalRuns: an unreadable method-run record does not stop the batch", async () => {
+  await withKilledOwner(async ({ runRepo, tracker, run, step }) => {
+    const result = await cancelAllLocalRuns(
+      [{ run, workflow: WORKFLOW }],
+      "Cancelled by user",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runTracker: tracker,
+        outputRepo: unreadableOutputs,
+        liveness: ownerGone,
+        killProcess: () => Promise.resolve(true),
+      },
+    );
+
+    assertEquals(result.cancelled.map((c) => c.runId), [run.id]);
+    assertEquals(tracker.findById(step.id)?.status, "interrupted");
+  });
+});

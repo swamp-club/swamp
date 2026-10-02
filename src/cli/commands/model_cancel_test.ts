@@ -601,3 +601,39 @@ Deno.test("cancelModelMethodRuns: leaves the record of an owner that saved its o
     );
   });
 });
+
+Deno.test("cancelModelMethodRuns: an unwritable method-run record leaves its row interrupted for run doctor", async () => {
+  await withTracker(async (tracker, dbPath) => {
+    const outputRepo = new YamlOutputRepository(dirname(dbPath));
+    const stuck = methodRun(OWNER_PID);
+    const other = methodRun(OWNER_PID + 1);
+    tracker.register(stuck);
+    tracker.register(other);
+    await saveStepOutput(outputRepo, stuck);
+
+    const outcomes = await cancelModelMethodRuns([stuck, other], "Stop it", {
+      tracker,
+      outputRepo: {
+        findByIds: (type, method, ids) =>
+          outputRepo.findByIds(type, method, ids),
+        save: () => Promise.reject(new Error("disk full")),
+      },
+      liveness: { hostname: "test-host", isDead: () => true },
+      killProcess: () => Promise.resolve(true),
+    });
+
+    assertEquals(
+      outcomes.map((o) => [o.run.id, o.status]),
+      [[stuck.id, "interrupted"], [other.id, "cancelled"]],
+    );
+    assertEquals(
+      (await outputRepo.findById(
+        ModelType.create("command/shell"),
+        "execute",
+        createModelOutputId(stuck.id),
+      ))?.status,
+      "running",
+    );
+    assertEquals(readCancelReason(dbPath, other.id), "Stop it");
+  });
+});

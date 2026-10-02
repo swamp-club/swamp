@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  cancelOrphanedMethodRuns,
   findDeadOwnerMethodRuns,
   matchMethodRunOutputs,
   type MethodRunOutputs,
@@ -1111,4 +1112,47 @@ Deno.test("settleDeadOwnerRun: a method-run settlement failure does not fail the
     "save:interrupted",
     "settled:owner_process_dead",
   ]);
+});
+
+Deno.test("cancelOrphanedMethodRuns: collects a failed save instead of throwing", async () => {
+  const ok = methodRow();
+  const bad = methodRow();
+  const finished = methodRow();
+  const done = runningOutput(finished);
+  done.markSucceeded();
+  const outputs = [runningOutput(ok), runningOutput(bad), done];
+  const outputRepo: MethodRunOutputs = {
+    findByIds: (_type, _method, ids) =>
+      Promise.resolve(
+        new Map(outputs.filter((o) => ids.has(o.id)).map((o) => [o.id, o])),
+      ),
+    save: (_type, _method, output) =>
+      output.id === bad.id
+        ? Promise.reject(new Error("disk full"))
+        : Promise.resolve(),
+  };
+
+  const { closed, failed, errors } = await cancelOrphanedMethodRuns(
+    outputRepo,
+    [ok, bad, finished],
+    "stopped",
+  );
+
+  assertEquals(closed.map((r) => r.id).sort(), [ok.id, finished.id].sort());
+  assertEquals(failed.map((r) => r.id), [bad.id]);
+  assertEquals(errors.length, 1);
+});
+
+Deno.test("cancelOrphanedMethodRuns: a failed read leaves every row failed", async () => {
+  const row = methodRow();
+  const { failed, closed } = await cancelOrphanedMethodRuns(
+    {
+      findByIds: () => Promise.reject(new Error("permission denied")),
+      save: () => Promise.resolve(),
+    },
+    [row],
+    "stopped",
+  );
+  assertEquals(closed, []);
+  assertEquals(failed.map((r) => r.id), [row.id]);
 });

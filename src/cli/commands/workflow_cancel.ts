@@ -63,10 +63,10 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import {
-  matchMethodRunOutputs,
+  cancelOrphanedMethodRuns,
   type MethodRunOutputs,
   type OwnerLiveness,
-  settleOrphanedMethodRun,
+  warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import {
   resolveServerTokenFromOptions,
@@ -231,7 +231,9 @@ async function stopOwner(
  * this host are completed `cancelled` with `reason`. Another workflow run of
  * the same process, such as a nested child this cancel does not settle,
  * keeps its row for `run doctor`. An owner that settled itself left nothing
- * running, and one still alive is left alone.
+ * running, and one still alive is left alone. A method run whose output
+ * cannot be read or saved does not stop the cancel: its row is marked
+ * `interrupted` instead, so `run doctor --fix` settles it later.
  */
 async function closeStoppedOwnerRuns(
   pid: number,
@@ -248,15 +250,20 @@ async function closeStoppedOwnerRuns(
     row.isLocalTo(liveness.hostname, liveness.instanceId) &&
     (row.runKind === "model_method" || cancelled.has(row.id))
   );
-  const { running } = await matchMethodRunOutputs(outputRepo, rows);
-  for (const orphan of running) {
-    await settleOrphanedMethodRun(
-      outputRepo,
-      orphan,
-      OWNER_STOPPED_STEP_ERROR,
-    );
+  const { failed, errors } = await cancelOrphanedMethodRuns(
+    outputRepo,
+    rows.filter((row) => row.runKind === "model_method"),
+    OWNER_STOPPED_STEP_ERROR,
+  );
+  warnUnsettledMethodRuns(failed.length, errors);
+  const unsettled = new Set(failed.map((row) => row.id));
+  for (const row of rows) {
+    if (unsettled.has(row.id)) {
+      runTracker.complete(row.id, "interrupted");
+    } else {
+      runTracker.complete(row.id, "cancelled", reason);
+    }
   }
-  for (const row of rows) runTracker.complete(row.id, "cancelled", reason);
 }
 
 /**
