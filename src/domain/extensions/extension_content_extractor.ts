@@ -643,13 +643,14 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
   const entries: TopLevelEntry[] = [];
   let i = 0;
 
-  // Advances past the rest of the current value to just after the next
-  // comma at depth 0. Parentheses and brackets are tracked here because, at
-  // depth 0 of the block, they can only be call arguments or arrays.
   // noRegexBefore stays shared because it holds positions in this block; paren
   // tracking starts afresh for each value so one value's unbalanced paren
   // cannot change how a later value is read.
   const scan = newScanState();
+
+  // Advances past the rest of the current value to just after the next
+  // comma at depth 0. Parentheses and brackets are tracked here because, at
+  // depth 0 of the block, they can only be call arguments or arrays.
   const skipValue = () => {
     let nesting = 0;
     let prev = ":";
@@ -1284,6 +1285,12 @@ function isComment(source: string, i: number): boolean {
  * or `i` when there is none. An unterminated string or regex ends at its
  * newline so one stray quote cannot swallow the file. Template expressions
  * are scanned as code, up to MAX_TEMPLATE_DEPTH levels deep.
+ *
+ * Telling a regex from division is a heuristic. Known misreadings: a
+ * variable named like a keyword (`of`, `in`, `yield`, `await`) followed by
+ * division is taken as a regex start, and JSX text (`</tag>`, an apostrophe
+ * in `Don't`) is read as regex or string syntax. Each can only affect the
+ * rest of one line, since unclosed regexes and strings stop at the newline.
  */
 function skipNonCode(
   source: string,
