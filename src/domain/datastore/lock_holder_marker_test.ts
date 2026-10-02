@@ -50,11 +50,11 @@ function fakeEnv(initial: Record<string, string> = {}): {
 const sorted = (pids: ReadonlySet<number>): number[] =>
   [...pids].sort((a, b) => a - b);
 
-Deno.test("LockHolderMarker.publish: a lone swamp publishes only its own pid", () => {
+Deno.test("LockHolderMarker.publish: a lone swamp publishes a chain of only its own pid and no holder", () => {
   const env = fakeEnv();
   new LockHolderMarker(env.store, 500).publish();
 
-  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "500");
+  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), undefined);
   assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "500");
 });
 
@@ -65,7 +65,7 @@ Deno.test("LockHolderMarker.publish: appends its own pid to the inherited chain"
   });
   new LockHolderMarker(env.store, 300).publish();
 
-  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "300");
+  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "200");
   assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "100,200,300");
 });
 
@@ -99,6 +99,37 @@ Deno.test("LockHolderMarker.publish: is idempotent and never re-captures its own
   assertEquals(env.writes(), writes);
   assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
   assertEquals(sorted(marker.ancestorPids()), [200]);
+});
+
+Deno.test("LockHolderMarker.markHoldingLocks: sets the holder to its own pid once, leaving the chain", () => {
+  const env = fakeEnv({ [SWAMP_LOCK_HOLDER_PID]: "200" });
+  const marker = new LockHolderMarker(env.store, 300);
+  marker.publish();
+  marker.markHoldingLocks();
+  const writes = env.writes();
+  marker.markHoldingLocks();
+
+  assertEquals(env.writes(), writes);
+  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "300");
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
+  // Its own drain still skips the holder it inherited.
+  assertEquals(sorted(marker.ancestorPids()), [200]);
+});
+
+Deno.test("LockHolderMarker: a lock-free swamp in between hands the real holder to an older child", () => {
+  // The grandparent took locks; the intermediate (e.g. a read-only model
+  // method run) takes none, so an older child, which reads only the holder,
+  // still skips the grandparent's locks.
+  const grandparent = fakeEnv();
+  const grandparentMarker = new LockHolderMarker(grandparent.store, 100);
+  grandparentMarker.publish();
+  grandparentMarker.markHoldingLocks();
+
+  const intermediate = fakeEnv(Object.fromEntries(grandparent.values));
+  new LockHolderMarker(intermediate.store, 200).publish();
+
+  assertEquals(intermediate.values.get(SWAMP_LOCK_HOLDER_PID), "100");
+  assertEquals(intermediate.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "100,200");
 });
 
 Deno.test("LockHolderMarker.ancestorPids: after publishing, returns what was inherited, not its own pid", () => {

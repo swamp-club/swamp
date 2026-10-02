@@ -1661,18 +1661,19 @@ Deno.test(
 // ============================================================================
 
 Deno.test(
-  "acquireModelLocks - leaves the lock holder marker untouched across overlapping holders",
+  "acquireModelLocks - keeps this process as the lock holder across overlapping holders' flushes",
   async () => {
     await withTempDir(async (dir) => {
       await initializeRepo(dir);
       const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-      // Compared with the values read before acquiring: under a swamp shell
-      // step (verify-build) the test process inherits real values.
+      // The chain is compared with the value read before acquiring: under a
+      // swamp shell step (verify-build) the test process inherits one.
+      const chainBefore = Deno.env.get(SWAMP_LOCK_ANCESTOR_PIDS);
       const readMarker = () => [
         Deno.env.get(SWAMP_LOCK_HOLDER_PID),
         Deno.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
       ];
-      const before = readMarker();
+      const holding = [String(Deno.pid), chainBefore];
 
       const first = await acquireModelLocks(
         datastoreConfig,
@@ -1684,15 +1685,15 @@ Deno.test(
         [{ modelType: "test-type", modelId: "second-model" }],
         dir,
       );
-      assertEquals(readMarker(), before, "unchanged while both hold locks");
+      assertEquals(readMarker(), holding, "set while both hold locks");
 
       // Flushing one holder used to delete the marker while the other
       // still held its lock.
       await first.flush();
-      assertEquals(readMarker(), before, "unchanged after the first flush");
+      assertEquals(readMarker(), holding, "kept after the first flush");
 
       await second.flush();
-      assertEquals(readMarker(), before, "unchanged after the last flush");
+      assertEquals(readMarker(), holding, "kept after the last flush");
     });
   },
 );

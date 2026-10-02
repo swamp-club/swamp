@@ -20,9 +20,11 @@
 import { hostname } from "node:os";
 
 /**
- * The pid of the swamp process a child was started under. A single pid, so a
- * child running an older swamp, which reads only this name, still skips its
- * parent's per-model locks.
+ * The pid of the nearest swamp above a child that has taken a per-model lock:
+ * a swamp sets it to its own pid once it takes one, and until then leaves the
+ * value it inherited. A single pid, so a child running an older swamp, which
+ * reads only this name, still skips the real lock holder's locks through a
+ * swamp in between that takes none.
  */
 export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
 
@@ -58,14 +60,16 @@ interface Inherited {
  * waiting on them (design/enablers/datastores.md, "Parent-Process Lock
  * Awareness").
  *
- * Published once per process and never cleared. A lock file carrying a pid
- * exists only while that process holds it, so publishing for the whole life
- * of the process is equivalent to publishing while it holds locks, and
+ * Never cleared: the chain is published once at startup and the holder once
+ * the process first takes a lock. A lock file carrying a pid exists only
+ * while that process holds it, so keeping either for the rest of the
+ * process's life is equivalent to keeping it while it holds locks, and
  * concurrent lock holders in one process (parallel workflow steps,
  * `swamp serve` runs) cannot clear it under each other.
  */
 export class LockHolderMarker {
   #inherited: Inherited | undefined;
+  #holding = false;
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -74,8 +78,9 @@ export class LockHolderMarker {
   ) {}
 
   /**
-   * Captures what this process inherited, then publishes its own pid and the
-   * ancestor chain for its children. Later calls do nothing.
+   * Captures what this process inherited, then publishes the ancestor chain
+   * (inherited chain plus its own pid) for its children. The holder keeps its
+   * inherited value until {@link markHoldingLocks}. Later calls do nothing.
    *
    * Writes the env it was built with: tests use an instance with an injected
    * store, never {@link processLockHolderMarker}, which writes the real
@@ -94,8 +99,23 @@ export class LockHolderMarker {
     this.#inherited = inherited;
     const chain = [...inheritedChain(inherited, this.pid), this.pid]
       .slice(-MAX_LOCK_ANCESTORS);
-    this.env.set(SWAMP_LOCK_HOLDER_PID, String(this.pid));
     this.env.set(SWAMP_LOCK_ANCESTOR_PIDS, chain.join(","));
+  }
+
+  /**
+   * Records that this process holds per-model locks, so an older child (which
+   * reads only the holder) skips them. Called each time locks are acquired;
+   * only the first call writes, and nothing clears it.
+   *
+   * Does not capture what was inherited; only {@link publish} does, so a
+   * process's own drain skips its parent's holder even after this runs.
+   */
+  markHoldingLocks(): void {
+    if (this.#holding) {
+      return;
+    }
+    this.#holding = true;
+    this.env.set(SWAMP_LOCK_HOLDER_PID, String(this.pid));
   }
 
   /**

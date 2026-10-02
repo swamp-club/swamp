@@ -1766,6 +1766,10 @@ export async function acquireModelLocks(
     }
   }
 
+  // Older nested swamps read only the holder; set once, never cleared, so
+  // concurrent lock holders in this process cannot clear it under each other.
+  processLockHolderMarker.markHoldingLocks();
+
   const flush = async () => {
     try {
       // For custom sync-capable datastores: push changes to remote
