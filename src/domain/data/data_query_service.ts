@@ -302,6 +302,38 @@ export class DataQueryService {
       latest,
     );
     if (!data || data.isDeleted || data.isRenamed) return null;
+    // Rows above the marker whose version is gone from disk (another
+    // repository deleted it) would otherwise outrank the marker's version in
+    // upsertNewVersion, which orders by version (swamp-club#2520).
+    for (
+      const stale of this.catalogStore.iterateFiltered(
+        "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?",
+        [
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          latest,
+        ],
+      )
+    ) {
+      if (
+        !this.dataRepo.findByNameSync(
+          type,
+          row.model_id,
+          row.data_name,
+          stale.version,
+        )
+      ) {
+        this.catalogStore.removeVersion(
+          stale.namespace,
+          stale.type_normalized,
+          stale.model_id,
+          stale.data_name,
+          stale.version,
+        );
+      }
+    }
     const current = this.toCatalogRow(data, type, row.model_id, true);
     this.catalogStore.upsertNewVersion(current);
     return current;

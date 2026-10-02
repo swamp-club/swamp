@@ -339,6 +339,10 @@ export class CatalogStore {
            AND (is_latest = 1 OR is_step_latest = 1)
          LIMIT 1`,
       ).get(...group, row.version);
+      // Not filtered on flags: a superseded model-method row holds neither
+      // flag yet still outranks lower step rows, exactly as it does in
+      // computeLatestFlags. An unpromoted deferred row counts too; if it is
+      // rolled back, its step has no step latest until the catalog is rebuilt.
       const higherInScope = this.db.prepare(
         `SELECT 1 FROM catalog
          WHERE ${groupWhere} AND version > ? AND ${stepScope}

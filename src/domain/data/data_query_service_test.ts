@@ -2716,6 +2716,40 @@ Deno.test("getLatestRecord: an unpopulated row behind the on-disk latest marker 
   }
 });
 
+Deno.test("getLatestRecord: an unpopulated row ahead of the on-disk latest marker whose version was deleted yields to the marker (swamp-club#2520)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1-v3; another repository sharing the datastore has
+    // since deleted v3, leaving the marker on v2.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    for (const version of [1, 2, 3]) {
+      catalog.upsertNewVersion(makeRow({ version }));
+    }
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+    assertEquals(
+      [...catalog.iterate()].map((r) => r.version).sort(),
+      [1, 2],
+      "the deleted version's row is dropped",
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("getLatestRecord: a row from another namespace is never refreshed from this repository's layout", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-foreign-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));

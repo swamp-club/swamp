@@ -363,7 +363,13 @@ Deno.test("DataAccessService.readModelData: returns one latest record when workf
     assertEquals(results[0].attributes, { state: "Ingested" });
   } finally {
     catalog.close();
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });
 

@@ -613,7 +613,7 @@ class LogCatalogDuplicateLatestRepairRenderer
         this.overallStatus = "preview";
         writeOutput(`\n${bold("Duplicate is_latest flags:")}`);
         writeOutput(
-          `  ${e.duplicateCount} record group(s) have more than one version flagged as latest`,
+          `  ${e.duplicateCount} record group(s) have conflicting latest-version flags`,
         );
         writeOutput(dim("\n  Run with -y to repair."));
       },

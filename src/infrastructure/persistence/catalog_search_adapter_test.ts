@@ -71,6 +71,12 @@ Deno.test("findLatestItemsFromCatalog: lists a data name once when several workf
     assertEquals(items.map((i) => [i.name, i.version]), [["item-b", 2]]);
   } finally {
     catalog.close();
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });
