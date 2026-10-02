@@ -64,6 +64,7 @@ import {
   flushDatastoreSyncNamed,
   registerDatastoreSync,
   registerDatastoreSyncNamed,
+  SLOW_LOCK_NAMESPACE_ADVICE,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
@@ -96,6 +97,10 @@ import {
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
+import {
+  isShareableDatastore,
+  slowLockAdvice,
+} from "../domain/datastore/slow_lock_advice.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import type {
   DatastoreSyncService,
@@ -969,6 +974,7 @@ export function requireInitializedRepo(
         syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
         metadataOnly: datastoreConfig.hydrationStrategy === "lazy",
         namespace: datastoreConfig.namespace,
+        slowLockScope: { scope: { kind: "global" }, shareable: true },
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
@@ -1025,7 +1031,14 @@ export function requireInitializedRepo(
           maxWaitMs: resolveLockTimeoutMs(),
         },
       );
-      await registerDatastoreSync({ lock });
+      await registerDatastoreSync({
+        lock,
+        namespace: datastoreConfig.namespace,
+        slowLockScope: {
+          scope: { kind: "global" },
+          shareable: isShareableDatastore(datastoreConfig, repoPath.value),
+        },
+      });
 
       // Second drain: with the global lock now held, wait for any such
       // straggling per-model locks to release. Writers in the middle of
@@ -1631,6 +1644,10 @@ export async function acquireModelLocks(
     await registerDatastoreSyncNamed(coordinatorKey, {
       lock,
       namespace: config.namespace,
+      slowLockScope: {
+        scope: { kind: "model", modelType, modelId },
+        shareable: isCustomDatastoreConfig(config),
+      },
     });
     lockKeys.push(coordinatorKey);
 
@@ -1845,13 +1862,17 @@ export async function flushSinglePhasePush(
     const lockStart = Date.now();
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
-    if (lockMs > 5_000 && !config.namespace) {
+    if (
+      slowLockAdvice({
+        waitedMs: lockMs,
+        scope: { kind: "global" },
+        shareable: true,
+        namespace: config.namespace,
+      }) === "namespace"
+    ) {
       write(
         yellow(
-          `Lock acquisition took ${lockMs}ms — if multiple repos share ` +
-            "this datastore without namespaces, all writes serialize " +
-            "behind a single lock. Run 'swamp datastore namespace set " +
-            "<name>' to scope each repo to its own lock and index",
+          `Lock acquisition took ${lockMs}ms — ${SLOW_LOCK_NAMESPACE_ADVICE}`,
         ),
       );
     }
@@ -1964,13 +1985,17 @@ export async function flushTwoPhasePush(
     const lockStart = Date.now();
     await pushLock.acquire();
     const lockMs = Date.now() - lockStart;
-    if (lockMs > 5_000 && !config.namespace) {
+    if (
+      slowLockAdvice({
+        waitedMs: lockMs,
+        scope: { kind: "global" },
+        shareable: true,
+        namespace: config.namespace,
+      }) === "namespace"
+    ) {
       write(
         yellow(
-          `Lock acquisition took ${lockMs}ms — if multiple repos share ` +
-            "this datastore without namespaces, all writes serialize " +
-            "behind a single lock. Run 'swamp datastore namespace set " +
-            "<name>' to scope each repo to its own lock and index",
+          `Lock acquisition took ${lockMs}ms — ${SLOW_LOCK_NAMESPACE_ADVICE}`,
         ),
       );
     }

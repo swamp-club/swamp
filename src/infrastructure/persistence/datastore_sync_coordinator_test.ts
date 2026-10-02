@@ -678,6 +678,7 @@ Deno.test("registerDatastoreSyncNamed: slow lock with namespace suppresses conte
     await registerDatastoreSyncNamed("ns-warn-suppressed", {
       lock,
       namespace: "my-namespace",
+      slowLockScope: { scope: { kind: "global" }, shareable: true },
     });
 
     const warnings = captured.filter((r) => r.level === "warning");
@@ -726,7 +727,10 @@ Deno.test("registerDatastoreSyncNamed: slow lock without namespace emits content
     };
     captured.length = 0;
 
-    await registerDatastoreSyncNamed("no-ns-warn", { lock });
+    await registerDatastoreSyncNamed("no-ns-warn", {
+      lock,
+      slowLockScope: { scope: { kind: "global" }, shareable: true },
+    });
 
     const warnings = captured.filter((r) => r.level === "warning");
     assertEquals(
@@ -743,4 +747,76 @@ Deno.test("registerDatastoreSyncNamed: slow lock without namespace emits content
     Date.now = originalNow;
     await initializeLogging({ _reset: true });
   }
+});
+
+// --- Slow-lock advice by lock scope (swamp-club#2941) ---
+
+/**
+ * Registers `key` with a lock whose acquisition appears to take 6 s and
+ * returns the warning messages logged under datastore·lock.
+ */
+async function slowLockWarnings(
+  key: string,
+  options: Omit<Parameters<typeof registerDatastoreSyncNamed>[1], "lock">,
+): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "lock"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+
+  const originalNow = Date.now;
+  let lockAcquired = false;
+  const baseTime = originalNow.call(Date);
+  Date.now = () => lockAcquired ? baseTime + 6_000 : baseTime;
+
+  try {
+    const lock = new FakeLock();
+    const origAcquire = lock.acquire.bind(lock);
+    lock.acquire = async () => {
+      await origAcquire();
+      lockAcquired = true;
+    };
+    await registerDatastoreSyncNamed(key, { ...options, lock });
+    await flushDatastoreSyncNamed(key);
+    return captured
+      .filter((r) => r.level === "warning")
+      .map((r) => r.message.map((p) => String(p)).join(""));
+  } finally {
+    Date.now = originalNow;
+    await initializeLogging({ _reset: true });
+  }
+}
+
+Deno.test("registerDatastoreSyncNamed: slow model lock names model contention, not a namespace", async () => {
+  const warnings = await slowLockWarnings(`model-${crypto.randomUUID()}`, {
+    slowLockScope: {
+      scope: { kind: "model", modelType: "command/shell", modelId: "abc" },
+      shareable: false,
+    },
+  });
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "command/shell/abc");
+  assertStringIncludes(warnings[0], "6000ms");
+  assertStringIncludes(warnings[0], "concurrent runs");
+  assertEquals(warnings[0].includes("namespace"), false);
+});
+
+Deno.test("registerDatastoreSyncNamed: slow global lock on a datastore no other repo can reach is silent", async () => {
+  const warnings = await slowLockWarnings(`global-${crypto.randomUUID()}`, {
+    slowLockScope: { scope: { kind: "global" }, shareable: false },
+  });
+  assertEquals(warnings, []);
+});
+
+Deno.test("registerDatastoreSyncNamed: slow lock without a scope is silent", async () => {
+  const warnings = await slowLockWarnings(`none-${crypto.randomUUID()}`, {});
+  assertEquals(warnings, []);
 });

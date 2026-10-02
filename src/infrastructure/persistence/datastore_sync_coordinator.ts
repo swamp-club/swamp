@@ -40,6 +40,8 @@
 import {
   type DatastoreSyncService,
   DEFAULT_SYNC_TIMEOUT_MS,
+  type LockScope,
+  slowLockAdvice,
   type SyncDirection,
   SyncTimeoutError,
 } from "../../domain/datastore/mod.ts";
@@ -80,7 +82,37 @@ export interface RegisterDatastoreSyncOptions {
    * empty, the extension syncs everything (solo mode).
    */
   namespace?: string;
+  /**
+   * Which lock this is, and whether another repo can reach the datastore.
+   * A slow acquisition is reported only when this is set, with advice
+   * chosen by `slowLockAdvice`.
+   */
+  slowLockScope?: SlowLockScope;
 }
+
+/** The lock a registration takes, for slow-acquisition advice. */
+export interface SlowLockScope {
+  /** Global datastore lock, or the lock of one model instance. */
+  scope: LockScope;
+  /** Whether another repo can reach this datastore. */
+  shareable: boolean;
+}
+
+/**
+ * Advice for a slow global lock on a shareable datastore with no namespace.
+ * Contains no `{`, so it can be appended to a LogTape template.
+ */
+export const SLOW_LOCK_NAMESPACE_ADVICE =
+  "if multiple repos share this datastore without namespaces, all writes " +
+  "serialize behind a single lock. Run 'swamp datastore namespace set " +
+  "<name>' to scope each repo to its own lock and index";
+
+/**
+ * Cause of a slow per-model lock. Contains no `{`, so it can be appended to
+ * a LogTape template.
+ */
+export const SLOW_LOCK_MODEL_CONTENTION_ADVICE =
+  "concurrent runs against one model instance take turns on its lock";
 
 /** Internal entry tracking a single lock/sync pair. */
 interface SyncEntry {
@@ -249,6 +281,32 @@ export async function runBoundedSync<T>(
   }
 }
 
+/** Warns about a slow lock acquisition when advice would help. */
+function logSlowLock(
+  logger: ReturnType<typeof getSwampLogger>,
+  lockMs: number,
+  { scope, shareable }: SlowLockScope,
+  namespace: string | undefined,
+): void {
+  const advice = slowLockAdvice({
+    waitedMs: lockMs,
+    scope,
+    shareable,
+    namespace,
+  });
+  if (advice === "namespace") {
+    logger.warn(
+      `Lock acquisition took {ms}ms — ${SLOW_LOCK_NAMESPACE_ADVICE}`,
+      { ms: lockMs },
+    );
+  } else if (advice === "model-contention" && scope.kind === "model") {
+    logger.warn(
+      `Lock on model {model} took {ms}ms — ${SLOW_LOCK_MODEL_CONTENTION_ADVICE}`,
+      { model: `${scope.modelType}/${scope.modelId}`, ms: lockMs },
+    );
+  }
+}
+
 /**
  * Registers the datastore sync lifecycle (global lock).
  *
@@ -311,14 +369,8 @@ export async function registerDatastoreSyncNamed(
       const lockStart = Date.now();
       await lock.acquire();
       const lockMs = Date.now() - lockStart;
-      if (lockMs > 5_000 && !namespace) {
-        logger.warn(
-          "Lock acquisition took {ms}ms — if multiple repos share this " +
-            "datastore without namespaces, all writes serialize behind a " +
-            "single lock. Run 'swamp datastore namespace set <name>' to " +
-            "scope each repo to its own lock and index",
-          { ms: lockMs },
-        );
+      if (options.slowLockScope) {
+        logSlowLock(logger, lockMs, options.slowLockScope, namespace);
       }
       lockAcquired = true;
       lockSpan.setStatus({ code: SpanStatusCode.OK });
