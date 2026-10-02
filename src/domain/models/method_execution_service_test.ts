@@ -3607,6 +3607,7 @@ function createMockOutputRepo(): {
   return {
     repo: {
       findById: () => Promise.resolve(null),
+      findByIds: () => Promise.resolve(new Map()),
       findByDefinition: () => Promise.resolve([]),
       findLatestByDefinition: () => Promise.resolve(null),
       findAll: () => Promise.resolve([]),

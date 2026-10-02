@@ -130,6 +130,7 @@ function createMockOutputRepo(
     findAllGlobalSince: (cutoff: Date) =>
       Promise.resolve(items.filter(({ output }) => output.startedAt >= cutoff)),
     findById: () => Promise.resolve(null),
+    findByIds: () => Promise.resolve(new Map()),
     findByDefinition: () => Promise.resolve([]),
     findLatestByDefinition: () => Promise.resolve(null),
     findAll: () => Promise.resolve([]),
