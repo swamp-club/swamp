@@ -31,8 +31,9 @@ import { dirname, join } from "@std/path";
 import {
   createInMemoryRemote,
   type InMemoryRemote,
+  type InMemoryRemoteOpRecord,
+  type InMemorySyncService,
 } from "@swamp-club/swamp-testing";
-import type { DatastoreSyncService } from "../src/domain/datastore/datastore_sync_service.ts";
 import type { StagedChange } from "../src/domain/datastore/unit_of_work.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
@@ -49,6 +50,23 @@ import { VERSION } from "../src/cli/commands/version.ts";
 await initializeLogging({});
 
 type Mark = (change: StagedChange) => Promise<void>;
+type Push = () => Promise<void>;
+type Op = Omit<InMemoryRemoteOpRecord, "instance">;
+
+/**
+ * Pushes the way core does for the advertised capability: two-phase
+ * (preparePush then commitPush) when the service supports it, otherwise a
+ * single pushChanged.
+ */
+function pushFor(service: InMemorySyncService, twoPhaseSync: boolean): Push {
+  return twoPhaseSync
+    ? async () => {
+      await service.commitPush(await service.preparePush());
+    }
+    : async () => {
+      await service.pushChanged();
+    };
+}
 
 /**
  * Writes and removes real files in the cache, marking each change before it
@@ -58,7 +76,7 @@ type Mark = (change: StagedChange) => Promise<void>;
 async function runScript(
   cacheDir: string,
   mark: Mark,
-  syncService: DatastoreSyncService,
+  push: Push,
 ): Promise<void> {
   const file = (name: string) => join(cacheDir, "data", name);
   const write = async (name: string, body: string) => {
@@ -74,17 +92,17 @@ async function runScript(
   await write("a.txt", "a");
   await write("b.txt", "b");
   await write("c.txt", "c");
-  await syncService.pushChanged();
+  await push();
   await remove("a.txt");
   await write("b.txt", "b2");
-  await syncService.pushChanged();
+  await push();
   await mark({ kind: "bulk", reason: "test bulk" });
   await write("d.txt", "d");
   await remove("c.txt");
 }
 
 interface Observed {
-  ops: unknown[];
+  ops: Op[];
   pending: Awaited<ReturnType<InMemoryRemote["pendingPush"]>>;
   files: Record<string, string>;
 }
@@ -97,7 +115,15 @@ async function observe(
   const remote = createInMemoryRemote({
     capabilities: twoPhaseSync ? { twoPhaseSync: true } : {},
   });
-  const type = registerTestDatastoreType(remote);
+  // Keep the service core connects, so the test can push it two-phase.
+  const services: InMemorySyncService[] = [];
+  const type = registerTestDatastoreType({
+    connect: (cacheDir) => {
+      const service = remote.connect(cacheDir);
+      services.push(service);
+      return service;
+    },
+  });
   try {
     const repoDir = join(dir, via);
     await Deno.mkdir(repoDir, { recursive: true });
@@ -114,9 +140,14 @@ async function observe(
     });
     try {
       const hook = ctx.repoContext.markDirty;
-      const syncService = ctx.syncService;
       assert(hook !== undefined, "expected the composition-built mark hook");
-      assert(syncService !== undefined, "expected a sync service");
+      assert(ctx.syncService !== undefined, "expected a sync service");
+      assertEquals(services.length, 1, "expected one connected sync service");
+      assert(
+        (ctx.syncService as unknown) === services[0],
+        "expected the hook and the pushes to share one sync service",
+      );
+      const push = pushFor(services[0], twoPhaseSync);
       const cacheDir = join(repoDir, ".test-cache");
 
       let mark: Mark;
@@ -128,10 +159,10 @@ async function observe(
         mark = (change) => unit.stage(change);
       }
       const opsBefore = remote.ops().length;
-      await runScript(cacheDir, mark, syncService);
+      await runScript(cacheDir, mark, push);
 
       const pending = await remote.pendingPush(cacheDir);
-      await syncService.pushChanged();
+      await push();
       // Each remote names its own instance; compare everything else.
       const ops = remote.ops().slice(opsBefore).map(
         ({ instance: _instance, ...rest }) => rest,
@@ -167,8 +198,24 @@ for (const twoPhaseSync of [true, false]) {
       // removal of a pushed file was deleted remotely, and the writes landed.
       assert(direct.ops.some((op) => (op as { bulk?: boolean }).bulk === true));
       assertEquals(direct.files["data/a.txt"], undefined);
+      // A bulk mark makes the next push a full walk that deletes nothing, so
+      // the removal of c.txt after it never reaches the remote (pinned legacy
+      // behaviour; the adapter must reproduce it exactly).
+      assertEquals(direct.files["data/c.txt"], "c");
       assertEquals(direct.files["data/b.txt"], "b2");
       assertEquals(direct.files["data/d.txt"], "d");
+      // The push style really ran: two-phase pushes record prepare and
+      // commit and never a push carrying paths; single-phase the reverse.
+      const ran = (op: Op["op"]) => direct.ops.some((o) => o.op === op);
+      const pathPush = direct.ops.some((o) =>
+        o.op === "push" && (o.paths.length > 0 || o.deleted.length > 0)
+      );
+      assertEquals(
+        { prepare: ran("prepare"), commit: ran("commit"), pathPush },
+        twoPhaseSync
+          ? { prepare: true, commit: true, pathPush: false }
+          : { prepare: false, commit: false, pathPush: true },
+      );
     } finally {
       if (Deno.build.os === "windows") {
         await Deno.remove(dir, { recursive: true }).catch(() => {});

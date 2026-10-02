@@ -44,6 +44,10 @@ export interface UnitOfWorkProbe {
   /**
    * The target of each change the unit forwarded downstream, in order: the
    * path for `write` and `remove`, `undefined` for `bulk`.
+   *
+   * The legacy adapter forwards at `stage`. An adapter that defers sending
+   * until `commit` (a Phase 3 commit-log adapter may) must report here the
+   * changes it has accepted for commit, in order.
    */
   forwarded(): readonly (string | undefined)[];
   /** Makes the next downstream forward reject with `error`. */
@@ -91,6 +95,8 @@ async function assertSpent(unit: UnitOfWork): Promise<void> {
 
 const CASES: readonly ContractCase[] = [
   {
+    // Reads forwarded() once stage resolves: legacy forward-at-stage timing,
+    // or "accepted for commit" for an adapter that defers (see forwarded).
     name: "stage order is preserved",
     run: async ({ unit, forwarded }) => {
       const changes = [WRITE_A, BULK, REMOVE_B, WRITE_A];
@@ -168,6 +174,9 @@ const CASES: readonly ContractCase[] = [
     },
   },
   {
+    // Assumes a downstream rejection surfaces at stage, as the legacy adapter
+    // forwards there. An adapter that defers sending must surface it where its
+    // design does, and adapt this case when it joins the suite.
     name: "a downstream error propagates",
     run: async ({ unit, forwarded, failNext }) => {
       const error = new Error("downstream failed");
