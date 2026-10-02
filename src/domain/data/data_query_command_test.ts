@@ -135,3 +135,37 @@ Deno.test("dataQueryPredicate: names the model type when given", () => {
     'modelType == "workflow" && modelName == "wf" && name == "r"',
   );
 });
+
+Deno.test("dataQueryPredicate: a latest-run read names the workflow's latest run and any version", () => {
+  assertEquals(
+    dataQueryPredicate({
+      latestRunWorkflow: "deploy",
+      jobName: "main",
+      stepName: "build",
+      dataName: "output",
+    }),
+    'workflowRunId == latestRun("deploy") && jobName == "main" && ' +
+      'stepName == "build" && name == "output" && version >= 0',
+  );
+});
+
+Deno.test("dataQueryPredicate: a latest-run read keeps a given version", () => {
+  assertEquals(
+    dataQueryPredicate({
+      latestRunWorkflow: "deploy",
+      dataName: "output",
+      version: 3,
+    }),
+    'workflowRunId == latestRun("deploy") && name == "output" && version == 3',
+  );
+});
+
+Deno.test("dataQueryCommand: quotes the latest-run workflow for CEL and the shell", () => {
+  assertEquals(
+    dataQueryCommand({ latestRunWorkflow: `it's "x"`, dataName: "out" }, {
+      includeContent: false,
+    }),
+    `swamp data query 'workflowRunId == latestRun("it'"'"'s \\"x\\"") && ` +
+      `name == "out" && version >= 0'`,
+  );
+});

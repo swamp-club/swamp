@@ -34,6 +34,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createLatestRunResolver } from "../../domain/workflows/workflow_lookup.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -126,9 +127,14 @@ export const dataQueryCommand = withRemoteOptions(
   }
 
   const queryService = repoContext.dataQueryService;
+  const latestRunResolver = createLatestRunResolver(
+    repoContext.workflowRepo,
+    repoContext.workflowRunRepo,
+  );
 
   const deps: DataQueryDeps = {
-    query: (pred, opts) => queryService.query(pred, opts),
+    query: (pred, opts) =>
+      queryService.query(pred, { ...opts, latestRunResolver }),
   };
 
   // Interactive TUI when no predicate is given, TTY, and not --json mode

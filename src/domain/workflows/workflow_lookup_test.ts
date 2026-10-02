@@ -17,13 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { UserError } from "../errors.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import type { WorkflowId } from "./workflow_id.ts";
-import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
+import { WorkflowRun } from "./workflow_run.ts";
+import {
+  createLatestRunResolver,
+  findWorkflowById,
+  findWorkflowByIdOrName,
+  latestRunForWorkflow,
+} from "./workflow_lookup.ts";
 
 function workflow(name: string): Workflow {
   return Workflow.create({
@@ -111,4 +118,58 @@ Deno.test("findWorkflowById: with an expected name, only a workflow with both th
   );
   assertEquals((await findWorkflowById(repo, target.id, "copy"))?.name, "copy");
   assertEquals(await findWorkflowById(repo, target.id, "other"), null);
+});
+
+function runRepoOf(latest: Map<string, WorkflowRun>) {
+  const lookups: string[] = [];
+  return {
+    lookups,
+    findLatestByWorkflowId: (id: WorkflowId) => {
+      lookups.push(id);
+      return Promise.resolve(latest.get(id) ?? null);
+    },
+  };
+}
+
+Deno.test("latestRunForWorkflow: returns the run repository's latest run", async () => {
+  const deploy = workflow("deploy");
+  const run = WorkflowRun.create(deploy);
+  const runRepo = runRepoOf(new Map([[deploy.id, run]]));
+  assertEquals((await latestRunForWorkflow(runRepo, deploy.id))?.id, run.id);
+});
+
+Deno.test("latestRunForWorkflow: returns null for a non-UUID id without a lookup", async () => {
+  const runRepo = runRepoOf(new Map());
+  assertEquals(await latestRunForWorkflow(runRepo, "../../etc"), null);
+  assertEquals(runRepo.lookups, []);
+});
+
+Deno.test("createLatestRunResolver: resolves by name and by UUID", async () => {
+  const deploy = workflow("deploy");
+  const run = WorkflowRun.create(deploy);
+  const resolve = createLatestRunResolver(
+    repoOf([deploy]),
+    runRepoOf(new Map([[deploy.id, run]])),
+  );
+  assertEquals(await resolve("deploy"), run.id);
+  assertEquals(await resolve(deploy.id), run.id);
+});
+
+Deno.test("createLatestRunResolver: returns null for a workflow with no runs", async () => {
+  const resolve = createLatestRunResolver(
+    repoOf([workflow("deploy")]),
+    runRepoOf(new Map()),
+  );
+  assertEquals(await resolve("deploy"), null);
+});
+
+Deno.test("createLatestRunResolver: an unknown workflow is a UserError, and a path-like argument is never looked up by id", async () => {
+  const repo = repoOf([workflow("deploy")]);
+  const resolve = createLatestRunResolver(repo, runRepoOf(new Map()));
+  await assertRejects(
+    () => resolve("../deploy"),
+    UserError,
+    "Workflow not found: ../deploy",
+  );
+  assertEquals(repo.idLookups, []);
 });

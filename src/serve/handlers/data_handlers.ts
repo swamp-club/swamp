@@ -84,6 +84,7 @@ import {
   type ConnectionContext,
   DEFAULT_QUERY_LIMIT,
   filterByResources,
+  isAuthorized,
   LibSwampStreamError,
   MAX_QUERY_RESULTS,
   pushChangedToRemote,
@@ -100,7 +101,12 @@ import {
   resolveModelTarget,
   resolveWorkflowTarget,
   targetArgument,
+  unresolvedAccessResource,
 } from "./resource_resolution.ts";
+import type { AccessResource } from "../../domain/access/access_decision_service.ts";
+import type { LatestWorkflowRunResolver } from "../../domain/data/data_query_service.ts";
+import { latestRunForWorkflow } from "../../domain/workflows/workflow_lookup.ts";
+import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -345,6 +351,52 @@ async function authorizeWorkflowData(
   };
 }
 
+/**
+ * Resolves `latestRun("<workflow>")` for a data query over serve with the
+ * checks a workflow history read of the latest run makes: `read` on the
+ * workflow, then on every workflow the run is recorded under — a copy
+ * shares its original's id and runs (swamp-club#2957). The run is looked up
+ * by the resolved id, so it belongs to the workflow that was authorized. A
+ * refusal is audited but never replied; it, an unknown workflow and a file
+ * that does not parse all fail as one not-found naming only the argument,
+ * so the error says nothing about what the caller may not read.
+ */
+function servedLatestRunResolver(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): LatestWorkflowRunResolver {
+  return async (workflow) => {
+    const notFound = new UserError(`Workflow not found: ${workflow}`);
+    const allowed = (resource: AccessResource) =>
+      isAuthorized(socket, requestId, principal, "read", resource, ctx);
+    const target = await resolveWorkflowTarget(
+      ctx.repoContext.workflowRepo,
+      workflow,
+      workflowsDirFor(ctx.repoDir),
+    );
+    if (target.status === "failed") {
+      if (!allowed(unresolvedAccessResource("workflow", workflow))) {
+        throw notFound;
+      }
+      throw target.error;
+    }
+    if (!allowed(target.resource) || target.status !== "found") throw notFound;
+    const run = await latestRunForWorkflow(
+      ctx.repoContext.workflowRunRepo,
+      target.id,
+    );
+    if (!run) return null;
+    const owners = await canonicalResources(ctx).workflowOwners(
+      run.workflowId,
+      run.workflowName,
+    );
+    if (!owners.every(allowed)) throw notFound;
+    return run.id;
+  };
+}
+
 export async function handleDataQuery(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -375,8 +427,15 @@ export async function handleDataQuery(
   try {
     const libCtx = createLibSwampContext();
     const queryService = ctx.repoContext.dataQueryService;
+    const latestRunResolver = servedLatestRunResolver(
+      socket,
+      requestId,
+      principal,
+      ctx,
+    );
     const deps: DataQueryDeps = {
-      query: (pred, opts) => queryService.query(pred, opts),
+      query: (pred, opts) =>
+        queryService.query(pred, { ...opts, latestRunResolver }),
     };
 
     const limit = Math.min(

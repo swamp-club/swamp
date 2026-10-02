@@ -175,6 +175,108 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
 }
 
 /**
+ * The query function that resolves a workflow's most recent run id, as
+ * `swamp data get --workflow` does without `--run` (swamp-club#2957).
+ */
+export const LATEST_RUN_FUNCTION = "latestRun";
+
+/** The AST nodes directly under `node`, in source order. */
+function childNodes(node: ASTNode): ASTNode[] {
+  const { op, args } = node;
+  switch (op) {
+    case "id":
+    case "value":
+      return [];
+    case ".":
+    case ".?":
+      return [(args as [ASTNode, string])[0]];
+    case "call":
+      return (args as [string, ASTNode[]])[1];
+    case "rcall": {
+      const [, receiver, callArgs] = args as [string, ASTNode, ASTNode[]];
+      return [receiver, ...callArgs];
+    }
+    case "!_":
+    case "-_":
+      return [args as ASTNode];
+    case "map":
+      return (args as Array<[ASTNode, ASTNode]>).flat();
+    default:
+      if (!Array.isArray(args)) return [];
+      return (args as unknown[]).filter((a): a is ASTNode =>
+        !!a && typeof a === "object" && "op" in a
+      );
+  }
+}
+
+/**
+ * Collects the distinct workflow arguments of every `latestRun(...)` call in
+ * the AST. Each call must take exactly one non-empty string literal, so the
+ * run can be resolved once per query rather than per row; anything else is
+ * a UserError.
+ */
+export function collectLatestRunWorkflows(node: ASTNode): string[] {
+  const workflows = new Set<string>();
+  const visit = (n: ASTNode) => {
+    if (!n || typeof n !== "object" || !("op" in n)) return;
+    if (n.op === "rcall" && (n.args as [string])[0] === LATEST_RUN_FUNCTION) {
+      throw new UserError(
+        `${LATEST_RUN_FUNCTION}() takes the workflow as its argument: ` +
+          `write ${LATEST_RUN_FUNCTION}("<workflow>")`,
+      );
+    }
+    if (n.op === "call" && (n.args as [string])[0] === LATEST_RUN_FUNCTION) {
+      const callArgs = (n.args as [string, ASTNode[]])[1];
+      const [arg] = callArgs;
+      if (
+        callArgs.length !== 1 || arg.op !== "value" ||
+        typeof arg.args !== "string" || arg.args === ""
+      ) {
+        throw new UserError(
+          `${LATEST_RUN_FUNCTION}() takes one workflow name or id as a ` +
+            `string literal, e.g. ${LATEST_RUN_FUNCTION}("deploy")`,
+        );
+      }
+      workflows.add(arg.args);
+      return;
+    }
+    for (const child of childNodes(n)) visit(child);
+  };
+  visit(node);
+  return [...workflows];
+}
+
+/**
+ * Extracts the workflow argument from a top-level
+ * `workflowRunId == latestRun("<workflow>")` equality in the AST, for SQL
+ * pushdown once the run is resolved. Walks through AND conjuncts but does
+ * not descend into OR branches. Returns null if there is none.
+ */
+export function extractWorkflowRunIdLatestRun(ast: ASTNode): string | null {
+  if (ast.op === "==") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return latestRunEquality(left, right) ?? latestRunEquality(right, left);
+  }
+
+  if (ast.op === "&&") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return extractWorkflowRunIdLatestRun(left) ??
+      extractWorkflowRunIdLatestRun(right);
+  }
+
+  return null;
+}
+
+function latestRunEquality(field: ASTNode, call: ASTNode): string | null {
+  if (field.op !== "id" || field.args !== "workflowRunId") return null;
+  if (call.op !== "call") return null;
+  const [name, callArgs] = call.args as [string, ASTNode[]];
+  if (name !== LATEST_RUN_FUNCTION || callArgs.length !== 1) return null;
+  const [arg] = callArgs;
+  return arg.op === "value" && typeof arg.args === "string" ? arg.args : null;
+}
+
+/**
  * Checks whether the AST references the `attributes` identifier at root level.
  */
 export function referencesAttributes(node: ASTNode): boolean {

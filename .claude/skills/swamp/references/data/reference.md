@@ -94,13 +94,18 @@ swamp data list --workflow test-data-fetch --run <run_id> --json
 # Read one step's output; name the job and step, since several steps can
 # write data with the same name
 swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName == "<step>" && name == "output" && version >= 0' --select content
+
+# The same read from the workflow's latest run, without looking the run id up
+swamp data query 'workflowRunId == latestRun("test-data-fetch") && jobName == "<job>" && stepName == "<step>" && name == "output" && version >= 0' --select content
 ```
 
-A query has no "latest run" shortcut: get the run id from
-`swamp workflow history get <workflow>` or the `data list --workflow` output.
-When several steps wrote the name, the deprecated `swamp data get --workflow`
-returns the highest-versioned match (the first step on a tie) and warns with the
-other matches.
+`latestRun("<workflow>")` resolves to the workflow's most recent run, the run
+`data list --workflow` reads. An unknown workflow is an error; a workflow with
+no runs matches nothing. `workflowName == "<w>"` is not the same: it returns
+each item's latest version, which can come from different runs. When several
+steps wrote the name, the deprecated `swamp data get --workflow` returns the
+highest-versioned match (the first step on a tie) and warns with the other
+matches.
 
 ## View Version History
 
