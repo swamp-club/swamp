@@ -26,6 +26,7 @@
 // leaves the whoami response (the grace period is 30 days). On an emergency
 // rotation, every proof signed with the old key stops verifying at once:
 // interactive users re-verify on their next run, and CI signin tokens need
-// a CLI release carrying the new key plus newly issued tokens.
+// a CLI release carrying the new key plus newly issued tokens. The step-by-step
+// runbook is "Key rotation" in design/surfaces/auth-gate.md.
 export const EMBEDDED_PUBLIC_KEY: string | undefined =
   "rIXC70V_y64Se9pDjifRLMBWMhOmsa5z3mMCyCZXKns";

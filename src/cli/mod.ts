@@ -118,6 +118,8 @@ import "../domain/datastore/datastore_types.ts";
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
+import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
+import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { ReconcileFromDiskService } from "../libswamp/mod.ts";
 import {
   type RepoMarkerData,
@@ -2085,6 +2087,9 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
  * The command tree without the invocation's global action — enough to
  * resolve a telemetry invocation for a run blocked before the real tree is
  * built. registerCommands is kept free of invocation state for this.
+ *
+ * Call it before the real cli registers its commands: the instances are
+ * shared, and Cliffy re-parents each to the tree that registers it last.
  */
 export function buildCommandTree(): AnyCommand {
   const tree = createRootCommand(false);
@@ -2281,7 +2286,15 @@ async function runInvocation(
   // tree, never guessed. Hook mode (always `audit record`, always gated)
   // skips building the tree, checks locally only and, when blocked, records
   // nothing and exits 0 so an agent session is not broken.
+  //
+  // buildCommandTree must run before registerCommands(cli) below: the
+  // command instances are shared, and Cliffy re-parents an instance to
+  // whichever tree registers it last, so the real cli must register last.
   const commandTree = hookMode ? undefined : buildCommandTree();
+  // A process that does not own the config dir (a system daemon running as
+  // root against the enabling user's dir) reads it but never writes it, so
+  // it leaves no root-owned files the user's own runs cannot read back.
+  const configDirOwned = processOwnsConfigDir();
   const gateTiming = commandTree ? authGateTiming(commandTree, args) : "gated";
   let gateOutcome: AuthGateOutcome | undefined;
   if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
@@ -2310,7 +2323,10 @@ async function runInvocation(
     };
     try {
       gateOutcome = await runAuthGate(
-        createAuthGateDeps({ liveChecks: !hookMode }),
+        createAuthGateDeps({
+          liveChecks: !hookMode,
+          canWrite: configDirOwned,
+        }),
       );
     } catch (error) {
       // A misconfigured key source or an unreadable auth.json. Hook mode
@@ -2434,7 +2450,7 @@ async function runInvocation(
             );
             if (response.authenticated) {
               setAuthScopes(response.scopes);
-              if (response.scopes) {
+              if (response.scopes && configDirOwned) {
                 await authRepo.saveScopeCache(
                   scopeFingerprint,
                   response.scopes,
@@ -2442,7 +2458,9 @@ async function runInvocation(
               }
             }
           }
-        } else if (!creds.username) {
+        } else if (!creds.username && configDirOwned) {
+          // Only fetched to fill the identity cache, which a process that
+          // does not own the config dir must not write.
           const response = await gateWhoamiOr(
             gateOutcome,
             creds.serverUrl,
@@ -2576,7 +2594,7 @@ async function runInvocation(
       }
 
       if (gateOutcome?.kind === "pass" && gateOutcome.warning) {
-        logger.warn`${gateOutcome.warning}`;
+        renderAuthGateWarning(outputMode, gateOutcome.warning);
       }
     })
     .error(unknownCommandErrorHandler)
@@ -2725,7 +2743,7 @@ async function runInvocation(
                 }
               }
 
-              if (prefsChanged) {
+              if (prefsChanged && configDirOwned) {
                 await prefsRepo.write(updatedPrefs);
               }
             }

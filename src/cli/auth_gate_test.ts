@@ -465,7 +465,10 @@ Deno.test("runAuthGate: a read-only config dir does not fail a passing run", asy
       const outcome = await runAuthGate(
         h.deps({ answer: { outcome: { kind: "server_error", status: 500 } } }),
       );
-      assertEquals(outcome.kind, "pass");
+      assert(outcome.kind === "pass");
+      // The window could not be recorded, so no 24-hour limit is promised.
+      assertStringIncludes(outcome.warning ?? "", "cannot record");
+      assert(!outcome.warning?.includes("24 hours"));
     } finally {
       await Deno.chmod(h.dir, 0o700);
     }
@@ -477,7 +480,10 @@ Deno.test("authGateBlockedError: carries the reason, the code and the design's m
   assertEquals(error.name, "AuthGateBlockedError");
   assertEquals(error.code, "auth_gate_blocked");
   assertStringIncludes(error.message, "swamp auth login");
-  assertStringIncludes(error.message, "SWAMP_SIGNIN_TOKEN");
+  assertStringIncludes(
+    error.message,
+    "swamp-club.com/manual/reference/swamp-account-requirement",
+  );
   assertStringIncludes(blockMessage({ kind: "revoked" }), "revoked");
   assertStringIncludes(
     blockMessage({ kind: "unreachable_unverified", daysSinceVerification: 15 }),
@@ -539,6 +545,10 @@ Deno.test("blockMessage: a refusal names the status and the proxy, and unreachab
     blockMessage({ kind: "unreachable_unverified" }),
     "swamp auth whoami",
   );
+  assertStringIncludes(
+    blockMessage({ kind: "unverified_for_a_day" }),
+    "swamp auth whoami",
+  );
 });
 
 Deno.test("runAuthGate: a process that does not own the config dir reads but never writes", async () => {
@@ -557,7 +567,8 @@ Deno.test("runAuthGate: a process that does not own the config dir reads but nev
         canWrite: false,
       }),
     );
-    assertEquals(outage.kind, "pass");
+    assert(outage.kind === "pass");
+    assertStringIncludes(outage.warning ?? "", "cannot record");
     assertEquals([...Deno.readDirSync(h.dir)], [], "nothing written");
 
     // It still passes on a proof the owner cached, and offers no refresh.
@@ -873,5 +884,20 @@ Deno.test("runAuthGate: a grandchild passes under a daemon that outlived its pro
     assertEquals(grandchild.kind, "pass");
     // Judged against the daemon, not the nested run that started today.
     assertEquals(checked, [PARENT_PID]);
+  });
+});
+
+Deno.test("runAuthGate: a process that does not own the config dir honours a running window and keeps the 24-hour warning", async () => {
+  await withHarness(async (h) => {
+    await h.repo.markFailOpenSince(NOW - 60);
+    const outcome = await runAuthGate(
+      h.deps({
+        answer: { outcome: { kind: "server_error", status: 503 } },
+        canWrite: false,
+      }),
+    );
+    assert(outcome.kind === "pass");
+    assertStringIncludes(outcome.warning ?? "", "24 hours");
+    assertEquals(await h.repo.readFailOpenSince(), NOW - 60);
   });
 });

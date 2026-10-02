@@ -112,3 +112,19 @@ Deno.test("UserIdentityRepository.getUserId returns different ids for different 
     assertNotEquals(userId1, userId2);
   });
 });
+
+Deno.test("UserIdentityRepository.getUserId creates nothing in a config dir another user owns", async () => {
+  await withTempDir(async (tmpDir) => {
+    const repo = new UserIdentityRepository(tmpDir, { ownsDir: () => false });
+    assertEquals(await repo.getUserId(), null);
+    assertEquals([...Deno.readDirSync(tmpDir)], []);
+  });
+});
+
+Deno.test("UserIdentityRepository.getUserId still reads an existing identity in a config dir another user owns", async () => {
+  await withTempDir(async (tmpDir) => {
+    const created = await new UserIdentityRepository(tmpDir).getUserId();
+    const repo = new UserIdentityRepository(tmpDir, { ownsDir: () => false });
+    assertEquals(await repo.getUserId(), created);
+  });
+});

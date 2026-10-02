@@ -93,6 +93,20 @@ credential exits 1. An error the gate itself hits, such as an unreadable
 (`audit record --from-hook`) the gate checks locally only. A blocked hook
 records nothing and exits 0, so an agent session is not broken.
 
+A run that passes as `offline` warns why. In log mode the warning goes through
+the logger. JSON mode has no console log output, so the warning is one line on
+stderr, `{"warning": "<message>", "authMode": "offline"}`, and stdout carries
+only the command's own output.
+
+### Troubleshooting an empty audit trail
+
+A blocked hook is silent by design, so an audit timeline that stops filling
+usually means the gate blocks the hook: no credential, or no locally valid
+proof (hook mode never calls swamp-club). Run any swamp command, or
+`swamp auth whoami`, in the same environment to see the block message. A
+signed-in user's next ordinary command refreshes the proof, and the hook
+records again.
+
 ## CI and signin tokens
 
 An ephemeral runner keeps no `auth_verified.json`. It sets two secrets from the
@@ -209,7 +223,16 @@ missing. Writes are best effort: a read-only config dir never fails a run the
 gate already passed. A future or unparsable time is read as absent, so editing
 a file cannot widen a window. On a config dir that cannot be written, the
 fail-open window cannot be recorded. Each run then starts a fresh 24 hours
-while swamp-club returns 5xx, the same trade-off as an ephemeral CI runner.
+while swamp-club returns 5xx, the same trade-off as an ephemeral CI runner, and
+the warning says the window cannot be recorded rather than promising a
+24-hour limit.
+
+Blocking instead (failing closed when the window cannot be recorded) was
+considered and declined (swamp-club#2916). It would not close the gap: the
+stamp is a user-writable file (see Non-goals), and an ephemeral CI runner
+already restarts the window on every job. Only swamp-club can produce a 5xx,
+so no client can provoke the case, and blocking would stop legitimate daemons
+and read-only containers during swamp-club's own outage.
 
 `swamp serve daemon enable` and `swamp worker daemon enable` set
 `SWAMP_CONFIG_DIR` in the service definition, so a system-mode daemon reads the
@@ -217,7 +240,10 @@ enabling user's credential and proof. A worker daemon enabled before this
 change lacks it and must be enabled again. A process that does not own the
 config dir, such as a system daemon running as root, reads it but never writes
 to it and skips the weekly refresh. It would otherwise leave root-owned files
-that the user's own runs cannot read.
+that the user's own runs cannot read. The same rule covers the other writes
+every run can make: such a process does not save the scope or identity cache,
+does not create `identity.json`, and does not update the autoupdate
+preferences.
 
 ## Telemetry
 
@@ -230,12 +256,34 @@ that the user's own runs cannot read.
 
 ## Key rotation
 
-Planned rotation keeps the old key in the whoami response for 30 days. Cached
-proofs keep verifying, and every refresh caches the new key. The embedded key
-must be updated in a release inside that window. On an emergency rotation,
-every proof signed with the old key stops verifying at once. Interactive users
-re-verify on their next run. CI tokens need new tokens and a release that
-carries the new key.
+A proof is verified against the keys cached with it in `auth_verified.json`,
+and only when none matches its `kid`, against the key built into the binary
+(`src/domain/auth/embedded_public_key.ts`). A signin token carries no key, so
+on a fresh runner it depends on the embedded key. A cached file proof keeps
+verifying with its own copy of the old key until it expires (14 days) or the
+weekly refresh replaces it; a release cannot shorten that, which is
+acceptable because the gate is not a security boundary (see Non-goals).
+
+Planned rotation, in order:
+
+1. swamp-club starts signing with the new key and returns both keys in
+   whoami's `publicKeys`, the old one for 30 days. Every verified answer and
+   weekly refresh caches a proof signed with the new key.
+2. Replace `EMBEDDED_PUBLIC_KEY` with the new key (and its `kid` in the
+   comment) and ship a release inside the 30 days.
+3. Collectives issue new signin tokens and update their CI secrets. A token
+   signed with the old key does not verify against the new embedded key, so
+   CI on the new release without a new token falls back to a live check.
+4. After the 30 days swamp-club drops the old key from whoami.
+
+Emergency rotation (the old key is compromised):
+
+1. swamp-club drops the old key from whoami and signs with the new key.
+   Users re-verify when their cached proof expires or is refreshed.
+2. Replace `EMBEDDED_PUBLIC_KEY` and ship a release as soon as possible.
+3. Collectives issue new signin tokens. Until a CI job has both the new token
+   and the new release, it verifies live on every run and blocks when
+   swamp-club cannot be reached.
 
 ## Non-goals
 
