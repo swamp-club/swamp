@@ -111,7 +111,10 @@ set, and the shortcut mapping table.
 
 `self` refers to your own model (`id`, `name`, `version`, `tags`,
 `globalArguments`). Inside a forEach step it also carries the iteration
-variable.
+variable and `self._index`, the zero-based iteration index (array order, or key
+order for objects). The index gives each iteration a slug-safe identifier, such
+as a per-iteration model name, when the item is not one. An iteration variable
+named `_index` shadows it.
 
 A model can also be referenced by its uuid instead of its name. There is no
 `workflow.*` namespace; workflows are not addressable from expressions.

@@ -221,7 +221,7 @@ export class ForEachExpansionService {
   ): ExpandedStep {
     const stepContext = {
       ...context,
-      self: { ...context.self, [itemName]: item },
+      self: { ...context.self, _index: index, [itemName]: item },
     };
 
     // Fallback-suffix policy: index for objects (for uniqueness when
@@ -278,7 +278,7 @@ export class ForEachExpansionService {
     const objItem = { key, value };
     const stepContext = {
       ...context,
-      self: { ...context.self, [itemName]: objItem },
+      self: { ...context.self, _index: index, [itemName]: objItem },
     };
 
     const { name: expandedName, hadEvalFailure } = resolveForEachStepName(

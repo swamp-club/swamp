@@ -1033,3 +1033,57 @@ Deno.test("workflowEvaluate all with include evaluates only accepted workflows",
   assertEquals(data.total, 1);
   assertEquals(saved, ["keep"]);
 });
+
+Deno.test("forEach: resolves self._index in the step name and task fields (swamp-club#2348)", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "processor-${{ self._index }}",
+    methodName: "run",
+    forEachIn: "${{ items }}",
+    forEachItem: "file",
+    stepName: "process-${{ self._index }}",
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        { model: {}, env: {}, self: {}, items: ["src/a.ts", "src/b/c.ts"] } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.map((s) => s.name), ["process-0", "process-1"]);
+  assertEquals(
+    steps.map((s) => asModelMethodTask(s.task).modelIdOrName),
+    ["processor-0", "processor-1"],
+  );
+});
+
+Deno.test("forEach: resolves self._index in object iteration (swamp-club#2348)", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "device-${{ self._index }}",
+    methodName: "scan",
+    forEachIn: "${{ items }}",
+    forEachItem: "entry",
+    stepName: "step-${{ self.entry.key }}",
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: { alpha: "a-config", beta: "b-config" },
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  assertEquals(
+    steps.map((s) => asModelMethodTask(s.task).modelIdOrName),
+    ["device-0", "device-1"],
+  );
+});

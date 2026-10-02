@@ -564,6 +564,8 @@ export interface StepExecutionContext {
   mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
+  /** Zero-based forEach iteration index, exposed as self._index */
+  forEachIndex?: number;
   /**
    * Expressions written in the workflow source, unioned with the executing
    * model's own source definition before every post-substitution pass.
@@ -1691,6 +1693,9 @@ export class DefaultStepExecutor implements StepExecutor {
       // Preserve any forEach variables that were set by the workflow engine
       const forEachVars: Record<string, unknown> = {};
       if (ctx.forEachVariable && ctx.forEachVariable.name) {
+        if (ctx.forEachIndex !== undefined) {
+          forEachVars._index = ctx.forEachIndex;
+        }
         forEachVars[ctx.forEachVariable.name] = ctx.forEachVariable.value;
       }
       ctx.expressionContext.self = {
@@ -4493,6 +4498,7 @@ export class WorkflowExecutionService {
         ...stepExprContext,
         self: {
           ...baseSelf,
+          _index: forEachIndex,
           [forEachVar.name]: forEachVar.value,
         },
       };
@@ -4877,6 +4883,7 @@ export class WorkflowExecutionService {
           step,
           mode: options.lastEvaluated ? "lastEvaluated" : "fresh",
           forEachVariable: forEachVar,
+          forEachIndex,
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,

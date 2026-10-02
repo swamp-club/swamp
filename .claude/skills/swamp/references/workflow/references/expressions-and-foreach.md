@@ -117,6 +117,28 @@ expansion — they resolve at their own runtime/execution stage.
 | `self.{item}`       | Current item (array iteration) |
 | `self.{item}.key`   | Key name (object iteration)    |
 | `self.{item}.value` | Value (object iteration)       |
+| `self._index`       | Zero-based iteration index     |
+
+`self._index` counts array items in order, and object entries in key order. It
+gives each iteration a slug-safe identifier when the item itself is not one,
+such as a file path, so each iteration can target its own model:
+
+```yaml
+steps:
+  - name: process-${{ self._index }}
+    forEach:
+      item: file
+      in: ${{ data.latest('repo', 'diff').attributes.files }}
+    task:
+      type: model_method
+      modelIdOrName: processor-${{ run.id }}-${{ self._index }}
+      methodName: run
+      inputs:
+        path: ${{ self.file }}
+```
+
+In CEL string concatenation, convert it with `string(self._index)`. An item
+named `_index` shadows the index.
 
 ### forEach.in with Data Helpers
 
