@@ -2778,6 +2778,35 @@ Deno.test("getLatestRecord: an unpopulated row ahead of a lagging on-disk latest
   }
 });
 
+Deno.test("getLatestRecord: an unpromoted deferred version above the marker does not stop the refresh (swamp-club#2520)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1 and an in-flight deferred v3; another writer has
+    // since written v2 and moved the marker to it.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 3);
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 2);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    catalog.upsert(makeRow({ version: 3, is_latest: 0 }));
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("getLatestRecord: a row from another namespace is never refreshed from this repository's layout", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-foreign-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));

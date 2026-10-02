@@ -276,6 +276,36 @@ Deno.test("step latest: saves finishing out of version order keep disk and catal
   });
 });
 
+Deno.test("step latest: a save replaces a marker that names a version gone from disk", async () => {
+  await withTempDir(async (dir) => {
+    const { catalog, dataRepo } = await openRepo(dir);
+    try {
+      catalog.markPopulated();
+      await dataRepo.save(MODEL_TYPE, MODEL_ID, await itemB(""), body("a"));
+      // A delete or GC that stopped before rewriting the marker leaves it
+      // naming a version that no longer exists.
+      const markerPath = join(
+        dir,
+        ".swamp",
+        "data",
+        MODEL_TYPE.normalized,
+        MODEL_ID,
+        "item-b",
+        "latest",
+      );
+      await Deno.writeTextFile(markerPath, "5");
+
+      await dataRepo.save(MODEL_TYPE, MODEL_ID, await itemB(""), body("b"));
+      assertEquals(
+        dataRepo.getLatestVersionSync(MODEL_TYPE, MODEL_ID, "item-b"),
+        2,
+      );
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
 Deno.test("step latest: a v4 catalog with per-step duplicate latests rebuilds from disk", async () => {
   await withTempDir(async (dir) => {
     // Write the data to disk through the current repository.

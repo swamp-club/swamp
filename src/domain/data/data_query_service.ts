@@ -305,7 +305,8 @@ export class DataQueryService {
     // Rows above the marker whose version is gone from disk (another
     // repository deleted it) would otherwise outrank the marker's version in
     // upsertNewVersion, which orders by version (swamp-club#2520). A higher
-    // version still on disk means the marker lags — the catalog row stands.
+    // promoted version still on disk means the marker lags — the catalog row
+    // stands. An unpromoted deferred write (neither flag) does not count.
     const higher = [
       ...this.catalogStore.iterateFiltered(
         "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?",
@@ -328,7 +329,9 @@ export class DataQueryService {
           stale.version,
         )
       ) {
-        higherOnDisk = true;
+        if (stale.is_latest === 1 || stale.is_step_latest === 1) {
+          higherOnDisk = true;
+        }
         continue;
       }
       this.catalogStore.removeVersion(

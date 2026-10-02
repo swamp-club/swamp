@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { existsSync } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
@@ -2048,8 +2049,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * one name finish out of order (swamp-club#2520). The read, compare and
    * write run synchronously so writers in this process cannot interleave
    * between them; writers in other processes are serialized by the model
-   * lock. Paths that lower the marker on purpose — delete, rename, GC — use
-   * {@link updateLatestMarker}.
+   * lock. A marker naming a version that is gone from disk (a delete or GC
+   * that stopped before rewriting it) is replaced. Paths that lower the
+   * marker on purpose — delete, rename, GC — use {@link updateLatestMarker}.
    */
   private async advanceLatestMarker(
     type: ModelType,
@@ -2067,7 +2069,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     } catch {
       // Missing, or a legacy symlink: replaced below.
     }
-    if (current !== null && !isNaN(current) && current > version) return;
+    if (
+      current !== null && !isNaN(current) && current > version &&
+      existsSync(this.getPath(type, modelId, dataName, current))
+    ) {
+      return;
+    }
 
     try {
       if (Deno.lstatSync(latestPath).isSymlink) Deno.removeSync(latestPath);
