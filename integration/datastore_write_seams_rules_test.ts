@@ -208,6 +208,9 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // The mark hook itself, and the catalog export.
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
+  // The legacy unit of work forwarding staged changes to the mark hook
+  // (datastore rework Phase 1, swamp-club#2970).
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
   // Repositories notifying their mark hook after a write.
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository (x16)",
   "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository (x4)",
