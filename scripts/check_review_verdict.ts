@@ -56,6 +56,30 @@ const PROVIDER_ERROR_PATTERN =
   /hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota/i;
 
 /**
+ * Markdown code: fenced blocks whose fences start a line, then inline spans
+ * on a single line, opened and closed by backtick runs of the same length
+ * (so a double-backtick span may quote single backticks), as in CommonMark.
+ *
+ * A reviewer quotes code in these — including swamp's own error codes, such
+ * as `invalid_api_key`, when it reviews an auth change. The provider writes
+ * its errors as raw text, never as markdown code, so a pattern match inside
+ * quoted code is the review talking about the code, not a failed provider.
+ */
+const FENCED_CODE_PATTERN = /^[ \t]*(`{3,})[\s\S]*?^[ \t]*\1/gm;
+const INLINE_CODE_PATTERN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
+/**
+ * The output with its markdown code replaced by spaces. A space, not
+ * nothing, so the text either side cannot join into a new match.
+ */
+function withoutQuotedCode(output: string): string {
+  return output.replace(FENCED_CODE_PATTERN, " ").replace(
+    INLINE_CODE_PATTERN,
+    " ",
+  );
+}
+
+/**
  * The verdict marker, anchored to the start of a line.
  *
  * Anchoring is load-bearing. The reviewer is told to begin its response with
@@ -85,7 +109,7 @@ function byteLength(text: string): number {
  * touches the filesystem.
  */
 export function determineVerdict(output: string): ReviewVerdict {
-  if (PROVIDER_ERROR_PATTERN.test(output)) {
+  if (PROVIDER_ERROR_PATTERN.test(withoutQuotedCode(output))) {
     return { kind: "provider-error" };
   }
 

@@ -107,6 +107,71 @@ Deno.test("whoami yields not_authenticated error when no credentials", async () 
   assertEquals(last.error.code, "not_authenticated");
 });
 
+Deno.test("whoami yields not_authenticated without contacting the server when the stored key is empty", async () => {
+  const ctx = createLibSwampContext();
+  let fetchCalls = 0;
+  const deps: AuthDeps = {
+    ...makeDeps({}),
+    // The identity cache an env-key run leaves behind: no key of its own.
+    loadCredentials: () =>
+      Promise.resolve({
+        serverUrl: "https://swamp-club.com",
+        apiKey: "",
+        apiKeyId: "",
+        username: "adam",
+        collectives: ["myorg"],
+        apiKeyFingerprint: "e439cb8a5820ad98",
+      }),
+    fetchWhoami: () => {
+      fetchCalls++;
+      return Promise.resolve({ authenticated: false });
+    },
+  };
+
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
+
+  assertEquals(fetchCalls, 0);
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "loading_credentials" });
+  const last = events[1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "not_authenticated");
+});
+
+Deno.test("whoami: an env-key identity cache read without a key source is not authenticated", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = `${tmpDir}/swamp`;
+    await createAuthDeps({
+      repo: { configDir, getApiKey: () => "swamp_test_env_key" },
+    }).saveCredentials({ ...testCredentials, collectives: ["myorg"] });
+
+    let fetchCalls = 0;
+    const deps: AuthDeps = {
+      ...createAuthDeps({
+        repo: { configDir, getApiKey: () => undefined },
+      }),
+      fetchWhoami: () => {
+        fetchCalls++;
+        return Promise.resolve({ authenticated: false });
+      },
+    };
+    const events = await collect<AuthWhoamiEvent>(
+      whoami(createLibSwampContext(), deps),
+    );
+
+    assertEquals(fetchCalls, 0);
+    const last = events[events.length - 1] as Extract<
+      AuthWhoamiEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error");
+    assertEquals(last.error.code, "not_authenticated");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("whoami yields invalid_api_key error when server says not authenticated", async () => {
   const ctx = createLibSwampContext();
   const deps = makeDeps({

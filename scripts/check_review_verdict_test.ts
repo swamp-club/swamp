@@ -133,6 +133,40 @@ Deno.test("determineVerdict: a provider error outranks an explicit pass marker",
   assertEquals(determineVerdict(output), { kind: "provider-error" });
 });
 
+Deno.test("determineVerdict: a review quoting an error code in markdown code is judged on its verdict", () => {
+  // Reviewing an auth change, the reviewer names swamp's own error codes.
+  const inline = "VERDICT: pass\n\nThe user then got the `invalid_api_key` " +
+    "error, which reads like a revoked key.";
+  assertEquals(determineVerdict(inline), { kind: "pass" });
+
+  const fenced = "VERDICT: fail\n\nThe old path returned:\n\n```json\n" +
+    '{"code":"invalid_api_key","type":"authentication_error"}\n```\n';
+  assertEquals(determineVerdict(fenced), { kind: "fail" });
+
+  // A double-backtick span quoting single backticks, as a reviewer of this
+  // checker writes its test inputs.
+  const doubled = "VERDICT: pass\n\nThe test covers " +
+    "(`` see `whoami\\nrate_limit_error` ``) and ``rate_`x`limit_error``.";
+  assertEquals(determineVerdict(doubled), { kind: "pass" });
+});
+
+Deno.test("determineVerdict: removing quoted code cannot join text into a provider error", () => {
+  const output = "VERDICT: pass\n\nSee rate_`x`limit_error for the shape.";
+  assertEquals(determineVerdict(output), { kind: "pass" });
+});
+
+Deno.test("determineVerdict: a provider error outside quoted code is still detected", () => {
+  // Quoting code earlier in the output must not hide a raw provider error
+  // that follows it.
+  const output = "VERDICT: pass\n\nChecked `whoami` and `load()`.\n" +
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}';
+  assertEquals(determineVerdict(output), { kind: "provider-error" });
+
+  // An unclosed backtick does not reach across lines to swallow the error.
+  const unclosed = "VERDICT: pass\n\nsee `whoami\nrate_limit_error`";
+  assertEquals(determineVerdict(unclosed), { kind: "provider-error" });
+});
+
 Deno.test("formatGateVerdict: renders the gate's decision for the log", () => {
   assertEquals(formatGateVerdict({ kind: "pass" }), "GATE_VERDICT: pass");
   assertEquals(formatGateVerdict({ kind: "fail" }), "GATE_VERDICT: fail");
