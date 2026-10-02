@@ -714,6 +714,8 @@ export {
 
 // Workflow doctor operations
 export {
+  doctorWorkflowDirs,
+  type DoctorWorkflowRepos,
   type DoctorWorkflowResult,
   doctorWorkflows,
   type DoctorWorkflowsDeps,

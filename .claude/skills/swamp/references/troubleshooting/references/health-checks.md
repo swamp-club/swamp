@@ -225,21 +225,26 @@ swamp doctor workflows --json
 
 ### What it checks
 
-Walks all workflow directories (primary `workflows/`, extension workflows,
-source-mounted workflows, pulled extension workflows) and for each `*.yaml`
-file:
+Checks the same directories and files the workflow loader reads — locally and
+over `swamp serve` (`--server`) alike — and for each workflow file:
 
 1. Reads the file content
 2. Parses YAML via `@std/yaml`
 3. Constructs the domain object via `Workflow.fromData()`
 
-In the primary `workflows/` directory every `*.yaml` file must load, so a file
-without `jobs` fails. In extension, source-mounted and pulled directories —
-which also hold manifests and data files an extension ships — doctor applies the
-extension loader's rule: `manifest.yaml` / `manifest.yml` and any YAML without a
-top-level `jobs:` key are not workflows and are skipped. A file there whose
-`jobs:` key is missing or misspelled (`job:`) is therefore neither loaded nor
-reported; only a debug log line names it.
+| Directory                                                                 | Files checked                                                                                                                                                      |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Primary `workflows/` (the managed config copy when managed config is on)  | Top level only. Every `workflow-*.yaml` must load, so one without `jobs` fails. Any other `*.yaml` / `*.yml` fails as not loaded: rename it `workflow-<name>.yaml` |
+| Extension workflows dir (`extensions/workflows/` or `workflowsDir`)       | `*.yaml` and `*.yml` at any depth                                                                                                                                  |
+| Source-mounted (`.swamp-sources.yaml`) and pulled extension workflow dirs | `*.yaml` and `*.yml` at any depth                                                                                                                                  |
+
+Extension, source-mounted and pulled directories also hold manifests and data
+files an extension ships, so doctor applies the extension loader's rule there:
+`manifest.yaml` / `manifest.yml` and any YAML without a top-level `jobs:` key
+are not workflows and are skipped. A file there whose `jobs:` key is missing or
+misspelled (`job:`) is therefore neither loaded nor reported; only a debug log
+line names it. A file reachable through more than one directory is reported
+once.
 
 Scope is **load-ability only** — whether the file can be parsed and constructed.
 Schema validity (DAG integrity, model references, expression validation) is the
@@ -283,13 +288,14 @@ Checking workflows...
 
 ### Common failures
 
-| Error fragment                        | Fix                                                                   |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| YAML parse error at line N            | Fix the YAML syntax at the indicated line/column                      |
-| `type "shell" is no longer supported` | Replace `type: shell` with `type: model_method` using `command/shell` |
-| Invalid uuid / missing name           | Add required `id` (UUID) and `name` fields to the workflow YAML       |
-| Invalid cron expression               | Fix the `trigger.schedule` cron expression                            |
-| Extension workflow missing, no error  | Check its top-level `jobs:` key; rerun with `--log-level debug`       |
+| Error fragment                                               | Fix                                                                   |
+| ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| YAML parse error at line N                                   | Fix the YAML syntax at the indicated line/column                      |
+| `type "shell" is no longer supported`                        | Replace `type: shell` with `type: model_method` using `command/shell` |
+| Invalid uuid / missing name                                  | Add required `id` (UUID) and `name` fields to the workflow YAML       |
+| Invalid cron expression                                      | Fix the `trigger.schedule` cron expression                            |
+| Extension workflow missing, no error                         | Check its top-level `jobs:` key; rerun with `--log-level debug`       |
+| `Not loaded: workflow files in this directory must be named` | Rename the file in `workflows/` to `workflow-<name>.yaml`             |
 
 ### Relationship with `swamp workflow validate`
 

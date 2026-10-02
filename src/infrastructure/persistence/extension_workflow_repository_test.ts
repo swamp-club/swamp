@@ -21,7 +21,11 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
+import {
+  extensionWorkflowFiles,
+  ExtensionWorkflowRepository,
+} from "./extension_workflow_repository.ts";
+import { assertPathArrayEquals } from "./path_test_helpers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { UserError } from "../../domain/errors.ts";
 import { configure, type LogRecord } from "@logtape/logtape";
@@ -488,4 +492,46 @@ Deno.test("ExtensionWorkflowRepository delete throws UserError", async () => {
       "read-only",
     );
   });
+});
+
+Deno.test("extensionWorkflowFiles: yields nested .yaml and .yml files except manifests", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "ns", "deeper"));
+    await Deno.writeTextFile(join(dir, "top.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "nested.yml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "deeper", "deep.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "manifest.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "manifest.yml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "README.md"), "# readme");
+
+    const files: string[] = [];
+    for await (const path of extensionWorkflowFiles(dir)) files.push(path);
+
+    assertPathArrayEquals(
+      files.sort(),
+      [
+        join(dir, "ns", "deeper", "deep.yaml"),
+        join(dir, "ns", "nested.yml"),
+        join(dir, "top.yaml"),
+      ].sort(),
+    );
+  });
+});
+
+Deno.test("extensionWorkflowFiles: throws NotFound for a missing directory", async () => {
+  await withTempDir(async (dir) => {
+    await assertRejects(async () => {
+      for await (const _ of extensionWorkflowFiles(join(dir, "missing"))) {
+        // drain
+      }
+    }, Deno.errors.NotFound);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository getWorkflowDirs: reflects updateAdditionalDirs", () => {
+  const repo = new ExtensionWorkflowRepository("base", ["source-a"]);
+  assertEquals(repo.getWorkflowDirs(), ["base", "source-a"]);
+
+  repo.updateAdditionalDirs(["pulled-a", "pulled-b"]);
+  assertEquals(repo.getWorkflowDirs(), ["base", "pulled-a", "pulled-b"]);
 });

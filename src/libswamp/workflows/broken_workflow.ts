@@ -35,6 +35,7 @@ import {
   type WorkflowInput,
 } from "../../domain/workflows/workflow.ts";
 import { resolveEffectiveWorkflowsDir } from "../../infrastructure/persistence/paths.ts";
+import { isPrimaryWorkflowFileName } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 
 /** A workflow file that failed YAML parsing or schema validation. */
 export interface BrokenWorkflow {
@@ -74,9 +75,7 @@ export async function listBrokenWorkflows(
   }
 
   const yamlFiles = entries
-    .filter((e) =>
-      e.isFile && e.name.startsWith("workflow-") && e.name.endsWith(".yaml")
-    )
+    .filter((e) => e.isFile && isPrimaryWorkflowFileName(e.name))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   for (const entry of yamlFiles) {
