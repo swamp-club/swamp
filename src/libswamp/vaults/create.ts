@@ -85,12 +85,16 @@ export interface VaultCreateDeps {
   listAvailableTypes: () => string[];
 }
 
-/** Wires real infrastructure into VaultCreateDeps. */
+/**
+ * Wires real infrastructure into VaultCreateDeps. Serve injects its shared
+ * repository, whose mark hook signals the saved config.
+ */
 export async function createVaultCreateDeps(
   repoDir: string,
+  injectedRepo?: YamlVaultConfigRepository,
 ): Promise<VaultCreateDeps> {
   await vaultTypeRegistry.ensureLoaded();
-  const repo = new YamlVaultConfigRepository(repoDir);
+  const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   return {
     resolveExtensionVaultType: async (type) => {
       await vaultTypeRegistry.ensureTypeLoaded(type);

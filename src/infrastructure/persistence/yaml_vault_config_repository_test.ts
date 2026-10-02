@@ -33,6 +33,12 @@ import {
 } from "./yaml_vault_config_repository.ts";
 import { errorPaths, UserError } from "../../domain/errors.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  pathExists,
+  recordingUnitOfWork,
+} from "./test_helpers/staged_change_helpers.ts";
+import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", async () => {
   const dir = await Deno.makeTempDir();
@@ -423,4 +429,135 @@ Deno.test("VaultConfigParseError: marks the config path (swamp-club#2830)", () =
   const path = "/srv/acme/vaults/local_encryption/final report.yaml";
   const error = new VaultConfigParseError(path, "local_encryption", "v", "bad");
   assertEquals(errorPaths(error), [path]);
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+function localVault(id: string, name: string): VaultConfig {
+  return VaultConfig.create(id, name, "local_encryption", {});
+}
+
+Deno.test("YamlVaultConfigRepository.save: stages a write of the config file", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const config = localVault("vault-1", "v1");
+    const path = repo.getPath(config.type, config.id);
+
+    await runInUnitOfWork(uow, () => repo.save(config));
+
+    assertEquals(uow.staged(), [{ kind: "write", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), true);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository.save: marks the config before writing it", async () => {
+  await withTempDir(async (dir) => {
+    const existedAtMark: boolean[] = [];
+    const markDirty: MarkDirtyHook = async (path?: string) => {
+      existedAtMark.push(await pathExists(path!));
+    };
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await repo.save(localVault("vault-1", "v1"));
+
+    assertEquals(existedAtMark, [false]);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository.delete: stages a remove of the config file", async () => {
+  await withTempDir(async (dir) => {
+    const config = localVault("vault-1", "v1");
+    await new YamlVaultConfigRepository(dir).save(config);
+    const { markDirty, marks, uow } = recordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const path = repo.getPath(config.type, config.id);
+
+    await runInUnitOfWork(uow, () => repo.delete(config));
+
+    assertEquals(uow.staged(), [{ kind: "remove", path }]);
+    assertEquals(marks, [path]);
+    assertEquals(await pathExists(path), false);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository.delete: marks the config before removing it", async () => {
+  await withTempDir(async (dir) => {
+    const config = localVault("vault-1", "v1");
+    await new YamlVaultConfigRepository(dir).save(config);
+    const existedAtMark: boolean[] = [];
+    const markDirty: MarkDirtyHook = async (path?: string) => {
+      existedAtMark.push(await pathExists(path!));
+    };
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await repo.delete(config);
+
+    assertEquals(existedAtMark, [true]);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository.delete: stages a remove for a config already gone", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, marks } = recordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const config = localVault("vault-1", "v1");
+
+    await repo.delete(config);
+
+    assertEquals(marks, [repo.getPath(config.type, config.id)]);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: sends nothing without a mark hook", async () => {
+  await withTempDir(async (dir) => {
+    const { marks, uow } = recordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(dir);
+    const config = localVault("vault-1", "v1");
+
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(config);
+      await repo.delete(config);
+    });
+
+    assertEquals(uow.staged(), []);
+    assertEquals(marks, []);
+  });
 });

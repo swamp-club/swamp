@@ -54,6 +54,8 @@ const MOVED_REPOS = [
   "yaml_workflow_repository.ts",
   // swamp-club#2992, move C1.
   "yaml_workflow_run_repository.ts",
+  // swamp-club#2995, move C2.
+  "yaml_vault_config_repository.ts",
 ];
 
 // The kind property of a bulk StagedChange literal, then its reason: a quoted

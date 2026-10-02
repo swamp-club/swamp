@@ -544,6 +544,7 @@ export function createRepositoryContext(
     repoDir,
     enableIndexing ? eventBus : undefined,
     vaultsDir,
+    markDirty,
   );
 
   // Create index service (no-op — symlink-based indexing has been removed)
