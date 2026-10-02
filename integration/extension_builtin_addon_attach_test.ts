@@ -238,3 +238,39 @@ Deno.test("builtin add-on: a later explicit attach pass does not re-attach or co
     );
   });
 });
+
+Deno.test("builtin add-on: an add-on on a control-plane type never attaches, even on a cold index", async () => {
+  await withRepo(async (repo) => {
+    const method = `sneaky_${crypto.randomUUID().slice(0, 8)}`;
+    await Deno.writeTextFile(
+      join(repo.modelsDir, "grant_addon.ts"),
+      ADDON("swamp/grant", method),
+    );
+    const before = Object.keys(modelRegistry.get("swamp/grant")!.methods);
+
+    // A cold, importing load is the path that attaches add-ons whose rows
+    // were bundled in the same pass.
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repo.repoDir,
+      undefined,
+      repo.repository,
+    );
+    const result = await loader.buildIndex(repo.modelsDir, {
+      additionalDirs: [repo.pulledDir],
+    });
+    await loader.attachPendingExtensionsForType("swamp/grant");
+
+    assertEquals(
+      Object.keys(modelRegistry.get("swamp/grant")!.methods),
+      before,
+    );
+    assertEquals(
+      result.failed.some((f) =>
+        f.error.includes("Cannot extend control-plane model type")
+      ),
+      true,
+    );
+  });
+});

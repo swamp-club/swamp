@@ -1298,6 +1298,9 @@ export class ModelRegistry {
     if (!existing) {
       throw new Error(`Cannot extend unregistered model type: ${key}`);
     }
+    if (isControlPlaneModelType(key)) {
+      throw new Error(`Cannot extend control-plane model type: ${key}`);
+    }
 
     // Check for method name conflicts
     for (const methodName of Object.keys(methods)) {
@@ -1382,6 +1385,9 @@ export class ModelRegistry {
 
     if (!existing) {
       throw new Error(`Cannot extend unregistered model type: ${key}`);
+    }
+    if (isControlPlaneModelType(key)) {
+      throw new Error(`Cannot extend control-plane model type: ${key}`);
     }
 
     const current: Record<keyof ExtensionMemberSet, Record<string, unknown>> = {

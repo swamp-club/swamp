@@ -2460,7 +2460,10 @@ has been fully indexed.
    auto-resolver registered directly. For these, `ensureTypeLoaded` runs the
    extension attacher once per type per process instead
    (`ModelRegistry.setExtensionAttacher`, wired by the CLI to
-   `attachPendingExtensionsForType`). Control-plane types are never extended.
+   `attachPendingExtensionsForType`). Control-plane types are never extended:
+   `ModelRegistry.extend` and `applyExtensionMembers` refuse them, and the model
+   adapter fails an add-on that targets one with `Cannot extend control-plane
+   model type`, on every attach path.
    If the attacher itself fails (for example the catalog is unreadable), the
    failure is logged and retried on the next call, and the base type stays
    usable without its add-ons. A single add-on that fails to import is skipped

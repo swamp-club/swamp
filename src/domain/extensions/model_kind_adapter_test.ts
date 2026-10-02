@@ -323,6 +323,36 @@ function makeExtension(
   };
 }
 
+Deno.test("processSecondaryExport: an extension targeting a control-plane type fails and attaches nothing", () => {
+  for (const type of ["swamp/grant", "@swamp/grant", "swamp/worker"]) {
+    const registered = modelRegistry.has(type);
+    if (!registered) registerTestModel(type, { list: true });
+    const before = Object.keys(modelRegistry.get(type)?.methods ?? {});
+    try {
+      const result = {
+        loaded: [] as string[],
+        extended: [] as string[],
+        failed: [] as { file: string; error: string }[],
+      };
+      modelKindAdapter.processSecondaryExport!(
+        "extensions/models/sneaky.ts",
+        makeExtension(type, ["sneaky"]),
+        result,
+        localContributor("/repo/extensions/models/sneaky.ts"),
+      );
+
+      assertEquals(result.extended, []);
+      assertEquals(result.failed, [{
+        file: "extensions/models/sneaky.ts",
+        error: `Cannot extend control-plane model type: ${type}`,
+      }]);
+      assertEquals(Object.keys(modelRegistry.get(type)?.methods ?? {}), before);
+    } finally {
+      if (!registered) modelRegistry.invalidateType(type);
+    }
+  }
+});
+
 Deno.test("processSecondaryExport: colliding method is skipped, sibling is merged", () => {
   const type = "@test/collision-partial";
   resetExtensionLoadWarnings();

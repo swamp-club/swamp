@@ -1517,6 +1517,29 @@ Deno.test("ModelRegistry.setExtensionAttacher: a new attacher checks every type 
   assertEquals(calls, ["first", "second"]);
 });
 
+Deno.test("ModelRegistry.extend: refuses control-plane types", () => {
+  const registry = new ModelRegistry();
+  for (const type of ["swamp/grant", "@swamp/grant", "swamp/worker"]) {
+    registry.register(createTestModel(type));
+    assertThrows(
+      () => registry.extend(type, extensionMethod()),
+      Error,
+      "Cannot extend control-plane model type",
+    );
+    assertThrows(
+      () =>
+        registry.applyExtensionMembers(
+          type,
+          { methods: extensionMethod() },
+          {},
+        ),
+      Error,
+      "Cannot extend control-plane model type",
+    );
+    assertEquals("addon_method" in registry.get(type)!.methods, false);
+  }
+});
+
 Deno.test("ModelRegistry.ensureTypeLoaded: control-plane types are never extended", async () => {
   const registry = new ModelRegistry();
   const types = ["swamp/grant", "@swamp/grant", "swamp/worker"];
