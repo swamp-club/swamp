@@ -1158,11 +1158,6 @@ async function loadUserModels(
     modelRegistry.setTypeLoader(async (type, lazyEntry) => {
       await loader.loadSingleType(type, lazyEntry);
     });
-    // Built-in and other eagerly registered types skip the type loader, so
-    // their extensions attach through this hook instead (swamp-club#2846).
-    modelRegistry.setExtensionAttacher((type) =>
-      loader.attachPendingExtensionsForType(type)
-    );
 
     // Build the index: reads catalog + mtime scan for freshness.
     // If catalog is populated, only rebundles changed files.
@@ -1181,6 +1176,14 @@ async function loadUserModels(
     );
 
     throwOnTransientLoadFailures(result.failed, "model");
+
+    // Built-in and other eagerly registered types skip the type loader, so
+    // their extensions attach through this hook instead (swamp-club#2846).
+    // Wired once the index is built, so an attach never reads a partial
+    // catalog.
+    modelRegistry.setExtensionAttacher((type) =>
+      loader.attachPendingExtensionsForType(type)
+    );
 
     for (const failure of result.failed) {
       if (failure.error.startsWith("Cannot extend unregistered model type")) {

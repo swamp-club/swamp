@@ -1110,7 +1110,8 @@ export class ModelRegistry {
     // progress. loadSingleType registers the base type (promoteFromLazy)
     // before attaching extensions; a pending promise means extensions may
     // not yet be merged. Await the pending promise to avoid returning a
-    // base-only definition. (swamp-club#521)
+    // base-only definition. (swamp-club#521) The one-time extension attach
+    // for eagerly registered types parks its promise there too.
     if (this.models.has(key)) {
       const pending = this.typeLoadPromises.get(key);
       if (pending) {
@@ -1164,8 +1165,12 @@ export class ModelRegistry {
    * their extensions would never attach (swamp-club#2846). Control-plane
    * types are never extended. Concurrent callers share one attach through
    * {@link typeLoadPromises}, so none sees the base-only definition while it
-   * runs (swamp-club#521). An attach failure never fails the base type: it is
-   * logged, and the next call retries.
+   * runs (swamp-club#521). An attach failure never fails the base type: when
+   * the attacher itself fails (for example the catalog is unreadable), it is
+   * logged and the next call retries. A single extension that fails to
+   * import is skipped and logged by the attacher, and the type still counts
+   * as attached; it is retried by the next attach pass (hot reload, a new
+   * attacher, or a new process).
    */
   private async attachExtensionsOnce(key: string): Promise<void> {
     const attacher = this.extensionAttacher;

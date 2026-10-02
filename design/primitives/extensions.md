@@ -2461,8 +2461,11 @@ has been fully indexed.
    extension attacher once per type per process instead
    (`ModelRegistry.setExtensionAttacher`, wired by the CLI to
    `attachPendingExtensionsForType`). Control-plane types are never extended.
-   An attach failure is logged and retried on the next call; the base type
-   stays usable without its add-ons (swamp-club#2846).
+   If the attacher itself fails (for example the catalog is unreadable), the
+   failure is logged and retried on the next call, and the base type stays
+   usable without its add-ons. A single add-on that fails to import is skipped
+   and logged, and is retried by the next attach pass: a hot reload, a new
+   attacher or a new process (swamp-club#2846).
 
 4. Concurrent callers for the same type share one load promise (per-type
    memoization). `ensureTypeLoaded` also awaits a pending load promise when the

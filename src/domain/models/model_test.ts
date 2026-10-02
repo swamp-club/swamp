@@ -1459,7 +1459,7 @@ Deno.test("ModelRegistry.ensureTypeLoaded: invalidateType re-arms the extension 
   assertEquals(calls, 2);
 });
 
-Deno.test("ModelRegistry.ensureTypeLoaded: lazy and unknown types never use the extension attacher", async () => {
+Deno.test("ModelRegistry.ensureTypeLoaded: lazy types, before and after promotion, and unknown types never use the extension attacher", async () => {
   const registry = new ModelRegistry();
   registry.registerLazy(createLazyEntry("@myorg/echo"));
   registry.setTypeLoader((type) => {
