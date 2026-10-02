@@ -30,6 +30,10 @@
  */
 
 import { NESTED_GATE_PASS_ENV } from "../auth/nested_gate_pass.ts";
+import {
+  SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_PID,
+} from "../datastore/lock_holder_marker.ts";
 
 /** An immutable name→value capture of environment variables. */
 export type EnvironmentSnapshot = Readonly<Record<string, string>>;
@@ -152,21 +156,22 @@ export function isSwampEnvVar(name: string): boolean {
 
 /**
  * The SWAMP_* variables a method child may inherit, because a swamp it runs
- * needs them to act as a nested swamp under this one. Neither is a
+ * needs them to act as a nested swamp under this one. None is a
  * credential: the account key, its file and its signin token stay stripped
  * (swamp-club#2032).
  *
  * - SWAMP_NESTED_GATE_PASS: this run's signed proof and pid, so a nested
  *   swamp passes the auth gate without a key (design/surfaces/auth-gate.md,
  *   "Nested runs").
- * - SWAMP_LOCK_HOLDER_PID: so a nested swamp skips the per-model locks this
- *   run holds instead of waiting on them (design/enablers/datastores.md,
- *   "Parent-Process Lock Awareness"). Literal here because the domain may not
- *   import its owner in src/cli/repo_context.ts; a fitness test pins it.
+ * - SWAMP_LOCK_HOLDER_PID and SWAMP_LOCK_ANCESTOR_PIDS: this swamp's pid and
+ *   the pids of every swamp above it, so a nested swamp skips the per-model
+ *   locks they hold instead of waiting on them (design/enablers/datastores.md,
+ *   "Parent-Process Lock Awareness"). A fitness test pins the list.
  */
 export const NESTED_SWAMP_ENV_VARS: readonly string[] = [
   NESTED_GATE_PASS_ENV,
-  "SWAMP_LOCK_HOLDER_PID",
+  SWAMP_LOCK_HOLDER_PID,
+  SWAMP_LOCK_ANCESTOR_PIDS,
 ];
 
 /**

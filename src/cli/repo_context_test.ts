@@ -47,9 +47,12 @@ import {
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
-  SWAMP_LOCK_HOLDER_PID,
   waitForPerModelLocks,
 } from "./repo_context.ts";
+import {
+  SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_PID,
+} from "../domain/datastore/lock_holder_marker.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
@@ -1497,7 +1500,10 @@ Deno.test(
       );
 
       await withMockedEnv(
-        { [SWAMP_LOCK_HOLDER_PID]: String(parentPid) },
+        {
+          [SWAMP_LOCK_HOLDER_PID]: String(parentPid),
+          [SWAMP_LOCK_ANCESTOR_PIDS]: undefined,
+        },
         async () => {
           const start = Date.now();
           await waitForPerModelLocks(dir);
@@ -1534,7 +1540,10 @@ Deno.test(
         }),
       );
 
-      await withMockedEnv({ [SWAMP_LOCK_HOLDER_PID]: "77777" }, async () => {
+      await withMockedEnv({
+        [SWAMP_LOCK_HOLDER_PID]: "77777",
+        [SWAMP_LOCK_ANCESTOR_PIDS]: undefined,
+      }, async () => {
         const start = Date.now();
         // The lock has a 2s TTL; the scanner will count it on the first
         // pass, enter the wait loop, and eventually see it as stale.
@@ -1569,7 +1578,10 @@ Deno.test(
         }),
       );
 
-      await withMockedEnv({ [SWAMP_LOCK_HOLDER_PID]: undefined }, async () => {
+      await withMockedEnv({
+        [SWAMP_LOCK_HOLDER_PID]: undefined,
+        [SWAMP_LOCK_ANCESTOR_PIDS]: undefined,
+      }, async () => {
         const start = Date.now();
         await waitForPerModelLocks(dir);
         const elapsed = Date.now() - start;
@@ -1584,42 +1596,94 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "waitForPerModelLocks - skips locks held by every ancestor in SWAMP_LOCK_ANCESTOR_PIDS",
+  async () => {
+    await withTempDir(async (dir) => {
+      const writeLock = async (model: string, pid: number, ttlMs: number) => {
+        const lockDir = join(dir, "data", "command-shell", model);
+        await ensureDir(lockDir);
+        await Deno.writeTextFile(
+          join(lockDir, ".lock"),
+          JSON.stringify({
+            holder: "swamp@host",
+            hostname: "host",
+            pid,
+            acquiredAt: new Date().toISOString(),
+            ttlMs,
+          }),
+        );
+      };
+      // Two ancestors hold long-lived locks; an unrelated writer's lock
+      // goes stale shortly, which ends the wait.
+      await writeLock("grandparent-model", 11111, 30_000);
+      await writeLock("parent-model", 22222, 30_000);
+      await writeLock("other-model", 33333, 1_500);
+
+      const messages: string[] = [];
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "11111,22222",
+        },
+        async () => {
+          await waitForPerModelLocks(
+            dir,
+            undefined,
+            undefined,
+            (msg) => messages.push(msg),
+          );
+        },
+      );
+
+      assertEquals(
+        messages.some((m) => m.includes("Waiting for 1 per-model lock(s)")),
+        true,
+        `expected only the non-ancestor lock to be counted, got ${
+          JSON.stringify(messages)
+        }`,
+      );
+    });
+  },
+);
+
 // ============================================================================
-// acquireModelLocks — SWAMP_LOCK_HOLDER_PID Lifecycle Tests
+// acquireModelLocks — lock holder marker (swamp-club#2659)
 // ============================================================================
 
 Deno.test(
-  "acquireModelLocks - sets SWAMP_LOCK_HOLDER_PID on acquire and clears on flush",
+  "acquireModelLocks - leaves the lock holder marker untouched across overlapping holders",
   async () => {
     await withTempDir(async (dir) => {
       await initializeRepo(dir);
       const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-
-      assertEquals(
+      // Compared with the values read before acquiring: under a swamp shell
+      // step (verify-build) the test process inherits real values.
+      const readMarker = () => [
         Deno.env.get(SWAMP_LOCK_HOLDER_PID),
-        undefined,
-        "env var should not be set before acquire",
-      );
+        Deno.env.get(SWAMP_LOCK_ANCESTOR_PIDS),
+      ];
+      const before = readMarker();
 
-      const lockResult = await acquireModelLocks(
+      const first = await acquireModelLocks(
         datastoreConfig,
-        [{ modelType: "test-type", modelId: "test-model" }],
+        [{ modelType: "test-type", modelId: "first-model" }],
         dir,
       );
-
-      assertEquals(
-        Deno.env.get(SWAMP_LOCK_HOLDER_PID),
-        String(Deno.pid),
-        "env var should be set to current PID after acquire",
+      const second = await acquireModelLocks(
+        datastoreConfig,
+        [{ modelType: "test-type", modelId: "second-model" }],
+        dir,
       );
+      assertEquals(readMarker(), before, "unchanged while both hold locks");
 
-      await lockResult.flush();
+      // Flushing one holder used to delete the marker while the other
+      // still held its lock.
+      await first.flush();
+      assertEquals(readMarker(), before, "unchanged after the first flush");
 
-      assertEquals(
-        Deno.env.get(SWAMP_LOCK_HOLDER_PID),
-        undefined,
-        "env var should be cleared after flush",
-      );
+      await second.flush();
+      assertEquals(readMarker(), before, "unchanged after the last flush");
     });
   },
 );

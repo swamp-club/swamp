@@ -1642,14 +1642,39 @@ distributed) datastores rely on their own `DistributedLock` semantics instead.
 
 #### Parent-Process Lock Awareness
 
-`acquireModelLocks` sets `SWAMP_LOCK_HOLDER_PID` to the current process PID when
-it takes per-model locks. `waitForPerModelLocks` skips any lock file whose `pid`
-matches. Those locks belong to the parent, and waiting on them would deadlock:
-the parent waits on the child, the child on the parent's locks.
+A workflow shell step can run a nested `swamp` command (e.g.
+`swamp extension push`) while the step's own per-model lock is held. If the
+child's drain waited on that lock it would deadlock: the parent waits on the
+child, the child on the parent's lock.
 
-This happens when a workflow shell step runs a nested `swamp` command (e.g.
-`swamp extension push`). The child inherits the env var and does not poll its
-parent's locks. The parent clears the variable when it flushes its locks.
+Every swamp publishes two variables once at startup (`runInvocation`, through
+`LockHolderMarker` in `src/domain/datastore/lock_holder_marker.ts`). It never
+clears them:
+
+- `SWAMP_LOCK_HOLDER_PID`: its own pid. Older binaries read only this.
+- `SWAMP_LOCK_ANCESTOR_PIDS`: the comma-separated pids of every swamp above
+  it, followed by its own (at most 64, the newest kept). If no chain was
+  inherited, it is seeded from an inherited `SWAMP_LOCK_HOLDER_PID`.
+
+Before publishing, the marker captures what the process inherited.
+`waitForPerModelLocks` skips any lock file whose `pid` is one of those
+ancestors: each one is blocked on this subtree, so its locks cannot be released
+while the child waits. The drain never skips its own pid, so a structural
+command still waits on in-flight writes by other runs in its own process.
+
+Publishing for the life of the process is equivalent to publishing while
+holding locks, because a lock file carrying a pid exists only while that
+process holds it. Setting the variable on acquire and clearing it on flush is
+not safe: per-step workflow locks and concurrent `swamp serve` runs hold locks
+side by side in one process, and the first flush would clear the marker while
+the others still held theirs (swamp-club#2659). The ancestor chain keeps a
+nested swamp working when a swamp between it and the lock holder takes no
+locks itself, such as a read-only `model method run`.
+
+Mixed versions still work. An older child reads `SWAMP_LOCK_HOLDER_PID`. A newer
+child under an older parent falls back to it. An older swamp in the middle
+passes the chain through unchanged and overwrites only the holder, and the
+holder is still skipped.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by

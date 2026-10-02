@@ -1,0 +1,163 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals } from "@std/assert";
+import {
+  type LockHolderEnvStore,
+  LockHolderMarker,
+  MAX_LOCK_ANCESTORS,
+  SWAMP_LOCK_ANCESTOR_PIDS,
+  SWAMP_LOCK_HOLDER_PID,
+} from "./lock_holder_marker.ts";
+
+/** A fake env store that never touches the real process env. */
+function fakeEnv(initial: Record<string, string> = {}): {
+  store: LockHolderEnvStore;
+  values: Map<string, string>;
+  writes: () => number;
+} {
+  const values = new Map(Object.entries(initial));
+  let writes = 0;
+  return {
+    store: {
+      get: (key: string) => values.get(key),
+      set: (key: string, value: string) => {
+        writes++;
+        values.set(key, value);
+      },
+    },
+    values,
+    writes: () => writes,
+  };
+}
+
+const sorted = (pids: ReadonlySet<number>): number[] =>
+  [...pids].sort((a, b) => a - b);
+
+Deno.test("LockHolderMarker.publish: a lone swamp publishes only its own pid", () => {
+  const env = fakeEnv();
+  new LockHolderMarker(env.store, 500).publish();
+
+  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "500");
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "500");
+});
+
+Deno.test("LockHolderMarker.publish: appends its own pid to the inherited chain", () => {
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "200",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
+  });
+  new LockHolderMarker(env.store, 300).publish();
+
+  assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "300");
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "100,200,300");
+});
+
+Deno.test("LockHolderMarker.publish: seeds the chain from the holder an older parent set", () => {
+  const env = fakeEnv({ [SWAMP_LOCK_HOLDER_PID]: "200" });
+  new LockHolderMarker(env.store, 300).publish();
+
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
+});
+
+Deno.test("LockHolderMarker.publish: keeps a holder an older intermediate swamp set over the chain", () => {
+  // A new grandparent published the chain; an older swamp in between
+  // passed it through and overwrote only the holder.
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "200",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
+  });
+  new LockHolderMarker(env.store, 300).publish();
+
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "100,200,300");
+});
+
+Deno.test("LockHolderMarker.publish: is idempotent and never re-captures its own values", () => {
+  const env = fakeEnv({ [SWAMP_LOCK_HOLDER_PID]: "200" });
+  const marker = new LockHolderMarker(env.store, 300);
+  marker.publish();
+  const writes = env.writes();
+  marker.publish();
+
+  assertEquals(env.writes(), writes);
+  assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
+  assertEquals(sorted(marker.ancestorPids()), [200]);
+});
+
+Deno.test("LockHolderMarker.ancestorPids: after publishing, returns what was inherited, not its own pid", () => {
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "200",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
+  });
+  const marker = new LockHolderMarker(env.store, 300);
+  marker.publish();
+
+  assertEquals(sorted(marker.ancestorPids()), [100, 200]);
+});
+
+Deno.test("LockHolderMarker.ancestorPids: before publishing, reads the live values", () => {
+  const env = fakeEnv();
+  const marker = new LockHolderMarker(env.store, 300);
+  assertEquals(sorted(marker.ancestorPids()), []);
+
+  env.values.set(SWAMP_LOCK_HOLDER_PID, "200");
+  env.values.set(SWAMP_LOCK_ANCESTOR_PIDS, "100");
+  assertEquals(sorted(marker.ancestorPids()), [100, 200]);
+  assertEquals(env.writes(), 0);
+});
+
+Deno.test("LockHolderMarker.ancestorPids: never includes its own pid", () => {
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "300",
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100,300",
+  });
+  const marker = new LockHolderMarker(env.store, 300);
+
+  assertEquals(sorted(marker.ancestorPids()), [100]);
+});
+
+Deno.test("LockHolderMarker.ancestorPids: ignores entries that are not positive integers", () => {
+  const env = fakeEnv({
+    [SWAMP_LOCK_HOLDER_PID]: "abc",
+    [SWAMP_LOCK_ANCESTOR_PIDS]:
+      " 100 ,,0,-5,1.5,1e3,07,99999999999999999999,200",
+  });
+  const marker = new LockHolderMarker(env.store, 300);
+
+  assertEquals(sorted(marker.ancestorPids()), [100, 200]);
+});
+
+Deno.test("LockHolderMarker: caps the chain at the newest MAX_LOCK_ANCESTORS entries", () => {
+  const inherited = Array.from(
+    { length: MAX_LOCK_ANCESTORS + 10 },
+    (_, i) => i + 1,
+  );
+  const env = fakeEnv({ [SWAMP_LOCK_ANCESTOR_PIDS]: inherited.join(",") });
+  const own = 100_000;
+  const marker = new LockHolderMarker(env.store, own);
+
+  const skipped = sorted(marker.ancestorPids());
+  assertEquals(skipped.length, MAX_LOCK_ANCESTORS);
+  assertEquals(skipped.at(-1), inherited.at(-1));
+
+  marker.publish();
+  const published = env.values.get(SWAMP_LOCK_ANCESTOR_PIDS)!.split(",");
+  assertEquals(published.length, MAX_LOCK_ANCESTORS);
+  assertEquals(published.at(-1), String(own));
+});
