@@ -1599,25 +1599,31 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
     task: StepTask.workflow("child-workflow"),
   });
 
-  const catalogStore = new CatalogStore(join("/tmp", "_catalog.db"));
-  const ctx: StepExecutionContext = {
-    sensitiveValues: new RunSensitiveValues(),
-    workflowId: createWorkflowId("parent-id"),
-    workflowRunId: "run-123",
-    workflowName: "parent-workflow",
-    jobName: "job1",
-    stepName: "nested-step",
-    repoDir: "/tmp",
-    signal: new AbortController().signal,
-    catalogStore,
-    authoredExpressions: new Set(),
-  };
+  await withTempDir(async (tempDir) => {
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const ctx: StepExecutionContext = {
+      sensitiveValues: new RunSensitiveValues(),
+      workflowId: createWorkflowId("parent-id"),
+      workflowRunId: "run-123",
+      workflowName: "parent-workflow",
+      jobName: "job1",
+      stepName: "nested-step",
+      repoDir: tempDir,
+      signal: new AbortController().signal,
+      catalogStore,
+      authoredExpressions: new Set(),
+    };
 
-  await assertRejects(
-    () => executor.execute(step, ctx),
-    Error,
-    "Unsupported task type for step executor",
-  );
+    try {
+      await assertRejects(
+        () => executor.execute(step, ctx),
+        Error,
+        "Unsupported task type for step executor",
+      );
+    } finally {
+      catalogStore.close();
+    }
+  });
 });
 
 Deno.test("workflow step applies child workflow's input defaults", async () => {

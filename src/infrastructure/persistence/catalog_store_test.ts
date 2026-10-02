@@ -21,6 +21,8 @@ import { assert, assertEquals, assertLess } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  CATALOG_COLUMNS,
+  CATALOG_SCHEMA_VERSION,
   type CatalogRow,
   CatalogStore,
   ITERATE_PAGE_SIZE,
@@ -1090,6 +1092,73 @@ Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection co
   store.upsert(makeRow({ garbage_collection: "7d" }));
   assertEquals([...store.iterate()][0].garbage_collection, "7d");
   store.close();
+});
+
+Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current but whose table lacks a column (swamp-club#2994)", () => {
+  const dbPath = makeTempDbPath();
+
+  // Processes on different schema versions racing on one file can record the
+  // current version over an older table. Build that: today's version and
+  // populated flag over a table without is_step_latest.
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    DROP INDEX idx_catalog_step_latest;
+    ALTER TABLE catalog DROP COLUMN is_step_latest;
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
+      VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('generation', '3');
+  `);
+  db.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "rebuild drops the stale rows");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  assertEquals(store.generation(), 4, "rebuild advances the generation");
+  store.markPopulated(3);
+  assertEquals(
+    store.isPopulated(),
+    false,
+    "a backfill that read the old generation cannot mark it populated",
+  );
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+
+  const check = new DatabaseSync(dbPath);
+  const version = check.prepare(
+    "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
+  ).get() as { value: string };
+  check.close();
+  assertEquals(version.value, CATALOG_SCHEMA_VERSION);
+});
+
+Deno.test("CatalogStore: reopening a current catalog keeps its rows, populated flag and generation", () => {
+  const dbPath = makeTempDbPath();
+  const first = new CatalogStore(dbPath);
+  first.upsert(makeRow());
+  first.markPopulated();
+  const generation = first.generation();
+  first.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 1);
+  assertEquals(store.isPopulated(), true);
+  assertEquals(store.generation(), generation);
+  store.close();
+});
+
+Deno.test("CatalogStore: CATALOG_COLUMNS lists every column of a new catalog table", () => {
+  const dbPath = makeTempDbPath();
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  const columns = (db.prepare("PRAGMA table_info(catalog)").all() as {
+    name: string;
+  }[]).map((c) => c.name);
+  db.close();
+  assertEquals(columns, [...CATALOG_COLUMNS]);
 });
 
 Deno.test("CatalogStore: every write path stores garbage_collection", () => {

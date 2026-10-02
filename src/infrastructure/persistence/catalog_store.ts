@@ -105,6 +105,40 @@ export interface CatalogCheckpointStats {
 export const CATALOG_SCHEMA_VERSION = "7";
 
 /**
+ * Columns of the catalog table at {@link CATALOG_SCHEMA_VERSION}. A catalog
+ * missing any of them is rebuilt on open even when its stored version matches:
+ * processes on different schema versions racing on one file can leave the
+ * current version recorded over an older table (swamp-club#2994).
+ */
+export const CATALOG_COLUMNS: readonly string[] = [
+  "namespace",
+  "type_normalized",
+  "model_id",
+  "data_name",
+  "id",
+  "version",
+  "is_latest",
+  "is_step_latest",
+  "model_name",
+  "spec_name",
+  "data_type",
+  "content_type",
+  "lifetime",
+  "garbage_collection",
+  "owner_type",
+  "streaming",
+  "size",
+  "created_at",
+  "tags",
+  "owner_ref",
+  "workflow_run_id",
+  "workflow_name",
+  "job_name",
+  "step_name",
+  "source",
+];
+
+/**
  * A value SQLite can round-trip when copying rows generically during
  * compaction. Mirrors node:sqlite's supported bind/output value union.
  */
@@ -257,27 +291,60 @@ export class CatalogStore {
   }
 
   /**
-   * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}.
-   * If they differ, drops the catalog and rename tables and clears the
-   * populated flag so the next query triggers a full backfill with the new
-   * schema.
+   * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}
+   * and the catalog table's columns against {@link CATALOG_COLUMNS}. If either
+   * is stale, drops the catalog and rename tables, clears the populated flag so the next
+   * query triggers a full backfill with the new schema, and advances
+   * {@link generation} so a backfill that read the old generation cannot mark
+   * the rebuilt catalog populated.
+   *
+   * A healthy catalog is checked without a write lock. A stale one is checked
+   * again inside an IMMEDIATE transaction, so concurrent openers rebuild it
+   * once; a lock error propagates to {@link initializeWithRetry}.
    */
   private migrateIfNeeded(): void {
-    const stmt = this.db.prepare(
-      "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
-    );
-    const row = stmt.get() as { value: string } | undefined;
-    if (row?.value === CATALOG_SCHEMA_VERSION) return;
+    if (this.missingCatalogColumns() === undefined) return;
 
-    this.db.exec("DROP TABLE IF EXISTS catalog");
-    this.db.exec("DROP TABLE IF EXISTS catalog_renames");
-    this.createSchema();
-    this.db.prepare(
-      "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', ?)",
-    ).run(CATALOG_SCHEMA_VERSION);
-    this.db.prepare(
-      "DELETE FROM catalog_meta WHERE key = 'populated'",
-    ).run();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const missing = this.missingCatalogColumns();
+      if (missing !== undefined) {
+        if (missing.length > 0) {
+          logger
+            .warn`Rebuilding the data catalog: schema version ${CATALOG_SCHEMA_VERSION} is recorded but the table lacks columns ${missing}`;
+        }
+        this.db.exec("DROP TABLE IF EXISTS catalog");
+        this.db.exec("DROP TABLE IF EXISTS catalog_renames");
+        this.createSchema();
+        this.writeMeta("schema_version", CATALOG_SCHEMA_VERSION);
+        this.db.prepare(
+          "DELETE FROM catalog_meta WHERE key = 'populated'",
+        ).run();
+        this.writeMeta("generation", String(this.generation() + 1));
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Returns `undefined` when the catalog needs no rebuild: the stored schema
+   * version is current and the catalog table is absent or has every column in
+   * {@link CATALOG_COLUMNS}. Otherwise returns the missing columns — empty
+   * when only the version is stale.
+   */
+  private missingCatalogColumns(): string[] | undefined {
+    if (this.readMeta("schema_version") !== CATALOG_SCHEMA_VERSION) return [];
+    const present = new Set(
+      (this.db.prepare("PRAGMA table_info(catalog)").all() as {
+        name: string;
+      }[]).map((c) => c.name),
+    );
+    if (present.size === 0) return undefined;
+    const missing = CATALOG_COLUMNS.filter((c) => !present.has(c));
+    return missing.length > 0 ? missing : undefined;
   }
 
   /**
