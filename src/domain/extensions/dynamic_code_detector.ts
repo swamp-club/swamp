@@ -40,7 +40,9 @@ export type DynamicCodeKind =
   | "eval-reference"
   | "eval-computed-access"
   | "function-constructor"
-  | "constructor-call";
+  | "constructor-call"
+  | "global-object-alias"
+  | "aliased-eval-member";
 
 /** One occurrence of dynamic code execution, 1-based line and column. */
 export interface DynamicCodeFinding {
@@ -85,6 +87,8 @@ interface Token {
   colon?: "prop" | "ternary" | "other";
   /** For `}` — the kind of frame it closed. */
   closes?: FrameKind;
+  /** For `{` and `}` — the body of a function or class expression. */
+  exprBody?: boolean;
   /** Token is part of a TypeScript type declaration. */
   inType: boolean;
   /** For templates — the chunk is a whole template with no substitutions. */
@@ -97,6 +101,7 @@ interface Frame {
   kind: FrameKind;
   ternary: number;
   inType: boolean;
+  exprBody: boolean;
 }
 
 const GLOBAL_OBJECTS = new Set([
@@ -127,18 +132,34 @@ const EXPRESSION_KEYWORDS = new Set([
   "await",
 ]);
 
+// Only keywords that plausibly take an object operand. `void` is left out
+// because it also ends a return type (`(): void {`), where `{` is a body.
 const OBJECT_AFTER_KEYWORDS = new Set([
-  "typeof",
-  "instanceof",
   "in",
   "of",
-  "new",
-  "delete",
-  "void",
   "throw",
-  "case",
   "await",
 ]);
+
+// Keywords after which `function` or `class` is an expression.
+const EXPRESSION_START_KEYWORDS = new Set([
+  "return",
+  "yield",
+  "await",
+  "throw",
+  "typeof",
+  "void",
+  "delete",
+  "new",
+  "in",
+  "of",
+  "instanceof",
+  "case",
+]);
+
+// Keywords whose parenthesized head is followed by a statement, so a `/`
+// after the closing paren starts a regex.
+const STATEMENT_HEAD_KEYWORDS = new Set(["if", "while", "for", "with"]);
 
 const OBJECT_AFTER_PUNCT = new Set([
   "(",
@@ -155,7 +176,6 @@ const OBJECT_AFTER_PUNCT = new Set([
   "%",
   "**",
   "<",
-  ">",
   "<=",
   ">=",
   "==",
@@ -171,8 +191,6 @@ const OBJECT_AFTER_PUNCT = new Set([
   "|",
   "^",
   "<<",
-  ">>",
-  ">>>",
   "+=",
   "-=",
   "*=",
@@ -288,6 +306,14 @@ const NOT_A_DECLARED_NAME = new Set([
   "keyof",
 ]);
 
+// Code-like call text inside a regex, or inside a string right after a `/`.
+// Either means the tokenizer may have misread code as a literal, so the
+// literal is checked as text and the ambiguity resolves toward flagging.
+const CALL_TEXT = /(?:^|[^\w$.\\])(?:eval|Function)\s*\(/;
+
+// Global objects whose use as a value can alias the global `eval`.
+const VALUE_GLOBALS = new Set(["globalThis", "window", "self"]);
+
 const CALL_FORMS = new Set(["call", "apply", "bind"]);
 const COMPUTED_NAMES = new Set(["eval", "Function"]);
 const MAX_WALK_BACK = 64;
@@ -328,7 +354,9 @@ class Tokenizer {
   private noRegexUntil = -1;
   readonly tokens: Token[] = [];
   private readonly frames: Frame[] = [];
-  private readonly pendingClass: number[] = [];
+  private readonly pendingClass: Array<{ depth: number; expr: boolean }> = [];
+  private readonly pendingFunction: Array<{ depth: number; expr: boolean }> =
+    [];
   private pendingInterface = -1;
   private typeAlias:
     | { depth: number; active: boolean; named: boolean }
@@ -479,8 +507,11 @@ class Tokenizer {
   private readUnicodeEscape(at: number): { text: string; end: number } | null {
     const src = this.src;
     if (src[at] === "{") {
-      const close = src.indexOf("}", at);
-      if (close === -1 || close - at > 8) return null;
+      // Bounded search: an unbounded indexOf would make repeated `\u{`
+      // quadratic on hostile input.
+      const offset = src.slice(at, at + 10).indexOf("}");
+      if (offset === -1) return null;
+      const close = at + offset;
       const cp = parseInt(src.slice(at + 1, close), 16);
       if (!Number.isFinite(cp) || cp > 0x10ffff) return null;
       return { text: String.fromCodePoint(cp), end: close + 1 };
@@ -629,15 +660,47 @@ class Tokenizer {
       case "private":
         return false;
       case "ident":
+        if (prev.value === "of") return this.inForHead();
         return EXPRESSION_KEYWORDS.has(prev.value);
       case "punct":
-        if (prev.value === ")" || prev.value === "]") return false;
+        if (prev.value === ")") return this.closesStatementHead(prev);
+        if (prev.value === "]") return false;
         if (prev.value === "++" || prev.value === "--") return false;
         if (prev.value === "}") {
+          if (prev.exprBody) return false;
           return prev.closes === "block" || prev.closes === "class";
         }
         return true;
     }
+  }
+
+  /** `)` closes the head of `if`, `while`, `for` or `with`. */
+  private closesStatementHead(close: Token): boolean {
+    const before = this.tokens[close.match - 1];
+    if (close.match < 0 || before?.type !== "ident") return false;
+    if (STATEMENT_HEAD_KEYWORDS.has(before.value)) return true;
+    // `for await (`
+    return before.value === "await" &&
+      isIdent(this.tokens[close.match - 2], "for");
+  }
+
+  /** The innermost frame is the parenthesized head of a `for`. */
+  private inForHead(): boolean {
+    const top = this.frames[this.frames.length - 1];
+    if (!top || top.char !== "(") return false;
+    const before = this.tokens[top.opener - 1];
+    return isIdent(before, "for") ||
+      (isIdent(before, "await") && isIdent(this.tokens[top.opener - 2], "for"));
+  }
+
+  /** `function` or `class` at `index - 1`... is in expression position. */
+  private startsExpression(prev: Token | undefined): boolean {
+    if (!prev) return false;
+    if (prev.type === "ident") return EXPRESSION_START_KEYWORDS.has(prev.value);
+    if (prev.type !== "punct") return false;
+    if (prev.value === ":") return prev.colon !== "other";
+    return OBJECT_AFTER_PUNCT.has(prev.value) || prev.value === "=>" ||
+      prev.value === ">" || prev.value === ">>" || prev.value === ">>>";
   }
 
   /** Reads a regex literal at `/`; false (position unchanged) if none. */
@@ -731,10 +794,19 @@ class Tokenizer {
       this.pendingInterface === this.frames.length ||
       (this.typeAlias?.active ?? false);
 
-    if (type === "ident" && value === "class") {
+    if (type === "ident" && (value === "class" || value === "function")) {
       const memberName = prev?.type === "punct" &&
         (prev.value === "." || prev.value === "?.");
-      if (!memberName) this.pendingClass.push(this.frames.length);
+      if (!memberName) {
+        // `async function` takes its position from the token before `async`.
+        const lead = isIdent(prev, "async") ? tokens[index - 2] : prev;
+        const pending = {
+          depth: this.frames.length,
+          expr: this.startsExpression(lead),
+        };
+        if (value === "class") this.pendingClass.push(pending);
+        else this.pendingFunction.push(pending);
+      }
     }
 
     if (type !== "punct") return token;
@@ -800,9 +872,21 @@ class Tokenizer {
       return "type";
     }
     if (token.inType) return "type";
-    if (this.pendingClass[this.pendingClass.length - 1] === depth) {
+    const pendingClass = this.pendingClass[this.pendingClass.length - 1];
+    if (pendingClass?.depth === depth) {
       this.pendingClass.pop();
+      token.exprBody = pendingClass.expr;
       return "class";
+    }
+    const pendingFunction =
+      this.pendingFunction[this.pendingFunction.length - 1];
+    // A `{` after a type-annotation colon is an object type in the return
+    // type, not the body.
+    const afterAnnotation = isPunct(prev, ":") && prev?.colon === "other";
+    if (pendingFunction?.depth === depth && !afterAnnotation) {
+      this.pendingFunction.pop();
+      token.exprBody = pendingFunction.expr;
+      return "block";
     }
     if (!prev) return "block";
     if (prev.type === "punct") {
@@ -839,6 +923,7 @@ class Tokenizer {
       ternary: 0,
       inType: kind === "type" || (top?.inType ?? false) ||
         (this.typeAlias?.active ?? false),
+      exprBody: this.tokens[opener].exprBody ?? false,
     });
   }
 
@@ -852,9 +937,14 @@ class Tokenizer {
       ? this.frames[this.frames.length - 1].opener
       : -1;
     this.tokens[top.opener].match = index;
-    if (char === "{") token.closes = top.kind;
-    if (this.pendingClass[this.pendingClass.length - 1] > this.frames.length) {
-      this.pendingClass.pop();
+    if (char === "{") {
+      token.closes = top.kind;
+      token.exprBody = top.exprBody;
+    }
+    for (const pending of [this.pendingClass, this.pendingFunction]) {
+      if ((pending[pending.length - 1]?.depth ?? -1) > this.frames.length) {
+        pending.pop();
+      }
     }
     if (this.pendingInterface > this.frames.length) this.pendingInterface = -1;
   }
@@ -930,6 +1020,10 @@ class Analyzer {
   private readonly findings: DynamicCodeFinding[] = [];
   /** Per opener index: the frame is a destructuring pattern. */
   private readonly pattern: boolean[] = [];
+  /** Tokens where a global object is used as a value. */
+  private readonly globalValues: number[] = [];
+  /** `x.eval` / `x.Function` member accesses on a non-global receiver. */
+  private readonly evalMembers: number[] = [];
 
   constructor(private readonly tokens: Token[]) {}
 
@@ -945,9 +1039,20 @@ class Analyzer {
         if (t.value === "eval") this.checkEval(i);
         else if (t.value === "Function") this.checkFunction(i);
         else if (t.value === "constructor") this.checkConstructor(i);
+        else if (VALUE_GLOBALS.has(t.value)) this.checkGlobalValue(i);
       } else if (isPunct(t, "[")) {
         this.checkComputed(i);
+      } else if (this.isSuspectLiteral(i) && CALL_TEXT.test(t.value)) {
+        this.flag(i, "eval-reference");
       }
+    }
+    // A member named `eval` is allowed because the receiver is usually an
+    // interpreter, but once a global object escapes into a value the
+    // receiver could be an alias of it. A file with both is flagged.
+    if (this.globalValues.length > 0 && this.evalMembers.length > 0) {
+      for (const i of this.globalValues) this.flag(i, "global-object-alias");
+      for (const i of this.evalMembers) this.flag(i, "aliased-eval-member");
+      this.findings.sort((a, b) => a.line - b.line || a.column - b.column);
     }
     return this.findings;
   }
@@ -984,13 +1089,106 @@ class Analyzer {
     return false;
   }
 
-  /** `obj.name` where `obj` is a global-object name (or a paren group ending in one). */
+  /**
+   * `obj.name` where `obj` is a global-object name, a paren group ending in
+   * one, or a chain of them (`globalThis.self.eval`).
+   */
   private isGlobalMember(i: number): boolean {
     const tokens = this.tokens;
-    const at = isPunct(tokens[i - 2], ")") ? i - 3 : i - 2;
-    const obj = tokens[at];
+    let at = i - 2;
+    for (let steps = 0; steps < MAX_WALK_BACK; steps++) {
+      if (isPunct(tokens[at], ")")) {
+        if (this.isGlobalCast(tokens[at].match)) return true;
+        at--;
+      }
+      const obj = tokens[at];
+      if (obj?.type !== "ident" || !GLOBAL_OBJECTS.has(obj.value)) {
+        return false;
+      }
+      if (!isDot(tokens[at - 1])) return true;
+      at -= 2;
+    }
+    return true;
+  }
+
+  /**
+   * The paren group opened at `open` is a TypeScript cast of a global
+   * object: `(globalThis as T)`, `(globalThis satisfies T)`, `(globalThis!)`.
+   */
+  private isGlobalCast(open: number): boolean {
+    const tokens = this.tokens;
+    if (open < 0 || !isPunct(tokens[open], "(")) return false;
+    const obj = tokens[open + 1];
+    const after = tokens[open + 2];
     return obj?.type === "ident" && GLOBAL_OBJECTS.has(obj.value) &&
-      !isDot(tokens[at - 1]);
+      (isIdent(after, "as") || isIdent(after, "satisfies") ||
+        isPunct(after, "!"));
+  }
+
+  /**
+   * The identifier at `i` declares a binding of that name — a variable, a
+   * function or class name, or a parameter — rather than reading the global.
+   */
+  private declaresName(i: number): boolean {
+    const tokens = this.tokens;
+    const prev = tokens[i - 1];
+    if (
+      prev?.type === "ident" &&
+      ["const", "let", "var", "function", "class"].includes(prev.value)
+    ) {
+      return true;
+    }
+    const next = tokens[i + 1];
+    // A parameter: directly inside a paren group that a body or arrow
+    // follows, at a position where a parameter name can stand.
+    const frame = tokens[i].frame;
+    if (frame < 0 || tokens[frame].opens !== "paren") return false;
+    const close = tokens[frame].match;
+    if (close < 0) return false;
+    const after = tokens[close + 1];
+    const isParams = isPunct(after, "{") || isPunct(after, "=>") ||
+      isPunct(after, ":");
+    const atParam = isPunct(prev, "(") || isPunct(prev, ",");
+    const endsParam = isPunct(next, ",") || isPunct(next, ")") ||
+      isPunct(next, ":") || isPunct(next, "=") || isPunct(next, "?");
+    return isParams && atParam && endsParam;
+  }
+
+  /** A regex literal, or a string or template right after a `/`. */
+  private isSuspectLiteral(i: number): boolean {
+    const t = this.tokens[i];
+    if (t.type === "regex") return true;
+    if (t.type !== "string" && t.type !== "template") return false;
+    const prev = this.tokens[i - 1];
+    return isPunct(prev, "/") || isPunct(prev, "/=");
+  }
+
+  /**
+   * Records a global object used as a value — held, passed, or indexed with
+   * a computed key — as opposed to member access, `typeof` or `in`.
+   */
+  private checkGlobalValue(i: number): void {
+    const tokens = this.tokens;
+    const prev = tokens[i - 1];
+    if (isDot(prev)) return;
+    if (this.declaresName(i)) return;
+    if (isIdent(prev, "typeof") || isIdent(prev, "in")) return;
+    // A cast followed by member access, `(globalThis as T).x`, is used the
+    // same way as `globalThis.x`; member names are checked like any other.
+    const member = isPunct(prev, "(") && this.isGlobalCast(i - 1)
+      ? tokens[i - 1].match
+      : i;
+    if (member >= 0) {
+      const after = tokens[member + 1];
+      if (isDot(after)) return;
+      if (isPunct(after, "[")) {
+        const key = tokens[member + 2];
+        const literal = key?.type === "string" ||
+          (key?.type === "template" && key.whole);
+        if (literal && isPunct(tokens[member + 3], "]")) return;
+      }
+    }
+    this.globalValues.push(i);
   }
 
   /** The identifier at `i` is a member name in a class body or object literal. */
@@ -1036,6 +1234,7 @@ class Analyzer {
     const prev = this.tokens[i - 1];
     if (isDot(prev)) {
       if (this.isGlobalMember(i)) this.flag(i, "eval-reference");
+      else this.evalMembers.push(i);
       return;
     }
     if (isIdent(prev, "typeof")) return;
@@ -1049,6 +1248,7 @@ class Analyzer {
     const next = tokens[i + 1];
     if (isDot(prev)) {
       if (this.isGlobalMember(i)) this.flag(i, "function-constructor");
+      else this.evalMembers.push(i);
       return;
     }
     if (this.isMemberName(i)) return;

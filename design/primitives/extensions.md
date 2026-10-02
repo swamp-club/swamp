@@ -1100,7 +1100,13 @@ Every TypeScript file in an extension is checked before push and after pull.
 - Dynamic code execution (code injection): the global `eval` in any form, the
   `Function` constructor, and `.constructor(...)` calls. The check tokenizes
   the source, so methods and properties named `eval` and text in strings and
-  comments do not count (`src/domain/extensions/dynamic_code_detector.ts`)
+  comments do not count (`src/domain/extensions/dynamic_code_detector.ts`).
+  Because a member named `eval` could be reached through an alias of a global
+  object, a file that both uses `globalThis`, `window` or `self` as a value
+  (stored, passed, or indexed with a computed key) and accesses a member named
+  `eval` or `Function` is refused. Aliases built at runtime, such as a key
+  assembled from strings, are not caught; the check is a hygiene gate, not a
+  sandbox
 
 ### Warnings (prompt user)
 

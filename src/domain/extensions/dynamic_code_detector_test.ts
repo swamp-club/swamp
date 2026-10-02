@@ -33,15 +33,8 @@ const FLAGGED: Array<[string, string, DynamicCodeKind]> = [
   ["globalThis.eval", "globalThis.eval(src);", "eval-reference"],
   ["window.eval", "window.eval(src);", "eval-reference"],
   ["optional globalThis eval", "globalThis?.eval(src);", "eval-reference"],
-  ["parenthesized global", "(globalThis).eval(src);", "eval-reference"],
   ["eval alias", "const e = eval;", "eval-reference"],
   ["shorthand property", "const o = { eval };", "eval-reference"],
-  ["binding pattern key", "const { eval: e } = globalThis;", "eval-reference"],
-  [
-    "assignment pattern key",
-    "({ eval: e } = globalThis);",
-    "eval-reference",
-  ],
   ["parameter pattern key", "function f({ eval: e }) {}", "eval-reference"],
   ["array pattern", "[eval] = [x];", "eval-reference"],
   ["spread", "const o = { ...eval };", "eval-reference"],
@@ -94,6 +87,18 @@ const FLAGGED: Array<[string, string, DynamicCodeKind]> = [
   ],
   ["this.constructor call", "this.constructor(x);", "constructor-call"],
   ["computed constructor call", 'fn["constructor"]("a");', "constructor-call"],
+  ["chained global member", "globalThis.self.eval(src);", "eval-reference"],
+  ["eval on a cast global", "(globalThis as any).eval(src);", "eval-reference"],
+  [
+    "Function on a cast global",
+    '(window as unknown as W).Function("a");',
+    "function-constructor",
+  ],
+  [
+    "eval text in a regex",
+    "const r = /a/; const s = /x eval(y)/;",
+    "eval-reference",
+  ],
 ];
 
 for (const [name, source, kind] of FLAGGED) {
@@ -115,6 +120,32 @@ const ADVERSARIAL: Array<[string, string]> = [
     "type\nT = { a: eval(src) };",
   ],
   ["call after a type alias ends", "type T = A\neval(src);"],
+  [
+    "slash after a function expression",
+    "const x = function () {} / eval(src) / 1;",
+  ],
+  [
+    "slash after a named function expression",
+    "x = function f() {} / eval(src) / 1;",
+  ],
+  [
+    "slash after an async function expression",
+    "x = async function () {} / eval(src) / 1;",
+  ],
+  ["slash after a class expression", "const y = class {} / eval(src) / 1;"],
+  [
+    "slash after a typed function expression",
+    "x = function (): {a: 1} {} / eval(src) / 1;",
+  ],
+  ["regex after an if head", "if (a) /'/; eval(src); //'"],
+  ["regex after a while head", "while (a) /`/; eval(src); //`"],
+  ["regex after a for head", "for (;;) /'/; eval(src); //'"],
+  ["generic return type body", "function f(): Promise<void> { eval(src)\n{} }"],
+  ["void return type body", "function f(): void { eval(src)\n{} }"],
+  [
+    "object method with void return type",
+    "const o = { m(): void { eval(src)\n{} } };",
+  ],
   ["variable named type before as", "const k = type as string, v = eval(src);"],
   ["variable named type before in", "let t = type in o ? a = eval(s) : 0;"],
   [
@@ -191,6 +222,35 @@ const BENIGN: Array<[string, string]> = [
     "type E =\n  | { eval(n: Node): Value }\n  | Function;\nconst x = 1;",
   ],
   ["division", "const q = a / b; const z = c / d;"],
+  ["regex after a function declaration", "function f() {}\n/eval\\(/.test(s);"],
+  ["regex after a class declaration", "class A {}\n/x/.test(s);"],
+  ["regex after for-of", "for (const m of /a/g.exec(s) ?? []) {}"],
+  ["division by a variable named of", "const of = 4; const h = of / 2 / x;"],
+  ["globalThis member", "globalThis.fetch(url); globalThis?.Deno;"],
+  ["globalThis literal key", 'const d = globalThis["Deno"];'],
+  ["globalThis feature test", '"Deno" in globalThis && typeof globalThis;'],
+  [
+    "cast global member",
+    "(globalThis as unknown as { setTimeout: T }).setTimeout = fn;",
+  ],
+  ["non-null global member", "(globalThis!).fetch(url);"],
+  ["globalThis alias without eval members", "const g = globalThis as G;"],
+  [
+    "globalThis argument without eval members",
+    "use(globalThis); interp.run(x);",
+  ],
+  [
+    "shared pool on globalThis",
+    "(globalThis as Record<string, unknown>)[KEY] ||= new Map();",
+  ],
+  ["member eval without a global value", "f.eval(m.receiver, y);"],
+  [
+    "parameter named self",
+    "function unsupported(self, type) { throw self.err(type); }\nev.eval(a, b);",
+  ],
+  ["variable named self", "const self = this;\nev.eval(a, b);"],
+  ["regex with escaped eval", "const r = /eval\\(/;"],
+  ["regex with member call text", "const r = /x\\.eval(y)/;"],
   [
     "minified cel-js",
     "class Ev{eval(t,n){return t.evaluate(this,t,n)}}" +
@@ -267,7 +327,66 @@ Deno.test("findDynamicCodeExecution: a misread slash does not hide later lines",
   assertEquals(kinds("x = a\n/ b / c\neval(src);"), ["eval-reference"]);
 });
 
+Deno.test("findDynamicCodeExecution: unicode brace escapes stay linear", () => {
+  // Each failed escape looks at most ten characters ahead, so a large run
+  // of them completes; the old unbounded search scanned to end of input.
+  const source = "\\u{".repeat(200_000) + "eval(x)";
+  assertEquals(kinds(source), ["eval-reference"]);
+  assertEquals(kinds("'" + "\\u{".repeat(200_000) + "'; eval(x)"), [
+    "eval-reference",
+  ]);
+});
+
 Deno.test("findDynamicCodeExecution: an invalid identifier escape is skipped", () => {
   assertEquals(kinds("\\u eval(x);"), ["eval-reference"]);
   assertEquals(kinds("\\u{110000} eval(x);"), ["eval-reference"]);
+});
+
+Deno.test("findDynamicCodeExecution: flags parenthesized global", () => {
+  assertEquals(kinds("(globalThis).eval(src);"), ["eval-reference"]);
+});
+
+Deno.test("findDynamicCodeExecution: flags binding pattern key", () => {
+  assertEquals(kinds("const { eval: e } = globalThis;"), ["eval-reference"]);
+});
+
+Deno.test("findDynamicCodeExecution: flags assignment pattern key", () => {
+  assertEquals(kinds("({ eval: e } = globalThis);"), ["eval-reference"]);
+});
+
+const ALIASED: Array<[string, string]> = [
+  ["alias then member eval", "const g = globalThis;\ng.eval(src);"],
+  ["cast alias then member eval", "const g = globalThis as any;\ng.eval(src);"],
+  [
+    "global passed to a helper",
+    "function run(o) { return o.eval(src); }\nrun(globalThis);",
+  ],
+  ["window alias", "const w = window; w.eval(src);"],
+  ["self alias", "const s = self; s.Function(src)();"],
+  [
+    "self passed alongside a self parameter",
+    "function f(self) {}\nconst s = self; s.eval(src);",
+  ],
+  [
+    "variable-key index and member eval",
+    "const g = (globalThis as any)[k]; g.eval(src);",
+  ],
+];
+
+for (const [name, source] of ALIASED) {
+  Deno.test(`findDynamicCodeExecution: flags ${name}`, () => {
+    const found = kinds(source);
+    assertEquals(found.includes("global-object-alias"), true);
+    assertEquals(found.includes("aliased-eval-member"), true);
+  });
+}
+
+Deno.test("findDynamicCodeExecution: aliased findings are sorted by position", () => {
+  const findings = findDynamicCodeExecution(
+    "x.eval(a);\nconst g = globalThis;",
+  );
+  assertEquals(findings, [
+    { line: 1, column: 3, kind: "aliased-eval-member" },
+    { line: 2, column: 11, kind: "global-object-alias" },
+  ]);
 });

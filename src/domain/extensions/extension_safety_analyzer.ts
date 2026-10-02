@@ -137,6 +137,8 @@ const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
   "eval-computed-access": "computed eval/Function access",
   "function-constructor": "Function constructor",
   "constructor-call": ".constructor call",
+  "global-object-alias": "global object used as a value",
+  "aliased-eval-member": "member named eval in a file that aliases a global",
 };
 
 function describeDynamicCode(findings: DynamicCodeFinding[]): string {
