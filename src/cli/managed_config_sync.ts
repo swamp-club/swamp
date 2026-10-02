@@ -442,6 +442,9 @@ function coordinatedGlobalLock(config: DatastoreConfig): ManagedLockfileLock {
         namespace: isCustomDatastoreConfig(config)
           ? config.namespace
           : undefined,
+        // Only extension-backed datastores reach this lock, and those are
+        // always shareable.
+        slowLockScope: { scope: { kind: "global" }, shareable: true },
       }),
     release: () => flushDatastoreSyncNamed(MANAGED_LOCKFILE_LOCK_KEY),
   };

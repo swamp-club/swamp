@@ -1545,13 +1545,30 @@ The path is the absolute `lockPath` (`file_lock.ts`), built with `@std/path`
 `join`, so it uses the platform separator: timeout errors and log lines name a
 valid Windows path.
 
+**Slow-lock advice.** An acquisition that waits longer than 5 seconds
+(`SLOW_LOCK_THRESHOLD_MS`) may log one warning, chosen by `slowLockAdvice`
+(`slow_lock_advice.ts`) from the lock's scope. Each caller of the sync
+coordinator passes that scope as `slowLockScope`:
+
+- **Per-model lock.** The key already holds the model type and id, so a
+  namespace cannot help. The warning names the cause, concurrent runs (workflow
+  steps, separate commands, serve) taking turns on one model instance's lock.
+- **Global lock.** The warning suggests `swamp datastore namespace set` only
+  when no namespace is set and another repo can reach the datastore
+  (`isShareableDatastore`). Extension datastores always count as shareable.
+  Filesystem datastores count as shareable unless they sit in the repo's own
+  `.swamp` directory. With one repo on its own directory, the global lock
+  stays silent.
+
+A registration without `slowLockScope` logs no advice (swamp-club#2941).
+
 ### Lock Lifecycle
 
 The sync coordinator (`datastore_sync_coordinator.ts`), a global singleton,
 manages the lock lifecycle:
 
 - `registerDatastoreSync({ service?, lock?, label?, syncTimeoutMs?,
-  metadataOnly?, namespace? })`: take the lock, pull if S3.
+  metadataOnly?, namespace?, slowLockScope? })`: take the lock, pull if S3.
 - `flushDatastoreSync()`: push if S3, release the lock.
 
 Per-model commands (`model method run`) take only per-model locks, via

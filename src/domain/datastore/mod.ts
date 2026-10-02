@@ -39,6 +39,15 @@ export {
 } from "./datastore_config.ts";
 
 export {
+  isShareableDatastore,
+  type LockScope,
+  SLOW_LOCK_THRESHOLD_MS,
+  type SlowLockAdvice,
+  slowLockAdvice,
+  type SlowLockAdviceInput,
+} from "./slow_lock_advice.ts";
+
+export {
   compilePatterns,
   globToRegExp,
   isExcluded,
