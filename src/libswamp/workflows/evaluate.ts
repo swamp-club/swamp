@@ -422,7 +422,7 @@ async function evaluateWorkflowInternal(
         for (const [index, item] of items.entries()) {
           const stepContext = {
             ...context,
-            self: { ...context.self, [itemName]: item },
+            self: { ...context.self, _index: index, [itemName]: item },
           };
           expandedSteps.push(
             buildExpandedStep(stepContext, String(item), index),
@@ -433,7 +433,7 @@ async function evaluateWorkflowInternal(
           const objItem = { key, value };
           const stepContext = {
             ...context,
-            self: { ...context.self, [itemName]: objItem },
+            self: { ...context.self, _index: index, [itemName]: objItem },
           };
           expandedSteps.push(buildExpandedStep(stepContext, key, index));
         }

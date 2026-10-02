@@ -17448,3 +17448,208 @@ Deno.test("abort cleanup: an assert whose model.method() answers after the abort
     });
   });
 });
+
+// --- forEach self._index (swamp-club#2348) ---
+
+function indexedForEachWorkflow(name: string, guard?: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "fan-out",
+        steps: [
+          Step.create({
+            name: "process-${{ self._index }}",
+            guard,
+            task: StepTask.model("processor-${{ self._index }}", "run"),
+            forEach: {
+              item: "file",
+              in: "${{ ['a/x.ts', 'b/y.ts', 'c.ts'] }}",
+            },
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function capturedIndexes(
+  contexts: StepExecutionContext[],
+): Array<[string, unknown, number | undefined]> {
+  return contexts
+    .map((ctx): [string, unknown, number | undefined] => [
+      ctx.stepName,
+      (ctx.expressionContext?.self as Record<string, unknown> | undefined)
+        ?._index,
+      ctx.forEachIndex,
+    ])
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
+Deno.test("forEach: self._index is the iteration index in the step context and guard (swamp-club#2348)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const contexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        contexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+    // A truthy guard marks the step done, so iteration 1 never executes.
+    const workflow = indexedForEachWorkflow(
+      "indexed-foreach",
+      "${{ self._index == 1 }}",
+    );
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      new InMemoryWorkflowRunRepository(),
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(capturedIndexes(contexts), [
+      ["process-0", 0, 0],
+      ["process-2", 2, 2],
+    ]);
+  });
+});
+
+Deno.test("forEach: self._index survives a --last-evaluated run (swamp-club#2348)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const contexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        contexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+    const workflow = indexedForEachWorkflow("indexed-foreach-last-evaluated");
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      new InMemoryWorkflowRunRepository(),
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    await service.execute(workflow.name);
+    contexts.length = 0;
+    const run = await service.execute(workflow.name, { lastEvaluated: true });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(contexts.every((ctx) => ctx.mode === "lastEvaluated"), true);
+    assertEquals(capturedIndexes(contexts), [
+      ["process-0", 0, 0],
+      ["process-1", 1, 1],
+      ["process-2", 2, 2],
+    ]);
+  });
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: self._index resolves in the model name and in the definition after self is rebuilt (swamp-club#2348)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    const { buildEnvContext } = await import(
+      "../expressions/model_resolver.ts"
+    );
+    await initializeLogging({});
+
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-2348/indexed-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      const received: unknown[] = [];
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({}),
+        resources: {},
+        methods: {
+          run: {
+            description: "records its arguments",
+            arguments: z.object({ value: z.string() }),
+            execute: (args: { value: string }) => {
+              received.push(args);
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        // The definition reads self._index after the executor rebuilds self
+        // from the definition's own fields.
+        await new YamlDefinitionRepository(tempDir).save(
+          modelType,
+          Definition.create({
+            name: "processor-2",
+            type: modelType.normalized,
+            methods: {
+              run: { arguments: { value: "index-${{ self._index }}" } },
+            },
+          }),
+        );
+
+        const step = Step.create({
+          name: "process-2",
+          task: StepTask.model("processor-${{ self._index }}", "run"),
+        });
+        await new DefaultStepExecutor().execute(step, {
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "indexed",
+          jobName: "fan-out",
+          stepName: "process-2",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          expressionContext: {
+            model: {},
+            env: buildEnvContext(),
+            self: {
+              id: "",
+              name: "",
+              version: 1,
+              tags: {},
+              globalArguments: {},
+              _index: 2,
+              file: "c.ts",
+            },
+          },
+          authoredExpressions: new Set(["${{ self._index }}"]),
+          forEachVariable: { name: "file", value: "c.ts" },
+          forEachIndex: 2,
+          catalogStore,
+        });
+      } finally {
+        catalogStore.close();
+      }
+
+      assertEquals(received, [{ value: "index-2" }]);
+    });
+  },
+});
