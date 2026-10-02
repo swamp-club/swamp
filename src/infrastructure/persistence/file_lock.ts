@@ -42,8 +42,40 @@ const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_PATH = ".datastore.lock";
-const MAX_BACKOFF_MS = 8_000;
+const DEFAULT_MAX_BACKOFF_MS = 8_000;
 const JITTER_FACTOR = 0.25;
+
+/** {@link LockOptions} plus settings that only apply to {@link FileLock}. */
+export interface FileLockOptions extends LockOptions {
+  /** Ceiling for the doubling retry backoff in ms (default: 8_000). */
+  maxBackoffMs?: number;
+}
+
+/**
+ * Computes one retry of the acquire loop's jittered exponential backoff.
+ *
+ * `jitterSample` is a value in [0, 1) that scales the backoff by ±25%. The
+ * jittered sleep is clamped to both `remainingMs` and `maxBackoffMs`, so no
+ * sleep exceeds the cap or overshoots the wait budget. The next backoff
+ * doubles up to `maxBackoffMs`.
+ */
+export function nextBackoffSleep(
+  currentBackoffMs: number,
+  jitterSample: number,
+  remainingMs: number,
+  maxBackoffMs: number,
+): { sleepMs: number; nextBackoffMs: number } {
+  const jitter = 1 + (jitterSample * 2 - 1) * JITTER_FACTOR;
+  const sleepMs = Math.min(
+    currentBackoffMs * jitter,
+    remainingMs,
+    maxBackoffMs,
+  );
+  return {
+    sleepMs,
+    nextBackoffMs: Math.min(currentBackoffMs * 2, maxBackoffMs),
+  };
+}
 
 /** Build a LockInfo for the current process. */
 function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
@@ -73,13 +105,15 @@ export class FileLock implements DistributedLock {
   /** Initial backoff before the first retry. Readable so callers' lock
    * policy can be asserted without timing the acquire loop. */
   readonly retryIntervalMs: number;
+  /** Ceiling for the doubling backoff. Readable for the same reason. */
+  readonly maxBackoffMs: number;
   private readonly maxWaitMs: number;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
   private nonce: string | undefined;
 
-  constructor(basePath: string, options?: LockOptions) {
+  constructor(basePath: string, options?: FileLockOptions) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
     const ns = options?.namespace;
     this.lockPath = ns
@@ -88,6 +122,7 @@ export class FileLock implements DistributedLock {
     this.ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
     this.retryIntervalMs = options?.retryIntervalMs ??
       DEFAULT_RETRY_INTERVAL_MS;
+    this.maxBackoffMs = options?.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   }
 
@@ -137,17 +172,17 @@ export class FileLock implements DistributedLock {
       }
 
       // Jittered exponential backoff, clamped to remaining budget
-      const jitter = 1 + (Math.random() * 2 - 1) * JITTER_FACTOR;
       const remaining = this.maxWaitMs - (Date.now() - startTime);
-      const sleepMs = Math.min(
-        currentBackoff * jitter,
+      const { sleepMs, nextBackoffMs } = nextBackoffSleep(
+        currentBackoff,
+        Math.random(),
         remaining,
-        MAX_BACKOFF_MS,
+        this.maxBackoffMs,
       );
       if (sleepMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, sleepMs));
       }
-      currentBackoff = Math.min(currentBackoff * 2, MAX_BACKOFF_MS);
+      currentBackoff = nextBackoffMs;
     }
   }
 

@@ -1292,12 +1292,23 @@ export async function requireInitializedRepoUnlocked(
 /**
  * Initial retry interval for per-model locks.
  *
- * Per-model locks are held for brief local writes, so `FileLock`'s 1s
- * default meant a waiter slept through a release that happened milliseconds
- * later. Backoff still doubles from here, so sustained contention converges
- * on the same cadence as before.
+ * A per-model lock is released as soon as its method run finishes, so
+ * `FileLock`'s 1s default meant a waiter slept through a release that
+ * happened milliseconds later. Backoff doubles from here up to
+ * {@link MODEL_LOCK_MAX_BACKOFF_MS}.
  */
 export const MODEL_LOCK_RETRY_INTERVAL_MS = 25;
+
+/**
+ * Ceiling for the per-model lock's doubling backoff.
+ *
+ * A workflow step holds its model's lock for the whole method run, so
+ * concurrent steps against one instance (e.g. `forEach` iterations) queue on
+ * it. Under `FileLock`'s 8s default the tail of that queue slept for seconds
+ * after each release (swamp-club#2870); this cap keeps every waiter within a
+ * quarter second of the holder letting go.
+ */
+export const MODEL_LOCK_MAX_BACKOFF_MS = 250;
 
 /**
  * Creates a per-model distributed lock.
@@ -1319,6 +1330,7 @@ export async function createModelLock(
     lockKey,
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
+    maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
   });
 }
 

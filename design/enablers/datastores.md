@@ -1517,15 +1517,22 @@ translation needs `lockKey` and `waitedMs` on the error, and
 locks to that shape (swamp-club#2553).
 
 **Retry backoff.** `FileLock.acquire` uses jittered exponential backoff. It
-starts at `retryIntervalMs` (default 1 second), doubles per attempt up to 8
-seconds, and adds ±25% jitter. Each sleep is clamped to the remaining budget, so
-the loop never overshoots `maxWaitMs`. Per-model locks (`createModelLock`) start
-at 25 ms instead: they guard brief local writes, and the 1 second default made
-waiters sleep through a release that came milliseconds later. The auto-definition
-create lock (`createAutoDefinitionLock` in `direct_execution.ts`) starts at 25 ms
-for the same reason, so forEach iterations that race to create one direct-type
-definition do not stall. Backoff still doubles, so sustained contention reaches
-the same pace.
+starts at `retryIntervalMs` (default 1 second), doubles per attempt up to
+`maxBackoffMs` (a `FileLock`-only option, default 8 seconds), and adds ±25%
+jitter. Each sleep is clamped to the cap and to the remaining budget, so the loop
+never overshoots `maxWaitMs`.
+
+Per-model locks (`createModelLock`) start at 25 ms and cap at 250 ms. A workflow
+step holds its model's lock for the whole method run, so concurrent steps
+against one instance — `forEach` iterations, for example — queue on it. Under
+the 1 second start a waiter slept through a release that came milliseconds
+later. Under the 8 second cap the tail of a queue slept for seconds after each
+release, so a 13-wide `forEach` of 0.2 s methods took 14 s instead of about 3 s
+(swamp-club#2870). The cap keeps every waiter within a quarter second of the
+holder letting go. The auto-definition create lock (`createAutoDefinitionLock`
+in `direct_execution.ts`) starts at 25 ms for the same reason, so forEach
+iterations that race to create one direct-type definition do not stall; it
+keeps the default cap.
 
 **Contention logging.** A lock taken after one or more retries logs the retry
 count and total wait at info level:
