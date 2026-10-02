@@ -42,10 +42,47 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { DataQueryResponse } from "../../serve/protocol.ts";
+import type {
+  DataQueryPayload,
+  DataQueryResponse,
+} from "../../serve/protocol.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Builds the `data.query` request sent with `--server`. A single-result query
+ * asks for two matches, enough to tell one from several; the check itself runs
+ * on the client (renderRemoteQueryResponse) so older servers need no protocol
+ * change.
+ */
+export function remoteQueryPayload(
+  predicate: string,
+  options: { limit?: number; select?: string; single: boolean },
+): DataQueryPayload {
+  return {
+    predicate,
+    limit: options.single ? 2 : options.limit,
+    select: options.select,
+  };
+}
+
+/** Applies `--single` to a `--server` query response, then renders it. */
+export function renderRemoteQueryResponse(
+  data: DataQueryData,
+  outputMode: OutputMode,
+  single: boolean,
+): void {
+  if (single) {
+    const error = requireSingleResult(data);
+    if (error) throw userErrorFromSwampError(error);
+  }
+  createDataQueryRenderer(outputMode, false, { single }).handlers().completed({
+    kind: "completed",
+    data,
+  });
+}
 
 export const dataQueryCommand = withRemoteOptions(
   new Command()
@@ -116,24 +153,18 @@ export const dataQueryCommand = withRemoteOptions(
       { server, token },
       {
         type: "data.query",
-        payload: {
-          predicate,
-          // Two matches are enough to tell one from several; the check runs
-          // here so older servers need no protocol change.
-          limit: single ? 2 : options.limit as number | undefined,
+        payload: remoteQueryPayload(predicate, {
+          limit: options.limit as number | undefined,
           select: options.select as string | undefined,
-        },
+          single,
+        }),
       },
     );
-    const data = response.data as unknown as DataQueryData;
-    if (single) {
-      const error = requireSingleResult(data);
-      if (error) throw userErrorFromSwampError(error);
-    }
-    const renderer = createDataQueryRenderer(ctx.outputMode, false, {
+    renderRemoteQueryResponse(
+      response.data as unknown as DataQueryData,
+      ctx.outputMode,
       single,
-    });
-    renderer.handlers().completed({ kind: "completed", data });
+    );
     return;
   }
 
