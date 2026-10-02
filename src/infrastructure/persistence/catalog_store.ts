@@ -307,6 +307,10 @@ export class CatalogStore {
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      // Re-check under the lock: another opener may have rebuilt it already,
+      // and rebuilding again would advance the generation twice. Unit tests
+      // cannot interleave two synchronous constructors, so this branch is
+      // covered only by SQLite's locking.
       const staleness = this.catalogStaleness();
       if (staleness !== undefined) {
         if (staleness.kind === "missing-table") {
@@ -940,11 +944,14 @@ export class CatalogStore {
    * freshly-pulled data. Advances {@link generation}.
    */
   invalidate(): void {
+    // Advance the generation first: a markPopulated holding the old
+    // generation that lands after it is rejected, and one that lands before
+    // it is undone by the delete below.
+    this.writeMeta("generation", String(this.generation() + 1));
     const stmt = this.db.prepare(
       "DELETE FROM catalog_meta WHERE key = 'populated'",
     );
     stmt.run();
-    this.writeMeta("generation", String(this.generation() + 1));
   }
 
   /** Counts invalidations; see {@link markPopulated}. */

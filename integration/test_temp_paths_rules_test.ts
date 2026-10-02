@@ -27,9 +27,11 @@
 // `Deno.makeTempDir` (or `withTempDir`) directory, or use `:memory:`.
 //
 // The scan is textual and spans line breaks, because `deno fmt` wraps a long
-// path onto the line after the constructor. A path held in a variable gets
-// past it; the pattern self-check below proves it still matches the shapes it
-// targets.
+// path onto the line after the constructor. It does not see a path held in a
+// variable, built with `path.join` or `resolve`, or started by template
+// interpolation, nor a fixed repo dir handed to code that derives the database
+// path itself. The pattern self-check below proves it still matches the shapes
+// it targets.
 
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { walk } from "@std/fs";
