@@ -636,39 +636,63 @@ export class DataQueryService {
       // Forwards are recorded only for this repository's namespace, whose
       // markers are on local disk.
       if (namespace !== ownNamespace) continue;
-      const modelType = ModelType.create(type);
-      const renamedTo = (name: string): string | null => {
-        const latest = this.dataRepo.getLatestVersionSync(
-          modelType,
+      let target: string | null;
+      try {
+        target = this.followRenameMarkers(
+          ModelType.create(type),
           modelId,
-          name,
+          dataName,
         );
-        if (latest === null) return null;
-        const data = this.dataRepo.findByNameSync(
-          modelType,
-          modelId,
-          name,
-          latest,
-        );
-        return data?.isRenamed && data.renamedTo ? data.renamedTo : null;
-      };
-      const seen = new Set([dataName]);
-      let target = renamedTo(dataName);
-      for (let hop = 1; target !== null; hop++) {
-        if (seen.has(target) || hop > MAX_RENAME_HOPS) {
-          target = null;
-          break;
-        }
-        seen.add(target);
-        const next = renamedTo(target);
-        if (next === null) break;
-        target = next;
+      } catch (error) {
+        // An unreadable marker skips this one model rather than failing a
+        // query that matches other models' data.
+        logger
+          .debug`Not following rename forwards from ${dataName} under ${type}/${modelId}: ${error}`;
+        continue;
       }
       if (target !== null) {
         targets.set(renameKey(namespace, type, modelId), target);
       }
     }
     return targets;
+  }
+
+  /**
+   * The name an unversioned read of `dataName` ends at by following its
+   * rename markers on disk, or null when it has no marker, the chain loops,
+   * or it runs past {@link MAX_RENAME_HOPS}. Throws when a marker cannot be
+   * read.
+   */
+  private followRenameMarkers(
+    modelType: ModelType,
+    modelId: string,
+    dataName: string,
+  ): string | null {
+    const renamedTo = (name: string): string | null => {
+      const latest = this.dataRepo.getLatestVersionSync(
+        modelType,
+        modelId,
+        name,
+      );
+      if (latest === null) return null;
+      const data = this.dataRepo.findByNameSync(
+        modelType,
+        modelId,
+        name,
+        latest,
+      );
+      return data?.isRenamed && data.renamedTo ? data.renamedTo : null;
+    };
+    const seen = new Set([dataName]);
+    let target = renamedTo(dataName);
+    for (let hop = 1; target !== null; hop++) {
+      if (seen.has(target) || hop > MAX_RENAME_HOPS) return null;
+      seen.add(target);
+      const next = renamedTo(target);
+      if (next === null) break;
+      target = next;
+    }
+    return target;
   }
 
   /**

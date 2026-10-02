@@ -3075,6 +3075,24 @@ Deno.test("DataQueryService rename forwards: versioned and non-equality name ter
   catalog.close();
 });
 
+Deno.test("DataQueryService rename forwards: an unreadable marker skips that model instead of failing the query", async () => {
+  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  const corruptModel = crypto.randomUUID();
+  const otherModel = crypto.randomUUID();
+  await save("old", corruptModel);
+  await rename(corruptModel, "old", "new");
+  await save("old", otherModel);
+  const latest = dataRepo.getLatestVersionSync(type, corruptModel, "old")!;
+  Deno.writeTextFileSync(
+    dataRepo.getMetadataPath(type, corruptModel, "old", latest),
+    "lifecycle: [unclosed",
+  );
+
+  const results = service.querySync('name == "old"') as DataRecord[];
+  assertEquals(results.map((r) => r.modelId), [otherModel]);
+  catalog.close();
+});
+
 Deno.test("DataQueryService rename forwards: --select sees the item's current name", async () => {
   const { catalog, service, save, rename } = setupRenameTest();
   const modelId = crypto.randomUUID();
