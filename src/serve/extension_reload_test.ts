@@ -1718,7 +1718,7 @@ Deno.test("reloadPulledExtensions: attaches a pulled add-on when serve reaches t
     } finally {
       detachExtensionSources(
         "command/shell",
-        (p) => p.includes(`/${ext}/`),
+        (p) => p.includes(join(ext, "models")),
       );
       await Deno.remove(link);
     }

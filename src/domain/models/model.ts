@@ -1094,6 +1094,7 @@ export class ModelRegistry {
     this.lazyTypes.delete(key);
     this.typeLoadPromises.delete(key);
     this.extensionsAttached.delete(key);
+    this.extensionAttachWarned.delete(key);
   }
 
   /**
