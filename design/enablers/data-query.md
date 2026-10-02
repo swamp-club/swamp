@@ -77,7 +77,8 @@ not the name, so there is no hint. Otherwise it runs the spec-name predicate
 `otherFiltersDropped` (log mode prints the command, and notes the dropped
 conditions). Both probes use the caller's `include` filter, so the hint never
 reveals data the caller may not read; a failed probe only omits it, and the
-interactive TUI does not probe. A query has no "latest run of
+interactive TUI does not probe. With `--single`, where no match is an error,
+the hint is appended to the `QUERY_NO_MATCH` message. A query has no "latest run of
 a workflow" form: look the run id up with
 `swamp workflow history get <workflow>` first.
 

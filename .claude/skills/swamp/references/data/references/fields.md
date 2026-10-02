@@ -32,7 +32,7 @@
 A query matches `name` exactly. To find data by its spec name, match `specName`;
 when a `name == "..."` query finds nothing but data with that spec name exists,
 `swamp data query` prints the spec-name query to run instead (`specNameHint` in
-`--json`).
+`--json`; with `--single` it is part of the no-match error).
 
 `garbageCollection` is a number for a count policy and a string for a duration.
 Equality across the two types is simply false, but an ordering comparison

@@ -647,3 +647,43 @@ Deno.test("dataQuery: a throwing spec-name fallback omits the hint without faili
   assertEquals(data.total, 0);
   assertEquals(data.specNameHint, undefined);
 });
+
+Deno.test("dataQuery: single mode carries the spec-name hint into the no-match error", async () => {
+  const deps = fallbackDeps({ 'specName == "classification"': [makeRecord()] });
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "classification"',
+      single: true,
+    }),
+  );
+
+  const last = events.at(-1) as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "QUERY_NO_MATCH");
+  assertStringIncludes(
+    last.error.message,
+    "data with that spec name exists. Match it with:\n" +
+      '  specName == "classification"',
+  );
+});
+
+Deno.test("requireSingleResult: notes dropped conditions in the spec-name hint", () => {
+  const error = requireSingleResult({
+    predicate: 'name == "x" && size > 1',
+    total: 0,
+    specNameHint: {
+      suggestedPredicate: 'specName == "x"',
+      otherFiltersDropped: true,
+    },
+  });
+  assertStringIncludes(error?.message ?? "", '  specName == "x"');
+  assertStringIncludes(
+    error?.message ?? "",
+    "(some conditions from your query were not carried over)",
+  );
+});
+
+Deno.test("requireSingleResult: no hint text without a hint", () => {
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
+  assertEquals(error?.message.includes("spec name"), false);
+});

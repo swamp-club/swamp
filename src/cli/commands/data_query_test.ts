@@ -174,3 +174,28 @@ Deno.test("renderRemoteQueryResponse: --single counts projected values", async (
   }
   assertEquals(JSON.parse(lines[0]), "state");
 });
+
+Deno.test("renderRemoteQueryResponse: --single carries the server's spec-name hint into the no-match error", async () => {
+  const { renderRemoteQueryResponse } = await import("./data_query.ts");
+  const error = assertThrows(
+    () =>
+      renderRemoteQueryResponse(
+        'name == "classification"',
+        {
+          predicate: 'name == "classification"',
+          results: [],
+          total: 0,
+          limited: false,
+          specNameHint: {
+            suggestedPredicate: 'specName == "classification"',
+            otherFiltersDropped: false,
+          },
+        },
+        "json",
+        true,
+      ),
+    UserError,
+    'specName == "classification"',
+  );
+  assertEquals(error.code, "QUERY_NO_MATCH");
+});

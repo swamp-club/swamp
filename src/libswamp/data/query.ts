@@ -129,7 +129,10 @@ export function requireSingleResult(
       "is matched unless the predicate names version or isLatest." +
       (data.specNameHint
         ? "\nNo data matched that instance name, but data with that spec " +
-          `name exists. Match it with:\n  ${data.specNameHint.suggestedPredicate}`
+          `name exists. Match it with:\n  ${data.specNameHint.suggestedPredicate}` +
+          (data.specNameHint.otherFiltersDropped
+            ? "\n(some conditions from your query were not carried over)"
+            : "")
         : ""),
   };
 }
