@@ -180,7 +180,9 @@ export async function* whoami(
   yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
-  if (!credentials) {
+  // An empty key is the identity cache an env-key run leaves in auth.json:
+  // no credential, not a revoked one.
+  if (!credentials?.apiKey) {
     yield { kind: "error", error: notAuthenticated() };
     return;
   }
