@@ -1057,7 +1057,7 @@ Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a
   }
 });
 
-// ── retention of unsettled interrupted workflow rows ───────────────
+// ── retention of unsettled interrupted workflow and method rows ────
 
 function workflowRow(id: string, kind: "workflow" | "model_method") {
   return ActiveRun.fromData({
@@ -1087,27 +1087,54 @@ function reopenAfterRetention(dbPath: string): RunTrackerStore {
   return new RunTrackerStore(dbPath);
 }
 
-Deno.test("RunTrackerStore: retention keeps an interrupted workflow row until it is settled", () => {
+Deno.test("RunTrackerStore: retention keeps an interrupted workflow or method row until it is settled", () => {
   const dbPath = makeTempDbPath();
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("unsettled", "workflow"));
     store.register(workflowRow("settled", "workflow"));
     store.register(workflowRow("method", "model_method"));
+    store.register(workflowRow("settled-method", "model_method"));
     store.register(workflowRow("done", "workflow"));
+    store.register(workflowRow("done-method", "model_method"));
     store.complete("done", "completed");
+    store.complete("done-method", "cancelled");
     store.reapDeadProcessRuns();
     store.markSettled("settled", "owner_process_dead");
+    store.markSettled("settled-method", "record_settled");
   } finally {
     store.close();
   }
 
   const reopened = reopenAfterRetention(dbPath);
   try {
-    assertEquals(reopened.findAll().map((r) => r.id), ["unsettled"]);
+    assertEquals(
+      reopened.findAll().map((r) => r.id).sort(),
+      ["method", "unsettled"],
+    );
     assertEquals(reopened.findById("unsettled")?.status, "interrupted");
+    assertEquals(reopened.findById("method")?.status, "interrupted");
   } finally {
     reopened.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a row reads as settled only once markSettled gives it a reason", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("unsettled", "model_method"));
+    store.register(workflowRow("settled", "model_method"));
+    store.register(workflowRow("cancelled", "model_method"));
+    store.complete("cancelled", "cancelled", "Stop it");
+    store.reapDeadProcessRuns();
+    store.markSettled("settled", "record_settled");
+
+    assertEquals(store.findById("unsettled")?.settled, false);
+    assertEquals(store.findById("settled")?.settled, true);
+    assertEquals(store.findById("cancelled")?.settled, false);
+  } finally {
+    store.close();
   }
 });
 

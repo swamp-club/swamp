@@ -27,6 +27,11 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
+import { ModelOutput } from "../../domain/models/model_output.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reaper.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   WorkflowRepository,
@@ -44,12 +49,14 @@ const WORKFLOW_ID = "5b0e6c3c-2b7e-4c55-9d43-3c1f2f0e9a11" as WorkflowId;
 // Far above any real pid_max, so never a live process.
 const DEAD_PID = 2147483647;
 
-function withTracker(fn: (tracker: RunTrackerStore) => Promise<void>) {
+function withTracker(
+  fn: (tracker: RunTrackerStore, dir: string) => Promise<void>,
+) {
   return async () => {
     const dir = await Deno.makeTempDir({ prefix: "swamp-run-doctor-test-" });
     const tracker = new RunTrackerStore(join(dir, "run_tracker.db"));
     try {
-      await fn(tracker);
+      await fn(tracker, dir);
     } finally {
       tracker.close();
       await Deno.remove(dir, { recursive: true }).catch(
@@ -132,6 +139,31 @@ function runRepoOf(runs: WorkflowRun[], scanned = runs): {
   return { runRepo, saved };
 }
 
+/** An output repository holding no method-run records. */
+const noOutputs: MethodRunOutputs = {
+  findByIds: () => Promise.resolve(new Map()),
+  save: () => Promise.reject(new Error("unexpected output save")),
+};
+
+/** Saves a step's method-run output `running` under `pid`, as a step does. */
+async function saveRunningOutput(
+  outputRepo: YamlOutputRepository,
+  pid: number,
+): Promise<ModelOutput> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "execute",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "workflow",
+    },
+  });
+  output.markRunning(pid);
+  await outputRepo.save(ModelType.create("command/shell"), "execute", output);
+  return output;
+}
+
 /** Workflow lookup that knows only workflow "wf". */
 const workflowRepo = {
   findByName: (name: string) =>
@@ -151,6 +183,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       false,
     );
@@ -179,6 +212,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       true,
     );
@@ -214,6 +248,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       true,
     );
@@ -242,6 +277,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       true,
     );
@@ -265,6 +301,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       false,
     );
@@ -305,6 +342,7 @@ Deno.test(
       tracker,
       runRepo,
       workflowRepo,
+      noOutputs,
       localOwnerLiveness(),
       true,
     );
@@ -315,5 +353,86 @@ Deno.test(
     assertEquals(result.orphanedWorkflowRuns, 0);
     assertEquals(remote.status, "running");
     assertEquals(saved, []);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: counts a dead owner's running method run, and fix cancels it",
+  withTracker(async (tracker, dir) => {
+    const outputRepo = new YamlOutputRepository(dir);
+    const run = strandedRun(DEAD_PID);
+    const step = await saveRunningOutput(outputRepo, DEAD_PID);
+    const live = await saveRunningOutput(outputRepo, Deno.pid);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.register(trackerRow(step.id, DEAD_PID, "model_method"));
+    tracker.register(trackerRow(live.id, Deno.pid, "model_method"));
+    const { runRepo } = runRepoOf([run]);
+    const type = ModelType.create("command/shell");
+
+    const report = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      outputRepo,
+      localOwnerLiveness(),
+      false,
+    );
+    assertEquals(report.orphanedMethodRuns, 1);
+    assertEquals(report.orphanedMethodReaped, 0);
+    assertEquals(
+      (await outputRepo.findById(type, "execute", step.id))?.status,
+      "running",
+    );
+
+    const fixed = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      outputRepo,
+      localOwnerLiveness(),
+      true,
+    );
+    assertEquals(fixed.orphanedMethodRuns, 1);
+    assertEquals(fixed.orphanedMethodReaped, 1);
+    const settled = await outputRepo.findById(type, "execute", step.id);
+    assertEquals(settled?.status, "cancelled");
+    assertEquals(settled?.completedAt !== undefined, true);
+    assertEquals(tracker.findById(step.id)?.status, "interrupted");
+    assertEquals(
+      (await outputRepo.findById(type, "execute", live.id))?.status,
+      "running",
+    );
+    assertEquals(tracker.findById(live.id)?.status, "running");
+    assertEquals(run.status, "interrupted");
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: an unreadable method-run record is reported and the workflow pass still runs",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.register(
+      trackerRow(crypto.randomUUID(), DEAD_PID, "model_method"),
+    );
+    const { runRepo, saved } = runRepoOf([run]);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      {
+        findByIds: () => Promise.reject(new Error("permission denied")),
+        save: () => Promise.reject(new Error("unexpected output save")),
+      },
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.orphanedMethodError, "permission denied");
+    assertEquals(result.orphanedMethodRuns, 0);
+    assertEquals(result.orphanedReaped, 1);
+    assertEquals(run.status, "interrupted");
+    assertEquals(saved, [run.id]);
   }),
 );

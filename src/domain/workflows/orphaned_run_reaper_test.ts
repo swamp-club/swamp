@@ -18,9 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  cancelOrphanedMethodRuns,
+  findDeadOwnerMethodRuns,
+  matchMethodRunOutputs,
+  type MethodRunOutputs,
+  ownerExitedReason,
   type OwnerLiveness,
   reapOrphanedWorkflowRuns,
   runHasDeadOwner,
+  settleDeadOwnerMethodRuns,
   settleDeadOwnerRun,
   trackerShowsDeadOwner,
 } from "./orphaned_run_reaper.ts";
@@ -29,6 +35,9 @@ import type { WorkflowRunRepository } from "./repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
+import { ModelOutput } from "../models/model_output.ts";
+import type { ModelType } from "../models/model_type.ts";
+import { createDefinitionId } from "../definitions/definition.ts";
 
 const WORKFLOW_ID = "96968218-50aa-4b91-8161-a6995ce96cae" as WorkflowId;
 
@@ -82,6 +91,12 @@ const trackerReaped = () => ({ status: "failed" });
 // Helper: for cases decided before any pid check
 const unexpectedPidCheck = (pid: number): boolean => {
   throw new Error(`unexpected pid check for ${pid}`);
+};
+
+// Helper: an output repository holding no method-run records
+const noOutputs: MethodRunOutputs = {
+  findByIds: () => Promise.resolve(new Map()),
+  save: () => Promise.reject(new Error("unexpected output save")),
 };
 
 Deno.test("reapOrphanedWorkflowRuns: skips run when tracker reports still running", async () => {
@@ -468,6 +483,7 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
     } as unknown as WorkflowRunRepository,
     runTracker: {
       findById: (runId: string) => rows.find((r) => r.id === runId) ?? null,
+      findAll: () => rows,
       complete: (runId: string, status: ActiveRunStatus) => {
         recorded.completed.push({ runId, status });
         recorded.writes.push(`complete:${status}`);
@@ -578,6 +594,7 @@ Deno.test("settleDeadOwnerRun: interrupts a running run whose local owner is dea
     WORKFLOW_ID,
     run.id,
     liveness([4242]),
+    noOutputs,
   );
 
   assertEquals(settled, true);
@@ -631,6 +648,7 @@ Deno.test("settleDeadOwnerRun: a step whose start was never saved becomes unknow
     WORKFLOW_ID,
     run.id,
     liveness([4242]),
+    noOutputs,
   );
 
   assertEquals(run.unknownSteps(), ["slow"]);
@@ -652,6 +670,7 @@ Deno.test("settleDeadOwnerRun: leaves the row unsettled when saving the record f
         WORKFLOW_ID,
         run.id,
         liveness([4242]),
+        noOutputs,
       ),
     Error,
     "disk full",
@@ -672,6 +691,7 @@ Deno.test("settleDeadOwnerRun: interrupts a running run whose tracker row was al
     WORKFLOW_ID,
     run.id,
     liveness([4242]),
+    noOutputs,
   );
 
   assertEquals(settled, true);
@@ -694,6 +714,7 @@ Deno.test("settleDeadOwnerRun: leaves a running run whose interrupted row's owne
     WORKFLOW_ID,
     run.id,
     liveness(),
+    noOutputs,
   );
 
   assertEquals(settled, false);
@@ -725,6 +746,7 @@ Deno.test("settleDeadOwnerRun: leaves a run whose owner is alive, remote or untr
       WORKFLOW_ID,
       run.id,
       liveness(dead),
+      noOutputs,
     );
     assertEquals(settled, false);
     assertEquals(run.status, "running");
@@ -748,6 +770,7 @@ Deno.test("settleDeadOwnerRun: never overwrites a run its owner finished after t
     WORKFLOW_ID,
     finished.id,
     liveness([4242]),
+    noOutputs,
   );
 
   assertEquals(settled, false);
@@ -771,9 +794,365 @@ Deno.test("settleDeadOwnerRun: leaves a run another process took over", async ()
     WORKFLOW_ID,
     taken.id,
     liveness([4242]),
+    noOutputs,
   );
 
   assertEquals(settled, false);
   assertEquals(taken.status, "running");
   assertEquals(recorded.saved, []);
+});
+
+// --- method runs a dead owner left running ---
+
+const MODEL_TYPE = "command/shell";
+
+function methodRow(
+  overrides: {
+    id?: string;
+    status?: ActiveRunStatus;
+    pid?: number;
+    hostname?: string;
+    methodName?: string;
+    settled?: boolean;
+  } = {},
+): ActiveRun {
+  const now = new Date().toISOString();
+  return ActiveRun.fromData({
+    id: overrides.id ?? crypto.randomUUID(),
+    runKind: "model_method",
+    modelType: MODEL_TYPE,
+    methodName: overrides.methodName ?? "execute",
+    workflowName: null,
+    pid: overrides.pid ?? 4242,
+    hostname: overrides.hostname ?? HOST,
+    startedAt: now,
+    heartbeatAt: now,
+    status: overrides.status ?? "running",
+    initiatedBy: null,
+    settled: overrides.settled,
+  });
+}
+
+/** An output saved running by process `pid`, with the row's id. */
+function runningOutput(row: ActiveRun, pid = row.pid): ModelOutput {
+  const output = ModelOutput.fromData({
+    id: row.id,
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: row.methodName!,
+    status: "pending",
+    startedAt: new Date().toISOString(),
+    retryCount: 0,
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "workflow",
+    },
+    artifacts: { dataArtifacts: [] },
+  });
+  output.markRunning(pid);
+  return output;
+}
+
+/** An output repository over `outputs`, recording reads and saves. */
+function outputStub(outputs: ModelOutput[], writes: string[] = []): {
+  outputRepo: MethodRunOutputs;
+  reads: string[];
+} {
+  const reads: string[] = [];
+  return {
+    outputRepo: {
+      findByIds: (type: ModelType, method: string, ids) => {
+        reads.push(`${type.normalized}:${method}`);
+        return Promise.resolve(
+          new Map(
+            outputs.filter((o) => ids.has(o.id)).map((o) => [o.id, o]),
+          ),
+        );
+      },
+      save: (_type: ModelType, _method: string, output: ModelOutput) => {
+        writes.push(`save-output:${output.status}`);
+        return Promise.resolve();
+      },
+    },
+    reads,
+  };
+}
+
+Deno.test("matchMethodRunOutputs: only an output still running under the row's pid needs settling", async () => {
+  const same = methodRow();
+  const other = methodRow();
+  const finished = methodRow();
+  const missing = methodRow();
+  const noPid = methodRow();
+  const done = runningOutput(finished);
+  done.markSucceeded();
+  const { outputRepo, reads } = outputStub([
+    runningOutput(same),
+    runningOutput(other, 5151),
+    done,
+    runningOutput(noPid, undefined as unknown as number),
+  ]);
+
+  const { running, done: settled } = await matchMethodRunOutputs(
+    outputRepo,
+    [same, other, finished, missing, noPid],
+  );
+
+  assertEquals(running.map((r) => r.row.id).sort(), [same.id, noPid.id].sort());
+  assertEquals(
+    settled.map((r) => r.id).sort(),
+    [other.id, finished.id, missing.id].sort(),
+  );
+  // One read for the model type and method all five rows share.
+  assertEquals(reads, [`${MODEL_TYPE}:execute`]);
+});
+
+Deno.test("matchMethodRunOutputs: a row that cannot name an output is never looked up", async () => {
+  const escaping = methodRow({ methodName: "../../etc" });
+  const nested = methodRow({ methodName: "a/b" });
+  const workflow = trackerRow(crypto.randomUUID());
+  const { outputRepo, reads } = outputStub([]);
+
+  const { running, done } = await matchMethodRunOutputs(outputRepo, [
+    escaping,
+    nested,
+    workflow,
+  ]);
+
+  assertEquals(running, []);
+  assertEquals(done.length, 3);
+  assertEquals(reads, []);
+});
+
+Deno.test("settleDeadOwnerMethodRuns: cancels a dead owner's running output, then settles its row", async () => {
+  const row = methodRow();
+  const output = runningOutput(row);
+  const { runTracker, recorded } = stubs([], [row]);
+  const { outputRepo } = outputStub([output], recorded.writes);
+
+  const settled = await settleDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242]),
+  );
+
+  assertEquals(settled.map((s) => s.row.id), [row.id]);
+  assertEquals(output.status, "cancelled");
+  assertEquals(output.completedAt !== undefined, true);
+  assertEquals(output.error?.message, ownerExitedReason(4242));
+  // The row is marked settled only once the output is saved.
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "save-output:cancelled",
+    "settled:owner_process_dead",
+  ]);
+});
+
+Deno.test("settleDeadOwnerMethodRuns: leaves rows whose owner is alive, remote, or another pid", async () => {
+  const alive = methodRow({ pid: 7 });
+  const remote = methodRow({ hostname: "other-host" });
+  const otherPid = methodRow({ pid: 5151 });
+  const outputs = [
+    runningOutput(alive),
+    runningOutput(remote),
+    runningOutput(otherPid),
+  ];
+  const { runTracker, recorded } = stubs([], [alive, remote, otherPid]);
+  const { outputRepo } = outputStub(outputs, recorded.writes);
+
+  const settled = await settleDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242, 5151]),
+    4242,
+  );
+
+  assertEquals(settled, []);
+  assertEquals(outputs.map((o) => o.status), ["running", "running", "running"]);
+  assertEquals(recorded.writes, []);
+});
+
+Deno.test("settleDeadOwnerMethodRuns: settles a dead owner's row with no output left to settle", async () => {
+  const missing = methodRow({ status: "interrupted" });
+  const finished = methodRow();
+  const done = runningOutput(finished);
+  done.markFailed({ message: "boom" });
+  const { runTracker, recorded } = stubs([], [missing, finished]);
+  const { outputRepo } = outputStub([done], recorded.writes);
+
+  const settled = await settleDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242]),
+  );
+
+  assertEquals(settled, []);
+  assertEquals(done.status, "failed");
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "settled:record_settled",
+    "complete:interrupted",
+    "settled:record_settled",
+  ]);
+});
+
+Deno.test("settleDeadOwnerMethodRuns: leaves the row unsettled when saving the output fails", async () => {
+  const row = methodRow();
+  const { runTracker, recorded } = stubs([], [row]);
+  const outputRepo: MethodRunOutputs = {
+    findByIds: () => Promise.resolve(new Map([[row.id, runningOutput(row)]])),
+    save: () => Promise.reject(new Error("disk full")),
+  };
+
+  await assertRejects(
+    () => settleDeadOwnerMethodRuns(outputRepo, runTracker, liveness([4242])),
+    Error,
+    "disk full",
+  );
+  assertEquals(recorded.writes, ["complete:interrupted"]);
+});
+
+Deno.test("findDeadOwnerMethodRuns: reports without writing", async () => {
+  const row = methodRow();
+  const output = runningOutput(row);
+  const { runTracker, recorded } = stubs([], [row]);
+  const { outputRepo } = outputStub([output], recorded.writes);
+
+  const { running } = await findDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242]),
+  );
+
+  assertEquals(running.map((r) => r.row.id), [row.id]);
+  assertEquals(output.status, "running");
+  assertEquals(recorded.writes, []);
+});
+
+Deno.test("settleDeadOwnerRun: settles the method runs its dead owner left running", async () => {
+  const run = makeRun({ pid: 4242 });
+  const step = methodRow();
+  const stranger = methodRow({ pid: 5151 });
+  const stepOutput = runningOutput(step);
+  const strangerOutput = runningOutput(stranger);
+  const { runRepo, runTracker, recorded } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242 }), step, stranger],
+  );
+  const { outputRepo } = outputStub(
+    [stepOutput, strangerOutput],
+    recorded.writes,
+  );
+
+  const settled = await settleDeadOwnerRun(
+    runRepo,
+    runTracker,
+    WORKFLOW_ID,
+    run.id,
+    liveness([4242, 5151]),
+    outputRepo,
+  );
+
+  assertEquals(settled, true);
+  assertEquals(stepOutput.status, "cancelled");
+  // Only the dead owner's own method runs; another dead pid waits for doctor.
+  assertEquals(strangerOutput.status, "running");
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "save:interrupted",
+    "settled:owner_process_dead",
+    "complete:interrupted",
+    "save-output:cancelled",
+    "settled:owner_process_dead",
+  ]);
+});
+
+Deno.test("findDeadOwnerMethodRuns: a row already settled is not read again", async () => {
+  const settled = methodRow({ status: "interrupted", settled: true });
+  const { runTracker } = stubs([], [settled]);
+  const { outputRepo, reads } = outputStub([runningOutput(settled)]);
+
+  const { running, done } = await findDeadOwnerMethodRuns(
+    outputRepo,
+    runTracker,
+    liveness([4242]),
+  );
+
+  assertEquals(running, []);
+  assertEquals(done, []);
+  assertEquals(reads, []);
+});
+
+Deno.test("settleDeadOwnerRun: a method-run settlement failure does not fail the settled run", async () => {
+  const run = makeRun({ pid: 4242 });
+  const step = methodRow();
+  const { runRepo, runTracker, recorded } = stubs(
+    [run],
+    [trackerRow(run.id, { pid: 4242 }), step],
+  );
+  const outputRepo: MethodRunOutputs = {
+    findByIds: () => Promise.reject(new Error("permission denied")),
+    save: () => Promise.reject(new Error("unexpected output save")),
+  };
+
+  const settled = await settleDeadOwnerRun(
+    runRepo,
+    runTracker,
+    WORKFLOW_ID,
+    run.id,
+    liveness([4242]),
+    outputRepo,
+  );
+
+  assertEquals(settled, true);
+  assertEquals(run.status, "interrupted");
+  // The step's row is left unsettled for run doctor.
+  assertEquals(recorded.writes, [
+    "complete:interrupted",
+    "save:interrupted",
+    "settled:owner_process_dead",
+  ]);
+});
+
+Deno.test("cancelOrphanedMethodRuns: collects a failed save instead of throwing", async () => {
+  const ok = methodRow();
+  const bad = methodRow();
+  const finished = methodRow();
+  const done = runningOutput(finished);
+  done.markSucceeded();
+  const outputs = [runningOutput(ok), runningOutput(bad), done];
+  const outputRepo: MethodRunOutputs = {
+    findByIds: (_type, _method, ids) =>
+      Promise.resolve(
+        new Map(outputs.filter((o) => ids.has(o.id)).map((o) => [o.id, o])),
+      ),
+    save: (_type, _method, output) =>
+      output.id === bad.id
+        ? Promise.reject(new Error("disk full"))
+        : Promise.resolve(),
+  };
+
+  const { closed, failed, errors } = await cancelOrphanedMethodRuns(
+    outputRepo,
+    [ok, bad, finished],
+    "stopped",
+  );
+
+  assertEquals(closed.map((r) => r.id).sort(), [ok.id, finished.id].sort());
+  assertEquals(failed.map((r) => r.id), [bad.id]);
+  assertEquals(errors.length, 1);
+});
+
+Deno.test("cancelOrphanedMethodRuns: a failed read leaves every row failed", async () => {
+  const row = methodRow();
+  const { failed, closed } = await cancelOrphanedMethodRuns(
+    {
+      findByIds: () => Promise.reject(new Error("permission denied")),
+      save: () => Promise.resolve(),
+    },
+    [row],
+    "stopped",
+  );
+  assertEquals(closed, []);
+  assertEquals(failed.map((r) => r.id), [row.id]);
 });

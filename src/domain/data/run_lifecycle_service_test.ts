@@ -68,6 +68,7 @@ function createMockOutputRepo(
     lastCutoff: undefined as Date | undefined,
     lastDryRun: undefined as boolean | undefined,
     findById: () => Promise.resolve(null),
+    findByIds: () => Promise.resolve(new Map()),
     findByDefinition: () => Promise.resolve([]),
     findLatestByDefinition: () => Promise.resolve(null),
     findAll: () => Promise.resolve([]),

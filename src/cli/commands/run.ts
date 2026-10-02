@@ -31,8 +31,12 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
+  findDeadOwnerMethodRuns,
+  type MethodRunOutputs,
+  type OrphanedMethodRun,
   type OwnerLiveness,
   runHasDeadOwner,
+  settleDeadOwnerMethodRuns,
   settleDeadOwnerRun,
   trackerShowsDeadOwner,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
@@ -177,14 +181,19 @@ export interface LocalRunDiagnosis {
   readonly reaped: number;
   readonly orphanedWorkflowRuns: number;
   readonly orphanedReaped: number;
+  readonly orphanedMethodRuns: number;
+  readonly orphanedMethodReaped: number;
+  /** Why method runs could not be checked or settled, if they could not. */
+  readonly orphanedMethodError?: string;
 }
 
 /**
  * Local `swamp run doctor`. A tracker row is stale when its heartbeat
- * expired or its owner is a dead process on this host. Workflow run records
- * still `running` whose tracker row shows a dead owner are orphaned; with
- * `fix`, the stale rows are reaped and the orphaned records interrupted so
- * `swamp workflow recover` accepts them.
+ * expired or its owner is a dead process on this host. Workflow and method
+ * run records still `running` whose tracker row shows a dead owner are
+ * orphaned; with `fix`, the stale rows are reaped, the orphaned workflow
+ * records interrupted so `swamp workflow recover` accepts them, and the
+ * orphaned method runs cancelled.
  *
  * Recent records are found by scanning; an older one is found through its
  * workflow tracker row, so no run is stranded by its age. With `fix`, an
@@ -195,6 +204,7 @@ export async function diagnoseLocalRuns(
   tracker: RunTrackerStore,
   runRepo: WorkflowRunRepository,
   workflowRepo: Pick<WorkflowRepository, "findByName">,
+  outputRepo: MethodRunOutputs,
   liveness: OwnerLiveness,
   fix: boolean,
 ): Promise<LocalRunDiagnosis> {
@@ -217,6 +227,21 @@ export async function diagnoseLocalRuns(
       ...tracker.reapDeadProcessRuns(liveness.instanceId),
     ].map((r) => r.id));
     reaped = reapedIds.size;
+  }
+
+  // Method runs first, so the step method runs a settled workflow run takes
+  // with it are counted here too. A failure is reported, not thrown, so the
+  // workflow runs are still diagnosed.
+  let orphanedMethods: OrphanedMethodRun[] = [];
+  let orphanedMethodError: string | undefined;
+  try {
+    orphanedMethods = fix
+      ? await settleDeadOwnerMethodRuns(outputRepo, tracker, liveness)
+      : (await findDeadOwnerMethodRuns(outputRepo, tracker, liveness)).running;
+  } catch (error) {
+    orphanedMethodError = error instanceof Error
+      ? error.message
+      : String(error);
   }
 
   let orphanedWorkflowRuns = 0;
@@ -244,7 +269,14 @@ export async function diagnoseLocalRuns(
     orphanedWorkflowRuns++;
     if (
       fix &&
-      await settleDeadOwnerRun(runRepo, tracker, workflowId, run.id, liveness)
+      await settleDeadOwnerRun(
+        runRepo,
+        tracker,
+        workflowId,
+        run.id,
+        liveness,
+        outputRepo,
+      )
     ) {
       orphanedReaped++;
     }
@@ -257,6 +289,9 @@ export async function diagnoseLocalRuns(
     reaped,
     orphanedWorkflowRuns,
     orphanedReaped,
+    orphanedMethodRuns: orphanedMethods.length,
+    orphanedMethodReaped: fix ? orphanedMethods.length : 0,
+    ...(orphanedMethodError !== undefined ? { orphanedMethodError } : {}),
   };
 }
 
@@ -344,6 +379,7 @@ const runDoctorCommand = withRemoteOptions(
           tracker,
           repoContext.workflowRunRepo,
           repoContext.workflowRepo,
+          repoContext.outputRepo,
           localOwnerLiveness(),
           !!options.fix,
         );
@@ -356,6 +392,9 @@ const runDoctorCommand = withRemoteOptions(
             result.reaped,
             result.orphanedWorkflowRuns,
             result.orphanedReaped,
+            result.orphanedMethodRuns,
+            result.orphanedMethodReaped,
+            result.orphanedMethodError,
           );
         } else {
           writeDoctorRunsLog(
@@ -365,6 +404,9 @@ const runDoctorCommand = withRemoteOptions(
             !!options.fix,
             result.orphanedWorkflowRuns,
             result.orphanedReaped,
+            result.orphanedMethodRuns,
+            result.orphanedMethodReaped,
+            result.orphanedMethodError,
           );
         }
       } finally {

@@ -987,6 +987,54 @@ Deno.test(
 );
 
 Deno.test(
+  "findByIds: returns the outputs asked for and skips unreadable records",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const first = await makeOutput(repo, new Date());
+      const second = await makeOutput(repo, new Date());
+      await makeOutput(repo, new Date());
+      const { invalidId } = await seedUnreadableYaml(
+        dir,
+        registeredType,
+        "run",
+      );
+
+      const found = await repo.findByIds(
+        registeredType,
+        "run",
+        new Set([first.id, second.id, invalidId, crypto.randomUUID()]),
+      );
+      assertEquals(
+        [...found.keys()].sort(),
+        [first.id, second.id].sort(),
+      );
+      assertEquals(found.get(first.id)?.id, first.id);
+    });
+  },
+);
+
+Deno.test(
+  "findByIds: a method with no outputs, or no IDs asked for, finds nothing",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const output = await makeOutput(repo, new Date());
+
+      assertEquals(
+        (await repo.findByIds(registeredType, "missing", new Set([output.id])))
+          .size,
+        0,
+      );
+      assertEquals(
+        (await repo.findByIds(registeredType, "run", new Set())).size,
+        0,
+      );
+    });
+  },
+);
+
+Deno.test(
   "findAll: a malformed record quoting I/O error text is skipped, not rethrown",
   async () => {
     await withTempDir(async (dir) => {

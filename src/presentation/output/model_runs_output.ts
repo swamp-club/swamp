@@ -137,10 +137,15 @@ export function writeDoctorRunsLog(
   fix: boolean,
   orphanedWorkflowRuns?: number,
   orphanedReaped?: number,
+  orphanedMethodRuns?: number,
+  orphanedMethodReaped?: number,
+  orphanedMethodError?: string,
 ): void {
   if (
     active.length === 0 && stale.length === 0 &&
-    (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0)
+    (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0) &&
+    (!orphanedMethodRuns || orphanedMethodRuns === 0) &&
+    orphanedMethodError === undefined
   ) {
     writeOutput("No active or stale runs.");
     return;
@@ -216,6 +221,35 @@ export function writeDoctorRunsLog(
     }
   }
 
+  if (orphanedMethodRuns && orphanedMethodRuns > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      bold(
+        red(
+          `${orphanedMethodRuns} orphaned method run(s) whose owner is gone:`,
+        ),
+      ),
+    );
+    if (fix && orphanedMethodReaped) {
+      lines.push(
+        green(`Cancelled ${orphanedMethodReaped} orphaned method run(s).`),
+      );
+    } else if (!fix) {
+      lines.push(
+        dim("Run with --fix to cancel orphaned method runs."),
+      );
+    }
+  }
+
+  if (orphanedMethodError !== undefined) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      red(
+        `Could not check method runs for a gone owner: ${orphanedMethodError}`,
+      ),
+    );
+  }
+
   writeOutput(lines.join("\n"));
 }
 
@@ -226,6 +260,9 @@ export function writeDoctorRunsJson(
   reaped: number,
   orphanedWorkflowRuns?: number,
   orphanedReaped?: number,
+  orphanedMethodRuns?: number,
+  orphanedMethodReaped?: number,
+  orphanedMethodError?: string,
 ): void {
   // A run is stale because doctor listed it as stale: an expired heartbeat,
   // or an owner process that is gone while its heartbeat is still fresh.
@@ -250,6 +287,13 @@ export function writeDoctorRunsJson(
     ...(orphanedWorkflowRuns !== undefined
       ? { orphanedWorkflowRuns, orphanedReaped: orphanedReaped ?? 0 }
       : {}),
+    ...(orphanedMethodRuns !== undefined
+      ? {
+        orphanedMethodRuns,
+        orphanedMethodReaped: orphanedMethodReaped ?? 0,
+      }
+      : {}),
+    ...(orphanedMethodError !== undefined ? { orphanedMethodError } : {}),
     activeRuns: activeRuns.map(mapRun(false)),
     staleRuns: staleRuns.map(mapRun(true)),
   }));

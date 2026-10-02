@@ -263,15 +263,16 @@ export class RunTrackerStore implements RunTrackerRepository {
     const cutoff = new Date(
       Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
-    // An interrupted workflow row with no reason was reaped on liveness
-    // alone; its run record may still say running, and the row is what lets
-    // recover and doctor settle it. Kept until markSettled() gives a reason.
+    // An interrupted row with no reason was reaped on liveness alone; its
+    // workflow or method run record may still say running, and the row is
+    // what lets recover and doctor settle it. Kept until markSettled() gives
+    // a reason.
     const result = this.db.prepare(
       `DELETE FROM active_runs
        WHERE status NOT IN ('running', 'suspended')
          AND completed_at IS NOT NULL AND completed_at < ?
-         AND NOT (run_kind = 'workflow' AND status = 'interrupted'
-                  AND cancel_reason IS NULL)`,
+         AND NOT (run_kind IN ('workflow', 'model_method')
+                  AND status = 'interrupted' AND cancel_reason IS NULL)`,
     ).run(cutoff);
     if (result.changes > 0) {
       logger
@@ -529,6 +530,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       status: row.status as ActiveRunStatus,
       initiatedBy: row.initiated_by,
       instanceId: row.instance_id ?? undefined,
+      settled: row.status === "interrupted" && row.cancel_reason !== null,
     };
   }
 }

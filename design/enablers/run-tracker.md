@@ -63,9 +63,10 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 
 (`src/infrastructure/persistence/run_tracker_store.ts`.) The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
-days are purged at startup, except a workflow row reaped `interrupted` with no
-reason (`cancel_reason` null): its run record may still say `running`, and the
-row is the evidence that settles it (see Dead owner below). Once the record is
+days are purged at startup, except a workflow or method row reaped
+`interrupted` with no reason (`cancel_reason` null): its workflow or method run
+record may still say `running`, and the row is the evidence that settles it
+(see Dead owner below). Once the record is
 settled, `markSettled` stores a reason and the row is purged as usual. `swamp run gc` removes older records on demand:
 30-day default, `--older-than`, `--dry-run`, `--server`
 (`src/cli/commands/run_gc.ts`, protocol `run.gc`).
@@ -116,6 +117,34 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    (7 days) and finds older ones through their workflow row, by workflow
    name, so no run is stranded by age; with `--fix` it also marks settled an
    `interrupted` row whose record is no longer `running`.
+
+   A workflow step saves its method-run output `running` under its pid before
+   it finishes, so a dead owner strands that record too. It is settled
+   `cancelled` through `settleDeadOwnerMethodRuns`
+   (`src/domain/workflows/orphaned_run_reaper.ts`) by local
+   `run doctor --fix` (reported as `orphanedMethodRuns` and
+   `orphanedMethodReaped`; the `run.doctor` handler does not settle them), by
+   `settleDeadOwnerRun` for the steps of the run it interrupts, and by the
+   serve boot reaper, with the same rules: a local row, `running` or
+   `interrupted`, with a dead pid, and an output still `running` under that
+   pid, found by the row's id, model type and method (one read per type and
+   method, `OutputRepository.findByIds`). The row is marked `interrupted`,
+   the output saved with the owner-exited error, and only then the row
+   settled; a row whose output is missing or finished is settled too, and a
+   settled row is not read again. Settling outputs never blocks the command
+   around it: `settleDeadOwnerRun` and serve boot log a failure and keep the
+   row; `run doctor` reports it (`orphanedMethodError`) and still diagnoses
+   workflow runs; `workflow cancel` and `model cancel` still settle their
+   runs and leave a row whose output failed `interrupted` for
+   `run doctor --fix`. Serve
+   boot judges these rows on host and pid, not instance id, since its own
+   instance id is new each start. `swamp workflow cancel` and
+   `swamp model cancel` cancel the outputs of an owner they killed after its
+   grace with `OWNER_STOPPED_STEP_ERROR`, as the step is recorded. A step
+   output saved before its row was registered has no row and stays
+   `running`, as a workflow record with no row does. Method-run outputs have
+   no `interrupted` status: an older binary reading a shared datastore
+   validates the status against a fixed list.
 5. **Suspend**: approval gates set `suspended`, which skips stale detection.
 6. **Reactivate**: on resume, the row passes to the resuming process. A
    `suspended`, `failed` or `interrupted` row becomes `running` with that

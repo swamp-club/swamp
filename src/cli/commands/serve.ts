@@ -362,6 +362,7 @@ import {
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   DEFAULT_STALE_TTL_MS,
+  localOwnerLiveness,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
@@ -397,7 +398,10 @@ import {
   isProcessDead,
   tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
-import { reapOrphanedWorkflowRuns } from "../../domain/workflows/orphaned_run_reaper.ts";
+import {
+  reapOrphanedWorkflowRuns,
+  settleDeadOwnerMethodRuns,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
@@ -3836,6 +3840,30 @@ export const serveCommand = new Command()
       logger.warn(
         "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
         { reaped: reapResult.reaped },
+      );
+    }
+
+    // Method runs a dead owner left running on this host, such as the steps
+    // of a run the previous serve process was driving when it died. A row is
+    // judged on host and pid, not instance id: this serve's instance id is
+    // new, so the rows of the process it replaces carry another one.
+    // Best-effort: a row left unsettled is kept for `run doctor --fix`.
+    try {
+      const settledMethodRuns = await settleDeadOwnerMethodRuns(
+        repoContext.outputRepo,
+        runTracker,
+        localOwnerLiveness(),
+      );
+      if (settledMethodRuns.length > 0) {
+        logger.warn(
+          "Boot: cancelled {count} method run(s) whose owning process is gone",
+          { count: settledMethodRuns.length },
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        "Boot: could not settle method runs whose owning process is gone: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
       );
     }
 

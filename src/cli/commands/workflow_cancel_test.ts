@@ -44,6 +44,17 @@ import {
   serverCancelRejection,
 } from "./workflow_cancel.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
+import { DatabaseSync } from "node:sqlite";
+import { hostname } from "node:os";
+import { join } from "@std/path";
+import { ActiveRun } from "../../domain/models/active_run.ts";
+import { ModelOutput } from "../../domain/models/model_output.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reaper.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 
 // Import models barrel to trigger self-registration
@@ -58,6 +69,17 @@ const WORKFLOW = Workflow.create({ id: WORKFLOW_ID, name: "test-workflow" });
 
 /** Runs here have no evaluated snapshot. */
 const noSnapshot = () => Promise.resolve(null);
+
+/** Cancel deps for runs with no tracker rows or method-run records. */
+const untracked = {
+  runTracker: {
+    findAllRunning: () => [],
+  } as unknown as RunTrackerRepository,
+  outputRepo: {
+    findByIds: () => Promise.resolve(new Map()),
+    save: () => Promise.reject(new Error("unexpected output save")),
+  } as MethodRunOutputs,
+};
 
 function makeRun(
   overrides: {
@@ -250,6 +272,7 @@ Deno.test("cancelLocalRun: keeps the record the owner cancelled and records the 
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: async (pid) => {
           killed.push(pid);
           await runRepo.save(
@@ -291,6 +314,7 @@ Deno.test("cancelLocalRun: leaves a record the owner finished as failed or succe
         {
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
+          ...untracked,
           killProcess: async () => {
             await runRepo.save(workflowId, ownerFinal);
             return true;
@@ -321,6 +345,7 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -385,6 +410,7 @@ Deno.test("cancelLocalRun: settles a dead owner's run against the workflow's ste
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -421,6 +447,7 @@ Deno.test("cancelLocalRun: gives the owner the cleanup grace before it is killed
     await cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
       runRepo,
       findEvaluatedWorkflow: noSnapshot,
+      ...untracked,
       killProcess: (_pid, { maxWaitMs }) => {
         waits.push(maxWaitMs);
         return Promise.resolve(true);
@@ -449,6 +476,7 @@ Deno.test("cancelLocalRun: cancels without a kill when no other process owns the
         {
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
+          ...untracked,
           killProcess: () => {
             killCalls++;
             return Promise.resolve(true);
@@ -478,6 +506,7 @@ Deno.test("cancelLocalRun: does not recreate a run record deleted during the kil
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: () => Promise.resolve(true),
       },
     );
@@ -507,6 +536,7 @@ Deno.test("cancelAllLocalRuns: stops a process that owns several runs once", asy
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: (pid) => {
           killed.push(pid);
           return Promise.resolve(true);
@@ -545,6 +575,7 @@ Deno.test("cancelAllLocalRuns: stops different owners together", async () => {
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: async (pid) => {
           started.push(pid);
           if (started.length === 2) bothStarted();
@@ -583,6 +614,7 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        ...untracked,
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -712,4 +744,246 @@ Deno.test("serverCancelRejection: uses the status text for an empty body", () =>
     serverCancelRejection(502, "Bad Gateway", "").message,
     "Server returned 502: Bad Gateway",
   );
+});
+
+// --- what a stopped owner left open ---
+
+const SHELL = ModelType.create("command/shell");
+
+function ownerRow(
+  id: string,
+  pid: number,
+  runKind: "workflow" | "model_method",
+): ActiveRun {
+  const now = new Date().toISOString();
+  return ActiveRun.fromData({
+    id,
+    runKind,
+    modelType: runKind === "model_method" ? SHELL.normalized : null,
+    methodName: runKind === "model_method" ? "execute" : null,
+    workflowName: runKind === "workflow" ? "test-workflow" : null,
+    pid,
+    hostname: hostname(),
+    startedAt: now,
+    heartbeatAt: now,
+    status: "running",
+  });
+}
+
+/** A step's method-run record, saved `running` by process `pid`. */
+async function saveStepOutput(
+  outputRepo: YamlOutputRepository,
+  pid: number,
+): Promise<ModelOutput> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "execute",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "workflow",
+    },
+  });
+  output.markRunning(pid);
+  await outputRepo.save(SHELL, "execute", output);
+  return output;
+}
+
+function cancelReasonOf(dbPath: string, id: string): string | null {
+  const db = new DatabaseSync(dbPath);
+  try {
+    return (db.prepare("SELECT cancel_reason FROM active_runs WHERE id = ?")
+      .get(id) as { cancel_reason: string | null }).cancel_reason;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * A run whose owner OWNER_PID is killed without saving anything, with a
+ * step method run in flight and a method run of another process beside it.
+ */
+async function withKilledOwner(
+  fn: (ctx: {
+    runRepo: YamlWorkflowRunRepository;
+    outputRepo: YamlOutputRepository;
+    tracker: RunTrackerStore;
+    dbPath: string;
+    run: WorkflowRun;
+    step: ModelOutput;
+    stranger: ModelOutput;
+  }) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const dbPath = join(dir, "run_tracker.db");
+    const tracker = new RunTrackerStore(dbPath);
+    try {
+      const run = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
+      await runRepo.save(createWorkflowId(WORKFLOW_ID), run);
+      const step = await saveStepOutput(outputRepo, OWNER_PID);
+      const stranger = await saveStepOutput(outputRepo, OWNER_PID + 1);
+      tracker.register(ownerRow(run.id, OWNER_PID, "workflow"));
+      tracker.register(ownerRow(step.id, OWNER_PID, "model_method"));
+      tracker.register(ownerRow(stranger.id, OWNER_PID + 1, "model_method"));
+      await fn({ runRepo, outputRepo, tracker, dbPath, run, step, stranger });
+    } finally {
+      tracker.close();
+    }
+  });
+}
+
+/** OWNER_PID and its neighbour are gone; anything else is alive. */
+const ownerGone = {
+  hostname: hostname(),
+  isDead: (pid: number) => pid === OWNER_PID || pid === OWNER_PID + 1,
+};
+
+Deno.test("cancelLocalRun: cancels the method runs and closes the rows an owner killed after its grace left running", async () => {
+  await withKilledOwner(
+    async ({ runRepo, outputRepo, tracker, dbPath, run, step, stranger }) => {
+      const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runTracker: tracker,
+        outputRepo,
+        liveness: ownerGone,
+        killProcess: () => Promise.resolve(true),
+      });
+
+      assertEquals(result?.status, "cancelled");
+      const settled = await outputRepo.findById(SHELL, "execute", step.id);
+      assertEquals(settled?.status, "cancelled");
+      assertEquals(settled?.error?.message, OWNER_STOPPED_STEP_ERROR);
+      assertEquals(settled?.completedAt !== undefined, true);
+      for (const id of [run.id, step.id]) {
+        assertEquals(tracker.findById(id)?.status, "cancelled");
+        assertEquals(cancelReasonOf(dbPath, id), "No longer needed");
+      }
+      // Another process's method run is not this cancel's to close.
+      assertEquals(
+        (await outputRepo.findById(SHELL, "execute", stranger.id))?.status,
+        "running",
+      );
+      assertEquals(tracker.findById(stranger.id)?.status, "running");
+    },
+  );
+});
+
+Deno.test("cancelLocalRun: leaves the rows and method runs of an owner that is still alive", async () => {
+  await withKilledOwner(
+    async ({ runRepo, outputRepo, tracker, run, step }) => {
+      await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runTracker: tracker,
+        outputRepo,
+        liveness: { hostname: hostname(), isDead: () => false },
+        killProcess: () => Promise.resolve(true),
+      });
+
+      assertEquals(
+        (await outputRepo.findById(SHELL, "execute", step.id))?.status,
+        "running",
+      );
+      assertEquals(tracker.findById(step.id)?.status, "running");
+      assertEquals(tracker.findById(run.id)?.status, "running");
+    },
+  );
+});
+
+Deno.test("cancelAllLocalRuns: closes what each killed owner left running", async () => {
+  await withKilledOwner(
+    async ({ runRepo, outputRepo, tracker, dbPath, run, step }) => {
+      const result = await cancelAllLocalRuns(
+        [{ run, workflow: WORKFLOW }],
+        "Cancelled by user",
+        {
+          runRepo,
+          findEvaluatedWorkflow: noSnapshot,
+          runTracker: tracker,
+          outputRepo,
+          liveness: ownerGone,
+          killProcess: () => Promise.resolve(true),
+        },
+      );
+
+      assertEquals(result.cancelled.map((c) => c.runId), [run.id]);
+      assertEquals(
+        (await outputRepo.findById(SHELL, "execute", step.id))?.status,
+        "cancelled",
+      );
+      assertEquals(tracker.findById(step.id)?.status, "cancelled");
+      assertEquals(cancelReasonOf(dbPath, step.id), "Cancelled by user");
+    },
+  );
+});
+
+Deno.test("cancelLocalRun: keeps the row of another run the killed owner drove, for run doctor", async () => {
+  await withKilledOwner(
+    async ({ runRepo, outputRepo, tracker, run, step }) => {
+      // A nested child run shares its parent's process; this cancel does not
+      // settle its record, so its row must stay as evidence.
+      const childId = crypto.randomUUID();
+      tracker.register(ownerRow(childId, OWNER_PID, "workflow"));
+
+      await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runTracker: tracker,
+        outputRepo,
+        liveness: ownerGone,
+        killProcess: () => Promise.resolve(true),
+      });
+
+      assertEquals(tracker.findById(run.id)?.status, "cancelled");
+      assertEquals(tracker.findById(step.id)?.status, "cancelled");
+      assertEquals(tracker.findById(childId)?.status, "running");
+    },
+  );
+});
+
+/** An output repository whose reads fail, as an unreadable directory does. */
+const unreadableOutputs = {
+  findByIds: () => Promise.reject(new Error("permission denied")),
+  save: () => Promise.reject(new Error("unexpected output save")),
+} as MethodRunOutputs;
+
+Deno.test("cancelLocalRun: an unreadable method-run record still lets the cancel settle the run", async () => {
+  await withKilledOwner(async ({ runRepo, tracker, run, step }) => {
+    const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runTracker: tracker,
+      outputRepo: unreadableOutputs,
+      liveness: ownerGone,
+      killProcess: () => Promise.resolve(true),
+    });
+
+    assertEquals(result?.status, "cancelled");
+    assertEquals(tracker.findById(run.id)?.status, "cancelled");
+    // Left for run doctor --fix, which settles an interrupted dead-pid row.
+    assertEquals(tracker.findById(step.id)?.status, "interrupted");
+  });
+});
+
+Deno.test("cancelAllLocalRuns: an unreadable method-run record does not stop the batch", async () => {
+  await withKilledOwner(async ({ runRepo, tracker, run, step }) => {
+    const result = await cancelAllLocalRuns(
+      [{ run, workflow: WORKFLOW }],
+      "Cancelled by user",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runTracker: tracker,
+        outputRepo: unreadableOutputs,
+        liveness: ownerGone,
+        killProcess: () => Promise.resolve(true),
+      },
+    );
+
+    assertEquals(result.cancelled.map((c) => c.runId), [run.id]);
+    assertEquals(tracker.findById(step.id)?.status, "interrupted");
+  });
 });

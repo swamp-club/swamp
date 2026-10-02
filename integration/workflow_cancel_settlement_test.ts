@@ -43,10 +43,23 @@ import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persisten
 import { cancelLocalRun } from "../src/cli/commands/workflow_cancel.ts";
 import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
+import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
+import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
+
+/** Cancel deps for runs with no tracker rows or method-run records. */
+const untracked = {
+  runTracker: {
+    findAllRunning: () => [],
+  } as unknown as RunTrackerRepository,
+  outputRepo: {
+    findByIds: () => Promise.resolve(new Map()),
+    save: () => Promise.reject(new Error("unexpected output save")),
+  } as MethodRunOutputs,
+};
 
 type RepositoryContext = ReturnType<typeof createRepositoryContext>;
 
@@ -198,6 +211,7 @@ Deno.test("workflow cancel settles a suspended run's jobs and steps in its recor
     await cancelLocalRun(suspended, workflow, "Cancelled by user", {
       runRepo: fixture.repo.workflowRunRepo,
       findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+      ...untracked,
       killProcess: (pid) => {
         killed.push(pid);
         return Promise.resolve(true);
@@ -289,6 +303,7 @@ Deno.test("workflow cancel settles an evaluated job name through the run's snaps
     await cancelLocalRun(suspended, workflow, "Cancelled by user", {
       runRepo: fixture.repo.workflowRunRepo,
       findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+      ...untracked,
       killProcess: () => Promise.resolve(true),
     });
 
