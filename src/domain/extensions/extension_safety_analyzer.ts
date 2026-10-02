@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { basename, extname } from "@std/path";
+import {
+  type DynamicCodeFinding,
+  findDynamicCodeExecution,
+} from "./dynamic_code_detector.ts";
 
 /** A safety issue found during analysis. */
 export interface SafetyIssue {
@@ -126,6 +130,25 @@ const MAX_INDIVIDUAL_FILE_SIZE = 1_000_000; // 1 MB
 const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
 const LONG_LINE_THRESHOLD = 500;
 const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
+const MAX_REPORTED_LOCATIONS = 5;
+
+const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
+  "eval-reference": "eval",
+  "eval-computed-access": "computed eval/Function access",
+  "function-constructor": "Function constructor",
+  "constructor-call": ".constructor call",
+  "eval-member": "member named eval or Function",
+  "unparsed-eval-text":
+    "eval( or new Function( text in a file that does not parse",
+};
+
+function describeDynamicCode(findings: DynamicCodeFinding[]): string {
+  const shown = findings.slice(0, MAX_REPORTED_LOCATIONS).map((f) =>
+    `line ${f.line}:${f.column} ${DYNAMIC_CODE_LABELS[f.kind]}`
+  );
+  const more = findings.length - shown.length;
+  return `${shown.join(", ")}${more > 0 ? `; and ${more} more` : ""}`;
+}
 
 /**
  * Analyzes files to be bundled for safety issues.
@@ -224,11 +247,14 @@ export async function analyzeExtensionSafety(
       }
 
       // Hard errors: dangerous patterns
-      if (content.includes("eval(") || content.includes("new Function(")) {
+      const dynamicCode = findDynamicCodeExecution(content);
+      if (dynamicCode.length > 0) {
         errors.push({
           file,
           message:
-            "File contains eval() or new Function() which are not allowed.",
+            `File contains eval() or new Function() which are not allowed (${
+              describeDynamicCode(dynamicCode)
+            }).`,
         });
       }
 
