@@ -4498,7 +4498,7 @@ export class WorkflowExecutionService {
         ...stepExprContext,
         self: {
           ...baseSelf,
-          _index: forEachIndex,
+          ...(forEachIndex !== undefined ? { _index: forEachIndex } : {}),
           [forEachVar.name]: forEachVar.value,
         },
       };

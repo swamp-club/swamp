@@ -119,9 +119,10 @@ expansion — they resolve at their own runtime/execution stage.
 | `self.{item}.value` | Value (object iteration)       |
 | `self._index`       | Zero-based iteration index     |
 
-`self._index` counts array items in order, and object entries in key order. It
-gives each iteration a slug-safe identifier when the item itself is not one,
-such as a file path, so each iteration can target its own model:
+`self._index` exists only inside a forEach step. It counts iterations in the
+order they run: array order, or the order object entries are iterated. It gives
+each iteration a slug-safe identifier when the item itself is not one, such as a
+file path, so each iteration can target its own model:
 
 ```yaml
 steps:
@@ -138,7 +139,9 @@ steps:
 ```
 
 In CEL string concatenation, convert it with `string(self._index)`. An item
-named `_index` shadows the index.
+named `_index` shadows the index. The index follows position, not the item, so
+reordering `forEach.in` gives an item a different index; scope index-based model
+names to the run (as `run.id` does above) rather than reusing them across runs.
 
 ### forEach.in with Data Helpers
 
