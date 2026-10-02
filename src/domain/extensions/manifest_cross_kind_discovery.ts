@@ -25,7 +25,11 @@ import type { ExtensionKind } from "../repo/swamp_sources.ts";
 
 const logger = getLogger(["swamp", "extensions", "manifest-discovery"]);
 
-const MANIFEST_FILENAMES = new Set(["manifest.yaml", "manifest.yml"]);
+/** Filenames an extension manifest may use. */
+export const MANIFEST_FILENAMES: ReadonlySet<string> = new Set([
+  "manifest.yaml",
+  "manifest.yml",
+]);
 const MANIFEST_MAX_DEPTH = 3;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 

@@ -68,6 +68,28 @@ async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
   return collectDirsForKind(resolved, "workflows");
 }
 
+/**
+ * Splits the directories doctor checks into the repo-owned workflows dir,
+ * where every file must be a workflow, and the extension-provided dirs, which
+ * are exactly the dirs the extension workflow loader reads and so get its
+ * rule for skipping manifests and other YAML.
+ */
+export function buildDoctorWorkflowDirs(dirs: {
+  yamlWorkflowsDir: string;
+  extensionWorkflowsDir: string;
+  sourceWorkflowDirs: string[];
+  pulledWorkflowDirs: string[];
+}): { workflowDirs: string[]; extensionWorkflowDirs: string[] } {
+  return {
+    workflowDirs: [dirs.yamlWorkflowsDir],
+    extensionWorkflowDirs: [
+      dirs.extensionWorkflowsDir,
+      ...dirs.sourceWorkflowDirs,
+      ...dirs.pulledWorkflowDirs,
+    ],
+  };
+}
+
 export const doctorWorkflowsCommand = withRemoteOptions(
   new Command()
     .description(
@@ -136,12 +158,12 @@ export const doctorWorkflowsCommand = withRemoteOptions(
     "workflows",
   );
 
-  const workflowDirs = [
+  const { workflowDirs, extensionWorkflowDirs } = buildDoctorWorkflowDirs({
     yamlWorkflowsDir,
-    workflowsDir,
-    ...sourceWorkflowDirs,
-    ...pulledWorkflowDirs,
-  ];
+    extensionWorkflowsDir: workflowsDir,
+    sourceWorkflowDirs,
+    pulledWorkflowDirs,
+  });
 
   const controller = new AbortController();
   const renderer = createWorkflowDoctorRenderer(cliCtx.outputMode);
@@ -149,6 +171,7 @@ export const doctorWorkflowsCommand = withRemoteOptions(
   await consumeStream(
     doctorWorkflows({
       workflowDirs,
+      extensionWorkflowDirs,
       abortSignal: controller.signal,
     }),
     renderer.handlers(),

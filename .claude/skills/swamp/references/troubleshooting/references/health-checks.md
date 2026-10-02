@@ -233,6 +233,14 @@ file:
 2. Parses YAML via `@std/yaml`
 3. Constructs the domain object via `Workflow.fromData()`
 
+In the primary `workflows/` directory every `*.yaml` file must load, so a file
+without `jobs` fails. In extension, source-mounted and pulled directories —
+which also hold manifests and data files an extension ships — doctor applies the
+extension loader's rule: `manifest.yaml` / `manifest.yml` and any YAML without a
+top-level `jobs:` key are not workflows and are skipped. A file there whose
+`jobs:` key is missing or misspelled (`job:`) is therefore neither loaded nor
+reported; only a debug log line names it.
+
 Scope is **load-ability only** — whether the file can be parsed and constructed.
 Schema validity (DAG integrity, model references, expression validation) is the
 job of `swamp workflow validate`.
@@ -281,6 +289,7 @@ Checking workflows...
 | `type "shell" is no longer supported` | Replace `type: shell` with `type: model_method` using `command/shell` |
 | Invalid uuid / missing name           | Add required `id` (UUID) and `name` fields to the workflow YAML       |
 | Invalid cron expression               | Fix the `trigger.schedule` cron expression                            |
+| Extension workflow missing, no error  | Check its top-level `jobs:` key; rerun with `--log-level debug`       |
 
 ### Relationship with `swamp workflow validate`
 
