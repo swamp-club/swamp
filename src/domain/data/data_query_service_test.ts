@@ -4374,3 +4374,34 @@ Deno.test("DataQueryService rename forwards: backfill restores forwards from dis
     catalog.close();
   }
 });
+
+Deno.test("DataQueryService rename forwards: a model() scope reads no other model's markers", async () => {
+  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  const scoped = crypto.randomUUID();
+  const other = crypto.randomUUID();
+  await save("old", scoped);
+  await rename(scoped, "old", "new");
+  await save("old", other);
+  await rename(other, "old", "renamed-elsewhere");
+  // Corrupt the other model's marker: a scoped query must not even read it.
+  const latest = dataRepo.getLatestVersionSync(type, other, "old")!;
+  Deno.writeTextFileSync(
+    dataRepo.getMetadataPath(type, other, "old", latest),
+    "lifecycle: [unclosed",
+  );
+  const reads: string[] = [];
+  const findByNameSync = dataRepo.findByNameSync.bind(dataRepo);
+  dataRepo.findByNameSync = (t, modelId, name, version) => {
+    reads.push(modelId);
+    return findByNameSync(t, modelId, name, version);
+  };
+
+  const results = await service.query('model("m") && name == "old"', {
+    modelResolver: () =>
+      Promise.resolve({ modelType: type.normalized, modelId: scoped }),
+  }) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["new"]);
+  assertEquals(reads.includes(other), false);
+  catalog.close();
+});

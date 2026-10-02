@@ -79,8 +79,8 @@ spec name; match a spec with `specName == "<s>"`. For a binary item, select
 be told from text (see [Binary content](#binary-content)). When a query with a top-level
 `name == "<n>"` matches nothing, swamp builds its spec-name counterpart
 (`buildSpecNameFallback` in `query_predicate.ts`): `name` becomes `specName`,
-the other top-level string and `version` equalities are kept, and anything else
-is dropped. If something was dropped, it first runs the kept equalities with
+the other top-level string and `version` equalities and any `model("<m>")`
+call are kept, and anything else is dropped. If something was dropped, it first runs the kept equalities with
 `name` (limit 1): a match there means a dropped condition excluded the data,
 not the name, so there is no hint. Otherwise it runs the spec-name predicate
 (limit 1) and on a match returns `specNameHint` with `suggestedPredicate` and

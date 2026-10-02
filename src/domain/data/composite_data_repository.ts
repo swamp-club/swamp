@@ -24,6 +24,7 @@ import { coerceModelType } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 import type {
   DeferredWriteReceipt,
+  FindAllGlobalOptions,
   GarbageCollectionResult,
   UnifiedDataRepository,
 } from "./repositories.ts";
@@ -235,12 +236,12 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return merged;
   }
 
-  async findAllGlobal(): Promise<
+  async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
     const [ephResults, persResults] = await Promise.all([
-      this.ephemeral.findAllGlobal(),
-      this.persistent.findAllGlobal(),
+      this.ephemeral.findAllGlobal(options),
+      this.persistent.findAllGlobal(options),
     ]);
 
     const seen = new Set<string>();
@@ -400,11 +401,11 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return merged;
   }
 
-  findAllGlobalSync(): Array<
+  findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
-    const ephResults = this.ephemeral.findAllGlobalSync();
-    const persResults = this.persistent.findAllGlobalSync();
+    const ephResults = this.ephemeral.findAllGlobalSync(options);
+    const persResults = this.persistent.findAllGlobalSync(options);
 
     const seen = new Set<string>();
     const merged: Array<

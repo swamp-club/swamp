@@ -467,7 +467,8 @@ export interface SpecNameFallback {
  * Builds the spec-name counterpart of a predicate that matches one data
  * instance name exactly: the top-level `name == "x"` becomes
  * `specName == "x"`, and every other top-level equality of a string field
- * to a string literal, or of `version` to an int literal, is kept. Other
+ * to a string literal, of `version` to an int literal, or a
+ * `model("<literal>")` call, is kept. Other
  * conjuncts are dropped, so the result can match more than the original
  * would have; callers verify it matches before suggesting it, and check
  * `namePredicate` to tell whether a dropped conjunct, not the name, is what
@@ -499,6 +500,11 @@ export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
       clause = `${eq.field} == ${celString(eq.value)}`;
     } else if (eq?.field === "version" && typeof eq.value === "bigint") {
       clause = `version == ${eq.value}`;
+    } else {
+      // A model("<literal>") scope is kept like a modelName equality, so the
+      // hint for the documented model() form stays on that model.
+      const model = extractModelCall(conjunct);
+      if (model !== null) clause = `${MODEL_FUNCTION}(${celString(model)})`;
     }
     if (clause === null) {
       droppedConjuncts = true;

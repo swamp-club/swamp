@@ -403,3 +403,14 @@ Deno.test("validateFieldReferences: unknown-field error names the query function
   assertStringIncludes(error.message, 'latestRun("<workflow>")');
   assertStringIncludes(error.message, 'model("<model name or definition id>")');
 });
+
+Deno.test("buildSpecNameFallback: keeps a model() scope, in both predicates", () => {
+  const fallback = buildSpecNameFallback(
+    ast('model("scanner") && name == "classification"'),
+  );
+  assertEquals(fallback, {
+    specNamePredicate: 'model("scanner") && specName == "classification"',
+    namePredicate: 'model("scanner") && name == "classification"',
+    droppedConjuncts: false,
+  });
+});

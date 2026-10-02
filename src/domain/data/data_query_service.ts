@@ -871,11 +871,19 @@ export class DataQueryService {
    * (here or on another machine) ended is never followed. A chain that loops
    * or runs past {@link MAX_RENAME_HOPS} resolves to nothing.
    */
-  private resolveRenameForwards(dataName: string): Map<string, string> {
+  private resolveRenameForwards(
+    dataName: string,
+    onlyModel?: ResolvedModelReference,
+  ): Map<string, string> {
     const targets = new Map<string, string>();
     const ownNamespace = this.dataRepo.namespace;
     for (const forward of this.catalogStore.findRenamesFrom(dataName)) {
       const { namespace, type_normalized: type, model_id: modelId } = forward;
+      // A top-level model() already limits the rows to one model.
+      if (
+        onlyModel &&
+        (type !== onlyModel.modelType || modelId !== onlyModel.modelId)
+      ) continue;
       // Forwards are recorded only for this repository's namespace, whose
       // markers are on local disk.
       if (namespace !== ownNamespace) continue;
@@ -1175,7 +1183,7 @@ export class DataQueryService {
       : extractStringEquality(userAst, "name");
     const renameTargets = nameLiteral === null
       ? new Map<string, string>()
-      : this.resolveRenameForwards(nameLiteral);
+      : this.resolveRenameForwards(nameLiteral, modelTarget);
 
     const latestRunWorkflow = extractWorkflowRunIdLatestRun(userAst);
     if (latestRunWorkflow !== null) {
