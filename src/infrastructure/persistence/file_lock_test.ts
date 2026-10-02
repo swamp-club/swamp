@@ -25,7 +25,8 @@ import {
 } from "@std/assert";
 import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
-import { FileLock } from "./file_lock.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { FileLock, nextBackoffSleep } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
@@ -453,6 +454,84 @@ Deno.test("FileLock - acquire succeeds after holder releases (contention path)",
     assertEquals(info!.pid, Deno.pid);
 
     await waiter.release();
+  });
+});
+
+Deno.test("FileLock - maxBackoffMs defaults to 8s and honours an override", () => {
+  assertEquals(new FileLock("/tmp").maxBackoffMs, 8_000);
+  assertEquals(new FileLock("/tmp", { maxBackoffMs: 250 }).maxBackoffMs, 250);
+});
+
+Deno.test("nextBackoffSleep: doubles from the initial interval and holds at the cap", () => {
+  // jitterSample 0.5 means no jitter, so the sequence is exact.
+  const sleeps: number[] = [];
+  let backoff = 25;
+  for (let i = 0; i < 7; i++) {
+    const { sleepMs, nextBackoffMs } = nextBackoffSleep(
+      backoff,
+      0.5,
+      60_000,
+      250,
+    );
+    sleeps.push(sleepMs);
+    backoff = nextBackoffMs;
+  }
+  assertEquals(sleeps, [25, 50, 100, 200, 250, 250, 250]);
+});
+
+Deno.test("nextBackoffSleep: clamps the jittered sleep to the cap and the remaining budget", () => {
+  // Maximum jitter (+25%) on a backoff already at the cap stays at the cap.
+  assertEquals(nextBackoffSleep(250, 0.999, 60_000, 250).sleepMs, 250);
+  // A sleep never overshoots what is left of maxWaitMs.
+  assertEquals(nextBackoffSleep(200, 0.5, 30, 250).sleepMs, 30);
+});
+
+Deno.test("FileLock - waiter with a small maxBackoffMs acquires after the holder releases", async () => {
+  await withTempDir(async (dir) => {
+    capturedLogRecords.length = 0;
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) => {
+          capturedLogRecords.push(record);
+        },
+      },
+      loggers: [
+        {
+          category: ["datastore", "lock"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+      ],
+      reset: true,
+    });
+    const logged = (text: string) =>
+      capturedLogRecords.some((r) =>
+        r.message.map((p) => String(p)).join("").includes(text)
+      );
+
+    try {
+      const holder = new FileLock(dir, { ttlMs: 60_000 });
+      await holder.acquire();
+
+      const waiter = new FileLock(dir, {
+        ttlMs: 60_000,
+        retryIntervalMs: 10,
+        maxBackoffMs: 20,
+        maxWaitMs: 10_000,
+      });
+      const acquired = waiter.acquire();
+      // Release only once the waiter is in its backoff loop, so the
+      // contention path is exercised rather than a first-try create.
+      await waitFor(() => logged("Waiting for lock"), "waiter to back off");
+      await holder.release();
+      await acquired;
+
+      assert(logged("Acquired lock"), "waiter should report its retries");
+      assertEquals((await waiter.inspect())!.pid, Deno.pid);
+      await waiter.release();
+    } finally {
+      await initializeLogging({ _reset: true });
+    }
   });
 });
 

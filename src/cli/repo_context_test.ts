@@ -39,6 +39,7 @@ import {
   flushTwoPhasePush,
   type LockProgressWriter,
   ManagedConfigUnresolvedError,
+  MODEL_LOCK_MAX_BACKOFF_MS,
   MODEL_LOCK_RETRY_INTERVAL_MS,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
@@ -693,6 +694,23 @@ Deno.test("createModelLock - retries promptly on brief contention", async () => 
     assertEquals(
       (lock as FileLock).retryIntervalMs,
       MODEL_LOCK_RETRY_INTERVAL_MS,
+    );
+  });
+});
+
+Deno.test("createModelLock - caps backoff so queued waiters stay near the release", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
+
+    // A workflow step holds the per-model lock for its whole method run, so
+    // forEach iterations on one instance queue behind it. Without a small cap
+    // the tail waiter sleeps up to 8s after each release (swamp-club#2870).
+    assertEquals(
+      (lock as FileLock).maxBackoffMs,
+      MODEL_LOCK_MAX_BACKOFF_MS,
     );
   });
 });
