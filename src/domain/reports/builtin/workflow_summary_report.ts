@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { stepDataQueryCommand } from "../../data/data_query_command.ts";
+import { stepRetrievalCommand } from "../../data/data_query_command.ts";
 import type {
   ReportContext,
   WorkflowReportContext,
@@ -87,7 +87,11 @@ export const workflowSummaryReport: ReportDefinition = {
           );
         } else {
           const [firstCmd, ...otherCmds] = step.dataHandles.map((h) =>
-            stepDataQueryCommand(workflowRunId, step, h)
+            stepRetrievalCommand(workflowRunId, step, {
+              name: h.name,
+              version: h.version,
+              contentType: h.metadata.contentType,
+            })
           );
           lines.push(
             `| ${step.jobName} | **${step.stepName}** | ${label} | \`${firstCmd}\` |`,
@@ -151,7 +155,11 @@ export const workflowSummaryReport: ReportDefinition = {
         methodName: s.methodName || undefined,
         errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
-          stepDataQueryCommand(workflowRunId, s, h)
+          stepRetrievalCommand(workflowRunId, s, {
+            name: h.name,
+            version: h.version,
+            contentType: h.metadata.contentType,
+          })
         ),
       })),
       steps: stepExecutions.map((s) => ({
@@ -164,7 +172,11 @@ export const workflowSummaryReport: ReportDefinition = {
         status: s.status,
         errorMessage: s.errorMessage,
         retrievalCommands: s.dataHandles.map((h) =>
-          stepDataQueryCommand(workflowRunId, s, h)
+          stepRetrievalCommand(workflowRunId, s, {
+            name: h.name,
+            version: h.version,
+            contentType: h.metadata.contentType,
+          })
         ),
       })),
     };

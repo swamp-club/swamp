@@ -103,7 +103,7 @@ Deno.test("verificationSummaryReport: failed step shows cross and retrieval comm
             size: 100,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),
@@ -206,7 +206,7 @@ Deno.test("verificationSummaryReport: JSON includes failures array when steps fa
             size: 50,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),

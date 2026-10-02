@@ -21,7 +21,8 @@ import { assertEquals } from "@std/assert";
 import {
   dataQueryCommand,
   dataQueryPredicate,
-  stepDataQueryCommand,
+  modelRetrievalCommand,
+  stepRetrievalCommand,
 } from "./data_query_command.ts";
 
 Deno.test("dataQueryPredicate: a model-scoped read names the model, data name and version", () => {
@@ -90,13 +91,47 @@ Deno.test("dataQueryCommand: shell-quotes a single quote inside a name", () => {
   );
 });
 
-Deno.test("stepDataQueryCommand: reads a step's item by run, job, step, name and version", () => {
+Deno.test("stepRetrievalCommand: reads a step's item by run, job, step, name and version", () => {
   assertEquals(
-    stepDataQueryCommand("run-1", { jobName: "tests", stepName: "lint" }, {
-      name: "log",
-      version: 3,
-    }),
+    stepRetrievalCommand(
+      "run-1",
+      { jobName: "tests", stepName: "lint", modelName: "lint-model" },
+      { name: "log", version: 3, contentType: "text/plain" },
+    ),
     `swamp data query 'workflowRunId == "run-1" && jobName == "tests" && ` +
       `stepName == "lint" && name == "log" && version == 3' --select content`,
+  );
+});
+
+Deno.test("stepRetrievalCommand: a binary item keeps data get, which returns its bytes", () => {
+  assertEquals(
+    stepRetrievalCommand(
+      "run-1",
+      { jobName: "build", stepName: "package", modelName: "packager" },
+      { name: "bundle.tar", version: 2, contentType: "application/x-tar" },
+    ),
+    "swamp data get packager bundle.tar --version 2",
+  );
+});
+
+Deno.test("modelRetrievalCommand: reads one version of a model's text data", () => {
+  assertEquals(
+    modelRetrievalCommand("my-server", {
+      name: "info",
+      version: 4,
+      contentType: "application/json",
+    }),
+    `swamp data query 'modelName == "my-server" && name == "info" && version == 4' --select content`,
+  );
+});
+
+Deno.test("dataQueryPredicate: names the model type when given", () => {
+  assertEquals(
+    dataQueryPredicate({
+      modelType: "workflow",
+      modelName: "wf",
+      dataName: "r",
+    }),
+    'modelType == "workflow" && modelName == "wf" && name == "r"',
   );
 });

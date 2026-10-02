@@ -70,7 +70,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
         size: 256,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
     ],
   });
@@ -200,7 +200,7 @@ Deno.test("methodSummaryReport: output specs render schema section in markdown a
         size: 512,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
     ],
     outputSpecs: [
@@ -260,7 +260,7 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
         size: 100,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
       {
         name: "item-2",
@@ -271,7 +271,7 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
         size: 200,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
       {
         name: "log.txt",
@@ -282,7 +282,7 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
         size: 50,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
     ],
   });
@@ -376,7 +376,7 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
         size: 1024,
         tags: {},
         // deno-lint-ignore no-explicit-any
-        metadata: {} as any,
+        metadata: { contentType: "application/json" } as any,
       },
     ],
   });
@@ -428,4 +428,28 @@ Deno.test("methodSummaryReport: argument values never appear in markdown or JSON
   // JSON: key name arrays, not key-value objects
   assertEquals(result.json.globalArgs, ["region", "apiKey"]);
   assertEquals(result.json.methodArgs, ["target", "password"]);
+});
+
+Deno.test("methodSummaryReport: a binary data handle keeps the data get retrieval command", async () => {
+  const ctx = makeMethodContext({
+    dataHandles: [
+      {
+        name: "logo.png",
+        specName: "logo",
+        kind: "file",
+        dataId: createDataId("data-png"),
+        version: 2,
+        size: 512,
+        tags: {},
+        // deno-lint-ignore no-explicit-any
+        metadata: { contentType: "image/png" } as any,
+      },
+    ],
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+  assertStringIncludes(
+    result.markdown,
+    "`swamp data get my-server logo.png --version 2`",
+  );
 });

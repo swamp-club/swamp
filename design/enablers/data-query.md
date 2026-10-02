@@ -37,7 +37,8 @@ version.
 item. `data get` still returns the item, but every read carries a deprecation
 warning and a `replacementQuery` naming the equivalent `data query` command
 (`src/domain/data/data_query_command.ts`). Its `--workflow` form returns the
-first matching step when several steps in a run wrote the same data name
+highest-versioned match (the first step on a tie) when several steps in a
+run wrote the same data name
 (swamp-club#2948), so it warns with the other matches; a query that names
 `workflowRunId`, `jobName` and `stepName` selects one item.
 

@@ -46,7 +46,7 @@ function makeDataItem(): DataItem {
     lifetime: "run",
     garbageCollection: "none",
     streaming: false,
-    tags: {},
+    tags: { modelName: "my-model" },
     ownerDefinition: {
       ownerType: "model",
       ownerRef: "def-1",
@@ -576,6 +576,7 @@ Deno.test("dataGet: a model-scoped read is deprecated and names the equivalent q
   assertStringIncludes(data.warnings![0], "swamp data get is deprecated");
   assertStringIncludes(data.warnings![0], data.replacementQuery!);
   assertStringIncludes(data.warnings![0], "drop the version clause");
+  assertStringIncludes(data.warnings![0], "narrow by stepName");
 });
 
 Deno.test("dataGet: a metadata-only read's query lists metadata instead of selecting content", async () => {
@@ -623,11 +624,16 @@ Deno.test("dataGet: warns when other steps in the run wrote the same data name (
 
   assertEquals(data.warnings?.length, 2);
   const ambiguity = data.warnings![1];
-  assertStringIncludes(ambiguity, "2 items in run run-1 are named output");
-  assertStringIncludes(ambiguity, "job setup, step checkout (git)");
+  assertStringIncludes(ambiguity, '2 items in run run-1 are named "output"');
   assertStringIncludes(
     ambiguity,
-    "job reviews, step code-review (review-code)",
+    "data get returned the one from job setup, step checkout (git)",
+  );
+  assertStringIncludes(
+    ambiguity,
+    "job reviews, step code-review (review-code), read with: " +
+      `swamp data query 'workflowRunId == "run-1" && jobName == "reviews" && ` +
+      'stepName == "code-review"',
   );
   assertStringIncludes(data.replacementQuery!, 'stepName == "checkout"');
 });
@@ -688,9 +694,23 @@ Deno.test("dataGet: a binary item names no replacement query, since data query c
   assertStringIncludes(data.warnings![0], "cannot return binary content");
 });
 
+Deno.test("dataGet: an item written without a modelName tag names no replacement query", async () => {
+  const untagged = { ...makeDataItem(), tags: {} };
+  const data = await readCompleted(
+    makeDeps({ findDataByName: () => Promise.resolve(untagged) }),
+    { modelIdOrName: "my-model", dataName: "output" },
+  );
+
+  assertEquals(data.replacementQuery, undefined);
+  assertStringIncludes(
+    data.warnings![0],
+    "before data recorded its model name",
+  );
+});
+
 Deno.test("dataGet: workflow data that records no run is queried by its owner", async () => {
   const report: WorkflowDataItemInfo = {
-    data: makeDataItem(),
+    data: { ...makeDataItem(), tags: { modelName: "wf" } },
     modelType: makeModelType(),
     modelId: "id-report",
     modelName: "wf",
@@ -706,7 +726,8 @@ Deno.test("dataGet: workflow data that records no run is queried by its owner", 
 
   assertEquals(
     data.replacementQuery,
-    `swamp data query 'modelName == "wf" && name == "output" && version == 1' --select content`,
+    `swamp data query 'modelType == "model/type" && modelName == "wf" && ` +
+      `name == "output" && version == 1' --select content`,
   );
 });
 

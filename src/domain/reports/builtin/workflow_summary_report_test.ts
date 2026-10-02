@@ -112,7 +112,7 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
             size: 139,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
           {
             name: "log",
@@ -123,7 +123,7 @@ Deno.test("workflowSummaryReport: failures section with data handles shows retri
             size: 22,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),
@@ -312,7 +312,7 @@ Deno.test("workflowSummaryReport: failure JSON includes retrievalCommands", asyn
             size: 100,
             tags: {},
             // deno-lint-ignore no-explicit-any
-            metadata: {} as any,
+            metadata: { contentType: "application/json" } as any,
           },
         ],
       }),

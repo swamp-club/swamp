@@ -23,6 +23,33 @@ import { consumeStream } from "../../libswamp/mod.ts";
 import type { DataGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createDataGetRenderer } from "./data_get.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+
+// noColor: true selects LogTape's text formatter, so a captured record is
+// one pre-rendered string.
+await initializeLogging({ noColor: true });
+
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  // deno-lint-ignore no-control-regex
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 const testData = {
   id: "data-1",
@@ -231,13 +258,13 @@ Deno.test("JsonDataGetRenderer: carries the deprecation warnings and replacement
   }
 });
 
-Deno.test("LogDataGetRenderer: renders a read that carries warnings", async () => {
-  const renderer = createDataGetRenderer("log");
-  const events: DataGetEvent[] = [
-    {
+Deno.test("LogDataGetRenderer: logs each warning verbatim, braces included", () => {
+  const warning = "swamp data get is deprecated; model {name} wrote it";
+  const output = captureLog(() =>
+    createDataGetRenderer("log").handlers().completed({
       kind: "completed",
-      data: { ...testData, warnings: ["swamp data get is deprecated"] },
-    },
-  ];
-  await consumeStream(toStream(events), renderer.handlers());
+      data: { ...testData, warnings: [warning] },
+    })
+  );
+  assertStringIncludes(output, warning);
 });

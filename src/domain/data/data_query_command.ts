@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { quoteShellWord } from "../shell_word.ts";
+import { isTextContentType } from "./content_type.ts";
 
 /**
  * The coordinates of one stored data item, as a `swamp data query` predicate
@@ -28,6 +29,7 @@ import { quoteShellWord } from "../shell_word.ts";
 export interface DataQueryTarget {
   dataName: string;
   version?: number;
+  modelType?: string;
   modelName?: string;
   workflowRunId?: string;
   jobName?: string;
@@ -55,6 +57,9 @@ export function dataQueryPredicate(target: DataQueryTarget): string {
   if (target.stepName !== undefined) {
     clauses.push(`stepName == ${celString(target.stepName)}`);
   }
+  if (target.modelType !== undefined) {
+    clauses.push(`modelType == ${celString(target.modelType)}`);
+  }
   if (target.modelName !== undefined) {
     clauses.push(`modelName == ${celString(target.modelName)}`);
   }
@@ -80,21 +85,57 @@ export function dataQueryCommand(
   return options.includeContent ? `${command} --select content` : command;
 }
 
+/** One version of a data item a retrieval hint points at. */
+export interface RetrievalData {
+  name: string;
+  version: number;
+  contentType: string;
+}
+
 /**
- * The `swamp data query` command that reads one item a workflow step wrote,
- * named by its run, job and step so it cannot pick up another step's data
- * of the same name.
+ * The command that reads `data` back. `swamp data query` cannot return
+ * binary content yet (swamp-club#2959), so a binary item keeps the
+ * deprecated `swamp data get`, the one command that returns its bytes.
  */
-export function stepDataQueryCommand(
-  workflowRunId: string,
-  step: { jobName: string; stepName: string },
-  data: { name: string; version: number },
+function retrievalCommand(
+  modelName: string,
+  data: RetrievalData,
+  target: DataQueryTarget,
 ): string {
-  return dataQueryCommand({
+  if (!isTextContentType(data.contentType)) {
+    return `swamp data get ${quoteShellWord(modelName)} ${
+      quoteShellWord(data.name)
+    } --version ${data.version}`;
+  }
+  return dataQueryCommand(target, { includeContent: true });
+}
+
+/** The command that reads one version of a model's data. */
+export function modelRetrievalCommand(
+  modelName: string,
+  data: RetrievalData,
+): string {
+  return retrievalCommand(modelName, data, {
+    modelName,
+    dataName: data.name,
+    version: data.version,
+  });
+}
+
+/**
+ * The command that reads one item a workflow step wrote, named by its run,
+ * job and step so it cannot pick up another step's data of the same name.
+ */
+export function stepRetrievalCommand(
+  workflowRunId: string,
+  step: { jobName: string; stepName: string; modelName: string },
+  data: RetrievalData,
+): string {
+  return retrievalCommand(step.modelName, data, {
     workflowRunId,
     jobName: step.jobName,
     stepName: step.stepName,
     dataName: data.name,
     version: data.version,
-  }, { includeContent: true });
+  });
 }

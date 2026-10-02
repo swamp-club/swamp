@@ -1013,3 +1013,29 @@ Deno.test("WorkflowDataService.matchByNameInWorkflowRun: the specName fallback a
     "classify-b",
   ]);
 });
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: one model writing the name from two steps is two producers", async () => {
+  const modelType = ModelType.create("command/shell");
+  const first = await createRunData("result", TEST_RUN_ID, 1);
+  const second = await createRunData("result", TEST_RUN_ID, 2);
+  const latest = [{ data: second, modelType, modelId: TEST_MODEL_ID }];
+  const stored = [
+    { data: first, modelType, modelId: TEST_MODEL_ID },
+    ...latest,
+  ];
+
+  const run = createTestRun([
+    { stepName: "build-a", artifacts: [refFor(first)] },
+    { stepName: "build-b", artifacts: [refFor(second)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(latest, stored),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result");
+  assertEquals(match?.item.stepName, "build-b");
+  assertEquals(match?.otherProducers.map((item) => item.stepName), [
+    "build-a",
+  ]);
+});

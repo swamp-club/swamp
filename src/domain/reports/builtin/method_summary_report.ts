@@ -17,21 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dataQueryCommand } from "../../data/data_query_command.ts";
+import { modelRetrievalCommand } from "../../data/data_query_command.ts";
 import type { MethodReportContext, ReportContext } from "../report_context.ts";
 import type { DataHandle } from "../../models/model.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
 
-/** The `swamp data query` command that reads one version of a model's data. */
-function modelDataQuery(
-  modelName: string,
-  handle: { name: string; version: number },
-): string {
-  return dataQueryCommand({
-    modelName,
-    dataName: handle.name,
+/** The command that reads one version of a model's data back. */
+function modelDataQuery(modelName: string, handle: DataHandle): string {
+  return modelRetrievalCommand(modelName, {
+    name: handle.name,
     version: handle.version,
-  }, { includeContent: true });
+    contentType: handle.metadata.contentType,
+  });
 }
 
 function isMethodContext(ctx: ReportContext): ctx is MethodReportContext {

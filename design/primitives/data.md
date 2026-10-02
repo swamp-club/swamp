@@ -198,7 +198,8 @@ removes every version.
   return the item, with a deprecation warning and a `replacementQuery` naming
   the equivalent `data query` command
   (`src/domain/data/data_query_command.ts`). The `--workflow` form takes the
-  first step that wrote the name when several did (swamp-club#2948) and warns
+  highest-versioned match (the first step on a tie) when several steps wrote
+  the name (swamp-club#2948) and warns
   with the other matches. `data get`, serve's `data.get` and
   `swamp model output data` return content without loss: text when the
   stored bytes are valid UTF-8 (less a leading byte-order mark), otherwise

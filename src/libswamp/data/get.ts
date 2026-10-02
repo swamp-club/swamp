@@ -605,16 +605,13 @@ async function* workflowScopedGet(
     contentPath: deps.toRelativePath(repoDir, item.contentPath),
   };
 
-  output.warnings = [];
-  if (isTextContentType(item.data.contentType)) {
-    output.replacementQuery = dataQueryCommand(
-      workflowQueryTarget(item),
-      { includeContent: input.includeContent },
-    );
-    output.warnings.push(deprecationWarning(output.replacementQuery, false));
-  } else {
-    output.warnings.push(binaryDeprecationWarning());
-  }
+  const replacement = replacementFor(
+    item.data,
+    workflowQueryTarget(item),
+    input.includeContent,
+  );
+  output.replacementQuery = replacement.query;
+  output.warnings = [deprecationWarning(replacement, false)];
   const ambiguity = await otherProducersWarning(
     located.location,
     input.canReadOwner,
@@ -719,21 +716,18 @@ async function* modelScopedGet(
     contentPath: deps.toRelativePath(repoDir, absoluteContentPath),
   };
 
-  if (isTextContentType(data.contentType)) {
-    output.replacementQuery = dataQueryCommand(
-      {
-        modelName: storedModelName(data, definition.name),
-        dataName: data.name,
-        version: data.version,
-      },
-      { includeContent },
-    );
-    output.warnings = [
-      deprecationWarning(output.replacementQuery, version === undefined),
-    ];
-  } else {
-    output.warnings = [binaryDeprecationWarning()];
-  }
+  const storedName = storedModelName(data);
+  const replacement = replacementFor(
+    data,
+    storedName === undefined ? undefined : {
+      modelName: storedName,
+      dataName: data.name,
+      version: data.version,
+    },
+    includeContent,
+  );
+  output.replacementQuery = replacement.query;
+  output.warnings = [deprecationWarning(replacement, version === undefined)];
 
   if (includeContent) {
     const rawContent = await deps.getContent(
@@ -753,45 +747,78 @@ async function* modelScopedGet(
 }
 
 /**
+ * The `swamp data query` command that reads the same item as a `data get`
+ * read, or why none can read it yet.
+ */
+type Replacement =
+  | { query: string; unavailable?: undefined }
+  | { query?: undefined; unavailable: string };
+
+/**
+ * Builds the replacement for `data`, given the query coordinates the catalog
+ * holds for it (undefined when it holds none that single it out).
+ */
+function replacementFor(
+  data: DataItem,
+  target: DataQueryTarget | undefined,
+  includeContent: boolean,
+): Replacement {
+  if (!isTextContentType(data.contentType)) {
+    return {
+      unavailable:
+        "data query cannot return binary content yet (swamp-club#2959)",
+    };
+  }
+  if (!target) {
+    return {
+      unavailable:
+        "the item was written before data recorded its model name, so a " +
+        "query cannot single it out",
+    };
+  }
+  return { query: dataQueryCommand(target, { includeContent }) };
+}
+
+/**
  * The deprecation notice a `data get` read carries, naming the query that
  * reads the same item. A read of the latest version is pinned to that
  * version, so the notice says how to follow later versions instead.
  */
 function deprecationWarning(
-  replacementQuery: string,
+  replacement: Replacement,
   readLatest: boolean,
 ): string {
+  if (replacement.unavailable !== undefined) {
+    return "swamp data get is deprecated, but no data query reads this item " +
+      `yet: ${replacement.unavailable}. Keep using data get for it.`;
+  }
   const notice = "swamp data get is deprecated and will be removed in a " +
-    `future release. Read this item with: ${replacementQuery}`;
+    `future release. Read this item with: ${replacement.query}`;
   return readLatest
-    ? `${notice} (drop the version clause to read the latest version instead)`
+    ? `${notice} (to follow the latest version instead, drop the version ` +
+      "clause; if several workflow steps wrote this item, also narrow by " +
+      "stepName)"
     : notice;
 }
 
 /**
- * The deprecation notice for a binary item: `data query` does not return
- * binary content yet (swamp-club#2959), so no replacement is named.
- */
-function binaryDeprecationWarning(): string {
-  return "swamp data get is deprecated, but swamp data query cannot return " +
-    "binary content yet (swamp-club#2959); keep using data get for this item.";
-}
-
-/**
  * The model name the catalog stores for an item: the `modelName` tag stamped
- * when it was written, which outlives a later rename of the definition.
+ * when it was written, which outlives a later rename of the definition. The
+ * catalog stores no name for an item without the tag.
  */
-function storedModelName(data: DataItem, fallback: string): string {
-  return data.tags["modelName"] ?? fallback;
+function storedModelName(data: DataItem): string | undefined {
+  return data.tags["modelName"];
 }
 
 /**
  * The query coordinates of a workflow-run item, from what the item itself
  * records — the catalog indexes those fields, not the run's. Step output
  * records its run, job and step. Report output records none, so it is named
- * by its owner, data name and version instead.
+ * by its owner's type and name, its data name and version instead.
  */
-function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
+function workflowQueryTarget(
+  item: WorkflowDataItemInfo,
+): DataQueryTarget | undefined {
   const owner = item.data.ownerDefinition;
   const target: DataQueryTarget = {
     dataName: item.data.name,
@@ -801,9 +828,12 @@ function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
     target.workflowRunId = owner.workflowRunId;
     if (owner.jobName) target.jobName = owner.jobName;
     if (owner.stepName) target.stepName = owner.stepName;
-  } else {
-    target.modelName = storedModelName(item.data, item.modelName);
+    return target;
   }
+  const modelName = storedModelName(item.data);
+  if (modelName === undefined) return undefined;
+  target.modelType = item.modelType.normalized;
+  target.modelName = modelName;
   return target;
 }
 
@@ -855,14 +885,18 @@ async function otherProducersWarning(
   if (readable.length === 0) return undefined;
   const { item, run } = location;
   const others = readable.map((other) => {
-    const query = isTextContentType(other.data.contentType)
-      ? `: ${dataQueryCommand(workflowQueryTarget(other), { includeContent })}`
-      : "";
-    return `${producerLabel(other)}${query}`;
+    const { query } = replacementFor(
+      other.data,
+      workflowQueryTarget(other),
+      includeContent,
+    );
+    return query
+      ? `${producerLabel(other)}, read with: ${query}`
+      : producerLabel(other);
   });
   return `${readable.length + 1} items in run ${run.id} are named ` +
-    `${item.data.name}; returned the one from ${producerLabel(item)}. ` +
-    `Also named ${item.data.name}: ${others.join("; ")}`;
+    `"${item.data.name}"; data get returned the one from ` +
+    `${producerLabel(item)}. The others: ${others.join(" | ")}`;
 }
 
 /** Whether a located item is exactly the one a caller authorized. */

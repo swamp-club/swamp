@@ -50,7 +50,7 @@ export const dataGetCommand = withRemoteOptions(
   new Command()
     .name("get")
     .description(
-      "(Deprecated) Get data by model and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query.",
+      "(Deprecated) Get data by model and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query where one exists.",
     )
     .example(
       "Preferred: read the same data with data query",

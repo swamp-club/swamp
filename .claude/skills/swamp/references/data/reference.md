@@ -98,8 +98,9 @@ swamp data query 'workflowRunId == "<run_id>" && jobName == "<job>" && stepName 
 
 A query has no "latest run" shortcut: get the run id from
 `swamp workflow history get <workflow>` or the `data list --workflow` output.
-The deprecated `swamp data get --workflow` returns the first matching step's
-item when several steps wrote the name, and warns with the other matches.
+When several steps wrote the name, the deprecated `swamp data get --workflow`
+returns the highest-versioned match (the first step on a tie) and warns with the
+other matches.
 
 ## View Version History
 
