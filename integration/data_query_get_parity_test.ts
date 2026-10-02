@@ -40,7 +40,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { dirname, join, relative } from "@std/path";
 import { copy, ensureDir, walk } from "@std/fs";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -489,7 +489,7 @@ Deno.test("data query/get parity: custom datastore, lazy hydration", async () =>
     const first = openReader();
     try {
       await assertParity(first.view, "after lazy pull");
-      assertEquals(hydrated.length > 0, true, "nothing was downloaded");
+      assert(hydrated.length > 0, "nothing was downloaded");
 
       await withReader(
         writerDir,

@@ -1343,10 +1343,20 @@ needed body that is not on local disk, and `query()` downloads those rows
 through the async `getContent()` and matches again, until no row is left
 untried (swamp-club#2962). Only own-namespace rows whose body the predicate,
 the `select` or the results needed are downloaded, and rows the caller's
-`include` filter rejects never are. A row whose body is absent remotely too
-is returned with empty attributes, as `data get` returns that item without
-content. `integration/data_query_get_parity_test.ts` holds `data query` to
-`data get` on filesystem, full-hydration and lazy datastores.
+`include` filter rejects never are, and a row is downloaded at most once
+per query, across serve's `include` batches too. A row whose body is absent
+remotely too is returned with empty attributes, as `data get` returns that
+item without content. A download error fails the query, as it fails
+`data get`; before swamp-club#2962 such a row silently matched as empty.
+
+A downloaded row can stop matching a predicate it matched while empty (for
+example `!has(attributes.x)`), so under a limit a later pass can reach rows
+an earlier pass never evaluated. Each pass after a download doubles the
+limit it collects under, then one last pass applies the caller's limit. That
+keeps the body reads linear in the rows scanned rather than one full rescan
+per limit window, and downloads at most twice the bodies the result needs.
+`integration/data_query_get_parity_test.ts` holds `data query` to `data get`
+on filesystem, full-hydration and lazy datastores.
 
 `querySync()`, behind CEL `data.query()`, cannot download. The
 `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`

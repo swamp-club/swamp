@@ -441,11 +441,13 @@ export class DataQueryService {
       const include = options.include;
       const limit = options.limit ?? Infinity;
       let batch = Number.isFinite(limit) ? limit * 4 : undefined;
+      // Shared across batches, so a row is downloaded at most once.
+      const tried = new Set<string>();
       while (true) {
         const matched = await this.matchWithHydration(predicate, {
           ...options,
           limit: batch,
-        });
+        }, tried);
         const accepted: DataRecord[] = [];
         for (const record of matched.records) {
           if (accepted.length >= limit) break;
@@ -547,19 +549,31 @@ export class DataQueryService {
    * with empty attributes where `data get` downloads its content. Each pass
    * collects the own-namespace rows whose needed body was missing, downloads
    * them through the async getContent, and matches again while a download
-   * succeeded. A later pass can reach rows a limit hid from an earlier one;
-   * each row is tried once, so the loop ends. Rows `include` rejects are
-   * never downloaded, so a caller cannot make the server fetch content it
-   * may not read.
+   * succeeded. Rows `include` rejects are never downloaded, so a caller
+   * cannot make the server fetch content it may not read. A download error
+   * fails the query, as it fails `data get`.
+   *
+   * A row that matched while empty can stop matching once downloaded, so a
+   * later pass can reach rows a limit hid from an earlier one. Each pass
+   * after a download doubles the limit it collects under, so a predicate
+   * like `!has(attributes.x)` takes log(rows / limit) passes rather than one
+   * per limit window, and at most twice the needed bodies are downloaded.
+   * A pass that collected under a raised limit is followed by one at the
+   * caller's limit. Each row is tried once, so the loop ends.
    */
   private async matchWithHydration(
     predicate: string,
     options?: DataQueryOptions,
+    tried = new Set<string>(),
   ): Promise<MatchResult> {
-    const tried = new Set<string>();
+    let collectLimit = options?.limit;
     while (true) {
       const missing = new Map<string, CatalogRow>();
-      const matched = this.executeMatch(predicate, options, missing);
+      const matched = this.executeMatch(
+        predicate,
+        { ...options, limit: collectLimit },
+        missing,
+      );
       let hydrated = false;
       for (const [key, row] of missing) {
         if (tried.has(key)) continue;
@@ -570,7 +584,12 @@ export class DataQueryService {
         ) continue;
         if (await this.rowHasContent(row)) hydrated = true;
       }
-      if (!hydrated) return matched;
+      if (!hydrated) {
+        return collectLimit === options?.limit
+          ? matched
+          : this.executeMatch(predicate, options);
+      }
+      if (collectLimit !== undefined) collectLimit *= 2;
     }
   }
 

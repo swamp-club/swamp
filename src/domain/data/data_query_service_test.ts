@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
@@ -2791,6 +2792,7 @@ interface RemoteBody {
 function setupHydrationTest(bodies: RemoteBody[]): {
   service: DataQueryService;
   hydrated: string[];
+  dataRepo: TracingDataRepository;
   cleanup: () => void;
 } {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-hydrate-lazy-" });
@@ -2799,7 +2801,7 @@ function setupHydrationTest(bodies: RemoteBody[]): {
   const remote = new Map<string, Uint8Array>();
   const hydrated: string[] = [];
   const names = new Map<string, string>();
-  const dataRepo = new FileSystemUnifiedDataRepository(
+  const dataRepo = new TracingDataRepository(
     dir,
     undefined,
     catalog,
@@ -2837,6 +2839,7 @@ function setupHydrationTest(bodies: RemoteBody[]): {
   return {
     service: new DataQueryService(catalog, dataRepo),
     hydrated,
+    dataRepo,
     cleanup: () => {
       catalog.close();
       Deno.removeSync(dir, { recursive: true });
@@ -3009,6 +3012,58 @@ Deno.test("DataQueryService.querySync: does not download lazily-synced bodies", 
     const results = service.querySync('name == "a"') as DataRecord[];
     assertEquals(results[0].attributes, {});
     assertEquals(hydrated, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: later passes under a limit stay linear in body reads", async () => {
+  // Every row matches while empty and stops matching once downloaded, so
+  // each pass can only find new rows past what it already downloaded.
+  const count = 32;
+  const { service, hydrated, dataRepo, cleanup } = setupHydrationTest(
+    Array.from({ length: count }, (_, i) => ({
+      name: `row-${String(i).padStart(2, "0")}`,
+      body: { flag: true },
+    })),
+  );
+  try {
+    const results = await service.query("!has(attributes.flag)", {
+      limit: 1,
+    });
+    assertEquals(results, []);
+    assertEquals(hydrated.length, count);
+    const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
+    // Doubling passes read about 5 bodies per row (misses and the final
+    // pass at the caller's limit included); one rescan per downloaded row
+    // would be about count * count / 2.
+    assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body missing remotely is requested once across include batches", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "gone", body: {}, remoteMissing: true },
+    ...Array.from({ length: 9 }, (_, i) => ({
+      name: `r${i + 1}`,
+      body: { v: i + 1 },
+      local: true,
+    })),
+  ]);
+  try {
+    // The first batch accepts only "gone", so the query grows the batch.
+    const results = await service.query(
+      'attributes.v > 0 || name == "gone"',
+      {
+        include: (record) =>
+          Promise.resolve(record.name === "gone" || record.name === "r9"),
+        limit: 2,
+      },
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["gone", "r9"]);
+    assertEquals(hydrated, ["gone"]);
   } finally {
     cleanup();
   }
