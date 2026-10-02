@@ -79,6 +79,8 @@ export {
 
 export { type DatastoreProvider } from "./datastore_provider.ts";
 
+export { type StagedChange, type UnitOfWork } from "./unit_of_work.ts";
+
 export {
   type DatastoreTypeInfo,
   DatastoreTypeRegistry,

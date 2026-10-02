@@ -1063,6 +1063,18 @@ signal from `saveDeferred` / `finalizeVersionDeferred`
 Filesystem datastores have no fast path and no sync service, so markDirty is a
 no-op for them.
 
+**Unit of work (datastore rework Phase 1).** `UnitOfWork`
+(`src/domain/datastore/unit_of_work.ts`) is the seam later phases build on.
+Repositories stage each change (`write` or `remove` with an absolute path, or
+`bulk`) before writing, and a use case commits the unit once the operation is
+done. The legacy adapter (`src/infrastructure/persistence/legacy_unit_of_work.ts`)
+forwards each staged change to the dirty hook straight away, `markDirty(path)`
+for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
+and the order of bulk and per-path signals, and never batches or deduplicates.
+`commit` waits for any stage still in flight, runs once, and spends the unit
+even when it fails. No production code uses it yet: repositories still call the
+hook themselves, and the flush paths still push.
+
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
 workflow, data, output and definition repos) rely on the repositories' signals.
