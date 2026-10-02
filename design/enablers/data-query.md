@@ -37,8 +37,8 @@ version.
 
 | Shortcut                              | Underlying query                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
-| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
+| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --single --select content`          |
+| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --single`           |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
@@ -681,6 +681,18 @@ columns `name`, `modelName`, `specName`, `dataType`, `version`, `size`. A
 `--select` composes with `--json`, which renders projected values as JSON
 instead of human-readable text. It also composes with `--limit`: the limit
 applies to matched rows, the projection to output.
+
+### Single result (`--single`)
+
+`--single` requires exactly one match. The libswamp generator queries with a
+limit of 2 (enough to tell one match from several) and yields `QUERY_NO_MATCH`
+or `QUERY_MULTIPLE_MATCHES` instead of `completed` otherwise, so the command
+exits non-zero. With `--json` the renderer prints the one record (the object the
+envelope would carry as `results[0]`) or its projected value bare, without the
+`{results, total, limited}` envelope; log output is unchanged. `--single`
+conflicts with `--limit` and requires a predicate. Over `--server` the client
+sends `limit: 2` and applies the same `requireSingleResult` check to the
+response, so the `data.query` protocol is unchanged.
 
 ### Implementation
 

@@ -217,9 +217,30 @@ function recordToJsonOutput(
 }
 
 /**
+ * Renders a single-result query's one match as a bare JSON value: the record
+ * (the same object the envelope carries as `results[0]`) or, with `--select`,
+ * its projected value.
+ */
+function renderSingleJson(data: DataQueryData): void {
+  let value: unknown;
+  if (data.projected) {
+    value = data.projected.shape === "scalar"
+      ? data.projected.values[0]
+      : data.projected.rows[0];
+  } else {
+    value = recordToJsonOutput(data.results[0]);
+  }
+  writeOutput(JSON.stringify(value ?? null, null, 2));
+}
+
+/**
  * Renders JSON output for the completed event.
  */
-function renderJson(data: DataQueryData): void {
+function renderJson(data: DataQueryData, single: boolean): void {
+  if (single) {
+    renderSingleJson(data);
+    return;
+  }
   if (data.projected) {
     const results = data.projected.shape === "scalar"
       ? data.projected.values
@@ -287,6 +308,7 @@ export function renderQueryResultsTerminal(
 export function createDataQueryRenderer(
   outputMode: OutputMode,
   showNamespace = false,
+  options: { single?: boolean } = {},
 ): { handlers: () => EventHandlers<DataQueryEvent> } {
   return {
     handlers: () => ({
@@ -295,7 +317,7 @@ export function createDataQueryRenderer(
       projected_match: () => {},
       completed: (event: DataQueryEvent & { kind: "completed" }) => {
         if (outputMode === "json") {
-          renderJson(event.data);
+          renderJson(event.data, options.single ?? false);
           return;
         }
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));

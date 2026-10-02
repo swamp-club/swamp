@@ -17,10 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
-import { dataQuery, type DataQueryDeps, type DataQueryEvent } from "./query.ts";
+import {
+  dataQuery,
+  type DataQueryDeps,
+  type DataQueryEvent,
+  requireSingleResult,
+} from "./query.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 
 function makeRecord(overrides: Partial<DataRecord> = {}): DataRecord {
@@ -302,4 +307,122 @@ Deno.test("dataQuery: stringifies non-Error throws in the error event", async ()
     kind: "error",
     error: { code: "QUERY_FAILED", message: "catastrophe" },
   });
+});
+
+Deno.test("dataQuery: single mode queries with a limit of 2 and completes on one match", async () => {
+  const record = makeRecord({ name: "only" });
+  const limits: Array<number | undefined> = [];
+  const deps: DataQueryDeps = {
+    query: (_predicate, options) => {
+      limits.push(options?.limit);
+      return Promise.resolve([record]);
+    },
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "only"',
+      single: true,
+    }),
+  );
+
+  assertEquals(limits, [2]);
+  const data = completedOf(events);
+  assertEquals(data.results, [record]);
+  assertEquals(data.total, 1);
+});
+
+Deno.test("dataQuery: single mode yields QUERY_NO_MATCH when nothing matches", async () => {
+  const deps: DataQueryDeps = { query: () => Promise.resolve([]) };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'name == "missing"',
+      single: true,
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  const last = events[1] as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "QUERY_NO_MATCH");
+});
+
+Deno.test("dataQuery: single mode yields QUERY_MULTIPLE_MATCHES without emitting matches", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([makeRecord(), makeRecord()]),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'modelName == "my-model"',
+      single: true,
+    }),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["resolving", "error"]);
+  const last = events[1] as Extract<DataQueryEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "QUERY_MULTIPLE_MATCHES");
+});
+
+Deno.test("dataQuery: single mode completes with the one projected value", async () => {
+  const deps: DataQueryDeps = {
+    query: () => Promise.resolve([{ status: "ok" }]),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: "true",
+      select: "attributes",
+      single: true,
+    }),
+  );
+
+  const data = completedOf(events);
+  assertEquals(data.projected, {
+    shape: "map",
+    columns: ["status"],
+    rows: [{ status: "ok" }],
+  });
+});
+
+Deno.test("dataQuery: single mode with a limit yields validation_failed without querying", async () => {
+  let queried = false;
+  const deps: DataQueryDeps = {
+    query: () => {
+      queried = true;
+      return Promise.resolve([]);
+    },
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: "true",
+      single: true,
+      limit: 5,
+    }),
+  );
+
+  assertEquals(queried, false);
+  const last = events[events.length - 1] as Extract<
+    DataQueryEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("requireSingleResult: accepts exactly one match", () => {
+  assertEquals(requireSingleResult({ predicate: "true", total: 1 }), undefined);
+});
+
+Deno.test("requireSingleResult: names the predicate when nothing matched", () => {
+  const error = requireSingleResult({ predicate: 'name == "x"', total: 0 });
+  assertEquals(error?.code, "QUERY_NO_MATCH");
+  assertStringIncludes(error?.message ?? "", 'name == "x"');
+});
+
+Deno.test("requireSingleResult: rejects several matches", () => {
+  const error = requireSingleResult({ predicate: "true", total: 2 });
+  assertEquals(error?.code, "QUERY_MULTIPLE_MATCHES");
+  assertStringIncludes(error?.message ?? "", "more than one");
 });

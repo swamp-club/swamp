@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { LibSwampContext } from "../context.ts";
-import type { SwampError } from "../errors.ts";
+import { type SwampError, validationFailed } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -70,8 +70,40 @@ export interface DataQueryInput {
   predicate: string;
   select?: string;
   limit?: number;
+  /**
+   * Requires exactly one match: zero or several matches yield an error event
+   * instead of `completed`. Cannot be combined with `limit`.
+   */
+  single?: boolean;
   /** Keeps only the matched records this accepts, before any projection. */
   include?: (record: DataRecord) => Promise<boolean>;
+}
+
+/**
+ * Checks that a query matched exactly one data artifact. Returns the error to
+ * report when it did not, or undefined when it did. Callers that only need to
+ * tell one match from several query with a limit of 2, so `total` counts at
+ * most two.
+ */
+export function requireSingleResult(
+  data: { predicate: string; total: number },
+): SwampError | undefined {
+  if (data.total === 0) {
+    return {
+      code: "QUERY_NO_MATCH",
+      message:
+        `Expected exactly one data artifact to match ${data.predicate}, but none did.`,
+    };
+  }
+  if (data.total > 1) {
+    return {
+      code: "QUERY_MULTIPLE_MATCHES",
+      message:
+        `Expected exactly one data artifact to match ${data.predicate}, but more than one did. ` +
+        "Narrow the predicate, for example by name or version.",
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -99,10 +131,21 @@ export async function* dataQuery(
     (async function* () {
       yield { kind: "resolving" as const };
 
+      if (input.single && input.limit !== undefined) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            "A single-result query cannot also set a limit.",
+          ),
+        };
+        return;
+      }
+
       // Unlimited by default — callers pass an explicit limit when they
       // need a cap. `limited` in the completed event reflects whether
-      // the query service actually hit the supplied limit.
-      const limit = input.limit;
+      // the query service actually hit the supplied limit. A single-result
+      // query needs only two matches to tell one from several.
+      const limit = input.single ? 2 : input.limit;
 
       try {
         const rawResults = await deps.query(input.predicate, {
@@ -112,6 +155,17 @@ export async function* dataQuery(
         });
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;
+
+        if (input.single) {
+          const error = requireSingleResult({
+            predicate: input.predicate,
+            total,
+          });
+          if (error) {
+            yield { kind: "error" as const, error };
+            return;
+          }
+        }
 
         if (!input.select) {
           // No projection — results are DataRecord[]

@@ -20,8 +20,8 @@ predicate, a projection, or history beyond a single version.
 
 | Shortcut                              | Underlying query                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
-| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
+| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --single --select content`          |
+| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --single`           |
 | `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
 | `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
 | `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
@@ -30,8 +30,13 @@ predicate, a projection, or history beyond a single version.
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 
 The shortcut and the equivalent query run through the same catalog and return
-the same `DataRecord` shape. See [references/fields.md](references/fields.md)
-for the full list of queryable fields and predicate operators.
+the same `DataRecord` shape. `--single` makes the query fail unless exactly one
+artifact matches; with `--json` it prints that record (or its `--select` value)
+as a bare object instead of `{results, total, limited}`, so scripts that parsed
+`data get --json` keep parsing one object. See
+[reference.md](reference.md#query-data) for the fields `data get` has that the
+query record lacks. See [references/fields.md](references/fields.md) for the
+full list of queryable fields and predicate operators.
 
 ## Quick Reference
 

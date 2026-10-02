@@ -24,6 +24,8 @@ import {
   dataQuery,
   type DataQueryData,
   type DataQueryDeps,
+  requireSingleResult,
+  userErrorFromSwampError,
 } from "../../libswamp/mod.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
@@ -64,6 +66,11 @@ export const dataQueryCommand = withRemoteOptions(
       "--select <expr:string>",
       "CEL expression to extract fields from matching records (e.g. data.name)",
     )
+    .option(
+      "--single",
+      "Require exactly one match; with --json, print it as a single object instead of a results list",
+      { conflicts: ["limit"] },
+    )
     .example(
       "Interactive mode",
       "swamp data query",
@@ -76,9 +83,21 @@ export const dataQueryCommand = withRemoteOptions(
     .example(
       "Project a single field",
       "swamp data query 'dataType == \"resource\"' --select data.name",
+    )
+    .example(
+      "Get exactly one record as an object",
+      'swamp data query \'modelName == "scanner" && name == "state"\' --single --json',
     ),
 ).action(async function (options: AnyOptions, predicate?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "query"]);
+  const single = options.single === true;
+
+  if (single && !predicate) {
+    throw new UserError(
+      "A CEL predicate is required with --single.\n" +
+        'Usage: swamp data query \'modelName == "scanner" && name == "state"\' --single',
+    );
+  }
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -99,16 +118,22 @@ export const dataQueryCommand = withRemoteOptions(
         type: "data.query",
         payload: {
           predicate,
-          limit: options.limit as number | undefined,
+          // Two matches are enough to tell one from several; the check runs
+          // here so older servers need no protocol change.
+          limit: single ? 2 : options.limit as number | undefined,
           select: options.select as string | undefined,
         },
       },
     );
-    const renderer = createDataQueryRenderer(ctx.outputMode, false);
-    renderer.handlers().completed({
-      kind: "completed",
-      data: response.data as unknown as DataQueryData,
+    const data = response.data as unknown as DataQueryData;
+    if (single) {
+      const error = requireSingleResult(data);
+      if (error) throw userErrorFromSwampError(error);
+    }
+    const renderer = createDataQueryRenderer(ctx.outputMode, false, {
+      single,
     });
+    renderer.handlers().completed({ kind: "completed", data });
     return;
   }
 
@@ -157,12 +182,15 @@ export const dataQueryCommand = withRemoteOptions(
 
   const libCtx = createLibSwampContext();
 
-  const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace);
+  const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace, {
+    single,
+  });
   await consumeStream(
     dataQuery(libCtx, deps, {
       predicate,
       select: options.select as string | undefined,
       limit: options.limit as number | undefined,
+      single,
     }),
     renderer.handlers(),
   );
