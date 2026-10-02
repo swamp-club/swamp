@@ -620,36 +620,47 @@ export class DataQueryService {
 
   /**
    * Resolves the rename forwards a latest-only `name == "<old>"` predicate
-   * follows: for each model with a forward from `dataName`, the name it ends
-   * at after at most {@link MAX_RENAME_HOPS} hops, keyed by namespace, type
-   * and model id. A forward from a name that has a latest row again is
-   * stale and ignored; a chain that loops or runs past the hop limit
-   * resolves to nothing, as an unversioned repository read does.
+   * follows: for each model the catalog records a forward from `dataName`
+   * under, the name an unversioned repository read of `dataName` ends at,
+   * keyed by namespace, type and model id. The catalog only nominates
+   * models; each hop is decided by the name's rename marker on disk, exactly
+   * as `data get` reads it, so a forward that a later write or delete
+   * (here or on another machine) ended is never followed. A chain that loops
+   * or runs past {@link MAX_RENAME_HOPS} resolves to nothing.
    */
   private resolveRenameForwards(dataName: string): Map<string, string> {
     const targets = new Map<string, string>();
+    const ownNamespace = this.dataRepo.namespace;
     for (const forward of this.catalogStore.findRenamesFrom(dataName)) {
       const { namespace, type_normalized: type, model_id: modelId } = forward;
-      if (this.catalogStore.hasLatestRow(namespace, type, modelId, dataName)) {
-        continue;
-      }
+      // Forwards are recorded only for this repository's namespace, whose
+      // markers are on local disk.
+      if (namespace !== ownNamespace) continue;
+      const modelType = ModelType.create(type);
+      const renamedTo = (name: string): string | null => {
+        const latest = this.dataRepo.getLatestVersionSync(
+          modelType,
+          modelId,
+          name,
+        );
+        if (latest === null) return null;
+        const data = this.dataRepo.findByNameSync(
+          modelType,
+          modelId,
+          name,
+          latest,
+        );
+        return data?.isRenamed && data.renamedTo ? data.renamedTo : null;
+      };
       const seen = new Set([dataName]);
-      let target: string | null = forward.renamed_to;
+      let target = renamedTo(dataName);
       for (let hop = 1; target !== null; hop++) {
         if (seen.has(target) || hop > MAX_RENAME_HOPS) {
           target = null;
           break;
         }
         seen.add(target);
-        if (this.catalogStore.hasLatestRow(namespace, type, modelId, target)) {
-          break;
-        }
-        const next = this.catalogStore.findRenameTarget(
-          namespace,
-          type,
-          modelId,
-          target,
-        );
+        const next = renamedTo(target);
         if (next === null) break;
         target = next;
       }

@@ -1025,18 +1025,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           dataName,
           newLatest,
         );
-        if (latestData?.isDeleted) {
-          // The latest version left is a tombstone: the name has no data,
-          // and a rename marker still forwards it.
+        if (latestData?.isRenamed && latestData.renamedTo) {
+          // The rename marker stays latest: the name still forwards, and a
+          // marker is not a catalog row.
           this.catalogRemove(type, modelId, dataName);
-          if (latestData.isRenamed && latestData.renamedTo) {
-            this.recordRenameForward(
-              type,
-              modelId,
-              dataName,
-              latestData.renamedTo,
-            );
-          }
+          this.recordRenameForward(
+            type,
+            modelId,
+            dataName,
+            latestData.renamedTo,
+          );
         } else if (latestData) {
           this.catalogUpsert(type, modelId, latestData);
         }
@@ -1219,9 +1217,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Update latest marker to point to tombstone
       await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
-
-      // Old name is now a tombstone — remove from catalog
-      this.catalogRemove(type, modelId, oldName);
     } catch (tombstoneError) {
       // Roll back: remove the newly created data under the new name
       logger
@@ -1254,9 +1249,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       throw tombstoneError;
     }
 
-    // Record the forward so data query can follow it, outside the rollback
-    // above so a failed catalog write never undoes the rename. catalogRemove
-    // above already recorded the local write.
+    // The old name is now a tombstone: drop its rows and record the forward
+    // so data query can follow it. Outside the rollback above: the files are
+    // authoritative and the catalog is a projection the next backfill
+    // rebuilds, so a failed catalog write must never undo the rename.
+    try {
+      this.catalogRemove(type, modelId, oldName);
+    } catch (error) {
+      logger
+        .warn`Could not remove ${oldName} from the data catalog after renaming it to ${newName}: ${error}. Run swamp doctor datastores --repair if data query still lists it.`;
+    }
     this.recordRenameForward(type, modelId, oldName, newName);
 
     return {

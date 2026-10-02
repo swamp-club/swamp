@@ -544,8 +544,8 @@ export class CatalogStore {
    * already recorded for the same name and leaving every other forward in
    * place. Backfill merges what its walk found this way, as it does catalog
    * rows: a walk with gaps (lazy hydration) must not drop a forward it could
-   * not see. A forward made stale by a later write is ignored at query time,
-   * since its old name has a latest row again.
+   * not see. A forward that a later write or delete ended is never followed:
+   * data query confirms each hop against the rename marker on disk.
    */
   mergeRenames(rows: readonly RenameForwardRow[]): void {
     this.db.exec("BEGIN IMMEDIATE");
@@ -591,19 +591,6 @@ export class CatalogStore {
       | { renamed_to: string }
       | undefined;
     return row?.renamed_to ?? null;
-  }
-
-  /** Whether (namespace, type, model, name) has a latest row. */
-  hasLatestRow(
-    namespace: string,
-    typeNormalized: string,
-    modelId: string,
-    dataName: string,
-  ): boolean {
-    const row = this.db.prepare(
-      "SELECT 1 FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND is_latest = 1 LIMIT 1",
-    ).get(namespace, typeNormalized, modelId, dataName);
-    return row !== undefined;
   }
 
   /**

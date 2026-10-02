@@ -1596,11 +1596,8 @@ Deno.test("rename: records the rename forward in the catalog", async () => {
       "new",
     );
     assertEquals(
-      catalogStore.hasLatestRow(
-        SOLO_NAMESPACE,
-        testType.normalized,
-        modelId,
-        "old",
+      [...catalogStore.iterate()].some((r) =>
+        r.model_id === modelId && r.data_name === "old" && r.is_latest === 1
       ),
       false,
     );
@@ -1709,11 +1706,8 @@ Deno.test("delete: deleting an old version keeps the forward of a rename marker 
       "new",
     );
     assertEquals(
-      catalogStore.hasLatestRow(
-        SOLO_NAMESPACE,
-        testType.normalized,
-        modelId,
-        "old",
+      [...catalogStore.iterate()].some((r) =>
+        r.model_id === modelId && r.data_name === "old" && r.is_latest === 1
       ),
       false,
       "the tombstone is not a catalog row",
@@ -1736,5 +1730,28 @@ Deno.test("removeLatestMarker: an expired renamed name ends its forward", async 
       ),
       null,
     );
+  });
+});
+
+Deno.test("delete: deleting an old version of an item with a deletion marker keeps its history rows", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    const data = makeData("r");
+    await repo.save(testType, modelId, data, new Uint8Array([1]));
+    await repo.save(testType, modelId, data, new Uint8Array([2]));
+    const v2 = await repo.findByName(testType, modelId, "r");
+    await repo.save(
+      testType,
+      modelId,
+      v2!.withDeletionMarker({ version: v2!.version + 1 }),
+      new TextEncoder().encode("{}"),
+    );
+
+    await repo.delete(testType, modelId, "r", 1);
+
+    const versions = [...catalogStore.iterate()]
+      .filter((r) => r.model_id === modelId && r.data_name === "r")
+      .map((r) => r.version)
+      .sort();
+    assertEquals(versions, [2, 3]);
   });
 });

@@ -388,9 +388,6 @@ arguments are validated separately (see [model references](#model-references)).
   `querySync()`, query services built without one (including the composite
   service CEL `data.query()` uses during model and workflow runs), and
   `--select` expressions reject `model()`.
-- A name or definition that leaves the catalog (delete, expiry) loses its
-  forward through `catalogRemove`; deleting an older version while a rename
-  marker stays latest keeps it.
 
 ## Catalog
 
@@ -533,15 +530,19 @@ an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
 - **Backfill**: the `findAllGlobal` walk reports each rename marker it follows
   past (`FindAllGlobalOptions.renames`), and backfill merges them
   (`mergeRenames`). Like catalog rows, forwards are never deleted by a backfill:
-  a walk with gaps (lazy hydration) must not drop a forward it could not see. A
-  forward made stale by a later write to its old name is ignored at query time
-  instead.
+  a walk with gaps (lazy hydration) must not drop a forward it could not see.
+- **Delete**: the repository's `catalogRemove` drops the forward of the name it
+  removes (delete, expiry). Deleting an older version while the rename marker
+  stays latest keeps the forward and adds no catalog row for the marker.
 - **Query**: when the predicate does not open history and has a top-level
-  `name == "<literal>"` conjunct, matching resolves the literal's forwards per
-  `(namespace, type, model id)`: at most 5 hops, never revisiting a name, and
-  ignoring a forward from a name that has a latest row. Rows the chain ends at
-  are evaluated with `name` overlaid to the literal; the returned record keeps
-  its real name, and the caller's `include` filter still applies.
+  `name == "<literal>"` conjunct, the catalog nominates the models with a
+  forward from the literal, and each hop is then read from the name's latest
+  marker on disk — the same read as an unversioned `findByName` — for at most 5
+  hops, never revisiting a name. A forward that a later write or delete ended,
+  here or on another machine, therefore matches nothing, and a chain the
+  catalog only partly knows is still followed to its end. Rows the chain ends
+  at are evaluated with `name` overlaid to the literal; the returned record
+  keeps its real name, and the caller's `include` filter still applies.
 - **Not followed**: versioned or `isLatest` predicates (as `data get --version`
   does not follow), `name in [...]` or a name test under `||` or `!`, and
   renames in other namespaces: `.catalog-export.json` carries rows, not

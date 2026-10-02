@@ -1623,19 +1623,6 @@ Deno.test("CatalogStore.mergeRenames: adds and replaces forwards, keeping the re
   store.close();
 });
 
-Deno.test("CatalogStore.hasLatestRow: true only for a latest row under the key", () => {
-  const store = new CatalogStore(makeTempDbPath());
-  store.upsert(makeRow({ data_name: "a", version: 1, is_latest: 0 }));
-  store.upsert(makeRow({ data_name: "b", version: 1, is_latest: 1 }));
-  assertEquals(store.hasLatestRow("", "test-model", "model-001", "a"), false);
-  assertEquals(store.hasLatestRow("", "test-model", "model-001", "b"), true);
-  assertEquals(
-    store.hasLatestRow("other", "test-model", "model-001", "b"),
-    false,
-  );
-  store.close();
-});
-
 Deno.test("CatalogStore: a schema version change drops recorded forwards", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

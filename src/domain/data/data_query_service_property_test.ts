@@ -24,9 +24,10 @@ import {
   type CatalogRow,
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
-import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
+import type { ModelType } from "../models/model_type.ts";
 
 const NAMES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
@@ -80,24 +81,47 @@ function expectedTarget(
   }
 }
 
+/**
+ * The disk an unversioned repository read sees: a forwarded name's latest
+ * version is its rename marker, any other live name holds data. Only the
+ * methods rename-forward resolution reads are provided.
+ */
+function diskRepo(forwards: Map<string, string>): UnifiedDataRepository {
+  const disk = {
+    namespace: "",
+    getLatestVersionSync: (_type: ModelType, _modelId: string, name: string) =>
+      forwards.has(name) ? 2 : null,
+    findByNameSync: (_type: ModelType, _modelId: string, name: string) =>
+      forwards.has(name)
+        ? { isRenamed: true, renamedTo: forwards.get(name) }
+        : null,
+  };
+  return disk as unknown as UnifiedDataRepository;
+}
+
 Deno.test("DataQueryService rename forwards: a read by any name matches what the repository read returns", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-forward-prop-" });
   let run = 0;
   try {
     fc.assert(
       fc.property(
-        // At most one forward per name, as the catalog's primary key holds.
+        // At most one forward per name, as a name has one latest version.
         fc.dictionary(fc.constantFrom(...NAMES), fc.constantFrom(...NAMES)),
         fc.subarray(NAMES),
         fc.constantFrom(...NAMES),
-        (forwardRecord, liveNames, start) => {
+        fc.boolean(),
+        (forwardRecord, liveNames, start, catalogKnowsAll) => {
           const catalog = new CatalogStore(join(dir, `catalog-${run++}.db`));
           try {
             catalog.markPopulated();
-            const live = new Set(liveNames);
             const forwards = new Map(Object.entries(forwardRecord));
+            // A name whose latest version is a rename marker holds no data.
+            const live = new Set(liveNames.filter((n) => !forwards.has(n)));
             for (const name of live) catalog.upsert(row(name));
+            // The catalog may miss forwards beyond the first hop (a missed
+            // write-through); the markers on disk still decide the chain.
             for (const [from, to] of forwards) {
+              if (!catalogKnowsAll && from !== start) continue;
               catalog.recordRename({
                 namespace: "",
                 type_normalized: "test-model",
@@ -106,10 +130,7 @@ Deno.test("DataQueryService rename forwards: a read by any name matches what the
                 renamed_to: to,
               });
             }
-            const service = new DataQueryService(
-              catalog,
-              new FileSystemUnifiedDataRepository(dir, undefined, catalog),
-            );
+            const service = new DataQueryService(catalog, diskRepo(forwards));
 
             const results = service.querySync(
               `name == ${JSON.stringify(start)}`,
