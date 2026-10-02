@@ -64,6 +64,7 @@ import {
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
+import type { StagedChange } from "../src/domain/datastore/unit_of_work.ts";
 import type { MarkDirtyHook } from "../src/domain/datastore/datastore_sync_service.ts";
 import { Data } from "../src/domain/data/data.ts";
 import {
@@ -82,10 +83,12 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
+import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 
@@ -186,6 +189,8 @@ interface Harness extends Repos {
   cacheRoot: string;
   definitionsDir: string;
   workflowsDir: string;
+  /** The recording hook every repository in this harness was built with. */
+  markDirty: MarkDirtyHook;
   /** A cold second context on the same repo and cache, same hook. */
   fresh(): Repos;
 }
@@ -198,6 +203,12 @@ interface Row {
   /** False for rows that must leave the cache untouched (dry runs). */
   changesCache?: boolean;
   autoGc?: boolean;
+  /**
+   * The act marks from parallel tasks, so its mark order varies from run to
+   * run (collectGarbage removes versions in Promise.allSettled batches,
+   * src/infrastructure/persistence/unified_data_repository.ts:1821).
+   */
+  parallelMarks?: boolean;
 }
 
 /** What the hook saw (absolute paths) and what it forwarded (relPaths). */
@@ -267,6 +278,7 @@ async function withHarness(
         cacheRoot,
         definitionsDir,
         workflowsDir,
+        markDirty,
         fresh: build,
       }, { abs, forwarded });
     } finally {
@@ -646,6 +658,7 @@ const unifiedDataRows: Row[] = [
   {
     repo: "UnifiedData",
     method: "collectGarbage(numeric)",
+    parallelMarks: true,
     prepare: async (h) => {
       const modelId = crypto.randomUUID();
       const repo = h.ctx.unifiedDataRepo;
@@ -662,6 +675,7 @@ const unifiedDataRows: Row[] = [
   {
     repo: "UnifiedData",
     method: "collectGarbage(duration)",
+    parallelMarks: true,
     prepare: async (h) => {
       const modelId = crypto.randomUUID();
       const repo = h.ctx.unifiedDataRepo;
@@ -1368,4 +1382,63 @@ Deno.test("markDirty: every cache file a hooked repository changes is covered by
       "path (or an ancestor directory) before the write or delete. Pin it in " +
       "KNOWN_UNMARKED, with the source line, only if the gap is deliberate.",
   );
+});
+
+/** A mark's absolute path made comparable across harnesses; null is bare. */
+function comparableMark(h: Harness, mark: string | undefined): string | null {
+  if (mark === undefined) return null;
+  const rel = relative(dirname(h.cacheRoot), mark).split(SEPARATOR).join("/");
+  return normalise(rel);
+}
+
+/** The marks one run of `row`'s act sends, and what a scope staged. */
+async function marksOf(
+  row: Row,
+  scoped: boolean,
+): Promise<{ marks: (string | null)[]; staged: (string | null)[] }> {
+  let marks: (string | null)[] = [];
+  let staged: (string | null)[] = [];
+  await withHarness(row.autoGc ?? false, async (h, recorded) => {
+    const act = await row.prepare(h);
+    recorded.abs.length = 0;
+    if (scoped) {
+      const uow = createLegacyUnitOfWork(h.markDirty, { flush: undefined });
+      await runInUnitOfWork(uow, act);
+      staged = uow.staged().map((change: StagedChange) =>
+        comparableMark(h, change.kind === "bulk" ? undefined : change.path)
+      );
+    } else {
+      await act();
+    }
+    marks = recorded.abs.map((mark) => comparableMark(h, mark));
+  });
+  return { marks, staged };
+}
+
+Deno.test("unit of work: every repository sends the same marks inside a legacy unit of work scope as without one (swamp-club#2971)", async (t) => {
+  for (const row of ROWS) {
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      const unscoped = await marksOf(row, false);
+      const scoped = await marksOf(row, true);
+      if (row.parallelMarks) {
+        assertEquals(
+          [...scoped.marks].sort(),
+          [...unscoped.marks].sort(),
+          "expected the same marks (in any order: they come from parallel tasks)",
+        );
+      } else {
+        assertEquals(
+          scoped.marks,
+          unscoped.marks,
+          "expected the same marks in the same order",
+        );
+      }
+      // Within one run, the unit records each change just before it marks.
+      assertEquals(
+        scoped.staged,
+        scoped.marks,
+        "expected one staged change per mark, in order",
+      );
+    });
+  }
 });

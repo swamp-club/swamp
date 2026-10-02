@@ -1072,8 +1072,22 @@ forwards each staged change to the dirty hook straight away, `markDirty(path)`
 for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
 and the order of bulk and per-path signals, and never batches or deduplicates.
 `commit` waits for any stage still in flight, runs once, and spends the unit
-even when it fails. No production code uses it yet: repositories still call the
-hook themselves, and the flush paths still push.
+even when it fails.
+
+Repositories route their signal through `signalChange`
+(`src/infrastructure/persistence/unit_of_work_scope.ts`), which each private
+`notifyDirty` delegates to. When an operation runs inside `runInUnitOfWork`, the
+repository stages the change into that ambient unit of work, but only when the
+unit is a legacy adapter over the repository's own hook instance. A unit belongs
+to one repository context, so a second context in the same process (side-by-side
+repos, namespace migration) never hands it its changes. Otherwise the repository
+calls its hook as before, and with no hook (filesystem datastores) it does
+nothing. The scope is an `AsyncLocalStorage` store, so concurrent operations
+each see their own unit, and a promise started inside a scope keeps it after the
+scope returns. A write that lands after its unit committed is rejected. No
+production code opens a scope yet (pinned empty in
+`integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
+and behaviour is unchanged. Phase 2 opens scopes from use cases.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,

@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
 import { dirname, join, normalize, relative, SEPARATOR } from "@std/path";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -95,7 +96,12 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
+    await signalChange(
+      this.markDirty,
+      relPath === undefined
+        ? { kind: "bulk", reason: "YamlOutputRepository.notifyDirty" }
+        : { kind: "write", path: relPath },
+    );
   }
 
   /**

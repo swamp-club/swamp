@@ -20,6 +20,7 @@
 import { existsSync } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -155,7 +156,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * mutations.
    */
   private async notifyDirty(relPath?: string): Promise<void> {
-    if (this.markDirty) await this.markDirty(relPath);
+    await signalChange(
+      this.markDirty,
+      relPath === undefined
+        ? {
+          kind: "bulk",
+          reason: "FileSystemUnifiedDataRepository.notifyDirty",
+        }
+        : { kind: "write", path: relPath },
+    );
   }
 
   /**
