@@ -29,6 +29,7 @@ import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { RenameForward } from "../../domain/data/repositories.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -1553,3 +1554,95 @@ Deno.test(
     });
   },
 );
+
+async function withRenameRepo(
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    catalogStore: CatalogStore,
+    modelId: string,
+  ) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    await fn(repo, catalogStore, crypto.randomUUID());
+    catalogStore.close();
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("rename: records the rename forward in the catalog", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("old"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "old", "new");
+
+    assertEquals(
+      catalogStore.findRenameTarget(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      "new",
+    );
+    assertEquals(
+      catalogStore.hasLatestRow(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "old",
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test("save: writing a renamed-away name again ends its forward", async () => {
+  await withRenameRepo(async (repo, catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("b"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "b", "c");
+    await repo.save(testType, modelId, makeData("b"), new Uint8Array([2]));
+
+    assertEquals(
+      catalogStore.findRenameTarget(
+        SOLO_NAMESPACE,
+        testType.normalized,
+        modelId,
+        "b",
+      ),
+      null,
+    );
+    assertEquals((await repo.findByName(testType, modelId, "b"))?.name, "b");
+  });
+});
+
+Deno.test("findAllGlobal: reports each rename marker it follows past", async () => {
+  await withRenameRepo(async (repo, _catalogStore, modelId) => {
+    await repo.save(testType, modelId, makeData("x"), new Uint8Array([1]));
+    await repo.rename(testType, modelId, "x", "y");
+    await repo.rename(testType, modelId, "y", "z");
+    await repo.save(testType, modelId, makeData("plain"), new Uint8Array([2]));
+
+    for (const sync of [false, true]) {
+      const renames: RenameForward[] = [];
+      const all = sync
+        ? repo.findAllGlobalSync({ renames })
+        : await repo.findAllGlobal({ renames });
+      assertEquals(all.map((d) => d.data.name).sort(), ["plain", "z"]);
+      assertEquals(
+        renames.map((r) => [r.modelId, r.dataName, r.renamedTo]).sort(),
+        [[modelId, "x", "y"], [modelId, "y", "z"]],
+      );
+    }
+  });
+});

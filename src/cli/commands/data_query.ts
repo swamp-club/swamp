@@ -70,6 +70,10 @@ export const dataQueryCommand = withRemoteOptions(
     )
     .example("Filter by model", "swamp data query 'modelName == \"scanner\"'")
     .example(
+      "Read one item, resolving the model as data get does",
+      'swamp data query \'model("scanner") && name == "result"\' --select content',
+    )
+    .example(
       "Filter with size threshold",
       "swamp data query 'size > 1048576'",
     )
@@ -163,6 +167,7 @@ export const dataQueryCommand = withRemoteOptions(
       predicate,
       select: options.select as string | undefined,
       limit: options.limit as number | undefined,
+      reportUnresolvedModels: true,
     }),
     renderer.handlers(),
   );

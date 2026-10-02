@@ -190,7 +190,7 @@ removes every version.
   when the type has a single definition, by that definition. This "orphan
   recovery" is a read-time convenience, never a delete.
 - **CLI**: `swamp data query '<predicate>' [--select] [--limit]` is the read
-  path, e.g. `modelName == "<m>" && name == "<n>"` with `--select content` for
+  path, e.g. `model("<m>") && name == "<n>"` with `--select content` for
   one item's content, or `workflowRunId`, `jobName` and `stepName` to pick one
   step's output in a run. `swamp data get <model> <name> [--version N]
   [--no-content]` and its `--workflow <name> [--run <id>]` form
@@ -258,7 +258,10 @@ What each removal keeps:
 - **`swamp data rename`** copies the latest version to the new name and writes
   a forwarding tombstone (`renamedTo`) under the old one. `findByName` follows
   the forward for reads without a version
-  (`src/domain/data/data_rename_service.ts`, `unified_data_repository.ts`).
+  (`src/domain/data/data_rename_service.ts`, `unified_data_repository.ts`),
+  and so does a latest-only `data query` with an exact `name == "<old>"` term,
+  through the catalog's rename forwards
+  ([data-query.md](../enablers/data-query.md#rename-forwards)).
 
 `gc`, `prune` and `delete` take the global datastore lock. On a remote
 datastore they push their deletions in the same sync. `gc --dry-run` and

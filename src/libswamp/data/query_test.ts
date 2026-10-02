@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { dataQuery, type DataQueryDeps, type DataQueryEvent } from "./query.ts";
@@ -302,4 +302,39 @@ Deno.test("dataQuery: stringifies non-Error throws in the error event", async ()
     kind: "error",
     error: { code: "QUERY_FAILED", message: "catastrophe" },
   });
+});
+
+Deno.test("dataQuery: reportUnresolvedModels turns each unresolved model() into a warning", async () => {
+  const deps: DataQueryDeps = {
+    query: (_predicate, options) => {
+      options?.onUnresolvedModel?.("missing");
+      return Promise.resolve([]);
+    },
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: 'model("missing")',
+      reportUnresolvedModels: true,
+    }),
+  );
+  const warnings = completedOf(events).warnings ?? [];
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], 'model("missing") matched no model');
+});
+
+Deno.test("dataQuery: without reportUnresolvedModels no callback is passed and no warning is added", async () => {
+  let callbackPassed = false;
+  const deps: DataQueryDeps = {
+    query: (_predicate, options) => {
+      callbackPassed = options?.onUnresolvedModel !== undefined;
+      return Promise.resolve([]);
+    },
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, { predicate: 'model("missing")' }),
+  );
+  assertEquals(callbackPassed, false);
+  assertEquals("warnings" in completedOf(events), false);
 });

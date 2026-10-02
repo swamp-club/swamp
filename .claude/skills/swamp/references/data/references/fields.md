@@ -8,7 +8,7 @@
 | `name`        | string | Human-readable data name                                                            |
 | `version`     | int    | Latest version number                                                               |
 | `createdAt`   | string | ISO-8601 timestamp                                                                  |
-| `modelName`   | string | Owning model name                                                                   |
+| `modelName`   | string | Owning model's name when the data was written (not updated by a model rename)       |
 | `modelId`     | string | Owning model id (definition id; workflow id for workflow-scope data)                |
 | `modelType`   | string | Owning model type (normalized)                                                      |
 | `specName`    | string | Output spec name                                                                    |
@@ -32,6 +32,20 @@ binary artifact's bytes, use the deprecated
 `swamp data get <model> <name>
 --json` (no `data query` equivalent yet): its
 `content` is base64 when `contentEncoding` is `"base64"`.
+
+## `model()` — match by model, as `data get` resolves it
+
+`model("<name or definition id>")` is true for data stored under that model's
+current definition. It resolves the argument the way `data get <model>` does
+(name first, then exact definition id), so it still matches after a model
+rename, for data with no `modelName` tag, and never matches data left by a
+deleted model whose name was reused. `modelName == "<m>"` compares the tag
+written with the data, so it can differ in each of those cases.
+
+- The argument must be a string literal. Up to 32 distinct models per predicate.
+- A name or id with no definition matches nothing; the CLI warns about it.
+- Predicates only: not in `--select`, and not in CEL `data.query()` inside
+  models and workflows (use `modelId` and `modelType` there).
 
 ## CEL Operators
 

@@ -30,6 +30,7 @@ import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type DeferredWriteReceipt,
   EphemeralBudgetExceededError,
+  type FindAllGlobalOptions,
   type GarbageCollectionResult,
   OwnershipValidationError,
   type UnifiedDataRepository,
@@ -534,11 +535,11 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
   // --- Read Operations ---
 
-  findAllGlobal(): Promise<
+  findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
     this.ensureNotDisposed();
-    return Promise.resolve(this.findAllGlobalSync());
+    return Promise.resolve(this.findAllGlobalSync(options));
   }
 
   findAllForType(
@@ -961,7 +962,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  findAllGlobalSync(): Array<
+  findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
     this.ensureNotDisposed();
@@ -977,6 +978,14 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
       const dKey = dataKey(typeNorm, modelId, dataName, version);
       const data = this.dataMap.get(dKey);
+      if (data?.isRenamed && data.renamedTo) {
+        options?.renames?.push({
+          modelType: ModelType.create(typeNorm),
+          modelId,
+          dataName,
+          renamedTo: data.renamedTo,
+        });
+      }
       if (data && !data.isDeleted) {
         results.push({
           data,

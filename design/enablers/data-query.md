@@ -53,14 +53,23 @@ Deprecated `data get` forms map to these queries:
 
 | Deprecated command                             | Query                                                                                                                                   |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `swamp data get <m> <n>`                       | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                               |
-| `swamp data get <m> <n> --version 2`           | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                               |
+| `swamp data get <m> <n>`                       | `swamp data query 'model("<m>") && name == "<n>"' --select content`                                                                     |
+| `swamp data get <m> <n> --version 2`           | `swamp data query 'model("<m>") && name == "<n>" && version == 2' --select content`                                                     |
 | `swamp data get --workflow <w> --run <id> <n>` | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
 
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. A query has no "latest run of
 a workflow" form: look the run id up with
 `swamp workflow history get <workflow>` first.
+
+`model("<m>")` resolves `<m>` with the lookup `data get` uses
+(`findDefinitionByIdOrName`: definition name first, then exact definition id)
+and matches rows by the resolved definition's `modelType` and `modelId`
+(swamp-club#2960). `modelName` is the name stamped on the data when it was
+written, so `modelName == "<m>"` differs from `data get` after a model rename,
+for data with no `modelName` tag, and after a model is deleted and recreated
+under the same name. See [model references](#model-references) and
+[rename forwards](#rename-forwards).
 
 The remaining read subcommands are shortcuts:
 
@@ -236,7 +245,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `createdAt` | string | ISO-8601 timestamp |
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
-| `modelName` | string | Owning model name |
+| `modelName` | string | Owning model name as of the write (from the `modelName` tag; a model rename does not update it) |
 | `modelId` | string | Owning model id (stable across renames) |
 | `modelType` | string | Owning model type |
 | `specName` | string | Output spec name |
@@ -345,7 +354,37 @@ Available: attributes, content, contentType, createdAt, dataType, id, isLatest,
   ownerType, size,
   source, specName, stepName, streaming, tags, version, workflowName,
   workflowRunId
+Functions: model("<model name or definition id>")
 ```
+
+Function names are not identifiers, so `model(...)` passes this check; its
+arguments are validated separately (see [model references](#model-references)).
+
+### Model References
+
+`model("<name or id>")` is the one query function
+(`src/domain/data/query_predicate.ts` `collectModelReferences`,
+`src/domain/data/data_query_service.ts`):
+
+- `DataQueryService.query()` collects every `model(...)` argument before
+  matching and resolves each distinct one once through the
+  `ModelReferenceResolver` port (`DataQueryServiceOptions.resolveModel`). The
+  composition root (`repository_factory.ts`) wires it to
+  `findDefinitionByIdOrName`, so the CLI and serve's `data.query` resolve as
+  `data get` does. The domain service never depends on the definition
+  repository.
+- Each argument must be a string literal, and a predicate may name at most 32
+  distinct models (`MAX_MODEL_REFERENCES`), bounding the lookups a serve
+  client can cause.
+- Matching is synchronous; the resolutions are held in per-query state that is
+  set and cleared within the matching loop, so concurrent queries on one
+  service never see each other's resolutions.
+- A reference with no definition matches no rows. It is reported through
+  `DataQueryOptions.onUnresolvedModel`, which only the CLI wires (libswamp
+  `reportUnresolvedModels`, rendered as `warnings`). Serve leaves it unset, so
+  a client cannot tell a missing model from one it may not read.
+- `querySync()` (CEL `data.query()` in models and workflows), services built
+  without a resolver, and `--select` expressions reject `model()`.
 
 ## Catalog
 
@@ -400,6 +439,17 @@ CREATE INDEX idx_namespace               ON catalog(namespace);
 CREATE INDEX idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
 CREATE INDEX idx_catalog_latest_lookup   ON catalog(model_name, data_name, is_latest, namespace);
 
+CREATE TABLE catalog_renames (
+  namespace       TEXT NOT NULL DEFAULT '',
+  type_normalized TEXT NOT NULL,
+  model_id        TEXT NOT NULL,
+  data_name       TEXT NOT NULL,
+  renamed_to      TEXT NOT NULL,
+  PRIMARY KEY (namespace, type_normalized, model_id, data_name)
+);
+
+CREATE INDEX idx_catalog_renames_name ON catalog_renames(data_name);
+
 CREATE TABLE catalog_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -407,8 +457,8 @@ CREATE TABLE catalog_meta (
 ```
 
 `catalog_meta` holds a `schema_version` key. When the version changes, the
-catalog table is dropped and rebuilt by self-healing backfill on the next
-query.
+`catalog` and `catalog_renames` tables are dropped and rebuilt by self-healing
+backfill on the next query.
 
 Content is not stored in the catalog. It stays on disk in the existing
 versioned file layout.
@@ -422,7 +472,7 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `save()` | `upsertNewVersion`: full row for the new version, size, createdAt (no checksum column) |
 | `append()` | `upsertNewVersion`: full row for the appended version |
 | `delete()` | Remove row, or update version if only one version deleted |
-| `rename()` | Remove old row, insert new row |
+| `rename()` | Remove the old name's rows, insert the new row, record a rename forward |
 | `finalizeVersion()` | Upsert row |
 | `removeLatestMarker()` | Remove row |
 | `collectGarbage()` | Update version or remove row |
@@ -462,6 +512,32 @@ This is critical for `hydrationStrategy: lazy`, where the local cache is
 incomplete on purpose: data lives in the remote datastore and is fetched on
 demand. Under the old destructive replace, a walk gap meant data loss in the
 catalog. Under additive upsert, a walk gap does nothing to the rows it misses.
+
+### Rename Forwards
+
+`catalog_renames` projects the rename markers `data rename` writes on the old
+name (`lifecycle: deleted`, `renamedTo`), so a query can follow them the way
+an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
+`catalog`; only the forward remains.
+
+- **Write-through**: `rename()` records the forward. `upsertNewVersion` (every
+  runtime write) deletes the forward from the name it writes, so writing the
+  old name again ends the forward.
+- **Backfill**: the `findAllGlobal` walk reports each rename marker it follows
+  past (`FindAllGlobalOptions.renames`), and backfill replaces this
+  namespace's forwards with them (`replaceRenames`), dropping any forward that
+  is no longer on disk (for example after another repository on a shared
+  datastore wrote the old name again).
+- **Query**: when the predicate does not open history and has a top-level
+  `name == "<literal>"` conjunct, matching resolves the literal's forwards per
+  `(namespace, type, model id)`: at most 5 hops, never revisiting a name, and
+  ignoring a forward from a name that has a latest row. Rows the chain ends at
+  are evaluated with `name` overlaid to the literal; the returned record keeps
+  its real name, and the caller's `include` filter still applies.
+- **Not followed**: versioned or `isLatest` predicates (as `data get --version`
+  does not follow), `name in [...]` or a name test under `||` or `!`, and
+  renames in other namespaces: `.catalog-export.json` carries rows, not
+  forwards.
 
 ### Stale-Row Filtering
 
@@ -514,6 +590,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | --------------------------- | ---------------------- | -------------------------------------------------------- |
 | implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
+| `model("<literal>")`        | `WHERE type_normalized = ? AND model_id = ?` (or no rows when unresolved) | Top-level AND conjuncts only |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
 expressions, comparisons, tag filters, `attributes` references, and complex
@@ -529,7 +606,8 @@ in CEL.
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Extract SQL pushdown clauses (isLatest, modelName equality)
+3. Extract SQL pushdown clauses (isLatest, modelName equality, model());
+   resolve rename forwards for a latest-only `name == "<literal>"`
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown

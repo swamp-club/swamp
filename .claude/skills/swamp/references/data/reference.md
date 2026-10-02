@@ -47,17 +47,21 @@ still works, but every read warns and prints the equivalent query as
 
 ```bash
 # Latest content
-swamp data query 'modelName == "my-model" && name == "execution-log"' --select content
+swamp data query 'model("my-model") && name == "execution-log"' --select content
 
 # A specific version (naming `version` also searches history)
-swamp data query 'modelName == "my-model" && name == "execution-log" && version == 2' --select content
+swamp data query 'model("my-model") && name == "execution-log" && version == 2' --select content
 
 # One field of JSON content
-swamp data query 'modelName == "my-model" && name == "state"' --select 'content.status'
+swamp data query 'model("my-model") && name == "state"' --select 'content.status'
 
 # Metadata only (no content): omit --select
-swamp data query 'modelName == "my-model" && name == "execution-log"' --json
+swamp data query 'model("my-model") && name == "execution-log"' --json
 ```
+
+`model("my-model")` takes a model name or definition id and resolves it as
+`data get` does, so it finds the data after a model rename. A model with no
+definition matches nothing, with a warning.
 
 **Output shape:** `--json` returns
 `{"results": [...], "total": N, "limited":
@@ -145,23 +149,25 @@ transparently resolves to the new name.
    ```bash
    swamp data query 'modelName == "my-model" && name == "new-name"' --json
    ```
-   Should return `new-name` at version 1. `data query` matches names exactly and
-   does not follow the forward reference; CEL
-   `data.latest("my-model", "old-name")` resolves `old-name` to `new-name`.
+   Should return `new-name` at version 1.
 
 **What happens:**
 
 1. Latest version of `old-name` is copied to `new-name` (version 1)
 2. A tombstone is written on `old-name` with a `renamedTo` forward reference
-3. Future lookups of `old-name` transparently resolve to `new-name`
-4. Historical versions of `old-name` remain accessible via
-   `data.version("model", "old-name", N)`
+3. Future latest lookups of `old-name` transparently resolve to `new-name`
+4. Historical versions of `old-name` stay on disk but leave the query catalog
 
 **Forward reference behavior:**
 
+- `swamp data query 'model("m") && name == "old-name"'` → returns `new-name` (up
+  to 5 renames deep). Only a latest read with an exact `name == "..."` term
+  follows; adding `version`, `isLatest`, `name in [...]`, or putting the name
+  test inside `||` reads `old-name` literally and finds nothing. Renames made in
+  another namespace of a shared datastore are not followed.
 - `data.latest("model", "old-name")` → resolves to `new-name` automatically
-- `data.version("model", "old-name", 2)` → returns original version 2 (no
-  forwarding)
+- `data.version("model", "old-name", 2)` → returns null: old-name's versions are
+  no longer in the catalog
 - `model.<name>.resource.<spec>.<old-name>` → resolves to new name in
   expressions
 

@@ -195,16 +195,29 @@ export function referencesContent(node: ASTNode): boolean {
  * equality is found.
  */
 export function extractModelNameEquality(ast: ASTNode): string | null {
+  return extractFieldEquality(ast, "modelName");
+}
+
+/**
+ * Extracts a string literal from a top-level `name == "literal"` equality,
+ * walking AND conjuncts only, exactly as {@link extractModelNameEquality}.
+ * Data query follows rename forwards only for this form.
+ */
+export function extractNameEquality(ast: ASTNode): string | null {
+  return extractFieldEquality(ast, "name");
+}
+
+function extractFieldEquality(ast: ASTNode, field: string): string | null {
   if (ast.op === "==") {
     const [left, right] = ast.args as [ASTNode, ASTNode];
     if (
-      left.op === "id" && left.args === "modelName" &&
+      left.op === "id" && left.args === field &&
       right.op === "value" && typeof right.args === "string"
     ) {
       return right.args;
     }
     if (
-      right.op === "id" && right.args === "modelName" &&
+      right.op === "id" && right.args === field &&
       left.op === "value" && typeof left.args === "string"
     ) {
       return left.args;
@@ -214,8 +227,86 @@ export function extractModelNameEquality(ast: ASTNode): string | null {
 
   if (ast.op === "&&") {
     const [left, right] = ast.args as [ASTNode, ASTNode];
-    return extractModelNameEquality(left) ??
-      extractModelNameEquality(right);
+    return extractFieldEquality(left, field) ??
+      extractFieldEquality(right, field);
+  }
+
+  return null;
+}
+
+/** Name of the query function that matches rows by model reference. */
+export const MODEL_FUNCTION = "model";
+
+/**
+ * Most distinct model references one predicate may hold. Each is a
+ * definition lookup, so a predicate cannot make the query do unbounded work.
+ */
+export const MAX_MODEL_REFERENCES = 32;
+
+function isASTNode(value: unknown): value is ASTNode {
+  return value !== null && typeof value === "object" && "op" in value;
+}
+
+/**
+ * Returns the distinct arguments of every `model(...)` call in the AST, in
+ * the order first seen. Each call must take exactly one string literal: the
+ * references are resolved before evaluation, so a computed argument cannot
+ * be supported. Throws UserError otherwise, or when the predicate holds more
+ * than {@link MAX_MODEL_REFERENCES} distinct references.
+ */
+export function collectModelReferences(ast: ASTNode): string[] {
+  const references = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!isASTNode(value)) return;
+    if (value.op === "call") {
+      const [name, argNodes] = value.args as [string, ASTNode[]];
+      if (name === MODEL_FUNCTION) {
+        const arg = argNodes.length === 1 ? argNodes[0] : undefined;
+        if (arg?.op !== "value" || typeof arg.args !== "string") {
+          throw new UserError(
+            `${MODEL_FUNCTION}() takes exactly one string literal: a model name or definition id, e.g. ${MODEL_FUNCTION}("my-model").`,
+          );
+        }
+        references.add(arg.args);
+      }
+      visit(argNodes);
+      return;
+    }
+    visit(value.args);
+  };
+  visit(ast);
+  if (references.size > MAX_MODEL_REFERENCES) {
+    throw new UserError(
+      `A query predicate may reference at most ${MAX_MODEL_REFERENCES} models with ${MODEL_FUNCTION}(); this one references ${references.size}.`,
+    );
+  }
+  return [...references];
+}
+
+/**
+ * Extracts the argument of a top-level `model("literal")` conjunct, walking
+ * AND conjuncts only, for SQL pushdown. Returns null when there is none.
+ */
+export function extractModelCall(ast: ASTNode): string | null {
+  if (ast.op === "call") {
+    const [name, argNodes] = ast.args as [string, ASTNode[]];
+    const arg = argNodes[0];
+    if (
+      name === MODEL_FUNCTION && argNodes.length === 1 &&
+      arg.op === "value" && typeof arg.args === "string"
+    ) {
+      return arg.args;
+    }
+    return null;
+  }
+
+  if (ast.op === "&&") {
+    const [left, right] = ast.args as [ASTNode, ASTNode];
+    return extractModelCall(left) ?? extractModelCall(right);
   }
 
   return null;
@@ -235,7 +326,8 @@ export function validateFieldReferences(identifiers: string[]): void {
     throw new UserError(
       `Unknown field${unique.length > 1 ? "s" : ""} ${
         unique.map((f) => `"${f}"`).join(", ")
-      } in query predicate.\nAvailable: ${available}`,
+      } in query predicate.\nAvailable: ${available}\n` +
+        `Functions: ${MODEL_FUNCTION}("<model name or definition id>")`,
     );
   }
 }

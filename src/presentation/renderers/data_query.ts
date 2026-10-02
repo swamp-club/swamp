@@ -27,7 +27,10 @@ import type {
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { Table } from "@cliffy/table";
 import { bold } from "@std/fmt/colors";
@@ -229,6 +232,7 @@ function renderJson(data: DataQueryData): void {
         results,
         total: data.total,
         limited: data.limited,
+        ...(data.warnings ? { warnings: data.warnings } : {}),
       },
       null,
       2,
@@ -240,6 +244,7 @@ function renderJson(data: DataQueryData): void {
         results: data.results.map(recordToJsonOutput),
         total: data.total,
         limited: data.limited,
+        ...(data.warnings ? { warnings: data.warnings } : {}),
       },
       null,
       2,
@@ -297,6 +302,12 @@ export function createDataQueryRenderer(
         if (outputMode === "json") {
           renderJson(event.data);
           return;
+        }
+        const logger = getSwampLogger(["data", "query"]);
+        for (const warning of event.data.warnings ?? []) {
+          // Braces escaped so a reference containing {…} is printed, not
+          // read as a LogTape placeholder.
+          logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
         }
         writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
       },

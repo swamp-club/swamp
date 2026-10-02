@@ -1816,3 +1816,77 @@ Deno.test("serve id-deny conformance: model.create with a type that does not par
     assertNotEquals(error.error?.code, "unauthorized");
   });
 });
+
+Deno.test("serve id-deny conformance: data.query model() never reveals a denied model, nor whether one exists (swamp-club#2960)", async () => {
+  await withFixtures(async (f) => {
+    const queryData = async (ctx: ConnectionContext, predicate: string) => {
+      const frames = await sendRequest(
+        ctx,
+        request("data.query", { predicate }),
+      );
+      assertAllowed(frames, "data.query");
+      const reply = frames.find((fr) => fr.type === "data.query") as {
+        payload?: {
+          data?: {
+            results?: Array<{ modelName: string }>;
+            warnings?: string[];
+          };
+        };
+      };
+      const data = reply.payload?.data ?? {};
+      return {
+        models: (data.results ?? []).map((r) => r.modelName),
+        warnings: data.warnings,
+      };
+    };
+
+    assertEquals(await queryData(f.ctx, 'model("dev-db")'), {
+      models: ["dev-db"],
+      warnings: undefined,
+    });
+    // A denied model and a model that does not exist look the same.
+    const denied = await queryData(f.ctx, 'model("prod-db")');
+    const missing = await queryData(f.ctx, 'model("no-such-db")');
+    assertEquals(denied, { models: [], warnings: undefined });
+    assertEquals(missing, denied);
+    assertEquals(
+      await queryData(f.ctx, `model("${f.prodModel.id}")`),
+      denied,
+      "by definition id too",
+    );
+    assertEquals((await queryData(f.admin, 'model("prod-db")')).models, [
+      "prod-db",
+    ]);
+  });
+});
+
+Deno.test("serve id-deny conformance: data.query by a renamed item's old name still filters by owner (swamp-club#2968)", async () => {
+  await withFixtures(async (f) => {
+    await f.repo.repoContext.unifiedDataRepo.rename(
+      f.repo.modelType,
+      f.prodModel.id,
+      "state",
+      "renamed-state",
+    );
+    const namesOf = async (ctx: ConnectionContext) => {
+      const frames = await sendRequest(
+        ctx,
+        request("data.query", { predicate: 'name == "state"' }),
+      );
+      assertAllowed(frames, "data.query");
+      const reply = frames.find((fr) => fr.type === "data.query") as {
+        payload?: {
+          data?: { results?: Array<{ modelName: string; name: string }> };
+        };
+      };
+      return (reply.payload?.data?.results ?? [])
+        .map((r) => `${r.modelName}/${r.name}`).sort();
+    };
+
+    assertEquals(await namesOf(f.ctx), ["dev-db/state"]);
+    assertEquals(await namesOf(f.admin), [
+      "dev-db/state",
+      "prod-db/renamed-state",
+    ]);
+  });
+});

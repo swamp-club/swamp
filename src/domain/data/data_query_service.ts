@@ -25,13 +25,17 @@ import type {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
-import type { UnifiedDataRepository } from "./repositories.ts";
+import type { RenameForward, UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
+  collectModelReferences,
   collectRootIdentifiers,
+  extractModelCall,
   extractModelNameEquality,
+  extractNameEquality,
   HISTORY_OPT_IN_FIELDS,
+  MODEL_FUNCTION,
   referencesAttributes,
   referencesContent,
   validateFieldReferences,
@@ -128,6 +132,43 @@ export interface DataQueryOptions {
    * control-plane records (swamp-club#2756).
    */
   excludeModelTypes?: readonly string[];
+  /**
+   * Called once for each `model(...)` reference that resolves to no
+   * definition. Such a reference matches no rows rather than failing, so a
+   * caller that may not learn whether a definition exists (serve) simply
+   * leaves this unset.
+   */
+  onUnresolvedModel?: (reference: string) => void;
+}
+
+/** What a `model(...)` reference resolved to. */
+export interface ResolvedModelReference {
+  /** The definition's normalized model type, as stored in the catalog. */
+  modelType: string;
+  /** The definition id. */
+  modelId: string;
+}
+
+/**
+ * Resolves a model name or definition id to the definition data is stored
+ * under, or null when there is none. Wired at the composition root to the
+ * same lookup `data get` uses.
+ */
+export type ModelReferenceResolver = (
+  idOrName: string,
+) => Promise<ResolvedModelReference | null>;
+
+/** Rename hops data query follows, matching the repository's unversioned reads. */
+const MAX_RENAME_HOPS = 5;
+
+function renameKey(namespace: string, type: string, modelId: string): string {
+  return `${namespace}\0${type}\0${modelId}`;
+}
+
+function modelFunctionUnavailable(): UserError {
+  return new UserError(
+    `${MODEL_FUNCTION}() is available in swamp data query only. Match the model with modelId and modelType instead.`,
+  );
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -156,6 +197,17 @@ export type ForeignContentFetcher = (
 
 export interface DataQueryServiceOptions {
   filterStaleRows?: boolean;
+  /**
+   * Resolves `model(...)` references in query predicates. Without it, a
+   * predicate that uses `model()` is rejected.
+   */
+  resolveModel?: ModelReferenceResolver;
+}
+
+/** Per-query state the `model()` function reads while rows are matched. */
+interface ModelMatchState {
+  resolved: ReadonlyMap<string, ResolvedModelReference | null>;
+  row: CatalogRow | null;
 }
 
 export class DataQueryService {
@@ -164,6 +216,12 @@ export class DataQueryService {
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
   private backfillPromise: Promise<void> | null = null;
   private readonly filterStaleRows: boolean;
+  private readonly resolveModel?: ModelReferenceResolver;
+  /**
+   * Set only while one query's rows are matched. Matching is synchronous, so
+   * no other query can observe it.
+   */
+  private modelMatch: ModelMatchState | null = null;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -171,10 +229,21 @@ export class DataQueryService {
     options?: DataQueryServiceOptions,
   ) {
     this.filterStaleRows = options?.filterStaleRows ?? false;
+    this.resolveModel = options?.resolveModel;
     this.queryEnv = new Environment({
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
     });
+    this.queryEnv.registerFunction(
+      `${MODEL_FUNCTION}(string): bool`,
+      (reference: string) => {
+        const state = this.modelMatch;
+        const resolved = state?.resolved.get(reference);
+        return !!state?.row && !!resolved &&
+          state.row.type_normalized === resolved.modelType &&
+          state.row.model_id === resolved.modelId;
+      },
+    );
   }
 
   /**
@@ -414,6 +483,10 @@ export class DataQueryService {
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
     await this.ensurePopulated();
+    const resolvedModels = await this.resolveModelReferences(
+      predicate,
+      options,
+    );
     let results: DataRecord[] | unknown[];
     if (options?.include) {
       // Apply the limit to accepted records, so hidden records never shorten
@@ -426,7 +499,7 @@ export class DataQueryService {
         const matched = this.executeMatch(predicate, {
           ...options,
           limit: batch,
-        });
+        }, resolvedModels);
         const accepted: DataRecord[] = [];
         for (const record of matched.records) {
           if (accepted.length >= limit) break;
@@ -443,7 +516,7 @@ export class DataQueryService {
         batch *= 4;
       }
     } else {
-      results = this.executeQuery(predicate, options);
+      results = this.executeQuery(predicate, options, resolvedModels);
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.
@@ -515,9 +588,75 @@ export class DataQueryService {
   private executeQuery(
     predicate: string,
     options?: DataQueryOptions,
+    resolvedModels?: ReadonlyMap<string, ResolvedModelReference | null>,
   ): DataRecord[] | unknown[] {
-    const matched = this.executeMatch(predicate, options);
+    const matched = this.executeMatch(predicate, options, resolvedModels);
     return this.project(matched.records, matched.selectParsed);
+  }
+
+  /**
+   * Resolves every `model(...)` reference in the predicate through the
+   * configured resolver. Returns undefined when the predicate has none.
+   * A reference with no definition maps to null and matches no rows.
+   */
+  private async resolveModelReferences(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<Map<string, ResolvedModelReference | null> | undefined> {
+    const references = collectModelReferences(
+      this.queryEnv.parse(predicate).ast as ASTNode,
+    );
+    if (references.length === 0) return undefined;
+    if (!this.resolveModel) throw modelFunctionUnavailable();
+    const resolved = new Map<string, ResolvedModelReference | null>();
+    for (const reference of references) {
+      const target = await this.resolveModel(reference);
+      if (!target) options?.onUnresolvedModel?.(reference);
+      resolved.set(reference, target);
+    }
+    return resolved;
+  }
+
+  /**
+   * Resolves the rename forwards a latest-only `name == "<old>"` predicate
+   * follows: for each model with a forward from `dataName`, the name it ends
+   * at after at most {@link MAX_RENAME_HOPS} hops, keyed by namespace, type
+   * and model id. A forward from a name that has a latest row again is
+   * stale and ignored; a chain that loops or runs past the hop limit
+   * resolves to nothing, as an unversioned repository read does.
+   */
+  private resolveRenameForwards(dataName: string): Map<string, string> {
+    const targets = new Map<string, string>();
+    for (const forward of this.catalogStore.findRenamesFrom(dataName)) {
+      const { namespace, type_normalized: type, model_id: modelId } = forward;
+      if (this.catalogStore.hasLatestRow(namespace, type, modelId, dataName)) {
+        continue;
+      }
+      const seen = new Set([dataName]);
+      let target: string | null = forward.renamed_to;
+      for (let hop = 1; target !== null; hop++) {
+        if (seen.has(target) || hop > MAX_RENAME_HOPS) {
+          target = null;
+          break;
+        }
+        seen.add(target);
+        if (this.catalogStore.hasLatestRow(namespace, type, modelId, target)) {
+          break;
+        }
+        const next = this.catalogStore.findRenameTarget(
+          namespace,
+          type,
+          modelId,
+          target,
+        );
+        if (next === null) break;
+        target = next;
+      }
+      if (target !== null) {
+        targets.set(renameKey(namespace, type, modelId), target);
+      }
+    }
+    return targets;
   }
 
   /**
@@ -527,6 +666,7 @@ export class DataQueryService {
   private executeMatch(
     predicate: string,
     options?: DataQueryOptions,
+    resolvedModels?: ReadonlyMap<string, ResolvedModelReference | null>,
   ): {
     records: DataRecord[];
     selectParsed?: (ctx: Record<string, unknown>) => unknown;
@@ -544,6 +684,12 @@ export class DataQueryService {
     const userAst = userParsed.ast as ASTNode;
     const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
+    // model() references are resolved asynchronously before matching, so a
+    // synchronous query (CEL data.query) cannot use them. Rejected here,
+    // since an error inside the function would only skip each row.
+    if (!resolvedModels && collectModelReferences(userAst).length > 0) {
+      throw modelFunctionUnavailable();
+    }
 
     // Implicit latest-only: unless the predicate references `version` or
     // `isLatest` at root, restrict results to rows where is_latest is true.
@@ -566,6 +712,12 @@ export class DataQueryService {
       selectParsed = this.queryEnv.parse(options.select) as unknown as (
         ctx: Record<string, unknown>,
       ) => unknown;
+      const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
+      if (collectModelReferences(selectAst).length > 0) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() can only be used in the query predicate, not in --select.`,
+        );
+      }
     }
 
     // Detect attributes and content usage — union filter and select expression.
@@ -610,6 +762,26 @@ export class DataQueryService {
       whereParams.push(modelNameLiteral);
     }
 
+    const modelCall = extractModelCall(userAst);
+    if (modelCall !== null && resolvedModels) {
+      const target = resolvedModels.get(modelCall);
+      if (target) {
+        whereClauses.push("type_normalized = ?", "model_id = ?");
+        whereParams.push(target.modelType, target.modelId);
+      } else {
+        // An unresolved reference matches nothing.
+        whereClauses.push("0 = 1");
+      }
+    }
+
+    // A latest-only read by exact name follows rename forwards, as an
+    // unversioned `data get` does: rows the old name forwards to are
+    // evaluated as if they still carried it.
+    const nameLiteral = opensHistory ? null : extractNameEquality(userAst);
+    const renameTargets = nameLiteral === null
+      ? new Map<string, string>()
+      : this.resolveRenameForwards(nameLiteral);
+
     const rows = whereClauses.length > 0
       ? this.catalogStore.iterateFiltered(
         whereClauses.join(" AND "),
@@ -624,68 +796,84 @@ export class DataQueryService {
     let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
-    for (const row of rows) {
-      const record = this.rowToRecord(row, false, false, includePath);
-      // attributes/content are read from disk only when evaluation touches
-      // them or the row matches, so rows rejected by metadata terms never
-      // read their body (swamp-club#2122). The load outcome — record or
-      // error — is memoized per row; nothing is cached across queries.
-      let full: DataRecord | undefined;
-      let loadFailed = false;
-      let loadError: unknown;
-      const load = (): DataRecord => {
-        if (loadFailed) throw loadError;
-        if (!full) {
-          try {
-            full = this.rowToRecord(
-              row,
-              needsAttributes,
-              needsContent,
-              includePath,
-            );
-          } catch (error) {
-            loadFailed = true;
-            loadError = error;
-            throw error;
+    this.modelMatch = resolvedModels
+      ? { resolved: resolvedModels, row: null }
+      : null;
+    try {
+      for (const row of rows) {
+        const record = this.rowToRecord(row, false, false, includePath);
+        // attributes/content are read from disk only when evaluation touches
+        // them or the row matches, so rows rejected by metadata terms never
+        // read their body (swamp-club#2122). The load outcome — record or
+        // error — is memoized per row; nothing is cached across queries.
+        let full: DataRecord | undefined;
+        let loadFailed = false;
+        let loadError: unknown;
+        const load = (): DataRecord => {
+          if (loadFailed) throw loadError;
+          if (!full) {
+            try {
+              full = this.rowToRecord(
+                row,
+                needsAttributes,
+                needsContent,
+                includePath,
+              );
+            } catch (error) {
+              loadFailed = true;
+              loadError = error;
+              throw error;
+            }
           }
+          return full;
+        };
+        const ctx = Object.create(
+          record as unknown as Record<string, unknown>,
+        ) as Record<string, unknown>;
+        ctx["ns"] = record.namespace;
+        if (
+          nameLiteral !== null &&
+          renameTargets.get(
+              renameKey(row.namespace, row.type_normalized, row.model_id),
+            ) === row.data_name
+        ) {
+          ctx["name"] = nameLiteral;
         }
-        return full;
-      };
-      const ctx = Object.create(
-        record as unknown as Record<string, unknown>,
-      ) as Record<string, unknown>;
-      ctx["ns"] = record.namespace;
-      Object.defineProperties(ctx, {
-        attributes: { get: () => load().attributes },
-        content: {
-          get: () => {
-            const loaded = load();
-            return loaded.contentType === "application/json"
-              ? loaded.attributes
-              : loaded.content;
+        Object.defineProperties(ctx, {
+          attributes: { get: () => load().attributes },
+          content: {
+            get: () => {
+              const loaded = load();
+              return loaded.contentType === "application/json"
+                ? loaded.attributes
+                : loaded.content;
+            },
           },
-        },
-      });
-      try {
-        const match = parsed(ctx);
-        if (match === true) {
-          // Materialize as a plain record; a read error absorbed by CEL
-          // (e.g. `<read error> || true`) resurfaces here.
-          results.push(needsHydration ? record : load());
-          if (needsHydration) matchedRows.push(row);
-          if (results.length >= limit) {
-            hitLimit = true;
-            break;
+        });
+        if (this.modelMatch) this.modelMatch.row = row;
+        try {
+          const match = parsed(ctx);
+          if (match === true) {
+            // Materialize as a plain record; a read error absorbed by CEL
+            // (e.g. `<read error> || true`) resurfaces here.
+            results.push(needsHydration ? record : load());
+            if (needsHydration) matchedRows.push(row);
+            if (results.length >= limit) {
+              hitLimit = true;
+              break;
+            }
           }
+        } catch (error) {
+          // Required body reads must fail the query, not skip the row.
+          if (loadFailed) throw loadError;
+          logger
+            .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
+            String(error)
+          }`;
         }
-      } catch (error) {
-        // Required body reads must fail the query, not skip the row.
-        if (loadFailed) throw loadError;
-        logger
-          .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
-          String(error)
-        }`;
       }
+    } finally {
+      this.modelMatch = null;
     }
 
     // Hydrate matched records with attributes when the predicate didn't
@@ -780,7 +968,8 @@ export class DataQueryService {
   private async backfillAsync(): Promise<void> {
     // Read before walking the disk; see CatalogStore.markPopulated.
     const generation = this.catalogStore.generation();
-    const allData = await this.dataRepo.findAllGlobal();
+    const renames: RenameForward[] = [];
+    const allData = await this.dataRepo.findAllGlobal({ renames });
 
     // Group by model type so we can yield to the event loop between types,
     // giving V8 GC a chance to reclaim intermediate YAML/Zod allocations.
@@ -850,13 +1039,15 @@ export class DataQueryService {
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
+    this.replaceRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
   }
 
   private backfillSync(): void {
     // Read before walking the disk; see CatalogStore.markPopulated.
     const generation = this.catalogStore.generation();
-    const allData = this.dataRepo.findAllGlobalSync();
+    const renames: RenameForward[] = [];
+    const allData = this.dataRepo.findAllGlobalSync({ renames });
 
     const byType = new Map<
       string,
@@ -914,7 +1105,26 @@ export class DataQueryService {
     computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
+    this.replaceRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
+  }
+
+  /**
+   * Rebuilds this namespace's rename forwards from the markers a backfill
+   * walk found, dropping any forward that is no longer on disk.
+   */
+  private replaceRenameForwards(renames: readonly RenameForward[]): void {
+    const namespace = this.dataRepo.namespace;
+    this.catalogStore.replaceRenames(
+      namespace,
+      renames.map((rename) => ({
+        namespace,
+        type_normalized: rename.modelType.normalized,
+        model_id: rename.modelId,
+        data_name: rename.dataName,
+        renamed_to: rename.renamedTo,
+      })),
+    );
   }
 
   private toCatalogRow(

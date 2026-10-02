@@ -47,8 +47,10 @@ import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type DeferredWriteReceipt,
+  type FindAllGlobalOptions,
   type GarbageCollectionResult,
   OwnershipValidationError,
+  type RenameForward,
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
 
@@ -209,7 +211,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     this.catalogStore.recordLocalWrite();
   }
 
-  async findAllGlobal(): Promise<
+  async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
     const results: Array<
@@ -217,7 +219,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     > = [];
     const baseDir = this.getBaseDir();
 
-    await this.collectAllData(baseDir, [], results);
+    await this.collectAllData(
+      baseDir,
+      [],
+      results,
+      undefined,
+      options?.renames,
+    );
 
     return results;
   }
@@ -292,6 +300,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     pathSegments: string[],
     results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
     cutoff?: Date,
+    renames?: RenameForward[],
   ): Promise<void> {
     try {
       const entries: { name: string; isDirectory: boolean }[] = [];
@@ -321,7 +330,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             const modelType = ModelType.create(typeStr);
             const dataItems = cutoff
               ? await this.findAllForModelSince(modelType, modelId, cutoff)
-              : await this.findAllForModel(modelType, modelId);
+              : await this.collectModelData(modelType, modelId, renames);
             for (const data of dataItems) {
               results.push({ data, modelType, modelId });
             }
@@ -335,7 +344,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }
         } else {
           // Keep recursing deeper into type directories
-          await this.collectAllData(childPath, childSegments, results, cutoff);
+          await this.collectAllData(
+            childPath,
+            childSegments,
+            results,
+            cutoff,
+            renames,
+          );
         }
       }
     } catch (error) {
@@ -569,7 +584,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`findAllForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
-    type = coerceModelType(type);
+    return await this.collectModelData(coerceModelType(type), modelId);
+  }
+
+  /**
+   * The latest data of each name under a model, following rename forwards.
+   * Each rename marker followed is pushed to `renames` when given.
+   */
+  private async collectModelData(
+    type: ModelType,
+    modelId: string,
+    renames?: RenameForward[],
+  ): Promise<Data[]> {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
     const seen = new Set<string>();
@@ -579,7 +605,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         if (!entry.isDirectory) continue;
         const dataName = entry.name;
 
-        const data = await this.findByName(type, modelId, dataName);
+        // Read the name's own latest version, then follow a rename marker
+        // from depth 1: the same reads as an unversioned findByName, with
+        // the marker visible on the way.
+        const latest = await this.getLatestVersion(type, modelId, dataName);
+        let data = latest === null
+          ? null
+          : await this.findByName(type, modelId, dataName, latest);
+        if (data?.isRenamed && data.renamedTo) {
+          renames?.push({
+            modelType: type,
+            modelId,
+            dataName,
+            renamedTo: data.renamedTo,
+          });
+          data = await this.findByNameWithDepth(
+            type,
+            modelId,
+            data.renamedTo,
+            undefined,
+            1,
+          );
+        }
         if (data && !seen.has(data.name)) {
           seen.add(data.name);
           results.push(data);
@@ -1128,13 +1175,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Update latest marker to point to tombstone
       await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
 
-      // Old name is now a tombstone — remove from catalog
+      // Old name is now a tombstone — remove from catalog, and record the
+      // forward so data query can follow it.
       this.catalogRemove(type, modelId, oldName);
+      this.catalogStore.recordRename({
+        namespace: this.namespace,
+        type_normalized: type.normalized,
+        model_id: modelId,
+        data_name: oldName,
+        renamed_to: newName,
+      });
     } catch (tombstoneError) {
       // Roll back: remove the newly created data under the new name
       logger
         .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
       try {
+        this.catalogStore.removeRename(
+          this.namespace,
+          type.normalized,
+          modelId,
+          oldName,
+        );
         const newVersionDir = this.getPath(
           type,
           modelId,
@@ -1567,6 +1628,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   findAllForModelSync(type: ModelType, modelId: string): Data[] {
+    return this.collectModelDataSync(type, modelId);
+  }
+
+  /** Sync twin of {@link collectModelData}. */
+  private collectModelDataSync(
+    type: ModelType,
+    modelId: string,
+    renames?: RenameForward[],
+  ): Data[] {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
     const seen = new Set<string>();
@@ -1576,7 +1646,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         if (!entry.isDirectory) continue;
         const dataName = entry.name;
 
-        const data = this.findByNameSync(type, modelId, dataName);
+        const latest = this.getLatestVersionSync(type, modelId, dataName);
+        let data = latest === null
+          ? null
+          : this.findByNameSync(type, modelId, dataName, latest);
+        if (data?.isRenamed && data.renamedTo) {
+          renames?.push({
+            modelType: type,
+            modelId,
+            dataName,
+            renamedTo: data.renamedTo,
+          });
+          data = this.findByNameSyncWithDepth(
+            type,
+            modelId,
+            data.renamedTo,
+            undefined,
+            1,
+          );
+        }
         if (data && !seen.has(data.name)) {
           seen.add(data.name);
           results.push(data);
@@ -1592,14 +1680,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  findAllGlobalSync(): Array<
+  findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];
     const baseDir = this.getBaseDir();
-    this.collectAllDataSync(baseDir, [], results);
+    this.collectAllDataSync(baseDir, [], results, options?.renames);
     return results;
   }
 
@@ -1683,6 +1771,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     currentDir: string,
     pathSegments: string[],
     results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+    renames?: RenameForward[],
   ): void {
     try {
       const entries: string[] = [];
@@ -1705,7 +1794,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
           try {
             const modelType = ModelType.create(typeStr);
-            const dataItems = this.findAllForModelSync(modelType, modelId);
+            const dataItems = this.collectModelDataSync(
+              modelType,
+              modelId,
+              renames,
+            );
             for (const data of dataItems) {
               results.push({ data, modelType, modelId });
             }
@@ -1715,7 +1808,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               .debug`Skipping ${childPath} during walk: ${typeStr} is not a valid model type. If data is missing from data query, run swamp doctor datastores --repair.`;
           }
         } else {
-          this.collectAllDataSync(childPath, childSegments, results);
+          this.collectAllDataSync(childPath, childSegments, results, renames);
         }
       }
     } catch (error) {

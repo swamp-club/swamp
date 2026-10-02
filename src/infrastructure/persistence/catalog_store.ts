@@ -57,6 +57,20 @@ export interface CatalogRow {
 }
 
 /**
+ * A rename forward: the data item `data_name` was renamed to `renamed_to`
+ * under the same (namespace, type_normalized, model_id). Projected from the
+ * rename marker the repository writes on the old name, so data query can
+ * follow it the way an unversioned repository read does.
+ */
+export interface RenameForwardRow {
+  namespace: string;
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  renamed_to: string;
+}
+
+/**
  * SQLite-backed metadata catalog for data query.
  *
  * Stores one row per version of each data artifact with all metadata fields
@@ -82,7 +96,7 @@ export interface CatalogCheckpointStats {
  * On startup, if the stored version differs, the catalog is dropped and
  * rebuilt via self-healing backfill.
  */
-export const CATALOG_SCHEMA_VERSION = "4";
+export const CATALOG_SCHEMA_VERSION = "5";
 
 /**
  * A value SQLite can round-trip when copying rows generically during
@@ -215,6 +229,17 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
 
+      CREATE TABLE IF NOT EXISTS catalog_renames (
+        namespace       TEXT NOT NULL DEFAULT '',
+        type_normalized TEXT NOT NULL,
+        model_id        TEXT NOT NULL,
+        data_name       TEXT NOT NULL,
+        renamed_to      TEXT NOT NULL,
+        PRIMARY KEY (namespace, type_normalized, model_id, data_name)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_catalog_renames_name ON catalog_renames(data_name);
+
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -224,7 +249,8 @@ export class CatalogStore {
 
   /**
    * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}.
-   * If they differ, drops the catalog table and clears the populated flag
+   * If they differ, drops the catalog and rename tables and clears the
+   * populated flag
    * so the next query triggers a full backfill with the new schema.
    */
   private migrateIfNeeded(): void {
@@ -235,6 +261,7 @@ export class CatalogStore {
     if (row?.value === CATALOG_SCHEMA_VERSION) return;
 
     this.db.exec("DROP TABLE IF EXISTS catalog");
+    this.db.exec("DROP TABLE IF EXISTS catalog_renames");
     this.createSchema();
     this.db.prepare(
       "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', ?)",
@@ -304,6 +331,10 @@ export class CatalogStore {
    *
    * Runs in an IMMEDIATE transaction so concurrent writers serialize
    * through SQLite's reserved lock rather than racing on the flag.
+   *
+   * A new version makes the name active again, so any rename forward from
+   * it ends here: the on-disk latest marker no longer names the rename
+   * marker.
    */
   upsertNewVersion(row: CatalogRow): void {
     this.db.exec("BEGIN IMMEDIATE");
@@ -320,6 +351,12 @@ export class CatalogStore {
         row.data_name,
         row.step_name,
         row.step_name,
+      );
+      this.removeRename(
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
       );
       this.upsert({ ...row, is_latest: 1 });
       this.db.exec("COMMIT");
@@ -470,6 +507,103 @@ export class CatalogStore {
       "DELETE FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
     );
     stmt.run(namespace, typeNormalized, modelId, dataName);
+  }
+
+  /**
+   * Records that `data_name` now forwards to `renamed_to`, replacing any
+   * forward already recorded for the same name.
+   */
+  recordRename(row: RenameForwardRow): void {
+    this.db.prepare(
+      `INSERT OR REPLACE INTO catalog_renames (
+         namespace, type_normalized, model_id, data_name, renamed_to
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      row.namespace,
+      row.type_normalized,
+      row.model_id,
+      row.data_name,
+      row.renamed_to,
+    );
+  }
+
+  /** Removes the rename forward from (namespace, type, model, name), if any. */
+  removeRename(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): void {
+    this.db.prepare(
+      "DELETE FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
+    ).run(namespace, typeNormalized, modelId, dataName);
+  }
+
+  /**
+   * Replaces every rename forward in `namespace` with `rows`, in one
+   * transaction. Backfill rebuilds the forwards from disk this way, so a
+   * forward that another repository's write ended does not survive.
+   */
+  replaceRenames(namespace: string, rows: readonly RenameForwardRow[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM catalog_renames WHERE namespace = ?").run(
+        namespace,
+      );
+      const stmt = this.db.prepare(
+        `INSERT OR REPLACE INTO catalog_renames (
+           namespace, type_normalized, model_id, data_name, renamed_to
+         ) VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const row of rows) {
+        stmt.run(
+          namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.renamed_to,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Every rename forward whose old name is `dataName`, in any model. */
+  findRenamesFrom(dataName: string): RenameForwardRow[] {
+    return this.db.prepare(
+      "SELECT * FROM catalog_renames WHERE data_name = ?",
+    ).all(dataName) as unknown as RenameForwardRow[];
+  }
+
+  /** The name `dataName` forwards to under one model, or null. */
+  findRenameTarget(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): string | null {
+    const row = this.db.prepare(
+      "SELECT renamed_to FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
+    ).get(namespace, typeNormalized, modelId, dataName) as
+      | { renamed_to: string }
+      | undefined;
+    return row?.renamed_to ?? null;
+  }
+
+  /** Whether (namespace, type, model, name) has a latest row. */
+  hasLatestRow(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND is_latest = 1 LIMIT 1",
+    ).get(namespace, typeNormalized, modelId, dataName);
+    return row !== undefined;
   }
 
   /**

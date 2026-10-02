@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import type { DataRecord } from "../../libswamp/mod.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   createDataQueryRenderer,
   renderQueryResultsMarkdown,
@@ -202,4 +204,77 @@ Deno.test("renderQueryResultsMarkdown: renders more list rows than fit in a spre
   const lines = md.split("\n");
   assertEquals(lines[0], "| 1 | 2 | 3 |");
   assertEquals(lines.length, count + 2);
+});
+
+Deno.test("renderJson: carries unresolved-model warnings in both shapes", () => {
+  const warnings = ['model("missing") matched no model definition'];
+  const handlers = createDataQueryRenderer("json").handlers();
+
+  const records = captureJsonOutput(() => {
+    handlers.completed({
+      kind: "completed",
+      data: {
+        predicate: 'model("missing")',
+        results: [],
+        total: 0,
+        limited: false,
+        warnings,
+      },
+    });
+  });
+  assertEquals(records.warnings, warnings);
+
+  const projected = captureJsonOutput(() => {
+    handlers.completed({
+      kind: "completed",
+      data: {
+        predicate: 'model("missing")',
+        select: "name",
+        results: [],
+        projected: { shape: "scalar", values: [] },
+        total: 0,
+        limited: false,
+        warnings,
+      },
+    });
+  });
+  assertEquals(projected.warnings, warnings);
+});
+
+Deno.test("renderJson: omits warnings when there are none", () => {
+  const output = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data: { predicate: "true", results: [], total: 0, limited: false },
+    });
+  });
+  assertEquals("warnings" in output, false);
+});
+
+Deno.test("data query log renderer: logs each warning verbatim, braces included", async () => {
+  await initializeLogging({ noColor: true });
+  const warning = 'model("a{b}") matched no model definition';
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    };
+  }
+  try {
+    createDataQueryRenderer("log").handlers().completed({
+      kind: "completed",
+      data: {
+        predicate: 'model("a{b}")',
+        results: [],
+        total: 0,
+        limited: false,
+        warnings: [warning],
+      },
+    });
+  } finally {
+    for (const [m, original] of originals) console[m] = original;
+  }
+  assertStringIncludes(stripAnsiCode(lines.join("\n")), warning);
 });

@@ -40,6 +40,8 @@ export interface DataQueryData {
   projected?: ProjectedData;
   total: number;
   limited: boolean;
+  /** One per `model(...)` reference that matched no definition. */
+  warnings?: string[];
 }
 
 export type DataQueryEvent =
@@ -59,6 +61,7 @@ export interface DataQueryDeps {
       limit?: number;
       select?: string;
       include?: (record: DataRecord) => Promise<boolean>;
+      onUnresolvedModel?: (reference: string) => void;
     },
   ): Promise<DataRecord[] | unknown[]>;
 }
@@ -72,6 +75,18 @@ export interface DataQueryInput {
   limit?: number;
   /** Keeps only the matched records this accepts, before any projection. */
   include?: (record: DataRecord) => Promise<boolean>;
+  /**
+   * Adds a warning for each `model(...)` reference that matched no
+   * definition. Off by default: serve leaves it off so a client never learns
+   * whether a definition it may not read exists.
+   */
+  reportUnresolvedModels?: boolean;
+}
+
+function unresolvedModelWarning(reference: string): string {
+  return `model(${
+    JSON.stringify(reference)
+  }) matched no model definition, so it matched no data. Check the model name or definition id.`;
 }
 
 /**
@@ -105,13 +120,20 @@ export async function* dataQuery(
       const limit = input.limit;
 
       try {
+        const unresolved: string[] = [];
         const rawResults = await deps.query(input.predicate, {
           limit,
           select: input.select,
           include: input.include,
+          ...(input.reportUnresolvedModels
+            ? { onUnresolvedModel: (ref: string) => unresolved.push(ref) }
+            : {}),
         });
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;
+        const warnings = unresolved.length > 0
+          ? { warnings: unresolved.map(unresolvedModelWarning) }
+          : {};
 
         if (!input.select) {
           // No projection — results are DataRecord[]
@@ -121,7 +143,13 @@ export async function* dataQuery(
           }
           yield {
             kind: "completed" as const,
-            data: { predicate: input.predicate, results, total, limited },
+            data: {
+              predicate: input.predicate,
+              results,
+              total,
+              limited,
+              ...warnings,
+            },
           };
           return;
         }
@@ -170,6 +198,7 @@ export async function* dataQuery(
             projected: projectedData,
             total,
             limited,
+            ...warnings,
           },
         };
       } catch (error) {

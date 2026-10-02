@@ -81,6 +81,26 @@ export interface DeferredWriteReceipt {
 /**
  * Repository interface for unified Data storage with versioning.
  */
+/**
+ * A rename marker found while walking the data tree: `dataName` was renamed
+ * to `renamedTo` under the same model.
+ */
+export interface RenameForward {
+  modelType: ModelType;
+  modelId: string;
+  dataName: string;
+  renamedTo: string;
+}
+
+/** Options for {@link UnifiedDataRepository.findAllGlobal}. */
+export interface FindAllGlobalOptions {
+  /**
+   * Receives every rename marker the walk follows past, so catalog backfill
+   * can record rename forwards without walking the tree a second time.
+   */
+  renames?: RenameForward[];
+}
+
 export interface UnifiedDataRepository {
   /**
    * The namespace this repository writes as (giga-swamp Phase 2). Catalog rows
@@ -94,7 +114,7 @@ export interface UnifiedDataRepository {
    *
    * @returns Array of data with their model type and model ID
    */
-  findAllGlobal(): Promise<
+  findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;
 
@@ -492,7 +512,7 @@ export interface UnifiedDataRepository {
    *
    * @returns Array of data with their model type and model ID
    */
-  findAllGlobalSync(): Array<
+  findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   >;
 
