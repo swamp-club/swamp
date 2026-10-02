@@ -42,8 +42,10 @@
 /**
  * One change a repository is about to make in the datastore.
  *
- * - `write`: the absolute path of a file about to be created or overwritten.
- * - `remove`: the absolute path of a file or directory about to be removed.
+ * - `write`: the absolute path of a file or directory about to be created or
+ *   changed; it exists after the operation.
+ * - `remove`: the absolute path of a file or directory about to be removed;
+ *   it is gone after the operation.
  * - `bulk`: a change that cannot be attributed to one path. `reason` is a
  *   short fixed string naming the operation (e.g. `"rename tombstone"`),
  *   for diagnostics only.

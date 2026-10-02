@@ -25,7 +25,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
-import { changeFor, signalChange } from "./unit_of_work_scope.ts";
+import { signalChange } from "./unit_of_work_scope.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -119,13 +119,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
-  }
-
-  private async notifyDirty(relPath?: string): Promise<void> {
-    await signalChange(
-      this.markDirtyHook,
-      changeFor(relPath, "YamlEvaluatedWorkflowRepository.notifyDirty"),
-    );
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
@@ -276,7 +269,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
-    await this.notifyDirty(targetPath);
+    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
     const data = {
       ...workflow.toData(),
       deferredExpressions: deferredExpressions?.length
@@ -334,7 +327,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }
 
     const resolvedPath = cachedPath ?? this.getLegacyPath(id);
-    await this.notifyDirty(resolvedPath);
+    await signalChange(this.markDirtyHook, {
+      kind: "remove",
+      path: resolvedPath,
+    });
 
     for (const path of pathsToTry) {
       try {
@@ -354,7 +350,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
    */
   async clear(): Promise<void> {
     const dir = this.getWorkflowsDir();
-    await this.notifyDirty(dir);
+    await signalChange(this.markDirtyHook, { kind: "remove", path: dir });
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -378,7 +374,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
-    await this.notifyDirty(targetPath);
+    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
     const data = {
       ...workflow.toData(),
       writtenReferences: writtenReferences.length
@@ -454,7 +450,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
 
   async deleteForRun(runId: string): Promise<void> {
     const dir = await this.runDir(runId);
-    await this.notifyDirty(dir);
+    await signalChange(this.markDirtyHook, { kind: "remove", path: dir });
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
