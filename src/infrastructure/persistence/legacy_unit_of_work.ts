@@ -48,6 +48,9 @@ const targets = new WeakMap<UnitOfWork, MarkDirtyHook>();
  * A repository stages into an ambient unit of work only when this is its own
  * hook (`signalChange` in `unit_of_work_scope.ts`), so a unit opened for one
  * repository context never takes another context's changes.
+ *
+ * The binding recognises legacy units only. A Phase 3 adapter needs its own
+ * way to claim a repository context.
  */
 export function legacyUnitOfWorkTarget(
   uow: UnitOfWork,

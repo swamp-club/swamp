@@ -348,21 +348,6 @@ export function createWorkflowRunRepository(
   return new YamlWorkflowRunRepository(repoDir, eventBus, baseDir, markDirty);
 }
 
-/**
- * Creates a YamlVaultConfigRepository for storing vault configurations.
- *
- * @param repoDir - The repository directory path
- * @param eventBus - Optional event bus for emitting domain events
- * @returns A new YamlVaultConfigRepository instance
- */
-export function createVaultConfigRepository(
-  repoDir: string,
-  eventBus?: EventBus,
-  baseDir?: string,
-): YamlVaultConfigRepository {
-  return new YamlVaultConfigRepository(repoDir, eventBus, baseDir);
-}
-
 // =============================================================================
 // Repository Context
 // =============================================================================
