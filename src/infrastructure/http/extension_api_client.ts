@@ -27,7 +27,13 @@ import {
   type ClientIdentity,
   mergeIdentityHeaders,
 } from "./client_identity.ts";
-import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+import {
+  fetchWithRateLimitRetry,
+  hasCredential,
+  rateLimitError,
+  readRateLimit,
+  type Sleep,
+} from "./rate_limit.ts";
 
 export type { ClientIdentity };
 
@@ -234,6 +240,7 @@ export class ExtensionApiClient {
   constructor(
     private readonly serverUrl: string,
     private readonly identity: ClientIdentity = {},
+    private readonly options: { sleep?: Sleep } = {},
   ) {}
 
   /**
@@ -769,12 +776,6 @@ export class ExtensionApiClient {
   private async checkResponse(res: Response): Promise<void> {
     if (res.ok || res.status === 201) return;
 
-    if (res.status === 429) {
-      const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
-      await res.body?.cancel();
-      throw rateLimitError(retryAfter);
-    }
-
     const body = await res.text();
 
     if (res.status === 401) {
@@ -838,11 +839,28 @@ export class ExtensionApiClient {
     // override the constructor identity.
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     try {
-      return await fetch(url, {
-        ...init,
-        headers,
-        signal: init.signal ?? AbortSignal.timeout(15_000),
-      });
+      // Each attempt gets its own timeout so a Retry-After wait never
+      // eats into the next request's budget.
+      const res = await fetchWithRateLimitRetry(
+        () =>
+          fetch(url, {
+            ...init,
+            headers,
+            signal: init.signal ?? AbortSignal.timeout(15_000),
+          }),
+        {
+          method: init.method,
+          signal: init.signal ?? undefined,
+          sleep: this.options.sleep,
+        },
+      );
+      if (res.status === 429) {
+        throw rateLimitError({
+          ...(await readRateLimit(res)),
+          credentialed: hasCredential(headers),
+        });
+      }
+      return res;
     } catch (error) {
       if (error instanceof UserError) throw error;
       if (error instanceof DOMException && error.name === "TimeoutError") {

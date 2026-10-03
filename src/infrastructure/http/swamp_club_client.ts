@@ -22,7 +22,14 @@ import {
   type ClientIdentity,
   mergeIdentityHeaders,
 } from "./client_identity.ts";
-import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+import {
+  fetchWithRateLimitRetry,
+  hasCredential,
+  parseRetryAfter,
+  rateLimitError,
+  readRateLimit,
+  type Sleep,
+} from "./rate_limit.ts";
 import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 import type { IdentityCheckOutcome } from "../../domain/auth/auth_gate_policy.ts";
 
@@ -255,6 +262,7 @@ export class SwampClubClient {
   constructor(
     private readonly serverUrl: string,
     private readonly identity: ClientIdentity = {},
+    private readonly options: { sleep?: Sleep } = {},
   ) {}
 
   /**
@@ -1173,21 +1181,33 @@ export class SwampClubClient {
     timeoutMs = 15_000,
   ): Promise<Response> {
     const url = `${this.serverUrl}${path}`;
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const signal = callerSignal
-      ? AbortSignal.any([callerSignal, timeoutSignal])
-      : timeoutSignal;
+    // Built per attempt so a Retry-After wait never eats into the next
+    // request's timeout; only the caller's signal cancels the wait.
+    const attemptSignal = () => {
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      return callerSignal
+        ? AbortSignal.any([callerSignal, timeoutSignal])
+        : timeoutSignal;
+    };
     // Merge identity headers FIRST so any caller-supplied header in
     // init.headers wins on conflict. Required so per-call x-api-key /
     // Authorization values (e.g. signIn, getCurrentUser session token,
     // whoami) override the constructor identity.
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     try {
-      const res = await fetch(url, { ...init, headers, signal });
+      const res = await fetchWithRateLimitRetry(
+        () => fetch(url, { ...init, headers, signal: attemptSignal() }),
+        {
+          method: init.method,
+          signal: callerSignal,
+          sleep: this.options.sleep,
+        },
+      );
       if (res.status === 429) {
-        const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
-        await res.body?.cancel();
-        throw rateLimitError(retryAfter);
+        throw rateLimitError({
+          ...(await readRateLimit(res)),
+          credentialed: hasCredential(headers),
+        });
       }
       return res;
     } catch (error) {
