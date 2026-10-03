@@ -694,6 +694,8 @@ Deno.test("ExtensionApiClient version-scoped methods URL-encode version path seg
   }
 });
 
+const noSleep = () => Promise.resolve();
+
 Deno.test("ExtensionApiClient: 429 surfaces Retry-After in UserError", async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
     return new Response("rate limited", {
@@ -704,6 +706,8 @@ Deno.test("ExtensionApiClient: 429 surfaces Retry-After in UserError", async () 
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const err = await assertRejects(
       () => client.getLatestVersion("@test/ext"),
@@ -747,6 +751,8 @@ Deno.test("ExtensionApiClient: 429 on getDownloadUrl is preferred over 404 fallt
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const err = await assertRejects(
       () => client.getDownloadUrl("@test/ext", "2026.01.01.1"),
@@ -754,6 +760,142 @@ Deno.test("ExtensionApiClient: 429 on getDownloadUrl is preferred over 404 fallt
     );
     assertStringIncludes(err.message, "Rate limit exceeded");
     assertStringIncludes(err.message, "Retry in 10s");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: principal-scope 429 with an API key omits the sign-in hint", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return Response.json(
+      { error: "Rate limit exceeded", scope: "principal" },
+      {
+        status: 429,
+        headers: { "retry-after": "120", "x-ratelimit-scope": "principal" },
+      },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    const err = await assertRejects(
+      () => client.getLatestVersion("@test/ext", "collective-token"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "this API key or login");
+    assertStringIncludes(err.message, "Retry in 120s");
+    assertEquals(err.message.includes("swamp auth login"), false);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: reads the scope from the body when the header is missing", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return Response.json(
+      { error: "Rate limit exceeded", scope: "global" },
+      { status: 429 },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const err = await assertRejects(
+      () => client.searchExtensions({ q: "aws" }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "too many requests");
+    assertEquals(err.message.includes("swamp auth login"), false);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: retries a rate-limited GET and returns the later response", async () => {
+  let requests = 0;
+  const delays: number[] = [];
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    requests++;
+    if (requests === 1) {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "15", "x-ratelimit-scope": "principal" },
+      });
+    }
+    return Response.json({ latestVersion: "2026.09.10.0" });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      {
+        sleep: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      },
+    );
+    const latest = await client.getLatestVersion("@swamp/1password", "key");
+    assertEquals(latest?.version, "2026.09.10.0");
+    assertEquals(requests, 2);
+    assertEquals(delays.length, 1);
+    assertEquals(delays[0] >= 15_000 && delays[0] < 16_000, true);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: gives up after three rate-limited attempts", async () => {
+  let requests = 0;
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    requests++;
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "1", "x-ratelimit-scope": "principal" },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    await assertRejects(
+      () => client.getChecksum("@test/ext", "2026.01.01.1", "key"),
+      UserError,
+      "this API key or login",
+    );
+    assertEquals(requests, 3);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: does not retry a rate-limited POST", async () => {
+  let requests = 0;
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    requests++;
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "1", "x-ratelimit-scope": "principal" },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    await assertRejects(
+      () => client.yankExtension("@test/ext", null, null, "test", "key"),
+      UserError,
+      "Rate limit exceeded",
+    );
+    assertEquals(requests, 1);
   } finally {
     await server.shutdown();
   }

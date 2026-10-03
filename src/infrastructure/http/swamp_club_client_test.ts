@@ -453,6 +453,8 @@ Deno.test("SwampClubClient - updateIssue surfaces profanity on 422", async () =>
   }
 });
 
+const noSleep = () => Promise.resolve();
+
 Deno.test("SwampClubClient - 429 surfaces Retry-After in UserError", async () => {
   const mock = startMockServer((_req) =>
     new Response("rate limited", {
@@ -461,7 +463,11 @@ Deno.test("SwampClubClient - 429 surfaces Retry-After in UserError", async () =>
     })
   );
   try {
-    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const client = new SwampClubClient(
+      `http://localhost:${mock.port}`,
+      {},
+      { sleep: noSleep },
+    );
     const err = await assertRejects(
       () => client.fetchIssue(undefined, 1),
       UserError,
@@ -487,6 +493,97 @@ Deno.test("SwampClubClient - 429 without Retry-After still surfaces sign-in hint
     assertStringIncludes(err.message, "Rate limit exceeded");
     assertEquals(err.message.includes("Retry in"), false);
     assertStringIncludes(err.message, "swamp auth login");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - principal-scope 429 for a signed-in caller omits the sign-in hint", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json(
+      { error: "Rate limit exceeded", scope: "principal" },
+      {
+        status: 429,
+        headers: { "retry-after": "90", "x-ratelimit-scope": "principal" },
+      },
+    )
+  );
+  try {
+    const client = new SwampClubClient(
+      `http://localhost:${mock.port}`,
+      { bearerToken: "swamp_test" },
+      { sleep: noSleep },
+    );
+    const err = await assertRejects(
+      () => client.fetchIssue(undefined, 1),
+      UserError,
+    );
+    assertStringIncludes(err.message, "this API key or login");
+    assertStringIncludes(err.message, "Retry in 90s");
+    assertEquals(err.message.includes("swamp auth login"), false);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - retries a rate-limited GET with a fresh request", async () => {
+  let requests = 0;
+  const mock = startMockServer((_req) => {
+    requests++;
+    return requests === 1
+      ? new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "20", "x-ratelimit-scope": "global" },
+      })
+      : new Response("not found", { status: 404 });
+  });
+  const delays: number[] = [];
+  try {
+    const client = new SwampClubClient(
+      `http://localhost:${mock.port}`,
+      {},
+      {
+        sleep: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      },
+    );
+    // The second attempt's 404 reaches the caller: the retry happened.
+    await assertRejects(
+      () => client.fetchIssue(undefined, 1),
+      UserError,
+      "Issue #1 not found.",
+    );
+    assertEquals(requests, 2);
+    assertEquals(delays.length, 1);
+    assertEquals(delays[0] >= 20_000 && delays[0] < 21_000, true);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - does not retry a rate-limited PATCH", async () => {
+  let requests = 0;
+  const mock = startMockServer((_req) => {
+    requests++;
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "1", "x-ratelimit-scope": "principal" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(
+      `http://localhost:${mock.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    await assertRejects(
+      () => client.updateIssue("key", 42, { title: "t" }),
+      UserError,
+      "Rate limit exceeded",
+    );
+    assertEquals(requests, 1);
   } finally {
     await mock.shutdown();
   }
