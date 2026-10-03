@@ -1077,8 +1077,9 @@ even when it fails.
 Repositories route their signal through `signalChange`
 (`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
 repositories (swamp-club#2979), the definition, workflow, evaluated definition
-and evaluated workflow repositories (swamp-club#2980) and the workflow run
-repository (swamp-club#2992) stage a typed change at each call site: `write`
+and evaluated workflow repositories (swamp-club#2980), the workflow run
+repository (swamp-club#2992) and the vault config repository (swamp-club#2995)
+stage a typed change at each call site: `write`
 for a path that exists after the operation, `remove` for one that is gone after
 it. A definition or workflow `delete` that leaves its resolved path in place,
 because that file declares another entity sharing the id, stages a `write` of
@@ -1103,6 +1104,44 @@ scope returns. A write that lands after its unit committed is rejected. No
 production code opens a scope yet (pinned empty in
 `integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
 and behaviour is unchanged. Phase 2 opens scopes from use cases.
+
+**End of Phase 1 (swamp-club#2996).** Every hooked datastore-tier repository
+stages typed changes through `signalChange`. Two rules in
+`integration/datastore_write_seams_rules_test.ts` hold this: inside the
+datastore-tier repository classes the hook field appears only as the first
+argument of `signalChange`, and under `src/infrastructure/persistence/` only
+`legacy_unit_of_work.ts` and `unit_of_work_scope.ts` call a mark hook. Writes
+still mark through `signalChange`'s hook fallback, because nothing opens a
+scope. Phase 2 removes that fallback once every write path runs inside a
+scope.
+
+What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
+each site):
+
+- CLI commands that mark before pushing, several with bare marks: access grant,
+  access group, access token mint, datastore config migrate, datastore sync,
+  worker prune and worker token create and revoke (`src/cli/commands/`).
+- `pushManagedConfigChanges` and `pushManagedConfigPaths`
+  (`src/cli/managed_config_sync.ts`), which send bare marks after the CLI writes
+  managed config through unhooked repositories.
+- Namespace migration: `datastoreNamespaceMigrate`
+  (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
+  (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
+- Serve: device auth (`mintServerTokenImpl` in `src/serve/device_auth_handler.ts`),
+  grant tracking (`publishGrantWrites` in `src/serve/grant_write_tracking.ts`),
+  access reload (`handleAccessReload` in `src/serve/handlers/access_handlers.ts`)
+  and the extension lockfile (`extensionLockfileTransaction` in
+  `src/serve/handlers/admin_handlers.ts`).
+- The serve start-up definition migration, which marks each moved file by path
+  (`serveCommand` in `src/cli/commands/serve.ts`).
+
+The lockfile is deferred to Phase 2. `ManagedLockfileTransaction` publishes
+through the port `createDatastoreLockfileSync` builds
+(`src/libswamp/extensions/managed_lockfile_transaction.ts`), whose `publish`
+marks the lockfile path as a publish signal and pushes: with `mustUpload` a
+push that reports sending nothing rejects, and a failed publish is recorded as
+pending and published by the next transaction. swamp-club#2865 has the
+reasoning.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,

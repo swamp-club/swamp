@@ -82,6 +82,13 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
  *
  * Call it before the write, as `notifyDirty` always has. A rejected hook
  * rejects the returned promise with the same error on either route.
+ *
+ * Route 2 is the only route production writes take in Phase 1: no production
+ * code opens a scope, so every repository change reaches the sync service
+ * through this direct hook call. Phase 2 removes it once every write path
+ * runs inside a scope; `PINNED_UNIT_OF_WORK_SCOPES` in
+ * `integration/datastore_write_seams_rules_test.ts` shows how far that has
+ * got.
  */
 export async function signalChange(
   markDirty: MarkDirtyHook | undefined,
@@ -94,28 +101,4 @@ export async function signalChange(
     return;
   }
   await markDirty(change.kind === "bulk" ? undefined : change.path);
-}
-
-/**
- * The {@link StagedChange} for a dirty mark given as an optional path, the
- * form repositories used before they staged typed changes. `relPath` is the
- * absolute path of the file or directory about to change (the composition
- * root's hook makes it cache-relative). A path becomes `write`; no path
- * becomes `bulk` with `reason`.
- *
- * A bare path cannot tell a write from a remove, so removals are staged as
- * `write` too. The legacy adapter forwards both kinds identically, and a path
- * absent on disk at push time is a delete, so nothing changes. No repository
- * calls this now: every hooked repository stages typed changes at its call
- * sites (data and output, swamp-club#2979; definition, workflow and
- * evaluated, swamp-club#2980; workflow run, swamp-club#2992). It goes with
- * the Phase 1 step that ratchets repository marks to zero.
- */
-export function changeFor(
-  relPath: string | undefined,
-  reason: string,
-): StagedChange {
-  return relPath === undefined
-    ? { kind: "bulk", reason }
-    : { kind: "write", path: relPath };
 }

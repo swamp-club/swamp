@@ -230,7 +230,7 @@ const STAGED_KIND =
 /**
  * One key per staged change inside a datastore-tier repository class, as
  * "<file>: <class> <kind>". Scoped to those classes, so the StagedChange type
- * union, changeFor and the legacy adapter never count.
+ * union and the legacy adapter never count.
  */
 function stagedChanges(files: readonly SourceFile[]): string[] {
   const repositories = new Set<string>(DATASTORE_TIER_REPOSITORIES);
@@ -242,6 +242,86 @@ function stagedChanges(files: readonly SourceFile[]): string[] {
         const kind = match[1] ?? `${match[2]}|${match[3]}`;
         keys.push(`${rel}: ${owners[i]} ${kind}`);
       }
+    });
+  }
+  return countedKeys(keys);
+}
+
+// ---------------------------------------------------------------------------
+// Rule 6: mark calls in the persistence layer
+// ---------------------------------------------------------------------------
+
+const PERSISTENCE_DIR = "src/infrastructure/persistence/";
+
+/**
+ * The only persistence files that may call a mark hook, each with its reason
+ * (datastore rework Phase 1 close-out, swamp-club#2996). Repositories stage
+ * through signalChange instead. A Phase 3 adapter that forwards staged
+ * changes is added here on purpose.
+ */
+const PERSISTENCE_MARK_ADAPTERS: Record<string, string> = {
+  "src/infrastructure/persistence/legacy_unit_of_work.ts":
+    "the legacy unit of work forwards each staged change to the mark hook",
+  "src/infrastructure/persistence/unit_of_work_scope.ts":
+    "signalChange calls the hook directly when no scope is bound to it",
+};
+
+/** Mark call sites under the persistence layer outside the allowed adapters. */
+function persistenceMarksOutsideAdapters(
+  files: readonly SourceFile[],
+): string[] {
+  return markCallSites(files).filter((key) => {
+    const rel = key.slice(0, key.indexOf(": "));
+    return rel.startsWith(PERSISTENCE_DIR) &&
+      !Object.hasOwn(PERSISTENCE_MARK_ADAPTERS, rel);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Rule 7: repositories reach their hook only through signalChange
+// ---------------------------------------------------------------------------
+
+// A reference to a repository's hook field. The field is markDirty or
+// markDirtyHook depending on the class.
+const HOOK_FIELD = /\bthis\.(?:markDirty|markDirtyHook)\b/g;
+
+/**
+ * One key per reference to the hook field inside a datastore-tier repository
+ * class that is not the first argument of a `signalChange(...)` call, as
+ * "<file>: <class>": calling the hook, passing it elsewhere, or storing it.
+ * Code before and after the reference is read across lines, so a call that
+ * deno fmt wraps still counts as signalChange's argument. The constructor
+ * parameter (`private readonly markDirty?: MarkDirtyHook`) is not a
+ * `this.` reference and never counts.
+ *
+ * Known limits: only classes in DATASTORE_TIER_REPOSITORIES are scanned, so a
+ * new hooked repository must be added there (rule 6 still catches a direct
+ * hook call anywhere under the persistence layer). As a textual scan it
+ * cannot see the hook reached by aliasing, such as destructuring it off
+ * `this`.
+ */
+function hookReferencesOutsideSignalChange(
+  files: readonly SourceFile[],
+): string[] {
+  const repositories = new Set<string>(DATASTORE_TIER_REPOSITORIES);
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    const code = lines.map((line) => isCommentLine(line) ? "" : line);
+    const source = code.join("\n");
+    let offset = 0;
+    code.forEach((line, i) => {
+      if (repositories.has(owners[i])) {
+        for (const match of line.matchAll(HOOK_FIELD)) {
+          const start = offset + match.index;
+          const before = source.slice(Math.max(0, start - 200), start);
+          const after = source.slice(start + match[0].length);
+          if (/\bsignalChange\(\s*$/.test(before) && /^\s*,/.test(after)) {
+            continue;
+          }
+          keys.push(`${rel}: ${owners[i]}`);
+        }
+      }
+      offset += line.length + 1;
     });
   }
   return countedKeys(keys);
@@ -524,8 +604,6 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/create.ts: createVaultCreateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/edit.ts: createVaultEditDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/migrate.ts: createVaultMigrateDeps: YamlVaultConfigRepository",
-  // Factory helper with no callers.
-  "src/infrastructure/persistence/repository_factory.ts: createVaultConfigRepository: YamlVaultConfigRepository",
 ];
 
 // Typed changes the moved repositories stage before each write or remove
@@ -562,6 +640,11 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
 // nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
 // use cases here on purpose.
 const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [];
+
+// Hook references in datastore-tier repositories other than signalChange's
+// first argument. Empty since the datastore rework Phase 1 repository moves
+// (swamp-club#2996): repositories never call, pass on or store their hook.
+const PINNED_HOOK_MISUSES: readonly string[] = [];
 
 const files = await sourceFiles();
 
@@ -704,5 +787,100 @@ Deno.test("datastore write seams: the staged-change scan counts wrapped literals
     "src/infrastructure/persistence/probe.ts: YamlOutputRepository remove",
     "src/infrastructure/persistence/probe.ts: YamlOutputRepository write",
     "src/infrastructure/persistence/probe.ts: YamlOutputRepository write|remove",
+  ]);
+});
+
+Deno.test("datastore write seams: only the unit-of-work adapters call a mark hook in the persistence layer (swamp-club#2996)", () => {
+  assertPinnedSet(
+    persistenceMarksOutsideAdapters(files),
+    [],
+    "Mark calls under src/infrastructure/persistence/ outside the unit-of-work adapters",
+    "Repositories never call a mark hook: stage each change through\n" +
+      "signalChange(this.<hook>, { kind, path }) instead of pinning the call.\n" +
+      "A new unit-of-work adapter that forwards staged changes belongs in\n" +
+      "PERSISTENCE_MARK_ADAPTERS with its reason.",
+  );
+});
+
+Deno.test("datastore write seams: the persistence mark scan reports repositories, not the adapters or other layers", () => {
+  const probe = (rel: string, lines: string[]): SourceFile => ({
+    rel,
+    code: lines.join("\n"),
+    lines,
+    owners: topLevelOwners(lines),
+  });
+  const found = persistenceMarksOutsideAdapters([
+    probe("src/infrastructure/persistence/probe_repository.ts", [
+      "export class ProbeRepository {",
+      "  async save(path: string) {",
+      "    await this.markDirty?.(path);",
+      "  }",
+      "}",
+    ]),
+    probe("src/infrastructure/persistence/legacy_unit_of_work.ts", [
+      "export function createLegacyUnitOfWork() {",
+      "  await markDirty(path);",
+      "}",
+    ]),
+    probe("src/infrastructure/persistence/unit_of_work_scope.ts", [
+      "export async function signalChange() {",
+      "  await markDirty(path);",
+      "}",
+    ]),
+    probe("src/cli/commands/probe.ts", [
+      "export async function probeCommand() {",
+      "  await repoContext.markDirty?.(path);",
+      "}",
+    ]),
+  ]);
+  assertEquals(found, [
+    "src/infrastructure/persistence/probe_repository.ts: ProbeRepository",
+  ]);
+});
+
+Deno.test("datastore write seams: repositories reference their hook only as signalChange's first argument (swamp-club#2996)", () => {
+  assertPinnedSet(
+    hookReferencesOutsideSignalChange(files),
+    PINNED_HOOK_MISUSES,
+    "Datastore-tier repository hook references outside signalChange",
+    "A repository reaches its mark hook only as the first argument of\n" +
+      "signalChange(this.<hook>, change), so the unit of work sees every change.\n" +
+      "Do not call the hook, pass it on, or store it.",
+  );
+});
+
+Deno.test("datastore write seams: the hook reference scan catches calls and pass-throughs, not wrapped signalChange, comments or the constructor parameter", () => {
+  const lines = [
+    "export class YamlOutputRepository {",
+    "  constructor(",
+    "    private readonly markDirty?: MarkDirtyHook,",
+    "  ) {}",
+    "  // this.markDirty(path) in a comment is not a reference",
+    "  async a() {",
+    '    await signalChange(this.markDirty, { kind: "write", path });',
+    "    await signalChange(",
+    "      this.markDirty,",
+    '      { kind: "remove", path },',
+    "    );",
+    "    await this.markDirty(path);",
+    "    await this.markDirtyHook?.();",
+    "    other(this.markDirty);",
+    "    const hook = this.markDirty;",
+    "  }",
+    "}",
+    "export class Unrelated {",
+    "  b() {",
+    "    this.markDirty(path);",
+    "  }",
+    "}",
+  ];
+  const probe: SourceFile = {
+    rel: "src/infrastructure/persistence/probe.ts",
+    code: lines.join("\n"),
+    lines,
+    owners: topLevelOwners(lines),
+  };
+  assertEquals(hookReferencesOutsideSignalChange([probe]), [
+    "src/infrastructure/persistence/probe.ts: YamlOutputRepository (x4)",
   ]);
 });
