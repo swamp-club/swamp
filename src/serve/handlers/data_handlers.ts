@@ -97,6 +97,7 @@ import {
 import {
   authorizeResolved,
   canonicalResources,
+  modelAccessResource,
   type RecordedOwner,
   resolveModelTarget,
   resolveWorkflowTarget,
@@ -104,7 +105,10 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
-import type { LatestWorkflowRunResolver } from "../../domain/data/data_query_service.ts";
+import type {
+  LatestWorkflowRunResolver,
+  ModelReferenceResolver,
+} from "../../domain/data/data_query_service.ts";
 import { latestRunForWorkflow } from "../../domain/workflows/workflow_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -397,6 +401,49 @@ function servedLatestRunResolver(
   };
 }
 
+/**
+ * Resolves `model("<name or id>")` for a data query over serve with the
+ * check a model-scoped `data.get` makes: `read` on the data of the model the
+ * reference resolves to, looked up by name then exact id
+ * (swamp-club#2960). A refusal is audited but never replied; it, an unknown
+ * model and a definition that cannot be read all fail as one not-found
+ * naming only the argument, so the error says nothing about what the
+ * caller may not read.
+ */
+function servedModelResolver(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): ModelReferenceResolver {
+  return async (reference) => {
+    const notFound = new UserError(`Model not found: ${reference}`);
+    const allowed = (resource: AccessResource) =>
+      isAuthorized(socket, requestId, principal, "read", resource, ctx);
+    let found;
+    try {
+      found = await findDefinitionByIdOrName(
+        ctx.repoContext.definitionRepo,
+        reference,
+      );
+    } catch (error) {
+      if (!allowed(unresolvedAccessResource("data", reference))) {
+        throw notFound;
+      }
+      throw error;
+    }
+    if (!found) {
+      allowed(unresolvedAccessResource("data", reference));
+      throw notFound;
+    }
+    if (!allowed(modelAccessResource(found, "data"))) throw notFound;
+    return {
+      modelType: found.type.normalized,
+      modelId: found.definition.id,
+    };
+  };
+}
+
 export async function handleDataQuery(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -433,9 +480,19 @@ export async function handleDataQuery(
       principal,
       ctx,
     );
+    const modelResolver = servedModelResolver(
+      socket,
+      requestId,
+      principal,
+      ctx,
+    );
     const deps: DataQueryDeps = {
       query: (pred, opts) =>
-        queryService.query(pred, { ...opts, latestRunResolver }),
+        queryService.query(pred, {
+          ...opts,
+          latestRunResolver,
+          modelResolver,
+        }),
       specNameFallback: (pred) => queryService.specNameFallback(pred),
     };
 

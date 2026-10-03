@@ -218,13 +218,17 @@ identical.
 
 ### Forward reference not resolving after rename
 
-**Symptom**: `data.latest("model", "old-name")` returns null after rename
+**Symptom**: `data.latest("model", "old-name")` returns null after rename, or
+`swamp data query 'model("model") && name == "old-name"'` returns no results
 
 **Causes**:
 
 1. A model re-ran and wrote new data to the old name, overwriting the forward
    reference tombstone
 2. The rename chain is too deep (more than 5 levels)
+3. (`data query` only) The predicate names `version` or `isLatest`, or tests the
+   name other than with a plain `name == "old-name"` term — only latest reads by
+   exact name follow a rename
 
 **Solutions**:
 

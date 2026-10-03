@@ -19,11 +19,11 @@ shortcuts for common queries; prefer them when your intent matches.
 
 | Read                     | Query                                                                                                                                             |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Latest content           | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                                                                         |
-| A specific version       | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`                                                         |
+| Latest content           | `swamp data query 'model("<m>") && name == "<n>"' --select content`                                                                               |
+| A specific version       | `swamp data query 'model("<m>") && name == "<n>" && version == 2' --select content`                                                               |
 | A workflow step's output | `swamp data query 'workflowRunId == "<id>" && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content`           |
 | From the latest run      | `swamp data query 'workflowRunId == latestRun("<w>") && jobName == "<j>" && stepName == "<s>" && name == "<n>" && version >= 0' --select content` |
-| Metadata only            | `swamp data query 'modelName == "<m>" && name == "<n>"'` (no `--select`)                                                                          |
+| Metadata only            | `swamp data query 'model("<m>") && name == "<n>"'` (no `--select`)                                                                                |
 
 With `--json` the output is `{"results": [...], "total": N, "limited": bool}`;
 read `results[0]` (JSON content comes back parsed). For a binary item, select
@@ -32,6 +32,13 @@ when `contentEncoding` is `"base64"`. An empty `results` means no such item. The
 query matches the instance `name` exactly (use `specName == "<spec>"` for a spec
 name); when nothing matches by name but something does by spec name,
 `specNameHint.suggestedPredicate` gives the query to run.
+
+`model("<m>")` resolves `<m>` as a model name or definition id exactly as
+`data get` does, and an unknown model is an error; `modelName == "<m>"` compares
+the name stored with the data, which a model rename does not update (see
+[references/fields.md](references/fields.md#model--match-by-model-as-data-get-resolves-it)).
+A latest read by a data name that was renamed (`data rename`) returns the item
+it was renamed to.
 
 Add `--single` to require exactly one match. With `--json` it prints that record
 (or its `--select` value) on its own instead of the envelope, so scripts that

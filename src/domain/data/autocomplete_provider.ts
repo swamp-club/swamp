@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { QUERY_FIELDS } from "./query_predicate.ts";
+import { MODEL_FUNCTION, QUERY_FIELDS } from "./query_predicate.ts";
 import { OwnerTypes } from "./data_metadata.ts";
 import type { CursorContext } from "./cel_cursor_context.ts";
 
@@ -148,7 +148,7 @@ export class AutocompleteProvider {
   ): CompletionItem[] {
     switch (context.kind) {
       case "root":
-        return this.completeRoot(context.prefix);
+        return this.completeRoot(context.prefix, mode);
       case "member":
         return this.completeMember(
           context.root,
@@ -166,7 +166,10 @@ export class AutocompleteProvider {
     }
   }
 
-  private completeRoot(prefix: string): CompletionItem[] {
+  private completeRoot(
+    prefix: string,
+    mode: "predicate" | "select",
+  ): CompletionItem[] {
     const items: CompletionItem[] = [];
     for (const field of QUERY_FIELDS) {
       if (field.startsWith(prefix)) {
@@ -177,6 +180,16 @@ export class AutocompleteProvider {
           kind: "field",
         });
       }
+    }
+    // model() matches rows by model name or definition id; it is resolved
+    // before matching, so it is offered in predicates only.
+    if (mode === "predicate" && MODEL_FUNCTION.startsWith(prefix)) {
+      items.push({
+        text: `${MODEL_FUNCTION}(`,
+        label: `${MODEL_FUNCTION}(`,
+        detail: "model name or definition id",
+        kind: "builtin",
+      });
     }
     return items;
   }

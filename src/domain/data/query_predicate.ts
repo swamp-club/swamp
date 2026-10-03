@@ -279,6 +279,77 @@ function latestRunEquality(field: ASTNode, call: ASTNode): string | null {
 }
 
 /**
+ * The query function that matches rows by model, resolving a model name or
+ * definition id as `swamp data get <model>` does (swamp-club#2960).
+ */
+export const MODEL_FUNCTION = "model";
+
+/**
+ * Most distinct models one query may name with `model()`. Each is a
+ * definition lookup, so a predicate cannot make the query do unbounded work.
+ */
+export const MAX_MODEL_REFERENCES = 32;
+
+/**
+ * Collects the distinct arguments of every `model(...)` call in the AST.
+ * Each call must take exactly one non-empty string literal, so the model can
+ * be resolved once per query rather than per row; anything else, or more
+ * than {@link MAX_MODEL_REFERENCES} distinct models, is a UserError.
+ */
+export function collectModelReferences(node: ASTNode): string[] {
+  const references = new Set<string>();
+  const visit = (n: ASTNode) => {
+    if (!n || typeof n !== "object" || !("op" in n)) return;
+    if (n.op === "rcall" && (n.args as [string])[0] === MODEL_FUNCTION) {
+      throw new UserError(
+        `${MODEL_FUNCTION}() takes the model as its argument: ` +
+          `write ${MODEL_FUNCTION}("<model>")`,
+      );
+    }
+    if (n.op === "call" && (n.args as [string])[0] === MODEL_FUNCTION) {
+      const callArgs = (n.args as [string, ASTNode[]])[1];
+      const [arg] = callArgs;
+      if (
+        callArgs.length !== 1 || arg.op !== "value" ||
+        typeof arg.args !== "string" || arg.args === ""
+      ) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() takes one model name or definition id as a ` +
+            `string literal, e.g. ${MODEL_FUNCTION}("my-model")`,
+        );
+      }
+      references.add(arg.args);
+      return;
+    }
+    for (const child of childNodes(n)) visit(child);
+  };
+  visit(node);
+  if (references.size > MAX_MODEL_REFERENCES) {
+    throw new UserError(
+      `A query may name at most ${MAX_MODEL_REFERENCES} models with ` +
+        `${MODEL_FUNCTION}(); this one names ${references.size}.`,
+    );
+  }
+  return [...references];
+}
+
+/**
+ * Extracts the argument of a top-level `model("<model>")` conjunct, for SQL
+ * pushdown once the model is resolved. Walks through AND conjuncts but does
+ * not descend into OR branches. Returns null if there is none.
+ */
+export function extractModelCall(ast: ASTNode): string | null {
+  for (const conjunct of topLevelConjuncts(ast)) {
+    if (conjunct.op !== "call") continue;
+    const [name, callArgs] = conjunct.args as [string, ASTNode[]];
+    if (name !== MODEL_FUNCTION || callArgs.length !== 1) continue;
+    const [arg] = callArgs;
+    if (arg.op === "value" && typeof arg.args === "string") return arg.args;
+  }
+  return null;
+}
+
+/**
  * Checks whether the AST references the `attributes` identifier at root level.
  */
 export function referencesAttributes(node: ASTNode): boolean {
@@ -396,7 +467,8 @@ export interface SpecNameFallback {
  * Builds the spec-name counterpart of a predicate that matches one data
  * instance name exactly: the top-level `name == "x"` becomes
  * `specName == "x"`, and every other top-level equality of a string field
- * to a string literal, or of `version` to an int literal, is kept. Other
+ * to a string literal, of `version` to an int literal, or a
+ * `model("<literal>")` call, is kept. Other
  * conjuncts are dropped, so the result can match more than the original
  * would have; callers verify it matches before suggesting it, and check
  * `namePredicate` to tell whether a dropped conjunct, not the name, is what
@@ -428,6 +500,11 @@ export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
       clause = `${eq.field} == ${celString(eq.value)}`;
     } else if (eq?.field === "version" && typeof eq.value === "bigint") {
       clause = `version == ${eq.value}`;
+    } else {
+      // A model("<literal>") scope is kept like a modelName equality, so the
+      // hint for the documented model() form stays on that model.
+      const model = extractModelCall(conjunct);
+      if (model !== null) clause = `${MODEL_FUNCTION}(${celString(model)})`;
     }
     if (clause === null) {
       droppedConjuncts = true;
@@ -458,7 +535,9 @@ export function validateFieldReferences(identifiers: string[]): void {
     throw new UserError(
       `Unknown field${unique.length > 1 ? "s" : ""} ${
         unique.map((f) => `"${f}"`).join(", ")
-      } in query predicate.\nAvailable: ${available}`,
+      } in query predicate.\nAvailable: ${available}\n` +
+        `Functions: ${LATEST_RUN_FUNCTION}("<workflow>"), ` +
+        `${MODEL_FUNCTION}("<model name or definition id>")`,
     );
   }
 }

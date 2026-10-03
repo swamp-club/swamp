@@ -1876,3 +1876,77 @@ Deno.test("serve id-deny conformance: latestRun by a copy's name is refused when
     );
   });
 });
+
+// data.query's model("<model>") resolves a model by name or id, so it is
+// authorized as a model-scoped data.get of that model is (swamp-club#2960).
+
+function modelQuery(model: string) {
+  return request("data.query", {
+    predicate: `model(${JSON.stringify(model)})`,
+  });
+}
+
+Deno.test("serve id-deny conformance: model() by a denied or missing model fails alike, naming only the argument", async () => {
+  await withFixtures(async (f) => {
+    const allowed = await sendRequest(f.ctx, modelQuery("dev-db"));
+    assertEquals(errorFrame(allowed), undefined, JSON.stringify(allowed));
+    assertStringIncludes(JSON.stringify(allowed), f.devModel.id);
+
+    for (
+      const [reference, label] of [
+        ["prod-db", "denied by name"],
+        [f.prodModel.id, "denied by id"],
+        ["no-such-db", "missing"],
+      ]
+    ) {
+      const frames = await sendRequest(f.ctx, modelQuery(reference));
+      const error = errorFrame(frames);
+      assertEquals(error?.error?.code, "data_query_failed", label);
+      assertEquals(
+        error?.error?.message,
+        `Model not found: ${reference}`,
+        label,
+      );
+      // Only the argument is echoed: the denied model's id never leaks
+      // through a by-name reference.
+      if (reference !== f.prodModel.id) {
+        assert(!JSON.stringify(frames).includes(f.prodModel.id), label);
+      }
+    }
+
+    const admin = await sendRequest(f.admin, modelQuery("prod-db"));
+    assertEquals(errorFrame(admin), undefined, JSON.stringify(admin));
+    assertStringIncludes(JSON.stringify(admin), f.prodModel.id);
+  });
+});
+
+Deno.test("serve id-deny conformance: data.query by a renamed item's old name still filters by owner (swamp-club#2968)", async () => {
+  await withFixtures(async (f) => {
+    await f.repo.repoContext.unifiedDataRepo.rename(
+      f.repo.modelType,
+      f.prodModel.id,
+      "state",
+      "renamed-state",
+    );
+    const namesOf = async (ctx: ConnectionContext) => {
+      const frames = await sendRequest(
+        ctx,
+        request("data.query", { predicate: 'name == "state"' }),
+      );
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const reply = frames.find((fr) => fr.type === "data.query") as {
+        payload?: {
+          data?: { results?: Array<{ modelName: string; name: string }> };
+        };
+      };
+      return (reply.payload?.data?.results ?? [])
+        .map((r) => `${r.modelName}/${r.name}`).sort();
+    };
+
+    assertEquals(await namesOf(f.ctx), ["dev-db/state"]);
+    assertEquals(await namesOf(f.admin), [
+      "dev-db/state",
+      "prod-db/renamed-state",
+    ]);
+  });
+});

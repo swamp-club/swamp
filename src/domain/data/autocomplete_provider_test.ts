@@ -45,9 +45,21 @@ Deno.test("AutocompleteProvider: root context returns matching fields", () => {
 Deno.test("AutocompleteProvider: root context with empty prefix returns all fields", () => {
   const provider = makeProvider();
   const items = provider.complete({ kind: "root", prefix: "" });
-  // Should include all QUERY_FIELDS
+  // Should include all QUERY_FIELDS, plus the model() function
   assertEquals(items.length > 10, true);
-  assertEquals(items.every((i) => i.kind === "field"), true);
+  assertEquals(
+    items.filter((i) => i.kind !== "field").map((i) => i.label),
+    ["model("],
+  );
+});
+
+Deno.test("AutocompleteProvider: root context offers model( in predicates only", () => {
+  const provider = makeProvider();
+  const predicate = provider.complete({ kind: "root", prefix: "mod" });
+  const builtin = predicate.find((i) => i.kind === "builtin");
+  assertEquals(builtin?.text, "model(");
+  const select = provider.complete({ kind: "root", prefix: "mod" }, "select");
+  assertEquals(select.some((i) => i.kind === "builtin"), false);
 });
 
 Deno.test("AutocompleteProvider: member context on tags returns tag keys", () => {

@@ -17,17 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { Environment } from "cel-js";
 import { UserError } from "../errors.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
   collectLatestRunWorkflows,
+  collectModelReferences,
+  extractModelCall,
   extractModelNameEquality,
   extractStringEquality,
   extractWorkflowRunIdLatestRun,
+  MAX_MODEL_REFERENCES,
   selectReadsContent,
+  validateFieldReferences,
 } from "./query_predicate.ts";
 
 const env = new Environment({
@@ -315,4 +319,98 @@ Deno.test("extractWorkflowRunIdLatestRun: never descends into OR or NOT", () => 
   ) {
     assertEquals(extractWorkflowRunIdLatestRun(ast(expr)), null, expr);
   }
+});
+
+Deno.test("collectModelReferences: returns distinct literals in first-seen order", () => {
+  assertEquals(
+    collectModelReferences(
+      ast('model("b") && (model("a") || !model("b")) && name == "x"'),
+    ),
+    ["b", "a"],
+  );
+});
+
+Deno.test("collectModelReferences: finds calls inside ternaries and lists", () => {
+  assertEquals(
+    collectModelReferences(
+      ast('(model("a") ? [model("b")] : []).size() > 0'),
+    ),
+    ["a", "b"],
+  );
+});
+
+Deno.test("collectModelReferences: no model() calls yields an empty list", () => {
+  assertEquals(collectModelReferences(ast('modelName == "model"')), []);
+});
+
+Deno.test("collectModelReferences: rejects an argument that is not one non-empty string literal", () => {
+  for (
+    const expr of [
+      "model(name)",
+      "model(1)",
+      'model("a", "b")',
+      "model()",
+      'model("")',
+    ]
+  ) {
+    assertThrows(
+      () => collectModelReferences(ast(expr)),
+      UserError,
+      "one model name or definition id",
+    );
+  }
+});
+
+Deno.test("collectModelReferences: rejects the receiver form", () => {
+  assertThrows(
+    () => collectModelReferences(ast('"x".model()')),
+    UserError,
+    'write model("<model>")',
+  );
+});
+
+Deno.test("collectModelReferences: caps the number of distinct models", () => {
+  const atCap = Array.from(
+    { length: MAX_MODEL_REFERENCES },
+    (_, i) => `model("m${i}")`,
+  ).join(" || ");
+  assertEquals(collectModelReferences(ast(atCap)).length, MAX_MODEL_REFERENCES);
+  // Repeats of one reference count once.
+  assertEquals(
+    collectModelReferences(ast(`${atCap} || model("m0")`)).length,
+    MAX_MODEL_REFERENCES,
+  );
+  assertThrows(
+    () => collectModelReferences(ast(`${atCap} || model("over")`)),
+    UserError,
+    `at most ${MAX_MODEL_REFERENCES} models`,
+  );
+});
+
+Deno.test("extractModelCall: top-level and AND-nested model() only", () => {
+  assertEquals(extractModelCall(ast('model("a")')), "a");
+  assertEquals(extractModelCall(ast('name == "x" && model("a")')), "a");
+  assertEquals(extractModelCall(ast('model("a") || model("b")')), null);
+  assertEquals(extractModelCall(ast('!model("a")')), null);
+  assertEquals(extractModelCall(ast('name == "x"')), null);
+});
+
+Deno.test("validateFieldReferences: unknown-field error names the query functions", () => {
+  const error = assertThrows(
+    () => validateFieldReferences(["nope"]),
+    UserError,
+  );
+  assertStringIncludes(error.message, 'latestRun("<workflow>")');
+  assertStringIncludes(error.message, 'model("<model name or definition id>")');
+});
+
+Deno.test("buildSpecNameFallback: keeps a model() scope, in both predicates", () => {
+  const fallback = buildSpecNameFallback(
+    ast('model("scanner") && name == "classification"'),
+  );
+  assertEquals(fallback, {
+    specNamePredicate: 'model("scanner") && specName == "classification"',
+    namePredicate: 'model("scanner") && name == "classification"',
+    droppedConjuncts: false,
+  });
 });

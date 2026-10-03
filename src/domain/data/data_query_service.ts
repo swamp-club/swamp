@@ -25,18 +25,21 @@ import type {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
-import type { UnifiedDataRepository } from "./repositories.ts";
+import type { RenameForward, UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
   collectLatestRunWorkflows,
+  collectModelReferences,
   collectRootIdentifiers,
+  extractModelCall,
   extractModelNameEquality,
   extractStringEquality,
   extractWorkflowRunIdLatestRun,
   HISTORY_OPT_IN_FIELDS,
   LATEST_RUN_FUNCTION,
+  MODEL_FUNCTION,
   referencesAttributes,
   referencesContent,
   selectReadsContent,
@@ -52,6 +55,31 @@ import { fromRow } from "./data_record_mapper.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
+
+function modelUnavailable(): UserError {
+  return new UserError(
+    `${MODEL_FUNCTION}() is only available in swamp data query; ` +
+      `here, match the model with modelId and modelType, e.g. ` +
+      `modelId == "<definition id>"`,
+  );
+}
+
+/** Rename hops data query follows, as an unversioned repository read does. */
+const MAX_RENAME_HOPS = 5;
+
+function renameKey(namespace: string, type: string, modelId: string): string {
+  return `${namespace}\0${type}\0${modelId}`;
+}
+
+/** Whether a select expression calls model() in any form. */
+function collectModelReferencesLenient(selectAst: ASTNode): boolean {
+  try {
+    return collectModelReferences(selectAst).length > 0;
+  } catch {
+    // A malformed model() call is still a model() call.
+    return true;
+  }
+}
 
 function latestRunUnavailable(): UserError {
   return new UserError(
@@ -138,6 +166,29 @@ type LatestRuns = ReadonlyMap<string, string | null>;
 
 const NO_LATEST_RUNS: LatestRuns = new Map();
 
+/** The definition data is stored under, as a `model()` call resolved it. */
+export interface ResolvedModelReference {
+  /** The definition's normalized model type, as the catalog stores it. */
+  modelType: string;
+  /** The definition id. */
+  modelId: string;
+}
+
+/**
+ * Resolves the model named in a `model("<name or id>")` query call to the
+ * definition its data is stored under, as `swamp data get <model>` does.
+ * Throws a UserError when the model is unknown or the caller may not read
+ * it.
+ */
+export type ModelReferenceResolver = (
+  idOrName: string,
+) => Promise<ResolvedModelReference>;
+
+/** The definition each `model()` reference resolved to for one query. */
+type ResolvedModels = ReadonlyMap<string, ResolvedModelReference>;
+
+const NO_MODELS: ResolvedModels = new Map();
+
 export interface DataQueryOptions {
   limit?: number;
   /** CEL projection expression. When set, results are projected and returned as unknown[]. */
@@ -181,6 +232,12 @@ export interface DataQueryOptions {
    * without it a query that calls latestRun fails (swamp-club#2957).
    */
   latestRunResolver?: LatestWorkflowRunResolver;
+  /**
+   * Resolves `model("<name or id>")` calls in the predicate. Passed per
+   * call, so each caller decides whose models may be resolved; without it a
+   * query that calls model fails (swamp-club#2960).
+   */
+  modelResolver?: ModelReferenceResolver;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -560,6 +617,7 @@ export class DataQueryService {
     // Resolved before the catalog is touched, so a query that cannot
     // resolve its runs fails without a backfill.
     const latestRuns = await this.resolveLatestRuns(predicate, options);
+    const models = await this.resolveModels(predicate, options);
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
     if (options?.include) {
@@ -580,6 +638,7 @@ export class DataQueryService {
           },
           latestRuns,
           tried,
+          models,
         );
         // Walk violations and matches in the order they were evaluated, and
         // stop where the accepted page fills, so a violation is raised only
@@ -627,6 +686,8 @@ export class DataQueryService {
         predicate,
         options,
         latestRuns,
+        undefined,
+        models,
       );
       if (matched.violations.length > 0) {
         throw new BinaryContentPredicateError(matched.violations[0].record);
@@ -779,6 +840,113 @@ export class DataQueryService {
   }
 
   /**
+   * Resolves each distinct model the predicate passes to `model`, once per
+   * query, through the caller's resolver. Field references are validated
+   * first, so an invalid predicate never costs a definition lookup.
+   */
+  private async resolveModels(
+    predicate: string,
+    options?: DataQueryOptions,
+  ): Promise<ResolvedModels> {
+    const ast = this.queryEnv.parse(predicate).ast as ASTNode;
+    validateFieldReferences(collectRootIdentifiers(ast));
+    const references = collectModelReferences(ast);
+    if (references.length === 0) return NO_MODELS;
+    const resolver = options?.modelResolver;
+    if (!resolver) throw modelUnavailable();
+    const models = new Map<string, ResolvedModelReference>();
+    for (const reference of references) {
+      models.set(reference, await resolver(reference));
+    }
+    return models;
+  }
+
+  /**
+   * Resolves the rename forwards a latest-only `name == "<old>"` predicate
+   * follows: for each model the catalog records a forward from `dataName`
+   * under, the name an unversioned repository read of `dataName` ends at,
+   * keyed by namespace, type and model id. The catalog only nominates
+   * models; each hop is decided by the name's rename marker on disk, exactly
+   * as `data get` reads it, so a forward that a later write or delete
+   * (here or on another machine) ended is never followed. A chain that loops
+   * or runs past {@link MAX_RENAME_HOPS} resolves to nothing.
+   */
+  private resolveRenameForwards(
+    dataName: string,
+    onlyModel?: ResolvedModelReference,
+  ): Map<string, string> {
+    const targets = new Map<string, string>();
+    const ownNamespace = this.dataRepo.namespace;
+    for (const forward of this.catalogStore.findRenamesFrom(dataName)) {
+      const { namespace, type_normalized: type, model_id: modelId } = forward;
+      // A top-level model() already limits the rows to one model.
+      if (
+        onlyModel &&
+        (type !== onlyModel.modelType || modelId !== onlyModel.modelId)
+      ) continue;
+      // Forwards are recorded only for this repository's namespace, whose
+      // markers are on local disk.
+      if (namespace !== ownNamespace) continue;
+      let target: string | null;
+      try {
+        target = this.followRenameMarkers(
+          ModelType.create(type),
+          modelId,
+          dataName,
+        );
+      } catch (error) {
+        // An unreadable marker skips this one model rather than failing a
+        // query that matches other models' data.
+        logger
+          .debug`Not following rename forwards from ${dataName} under ${type}/${modelId}: ${error}`;
+        continue;
+      }
+      if (target !== null) {
+        targets.set(renameKey(namespace, type, modelId), target);
+      }
+    }
+    return targets;
+  }
+
+  /**
+   * The name an unversioned read of `dataName` ends at by following its
+   * rename markers on disk, or null when it has no marker, the chain loops,
+   * or it runs past {@link MAX_RENAME_HOPS}. Throws when a marker cannot be
+   * read.
+   */
+  private followRenameMarkers(
+    modelType: ModelType,
+    modelId: string,
+    dataName: string,
+  ): string | null {
+    const renamedTo = (name: string): string | null => {
+      const latest = this.dataRepo.getLatestVersionSync(
+        modelType,
+        modelId,
+        name,
+      );
+      if (latest === null) return null;
+      const data = this.dataRepo.findByNameSync(
+        modelType,
+        modelId,
+        name,
+        latest,
+      );
+      return data?.isRenamed && data.renamedTo ? data.renamedTo : null;
+    };
+    const seen = new Set([dataName]);
+    let target = renamedTo(dataName);
+    for (let hop = 1; target !== null; hop++) {
+      if (seen.has(target) || hop > MAX_RENAME_HOPS) return null;
+      seen.add(target);
+      const next = renamedTo(target);
+      if (next === null) break;
+      target = next;
+    }
+    return target;
+  }
+
+  /**
    * {@link executeMatch} for the async query path, with lazy content
    * hydrated. Matching is synchronous and reads bodies with getContentSync,
    * which cannot download, so a lazily-synced row would evaluate and return
@@ -804,6 +972,7 @@ export class DataQueryService {
     options: DataQueryOptions | undefined,
     latestRuns: LatestRuns,
     tried = new Set<string>(),
+    models: ResolvedModels = NO_MODELS,
   ): Promise<MatchResult> {
     let collectLimit = options?.limit;
     let downloadedBefore = false;
@@ -814,6 +983,7 @@ export class DataQueryService {
         { ...options, limit: collectLimit },
         missing,
         latestRuns,
+        models,
       );
       let hydrated = false;
       for (const [key, row] of missing) {
@@ -826,9 +996,13 @@ export class DataQueryService {
         if (await this.rowHasContent(row)) hydrated = true;
       }
       if (!hydrated) {
-        return collectLimit === options?.limit
-          ? matched
-          : this.executeMatch(predicate, options, undefined, latestRuns);
+        return collectLimit === options?.limit ? matched : this.executeMatch(
+          predicate,
+          options,
+          undefined,
+          latestRuns,
+          models,
+        );
       }
       // This pass reached rows a previous download had not: the rows that
       // download synced stopped matching, so widen the window.
@@ -850,6 +1024,7 @@ export class DataQueryService {
     options?: DataQueryOptions,
     missingContent?: Map<string, CatalogRow>,
     latestRuns: LatestRuns = NO_LATEST_RUNS,
+    models: ResolvedModels = NO_MODELS,
   ): MatchResult {
     // No default limit — an unspecified limit returns every matching row.
     // Callers that need a cap pass one explicitly.
@@ -876,6 +1051,41 @@ export class DataQueryService {
     );
     if (latestRunWorkflows.length > 0) {
       env = this.latestRunEnv(latestRunWorkflows, latestRuns);
+      userParsed = env.parse(predicate);
+    }
+
+    // A query calling model parses in an environment where model() matches
+    // the row being evaluated against its resolved definition. The row is
+    // local to this call, so concurrent queries never see each other's.
+    let currentRow: CatalogRow | null = null;
+    const modelReferences = collectModelReferences(userAst);
+    if (options?.select) {
+      if (
+        collectModelReferencesLenient(
+          this.queryEnv.parse(options.select).ast as ASTNode,
+        )
+      ) {
+        throw new UserError(
+          `${MODEL_FUNCTION}() can only be used in the query predicate, ` +
+            `not in --select`,
+        );
+      }
+    }
+    if (modelReferences.length > 0) {
+      // Every call must have been resolved: an unregistered call would fail
+      // on each row, and per-row failures are skipped, not reported.
+      if (modelReferences.some((reference) => !models.has(reference))) {
+        throw modelUnavailable();
+      }
+      env = (env === this.queryEnv ? env.clone() : env).registerFunction(
+        `${MODEL_FUNCTION}(string): bool`,
+        (reference: string) => {
+          const target = models.get(reference);
+          return !!currentRow && !!target &&
+            currentRow.type_normalized === target.modelType &&
+            currentRow.model_id === target.modelId;
+        },
+      );
       userParsed = env.parse(predicate);
     }
 
@@ -958,6 +1168,23 @@ export class DataQueryService {
       whereParams.push(specNameLiteral);
     }
 
+    const modelCall = extractModelCall(userAst);
+    const modelTarget = modelCall === null ? undefined : models.get(modelCall);
+    if (modelTarget) {
+      whereClauses.push("type_normalized = ?", "model_id = ?");
+      whereParams.push(modelTarget.modelType, modelTarget.modelId);
+    }
+
+    // A latest-only read by exact name follows rename forwards, as an
+    // unversioned `data get` does: rows the old name forwards to are
+    // evaluated as if they still carried it.
+    const nameLiteral = opensHistory
+      ? null
+      : extractStringEquality(userAst, "name");
+    const renameTargets = nameLiteral === null
+      ? new Map<string, string>()
+      : this.resolveRenameForwards(nameLiteral, modelTarget);
+
     const latestRunWorkflow = extractWorkflowRunIdLatestRun(userAst);
     if (latestRunWorkflow !== null) {
       const runId = latestRuns.get(latestRunWorkflow) ?? null;
@@ -991,6 +1218,15 @@ export class DataQueryService {
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
     for (const row of rows) {
+      // The old name's latest version is a confirmed rename marker, so a row
+      // still under that name (left by a sync or a failed catalog write) is
+      // not its latest version: data get reads the forwarded item instead.
+      if (
+        nameLiteral !== null && row.data_name === nameLiteral &&
+        renameTargets.has(
+          renameKey(row.namespace, row.type_normalized, row.model_id),
+        )
+      ) continue;
       const record = this.rowToRecord(row, false, false, includePath);
       // attributes/content are read from disk only when evaluation touches
       // them or the row matches, so rows rejected by metadata terms never
@@ -1026,6 +1262,15 @@ export class DataQueryService {
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
       ctx["ns"] = record.namespace;
+      if (
+        nameLiteral !== null &&
+        renameTargets.get(
+            renameKey(row.namespace, row.type_normalized, row.model_id),
+          ) === row.data_name
+      ) {
+        ctx["name"] = nameLiteral;
+      }
+      currentRow = row;
       Object.defineProperties(ctx, {
         attributes: { get: () => load().attributes },
         content: {
@@ -1274,7 +1519,8 @@ export class DataQueryService {
   private async backfillAsync(): Promise<void> {
     // Read before walking the disk; see CatalogStore.markPopulated.
     const generation = this.catalogStore.generation();
-    const allData = await this.dataRepo.findAllGlobal();
+    const renames: RenameForward[] = [];
+    const allData = await this.dataRepo.findAllGlobal({ renames });
 
     // Group by model type so we can yield to the event loop between types,
     // giving V8 GC a chance to reclaim intermediate YAML/Zod allocations.
@@ -1344,13 +1590,15 @@ export class DataQueryService {
 
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
+    this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
   }
 
   private backfillSync(): void {
     // Read before walking the disk; see CatalogStore.markPopulated.
     const generation = this.catalogStore.generation();
-    const allData = this.dataRepo.findAllGlobalSync();
+    const renames: RenameForward[] = [];
+    const allData = this.dataRepo.findAllGlobalSync({ renames });
 
     const byType = new Map<
       string,
@@ -1408,7 +1656,22 @@ export class DataQueryService {
     computeLatestFlags(rows);
     this.catalogStore.bulkUpsert(rows);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
+    this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
+  }
+
+  /** Merges the rename markers a backfill walk found into the catalog. */
+  private recordRenameForwards(renames: readonly RenameForward[]): void {
+    const namespace = this.dataRepo.namespace;
+    this.catalogStore.mergeRenames(
+      renames.map((rename) => ({
+        namespace,
+        type_normalized: rename.modelType.normalized,
+        model_id: rename.modelId,
+        data_name: rename.dataName,
+        renamed_to: rename.renamedTo,
+      })),
+    );
   }
 
   private toCatalogRow(

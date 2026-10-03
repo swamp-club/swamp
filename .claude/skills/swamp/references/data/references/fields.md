@@ -9,7 +9,7 @@
 | `version`           | int              | Version number of this record                                                       |
 | `isLatest`          | bool             | `true` for the newest version of each item                                          |
 | `createdAt`         | string           | ISO-8601 timestamp                                                                  |
-| `modelName`         | string           | Owning model name                                                                   |
+| `modelName`         | string           | Owning model's name when the data was written (not updated by a model rename)       |
 | `modelId`           | string           | Owning model id (definition id; workflow id for workflow-scope data)                |
 | `modelType`         | string           | Owning model type (normalized)                                                      |
 | `specName`          | string           | Output spec name (e.g. `classification`)                                            |
@@ -67,6 +67,25 @@ swamp data query 'modelName == "<model>" && name == "<name>"' \
   --select '{"content": content, "contentEncoding": contentEncoding}' --json \
   | jq -r '.results[0].content' | base64 -d > out.bin
 ```
+
+## `model()` — match by model, as `data get` resolves it
+
+`model("<name or definition id>")` is true for data stored under that model's
+current definition. It resolves the argument the way `data get <model>` does
+(name first, then exact definition id), so it still matches after a model
+rename, for data with no `modelName` tag, and never matches data left by a
+deleted model whose name was reused. `modelName == "<m>"` compares the tag
+written with the data, so it can differ in each of those cases.
+
+- The argument must be a non-empty string literal; up to 32 distinct models per
+  predicate.
+- An unknown model is an error (`Model not found`), as in `data get`. Over
+  `--server`, a model you may not read fails the same way.
+- Predicates only, not `--select`. It is resolved by `swamp data query` and
+  serve's `data.query`; CEL `data.query()` in models and workflows rejects it
+  (use `modelId` and `modelType` there).
+- It matches the definition's data in every namespace the catalog holds, not
+  only this repository's.
 
 ## CEL Operators
 

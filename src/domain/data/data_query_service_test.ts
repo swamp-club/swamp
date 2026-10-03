@@ -33,12 +33,19 @@ import {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
+import {
+  computeLatestFlags,
+  type DataQueryOptions,
+  DataQueryService,
+  type ModelReferenceResolver,
+  type ResolvedModelReference,
+} from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
+import { Data } from "./data.ts";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -3977,4 +3984,463 @@ Deno.test("DataQueryService: a content predicate reads text types beyond text/*"
     ) as DataRecord[];
     assertEquals(results.map((r) => r.name), ["manifest"]);
   });
+});
+
+// ── model() references (swamp-club#2960) ────────────────────────────────────
+
+const OLD_ID = "11111111-1111-4111-8111-111111111111";
+const NEW_ID = "22222222-2222-4222-8222-222222222222";
+
+function setupModelTest(
+  definitions: Record<string, ResolvedModelReference> = {
+    ingest: { modelType: "test-model", modelId: NEW_ID },
+    [NEW_ID]: { modelType: "test-model", modelId: NEW_ID },
+  },
+) {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const lookups: string[] = [];
+  const service = new DataQueryService(catalog, dataRepo);
+  const modelResolver: ModelReferenceResolver = (idOrName) => {
+    lookups.push(idOrName);
+    const found = definitions[idOrName];
+    return found
+      ? Promise.resolve(found)
+      : Promise.reject(new UserError(`Model not found: ${idOrName}`));
+  };
+  const query = (predicate: string, options: DataQueryOptions = {}) =>
+    service.query(predicate, { ...options, modelResolver });
+  // A model deleted and recreated under the same name: both ids carry the
+  // modelName tag "ingest", and only NEW_ID is the current definition.
+  catalog.upsert(makeRow({ model_id: OLD_ID, id: "old-data" }));
+  catalog.upsert(makeRow({ model_id: NEW_ID, id: "new-data" }));
+  return { catalog, service, query, lookups };
+}
+
+Deno.test("DataQueryService model(): matches the resolved definition, not every row tagged with its name", async () => {
+  const { catalog, query } = setupModelTest();
+  const byTag = await query('modelName == "ingest"') as DataRecord[];
+  assertEquals(byTag.length, 2);
+
+  const byName = await query(
+    'model("ingest") && name == "my-data"',
+  ) as DataRecord[];
+  assertEquals(byName.map((r) => r.id), ["new-data"]);
+
+  const byId = await query(`model("${NEW_ID}")`) as DataRecord[];
+  assertEquals(byId.map((r) => r.id), ["new-data"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): matches data whose modelName tag differs or is empty", async () => {
+  const { catalog, query } = setupModelTest();
+  // Written before a model rename, and before the modelName tag existed.
+  catalog.upsert(
+    makeRow({ model_id: NEW_ID, data_name: "pre-rename", model_name: "old" }),
+  );
+  catalog.upsert(
+    makeRow({ model_id: NEW_ID, data_name: "untagged", model_name: "" }),
+  );
+  const results = await query('model("ingest")') as DataRecord[];
+  assertEquals(results.map((r) => r.name).sort(), [
+    "my-data",
+    "pre-rename",
+    "untagged",
+  ]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): requires the definition's model type too", async () => {
+  const { catalog, query } = setupModelTest();
+  catalog.upsert(
+    makeRow({ type_normalized: "other-type", model_id: NEW_ID, id: "x" }),
+  );
+  const results = await query('model("ingest")') as DataRecord[];
+  assertEquals(results.map((r) => r.id), ["new-data"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): an unknown model fails the query, before the catalog is read", async () => {
+  const { catalog, query } = setupModelTest();
+  catalog.invalidate();
+  await assertRejects(
+    () => query('model("missing") || model("ingest")'),
+    UserError,
+    "Model not found: missing",
+  );
+  assertEquals(catalog.isPopulated(), false, "no backfill ran");
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): resolves each distinct reference once", async () => {
+  const { catalog, query, lookups } = setupModelTest({
+    ingest: { modelType: "test-model", modelId: NEW_ID },
+    x: { modelType: "test-model", modelId: OLD_ID },
+  });
+  await query('model("ingest") && (model("ingest") || !model("x"))');
+  assertEquals(lookups, ["ingest", "x"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): an unknown field fails before any model lookup", async () => {
+  const { catalog, query, lookups } = setupModelTest();
+  await assertRejects(
+    () => query('model("ingest") && bogus == 1'),
+    UserError,
+    "Unknown field",
+  );
+  assertEquals(lookups, []);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): composes with include and limit", async () => {
+  const { catalog, query } = setupModelTest();
+  catalog.upsert(makeRow({ model_id: NEW_ID, data_name: "second" }));
+  const results = await query('model("ingest")', {
+    limit: 1,
+    include: (record) => Promise.resolve(record.name === "second"),
+  }) as DataRecord[];
+  assertEquals(results.map((r) => r.name), ["second"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): concurrent queries keep their own resolutions", async () => {
+  const { catalog, service, query } = setupModelTest({
+    ingest: { modelType: "test-model", modelId: NEW_ID },
+    old: { modelType: "test-model", modelId: OLD_ID },
+  });
+  const [a, b] = await Promise.all([
+    query('model("ingest")'),
+    query('model("old")'),
+  ]) as [DataRecord[], DataRecord[]];
+  assertEquals(a.map((r) => r.id), ["new-data"]);
+  assertEquals(b.map((r) => r.id), ["old-data"]);
+  // Nothing leaks into a later query that uses no model() at all.
+  assertEquals(
+    (service.querySync('modelName == "ingest"') as DataRecord[]).length,
+    2,
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): querySync and a query without a resolver reject it", async () => {
+  const { catalog, service } = setupModelTest();
+  assertThrows(
+    () => service.querySync('model("ingest")'),
+    UserError,
+    "only available in swamp data query",
+  );
+  await assertRejects(
+    () => service.query('model("ingest")'),
+    UserError,
+    "only available in swamp data query",
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService model(): rejected in --select, malformed or not", async () => {
+  const { catalog, query } = setupModelTest();
+  for (const select of ['model("ingest")', "model(name)"]) {
+    await assertRejects(
+      () => query('name == "my-data"', { select }),
+      UserError,
+      "not in --select",
+    );
+  }
+  await assertRejects(
+    () => query("model(name)"),
+    UserError,
+    "one model name or definition id",
+  );
+  catalog.close();
+});
+
+// ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
+
+/**
+ * A populated catalog over a real repository, so renames write their markers
+ * to disk — data query confirms every forward against them.
+ */
+function setupRenameTest() {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-forwards-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+  const type = ModelType.create("test/model");
+  const save = async (name: string, modelId: string) => {
+    const data = Data.create({
+      name,
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    });
+    await dataRepo.save(type, modelId, data, new TextEncoder().encode(name));
+    return data;
+  };
+  const rename = (modelId: string, from: string, to: string) =>
+    dataRepo.rename(type, modelId, from, to);
+  return { catalog, service, dataRepo, type, save, rename };
+}
+
+const names = (records: unknown) =>
+  (records as DataRecord[]).map((r) => r.name);
+
+Deno.test("DataQueryService rename forwards: a latest read by the old name returns the renamed item", async () => {
+  const { catalog, service, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  await save("old", modelId);
+  await rename(modelId, "old", "new");
+
+  assertEquals(names(service.querySync('name == "old"')), ["new"]);
+  assertEquals(
+    names(service.querySync('modelName == "ingest" && name == "old"')),
+    ["new"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: follows a chain up to five hops", async () => {
+  const { catalog, service, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  const chain = ["n0", "n1", "n2", "n3", "n4", "n5", "n6"];
+  await save(chain[0], modelId);
+  for (let i = 0; i < chain.length - 1; i++) {
+    await rename(modelId, chain[i], chain[i + 1]);
+  }
+
+  // n1 → n6 is five hops; n0 → n6 is six, past the limit, as data get.
+  assertEquals(names(service.querySync('name == "n1"')), ["n6"]);
+  assertEquals(service.querySync('name == "n0"'), []);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: a forward with no rename marker on disk is not followed", async () => {
+  const { catalog, service, type, save } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  await save("new", modelId);
+  // A forward left behind, e.g. after another machine deleted the old name
+  // or wrote it again; the cycle case is the same: no marker confirms it.
+  catalog.recordRename({
+    namespace: "",
+    type_normalized: type.normalized,
+    model_id: modelId,
+    data_name: "old",
+    renamed_to: "new",
+  });
+  catalog.recordRename({
+    namespace: "",
+    type_normalized: type.normalized,
+    model_id: modelId,
+    data_name: "new",
+    renamed_to: "old",
+  });
+
+  assertEquals(service.querySync('name == "old"'), []);
+  assertEquals(names(service.querySync('name == "new"')), ["new"]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: the old name written again is read as itself", async () => {
+  const { catalog, service, save, rename, type } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  await save("old", modelId);
+  await rename(modelId, "old", "new");
+  const rewritten = await save("old", modelId);
+  // Even a forward the write did not clear is refuted by the marker on disk.
+  catalog.recordRename({
+    namespace: "",
+    type_normalized: type.normalized,
+    model_id: modelId,
+    data_name: "old",
+    renamed_to: "new",
+  });
+
+  const results = service.querySync('name == "old"') as DataRecord[];
+  assertEquals(results.map((r) => r.id), [rewritten.id]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: only the renamed model's target row matches", async () => {
+  const { catalog, service, save, rename } = setupRenameTest();
+  const renamedModel = crypto.randomUUID();
+  const otherModel = crypto.randomUUID();
+  await save("old", renamedModel);
+  await rename(renamedModel, "old", "new");
+  await save("new", otherModel);
+
+  const results = service.querySync('name == "old"') as DataRecord[];
+  assertEquals(results.map((r) => r.modelId), [renamedModel]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: versioned and non-equality name terms do not follow", async () => {
+  const { catalog, service, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  await save("old", modelId);
+  await rename(modelId, "old", "new");
+
+  assertEquals(service.querySync('name == "old" && version >= 0'), []);
+  assertEquals(service.querySync('name == "old" && isLatest == true'), []);
+  assertEquals(service.querySync('name in ["old"]'), []);
+  assertEquals(service.querySync('name == "old" || name == "zzz"'), []);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: an unreadable marker skips that model instead of failing the query", async () => {
+  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  const corruptModel = crypto.randomUUID();
+  const otherModel = crypto.randomUUID();
+  await save("old", corruptModel);
+  await rename(corruptModel, "old", "new");
+  await save("old", otherModel);
+  const latest = dataRepo.getLatestVersionSync(type, corruptModel, "old")!;
+  Deno.writeTextFileSync(
+    dataRepo.getMetadataPath(type, corruptModel, "old", latest),
+    "lifecycle: [unclosed",
+  );
+
+  const results = service.querySync('name == "old"') as DataRecord[];
+  assertEquals(results.map((r) => r.modelId), [otherModel]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: --select sees the item's current name", async () => {
+  const { catalog, service, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  await save("old", modelId);
+  await rename(modelId, "old", "new");
+  assertEquals(
+    await service.query('name == "old"', { select: "name" }),
+    ["new"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: backfill restores forwards from disk and keeps ones its walk cannot see, async and sync", async () => {
+  for (const sync of [false, true]) {
+    const dir = Deno.makeTempDirSync({ prefix: "swamp-query-forwards-" });
+    const catalog = new CatalogStore(
+      join(dir, ".swamp", "data", "_catalog.db"),
+    );
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+    const type = ModelType.create("test/model");
+    const modelId = crypto.randomUUID();
+    await dataRepo.save(
+      type,
+      modelId,
+      Data.create({
+        name: "old",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName: "ingest" },
+        ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      }),
+      new TextEncoder().encode("hello"),
+    );
+    await dataRepo.rename(type, modelId, "old", "new");
+
+    // Lose the rename's write-through, and record a forward for a model whose
+    // directory is not on disk, as a lazily hydrated walk would miss it.
+    catalog.removeRename("", type.normalized, modelId, "old");
+    const unseenModel = crypto.randomUUID();
+    catalog.recordRename({
+      namespace: "",
+      type_normalized: type.normalized,
+      model_id: unseenModel,
+      data_name: "elsewhere",
+      renamed_to: "there",
+    });
+    catalog.invalidate();
+
+    const results = sync
+      ? service.querySync('name == "old"') as DataRecord[]
+      : await service.query('name == "old"') as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["new"]);
+    assertEquals(
+      catalog.findRenameTarget("", type.normalized, unseenModel, "elsewhere"),
+      "there",
+    );
+    catalog.close();
+  }
+});
+
+Deno.test("DataQueryService rename forwards: a model() scope reads no other model's markers", async () => {
+  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  const scoped = crypto.randomUUID();
+  const other = crypto.randomUUID();
+  await save("old", scoped);
+  await rename(scoped, "old", "new");
+  await save("old", other);
+  await rename(other, "old", "renamed-elsewhere");
+  // Corrupt the other model's marker: a scoped query must not even read it.
+  const latest = dataRepo.getLatestVersionSync(type, other, "old")!;
+  Deno.writeTextFileSync(
+    dataRepo.getMetadataPath(type, other, "old", latest),
+    "lifecycle: [unclosed",
+  );
+  const reads: string[] = [];
+  const findByNameSync = dataRepo.findByNameSync.bind(dataRepo);
+  dataRepo.findByNameSync = (t, modelId, name, version) => {
+    reads.push(modelId);
+    return findByNameSync(t, modelId, name, version);
+  };
+
+  const results = await service.query('model("m") && name == "old"', {
+    modelResolver: () =>
+      Promise.resolve({ modelType: type.normalized, modelId: scoped }),
+  }) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["new"]);
+  assertEquals(reads.includes(other), false);
+  catalog.close();
+});
+
+Deno.test("DataQueryService rename forwards: a stale catalog row under the old name is not returned beside the forwarded item", async () => {
+  const { catalog, service, type, save, rename } = setupRenameTest();
+  const modelId = crypto.randomUUID();
+  const original = await save("old", modelId);
+  await rename(modelId, "old", "new");
+  // As a rename synced from another machine leaves it: the old name's row is
+  // still latest in this catalog, though the marker on disk forwards it.
+  catalog.upsert({
+    namespace: "",
+    type_normalized: type.normalized,
+    model_id: modelId,
+    data_name: "old",
+    id: original.id,
+    version: 1,
+    is_latest: 1,
+    is_step_latest: 1,
+    model_name: "ingest",
+    spec_name: "",
+    data_type: "resource",
+    content_type: "text/plain",
+    lifetime: "infinite",
+    garbage_collection: "10",
+    owner_type: "model-method",
+    streaming: 0,
+    size: 3,
+    created_at: "2026-01-01T00:00:00.000Z",
+    tags: "{}",
+    owner_ref: "test",
+    workflow_run_id: "",
+    workflow_name: "",
+    job_name: "",
+    step_name: "",
+    source: "",
+  });
+
+  assertEquals(names(service.querySync('name == "old"')), ["new"]);
+  catalog.close();
 });

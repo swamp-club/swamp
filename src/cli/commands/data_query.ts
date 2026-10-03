@@ -37,6 +37,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createLatestRunResolver } from "../../domain/workflows/workflow_lookup.ts";
+import { createModelReferenceResolver } from "../../domain/models/model_lookup.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -130,7 +131,14 @@ export const dataQueryCommand = withRemoteOptions(
       "Interactive mode",
       "swamp data query",
     )
-    .example("Filter by model", "swamp data query 'modelName == \"scanner\"'")
+    .example(
+      "Filter by the model name stored with the data",
+      "swamp data query 'modelName == \"scanner\"'",
+    )
+    .example(
+      "Read one item, resolving the model as data get does",
+      'swamp data query \'model("scanner") && name == "result"\' --select content',
+    )
     .example(
       "Filter with size threshold",
       "swamp data query 'size > 1048576'",
@@ -209,10 +217,13 @@ export const dataQueryCommand = withRemoteOptions(
     repoContext.workflowRepo,
     repoContext.workflowRunRepo,
   );
+  const modelResolver = createModelReferenceResolver(
+    repoContext.definitionRepo,
+  );
 
   const deps: DataQueryDeps = {
     query: (pred, opts) =>
-      queryService.query(pred, { ...opts, latestRunResolver }),
+      queryService.query(pred, { ...opts, latestRunResolver, modelResolver }),
     specNameFallback: (pred) => queryService.specNameFallback(pred),
   };
 

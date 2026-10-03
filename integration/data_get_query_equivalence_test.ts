@@ -26,7 +26,12 @@
  * with the same name.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -43,6 +48,8 @@ import {
 } from "../src/libswamp/mod.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { UserError } from "../src/domain/errors.ts";
+import { createModelReferenceResolver } from "../src/domain/models/model_lookup.ts";
 import type { GarbageCollectionPolicy } from "../src/domain/data/data_metadata.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -519,5 +526,198 @@ Deno.test("data query: latestRun selects what data get reads without --run, wher
     );
     assert(notice, data.warnings![0]);
     assertSameItem(await queryAsCli(repo, predicateOf(notice[1])), data);
+  });
+});
+
+// ── The documented model-scoped equivalent (swamp-club#2960, #2968) ─────────
+//
+// `model("<m>") && name == "<n>"` must select what `data get <m> <n>` returns,
+// whatever the model argument is and whatever the data's modelName tag says.
+
+/** Runs the documented model-scoped query for `data get <model> <name>`. */
+async function queryDocumented(
+  repo: ServeRepo,
+  model: string,
+  dataName: string,
+): Promise<DataRecord[]> {
+  return await repo.repoContext.dataQueryService.query(
+    `model(${JSON.stringify(model)}) && name == ${JSON.stringify(dataName)}`,
+    {
+      modelResolver: createModelReferenceResolver(
+        repo.repoContext.definitionRepo,
+      ),
+    },
+  ) as DataRecord[];
+}
+
+/** Saves `dataName` under `model` with exactly `tags`. */
+async function saveTagged(
+  repo: ServeRepo,
+  model: Definition,
+  dataName: string,
+  tags: Record<string, string>,
+): Promise<Data> {
+  const data = Data.create({
+    name: dataName,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags,
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: `${repo.modelType.normalized}:${model.id}`,
+    },
+  });
+  await repo.repoContext.unifiedDataRepo.save(
+    repo.modelType,
+    model.id,
+    data,
+    encode(JSON.stringify({ value: dataName })),
+  );
+  return data;
+}
+
+Deno.test("data query model(): selects what data get returns when the model argument is a definition id", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "by-id");
+    await saveData(repo, model, "result");
+
+    const got = await read(repo, {
+      modelIdOrName: model.id,
+      dataName: "result",
+    });
+    assertSameItem(await queryDocumented(repo, model.id, "result"), got);
+  });
+});
+
+Deno.test("data query model(): selects what data get returns after a model rename and for untagged data", async () => {
+  await withServeRepo(async (repo) => {
+    // Data written before the model was renamed keeps the old modelName tag;
+    // data written before the tag existed has none.
+    const model = await saveModel(repo, "renamed-model");
+    await saveTagged(repo, model, "before-rename", {
+      type: "resource",
+      modelName: "original-model",
+    });
+    await saveTagged(repo, model, "untagged", { type: "resource" });
+
+    for (const dataName of ["before-rename", "untagged"]) {
+      const got = await read(repo, {
+        modelIdOrName: "renamed-model",
+        dataName,
+      });
+      assertSameItem(
+        await queryDocumented(repo, "renamed-model", dataName),
+        got,
+      );
+      const byTag = await repo.repoContext.dataQueryService.query(
+        `modelName == "renamed-model" && name == ${JSON.stringify(dataName)}`,
+      );
+      assertEquals(byTag, [], "the modelName tag does not find it");
+    }
+  });
+});
+
+Deno.test("data query model(): after delete and recreate under one name, selects only the current definition's data", async () => {
+  await withServeRepo(async (repo) => {
+    const first = await saveModel(repo, "recreated");
+    await saveData(repo, first, "result");
+    await repo.repoContext.definitionRepo.delete(
+      repo.modelType,
+      first.id,
+      first.name,
+    );
+    const second = await saveModel(repo, "recreated");
+    await saveData(repo, second, "result");
+
+    const got = await read(repo, {
+      modelIdOrName: "recreated",
+      dataName: "result",
+    });
+    assertEquals(got.modelId, second.id);
+    assertSameItem(await queryDocumented(repo, "recreated", "result"), got);
+    const byTag = await repo.repoContext.dataQueryService.query(
+      'modelName == "recreated" && name == "result"',
+    ) as DataRecord[];
+    assertEquals(byTag.length, 2, "the tag matches both definitions' data");
+  });
+});
+
+Deno.test("data query model(): a model with no definition fails as data get does", async () => {
+  await withServeRepo(async (repo) => {
+    await assertRejects(
+      () => queryDocumented(repo, "no-such-model", "result"),
+      UserError,
+      "Model not found: no-such-model",
+    );
+  });
+});
+
+Deno.test("data query: a read by a renamed data item's old name selects what data get returns", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "renamer");
+    await saveData(repo, model, "x");
+    const dataRepo = repo.repoContext.unifiedDataRepo;
+    await dataRepo.rename(repo.modelType, model.id, "x", "y");
+
+    const oneHop = await read(repo, {
+      modelIdOrName: "renamer",
+      dataName: "x",
+    });
+    assertEquals(oneHop.name, "y");
+    assertSameItem(await queryDocumented(repo, "renamer", "x"), oneHop);
+
+    // A chain resolves to its end, as data get follows it.
+    await dataRepo.rename(repo.modelType, model.id, "y", "z");
+    const chain = await read(repo, { modelIdOrName: "renamer", dataName: "x" });
+    assertEquals(chain.name, "z");
+    assertSameItem(await queryDocumented(repo, "renamer", "x"), chain);
+
+    // A versioned read does not follow, as data get --version does not.
+    assertEquals(
+      await repo.repoContext.dataQueryService.query(
+        'model("renamer") && name == "x" && version >= 0',
+        {
+          modelResolver: createModelReferenceResolver(
+            repo.repoContext.definitionRepo,
+          ),
+        },
+      ),
+      [],
+    );
+
+    // Writing the old name again ends its forward.
+    const rewritten = await saveData(repo, model, "x");
+    const fresh = await read(repo, { modelIdOrName: "renamer", dataName: "x" });
+    assertEquals(fresh.id, rewritten.id);
+    assertSameItem(await queryDocumented(repo, "renamer", "x"), fresh);
+  });
+});
+
+Deno.test("data query: after a renamed item's old name is deleted, neither data get nor query finds it", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "deleter");
+    await saveData(repo, model, "x");
+    const dataRepo = repo.repoContext.unifiedDataRepo;
+    await dataRepo.rename(repo.modelType, model.id, "x", "y");
+    await dataRepo.delete(repo.modelType, model.id, "x");
+
+    const deps = createDataGetDeps(
+      repo.repoDir,
+      repo.datastoreResolver,
+      repo.repoContext.unifiedDataRepo,
+      repo.repoContext.workflowRepo,
+      repo.repoContext.definitionRepo,
+    );
+    const events = await collect<DataGetEvent>(
+      dataGet(createLibSwampContext(), deps, {
+        includeContent: true,
+        repoDir: repo.repoDir,
+        modelIdOrName: "deleter",
+        dataName: "x",
+      }),
+    );
+    assertEquals(events.at(-1)?.kind, "error");
+    assertEquals(await queryDocumented(repo, "deleter", "x"), []);
   });
 });

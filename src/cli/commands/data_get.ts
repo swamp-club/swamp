@@ -55,7 +55,7 @@ export const dataGetCommand = withRemoteOptions(
     )
     .example(
       "Preferred: read the same data with data query",
-      `swamp data query 'modelName == "my-server" && name == "system-info"' --select content`,
+      `swamp data query 'model("my-server") && name == "system-info"' --select content`,
     )
     .example("Get latest data", "swamp data get my-server system-info")
     .example(

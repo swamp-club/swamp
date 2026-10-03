@@ -24,6 +24,7 @@ import {
   type CatalogRow,
   CatalogStore,
   ITERATE_PAGE_SIZE,
+  type RenameForwardRow,
 } from "./catalog_store.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
@@ -1761,4 +1762,130 @@ Deno.test("CatalogStore: tokens that cannot be read leave the catalog unpopulate
     store.close();
     Deno.removeSync(dir, { recursive: true });
   }
+});
+
+// ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
+
+function makeForward(
+  overrides: Partial<RenameForwardRow> = {},
+): RenameForwardRow {
+  return {
+    namespace: "",
+    type_normalized: "test-model",
+    model_id: "model-001",
+    data_name: "old",
+    renamed_to: "new",
+    ...overrides,
+  };
+}
+
+Deno.test("CatalogStore.recordRename: records a forward that lookups return", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward());
+  store.recordRename(makeForward({ model_id: "model-002", renamed_to: "b" }));
+
+  assertEquals(
+    store.findRenamesFrom("old").map((f) => [f.model_id, f.renamed_to]).sort(),
+    [["model-001", "new"], ["model-002", "b"]],
+  );
+  assertEquals(
+    store.findRenameTarget("", "test-model", "model-001", "old"),
+    "new",
+  );
+  assertEquals(
+    store.findRenameTarget("", "test-model", "model-001", "new"),
+    null,
+  );
+  assertEquals(store.findRenamesFrom("new"), []);
+  store.close();
+});
+
+Deno.test("CatalogStore.recordRename: a second rename of the same name replaces the forward", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward({ renamed_to: "first" }));
+  store.recordRename(makeForward({ renamed_to: "second" }));
+  assertEquals(store.findRenamesFrom("old").map((f) => f.renamed_to), [
+    "second",
+  ]);
+  store.close();
+});
+
+Deno.test("CatalogStore.removeRename: removes only the named forward", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward());
+  store.recordRename(makeForward({ model_id: "model-002" }));
+  store.removeRename("", "test-model", "model-001", "old");
+  assertEquals(store.findRenamesFrom("old").map((f) => f.model_id), [
+    "model-002",
+  ]);
+  store.close();
+});
+
+Deno.test("CatalogStore.upsertNewVersion: writing the old name again ends its forward", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward());
+  store.recordRename(makeForward({ model_id: "model-002" }));
+
+  store.upsertNewVersion(makeRow({ model_id: "model-001", data_name: "old" }));
+
+  assertEquals(
+    store.findRenameTarget("", "test-model", "model-001", "old"),
+    null,
+  );
+  assertEquals(
+    store.findRenameTarget("", "test-model", "model-002", "old"),
+    "new",
+    "a forward under another model is untouched",
+  );
+  store.close();
+});
+
+Deno.test("CatalogStore.upsert and bulkUpsert: leave forwards alone", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward());
+  store.upsert(makeRow({ data_name: "old" }));
+  store.bulkUpsert([makeRow({ data_name: "old", version: 2 })]);
+  assertEquals(
+    store.findRenameTarget("", "test-model", "model-001", "old"),
+    "new",
+  );
+  store.close();
+});
+
+Deno.test("CatalogStore.mergeRenames: adds and replaces forwards, keeping the rest", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.recordRename(makeForward({ data_name: "unseen", renamed_to: "u2" }));
+  store.recordRename(makeForward({ data_name: "moved", renamed_to: "before" }));
+
+  store.mergeRenames([
+    makeForward({ data_name: "moved", renamed_to: "after" }),
+    makeForward({ data_name: "fresh", renamed_to: "f2" }),
+  ]);
+
+  const target = (name: string) =>
+    store.findRenameTarget("", "test-model", "model-001", name);
+  assertEquals(target("unseen"), "u2", "a forward the batch omits survives");
+  assertEquals(target("moved"), "after");
+  assertEquals(target("fresh"), "f2");
+  store.close();
+});
+
+Deno.test("CatalogStore: a schema version change drops recorded forwards", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+  store.recordRename(makeForward());
+  store.markPopulated();
+  store.close();
+
+  // Simulate a catalog written by an older build.
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '4')",
+  );
+  db.close();
+
+  const reopened = new CatalogStore(dbPath);
+  assertEquals(reopened.findRenamesFrom("old"), []);
+  assertEquals(reopened.isPopulated(), false, "populated cleared for backfill");
+  reopened.close();
 });

@@ -22,6 +22,7 @@ import { modelRegistry } from "./model.ts";
 import type { Definition, DefinitionId } from "../definitions/definition.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { UserError } from "../errors.ts";
 
 /**
  * UUID regex pattern for detecting if an argument is a UUID (versions 1-8).
@@ -200,4 +201,19 @@ export async function findDefinitionByIdOrName(
     return null;
   }
   return findDefinitionByIdGlobal(definitionRepo, idOrName);
+}
+
+/**
+ * Resolves a `model("<name or id>")` data query call as `swamp data get
+ * <model>` resolves its model argument: by definition name, then exact id.
+ * Throws a UserError when no definition matches.
+ */
+export function createModelReferenceResolver(
+  definitionRepo: DefinitionRepository,
+): (idOrName: string) => Promise<{ modelType: string; modelId: string }> {
+  return async (idOrName) => {
+    const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
+    if (!found) throw new UserError(`Model not found: ${idOrName}`);
+    return { modelType: found.type.normalized, modelId: found.definition.id };
+  };
 }

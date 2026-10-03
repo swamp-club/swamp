@@ -23,6 +23,7 @@ import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
+import type { RenameForward } from "./repositories.ts";
 
 function createTestData(overrides: Partial<{
   name: string;
@@ -294,4 +295,25 @@ Deno.test("CompositeUnifiedDataRepository: delete deletes from persistent when d
     "test-data",
   );
   assertEquals(found, null);
+});
+
+Deno.test("CompositeUnifiedDataRepository: findAllGlobal reports rename markers from both repos", async () => {
+  const { composite, persistent } = createCompositeRepo();
+  await persistent.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "old", lifetime: "infinite" }),
+    TEST_CONTENT,
+  );
+  await persistent.rename(TEST_TYPE, TEST_MODEL_ID, "old", "new");
+
+  for (const sync of [false, true]) {
+    const renames: RenameForward[] = [];
+    if (sync) composite.findAllGlobalSync({ renames });
+    else await composite.findAllGlobal({ renames });
+    assertEquals(
+      renames.map((r) => [r.dataName, r.renamedTo]),
+      [["old", "new"]],
+    );
+  }
 });
