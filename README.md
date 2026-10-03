@@ -20,6 +20,18 @@ curl -fsSL https://swamp-club.com/install.sh | sh
 
 ### Quick Start
 
+Swamp needs a swamp-club.com account to run. Sign in first — `swamp auth login`
+creates your account if you don't have one yet:
+
+```bash
+swamp auth login
+```
+
+For CI and daemons, see the
+[Swamp Account Requirement](https://swamp-club.com/manual/reference/swamp-account-requirement).
+
+Then initialize a repository:
+
 ```bash
 swamp repo init                    # Claude Code (default)
 swamp repo init --tool cursor      # Cursor
