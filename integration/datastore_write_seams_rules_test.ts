@@ -298,7 +298,7 @@ const HOOK_FIELD = /\bthis\.(?:markDirty|markDirtyHook)\b/g;
  * new hooked repository must be added there (rule 6 still catches a direct
  * hook call anywhere under the persistence layer). As a textual scan it
  * cannot see the hook reached by aliasing, such as destructuring it off
- * `this`.
+ * `this`, or by bracket access such as `this["markDirty"]`.
  */
 function hookReferencesOutsideSignalChange(
   files: readonly SourceFile[],

@@ -1110,10 +1110,11 @@ stages typed changes through `signalChange`. Two rules in
 `integration/datastore_write_seams_rules_test.ts` hold this: inside the
 datastore-tier repository classes the hook field appears only as the first
 argument of `signalChange`, and under `src/infrastructure/persistence/` only
-`legacy_unit_of_work.ts` and `unit_of_work_scope.ts` call a mark hook. Writes
-still mark through `signalChange`'s hook fallback, because nothing opens a
-scope. Phase 2 removes that fallback once every write path runs inside a
-scope.
+`legacy_unit_of_work.ts` and `unit_of_work_scope.ts` call a mark hook. The
+first rule scans only the classes in `DATASTORE_TIER_REPOSITORIES`, so a new
+hooked repository must be added to that list. Writes still mark through
+`signalChange`'s hook fallback, because nothing opens a scope. Phase 2 removes
+that fallback once every write path runs inside a scope.
 
 What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
 each site):
@@ -1127,13 +1128,18 @@ each site):
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
-- Serve: device auth (`mintServerTokenImpl` in `src/serve/device_auth_handler.ts`),
-  grant tracking (`publishGrantWrites` in `src/serve/grant_write_tracking.ts`),
-  access reload (`handleAccessReload` in `src/serve/handlers/access_handlers.ts`)
-  and the extension lockfile (`extensionLockfileTransaction` in
-  `src/serve/handlers/admin_handlers.ts`).
+- Serve: device auth (`mintServerTokenImpl` in
+  `src/serve/device_auth_handler.ts`), grant tracking (`publishGrantWrites` in
+  `src/serve/grant_write_tracking.ts`), access reload (`handleAccessReload` in
+  `src/serve/handlers/access_handlers.ts`) and the extension lockfile
+  (`extensionLockfileTransaction` in `src/serve/handlers/admin_handlers.ts`).
 - The serve start-up definition migration, which marks each moved file by path
   (`serveCommand` in `src/cli/commands/serve.ts`).
+- The namespace catalog export, marked by path after it is written before a
+  push (`writeCatalogExportIfNeeded` in `src/cli/repo_context.ts`).
+
+`buildMarkDirtyHook` in the same file is pinned too, but it is the hook itself,
+not a hand mark.
 
 The lockfile is deferred to Phase 2. `ManagedLockfileTransaction` publishes
 through the port `createDatastoreLockfileSync` builds
