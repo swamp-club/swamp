@@ -83,9 +83,9 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
  * Call it before the write, as `notifyDirty` always has. A rejected hook
  * rejects the returned promise with the same error on either route.
  *
- * Route 2 is the only route production writes take in Phase 1: no production
- * code opens a scope, so every repository change reaches the sync service
- * through this direct hook call. Phase 2 removes it once every write path
+ * Route 2 is the only route a hooked write takes in Phase 1: no production
+ * code opens a scope, so every hooked repository change reaches the sync
+ * service through this direct hook call. Phase 2 removes it once every write path
  * runs inside a scope; `PINNED_UNIT_OF_WORK_SCOPES` in
  * `integration/datastore_write_seams_rules_test.ts` shows how far that has
  * got.

@@ -284,6 +284,10 @@ function persistenceMarksOutsideAdapters(
 // A reference to a repository's hook field. The field is markDirty or
 // markDirtyHook depending on the class.
 const HOOK_FIELD = /\bthis\.(?:markDirty|markDirtyHook)\b/g;
+// How far before a hook reference to look for `signalChange(`: enough for
+// the call name plus the newline and indentation deno fmt adds when it wraps
+// the arguments. A longer gap reports a false violation, never misses one.
+const SIGNAL_CHANGE_LOOKBACK = 200;
 
 /**
  * One key per reference to the hook field inside a datastore-tier repository
@@ -313,7 +317,10 @@ function hookReferencesOutsideSignalChange(
       if (repositories.has(owners[i])) {
         for (const match of line.matchAll(HOOK_FIELD)) {
           const start = offset + match.index;
-          const before = source.slice(Math.max(0, start - 200), start);
+          const before = source.slice(
+            Math.max(0, start - SIGNAL_CHANGE_LOOKBACK),
+            start,
+          );
           const after = source.slice(start + match[0].length);
           if (/\bsignalChange\(\s*$/.test(before) && /^\s*,/.test(after)) {
             continue;
@@ -818,7 +825,7 @@ Deno.test("datastore write seams: the persistence mark scan reports repositories
       "}",
     ]),
     probe("src/infrastructure/persistence/legacy_unit_of_work.ts", [
-      "export function createLegacyUnitOfWork() {",
+      "export async function createLegacyUnitOfWork() {",
       "  await markDirty(path);",
       "}",
     ]),
