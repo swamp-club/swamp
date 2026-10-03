@@ -123,30 +123,33 @@ main() {
   info "  Extension Registry:   https://swamp-club.com/extension-registry-terms"
   echo
 
-  # Prompt to connect to SWAMP CLUB when running interactively
+  # Prompt to sign in to SWAMP CLUB when running interactively. Every swamp
+  # command needs an account, so a run that does not sign in lists it first
+  # in the next steps.
   # Skip in CI environments or when explicitly requested via SWAMP_NONINTERACTIVE
+  _signed_in=""
   if [ -z "${CI:-}" ] && [ -z "${SWAMP_NONINTERACTIVE:-}" ] && [ -e /dev/tty ] && [ -t 1 ]; then
     echo
-    section "Swamp is better with SWAMP CLUB (swamp-club.com)"
+    section "Sign in to SWAMP CLUB (swamp-club.com)"
     info ""
-    info "Connect your account to unlock:"
-    info "  - Submit bug reports and feature requests"
-    info "  - Publish extensions to share with the community"
-    info "  - Higher rate limits on CLI usage"
+    info "Swamp needs a swamp-club.com account to run. Signing in also creates"
+    info "your account if you don't have one yet."
     info ""
-    printf "  Set up your SWAMP CLUB account now? [Y/n] "
+    printf "  Sign in now? [Y/n] "
     read -r _answer </dev/tty || _answer=""
     case "$_answer" in
       [nN]*)
         info ""
-        info "No problem! You can connect later: swamp auth login"
+        info "You'll need to sign in before using swamp: swamp auth login"
         ;;
       *)
         echo
-        if ! "$dest/$bin" auth login </dev/tty; then
+        if "$dest/$bin" auth login </dev/tty; then
+          _signed_in=1
+        else
           warn ""
-          warn "Account setup didn't finish — no worries!"
-          warn "Run this when you're ready to pick up where you left off:"
+          warn "Sign-in didn't finish. Swamp needs it before any other command."
+          warn "Run this to try again:"
           warn ""
           warn "    swamp auth login"
           warn ""
@@ -158,13 +161,24 @@ main() {
 
   info "Next steps:"
   info ""
-  info "  1. Initialize a swamp repository:"
+  _step=1
+  if [ -z "$_signed_in" ]; then
+    info "  $_step. Sign in to swamp-club.com (required, skip if already signed in):"
+    info "       swamp auth login"
+    info "     In CI or for daemons, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN instead:"
+    info "       https://swamp-club.com/manual/reference/swamp-account-requirement"
+    info ""
+    _step=$((_step + 1))
+  fi
+  info "  $_step. Initialize a swamp repository:"
   info "       cd your-project && swamp repo init"
   info ""
-  info "  2. Set up shell completions (optional):"
+  _step=$((_step + 1))
+  info "  $_step. Set up shell completions (optional):"
   info "       swamp completions --help"
   info ""
-  info "  3. Join the community:"
+  _step=$((_step + 1))
+  info "  $_step. Join the community:"
   info "       https://discord.gg/swamp-club"
   info ""
   info "Learn more: https://github.com/swamp-club/swamp"
