@@ -199,9 +199,7 @@ export class AuditEmitter {
    * Nothing new reaches that sink until the write settles.
    */
   get durableStalled(): boolean {
-    return this.#sinks.some((sink) =>
-      sink.durable && (this.#deliveries.get(sink)?.stuckSince ?? null) !== null
-    );
+    return this.#sinks.some((sink) => this.#isStalled(sink));
   }
 
   replaceSinks(newSinks: AuditSink[]): void {
@@ -827,13 +825,24 @@ export class AuditEmitter {
     }
   }
 
+  /** Whether a durable sink has a write outstanding past the timeout. */
+  #isStalled(sink: AuditSink): boolean {
+    return sink.durable &&
+      (this.#deliveries.get(sink)?.stuckSince ?? null) !== null;
+  }
+
   /**
-   * At shutdown, a durable sink whose write is stalled is given up to the sink
-   * timeout to settle; if it does, one more drain delivers what it missed. If
-   * it does not, the events after the stalled batch are written on their own,
-   * so they still reach the WAL without the stalled batch being sent twice.
+   * At shutdown, a durable sink whose write is stalled — before close's flush
+   * or during it — is given up to the sink timeout to settle; if it does, one
+   * more drain delivers what it missed. A sink still stalled after that has
+   * the events after its stalled batch written on their own, so they reach
+   * the WAL without the stalled batch being sent twice.
    */
-  async #finishStalledDurableWrites(stalled: AuditSink[]): Promise<void> {
+  async #finishStalledDurableWrites(stalledBefore: AuditSink[]): Promise<void> {
+    const stalled = new Set(stalledBefore);
+    for (const sink of this.#sinks) {
+      if (this.#isStalled(sink)) stalled.add(sink);
+    }
     let settledLate = false;
     for (const sink of stalled) {
       const delivery = this.#deliveries.get(sink);
@@ -843,53 +852,48 @@ export class AuditEmitter {
         await this.#settlesWithin(delivery.inFlight, this.#sinkTimeoutMs)
       ) {
         settledLate = true;
-        continue;
       }
-      const events: ChainedAuditEvent[] = [];
-      for (
-        let seq = delivery.inFlightThroughSeq + 1;
-        seq <= this.#chainedThroughSeq;
-        seq++
-      ) {
-        const event = this.#chained.get(seq);
-        if (event) events.push(event);
-      }
-      const key = this.#keyOf(sink) ?? sink.name;
-      if (events.length > 0) {
-        // The one exception to one write at a time: the stalled call is still
-        // open. WalSink appends each write to its own segment file, so the
-        // later events still reach the WAL.
-        try {
-          await this.#withSinkTimeout(sink, sink.write(events));
-        } catch (error: unknown) {
-          logger.warn(
-            "Audit sink {sink} could not write {count} event(s) at shutdown: {error}",
-            {
-              sink: key,
-              count: events.length,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
-      }
-      logger.warn(
-        "Audit sink {sink} still had a durable write outstanding at shutdown; events through sequence {seq} are not confirmed stored",
-        { sink: key, seq: delivery.inFlightThroughSeq },
-      );
     }
-    if (!settledLate) return;
-    await this.flush();
+    if (settledLate) await this.flush();
     for (const sink of stalled) {
-      const delivery = this.#deliveries.get(sink);
-      if (delivery?.stuckSince === null || delivery === undefined) continue;
-      logger.warn(
-        "Audit sink {sink} still had a durable write outstanding at shutdown; events through sequence {seq} are not confirmed stored",
-        {
-          sink: this.#keyOf(sink) ?? sink.name,
-          seq: delivery.inFlightThroughSeq,
-        },
-      );
+      if (this.#isStalled(sink)) await this.#writeAfterStalledBatch(sink);
     }
+  }
+
+  /** Writes the events after a stalled batch, then says what is unconfirmed. */
+  async #writeAfterStalledBatch(sink: AuditSink): Promise<void> {
+    const delivery = this.#deliveryFor(sink);
+    const events: ChainedAuditEvent[] = [];
+    for (
+      let seq = delivery.inFlightThroughSeq + 1;
+      seq <= this.#chainedThroughSeq;
+      seq++
+    ) {
+      const event = this.#chained.get(seq);
+      if (event) events.push(event);
+    }
+    const key = this.#keyOf(sink) ?? sink.name;
+    if (events.length > 0) {
+      // The one exception to one write at a time: the stalled call is still
+      // open. WalSink appends each write to its own segment file, so the
+      // later events still reach the WAL.
+      try {
+        await this.#withSinkTimeout(sink, sink.write(events));
+      } catch (error: unknown) {
+        logger.warn(
+          "Audit sink {sink} could not write {count} event(s) at shutdown: {error}",
+          {
+            sink: key,
+            count: events.length,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }
+    logger.warn(
+      "Audit sink {sink} still had a durable write outstanding at shutdown; events through sequence {seq} are not confirmed stored",
+      { sink: key, seq: delivery.inFlightThroughSeq },
+    );
   }
 
   /** Whether a promise that never rejects settles within the given time. */
@@ -919,9 +923,7 @@ export class AuditEmitter {
       if (delivery.timer !== null) clearTimeout(delivery.timer);
       delivery.timer = null;
     }
-    const stalled = this.#sinks.filter((sink) =>
-      sink.durable && (this.#deliveries.get(sink)?.stuckSince ?? null) !== null
-    );
+    const stalled = this.#sinks.filter((sink) => this.#isStalled(sink));
     await this.flush();
     await this.#finishStalledDurableWrites(stalled);
     for (const sink of this.#sinks) {

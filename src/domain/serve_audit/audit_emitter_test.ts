@@ -1066,3 +1066,34 @@ Deno.test("AuditEmitter: the shared-name warning is logged once per set of share
     await initializeLogging({ _reset: true });
   }
 });
+
+Deno.test("AuditEmitter: a durable write that first stalls during close is reported", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  const durableSink = createHangingSink("wal", true);
+  try {
+    const emitter = new AuditEmitter({
+      sinks: [durableSink],
+      sinkTimeoutMs: 20,
+    });
+    emitter.emit(makeEvent("only"));
+    await emitter.close();
+
+    const unconfirmed = captured.filter((r) =>
+      r.message.join("").includes("not confirmed stored")
+    );
+    assertEquals(unconfirmed.length, 1);
+    assertEquals(unconfirmed[0].properties.seq, 1);
+  } finally {
+    durableSink.release();
+    await initializeLogging({ _reset: true });
+  }
+});

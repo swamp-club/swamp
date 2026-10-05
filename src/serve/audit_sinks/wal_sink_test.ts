@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -113,10 +115,10 @@ Deno.test(
     const sink = new WalSink({ wal, downstream });
 
     await sink.write([makeEvent("test")]);
-    assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 1);
 
     await sink.flush();
+    assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 0);
   }),
 );
@@ -249,9 +251,12 @@ Deno.test(
     await sink.write([makeEvent("c")]);
 
     assertEquals(wal.segmentCount, 3);
-    assertEquals(downstream.written.length, 3);
 
     await sink.flush();
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["a", "b", "c"],
+    );
     assertEquals(wal.segmentCount, 0);
   }),
 );
@@ -275,5 +280,156 @@ Deno.test(
     assertEquals(count, 1);
     assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+/** A downstream sink whose writes hang until released. */
+function createHangingSink(): AuditSink & {
+  written: AuditEvent[][];
+  outstanding: number;
+  maxOutstanding: number;
+  release(): void;
+} {
+  const pending: (() => void)[] = [];
+  const sink = {
+    name: "hanging-downstream",
+    durable: true,
+    written: [] as AuditEvent[][],
+    outstanding: 0,
+    maxOutstanding: 0,
+    write(events: readonly AuditEvent[]): Promise<void> {
+      sink.outstanding++;
+      sink.maxOutstanding = Math.max(sink.maxOutstanding, sink.outstanding);
+      return new Promise<void>((resolve) => {
+        pending.push(() => {
+          sink.outstanding--;
+          sink.written.push([...events]);
+          resolve();
+        });
+      });
+    },
+    release(): void {
+      for (const done of pending.splice(0)) done();
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
+  return sink;
+}
+
+Deno.test(
+  "WalSink: write resolves once the WAL has the events, while downstream hangs",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream });
+
+    await sink.write([makeEvent("first")]);
+    await sink.write([makeEvent("second")]);
+    assertEquals(wal.segmentCount, 2);
+
+    // Deliveries go one at a time, in order, each segment once.
+    for (let i = 0; i < 2; i++) {
+      await waitFor(() => downstream.outstanding === 1, "a delivery to start");
+      downstream.release();
+      await waitFor(
+        () => downstream.written.length === i + 1,
+        "the delivery to land",
+      );
+    }
+    await sink.flush();
+    assertEquals(downstream.maxOutstanding, 1);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["first", "second"],
+    );
+    assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+Deno.test(
+  "WalSink: flush stops waiting for a hung downstream and keeps its segments in the WAL",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
+
+    await sink.write([makeEvent("stuck")]);
+    await sink.flush();
+    await sink.flush();
+    assertEquals(downstream.written.length, 0);
+    assertEquals(wal.segmentCount, 1);
+
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "late delivery");
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+Deno.test(
+  "WalSink: a segment the WAL size limit dropped before delivery is skipped",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir, maxWalBytes: 1 });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream });
+
+    await sink.write([makeEvent("one")]);
+    await sink.write([makeEvent("two")]);
+    await sink.write([makeEvent("three")]);
+    // Only the newest segment is kept; the first was already being delivered.
+    assertEquals(wal.segmentCount, 1);
+
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "first delivered");
+    await waitFor(() => downstream.outstanding === 1, "next delivery");
+    downstream.release();
+    await waitFor(
+      () => downstream.written.length === 2,
+      "delivery of the kept segment",
+    );
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["one", "three"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: behind an AuditEmitter, a hung store does not stall the durable path or duplicate events",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const walSink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
+    const emitter = new AuditEmitter({
+      sinks: [walSink],
+      sinkTimeoutMs: 20,
+      durableRetryMs: 1,
+    });
+
+    for (const action of ["a", "b", "c"]) {
+      emitter.emit(makeEvent(action));
+      await emitter.flush();
+    }
+    assertEquals(emitter.durableStalled, false);
+    assertEquals(wal.segmentCount >= 1, true);
+
+    await waitFor(async () => {
+      downstream.release();
+      await emitter.flush();
+      return wal.segmentCount === 0;
+    }, "every segment delivered");
+    const sequences = downstream.written.flat().map((e) =>
+      (e as unknown as { sequence: number }).sequence
+    );
+    assertEquals(sequences, [1, 2, 3]);
+    assert(downstream.maxOutstanding <= 1);
+    await emitter.close();
   }),
 );

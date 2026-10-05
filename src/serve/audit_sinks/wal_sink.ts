@@ -27,7 +27,14 @@ const logger = getSwampLogger(["serve", "audit", "wal-sink"]);
 export interface WalSinkOptions {
   readonly wal: AuditWal;
   readonly downstream: AuditSink;
+  /**
+   * How long flush waits for queued deliveries to the downstream sink before
+   * leaving the rest in the WAL. Default 30s.
+   */
+  readonly deliveryWaitMs?: number;
 }
+
+const DEFAULT_DELIVERY_WAIT_MS = 30_000;
 
 export class WalSink implements AuditSink {
   readonly name = "wal";
@@ -35,22 +42,52 @@ export class WalSink implements AuditSink {
   readonly #wal: AuditWal;
   readonly #downstream: AuditSink;
   readonly #delivered = new Set<string>();
+  readonly #deliveryWaitMs: number;
+  // Deliveries to the downstream sink run one at a time, in WAL order, on
+  // this chain. It never rejects; flush and close wait on it.
+  #deliveries: Promise<void> = Promise.resolve();
+  #queued = 0;
+  // The chain a wait last gave up on; waiting on it again only delays
+  // shutdown, since nothing has been queued or settled since.
+  #gaveUpOn: Promise<void> | null = null;
 
   constructor(options: WalSinkOptions) {
     this.#wal = options.wal;
     this.#downstream = options.downstream;
+    this.#deliveryWaitMs = options.deliveryWaitMs ?? DEFAULT_DELIVERY_WAIT_MS;
   }
 
   get wal(): AuditWal {
     return this.#wal;
   }
 
+  /**
+   * Resolves once the events are appended to the WAL. Delivery downstream
+   * follows on its own, so a slow or hung store never holds the audit
+   * pipeline; while it is outstanding, later writes still reach the WAL and
+   * queue behind it.
+   */
   async write(events: readonly AuditEvent[]): Promise<void> {
     if (events.length === 0) return;
 
     const segmentName = await this.#wal.append(events);
 
+    this.#queued++;
+    this.#deliveries = this.#deliveries.then(() => this.#deliver(segmentName));
+  }
+
+  /** Delivers one segment downstream; never rejects. */
+  async #deliver(segmentName: string): Promise<void> {
     try {
+      // Read back from disk, so a long queue holds segment names, not events.
+      let events: AuditEvent[];
+      try {
+        events = await this.#wal.readSegment(segmentName);
+      } catch (error: unknown) {
+        if (error instanceof Deno.errors.NotFound) return;
+        throw error;
+      }
+      if (events.length === 0) return;
       await this.#downstream.write(events);
       this.#delivered.add(segmentName);
     } catch (error: unknown) {
@@ -61,10 +98,40 @@ export class WalSink implements AuditSink {
           error: error instanceof Error ? error.message : String(error),
         },
       );
+    } finally {
+      this.#queued--;
+    }
+  }
+
+  /** Waits for queued deliveries, up to the delivery wait. */
+  async #awaitDeliveries(): Promise<void> {
+    const deliveries = this.#deliveries;
+    if (deliveries === this.#gaveUpOn) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const done = await Promise.race([
+        deliveries.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), this.#deliveryWaitMs);
+        }),
+      ]);
+      if (!done) {
+        this.#gaveUpOn = deliveries;
+        logger.warn(
+          "Downstream sink still has {count} WAL segment(s) to deliver after {seconds}s; they stay in the WAL and are replayed on the next start",
+          {
+            count: this.#queued,
+            seconds: Math.round(this.#deliveryWaitMs / 1000),
+          },
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   async flush(): Promise<void> {
+    await this.#awaitDeliveries();
     let flushSucceeded = false;
     try {
       await this.#downstream.flush();

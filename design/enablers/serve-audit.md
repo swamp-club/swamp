@@ -34,8 +34,15 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
 4. **AuditPolicy** matches ordered rules to pick each event's detail level:
    none, metadata, request or requestResponse. Management-tier events
    (audit.query, audit.verify) default to metadata.
-5. **WalSink** spills events to local disk while the remote backend is down and
-   replays them on reconnect. Max size is configurable (default 100MB).
+5. **WalSink** appends each batch to a segment file on local disk, and its
+   write returns once the append lands. It then delivers segments to
+   StoreSink in the background, one at a time and in order, reading each back
+   from disk; a delivered segment is deleted on flush. A slow or hung remote
+   store therefore never holds the audit pipeline: later batches keep reaching
+   the WAL and queue behind it. A segment whose delivery fails stays on disk
+   and is replayed on the next start. `flush` waits up to 30s for queued
+   deliveries before leaving them in the WAL. Max size is configurable
+   (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention; old
@@ -73,18 +80,19 @@ other sink:
   misses; when it settles, delivery resumes, and a late success counts as
   delivered. A non-durable sink counts the timeout as a failure and backs off;
   a durable sink retries a late failure as soon as it settles.
-- **Stalled durable writes and fail-secure.** While a durable write is
-  outstanding past the timeout, new events reach no durable sink, not even the
-  WAL, and are held only in memory. With `fail-open: false`, serve rejects
-  requests with `audit_unavailable` until the write settles, as it does when
-  the WAL is full. A remote store slower than the 30s timeout therefore
-  rejects requests for as long as each put takes, and one that never returns
+- **Stalled durable writes and fail-secure.** Because WalSink returns once
+  the WAL append lands, a slow remote store does not stall the durable path;
+  only a WAL append that hangs (a stuck disk) can. While a durable write is
+  outstanding past the timeout, new events are held only in memory. With
+  `fail-open: false`, serve rejects requests with `audit_unavailable` until
+  the write settles, as it does when the WAL is full; one that never returns
   rejects them until restart. With `fail-open: true` nothing is rejected. At
-  shutdown a stalled write gets up to the sink timeout to settle; if it does
-  not, the events after it are written on their own so they reach the WAL,
-  and a warning names the sequence the stalled write ends at. That last write
-  is the one time a sink has two writes open; WalSink appends each write to
-  its own segment file, so they do not collide.
+  shutdown a stalled write — including one that stalls during shutdown's own
+  flush — gets up to the sink timeout to settle; if it does not, the events
+  after it are written on their own and a warning names the sequence the
+  stalled write ends at, so shutdown can take up to two sink timeouts. That
+  last write is the one time a sink has two writes open; WalSink appends each
+  write to its own segment file, so they do not collide.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink
