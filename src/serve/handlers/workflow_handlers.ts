@@ -1400,12 +1400,14 @@ export async function handleWorkflowReject(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
-  const rejectedRun = await runInRootUnitOfWork(
+  // Set as soon as the rejection is saved, outside the root, so the parent
+  // still resumes if the reply fails after the save.
+  let rejected: WorkflowRejectData | undefined;
+  await runInRootUnitOfWork(
     ctx.repoContext,
     { flush: () => pushChangedToRemote(ctx) },
-    async (): Promise<WorkflowRejectData | undefined> => {
+    async () => {
       let release: (() => void) | undefined;
-      let rejected: WorkflowRejectData | undefined;
       try {
         const reserved = await reserveSuspendedRun(
           ctx,
@@ -1419,7 +1421,7 @@ export async function handleWorkflowReject(
             "workflow_reject_failed",
             reserved.message,
           );
-          return undefined;
+          return;
         }
         release = reserved.release;
 
@@ -1465,7 +1467,7 @@ export async function handleWorkflowReject(
 
         if (controller.signal.aborted) {
           sendError(socket, requestId, "cancelled", "Operation was cancelled");
-          return undefined;
+          return;
         }
 
         if (!result) {
@@ -1475,7 +1477,7 @@ export async function handleWorkflowReject(
             "workflow_reject_failed",
             "Workflow rejection failed",
           );
-          return undefined;
+          return;
         }
         rejected = result as unknown as WorkflowRejectData;
         // Other runs are named only to a reader of their workflow
@@ -1499,11 +1501,9 @@ export async function handleWorkflowReject(
           id: requestId,
           payload: { data: result },
         });
-        return rejected;
       } catch (error) {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "workflow_reject_failed", message);
-        return undefined;
       } finally {
         release?.();
       }
@@ -1513,6 +1513,7 @@ export async function handleWorkflowReject(
   // A rejected nested run has finished: its parent may continue. Launched
   // once the decision is saved, pushed and released; it may wait on a parent
   // this instance still drives, so the reply does not wait for it.
+  const rejectedRun = rejected;
   if (rejectedRun) {
     autoResumeParentAfterChild(
       ctx,
