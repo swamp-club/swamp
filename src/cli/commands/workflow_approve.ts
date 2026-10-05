@@ -77,19 +77,25 @@ export function renderApproveResult(
     cliCtx.logger.info`Serve is resuming run ${data.runId} automatically`;
   }
   if (cliCtx.verbosity === "quiet") return;
+  const target = remote ? formatCommandTarget({ server: remote.server }) : "";
   if (!remote?.serveResuming) {
-    const target = remote ? formatCommandTarget({ server: remote.server }) : "";
     writeOutput(
       `After approval: swamp workflow resume ${
         quoteShellWord(data.workflowName)
       } --run ${data.runId}${target}`,
     );
   }
-  if (data.awaitingParent) {
+  const parent = data.awaitingParent;
+  if (parent) {
+    // Through serve, both runs live on the server this command reached, so
+    // its target replaces the `--server <url>` placeholder that serve puts in
+    // `resumeCommand` (it cannot know the address the client used).
     writeOutput(
       remote
-        ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${data.awaitingParent.resumeCommand}`
-        : `Once it finishes, resume the parent run: ${data.awaitingParent.resumeCommand}`,
+        ? `Once it finishes, resume the parent run unless serve resumes it automatically: swamp workflow resume ${
+          quoteShellWord(parent.workflowName)
+        } --run ${parent.runId}${target}`
+        : `Once it finishes, resume the parent run: ${parent.resumeCommand}`,
     );
   }
 }

@@ -19,24 +19,14 @@
 
 import { assertEquals } from "@std/assert";
 import type { PendingApproval } from "../../libswamp/mod.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import type { CommandContext } from "../context.ts";
+import {
+  captureStdout,
+  hintTestContext,
+} from "./approval_hint_test_helpers.ts";
 import { renderApprovals } from "./workflow_approvals.ts";
 
 const RUN_ID = "8603d973-24ca-4f36-9c04-7b7c39a4a41a";
 const PARENT_RUN_ID = "0a5c1e8e-7f4b-4c55-9a3e-2b1c0d9e8f7a";
-
-function ctx(
-  overrides: Partial<CommandContext> = {},
-): CommandContext {
-  return {
-    outputMode: "log",
-    forceLog: false,
-    verbosity: "normal",
-    logger: getSwampLogger(["workflow", "approvals", "test"]),
-    ...overrides,
-  };
-}
 
 function pending(
   overrides: Partial<PendingApproval> = {},
@@ -53,21 +43,10 @@ function pending(
   };
 }
 
-/** Runs `fn` and returns what it wrote to stdout through console.log. */
-function stdout(fn: () => void): string[] {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => lines.push(msg);
-  try {
-    fn();
-    return lines;
-  } finally {
-    console.log = originalLog;
-  }
-}
-
 Deno.test("renderApprovals: prints each command unquoted on one line", () => {
-  const lines = stdout(() => renderApprovals(ctx(), [pending()]));
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [pending()])
+  );
   assertEquals(lines, [
     `  swamp workflow approve wipe-drive gate --run ${RUN_ID}`,
     `  swamp workflow reject  wipe-drive gate --run ${RUN_ID}`,
@@ -76,8 +55,8 @@ Deno.test("renderApprovals: prints each command unquoted on one line", () => {
 });
 
 Deno.test("renderApprovals: prints the parent's resume command for a nested run", () => {
-  const lines = stdout(() =>
-    renderApprovals(ctx(), [
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
       pending({
         parentRun: {
           workflowId: "parent-id",
@@ -96,8 +75,8 @@ Deno.test("renderApprovals: prints the parent's resume command for a nested run"
 });
 
 Deno.test("renderApprovals: --quiet prints no commands", () => {
-  const lines = stdout(() =>
-    renderApprovals(ctx({ verbosity: "quiet" }), [
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext({ verbosity: "quiet" }), [
       pending({
         parentRun: {
           workflowId: "parent-id",
@@ -114,15 +93,17 @@ Deno.test("renderApprovals: --quiet prints no commands", () => {
 
 Deno.test("renderApprovals: JSON mode prints only the approvals list", () => {
   const approvals = [pending()];
-  const lines = stdout(() =>
-    renderApprovals(ctx({ outputMode: "json" }), approvals)
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext({ outputMode: "json" }), approvals)
   );
   assertEquals(JSON.parse(lines.join("\n")), { approvals });
 });
 
 Deno.test("renderApprovals: shell-quotes a step name with spaces or shell syntax", () => {
-  const lines = stdout(() =>
-    renderApprovals(ctx(), [pending({ stepName: "verify build; rm -rf x" })])
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ stepName: "verify build; rm -rf x" }),
+    ])
   );
   assertEquals(lines, [
     `  swamp workflow approve wipe-drive 'verify build; rm -rf x' --run ${RUN_ID}`,
@@ -132,9 +113,9 @@ Deno.test("renderApprovals: shell-quotes a step name with spaces or shell syntax
 });
 
 Deno.test("renderApprovals: carries an explicit --server into every command", () => {
-  const lines = stdout(() =>
+  const lines = captureStdout(() =>
     renderApprovals(
-      ctx(),
+      hintTestContext(),
       [
         pending({
           parentRun: {
