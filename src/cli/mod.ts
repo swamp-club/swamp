@@ -127,8 +127,7 @@ import {
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { detectSupersededSkills } from "../domain/repo/repo_service.ts";
-import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
-import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
+import { supersededSkillDirs } from "../domain/repo/superseded_skills.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
@@ -1702,14 +1701,9 @@ async function checkForSupersededSkills(
   deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
-    const tools = marker?.tools?.length
-      ? marker.tools
-      : [resolvePrimaryTool(marker)];
     const allStale = new Set<string>();
-    for (const tool of tools) {
-      const dir = SKILL_DIRS[tool];
-      if (!dir) continue;
-      const stale = await detectSupersededSkills(join(repoDir, dir));
+    for (const dir of supersededSkillDirs(repoDir, marker?.tools ?? [])) {
+      const stale = await detectSupersededSkills(dir);
       for (const name of stale) allStale.add(name);
     }
     if (allStale.size > 0) {

@@ -20,10 +20,13 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   detectSupersededSkills,
+  removeSupersededLocalSkills,
   removeSupersededSkills,
   SUPERSEDED_SKILLS,
+  supersededSkillDirs,
 } from "./superseded_skills.ts";
 
 await initializeLogging({});
@@ -100,4 +103,93 @@ Deno.test("SUPERSEDED_SKILLS: contains expected entries", () => {
   assertEquals(SUPERSEDED_SKILLS.includes("swamp-extension-model"), true);
   assertEquals(SUPERSEDED_SKILLS.includes("swamp-data-query"), true);
   assertEquals(SUPERSEDED_SKILLS.includes("swamp"), false);
+});
+
+async function seedSuperseded(dir: string): Promise<void> {
+  for (const name of SUPERSEDED_SKILLS) {
+    await Deno.mkdir(join(dir, name), { recursive: true });
+    await Deno.writeTextFile(join(dir, name, "SKILL.md"), "old");
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("supersededSkillDirs: one dir per built-in tool, de-duplicated", () => {
+  const dirs = supersededSkillDirs("/repo", ["claude", "codex", "copilot"]);
+  assertEquals(dirs.length, 2);
+  assertPathEquals(dirs[0], join("/repo", ".claude", "skills"));
+  assertPathEquals(dirs[1], join("/repo", ".agents", "skills"));
+});
+
+Deno.test("supersededSkillDirs: ignores tools without a built-in skills dir", () => {
+  assertEquals(supersededSkillDirs("/repo", ["none", "my-custom-tool"]), []);
+});
+
+Deno.test("supersededSkillDirs: falls back to the claude dir when no tools are set", () => {
+  const dirs = supersededSkillDirs("/repo", []);
+  assertEquals(dirs.length, 1);
+  assertPathEquals(dirs[0], join("/repo", ".claude", "skills"));
+});
+
+Deno.test("removeSupersededLocalSkills: removes superseded skills and keeps others", async () => {
+  await withTempDir(async (tempDir) => {
+    const skillsDir = join(tempDir, ".claude", "skills");
+    await seedSuperseded(skillsDir);
+    await Deno.mkdir(join(skillsDir, "my-skill"));
+
+    await removeSupersededLocalSkills(tempDir, ["claude"]);
+
+    assertEquals(await detectSupersededSkills(skillsDir), []);
+    assertEquals(await exists(join(skillsDir, "my-skill")), true);
+  });
+});
+
+Deno.test("removeSupersededLocalSkills: no-ops when the skills dir does not exist", async () => {
+  await withTempDir(async (tempDir) => {
+    await removeSupersededLocalSkills(tempDir, ["claude", "kiro"]);
+    assertEquals(await exists(join(tempDir, ".claude")), false);
+  });
+});
+
+Deno.test("removeSupersededLocalSkills: skips a skills dir that resolves outside the repo", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    const outside = join(tempDir, "outside");
+    await seedSuperseded(outside);
+    await Deno.mkdir(join(repoDir, ".claude"), { recursive: true });
+    await Deno.symlink(outside, join(repoDir, ".claude", "skills"), {
+      type: "dir",
+    });
+
+    await removeSupersededLocalSkills(repoDir, ["claude"]);
+
+    assertEquals(
+      (await detectSupersededSkills(outside)).length,
+      SUPERSEDED_SKILLS.length,
+    );
+  });
+});
+
+Deno.test("removeSupersededLocalSkills: removes a symlinked superseded entry without touching its target", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    const target = join(tempDir, "target");
+    await Deno.mkdir(target);
+    await Deno.writeTextFile(join(target, "keep.txt"), "keep");
+    const skillsDir = join(repoDir, ".claude", "skills");
+    await Deno.mkdir(skillsDir, { recursive: true });
+    await Deno.symlink(target, join(skillsDir, "swamp-data"), { type: "dir" });
+
+    await removeSupersededLocalSkills(repoDir, ["claude"]);
+
+    assertEquals(await exists(join(skillsDir, "swamp-data")), false);
+    assertEquals(await exists(join(target, "keep.txt")), true);
+  });
 });
