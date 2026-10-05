@@ -22,6 +22,7 @@ import {
   type CancelTargetWorkflow,
   createWorkflowCancelSuspendedDeps,
   locateSuspendedRunToCancel,
+  type RunOwnerVerdict,
   type SwampError,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedDeps,
@@ -104,19 +105,26 @@ export function ownerGoneDecider(
     "activeRunRegistry" | "runTracker" | "controlPlaneStore" | "instanceId"
   >,
   onDeadPid?: (pid: number) => void,
-): (run: WorkflowRun) => Promise<boolean> {
+): (run: WorkflowRun) => Promise<RunOwnerVerdict> {
   return async (run) => {
-    if (ctx.activeRunRegistry?.get(run.id)) return false;
+    if (ctx.activeRunRegistry?.get(run.id)) {
+      return { gone: false, why: OWNER_IS_THIS_INSTANCE };
+    }
     const liveness = localOwnerLiveness();
     const tracked = ctx.runTracker?.findById(run.id);
     // A row another host wrote says nothing here: its pid is not ours to
     // check. The run is then judged like one with no row.
     if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
       if (!runHasDeadOwner(run, ctx.runTracker, liveness)) {
-        return false;
+        return {
+          gone: false,
+          why: liveness.isDead(tracked.pid)
+            ? OWNER_ROW_UNCLEAR
+            : OWNER_PROCESS_ALIVE,
+        };
       }
       onDeadPid?.(tracked.pid);
-      return true;
+      return { gone: true };
     }
     if (
       ctx.controlPlaneStore && ctx.instanceId && run.instanceId &&
@@ -125,11 +133,27 @@ export function ownerGoneDecider(
       const heartbeat = await ctx.controlPlaneStore.get(
         `heartbeats/${run.instanceId}`,
       );
-      return heartbeat === null;
+      return heartbeat === null
+        ? { gone: true }
+        : { gone: false, why: OWNER_INSTANCE_ALIVE };
     }
-    return false;
+    return { gone: false, why: OWNER_UNKNOWN };
   };
 }
+
+// Why a running run was not cancelled, as the caller allowed to cancel it
+// reads it. None names a pid, host or instance id: the reply crosses to a
+// client that holds `run` on the workflow, not admin on the server.
+const OWNER_IS_THIS_INSTANCE =
+  "this serve instance is running it. Cancel it again";
+const OWNER_PROCESS_ALIVE =
+  "the process running it on the serve host is still alive. Stop that process, then cancel the run again";
+const OWNER_INSTANCE_ALIVE =
+  "the serve instance running it still reports a heartbeat. Cancel the run through that instance, or again here once that instance has stopped and its heartbeat has expired";
+const OWNER_ROW_UNCLEAR =
+  "the run tracker on the serve host does not show the process that ran it as its unfinished owner, so swamp cannot tell that nothing is running it";
+const OWNER_UNKNOWN =
+  "the serve host has no run tracker record of the process running it, and no control plane to ask whether the serve instance that started it is alive, so swamp cannot tell that nothing is running it";
 
 /**
  * Cancels a persisted run that no process in this serve instance is driving,

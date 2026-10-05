@@ -514,7 +514,7 @@ Deno.test("ownerGoneDecider: a dead pid in the tracker row of a previous serve i
       (pid) => pids.push(pid),
     )(run);
 
-    assertEquals(gone, true);
+    assertEquals(gone, { gone: true });
     assertEquals(pids, [DEAD_PID]);
   });
 });
@@ -531,7 +531,8 @@ Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, what
       controlPlaneStore: controlPlaneWith([]),
     })(run);
 
-    assertEquals(gone, false);
+    assertEquals(gone.gone, false);
+    if (!gone.gone) assertStringIncludes(gone.why, "is still alive");
   });
 });
 
@@ -548,7 +549,8 @@ Deno.test("ownerGoneDecider: a run this instance drives is never gone", async ()
       instanceId: "new-instance",
     })(run);
 
-    assertEquals(gone, false);
+    assertEquals(gone.gone, false);
+    if (!gone.gone) assertStringIncludes(gone.why, "this serve instance");
   });
 });
 
@@ -565,20 +567,26 @@ Deno.test("ownerGoneDecider: without a tracker row, another instance's run is go
         instanceId,
         ...extra,
       })(run);
+    const why = async (verdict: ReturnType<typeof decide>) => {
+      const v = await verdict;
+      return v.gone ? "gone" : v.why;
+    };
 
-    assertEquals(await decide({}), false);
-    assertEquals(
-      await decide({ controlPlaneStore: controlPlaneWith(["peer"]) }),
-      false,
+    assertStringIncludes(await why(decide({})), "no control plane to ask");
+    assertStringIncludes(
+      await why(decide({ controlPlaneStore: controlPlaneWith(["peer"]) })),
+      "still reports a heartbeat",
     );
     assertEquals(
       await decide({ controlPlaneStore: controlPlaneWith([]) }),
-      true,
+      { gone: true },
     );
     // Its own run with no row: nothing shows the owner gone.
-    assertEquals(
-      await decide({ controlPlaneStore: controlPlaneWith([]) }, "peer"),
-      false,
+    assertStringIncludes(
+      await why(
+        decide({ controlPlaneStore: controlPlaneWith([]) }, "peer"),
+      ),
+      "no run tracker record",
     );
   });
 });
@@ -608,7 +616,7 @@ Deno.test("cancelSuspendedRunAndPush: cancels a running run whose serve process 
   });
 });
 
-Deno.test("cancelSuspendedRunAndPush: refuses a running run whose owner is alive with a conflict naming run doctor", async () => {
+Deno.test("cancelSuspendedRunAndPush: refuses a running run whose owner is alive with a conflict saying so", async () => {
   await withTracker(async (tracker) => {
     const wf = makeWorkflow("deploy");
     const run = runningRun(wf, Deno.pid, "old-instance");
@@ -624,7 +632,10 @@ Deno.test("cancelSuspendedRunAndPush: refuses a running run whose owner is alive
 
     assertEquals(result.status, "not_suspended");
     if (result.status === "not_suspended") {
-      assertStringIncludes(result.message, "swamp run doctor --fix");
+      assertStringIncludes(
+        result.message,
+        "was not cancelled: the process running it on the serve host is still alive",
+      );
     }
     assertEquals(h.saved, []);
     assertEquals(tracker.findById(run.id)?.status, "running");
@@ -672,8 +683,8 @@ Deno.test("ownerGoneDecider: a tracker row written under another hostname is not
         controlPlaneStore,
       })(run);
 
-    assertEquals(await decide(), false);
-    assertEquals(await decide(controlPlaneWith(["peer"])), false);
-    assertEquals(await decide(controlPlaneWith([])), true);
+    assertEquals((await decide()).gone, false);
+    assertEquals((await decide(controlPlaneWith(["peer"]))).gone, false);
+    assertEquals(await decide(controlPlaneWith([])), { gone: true });
   });
 });

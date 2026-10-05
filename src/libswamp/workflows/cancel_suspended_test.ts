@@ -525,7 +525,7 @@ Deno.test("workflowCancelSuspended: cancels a running run whose owner is gone an
   const asked: string[] = [];
   h.deps.ownerGone = (r) => {
     asked.push(r.id);
-    return true;
+    return { gone: true };
   };
 
   const event = await cancel(h.deps, { runId: run.id, reason: "stuck" });
@@ -546,9 +546,15 @@ Deno.test("workflowCancelSuspended: cancels a running run whose owner is gone an
   ]);
 });
 
-Deno.test("workflowCancelSuspended: refuses a running run whose owner is not shown gone, naming run doctor", async () => {
+Deno.test("workflowCancelSuspended: refuses a running run whose owner is not shown gone, saying what still holds it", async () => {
   const wf = makeWorkflow("deploy");
-  for (const ownerGone of [() => false, undefined]) {
+  const held = { gone: false, why: "its process is still alive" } as const;
+  for (
+    const [ownerGone, why] of [
+      [() => held, "its process is still alive"],
+      [undefined, "nothing here can tell whether the process"],
+    ] as const
+  ) {
     const run = runningServeRun(wf);
     const h = harness([wf], [run]);
     h.deps.ownerGone = ownerGone;
@@ -558,8 +564,10 @@ Deno.test("workflowCancelSuspended: refuses a running run whose owner is not sho
     assertEquals(event?.kind, "error");
     if (event?.kind === "error") {
       assertEquals(event.error.code, CANCEL_SUSPENDED_NOT_SUSPENDED);
-      assertStringIncludes(event.error.message, "recorded as running");
-      assertStringIncludes(event.error.message, "swamp run doctor --fix");
+      assertStringIncludes(
+        event.error.message,
+        `Run ${run.id} is recorded as running and was not cancelled: ${why}`,
+      );
     }
     assertEquals(run.status, "running");
     assertEquals(h.saved, []);
@@ -574,7 +582,7 @@ Deno.test("workflowCancelSuspended: a refused caller gets not found for a runnin
   let judged = false;
   h.deps.ownerGone = () => {
     judged = true;
-    return true;
+    return { gone: true };
   };
 
   const event = await cancel(h.deps, { runId: run.id, reason: "r" });

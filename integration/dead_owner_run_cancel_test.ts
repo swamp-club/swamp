@@ -128,7 +128,10 @@ for (
             () => true,
             () => Promise.resolve(null),
             tracker,
-            (r) => runHasDeadOwner(r, tracker, localOwnerLiveness()),
+            (r) =>
+              runHasDeadOwner(r, tracker, localOwnerLiveness())
+                ? { gone: true }
+                : { gone: false, why: "its owner is alive" },
           );
           const events = await collect(
             workflowCancelSuspended(createLibSwampContext(), deps, {

@@ -1623,11 +1623,17 @@ The run is then cancelled like an offline cancel of a run whose owner died:
 its in-flight steps fail with "the process running this step stopped before
 the step finished", its tracker row is completed `cancelled`, and the method
 runs the dead process left `running` are settled, best effort. When the owner
-cannot be shown gone, a caller allowed to cancel the run gets `409` saying the
-run is recorded as running and naming `swamp run doctor --fix` (run on the
-serve host, or with `--server`); nothing is
-written, since a live owner would save over the cancel. A run with no tracker
-row and no control plane to ask is in that case.
+cannot be shown gone, a caller allowed to cancel the run gets `409` and
+nothing is written, since a live owner would save over the cancel. The reply
+says what still holds the run and what to do, without naming a pid, host or
+instance id:
+
+- The process on the serve host is still alive: stop it, then cancel again.
+- The serve instance that runs it still reports a heartbeat: cancel through
+  that instance, or again here once its heartbeat has expired.
+- Nothing can judge it: there is no tracker row from this host and no control
+  plane to ask. No supported command clears such a run; `run doctor` applies
+  the same owner checks, so it does not either.
 
 A run aborted through `ActiveRunRegistry` is checked again once it leaves the
 registry. A resume can save the run suspended at its next gate just before the

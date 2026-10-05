@@ -923,8 +923,7 @@ export const workflowCancelCommand = withRemoteOptions(
     if (isServeOwnedRun(run)) {
       throw new UserError(
         `Run ${run.id} belongs to a serve instance and cannot be cancelled locally. ` +
-          `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>. ` +
-          `If the server refuses a run whose serve process is gone, settle it with: swamp run doctor --fix (on the serve host, or with --server <url>)`,
+          `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
       );
     }
 

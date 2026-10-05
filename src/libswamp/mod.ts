@@ -363,6 +363,7 @@ export {
   type LocatedSuspendedRun,
   type LocateSuspendedRunInput,
   locateSuspendedRunToCancel,
+  type RunOwnerVerdict,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedData,
   type WorkflowCancelSuspendedDeps,

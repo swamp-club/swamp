@@ -134,11 +134,27 @@ export interface WorkflowCancelSuspendedDeps {
   /**
    * Decides whether a run recorded `running` has lost its owner: no process
    * drives it and the one that did is shown to be gone. Only then is a
-   * running run cancelled here; without this, or on false, it is refused,
-   * since a live owner would save over the cancel.
+   * running run cancelled here; without this, or when the owner is not shown
+   * gone, it is refused, since a live owner would save over the cancel.
    */
-  ownerGone?: (run: WorkflowRun) => Promise<boolean> | boolean;
+  ownerGone?: (run: WorkflowRun) => Promise<RunOwnerVerdict> | RunOwnerVerdict;
 }
+
+/**
+ * Whether the owner of a run recorded `running` is shown gone. When it is
+ * not, `why` completes "was not cancelled: ..." for the caller allowed to
+ * cancel the run: what still holds the run, and what to do about it.
+ */
+export type RunOwnerVerdict =
+  | { gone: true }
+  | { gone: false; why: string };
+
+/** The verdict when nothing is able to judge a running run's owner. */
+const OWNER_NOT_JUDGED: RunOwnerVerdict = {
+  gone: false,
+  why:
+    "nothing here can tell whether the process running it has stopped. Cancel it where it was started",
+};
 
 export function createWorkflowCancelSuspendedDeps(
   workflowRepo: WorkflowRepository,
@@ -211,7 +227,7 @@ export async function locateSuspendedRunToCancel(
  * A run recorded `running` is cancelled too, but only when `deps.ownerGone`
  * shows the process that ran it is gone, for example a serve instance killed
  * mid-step (swamp-club#2518). Its in-flight steps are settled as an offline
- * cancel settles them. Otherwise it is refused, naming `run doctor`.
+ * cancel settles them. Otherwise it is refused, saying what still holds it.
  *
  * Does no locking: the caller must hold whatever claim keeps other writers
  * off the run for the whole call, so the load here is a fresh read.
@@ -236,16 +252,17 @@ export async function* workflowCancelSuspended(
         const { run, workflowId, target, workflow } = found;
 
         const previousStatus = run.status;
-        if (
-          previousStatus === "running" &&
-          !(deps.ownerGone && await deps.ownerGone(run))
-        ) {
+        const owner = previousStatus !== "running"
+          ? undefined
+          : deps.ownerGone
+          ? await deps.ownerGone(run)
+          : OWNER_NOT_JUDGED;
+        if (owner && !owner.gone) {
           yield {
             kind: "error",
             error: {
               ...validationFailed(
-                `Run ${run.id} is recorded as running, and swamp could not confirm that the process running it has stopped, so it was not cancelled. ` +
-                  `If that process is gone, settle the run with: swamp run doctor --fix (on the serve host, or with --server <url>)`,
+                `Run ${run.id} is recorded as running and was not cancelled: ${owner.why}`,
               ),
               code: CANCEL_SUSPENDED_NOT_SUSPENDED,
             },
