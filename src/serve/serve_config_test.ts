@@ -1342,6 +1342,34 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "writeServeConfigFile: the default path does not write through a symlinked .swamp/serve.yaml",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const outside = join(dir, "outside.yaml");
+      await Deno.writeTextFile(outside, "port: 9090\n");
+      const repoDir = join(dir, "repo");
+      await Deno.mkdir(join(repoDir, ".swamp"), { recursive: true });
+      await Deno.symlink(outside, join(repoDir, ".swamp", "serve.yaml"), {
+        type: "file",
+      });
+
+      await writeServeConfigFile(repoDir, {
+        triggers: { "my-workflow": { schedule: "0 3 * * *" } },
+      });
+
+      assertEquals(await Deno.readTextFile(outside), "port: 9090\n");
+    } finally {
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch { /* Windows EBUSY */ }
+    }
+  },
+});
+
 Deno.test("writeServeConfigFile: preserves other config sections", async () => {
   const dir = await Deno.makeTempDir();
   try {

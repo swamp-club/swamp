@@ -656,9 +656,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `ScheduledExecutionService` after writing, so no full reload or `--hot-reload`
   flag is needed (`src/serve/handlers/workflow_handlers.ts`). They read and
   write the same config file as the reload; writing rewrites it (YAML comments
-  are lost). When the file cannot be written, such as a read-only ConfigMap
-  mount, they refuse and leave the scheduler unchanged; the client message
-  names no server path, the log does. `workflow.trigger.get` reports the
+  are lost), through the real path of a symlinked `--config` file. When the
+  file cannot be written, such as a read-only ConfigMap mount, they refuse and
+  leave the scheduler unchanged; the client message names no server path (the
+  log does) and points at `swamp serve reload` or, without `--hot-reload`, a
+  restart. `workflow.trigger.get` reports the
   override the scheduler holds (`getTriggerOverride`), or the file's entry when
   serve runs without `--schedule`.
 

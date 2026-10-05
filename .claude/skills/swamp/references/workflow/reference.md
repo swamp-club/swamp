@@ -154,7 +154,7 @@ restart. With `--server`, they act on the config file that serve was started
 with and apply the change to its scheduler immediately. `set` and `remove`
 rewrite that file, dropping YAML comments, and are refused when it is not
 writable (e.g. a read-only ConfigMap mount): edit it directly, then run
-`swamp serve reload`.
+`swamp serve reload` (with `--hot-reload`) or restart serve.
 
 **`set` behavior:** `--schedule` is required. Each call replaces the entire
 override entry (not a merge). To keep existing inputs, re-specify them.

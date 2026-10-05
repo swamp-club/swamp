@@ -50,7 +50,7 @@ function data(frames: Frame[]): Record<string, unknown> {
 }
 
 async function withConfigFile(
-  fn: (repo: ServeRepo, configPath: string) => Promise<void>,
+  fn: (repo: ServeRepo, configPath: string, configDir: string) => Promise<void>,
 ): Promise<void> {
   await withServeRepo(async (repo) => {
     const configDir = join(repo.repoDir, "mounted-config");
@@ -68,7 +68,7 @@ async function withConfigFile(
         "",
       ].join("\n"),
     );
-    await fn(repo, configPath);
+    await fn(repo, configPath, configDir);
   });
 }
 
@@ -161,8 +161,7 @@ Deno.test({
     "workflow.trigger.set: refuses when the --config file cannot be written and leaves the scheduler unchanged",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    await withConfigFile(async (repo, configPath) => {
-      const configDir = join(repo.repoDir, "mounted-config");
+    await withConfigFile(async (repo, configPath, configDir) => {
       await Deno.chmod(configDir, 0o555);
       try {
         // Mode bits do not stop root; skip rather than fail there.
@@ -185,7 +184,7 @@ Deno.test({
         const before = await Deno.readTextFile(configPath);
 
         const frames = await sendRequest(
-          { ...ctxFor(repo, configPath), scheduledExecution },
+          { ...ctxFor(repo, configPath), scheduledExecution, hotReload: true },
           request("workflow.trigger.set", {
             workflowName: "sweep",
             schedule: "44 10 * * *",
@@ -195,6 +194,14 @@ Deno.test({
         const error = errorFrame(frames)?.error;
         assertEquals(error?.code, "workflow_trigger_set_failed");
         assertStringIncludes(error?.message ?? "", "swamp serve reload");
+
+        const removeFrames = await sendRequest(
+          ctxFor(repo, configPath),
+          request("workflow.trigger.remove", { workflowName: "sweep" }),
+        );
+        const removeError = errorFrame(removeFrames)?.error;
+        assertEquals(removeError?.code, "workflow_trigger_remove_failed");
+        assertStringIncludes(removeError?.message ?? "", "restart serve");
         assertEquals(scheduledExecution.getTriggerOverride("sweep"), original);
         assertEquals(await Deno.readTextFile(configPath), before);
       } finally {

@@ -1450,8 +1450,9 @@ export async function readServeConfigFile(
 
 /**
  * Writes the serve config file at `configPath` when given, otherwise at
- * `<repoDir>/.swamp/serve.yaml`. An existing file is written through its real
- * path, so the atomic rename replaces a symlink's target, not the symlink.
+ * `<repoDir>/.swamp/serve.yaml`. An existing `configPath` file is written
+ * through its real path, so the atomic rename replaces a symlink's target, not
+ * the symlink.
  */
 export async function writeServeConfigFile(
   repoDir: string,
@@ -1460,10 +1461,12 @@ export async function writeServeConfigFile(
 ): Promise<void> {
   const path = configPath ?? join(repoDir, DEFAULT_CONFIG_PATH);
   let target = path;
-  try {
-    target = await Deno.realPath(path);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  if (configPath !== undefined) {
+    try {
+      target = await Deno.realPath(configPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
   }
   await Deno.mkdir(dirname(target), { recursive: true });
   const content = stringifyYaml(

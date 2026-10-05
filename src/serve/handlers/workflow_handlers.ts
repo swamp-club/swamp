@@ -2649,9 +2649,9 @@ async function writeTriggerConfig(
       socket,
       requestId,
       errorCode,
-      "Cannot write the serve config file this server was started with " +
-        "(it may be read-only). Edit that file and run 'swamp serve reload' " +
-        "instead.",
+      "Cannot write the serve config file (it may be read-only). Edit it " +
+        "directly, then " +
+        (ctx.hotReload ? "run 'swamp serve reload'." : "restart serve."),
     );
     return false;
   }
