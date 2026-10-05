@@ -387,7 +387,14 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       buildPlist(job.binaryPath, cadenceFromInterval(job.interval), this.mode),
     );
 
-    await launchctl(["bootout", target]);
+    // The scheduler may have started the job since the first check.
+    const recheck = await launchctl(["print", target]);
+    if (recheck.code === 0 && parseLaunchctlPrint(recheck.stdout)?.running) {
+      return "skipped";
+    }
+
+    await options.beforeUnload?.();
+    const bootout = await launchctl(["bootout", target]);
     let unloaded = false;
     for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
       if ((await launchctl(["print", target])).code !== 0) {
@@ -397,8 +404,10 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
     }
     if (!unloaded) {
+      const reason = bootout.stderr.trim();
       throw new Error(
-        `launchctl bootout did not unload ${target}; the job was left as it was`,
+        `launchctl bootout did not unload ${target}; the job was left as it was` +
+          (reason ? `: ${reason}` : ""),
       );
     }
 

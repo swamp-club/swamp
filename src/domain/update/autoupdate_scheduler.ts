@@ -81,6 +81,12 @@ export class SchedulerRefreshError extends Error {
 
 export interface SchedulerRefreshOptions {
   loadIfNotLoaded?: boolean;
+  /**
+   * Called just before the job is taken out of the scheduler, so the caller
+   * can record that it may be left unloaded if this process dies before
+   * loading it again.
+   */
+  beforeUnload?: () => Promise<void>;
 }
 
 export interface AutoupdateScheduler {

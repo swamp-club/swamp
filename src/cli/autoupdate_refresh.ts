@@ -107,6 +107,11 @@ export async function refreshAutoupdateSchedulerIfOwed(
           // left it that way, never one the user turned off.
           result = await deps.refreshScheduler(job, {
             loadIfNotLoaded: prefs.schedulerLeftUnloaded === true,
+            // Recorded before the job is taken out, so a process killed
+            // before loading it again still leaves the next command the
+            // trail to recover it.
+            beforeUnload: () =>
+              deps.writePreferences({ ...prefs, schedulerLeftUnloaded: true }),
           });
         } catch (error) {
           const leftUnloaded = error instanceof SchedulerRefreshError

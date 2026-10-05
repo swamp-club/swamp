@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   SchedulerRefreshError,
+  type SchedulerRefreshOptions,
   type SchedulerRefreshResult,
 } from "../domain/update/autoupdate_scheduler.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
@@ -39,17 +40,19 @@ function fakeDeps(
     prefs?: UpdatePreferences;
     os?: string;
     job?: "agent" | "daemon" | null;
-    refresh?: () => Promise<SchedulerRefreshResult>;
+    refresh?: (
+      options: SchedulerRefreshOptions,
+    ) => Promise<SchedulerRefreshResult>;
     lockHeld?: boolean;
   } = {},
 ): AutoupdateRefreshDeps & {
   written: UpdatePreferences[];
   refreshes: string[];
-  refreshOptions: { loadIfNotLoaded?: boolean }[];
+  refreshOptions: SchedulerRefreshOptions[];
 } {
   const written: UpdatePreferences[] = [];
   const refreshes: string[] = [];
-  const refreshOptions: { loadIfNotLoaded?: boolean }[] = [];
+  const refreshOptions: SchedulerRefreshOptions[] = [];
   return {
     written,
     refreshes,
@@ -68,7 +71,7 @@ function fakeDeps(
     refreshScheduler: (job, opts) => {
       refreshes.push(job);
       refreshOptions.push(opts);
-      return options.refresh?.() ?? Promise.resolve("refreshed");
+      return options.refresh?.(opts) ?? Promise.resolve("refreshed");
     },
     withRefreshLock: (fn) => options.lockHeld ? Promise.resolve(null) : fn(),
     now: () => NOW,
@@ -120,7 +123,7 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: records the attempt when refresh fa
 Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only when a refresh left it unloaded", async () => {
   const fresh = fakeDeps();
   await refreshAutoupdateSchedulerIfOwed(fresh, VERSION);
-  assertEquals(fresh.refreshOptions, [{ loadIfNotLoaded: false }]);
+  assertEquals(fresh.refreshOptions[0].loadIfNotLoaded, false);
 
   // An attempt that never booted the job out (unknown, or a failure before
   // bootout) must not force-load a job the user may have turned off.
@@ -132,7 +135,7 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only when a r
     },
   });
   await refreshAutoupdateSchedulerIfOwed(afterUnknown, VERSION);
-  assertEquals(afterUnknown.refreshOptions, [{ loadIfNotLoaded: false }]);
+  assertEquals(afterUnknown.refreshOptions[0].loadIfNotLoaded, false);
 
   const leftUnloaded = fakeDeps({
     prefs: {
@@ -143,8 +146,25 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only when a r
     },
   });
   await refreshAutoupdateSchedulerIfOwed(leftUnloaded, VERSION);
-  assertEquals(leftUnloaded.refreshOptions, [{ loadIfNotLoaded: true }]);
+  assertEquals(leftUnloaded.refreshOptions[0].loadIfNotLoaded, true);
   assertEquals(leftUnloaded.written[0].schedulerLeftUnloaded, undefined);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: records the unloaded mark before bootout, so a killed process leaves a trail", async () => {
+  let onDiskAtBootout: UpdatePreferences | undefined;
+  const deps = fakeDeps({
+    refresh: async (opts) => {
+      await opts.beforeUnload?.();
+      // What a process killed between bootout and bootstrap leaves behind.
+      onDiskAtBootout = deps.written.at(-1);
+      return "refreshed";
+    },
+  });
+  await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(onDiskAtBootout?.schedulerLeftUnloaded, true);
+  // A successful refresh then clears it.
+  assertEquals(deps.written.at(-1)?.schedulerLeftUnloaded, undefined);
 });
 
 Deno.test("refreshAutoupdateSchedulerIfOwed: remembers a refresh that left the job unloaded", async () => {

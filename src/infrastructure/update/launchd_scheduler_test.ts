@@ -238,6 +238,7 @@ Deno.test("LaunchdScheduler.refresh: boots out, waits, and bootstraps again", as
     assertEquals(result, "refreshed");
     assertEquals(launchctlCalls(calls), [
       "print",
+      "print",
       "bootout",
       "print",
       "bootstrap",
@@ -248,6 +249,65 @@ Deno.test("LaunchdScheduler.refresh: boots out, waits, and bootstraps again", as
     const rewritten = parsePlistJob(await Deno.readTextFile(plistPath));
     assertEquals(rewritten, { binaryPath: binary, interval: 3600 });
   });
+});
+
+Deno.test("LaunchdScheduler.refresh: skips a job that started between the check and bootout", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async () => {
+      let prints = 0;
+      let unloadMarked = false;
+      const { result, calls } = await withMockedCommand((cmd, args) => {
+        if (cmd === "id") return { stdout: "501\n", code: 0 };
+        if (args[0] === "print") {
+          return {
+            stdout: prints++ === 0 ? STUCK_PRINT : RUNNING_PRINT,
+            code: 0,
+          };
+        }
+        return { stdout: "", code: 0 };
+      }, () =>
+        new LaunchdScheduler("agent").refresh({
+          beforeUnload: () => {
+            unloadMarked = true;
+            return Promise.resolve();
+          },
+        }));
+
+      assertEquals(result, "skipped");
+      assertEquals(launchctlCalls(calls), ["print", "print"]);
+      assertEquals(unloadMarked, false);
+    },
+  );
+});
+
+Deno.test("LaunchdScheduler.refresh: marks the job before booting it out", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async () => {
+      const order: string[] = [];
+      let booted = true;
+      await withMockedCommand((cmd, args) => {
+        if (cmd === "id") return { stdout: "501\n", code: 0 };
+        if (args[0] === "print") {
+          return booted ? { stdout: STUCK_PRINT, code: 0 } : NOT_FOUND;
+        }
+        if (args[0] === "bootout") {
+          order.push("bootout");
+          booted = false;
+        }
+        return { stdout: "", code: 0 };
+      }, () =>
+        new LaunchdScheduler("agent").refresh({
+          beforeUnload: () => {
+            order.push("marked");
+            return Promise.resolve();
+          },
+        }));
+
+      assertEquals(order, ["marked", "bootout"]);
+    },
+  );
 });
 
 Deno.test("LaunchdScheduler.refresh: leaves a running job alone", async () => {
