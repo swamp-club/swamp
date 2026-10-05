@@ -337,7 +337,12 @@ function reject(
 ): Promise<WorkflowRejectEvent> {
   return lastEvent(workflowReject(
     createLibSwampContext(),
-    createWorkflowRejectDeps(writer.repo.workflowRepo, runRepo, runClaims),
+    createWorkflowRejectDeps(
+      writer.repo.workflowRepo,
+      runRepo,
+      runClaims,
+      writer.findEvaluatedWorkflow,
+    ),
     {
       workflowIdOrName: workflow.name,
       stepName: "gate",

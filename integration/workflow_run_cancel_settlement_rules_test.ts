@@ -28,6 +28,13 @@
  * `pending` in a record marked cancelled (swamp-club#2895). Every cancel
  * goes through `cancelAndSettle`, which settles that work first.
  *
+ *   Only `src/domain/workflows/execution_service.ts`, which walks the run,
+ *   and `src/domain/workflows/abort_settlement.ts` call a run's `complete()`.
+ *
+ * `complete()` derives only the run's status. Called on a stored run that no
+ * process walks, it leaves the same open work in a record marked failed
+ * (swamp-club#2905). A reject goes through `completeAndSettle`.
+ *
  * Static — no subprocesses, nothing is executed.
  */
 
@@ -42,8 +49,20 @@ import {
 /** A call of the raw cancel transition, not its declaration. */
 const END_AS_CANCELLED_CALL = /\.endAsCancelled\s*\(/;
 
+/** A call of `complete` with no arguments: a run's, not a tracker's. */
+const COMPLETE_CALL = /\.complete\s*\(\s*\)/;
+
 /** True when `source` calls `endAsCancelled` outside a comment line. */
 function callsEndAsCancelled(source: string): boolean {
+  return callsOutsideComments(source, END_AS_CANCELLED_CALL);
+}
+
+/** True when `source` calls a run's `complete()` outside a comment line. */
+function callsComplete(source: string): boolean {
+  return callsOutsideComments(source, COMPLETE_CALL);
+}
+
+function callsOutsideComments(source: string, call: RegExp): boolean {
   return source.split("\n").some((line) => {
     const trimmed = line.trimStart();
     if (
@@ -52,7 +71,7 @@ function callsEndAsCancelled(source: string): boolean {
     ) {
       return false;
     }
-    return END_AS_CANCELLED_CALL.test(line);
+    return call.test(line);
   });
 }
 
@@ -88,5 +107,40 @@ Deno.test("WorkflowRun.endAsCancelled is called only by cancelAndSettle", async 
     "Cancel a run with cancelAndSettle from " +
       "src/domain/workflows/abort_settlement.ts, which settles the run's " +
       "unfinished jobs and steps before marking it cancelled.",
+  );
+});
+
+Deno.test("callsComplete: matches a run's complete(), not a tracker's or a comment", () => {
+  assertEquals(callsComplete("  run.complete();"), true);
+  assertEquals(callsComplete("  existingRun.complete( );"), true);
+  assertEquals(
+    callsComplete('  deps.runTracker.complete(run.id, "failed");'),
+    false,
+  );
+  assertEquals(callsComplete("  complete(): void {"), false);
+  assertEquals(callsComplete("  // service after run.complete())."), false);
+});
+
+/** The only production files allowed to call a run's `complete()`. */
+const PINNED_COMPLETE = [
+  "src/domain/workflows/abort_settlement.ts",
+  "src/domain/workflows/execution_service.ts",
+];
+
+Deno.test("WorkflowRun.complete is called only by the live walk and completeAndSettle", async () => {
+  const callers: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (callsComplete(await Deno.readTextFile(filePath))) {
+      callers.push(repoRelative(filePath));
+    }
+  }
+
+  assertPinnedSet(
+    callers.sort(),
+    PINNED_COMPLETE,
+    "WorkflowRun.complete callers",
+    "End a stored run with completeAndSettle from " +
+      "src/domain/workflows/abort_settlement.ts, which settles the run's " +
+      "unfinished jobs and steps before completing it.",
   );
 });

@@ -22,6 +22,9 @@
 // are driven to suspension by the real execution service on a temp repo whose
 // datastore lives outside `.swamp/`, so the evaluated snapshot a cancel
 // settles against is read from where the run wrote it.
+//
+// swamp-club#2905: rejecting a gate settles the run the same way before it is
+// marked failed, and a resume from the rejected gate runs the settled work.
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -45,7 +48,15 @@ import {
   findAllActiveRuns,
   resolveLocalCancelTarget,
 } from "../src/cli/commands/workflow_cancel.ts";
-import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
+import {
+  collect,
+  createLibSwampContext,
+  createWorkflowApproveDeps,
+  createWorkflowRejectDeps,
+  supersedeSuspendedRuns,
+  workflowApprove,
+  workflowReject,
+} from "../src/libswamp/mod.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
 import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
@@ -163,18 +174,22 @@ function issueWorkflow(): Workflow {
   });
 }
 
-async function suspend(
-  { dir, config, repo }: Fixture,
-  workflow: Workflow,
-): Promise<WorkflowRun> {
-  await repo.workflowRepo.save(workflow);
+async function executionService({ dir, config, repo }: Fixture) {
   const deps = await createWorkflowRunDeps(dir, repo, config);
-  const service = deps.createExecutionService(
+  return deps.createExecutionService(
     repo.workflowRepo,
     repo.workflowRunRepo,
     dir,
     repo.catalogStore,
   );
+}
+
+async function suspend(
+  fixture: Fixture,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  await fixture.repo.workflowRepo.save(workflow);
+  const service = await executionService(fixture);
   const run = await service.execute(workflow.name);
   assertEquals(run.status, "suspended", JSON.stringify(run.toData()));
   return run;
@@ -386,6 +401,193 @@ Deno.test("workflow cancel settles an evaluated job name through the run's snaps
     // report is settled as the live abort would settle it, not skipped.
     const stored = await reload(fixture, workflow, suspended);
     assertEquals(statuses(stored), {
+      "deploy-prod": "failed",
+      "deploy-prod/gate": "failed",
+      "report": "failed",
+      "report/r": "failed",
+    });
+  });
+});
+
+/** Rejects `stepName` of the run and returns the last event's kind. */
+async function reject(
+  fixture: Fixture,
+  workflow: Workflow,
+  run: WorkflowRun,
+  stepName: string,
+): Promise<string | undefined> {
+  const events = await collect(workflowReject(
+    createLibSwampContext(),
+    createWorkflowRejectDeps(
+      fixture.repo.workflowRepo,
+      fixture.repo.workflowRunRepo,
+      unclaimedRuns,
+      fixture.findEvaluatedWorkflow,
+    ),
+    {
+      workflowIdOrName: workflow.name,
+      stepName,
+      reason: "not today",
+      runId: run.id,
+      decidedBy: "user:test",
+    },
+  ));
+  return events.at(-1)?.kind;
+}
+
+async function approve(
+  fixture: Fixture,
+  workflow: Workflow,
+  run: WorkflowRun,
+  stepName: string,
+): Promise<string | undefined> {
+  const events = await collect(workflowApprove(
+    createLibSwampContext(),
+    createWorkflowApproveDeps(
+      fixture.repo.workflowRepo,
+      fixture.repo.workflowRunRepo,
+      unclaimedRuns,
+    ),
+    {
+      workflowIdOrName: workflow.name,
+      stepName,
+      runId: run.id,
+      decidedBy: "user:test",
+    },
+  ));
+  return events.at(-1)?.kind;
+}
+
+/** Resumes the run and returns it as the resume left it. */
+async function resume(
+  fixture: Fixture,
+  workflow: Workflow,
+  run: WorkflowRun,
+  fromStep?: string,
+): Promise<WorkflowRun> {
+  const service = await executionService(fixture);
+  for await (const _ of service.resume(workflow.name, run.id, { fromStep })) {
+    // Drained: the stored record is what is asserted on.
+  }
+  return await reload(fixture, workflow, run);
+}
+
+Deno.test("workflow reject settles a suspended run's jobs and steps in its record", async () => {
+  await withFixture(async (fixture) => {
+    const workflow = issueWorkflow();
+    const suspended = await suspend(fixture, workflow);
+
+    assertEquals(
+      await reject(fixture, workflow, suspended, "gate2"),
+      "completed",
+    );
+
+    const stored = await reload(fixture, workflow, suspended);
+    assertEquals(stored.status, "failed");
+    assertEquals(statuses(stored), {
+      "a-side": "failed",
+      "a-side/gate2": "failed",
+      "a-side/s": "skipped",
+      "main": "failed",
+      "main/gate": "failed",
+      "main/post": "skipped",
+      "teardown": "failed",
+      "teardown/t": "failed",
+    });
+    const rejected = stored.getJob("a-side")!.getStep("gate2")!;
+    assertEquals(rejected.error, "not today");
+    assertEquals(rejected.settledByAbort, false);
+    for (const ref of ["a-side/s", "main/gate", "main/post", "teardown/t"]) {
+      const [job, step] = ref.split("/");
+      assertEquals(stored.getJob(job)!.getStep(step)!.settledByAbort, true);
+    }
+    assertEquals(stored.toData().failedStep, "gate2");
+    assertEquals(fixture.executions, []);
+  });
+});
+
+Deno.test("workflow reject reports the rejected gate when a settled gate is stored before it", async () => {
+  await withFixture(async (fixture) => {
+    const workflow = issueWorkflow();
+    const suspended = await suspend(fixture, workflow);
+
+    assertEquals(
+      await reject(fixture, workflow, suspended, "gate"),
+      "completed",
+    );
+
+    const stored = await reload(fixture, workflow, suspended);
+    assertEquals(stored.getJob("a-side")!.getStep("gate2")!.status, "failed");
+    assertEquals(stored.toData().failedStep, "gate");
+    assertEquals(stored.toData().failureReason, "not today");
+  });
+});
+
+Deno.test("resuming from a rejected gate asks every gate again and runs the settled work once", async () => {
+  await withFixture(async (fixture) => {
+    const workflow = issueWorkflow();
+    const suspended = await suspend(fixture, workflow);
+    await reject(fixture, workflow, suspended, "gate2");
+
+    // Asked again: the rejected gate and the gate the reject settled wait.
+    const asked = await resume(fixture, workflow, suspended, "gate2");
+    assertEquals(asked.status, "suspended");
+    assertEquals(statuses(asked), {
+      "a-side": "running",
+      "a-side/gate2": "waiting_approval",
+      "a-side/s": "pending",
+      "main": "running",
+      "main/gate": "waiting_approval",
+      "main/post": "pending",
+      "teardown": "pending",
+      "teardown/t": "pending",
+    });
+    assertEquals(fixture.executions, []);
+
+    assertEquals(
+      await approve(fixture, workflow, suspended, "gate2"),
+      "completed",
+    );
+    assertEquals(
+      await approve(fixture, workflow, suspended, "gate"),
+      "completed",
+    );
+    const finished = await resume(fixture, workflow, suspended);
+
+    assertEquals(finished.status, "succeeded");
+    assertEquals([...fixture.executions].sort(), ["post", "s", "t"]);
+  });
+});
+
+Deno.test("workflow reject settles an evaluated job name through the run's snapshot", async () => {
+  await withFixture(async (fixture) => {
+    const deployName = '${{ "deploy-" + "prod" }}';
+    const workflow = Workflow.create({
+      name: `named-wf-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({ name: "a-side", steps: [gate("gate2")] }),
+        Job.create({ name: deployName, steps: [gate("gate")] }),
+        Job.create({
+          name: "report",
+          steps: [work("r")],
+          dependsOn: [{
+            job: deployName,
+            condition: TriggerCondition.failed(),
+          }],
+        }),
+      ],
+    });
+    const suspended = await suspend(fixture, workflow);
+    assertEquals(suspended.getJob("deploy-prod")?.status, "running");
+
+    await reject(fixture, workflow, suspended, "gate2");
+
+    // With the snapshot, report's failed condition on deploy-prod holds, so
+    // report is settled as startable work, not skipped.
+    const stored = await reload(fixture, workflow, suspended);
+    assertEquals(statuses(stored), {
+      "a-side": "failed",
+      "a-side/gate2": "failed",
       "deploy-prod": "failed",
       "deploy-prod/gate": "failed",
       "report": "failed",

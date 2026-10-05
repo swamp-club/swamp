@@ -225,7 +225,18 @@ snapshot, only an approval made in the same view (its `autoResumed: true`)
 hides Resume.
 
 `swamp workflow reject <workflow> <step> --run <id>` marks the step and the run
-as failed. No resume is needed.
+as failed. No resume is needed. Before the run is marked failed, the work the
+rejection leaves unfinished is settled as a cancel settles it (see
+[Cancellation](#cancellation)): every other waiting gate fails with error
+`cancelled`, pending steps are skipped or fail as `cancelled`, and their jobs
+end, so the failed record holds no job `running` and no step
+`waiting_approval` (swamp-club#2905). As on a cancel, a step with a `guard`
+whose `dependsOn` is met stays `pending`, and its job stays `pending` or ends
+`unknown`: its guard never decided.
+The run still reports the rejected gate
+as its failed step. `swamp workflow resume <workflow> --run <id> --from <gate>`
+reopens that settled work along with the rejected gate: each gate asks again,
+with its approval `timeout` counted from the new wait.
 
 **Gates inside a nested workflow (swamp-club#2736).** A workflow step runs its
 child workflow as a run of its own. When the child suspends at a gate, the
@@ -295,8 +306,8 @@ A parent this instance still drives is awaited first. Each skip is audited as
 `workflow.auto_resume_skipped`; no auto-resume starts once shutdown began.
 
 When a parent ends while a step still waits on a child (a reject of its own
-gate, a cancel, a supersede), only the parent changes: `WorkflowRun.cancel()`
-and `complete()` mark each such step failed with `detachedNestedRun`, and the
+gate, a cancel, a supersede), only the parent changes: `cancelAndSettle`
+and `completeAndSettle` mark each such step failed with `detachedNestedRun`, and the
 child is left as it was. The step's error names the child but not its state,
 which may have changed since the parent last read it. The command reports each
 detached child that has not finished with the command that cancels it (the
@@ -1563,7 +1574,18 @@ or step that definition does not name, and every job when there is no
 definition or its jobs or steps form a cycle, is settled from its records
 alone, with every unfinished step failed as `cancelled`. Because settled steps
 are failed, the run's history reports a failed step and failure reason
-`cancelled`, as it does for a run aborted live.
+`cancelled`, as it does for a run aborted live. A step that failed on its own
+is reported ahead of any step the settlement failed
+(`WorkflowRun.failureInfo`), so a run keeps naming its real failure.
+
+**Settling a rejected run.** `workflow reject` goes through
+`completeAndSettle` in the same module: it fails the rejected gate, settles
+every job and step still open by the rules above, including the gate's own job
+and dependents, then completes the run as `failed`. Its settled steps are
+marked `settledByAbort`, and since a failed run can be resumed, a resume runs
+them. Outside the live walk in `execution_service.ts`, `completeAndSettle` is
+the only production caller of a run's `complete()`; the same fitness test pins
+that.
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
 With `--server`, `--run <id>` is required and `--all` is rejected. `--reason`

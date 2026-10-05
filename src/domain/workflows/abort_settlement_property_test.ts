@@ -19,7 +19,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { cancelAndSettle, settleCancelledRun } from "./abort_settlement.ts";
+import {
+  cancelAndSettle,
+  completeAndSettle,
+  settleCancelledRun,
+} from "./abort_settlement.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -234,6 +238,36 @@ Deno.test("cancelAndSettle: a cancelled run holds no unfinished work but undecid
           assert(
             jobRun.steps.some((step) => step.status === "pending"),
             `${jobRun.jobName} ${jobRun.status} with every step finished`,
+          );
+        }
+      }
+    }),
+  );
+});
+
+Deno.test("completeAndSettle: a run failed by a rejected gate holds no running job and no waiting gate", () => {
+  fc.assert(
+    fc.property(arbScenario, (scenario) => {
+      const workflow = buildWorkflow(scenario);
+      const run = buildRun(workflow, scenario);
+      const definition = settlementDefinition(workflow, scenario);
+      const gate = run.jobs.flatMap((jobRun) => jobRun.steps).find((step) =>
+        step.status === "waiting_approval"
+      );
+      fc.pre(gate !== undefined);
+
+      gate!.fail("Approval rejected");
+      completeAndSettle(run, definition);
+
+      assertEquals(run.status, "failed");
+      assertEquals(gate!.error, "Approval rejected");
+      assertEquals(gate!.settledByAbort, false);
+      for (const jobRun of run.jobs) {
+        assert(jobRun.status !== "running", `${jobRun.jobName} running`);
+        for (const step of jobRun.steps) {
+          assert(
+            step.status !== "running" && step.status !== "waiting_approval",
+            `${jobRun.jobName}/${step.stepName} ${step.status}`,
           );
         }
       }

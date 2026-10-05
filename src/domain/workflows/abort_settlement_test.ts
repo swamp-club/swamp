@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   cancelAndSettle,
+  completeAndSettle,
   resolveSettlementWorkflow,
   settleCancelledRun,
 } from "./abort_settlement.ts";
@@ -141,6 +142,101 @@ Deno.test("cancelAndSettle: settles the issue's suspended run as an abort would"
     );
   }
   assertEquals(run.getJob("main")!.getStep("gate")!.settledByAbort, false);
+});
+
+/** The issue's run, suspended with both gates waiting. */
+function suspendedAtBothGates(workflow: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const name of ["a-side", "main"]) run.getJob(name)!.start();
+  run.getJob("a-side")!.getStep("gate2")!.waitForApproval("gate2?");
+  run.getJob("main")!.getStep("gate")!.waitForApproval("gate?");
+  run.suspend();
+  return reload(run);
+}
+
+Deno.test("completeAndSettle: fails a run on its rejected gate and settles the rest", () => {
+  const workflow = issueWorkflow();
+  const run = suspendedAtBothGates(workflow);
+
+  run.getJob("a-side")!.getStep("gate2")!.fail("Approval rejected");
+  completeAndSettle(run, workflow);
+
+  assertEquals(run.status, "failed");
+  assertEquals(statuses(run), {
+    "a-side": "failed",
+    "a-side/gate2": "failed",
+    "a-side/s": "skipped",
+    "main": "failed",
+    "main/gate": "failed",
+    "main/post": "skipped",
+    "teardown": "failed",
+    "teardown/t": "failed",
+  });
+  assertEquals(
+    run.getJob("a-side")!.getStep("gate2")!.error,
+    "Approval rejected",
+  );
+  assertEquals(run.getJob("a-side")!.getStep("gate2")!.settledByAbort, false);
+  assertEquals(
+    run.getJob("main")!.getStep("gate")!.error,
+    CANCELLED_STEP_ERROR,
+  );
+  for (const ref of ["a-side/s", "main/gate", "main/post", "teardown/t"]) {
+    const [jobName, stepName] = ref.split("/");
+    assertEquals(
+      run.getJob(jobName)!.getStep(stepName)!.settledByAbort,
+      true,
+      ref,
+    );
+  }
+});
+
+Deno.test("completeAndSettle: settles from the records alone with no definition", () => {
+  const run = suspendedAtBothGates(issueWorkflow());
+
+  run.getJob("a-side")!.getStep("gate2")!.fail("Approval rejected");
+  completeAndSettle(run, undefined);
+
+  assertEquals(run.status, "failed");
+  for (const jobRun of run.jobs) {
+    assertEquals(jobRun.status, "failed", jobRun.jobName);
+    for (const step of jobRun.steps) {
+      assertEquals(step.status, "failed", `${jobRun.jobName}/${step.stepName}`);
+    }
+  }
+});
+
+Deno.test("completeAndSettle: a resume reopens the work it settled, not the rejected gate", () => {
+  const workflow = issueWorkflow();
+  const run = suspendedAtBothGates(workflow);
+  run.getJob("a-side")!.getStep("gate2")!.fail("Approval rejected");
+  completeAndSettle(run, workflow);
+
+  const stored = reload(run);
+  stored.reopenAbortedWork();
+
+  assertEquals(statuses(stored), {
+    "a-side": "pending",
+    "a-side/gate2": "failed",
+    "a-side/s": "pending",
+    "main": "pending",
+    "main/gate": "pending",
+    "main/post": "pending",
+    "teardown": "pending",
+    "teardown/t": "pending",
+  });
+});
+
+Deno.test("completeAndSettle: leaves a finished run untouched", () => {
+  const workflow = issueWorkflow();
+  const run = suspendedAtBothGates(workflow);
+  cancelAndSettle(run, workflow, "Cancelled by user");
+  const before = run.toData();
+
+  completeAndSettle(run, workflow);
+
+  assertEquals(run.toData(), before);
 });
 
 Deno.test("cancelAndSettle: leaves a finished run untouched", () => {

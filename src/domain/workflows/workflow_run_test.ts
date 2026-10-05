@@ -1672,6 +1672,42 @@ Deno.test("WorkflowRun.toData: includes failedStep and failureReason when a step
   assertEquals(data.failureReason, "connection refused");
 });
 
+Deno.test("WorkflowRun.toData: reports a real failure over a step the run's end settled before it", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].cancelUnstarted();
+  job.steps[1].start();
+  job.steps[1].fail("Approval rejected");
+  job.fail();
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.failedStep, "step2");
+  assertEquals(data.failureReason, "Approval rejected");
+});
+
+Deno.test("WorkflowRun.toData: reports a settled step when no other step failed", () => {
+  const wf = createTestWorkflow();
+  const run = WorkflowRun.create(wf);
+  run.start();
+
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].succeed(undefined);
+  job.steps[1].cancelUnstarted();
+  job.fail();
+  run.complete();
+
+  const data = run.toData();
+  assertEquals(data.failedStep, "step2");
+  assertEquals(data.failureReason, CANCELLED_STEP_ERROR);
+});
+
 Deno.test("WorkflowRun.toData: omits failedStep when all steps succeed", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);

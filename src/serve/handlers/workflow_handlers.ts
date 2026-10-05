@@ -1426,11 +1426,16 @@ export async function handleWorkflowReject(
         release = reserved.release;
 
         const libCtx = handlerLibSwampContext(ctx);
+        const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
+          ctx.repoDir,
+          ctx.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+        );
         const deps = createWorkflowRejectDeps(
           ctx.repoContext.workflowRepo,
           ctx.repoContext.workflowRunRepo,
           // The reservation above is this process's claim on the run.
           unclaimedRuns,
+          (runId) => evaluatedRepo.findByRunId(runId),
           ctx.runTracker,
         );
 

@@ -190,9 +190,13 @@ function renderWorkflowRuns(
         .reverse()
         .find((r) => r.status === "failed");
       if (lastFailedRun) {
-        const failedStep = lastFailedRun.steps.find(
+        // The step the run reports as failed, else the first with an error.
+        const failed = lastFailedRun.steps.filter(
           (s) => s.status === "failed" && s.error,
         );
+        const failedStep = failed.find(
+          (s) => s.stepName === lastFailedRun.firstFailedStep,
+        ) ?? failed[0];
         if (failedStep?.error) {
           writeOutput(
             `  ${"".padEnd(maxLabel + 2)} ${
