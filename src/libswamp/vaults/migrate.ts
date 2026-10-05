@@ -30,6 +30,16 @@ import {
   withServerDefaultKeySource,
 } from "../../domain/vaults/local_encryption_key_source.ts";
 import { createVaultProvider } from "../../domain/vaults/vault_provider_factory.ts";
+import {
+  describeVaultConfigFields,
+  explainVaultConfigIssues,
+  type RerunHint,
+  shellSingleQuote,
+} from "../../domain/vaults/vault_config_fields.ts";
+import {
+  createRegistryConfigFieldsLookup,
+  type RegistryConfigFieldsLookup,
+} from "./config_fields.ts";
 import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -84,6 +94,14 @@ export interface VaultMigrateInput {
 /** Dependencies for the vault migrate operation. */
 export interface VaultMigrateDeps {
   findVaultConfig: (name: string) => Promise<VaultConfig | null>;
+  /** Loads a lazily-indexed type if needed and says whether it is known. */
+  isVaultTypeLoaded: (type: string) => Promise<boolean>;
+  /**
+   * The config fields the registry publishes for an extension type that is
+   * not installed yet, so the CLI can ask for the missing ones before the
+   * install (swamp-club#3003).
+   */
+  findRegistryConfigFields: RegistryConfigFieldsLookup;
   resolveExtensionVaultType: (type: string) => Promise<void>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   createProvider: (
@@ -117,6 +135,13 @@ export async function createVaultMigrateDeps(
     new YamlVaultConfigRepository(repoDir, undefined, options?.vaultsDir);
   return {
     findVaultConfig: (name) => repo.findByName(name),
+    isVaultTypeLoaded: async (type) => {
+      await vaultTypeRegistry.ensureTypeLoaded(type);
+      return vaultTypeRegistry.has(type);
+    },
+    findRegistryConfigFields: createRegistryConfigFieldsLookup(
+      getAutoResolver(),
+    ),
     resolveExtensionVaultType: async (type) => {
       await vaultTypeRegistry.ensureTypeLoaded(type);
       if (!vaultTypeRegistry.has(type) && type.startsWith("@")) {
@@ -153,6 +178,16 @@ function resolveBuiltInProviderConfig(
   }
 }
 
+/** How to try the migration again once the config is complete. */
+function migrateRerunHint(vaultName: string, targetType: string): RerunHint {
+  return (example, missing) =>
+    missing.length > 0
+      ? `Re-run with: swamp vault migrate ${vaultName} --to-type ${targetType} --config ${
+        shellSingleQuote(example)
+      }`
+      : "Re-run with a corrected --config.";
+}
+
 /** Gathers preview info for the vault migrate operation. */
 export async function vaultMigratePreview(
   ctx: LibSwampContext,
@@ -185,6 +220,8 @@ export async function vaultMigratePreview(
     );
   }
 
+  const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
+
   // Resolve and validate target type
   await deps.resolveExtensionVaultType(input.targetType);
   const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
@@ -204,6 +241,7 @@ export async function vaultMigratePreview(
     input.repoDir,
     input.trustKeySource,
     input.vaultName,
+    rerunHint,
   );
 
   // Verify we can create a provider for the target type (catches config issues early)
@@ -235,6 +273,7 @@ function resolveTargetConfig(
   repoDir: string,
   trustKeySource: boolean | undefined,
   vaultName: string,
+  rerunHint: RerunHint,
 ): Record<string, unknown> {
   if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
     const config = providedConfig ?? {};
@@ -242,7 +281,13 @@ function resolveTargetConfig(
       const result = typeInfo.configSchema.safeParse(config);
       if (!result.success) {
         throw validationFailed(
-          `Invalid config for vault type '${targetType}': ${result.error.message}`,
+          explainVaultConfigIssues({
+            vaultType: targetType,
+            config,
+            issues: result.error.issues,
+            fields: describeVaultConfigFields(typeInfo.configSchema),
+            rerunHint,
+          }),
         );
       }
     }
@@ -308,6 +353,8 @@ export async function* vaultMigrate(
         return;
       }
 
+      const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
+
       // Resolve target config
       await deps.resolveExtensionVaultType(input.targetType);
       const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
@@ -328,6 +375,7 @@ export async function* vaultMigrate(
         input.repoDir,
         input.trustKeySource,
         input.vaultName,
+        rerunHint,
       );
 
       // Create target provider

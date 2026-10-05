@@ -25,6 +25,10 @@ import {
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
 import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
+import {
+  describeVaultConfigFields,
+  explainVaultConfigIssues,
+} from "./vault_config_fields.ts";
 
 /**
  * Creates a VaultProvider instance for the given type, name, and config.
@@ -48,7 +52,13 @@ export function createVaultProvider(
       const result = registeredType.configSchema.safeParse(config);
       if (!result.success) {
         throw new Error(
-          `Invalid config for vault type '${type}' (vault '${name}'): ${result.error.message}`,
+          explainVaultConfigIssues({
+            vaultType: type,
+            vaultName: name,
+            config,
+            issues: result.error.issues,
+            fields: describeVaultConfigFields(registeredType.configSchema),
+          }),
         );
       }
     }

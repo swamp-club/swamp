@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createVaultMigrateDeps,
+  describeVaultTargetConfig,
   vaultMigrate,
   type VaultMigrateData,
   vaultMigratePreview,
@@ -46,6 +47,10 @@ import {
   promptConfirmation,
   promptLine,
 } from "../prompt_helpers.ts";
+import {
+  canPromptForConfig,
+  promptForMissingConfigFields,
+} from "../vault_config_prompt.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -229,9 +234,7 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       }
     } else if (chosen === "1Password") {
       toType = "@swamp/1password";
-      const vault = await promptLine(
-        "1Password vault name (or Enter for default): ",
-      );
+      const vault = await promptLine("1Password vault name: ");
       if (vault) {
         targetConfig = { op_vault: vault };
       }
@@ -310,6 +313,26 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
         } catch {
           throw new UserError(`Invalid JSON: ${configJson}`);
         }
+      }
+    }
+  }
+
+  // Ask for required config fields the target type needs and the command
+  // line did not supply, rather than failing (swamp-club#3003).
+  if (
+    canPromptForConfig(cliCtx.outputMode, {
+      yes: Boolean(options.yes || options.force),
+    })
+  ) {
+    const fields = await describeVaultTargetConfig(deps, toType);
+    if (fields) {
+      const answers = await promptForMissingConfigFields(
+        toType,
+        fields,
+        targetConfig ?? {},
+      );
+      if (Object.keys(answers).length > 0) {
+        targetConfig = { ...targetConfig, ...answers };
       }
     }
   }

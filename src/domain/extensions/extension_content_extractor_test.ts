@@ -2258,3 +2258,95 @@ Deno.test("extractContentMetadata: deeply nested template expressions read as un
 
   assertEquals(result.models, []);
 });
+
+Deno.test("extractContentMetadata marks defaulted, caught, nullish, prefaulted and z.optional() config fields as optional (swamp-club#3003)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "defaults.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const vault = {",
+        '  type: "@myorg/defaults",',
+        '  name: "Defaults Vault",',
+        '  description: "A vault whose config has defaults.",',
+        "  configSchema: z.object({",
+        '    region: z.string().default("us-east-1").describe("Region"),',
+        "    retries: z.number().catch(3),",
+        '    label: z.string().nullish().describe("Label"),',
+        "    mode: z.optional(z.string()),",
+        '    scope: z.string().prefault("all"),',
+        '    token: z.string().min(1).describe("API token"),',
+        "  }),",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(
+      result.vaults[0].configFields.map((f) => [f.name, f.required]),
+      [
+        ["region", false],
+        ["retries", false],
+        ["label", false],
+        ["mode", false],
+        ["scope", false],
+        ["token", true],
+      ],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata marks a defaulted method argument as optional (swamp-club#3003)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "test/defaulted-args",',
+        '  version: "2026.10.05.1",',
+        "  methods: {",
+        "    run: {",
+        '      description: "Run",',
+        "      arguments: z.object({",
+        '        name: z.string().describe("Name"),',
+        '        count: z.number().default(1).describe("Count"),',
+        "      }),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    const method = result.models[0].methods[0];
+    assertEquals(
+      method.arguments.map((a) => [a.name, a.required]),
+      [["name", true], ["count", false]],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

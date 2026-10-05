@@ -1233,3 +1233,125 @@ Deno.test("ExtensionAutoResolver - installs once when two types from one extensi
     1,
   );
 });
+
+// ---------------------------------------------------------------------------
+// describeTypeInRegistry (swamp-club#3003)
+// ---------------------------------------------------------------------------
+
+const ONE_PASSWORD_METADATA = {
+  models: [],
+  extensions: [],
+  workflows: [],
+  vaults: [{
+    fileName: "onepassword.ts",
+    type: "@swamp/1password",
+    name: "1Password",
+    description: "1Password vault provider.",
+    hasConfigSchema: true,
+    configFields: [{
+      name: "op_vault",
+      type: "string",
+      description: "The 1Password vault to use",
+      required: true,
+    }],
+  }],
+  datastores: [],
+  reports: [],
+  webhooks: [],
+  skills: [],
+};
+
+function createDescribeLookup(
+  options: {
+    detail?: Record<string, { contentMetadata: typeof ONE_PASSWORD_METADATA }>;
+    failWith?: Error;
+    withDetail?: boolean;
+  } = {},
+): ExtensionLookupPort & { detailCalls: string[] } {
+  const detailCalls: string[] = [];
+  const base = createMockLookup({
+    "@swamp/1password": { description: "1Password", latestVersion: "1.0.0" },
+  });
+  if (options.withDetail === false) return { ...base, detailCalls };
+  return {
+    ...base,
+    detailCalls,
+    getLatestVersionDetail(name: string) {
+      detailCalls.push(name);
+      if (options.failWith) return Promise.reject(options.failWith);
+      return Promise.resolve(options.detail?.[name] ?? null);
+    },
+  };
+}
+
+function createDescribeResolver(
+  lookup: ExtensionLookupPort,
+  allowedCollectives = ["swamp"],
+) {
+  const installer = createMockInstaller();
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives,
+    extensionLookup: lookup,
+    extensionInstaller: installer,
+    output,
+  });
+  return { resolver, installer, output };
+}
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - returns the published metadata without installing", async () => {
+  const lookup = createDescribeLookup({
+    detail: { "@swamp/1password": { contentMetadata: ONE_PASSWORD_METADATA } },
+  });
+  const { resolver, installer, output } = createDescribeResolver(lookup);
+
+  const metadata = await resolver.describeTypeInRegistry("@swamp/1password");
+
+  assertEquals(metadata?.vaults[0].configFields[0].name, "op_vault");
+  assertEquals(lookup.detailCalls, ["@swamp/1password"]);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, []);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null for an untrusted collective, without a lookup", async () => {
+  const lookup = createDescribeLookup({
+    detail: { "@swamp/1password": { contentMetadata: ONE_PASSWORD_METADATA } },
+  });
+  const { resolver, output } = createDescribeResolver(lookup, ["other"]);
+
+  assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
+  assertEquals(lookup.detailCalls, []);
+  assertEquals(output.calls, []);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when no extension provides the type", async () => {
+  const lookup = createDescribeLookup();
+  const { resolver } = createDescribeResolver(lookup);
+
+  assertEquals(await resolver.describeTypeInRegistry("@swamp/nothing"), null);
+  assertEquals(lookup.detailCalls, []);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when the lookup cannot fetch version detail", async () => {
+  const { resolver } = createDescribeResolver(
+    createDescribeLookup({ withDetail: false }),
+  );
+
+  assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when the registry request fails", async () => {
+  const lookup = createDescribeLookup({ failWith: new Error("boom") });
+  const { resolver, output } = createDescribeResolver(lookup);
+
+  assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
+  assertEquals(lookup.detailCalls, ["@swamp/1password"]);
+  assertEquals(output.calls, []);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when the version has no metadata", async () => {
+  const lookup = createDescribeLookup({ detail: {} });
+  const { resolver } = createDescribeResolver(lookup);
+
+  assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
+});

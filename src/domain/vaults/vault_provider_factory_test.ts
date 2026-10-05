@@ -19,6 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { createVaultProvider } from "./vault_provider_factory.ts";
+import { z } from "zod";
+import { MockVaultProvider } from "./mock_vault_provider.ts";
+import { vaultTypeRegistry } from "./vault_type_registry.ts";
 
 Deno.test("createVaultProvider: creates mock provider", () => {
   const provider = createVaultProvider("mock", "test-vault", {});
@@ -44,4 +47,28 @@ Deno.test("createVaultProvider: throws for unsupported type", () => {
 Deno.test("createVaultProvider: is case insensitive for built-in types", () => {
   const provider = createVaultProvider("Mock", "test-vault", {});
   assertEquals(provider.getName(), "test-vault");
+});
+
+Deno.test("createVaultProvider: a stored config that fails the type's schema names the vault and the missing field (swamp-club#3003)", () => {
+  const type = `@test/factory-config-${crypto.randomUUID()}`;
+  vaultTypeRegistry.register({
+    type,
+    name: "Factory config",
+    description: "Vault type with a required config field",
+    isBuiltIn: false,
+    configSchema: z.object({
+      token: z.string().describe("API token"),
+    }),
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    assertThrows(
+      () => createVaultProvider(type, "shared", {}),
+      Error,
+      `Invalid config for vault type '${type}' (vault 'shared'): missing ` +
+        "required field 'token' (API token).",
+    );
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
 });

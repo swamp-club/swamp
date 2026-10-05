@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createVaultCreateDeps,
+  describeVaultTargetConfig,
   vaultCreate,
   type VaultCreateData,
 } from "../../libswamp/mod.ts";
@@ -47,6 +48,10 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { VaultCreateResponse } from "../../serve/protocol.ts";
+import {
+  canPromptForConfig,
+  promptForMissingConfigFields,
+} from "../vault_config_prompt.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -202,6 +207,23 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createVaultCreateDeps(repoDir);
+
+    // Ask for required config fields the type needs and the command line
+    // did not supply, rather than failing (swamp-club#3003).
+    if (canPromptForConfig(cliCtx.outputMode)) {
+      const fields = await describeVaultTargetConfig(deps, vaultType);
+      if (fields) {
+        const answers = await promptForMissingConfigFields(
+          vaultType,
+          fields,
+          config ?? {},
+        );
+        if (Object.keys(answers).length > 0) {
+          config = { ...config, ...answers };
+        }
+      }
+    }
+
     const renderer = createVaultCreateRenderer(cliCtx.outputMode);
     await consumeStream(
       vaultCreate(ctx, deps, {
