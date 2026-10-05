@@ -2001,6 +2001,7 @@ export async function handleServeReload(
         : undefined,
       workflowReloader: ctx.workflowReloader,
       webhookUpdater: ctx.webhookUpdater,
+      configPath: ctx.serveConfigPath,
     };
     const result = await performServeReload(
       ctx.repoDir,

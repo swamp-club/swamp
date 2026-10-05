@@ -1489,8 +1489,9 @@ shared `performServeReload()` function in `src/serve/extension_reload.ts`. A
 module-level reloading guard (`isReloading()`) rejects a concurrent reload from
 either trigger. `serve.reload` on a server started without `--hot-reload` is
 refused with `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`).
-Besides extension types, a reload re-reads the `.swamp/serve.yaml` trigger
-overrides and refreshes the extension trust list.
+Besides extension types, a reload re-reads the trigger overrides from the config
+file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
+the extension trust list.
 
 `reloadPulledExtensions()`:
 

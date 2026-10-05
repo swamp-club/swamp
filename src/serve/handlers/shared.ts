@@ -307,6 +307,12 @@ export interface ConnectionContext {
   grantsDir?: string;
   /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
+  /**
+   * Resolved `--config` path serve was started with. Reload and the
+   * workflow.trigger handlers read and write it; undefined means
+   * `.swamp/serve.yaml`.
+   */
+  serveConfigPath?: string;
   /** Scheduled execution service — used by serve.reload to update trigger overrides. */
   scheduledExecution?: ScheduledExecutionService;
   /** Reloads extension workflow directories and rescans schedules during hot reload. */

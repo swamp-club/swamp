@@ -760,6 +760,11 @@ export interface ServeReloadOptions {
   webhookUpdater?: (
     configs: readonly WebhookConfigEntry[],
   ) => Promise<number>;
+  /**
+   * The serve config file to re-read trigger overrides and webhooks from:
+   * the resolved `--config` path. Undefined means `.swamp/serve.yaml`.
+   */
+  configPath?: string;
 }
 
 /** The error {@link performServeReload} reports while another reload runs. */
@@ -852,14 +857,16 @@ export async function performServeReload(
       options?.webhookUpdater;
     let configReadFailed = false;
     const config = needsConfigRead
-      ? await readServeConfigFile(repoDir).catch((err: unknown) => {
-        errors.push(
-          "Failed to read serve config: " +
-            (err instanceof Error ? err.message : String(err)),
-        );
-        configReadFailed = true;
-        return null;
-      })
+      ? await readServeConfigFile(repoDir, options?.configPath).catch(
+        (err: unknown) => {
+          errors.push(
+            "Failed to read serve config: " +
+              (err instanceof Error ? err.message : String(err)),
+          );
+          configReadFailed = true;
+          return null;
+        },
+      )
       : null;
 
     if (options?.triggerOverrideUpdater && !configReadFailed) {

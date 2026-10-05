@@ -2443,14 +2443,24 @@ export async function handleWorkflowTriggerSet(
         : {}),
     };
 
-    const configPath = join(ctx.repoDir, SERVE_CONFIG_PATH);
+    const configPath = ctx.serveConfigPath ??
+      join(ctx.repoDir, SERVE_CONFIG_PATH);
     validateTriggerOverrideEntry(entry, configPath, payload.workflowName);
 
-    const config = await readServeConfigFile(ctx.repoDir) ?? {};
+    const config =
+      await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath) ?? {};
     const triggers = config.triggers ?? {};
     triggers[payload.workflowName] = entry;
     config.triggers = triggers;
-    await writeServeConfigFile(ctx.repoDir, config);
+    if (
+      !await writeTriggerConfig(
+        socket,
+        ctx,
+        requestId,
+        config,
+        "workflow_trigger_set_failed",
+      )
+    ) return;
 
     await applyTriggerOverrides(ctx, config);
 
@@ -2494,9 +2504,13 @@ export async function handleWorkflowTriggerGet(
   ) return;
 
   try {
-    const config = await readServeConfigFile(ctx.repoDir);
-    const override: TriggerOverrideEntry | null =
-      config?.triggers?.[payload.workflowName] ?? null;
+    // Report the override the scheduler applies; without a scheduler, the
+    // one in the config file serve was started with.
+    const override: TriggerOverrideEntry | null = ctx.scheduledExecution
+      ? ctx.scheduledExecution.getTriggerOverride(payload.workflowName) ??
+        null
+      : (await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath))
+        ?.triggers?.[payload.workflowName] ?? null;
 
     let builtIn:
       | { schedule: string | null; inputs: Record<string, unknown> }
@@ -2564,7 +2578,10 @@ export async function handleWorkflowTriggerRemove(
   ) return;
 
   try {
-    const config = await readServeConfigFile(ctx.repoDir);
+    const config = await readServeConfigFile(
+      ctx.repoDir,
+      ctx.serveConfigPath,
+    );
     if (!config?.triggers?.[payload.workflowName]) {
       sendError(
         socket,
@@ -2579,7 +2596,15 @@ export async function handleWorkflowTriggerRemove(
     if (Object.keys(config.triggers).length === 0) {
       delete config.triggers;
     }
-    await writeServeConfigFile(ctx.repoDir, config);
+    if (
+      !await writeTriggerConfig(
+        socket,
+        ctx,
+        requestId,
+        config,
+        "workflow_trigger_remove_failed",
+      )
+    ) return;
 
     await applyTriggerOverrides(ctx, config);
 
@@ -2593,6 +2618,42 @@ export async function handleWorkflowTriggerRemove(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_trigger_remove_failed", message);
+  }
+}
+
+/**
+ * Writes trigger overrides to the serve config file serve was started with.
+ * A failed write (a read-only `--config` mount, for one) is refused with a
+ * message that names no server path; the path and cause go to the log.
+ * Returns false after sending the error.
+ */
+async function writeTriggerConfig(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  config: ServeConfigFile,
+  errorCode: string,
+): Promise<boolean> {
+  try {
+    await writeServeConfigFile(ctx.repoDir, config, ctx.serveConfigPath);
+    return true;
+  } catch (error) {
+    logger.warn(
+      "Cannot write trigger overrides to serve config file {path}: {error}",
+      {
+        path: ctx.serveConfigPath ?? join(ctx.repoDir, SERVE_CONFIG_PATH),
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    sendError(
+      socket,
+      requestId,
+      errorCode,
+      "Cannot write the serve config file (it or its directory may be " +
+        "read-only; the serve log has the cause). Edit it directly, then " +
+        (ctx.hotReload ? "run 'swamp serve reload'." : "restart serve."),
+    );
+    return false;
   }
 }
 
