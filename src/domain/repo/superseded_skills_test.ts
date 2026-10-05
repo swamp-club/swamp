@@ -224,7 +224,8 @@ Deno.test("resolveSupersededSkillDirs: splits dirs by containment and leaves out
 Deno.test({
   name:
     "removeSupersededLocalSkills: a failing entry does not stop the rest of the dir",
-  ignore: Deno.build.os === "windows",
+  // Root ignores the read-only permission this test relies on.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
     await withTempDir(async (tempDir) => {
       const skillsDir = join(tempDir, ".claude", "skills");
@@ -245,4 +246,17 @@ Deno.test({
       }
     });
   },
+});
+
+Deno.test("removeSupersededLocalSkills: a skills dir that cannot be resolved is skipped without aborting", async () => {
+  await withTempDir(async (tempDir) => {
+    // `.claude` is a file, so resolving `.claude/skills` fails.
+    await Deno.writeTextFile(join(tempDir, ".claude"), "not a dir");
+    const sharedDir = join(tempDir, ".agents", "skills");
+    await seedSuperseded(sharedDir);
+
+    await removeSupersededLocalSkills(tempDir, ["claude", "codex"]);
+
+    assertEquals(await detectSupersededSkills(sharedDir), []);
+  });
 });

@@ -77,8 +77,8 @@ warning checks. Both go through `resolveSupersededSkillDirs()`, which resolves
 each directory's real path. A directory that resolves outside the repository,
 such as a committed `.claude` symlink, is neither reported by the warning nor
 cleaned by upgrade (upgrade logs that it skipped it). Upgrade deletes through
-the resolved path, and a failure on one entry is logged without stopping the
-rest.
+the resolved path. A skill directory whose path cannot be resolved, or an entry
+that fails to delete, is logged without stopping the rest of the cleanup.
 
 ## Repository Layout
 

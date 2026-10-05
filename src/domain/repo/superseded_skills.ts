@@ -97,7 +97,9 @@ export function supersededSkillDirs(
 
 /**
  * Resolves the dirs from {@link supersededSkillDirs} to their real paths and
- * splits them by whether they stay inside the repo. Missing dirs are left out.
+ * splits them by whether they stay inside the repo. Missing dirs are left out;
+ * a dir whose path cannot be resolved for any other reason is returned in
+ * `failed` rather than thrown.
  * Only `contained` dirs are checked by the startup warning or cleaned by
  * `repo upgrade`, so a symlink such as a committed `.claude` pointing outside
  * the repo is never reported or touched.
@@ -105,17 +107,27 @@ export function supersededSkillDirs(
 export async function resolveSupersededSkillDirs(
   repoDir: string,
   tools: readonly string[],
-): Promise<{ contained: string[]; outside: string[] }> {
+): Promise<{
+  contained: string[];
+  outside: string[];
+  failed: { dir: string; message: string }[];
+}> {
   const root = await Deno.realPath(repoDir);
   const contained: string[] = [];
   const outside: string[] = [];
+  const failed: { dir: string; message: string }[] = [];
   for (const dir of supersededSkillDirs(repoDir, tools)) {
     let real: string;
     try {
       real = await Deno.realPath(dir);
     } catch (e) {
-      if (e instanceof Deno.errors.NotFound) continue;
-      throw e;
+      if (!(e instanceof Deno.errors.NotFound)) {
+        failed.push({
+          dir,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+      continue;
     }
     if (real.startsWith(root + SEPARATOR)) {
       contained.push(real);
@@ -123,7 +135,7 @@ export async function resolveSupersededSkillDirs(
       outside.push(dir);
     }
   }
-  return { contained, outside };
+  return { contained, outside, failed };
 }
 
 /**
@@ -135,10 +147,13 @@ export async function removeSupersededLocalSkills(
   repoDir: string,
   tools: readonly string[],
 ): Promise<void> {
-  const { contained, outside } = await resolveSupersededSkillDirs(
+  const { contained, outside, failed } = await resolveSupersededSkillDirs(
     repoDir,
     tools,
   );
+  for (const { dir, message } of failed) {
+    logger.warn`Skipping superseded skill cleanup in ${dir}: ${message}`;
+  }
   for (const dir of outside) {
     logger
       .warn`Skipping superseded skill cleanup in ${dir}: it resolves outside the repository`;
