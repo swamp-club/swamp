@@ -561,3 +561,19 @@ Deno.test("StoreSink: a retried date object no store has is handed back when the
   assertEquals([...error.pending ?? []], [4]);
   await sink.close().catch(() => {});
 });
+
+Deno.test("StoreSink: close reports unconfirmed events instead of rejecting", async () => {
+  const sink = new StoreSink({
+    stores: [{
+      put: () => Promise.reject(new Error("store down")),
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    }],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("unstored")]);
+  await sink.close();
+});

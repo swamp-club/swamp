@@ -56,7 +56,7 @@ export class WalSink implements AuditSink {
   // Segments handed downstream since the last checkpoint, with the
   // sequences they hold, so a checkpoint can tell which ones the store
   // confirmed.
-  readonly #delivered = new Map<string, readonly number[] | null>();
+  readonly #delivered = new Map<string, DeliveredSegment>();
   // Segments to send again: their delivery failed, or the store reported
   // their events unconfirmed at a checkpoint.
   #redeliver: string[] = [];
@@ -166,7 +166,7 @@ export class WalSink implements AuditSink {
       }
       if (events.length === 0) return;
       await this.#downstream.write(events);
-      this.#delivered.set(segmentName, sequencesOf(events));
+      this.#delivered.set(segmentName, describe(events));
     } catch (error: unknown) {
       this.#redeliver.push(segmentName);
       logger.warn(
@@ -236,7 +236,7 @@ export class WalSink implements AuditSink {
     if (delivered.length === 0) return;
     for (const [segmentName] of delivered) this.#delivered.delete(segmentName);
 
-    type Check = (segmentSequences: readonly number[] | null) => boolean;
+    type Check = (sequences: readonly number[] | null) => boolean;
     let unconfirmed: Check = () => false;
     let stillPending: Check = () => false;
     try {
@@ -261,18 +261,52 @@ export class WalSink implements AuditSink {
       );
     }
 
-    for (const [segmentName, segmentSequences] of delivered) {
-      if (this.#closed) return;
-      if (unconfirmed(segmentSequences)) {
+    if (this.#closed) return;
+    const confirmed: string[] = [];
+    let last: ChainPosition | null = null;
+    for (const [segmentName, segment] of delivered) {
+      if (unconfirmed(segment.sequences)) {
         this.#redeliver.push(segmentName);
         continue;
       }
-      if (stillPending(segmentSequences)) {
+      if (stillPending(segment.sequences)) {
         // The downstream sink is still retrying these: keep the segment,
         // without sending it again, and check it at the next checkpoint.
-        this.#delivered.set(segmentName, segmentSequences);
+        this.#delivered.set(segmentName, segment);
         continue;
       }
+      confirmed.push(segmentName);
+      if (segment.last && (!last || segment.last.sequence > last.sequence)) {
+        last = segment.last;
+      }
+    }
+    if (confirmed.length === 0) return;
+
+    // Startup finds the chain position from the segments on disk, or failing
+    // that chain-state.json. Record it before deleting the segments that hold
+    // it, or a crash would restart the chain from an older position.
+    if (last) {
+      try {
+        const saved = await this.#wal.loadChainState();
+        if (!saved || saved.sequence < last.sequence) {
+          await this.#wal.saveChainState({
+            sequence: last.sequence,
+            previousDigest: last.digest,
+          });
+        }
+      } catch (error: unknown) {
+        const segments = new Map(delivered);
+        for (const segmentName of confirmed) {
+          this.#delivered.set(segmentName, segments.get(segmentName)!);
+        }
+        logger.warn(
+          "Could not save the audit chain position, keeping confirmed WAL segments: {error}",
+          { error: error instanceof Error ? error.message : String(error) },
+        );
+        return;
+      }
+    }
+    for (const segmentName of confirmed) {
       try {
         await this.#wal.deleteSegment(segmentName);
       } catch (error: unknown) {
@@ -329,13 +363,34 @@ export class WalSink implements AuditSink {
 
 const CHECKPOINT = Symbol("checkpoint");
 
-/** The chain sequences in a segment, or null when any event lacks one. */
-function sequencesOf(events: readonly AuditEvent[]): readonly number[] | null {
-  const sequences: number[] = [];
+interface ChainPosition {
+  readonly sequence: number;
+  readonly digest: string;
+}
+
+interface DeliveredSegment {
+  /** The chain sequences in the segment, or null when any event lacks one. */
+  readonly sequences: readonly number[] | null;
+  /** The segment's last chain position, when its events carry one. */
+  readonly last: ChainPosition | null;
+}
+
+function describe(events: readonly AuditEvent[]): DeliveredSegment {
+  let sequences: number[] | null = [];
+  let last: ChainPosition | null = null;
   for (const event of events) {
-    const sequence = (event as { sequence?: unknown }).sequence;
-    if (typeof sequence !== "number") return null;
-    sequences.push(sequence);
+    const { sequence, digest } = event as {
+      sequence?: unknown;
+      digest?: unknown;
+    };
+    if (typeof sequence !== "number") {
+      sequences = null;
+      continue;
+    }
+    sequences?.push(sequence);
+    if (typeof digest === "string" && (!last || sequence > last.sequence)) {
+      last = { sequence, digest };
+    }
   }
-  return sequences;
+  return { sequences, last };
 }

@@ -681,3 +681,57 @@ Deno.test(
     await sink.close();
   }),
 );
+
+function withDigest(action: string, sequence: number): AuditEvent {
+  return { ...chained(action, sequence), digest: `d${sequence}` } as AuditEvent;
+}
+
+Deno.test(
+  "WalSink: a checkpoint records the chain position before deleting, so a crash restart resumes from it",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const sink = new WalSink({
+      wal,
+      downstream: createMockSink(),
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([withDigest("a", 1), withDigest("b", 2)]);
+    await sink.write([withDigest("c", 3)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+
+    // A process killed now never runs the shutdown save; a restart reads the
+    // directory afresh.
+    const restarted = new AuditWal({ dir });
+    await restarted.initialize();
+    assertEquals(restarted.segmentCount, 0);
+    assertEquals(await restarted.loadChainState(), {
+      sequence: 3,
+      previousDigest: "d3",
+    });
+  }),
+);
+
+Deno.test(
+  "WalSink: a checkpoint never moves the saved chain position backwards",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.saveChainState({ sequence: 10, previousDigest: "d10" });
+    const sink = new WalSink({
+      wal,
+      downstream: createMockSink(),
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([withDigest("old", 3)]);
+    await sink.flush();
+    assertEquals(await wal.loadChainState(), {
+      sequence: 10,
+      previousDigest: "d10",
+    });
+    await sink.close();
+  }),
+);

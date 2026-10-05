@@ -51,13 +51,19 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    the flush rejects with its sequences as `pending`: the caller keeps those
    segments without sending them again, so the landed date is not stored
    twice and the missed one is not lost. If the retry queue evicts such an
-   object, its sequences move to the lost set. A batch none of which reached
+   object, its sequences move to the lost set and the whole segment is sent
+   again, which stores its landed date a second time; this needs both a
+   batch spanning midnight and a full retry queue. A batch none of which reached
    any store makes the flush reject with its sequences as lost
    (`UnconfirmedEventsError`). Each WAL segment goes into exactly one
    StoreSink batch, so the checkpoint deletes the segments whose sequences
    were confirmed and delivers only the others again at the next checkpoint,
    as it does for a segment whose delivery failed; nothing is stored twice
-   and nothing waits for a restart. The delivery queue holds segment names
+   and nothing waits for a restart. Before deleting confirmed segments a
+   checkpoint records the highest confirmed chain position in
+   `chain-state.json` (never moving it backwards), because startup recovers
+   the chain position from the segments on disk or that file; without it a
+   crash would restart the chain from an older sequence. The delivery queue holds segment names
    only, and names the WAL size limit has evicted are pruned from it. `flush` waits up to 30s for
    queued work before leaving it in the WAL, where it is replayed on the next
    start. Max size is configurable (default 100MB).

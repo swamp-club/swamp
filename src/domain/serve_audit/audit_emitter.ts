@@ -808,6 +808,7 @@ export class AuditEmitter {
       await this.#drainPromise;
     }
     if (!this.#drainPromise) {
+      this.#drainAgain = false;
       this.#drainPromise = this.#drain().finally(() => {
         this.#drainPromise = null;
         if (this.#drainAgain && !this.#closed) this.#drainSerialized();

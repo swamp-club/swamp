@@ -187,7 +187,16 @@ export class StoreSink implements AuditSink {
       clearInterval(this.#gcTimer);
       this.#gcTimer = null;
     }
-    await this.flush();
+    try {
+      await this.flush();
+    } catch (error: unknown) {
+      // Shutting down while a store is failing: the caller (the WAL) keeps
+      // what is unconfirmed, so this is reported rather than thrown.
+      logger.warn(
+        "Audit store sink closed with events not yet in any store; the WAL keeps them for replay: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
   }
 
   async #runGc(): Promise<void> {
@@ -316,12 +325,16 @@ export class StoreSink implements AuditSink {
       const dropped = this.#retries.shift()!;
       this.#retryBytes -= dropped.data.byteLength;
       const unheld = this.#unheld.get(dropped.key);
-      if (
-        unheld === undefined ||
-        this.#retries.some((retry) => retry.key === dropped.key)
-      ) {
+      if (unheld === undefined) {
         logger.warn(
           "Audit store retry queue is full; batch {key} is dropped for one store, the others have it",
+          { key: dropped.key },
+        );
+        continue;
+      }
+      if (this.#retries.some((retry) => retry.key === dropped.key)) {
+        logger.warn(
+          "Audit store retry queue is full; batch {key}, which no store has yet, is dropped for one store and still retried for another",
           { key: dropped.key },
         );
         continue;
