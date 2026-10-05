@@ -29,8 +29,8 @@
  * token state machine race-free without datastore CAS.
  */
 
-import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createLibSwampContext,
   createWorkerModelRunDeps,

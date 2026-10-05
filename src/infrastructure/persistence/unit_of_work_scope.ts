@@ -39,9 +39,12 @@
  * store: concurrent operations (serve handlers, `Promise.all`) each see their
  * own unit of work. A promise started inside a scope keeps that scope even
  * when it is awaited after the scope returns. If its unit has been committed
- * by then, the legacy unit rejects the late `stage` with "unit of work already
- * committed", so commit a unit only after every write started in its scope
- * has settled.
+ * by then, the late `stage` follows the unit's `afterCommit` policy: units
+ * built for tests reject it with "unit of work already committed", and
+ * production units (`repo_unit_of_work.ts`) send it straight to the hook. An
+ * abandoned unit, never committed, keeps recording such writes for as long as
+ * the escaped work runs. Commit a unit only after every write started in its
+ * scope has settled.
  *
  * @module
  */

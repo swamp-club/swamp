@@ -1129,7 +1129,11 @@ operation inside a unit of work:
   yields `error`, throws, ends on another terminal or is stopped early is
   abandoned, its marks already sent. `workflowRun` ends `suspended` or
   `cancelled` too, so those runs abandon their unit. The step that moves the
-  push into `commit` must decide how a suspended run's state is pushed.
+  push into `commit` must decide how a suspended run's state is pushed. Work
+  that outlives an abandoned unit's stream (a detached nested run) keeps
+  appending its changes to that unit while it runs; the marks still reach the
+  hook, so only memory is held, for the life of that work. That step should
+  release abandoned units too.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`

@@ -30,7 +30,6 @@
  * fails the run.
  */
 
-import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { join } from "@std/path";
 import {
   createLibSwampContext,
@@ -38,6 +37,7 @@ import {
   modelMethodRun,
 } from "../libswamp/mod.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import {
   STEP_LEASE_INSTANCE_NAME,
