@@ -36,6 +36,7 @@ import {
   type BoundUnitOfWorkOptions,
   openRepoUnitOfWork,
   repoUnitOfWorkFactory,
+  type RootUnitOfWork,
   runInRootUnitOfWork,
   useUnitOfWorkFactoryForTesting,
 } from "./repo_unit_of_work.ts";
@@ -156,7 +157,7 @@ Deno.test("runInRootUnitOfWork: a use case's unit inside the root is a child tha
   const { hook, calls } = recordingHook();
   const push = countingFlush();
   let child: UnitOfWork | undefined;
-  let rootSeen: UnitOfWork | undefined;
+  let rootSeen: RootUnitOfWork | undefined;
   await runInRootUnitOfWork(
     { markDirty: hook },
     { flush: push.flush },
@@ -183,7 +184,7 @@ Deno.test("runInRootUnitOfWork: a use case's unit inside the root is a child tha
 
 Deno.test("runInRootUnitOfWork: nested use-case units roll up through each other to the root", async () => {
   const { hook } = recordingHook();
-  let rootSeen: UnitOfWork | undefined;
+  let rootSeen: RootUnitOfWork | undefined;
   let outer: UnitOfWork | undefined;
   await runInRootUnitOfWork(
     { markDirty: hook },
@@ -225,7 +226,7 @@ Deno.test("runInRootUnitOfWork: hand marks staged through the root are the ident
 
 Deno.test("runInRootUnitOfWork: two concurrent roots stay separate", async () => {
   const { hook } = recordingHook();
-  const roots: UnitOfWork[] = [];
+  const roots: RootUnitOfWork[] = [];
   const run = (path: string) =>
     runInRootUnitOfWork(
       { markDirty: hook },
@@ -352,7 +353,7 @@ Deno.test("runInRootUnitOfWork: with no hook the root is unbound and still flush
     { markDirty: undefined },
     { flush: push.flush },
     async (root) => {
-      assertStrictEquals(legacyUnitOfWorkTarget(root), undefined);
+      assertStrictEquals(legacyUnitOfWorkTarget(root as UnitOfWork), undefined);
       await root.stage({ kind: "bulk", reason: "filesystem" });
     },
   );
@@ -363,7 +364,7 @@ Deno.test("runInRootUnitOfWork: a nested call opens a child without a flush, so 
   const { hook } = recordingHook();
   const outerPush = countingFlush();
   const innerPush = countingFlush();
-  let outerRoot: UnitOfWork | undefined;
+  let outerRoot: RootUnitOfWork | undefined;
   await runInRootUnitOfWork(
     { markDirty: hook },
     { flush: outerPush.flush },
@@ -373,7 +374,10 @@ Deno.test("runInRootUnitOfWork: a nested call opens a child without a flush, so 
         { markDirty: hook },
         { flush: innerPush.flush },
         async (inner) => {
-          assertStrictEquals(legacyUnitOfWorkParent(inner), root);
+          assertStrictEquals(
+            legacyUnitOfWorkParent(inner as UnitOfWork),
+            root as UnitOfWork,
+          );
           await inner.stage({ kind: "write", path: "/cache/data/a" });
         },
       );
@@ -392,7 +396,7 @@ Deno.test("useUnitOfWorkFactoryForTesting: receives the flush, parent and role p
     seen.push(options);
     return createLegacyUnitOfWork(markDirty, options);
   });
-  let root: UnitOfWork | undefined;
+  let root: RootUnitOfWork | undefined;
   try {
     await runInRootUnitOfWork(
       { markDirty: hook },
@@ -411,4 +415,80 @@ Deno.test("useUnitOfWorkFactoryForTesting: receives the flush, parent and role p
   assertStrictEquals(seen[0].parent, undefined);
   assertStrictEquals(seen[1].flush, undefined);
   assertStrictEquals(seen[1].parent, root);
+});
+
+Deno.test("openRepoUnitOfWork: when the ambient unit has ended, the new unit rolls up into its nearest open ancestor", async () => {
+  const { hook } = recordingHook();
+  let rootSeen: RootUnitOfWork | undefined;
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: undefined },
+    async (root) => {
+      rootSeen = root;
+      const useCase = openRepoUnitOfWork(hook);
+      // Work started in the use case's scope that outlives its unit.
+      const { promise: go, resolve } = Promise.withResolvers<void>();
+      const escaped = runInUnitOfWork(useCase, async () => {
+        await go;
+        const late = openRepoUnitOfWork(hook);
+        assertStrictEquals(legacyUnitOfWorkParent(late), root as UnitOfWork);
+        await late.stage({ kind: "write", path: "/cache/data/late" });
+        await late.commit();
+      });
+      await useCase.abandon();
+      resolve();
+      await escaped;
+    },
+  );
+  assertEquals(rootSeen!.staged(), [
+    { kind: "write", path: "/cache/data/late" },
+  ]);
+});
+
+Deno.test("runInRootUnitOfWork: under an ended ambient unit with an open ancestor it is that ancestor's child and does not flush", async () => {
+  const { hook } = recordingHook();
+  const outerPush = countingFlush();
+  const innerPush = countingFlush();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: outerPush.flush },
+    async (root) => {
+      const useCase = openRepoUnitOfWork(hook);
+      await useCase.commit();
+      await runInUnitOfWork(useCase, () =>
+        runInRootUnitOfWork(
+          { markDirty: hook },
+          { flush: innerPush.flush },
+          (inner) => {
+            assertStrictEquals(
+              legacyUnitOfWorkParent(inner as UnitOfWork),
+              root as UnitOfWork,
+            );
+            return Promise.resolve();
+          },
+        ));
+    },
+  );
+  assertEquals(innerPush.calls(), 0);
+  assertEquals(outerPush.calls(), 1);
+});
+
+Deno.test("runInRootUnitOfWork: under an ended ambient unit with no open ancestor it is a root and flushes", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  const spent = openRepoUnitOfWork(hook);
+  await spent.commit();
+  await runInUnitOfWork(spent, () =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush: push.flush },
+      (root) => {
+        assertStrictEquals(
+          legacyUnitOfWorkParent(root as UnitOfWork),
+          undefined,
+        );
+        return Promise.resolve();
+      },
+    ));
+  assertEquals(push.calls(), 1);
 });

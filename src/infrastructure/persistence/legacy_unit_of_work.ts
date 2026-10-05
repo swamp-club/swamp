@@ -52,9 +52,10 @@ export interface LegacyUnitOfWorkOptions {
   /** Late-stage handling; defaults to `"reject"`. See {@link AfterCommitPolicy}. */
   afterCommit?: AfterCommitPolicy;
   /**
-   * The unit that was ambient when this one was opened. When it is an open
-   * legacy unit bound to the same hook, the new unit is its child; otherwise
-   * it is ignored and the new unit is a root.
+   * The unit that was ambient when this one was opened. The new unit is a
+   * child of it when it is an open legacy unit bound to the same hook, or of
+   * its nearest open ancestor when it has ended; otherwise the new unit is a
+   * root. See {@link legacyParentFor}.
    */
   parent?: UnitOfWork;
 }
@@ -117,16 +118,26 @@ export function legacyUnitOfWorkParent(
 }
 
 /**
- * The parent a new unit over `markDirty` rolls up into: `candidate` when it
- * is an open legacy unit bound to that same hook, otherwise none.
+ * The unit a new unit over `markDirty` rolls up into, given the ambient unit
+ * `candidate`: `candidate` itself when it is an open legacy unit bound to
+ * that hook, otherwise its nearest open ancestor (an ambient unit can outlive
+ * its own end, for work started in its scope that is still running). Undefined
+ * when there is none, or the candidate is bound to another hook or not legacy:
+ * the new unit is then a root.
+ *
+ * `openRepoUnitOfWork` and `runInRootUnitOfWork` resolve the parent through
+ * this same function, so the parent they report and the flush they choose
+ * always match the unit the adapter actually builds.
  */
-function childParent(
+export function legacyParentFor(
   markDirty: MarkDirtyHook | undefined,
   candidate: UnitOfWork | undefined,
 ): UnitOfWork | undefined {
   if (markDirty === undefined || candidate === undefined) return undefined;
   if (targets.get(candidate) !== markDirty) return undefined;
-  return states.get(candidate)?.isOpen() ? candidate : undefined;
+  const state = states.get(candidate);
+  if (state === undefined) return undefined;
+  return state.isOpen() ? candidate : nearestOpenAncestor(state.parent);
 }
 
 /** The nearest ancestor of a unit that has not ended yet. */
@@ -173,8 +184,9 @@ function nearestOpenAncestor(
  * sees everything the operation changed. A child's `commit` and `abandon`
  * only spend it: the root decides the push, so a child must not have a
  * flush. A change staged on a spent child goes to its nearest open
- * ancestor; with none, it follows `options.afterCommit`. A spent parent, or
- * one bound to another hook, is ignored and the unit is a root.
+ * ancestor; with none, it follows `options.afterCommit`. A spent parent
+ * hands the unit to its own nearest open ancestor; with none, or with a
+ * parent bound to another hook, the unit is a root.
  *
  * A change staged after the unit ended follows `options.afterCommit`. With
  * `"forward"` it is not recorded in `staged()`: the unit is spent, and the
@@ -184,7 +196,7 @@ export function createLegacyUnitOfWork(
   markDirty: MarkDirtyHook | undefined,
   options: LegacyUnitOfWorkOptions,
 ): UnitOfWork {
-  const parent = childParent(markDirty, options.parent);
+  const parent = legacyParentFor(markDirty, options.parent);
   if (parent !== undefined && options.flush !== undefined) {
     throw new Error("a child unit of work cannot flush; its root pushes");
   }

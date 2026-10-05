@@ -44,7 +44,7 @@ import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   createLegacyUnitOfWork,
-  legacyUnitOfWorkTarget,
+  legacyParentFor,
 } from "./legacy_unit_of_work.ts";
 import type { RepositoryContext } from "./repository_factory.ts";
 import { currentUnitOfWork, runInUnitOfWork } from "./unit_of_work_scope.ts";
@@ -75,15 +75,14 @@ let factoryForTesting: BoundUnitOfWorkFactory | undefined;
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
-/** The ambient unit, when it is bound to `markDirty`. */
+/**
+ * The open unit a new unit over `markDirty` rolls up into: the ambient unit,
+ * or its nearest open ancestor when it has already ended.
+ */
 function ambientFor(
   markDirty: MarkDirtyHook | undefined,
 ): UnitOfWork | undefined {
-  if (markDirty === undefined) return undefined;
-  const ambient = currentUnitOfWork();
-  return ambient !== undefined && legacyUnitOfWorkTarget(ambient) === markDirty
-    ? ambient
-    : undefined;
+  return legacyParentFor(markDirty, currentUnitOfWork());
 }
 
 function openUnit(
@@ -129,6 +128,12 @@ export function repoUnitOfWorkFactory(
   return () => openRepoUnitOfWork(repoContext.markDirty);
 }
 
+/**
+ * What composition code gets of its root: it stages hand marks and can read
+ * what was staged, but never ends the root; {@link runInRootUnitOfWork} does.
+ */
+export type RootUnitOfWork = Pick<UnitOfWork, "stage" | "staged">;
+
 /** Options for {@link runInRootUnitOfWork}. */
 export interface RootUnitOfWorkOptions {
   /** The push the root runs once when it ends, on every outcome. */
@@ -149,21 +154,25 @@ export interface RootUnitOfWorkOptions {
  *   stages the changes it makes outside repositories through it: a bare mark
  *   becomes `root.stage({ kind: "bulk", reason: "<command>" })`, and a
  *   per-path mark `root.stage({ kind: "write" | "remove", path })`. The
- *   legacy root forwards each as the identical hook call.
+ *   legacy root forwards each as the identical hook call. `fn` never ends
+ *   the root: it is typed {@link RootUnitOfWork}, without `commit` or
+ *   `abandon`.
  * - The root always ends: `commit` when `fn` resolved, `abandon` when it
  *   threw. A legacy root flushes either way, as today's paths push on every
  *   outcome.
  * - When `fn` threw and the flush also throws, `fn`'s error is rethrown and
  *   the flush error goes to `onFlushError` (or a warn log). When `fn`
  *   resolved and the flush throws, the flush error is thrown.
- * - Called while a unit for the same hook is already ambient, it opens a
- *   child without a flush instead of a second root, so a nested call never
- *   pushes twice; the outer root pushes.
+ * - Called while an open unit for the same hook is ambient (or an ended one
+ *   with an open ancestor), it opens a child of that open unit without a
+ *   flush instead of a second root, so a nested call never pushes twice; the
+ *   outer root pushes. With no open unit for the hook it is a root and
+ *   flushes.
  */
 export async function runInRootUnitOfWork<T>(
   repoContext: Pick<RepositoryContext, "markDirty">,
   options: RootUnitOfWorkOptions,
-  fn: (root: UnitOfWork) => Promise<T>,
+  fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
   const markDirty = repoContext.markDirty;
   const parent = ambientFor(markDirty);

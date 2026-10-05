@@ -26,9 +26,11 @@
 import { join } from "@std/path";
 import { assertEquals, AssertionError, assertThrows } from "@std/assert";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
-import type { UnitOfWork } from "../src/domain/datastore/unit_of_work.ts";
 import { resolveCustomProvider } from "../src/infrastructure/persistence/datastore_global_lock.ts";
-import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  type RootUnitOfWork,
+  runInRootUnitOfWork,
+} from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import {
   assertRootUnit,
   baseline,
@@ -95,7 +97,7 @@ async function runSynthetic(
           await release();
         }
       },
-    }, async (root: UnitOfWork) => {
+    }, async (root: RootUnitOfWork) => {
       const path = join(cacheDir(repos.repoA), "data", "synthetic.txt");
       await root.stage({ kind: "write", path });
       await Deno.mkdir(join(cacheDir(repos.repoA), "data"), {

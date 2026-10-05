@@ -56,6 +56,11 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   stops at `completed` that way, so most use cases end their unit through
  *   abandon even when they succeeded. If abandon fails while an error is
  *   already propagating, it is logged at warn and the original error wins.
+ *   Otherwise (a stream that ended without error, including a consumer's
+ *   `return()` after `completed`) an abandon that rejects reaches the
+ *   consumer, as a failing commit does. Use-case units have no flush today,
+ *   so theirs cannot fail; a Phase 3 unit whose discard can throw must expect
+ *   that error at `result()`.
  * - **Terminal policy.** For legacy units which ending is chosen does not
  *   change what is pushed: a use case's unit is a child of the command's or
  *   request's root (or has no flush), and the root decides the push. A
@@ -133,6 +138,7 @@ async function abandonQuietly(uow: UnitOfWork): Promise<void> {
   try {
     await uow.abandon();
   } catch (abandonError) {
-    logger.warn`Abandoning a unit of work failed: ${abandonError}`;
+    logger
+      .warn`Finishing datastore changes after a failed operation also failed: ${abandonError}`;
   }
 }

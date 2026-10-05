@@ -32,6 +32,7 @@ import type {
 import { assertUnitOfWorkContract } from "../testing/unit_of_work_contract.ts";
 import {
   createLegacyUnitOfWork,
+  legacyParentFor,
   legacyUnitOfWorkParent,
   legacyUnitOfWorkTarget,
 } from "./legacy_unit_of_work.ts";
@@ -623,4 +624,22 @@ Deno.test("createLegacyUnitOfWork: ending a root waits for a child's mark in fli
   await stage;
   await commit;
   assertEquals(pendingAtFlush, 0);
+});
+
+Deno.test("createLegacyUnitOfWork: a spent parent hands the new unit to its nearest open ancestor", async () => {
+  const { hook } = recordingHook();
+  const root = createLegacyUnitOfWork(hook, { flush: undefined });
+  const spent = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  await spent.abandon();
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: spent,
+  });
+  assertStrictEquals(legacyUnitOfWorkParent(unit), root);
+  assertStrictEquals(legacyParentFor(hook, spent), root);
+  await unit.stage({ kind: "write", path: "/cache/data/a" });
+  assertEquals(root.staged(), [{ kind: "write", path: "/cache/data/a" }]);
 });
