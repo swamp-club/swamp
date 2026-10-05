@@ -17,108 +17,88 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import type { OutputMode } from "../../presentation/output/output.ts";
+import type { WarningsWaiver } from "../../presentation/renderers/extension_push.ts";
 import {
   buildAcceptedWarnings,
   resolveWarningsGate,
+  resolveWarningsWaiver,
 } from "./extension_push.ts";
-
-const tty = () => true;
-const noTty = () => false;
 
 function gate(overrides: {
   warningCount?: number;
-  acceptWarnings?: boolean;
+  waiver?: WarningsWaiver;
   dryRun?: boolean;
   outputMode?: OutputMode;
-  stdinIsTty?: () => boolean;
 }) {
   return resolveWarningsGate({
     warningCount: 1,
-    acceptWarnings: false,
+    waiver: undefined,
     dryRun: false,
     outputMode: "log",
-    stdinIsTty: tty,
     ...overrides,
   });
 }
 
-Deno.test("resolveWarningsGate: json dry-run with a warning and no flag refuses and names --accept-warnings", () => {
-  const decision = gate({ dryRun: true, outputMode: "json" });
-  assertEquals(decision.kind, "refuse");
-  if (decision.kind !== "refuse") throw new Error("unreachable");
-  assertStringIncludes(decision.message, "--accept-warnings");
-  assertStringIncludes(decision.message, "1 warning that");
+Deno.test("resolveWarningsWaiver: --yes waives, --force waives, --yes wins when both are passed", () => {
+  assertEquals(resolveWarningsWaiver({ yes: true }), "--yes");
+  assertEquals(resolveWarningsWaiver({ force: true }), "--force");
+  assertEquals(resolveWarningsWaiver({ yes: true, force: true }), "--yes");
+  assertEquals(resolveWarningsWaiver({}), undefined);
+  assertEquals(resolveWarningsWaiver({ yes: false, force: false }), undefined);
 });
 
-Deno.test("resolveWarningsGate: json dry-run with --accept-warnings proceeds and records acceptance", () => {
-  assertEquals(
-    gate({ dryRun: true, outputMode: "json", acceptWarnings: true }),
-    { kind: "proceed", accepted: true, hint: false },
-  );
-});
-
-Deno.test("resolveWarningsGate: json push with --accept-warnings proceeds and records acceptance", () => {
-  assertEquals(
-    gate({ outputMode: "json", acceptWarnings: true, warningCount: 3 }),
-    { kind: "proceed", accepted: true, hint: false },
-  );
-});
-
-Deno.test("resolveWarningsGate: interactive push with a warning prompts; --yes is not an input to the gate", () => {
-  // --yes confirms the push prompt only. The gate has no notion of it, so an
-  // interactive run that passes --yes still reaches the warnings prompt.
-  assertEquals(gate({}), { kind: "prompt" });
-});
-
-Deno.test("resolveWarningsGate: interactive push with --accept-warnings skips the warnings prompt", () => {
-  assertEquals(
-    gate({ acceptWarnings: true }),
-    { kind: "proceed", accepted: true, hint: false },
-  );
-});
-
-Deno.test("resolveWarningsGate: no warnings proceeds without prompting in every mode", () => {
-  for (const outputMode of ["log", "json"] as const) {
-    for (const stdinIsTty of [tty, noTty]) {
+Deno.test("resolveWarningsGate: --yes and --force proceed and record the flag in every mode", () => {
+  for (const waiver of ["--yes", "--force"] as const) {
+    for (const outputMode of ["log", "json"] as const) {
       for (const dryRun of [true, false]) {
         assertEquals(
-          gate({ warningCount: 0, outputMode, stdinIsTty, dryRun }),
-          { kind: "proceed", accepted: false, hint: false },
+          gate({ waiver, outputMode, dryRun, warningCount: 3 }),
+          { kind: "proceed", waivedBy: waiver },
+          `${waiver} ${outputMode} dryRun=${dryRun}`,
         );
       }
     }
   }
 });
 
-Deno.test("resolveWarningsGate: log mode without a terminal refuses like --json", () => {
-  const decision = gate({ stdinIsTty: noTty, warningCount: 2 });
-  assertEquals(decision.kind, "refuse");
-  if (decision.kind !== "refuse") throw new Error("unreachable");
-  assertStringIncludes(decision.message, "2 warnings that");
-  assertStringIncludes(decision.message, "--accept-warnings");
+Deno.test("resolveWarningsGate: json push with a warning and no flag proceeds without a record", () => {
+  // The pre-#3015 behaviour: --json never prompted and never refused. The
+  // warnings were rendered ahead of the gate, so nothing is hidden.
+  assertEquals(gate({ outputMode: "json" }), { kind: "proceed" });
 });
 
-Deno.test("resolveWarningsGate: --accept-warnings proceeds without a terminal", () => {
+Deno.test("resolveWarningsGate: json dry run with a warning and no flag proceeds without a record", () => {
   assertEquals(
-    gate({ stdinIsTty: noTty, acceptWarnings: true }),
-    { kind: "proceed", accepted: true, hint: false },
+    gate({ outputMode: "json", dryRun: true }),
+    { kind: "proceed" },
   );
 });
 
-Deno.test("resolveWarningsGate: interactive dry-run proceeds with a hint instead of a prompt", () => {
-  assertEquals(
-    gate({ dryRun: true }),
-    { kind: "proceed", accepted: false, hint: true },
-  );
+Deno.test("resolveWarningsGate: log dry run with a warning and no flag proceeds without prompting", () => {
+  // A dry run performs no push and so has nothing to confirm.
+  assertEquals(gate({ dryRun: true }), { kind: "proceed" });
 });
 
-Deno.test("resolveWarningsGate: interactive dry-run with --accept-warnings records acceptance and skips the hint", () => {
-  assertEquals(
-    gate({ dryRun: true, acceptWarnings: true }),
-    { kind: "proceed", accepted: true, hint: false },
-  );
+Deno.test("resolveWarningsGate: log push with a warning and no flag prompts", () => {
+  // The prompt helper itself rejects a non-terminal stdin and names --yes, so
+  // the gate does not need to know whether a terminal is attached.
+  assertEquals(gate({}), { kind: "prompt" });
+});
+
+Deno.test("resolveWarningsGate: no warnings proceeds without a record in every mode", () => {
+  for (const waiver of ["--yes", "--force", undefined] as const) {
+    for (const outputMode of ["log", "json"] as const) {
+      for (const dryRun of [true, false]) {
+        assertEquals(
+          gate({ warningCount: 0, waiver, outputMode, dryRun }),
+          { kind: "proceed" },
+          `${waiver} ${outputMode} dryRun=${dryRun}`,
+        );
+      }
+    }
+  }
 });
 
 Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review skeleton", () => {

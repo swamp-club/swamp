@@ -47,7 +47,7 @@ import type { CompilationError } from "../../libswamp/mod.ts";
 export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
 
 /**
- * The safety and review warnings the pusher waived with `--accept-warnings`.
+ * The safety and review warnings the pusher waived with `--yes` or `--force`.
  * Recorded in the dry-run and push summaries so a reviewer can see exactly
  * what was accepted. Advisory warnings (dependency trust, version drift,
  * upgrade entries) never gate a push and are not part of the record.
@@ -57,20 +57,33 @@ export interface AcceptedWarnings {
   review: AcceptedReviewWarning[];
 }
 
+/** The flag that waived safety and review warnings on a run. */
+export type WarningsWaiver = "--yes" | "--force";
+
+/**
+ * What a run waived and with which flag. The log summary names the flag in
+ * its header; the JSON summary carries only the record, under
+ * `acceptedWarnings`.
+ */
+export interface WarningsAcceptance {
+  warnings: AcceptedWarnings;
+  waivedBy: WarningsWaiver;
+}
+
 /** Summary data for a completed dry run. */
 export interface ExtensionPushDryRunData {
   name: string;
   version: string;
   archiveSize: number;
   visibility: ExtensionPushResolvedData["visibility"];
-  /** Present only when `--accept-warnings` waived at least one warning. */
-  acceptedWarnings?: AcceptedWarnings;
+  /** Present only when a flag waived at least one warning. */
+  accepted?: WarningsAcceptance;
 }
 
 /** Per-run inputs for the stream handlers. */
 export interface ExtensionPushHandlerOptions {
-  /** Present only when `--accept-warnings` waived at least one warning. */
-  acceptedWarnings?: AcceptedWarnings;
+  /** Present only when a flag waived at least one warning. */
+  accepted?: WarningsAcceptance;
 }
 
 /** Extended renderer with methods for the prepare-phase outputs. */
@@ -91,21 +104,17 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderVersionDriftWarnings(warnings: QualityIssue[]): void;
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
-  /**
-   * Tells an interactive dry run that the warnings it just saw would stop a
-   * non-interactive push. The dry run itself never prompts.
-   */
-  renderAcceptWarningsHint(): void;
   renderDryRun(data: ExtensionPushDryRunData): void;
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent>;
 }
 
-function acceptedWarningsHeader(accepted: AcceptedWarnings): string {
-  const count = accepted.safety.length + accepted.review.length;
+function acceptedWarningsHeader(accepted: WarningsAcceptance): string {
+  const count = accepted.warnings.safety.length +
+    accepted.warnings.review.length;
   const noun = count === 1 ? "warning" : "warnings";
-  return `Accepted ${count} ${noun} with --accept-warnings:`;
+  return `Accepted ${count} ${noun} with ${accepted.waivedBy}:`;
 }
 
 function formatBytes(bytes: number): string {
@@ -314,18 +323,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
-  renderAcceptWarningsHint(): void {
-    this.logger.info(
-      "A non-interactive push (--json or no terminal) needs --accept-warnings for these warnings.",
-    );
-  }
-
-  private renderAcceptedWarnings(accepted: AcceptedWarnings): void {
+  private renderAcceptedWarnings(accepted: WarningsAcceptance): void {
     this.logger.warn(acceptedWarningsHeader(accepted));
-    for (const w of accepted.safety) {
+    for (const w of accepted.warnings.safety) {
       this.logger.warn`  ${w.file}: ${w.message}`;
     }
-    for (const w of accepted.review) {
+    for (const w of accepted.warnings.review) {
       const summary = w.message.split("\n")[0];
       this.logger
         .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
@@ -337,8 +340,8 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     renderRequestedVisibility(data.visibility);
     this.logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     this.logger.info("No API calls were made.");
-    if (data.acceptedWarnings) {
-      this.renderAcceptedWarnings(data.acceptedWarnings);
+    if (data.accepted) {
+      this.renderAcceptedWarnings(data.accepted);
     }
   }
 
@@ -377,8 +380,8 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;
-        if (options?.acceptedWarnings) {
-          this.renderAcceptedWarnings(options.acceptedWarnings);
+        if (options?.accepted) {
+          this.renderAcceptedWarnings(options.accepted);
         }
       },
       error: (e) => {
@@ -458,16 +461,21 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     console.log(JSON.stringify({ compilationErrors: errors }, null, 2));
   }
 
-  renderAcceptWarningsHint(): void {
-    // A JSON run never reaches the hint: without --accept-warnings it is
-    // refused, and with the flag the record goes in the summary instead.
-  }
-
   renderDryRun(data: ExtensionPushDryRunData): void {
-    // `acceptedWarnings` is undefined when nothing was accepted, and
-    // JSON.stringify drops undefined fields, so the document is unchanged
-    // for runs without the flag.
-    console.log(JSON.stringify({ ...data, status: "dry_run" }, null, 2));
+    // The document carries the record alone, under `acceptedWarnings`, and
+    // only when something was waived; the waiving flag is a log-mode detail.
+    const { accepted, ...summary } = data;
+    console.log(
+      JSON.stringify(
+        {
+          ...summary,
+          ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
+          status: "dry_run",
+        },
+        null,
+        2,
+      ),
+    );
   }
 
   handlers(
@@ -476,8 +484,8 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
-        const summary = options?.acceptedWarnings
-          ? { ...e.data, acceptedWarnings: options.acceptedWarnings }
+        const summary = options?.accepted
+          ? { ...e.data, acceptedWarnings: options.accepted.warnings }
           : e.data;
         console.log(JSON.stringify(summary, null, 2));
       },

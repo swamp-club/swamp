@@ -22,7 +22,6 @@ import { dirname, join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
-  isStdinTty,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
@@ -48,6 +47,7 @@ import {
   type AcceptedWarnings,
   createExtensionPushRenderer,
   renderExtensionPushCancelled,
+  type WarningsWaiver,
 } from "../../presentation/renderers/extension_push.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -72,7 +72,6 @@ interface ExtensionPushOptions extends GlobalOptions {
   extensionsDir?: string;
   yes?: boolean;
   force?: boolean;
-  acceptWarnings?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
   channel?: string;
@@ -81,50 +80,56 @@ interface ExtensionPushOptions extends GlobalOptions {
   skipUpgradeCheck?: boolean;
 }
 
+/**
+ * Names the flag that waives the warnings prompt on this run, or `undefined`
+ * when neither was passed. `--yes` wins when both are given, so the summary
+ * credits the flag users reach for.
+ */
+export function resolveWarningsWaiver(
+  options: { yes?: boolean; force?: boolean },
+): WarningsWaiver | undefined {
+  if (options.yes) return "--yes";
+  if (options.force) return "--force";
+  return undefined;
+}
+
 /** What the warnings gate decided for this run. */
 export type WarningsGateDecision =
   | {
     kind: "proceed";
-    /** True when `--accept-warnings` waived the warnings. */
-    accepted: boolean;
-    /** True when an interactive dry run should say what a real run would need. */
-    hint: boolean;
+    /**
+     * The flag that waived the warnings. Absent when there were none, or
+     * when the run proceeds without a waiver (dry run, `--json`).
+     */
+    waivedBy?: WarningsWaiver;
   }
-  | { kind: "prompt" }
-  | { kind: "refuse"; message: string };
+  | { kind: "prompt" };
 
 /**
- * Decides whether safety and review warnings stop, prompt, or pass a push.
+ * Decides whether safety and review warnings prompt or pass a push.
  *
- * `--accept-warnings` is the only waiver; `--yes` and `--force` confirm the
- * push and never enter this decision. A non-interactive run (`--json`, or
- * stdin not a terminal) refuses rather than silently waiving, and names the
- * flag it needs. A dry run exits exactly when the real run would but never
- * prompts, because declining a prompt on a dry run confirms nothing.
+ * `--yes` and `--force` waive the warnings along with the push confirmation,
+ * and the summary records what they waived. A dry run never prompts: it
+ * performs no push and so has nothing to confirm. A `--json` run never
+ * prompts either. Both proceed without a record, as they did before
+ * swamp-club#3015 briefly made them refuse (restored by swamp-club#3047). A
+ * log-mode run without a terminal reaches the prompt, whose own error says
+ * to pass `--yes`.
  */
 export function resolveWarningsGate(input: {
   warningCount: number;
-  acceptWarnings: boolean;
+  waiver: WarningsWaiver | undefined;
   dryRun: boolean;
   outputMode: OutputMode;
-  stdinIsTty: () => boolean;
 }): WarningsGateDecision {
   if (input.warningCount === 0) {
-    return { kind: "proceed", accepted: false, hint: false };
+    return { kind: "proceed" };
   }
-  if (input.acceptWarnings) {
-    return { kind: "proceed", accepted: true, hint: false };
+  if (input.waiver) {
+    return { kind: "proceed", waivedBy: input.waiver };
   }
-  if (input.outputMode === "json" || !input.stdinIsTty()) {
-    const noun = input.warningCount === 1 ? "warning" : "warnings";
-    return {
-      kind: "refuse",
-      message:
-        `Extension has ${input.warningCount} ${noun} that need review. Pass --accept-warnings to acknowledge them and continue, or run interactively in a terminal to answer the prompt.`,
-    };
-  }
-  if (input.dryRun) {
-    return { kind: "proceed", accepted: false, hint: true };
+  if (input.dryRun || input.outputMode === "json") {
+    return { kind: "proceed" };
   }
   return { kind: "prompt" };
 }
@@ -270,13 +275,9 @@ export const extensionPushCommand = new Command()
   )
   .option(
     "-y, --yes",
-    "Confirm the push without prompting (does not accept warnings)",
+    "Skip confirmation prompts; the summary records any warnings this waived",
   )
-  .option("-f, --force", "Alias for --yes")
-  .option(
-    "--accept-warnings",
-    "Accept safety and review warnings and continue; the summary records which were accepted",
-  )
+  .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
     "--visibility <visibility:string>",
@@ -628,21 +629,17 @@ export const extensionPushCommand = new Command()
     }
 
     // 6c. One gate covers safety and review-rule warnings, so the user is
-    // never prompted twice. --yes confirms the push only; --accept-warnings
-    // is the sole waiver, and the summary records what it waived. The
-    // warnings were rendered above, so a refused non-interactive run still
-    // shows them (and the review skeleton) ahead of the error.
+    // never prompted twice. --yes and --force waive them along with the push
+    // confirmation, and the summary records what was waived. A dry run has
+    // nothing to confirm and a --json run never prompts, so neither stops
+    // here; the warnings were rendered above either way.
     const gatedWarnings = buildAcceptedWarnings(prepared);
     const gate = resolveWarningsGate({
       warningCount: gatedWarnings.safety.length + gatedWarnings.review.length,
-      acceptWarnings: options.acceptWarnings ?? false,
+      waiver: resolveWarningsWaiver(options),
       dryRun: prepared.isDryRun,
       outputMode: cliCtx.outputMode,
-      stdinIsTty: isStdinTty,
     });
-    if (gate.kind === "refuse") {
-      throw new UserError(gate.message);
-    }
     if (gate.kind === "prompt") {
       const confirmed = await promptConfirmation(
         "Continue with push despite warnings?",
@@ -652,11 +649,8 @@ export const extensionPushCommand = new Command()
         return;
       }
     }
-    if (gate.kind === "proceed" && gate.hint) {
-      renderer.renderAcceptWarningsHint();
-    }
-    const acceptedWarnings = gate.kind === "proceed" && gate.accepted
-      ? gatedWarnings
+    const accepted = gate.kind === "proceed" && gate.waivedBy
+      ? { warnings: gatedWarnings, waivedBy: gate.waivedBy }
       : undefined;
 
     // 6d. Version-drift check (advisory warning only)
@@ -721,7 +715,7 @@ export const extensionPushCommand = new Command()
         version: prepared.manifest.version,
         archiveSize: prepared.archiveBytes.length,
         visibility: prepared.resolvedData.visibility,
-        acceptedWarnings,
+        accepted,
       });
       return;
     }
@@ -748,7 +742,7 @@ export const extensionPushCommand = new Command()
         releaseNotes: options.releaseNotes,
         channel: options.channel,
       }),
-      renderer.handlers({ acceptedWarnings }),
+      renderer.handlers({ accepted }),
     );
 
     cliCtx.logger.debug("Extension push command completed");

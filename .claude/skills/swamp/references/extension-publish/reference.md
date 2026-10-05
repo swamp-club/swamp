@@ -141,13 +141,7 @@ Validate the extension can be pushed without actually uploading.
 swamp extension push manifest.yaml --dry-run --json
 ```
 
-**Verify:** Exit code 0. Without a terminal (`--json`, CI, coding agents) the
-dry run exits non-zero while any safety or review warning stands, and the error
-names `--accept-warnings`. The warnings — and the review skeleton — are still
-printed above the error. That exit is the gate working: resolve the warnings
-(write the review report, add the missing tests) and re-run. Pass
-`--accept-warnings` only for warnings the user has seen and explicitly accepted;
-the summary then lists them under `acceptedWarnings`.
+**Verify:** Exit code 0. Confirm any warnings with the user.
 
 If private publication is requested, retain `visibility: private` in the
 manifest or pass optional `--visibility private` in both this dry run and
@@ -183,11 +177,10 @@ user confirmation.
 swamp extension push manifest.yaml --yes --json
 ```
 
-`--yes` confirms the push only; it never waives warnings. If State 7 needed
-`--accept-warnings`, pass it here too — the push refuses the same warnings
-otherwise, and the completed summary records the accepted ones.
-
 **Verify:** The command exits successfully and reports the published version.
+
+`--yes` also waives safety and review warnings; the completed summary records
+them under `acceptedWarnings` so the user can see what was waived.
 
 For explicit-private publication, verify the successful output reports
 `visibility: "private"`. A dry run proves intent, not applied registry
