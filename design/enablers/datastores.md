@@ -1156,12 +1156,38 @@ operation inside a unit of work:
   when it is given one, so a push is never dropped silently. Composition
   code stages its hand marks through the root: `root.stage({ kind: "bulk" })`
   replaces a bare mark, and `root.stage({ kind: "write" | "remove", path })` a
-  per-path mark, each forwarded as the identical hook call. No CLI command or
-  serve handler uses the root yet; swamp-club#3033 (CLI) and swamp-club#3034
-  (serve) adopt it, switching on `rootUnit` rows in the use-case sync
-  characterization, which then check that the root staged every mark and that
-  pushes keep their place relative to lock release and gate exit
-  (`syncOrder`).
+  per-path mark, each forwarded as the identical hook call. swamp-club#3034
+  adopts it for serve.
+- **CLI commands in root units (swamp-club#3033).** Every CLI write command
+  runs its write section in `runCommandInRootUnit`
+  (`src/cli/command_root_unit.ts`), whose flush is the push the command made
+  before, at the same point:
+  - Model-lock commands split `ModelLockResult.flush()` into `push()` and
+    `release()`. `push` is the root's flush, and `release` runs after the root
+    has ended, so the locks are released after the push, as before. `flush()`
+    is still push-then-release for callers that open no root: per-step locks
+    inside a workflow run, and serve.
+  - Commands that pushed only once their mutation completed (the
+    managed-config commands through `runManagedConfigMutation`, worker prune,
+    datastore config migrate) pass `pushWhen: "completed"`, so a failed
+    command still pushes nothing.
+  - A push or release failure reaches the handler the command used before:
+    the release error replaces the push error, as a `finally` did, and neither
+    hides the command's own error.
+  - Former bare marks are `root.stage({ kind: "bulk", reason })`. Access token
+    mint and worker token create and revoke also push mid-command (mint and
+    create then read the token back). A root cannot push mid-command (a nested
+    root with its own push is refused), so that push stays a direct call,
+    pinned in `PINNED_CLI_PUSH_CALLS`, and the root makes the end-of-command
+    lock push.
+  - Commands on the global lock (data gc, data prune, workflow delete, the
+    `--all` evaluates) still push through the process-exit coordinator and
+    open no root.
+  - The use-case sync characterization switches on `rootUnit` for these rows,
+    checking that the root staged every mark and that pushes keep their place
+    relative to lock release (`syncOrder`, recorded before the change).
+    `PINNED_CLI_ROOT_UNIT_COMMANDS` and `PINNED_LOCK_FLUSH_CALLERS` list the
+    commands with a root and the callers of the combined flush.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`
@@ -1184,12 +1210,13 @@ no hook to bind to, so nothing changes for them.
 What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
 each site):
 
-- CLI commands that mark before pushing, several with bare marks: access grant,
-  access group, access token mint, datastore config migrate, datastore sync,
-  worker prune and worker token create and revoke (`src/cli/commands/`).
+- `swamp datastore sync`, which owns its pull and push
+  (`src/cli/commands/datastore_sync.ts`). The other CLI write commands stage
+  their marks through their root unit (swamp-club#3033).
 - `pushManagedConfigChanges` and `pushManagedConfigPaths`
-  (`src/cli/managed_config_sync.ts`), which send bare marks after the CLI writes
-  managed config through unhooked repositories.
+  (`src/cli/managed_config_sync.ts`), which send bare marks. No command calls
+  them since swamp-club#3033: the managed-config commands stage the bare mark
+  through `runManagedConfigMutation`'s root.
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).

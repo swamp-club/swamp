@@ -70,6 +70,7 @@ async function saveVersions(
 const ROWS: AnyRow[] = [
   row({
     name: "data delete",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
@@ -86,6 +87,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data rename",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
@@ -99,6 +101,22 @@ const ROWS: AnyRow[] = [
       type: "data.rename",
       payload: { modelIdOrName: "m1", oldName: "state", newName: "renamed" },
     }),
+  }),
+  row({
+    name: "data delete (use case fails)",
+    rootUnit: { cli: true },
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
+    refuses: true,
+    seed: async (repos) => {
+      await saveModel(repos.serveRepo, "m1");
+    },
+    cli: (repos) => ({
+      args: ["data", "delete", "m1", "missing", "--force", ...json(repos)],
+    }),
+    // The failure path of the CLI's root unit (swamp-club#3033); serve's
+    // belongs to swamp-club#3034.
+    serve: null,
   }),
   row({
     name: "data gc",
@@ -131,6 +149,16 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "data delete (use case fails)": {
+    // The use case fails under the model lock, and the lock still pushes once
+    // (with nothing changed) before it releases, as on success.
+    cli: {
+      "ops": ["pull[0]", "prepare[0]", "commit[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+      "error": 'No data named "missing" exists for model m1',
+    },
+    serve: null,
+  },
   "data delete": {
     // The model-lock acquisition pulls and its flush pushes two-phase
     // (prepare/commit); serve neither pulls nor goes two-phase, pushing once

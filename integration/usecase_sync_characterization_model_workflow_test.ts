@@ -115,11 +115,12 @@ async function suspendAtGate(
 function modelCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model create${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({
@@ -150,11 +151,12 @@ function modelCreateRow(managedConfig: boolean): AnyRow {
 function modelEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model edit${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedModelYaml(repos, "m1"),
@@ -179,11 +181,12 @@ function modelEditRow(managedConfig: boolean): AnyRow {
 function workflowCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow create${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({ args: ["workflow", "create", "wf2", ...json(repos)] }),
@@ -198,11 +201,12 @@ function workflowCreateRow(managedConfig: boolean): AnyRow {
 function workflowEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow edit${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedWorkflowYaml(repos, "wf1"),
@@ -229,6 +233,7 @@ const seedModelAndWorkflow = async (repos: RowRepos) => {
 function modelDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model delete${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     options: { managedConfig },
@@ -274,12 +279,36 @@ function workflowDeleteRow(managedConfig: boolean): AnyRow {
 const ROWS: AnyRow[] = [
   modelCreateRow(false),
   modelCreateRow(true),
+  row({
+    name: "model create (managedConfig, use case fails)",
+    rootUnit: { cli: true },
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: [] },
+    refuses: true,
+    options: { managedConfig: true },
+    seed: async (repos) => {
+      await saveModel(repos.serveRepo, "m2");
+    },
+    cli: (repos) => ({
+      args: [
+        "model",
+        "create",
+        repos.modelType.normalized,
+        "m2",
+        ...json(repos),
+      ],
+    }),
+    // The failure path of the CLI's root unit (swamp-club#3033); serve's
+    // belongs to swamp-club#3034.
+    serve: null,
+  }),
   modelEditRow(false),
   modelEditRow(true),
   modelDeleteRow(false),
   modelDeleteRow(true),
   row({
     name: "model evaluate",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
@@ -307,6 +336,7 @@ const ROWS: AnyRow[] = [
   workflowDeleteRow(true),
   row({
     name: "workflow evaluate",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: seedModelAndWorkflow,
@@ -328,6 +358,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model method run",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: [] },
     seed: async (repos) => {
@@ -341,6 +372,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow run",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release", "push"] },
     seed: seedModelAndWorkflow,
@@ -350,6 +382,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow resume",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["release", "push"] },
     // workflow_resume.ts drives WorkflowExecutionService directly, not
@@ -467,6 +500,16 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "model create (managedConfig, use case fails)": {
+    // The use case fails before anything is written, so nothing is marked or
+    // pushed.
+    cli: {
+      "ops": [],
+      "remote": { "added": [], "removed": [], "changed": [] },
+      "error": "Model already exists: m2",
+    },
+    serve: null,
+  },
   "model method run": {
     cli: {
       "ops": [
@@ -571,7 +614,7 @@ const EXPECTED: Record<string, PinnedRow> = {
   },
   "model create (managedConfig)": {
     // DIVERGENCE: the CLI publishes managed config with a bare markDirty
-    // (pushManagedConfigChanges), a whole-cache walk that can never delete;
+    // (runManagedConfigMutation), a whole-cache walk that can never delete;
     // serve marks the one path it wrote. Datastore refactor phase 2 is
     // expected to change this.
     cli: {
@@ -746,7 +789,7 @@ const EXPECTED: Record<string, PinnedRow> = {
   },
   "workflow edit (managedConfig)": {
     // DIVERGENCE: the repository hook marks the path, then
-    // pushManagedConfigChanges adds a bare markDirty, so the push walks the
+    // runManagedConfigMutation adds a bare markDirty, so the push walks the
     // whole cache; serve marks the path only. Datastore refactor phase 2 is
     // expected to change this.
     cli: {

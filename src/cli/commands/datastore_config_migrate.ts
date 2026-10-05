@@ -30,6 +30,7 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -71,7 +72,7 @@ export const datastoreConfigMigrateCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir);
 
     const {
-      repoContext: _repoContext,
+      repoContext,
       datastoreResolver,
       datastoreConfig,
       syncService,
@@ -115,50 +116,70 @@ export const datastoreConfigMigrateCommand = new Command()
     );
     const pulledExtensionsSource = swampPath(repoDir, "pulled-extensions");
 
-    const result = await migrateConfigToDatastore(
-      repoDir,
-      lockfileSourcePath,
-      configRoot,
-      pulledExtensionsSource,
-    );
-
-    const managedConfigSet = await ensureManagedConfig(
-      markerRepo,
-      repoPath,
-      marker,
-    );
-    if (managedConfigSet && ctx.outputMode !== "json") {
-      ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
-    }
-
-    if (result.alreadyMigrated) {
-      if (ctx.outputMode === "json") {
-        writeOutput(
-          JSON.stringify({ alreadyMigrated: true, managedConfigSet }),
-        );
-      } else {
-        ctx.logger.info`Config migration already completed`;
-      }
-      return;
-    }
-
-    const copied = [
-      result.copiedModels && "models",
-      result.copiedWorkflows && "workflows",
-      result.copiedVaults && "vaults",
-      result.copiedLockfile && "lockfile",
-      result.copiedPulledExtensions && "pulled-extensions",
-    ].filter(Boolean);
-
+    // The migration marks the whole cache and pushes it, only once it
+    // completed and copied something or set managedConfig.
+    const namespace = isCustomDatastoreConfig(datastoreConfig)
+      ? datastoreConfig.namespace
+      : undefined;
     let pushed = false;
-    if (syncService && (copied.length > 0 || managedConfigSet)) {
-      const namespace = isCustomDatastoreConfig(datastoreConfig)
-        ? datastoreConfig.namespace
-        : undefined;
-      await syncService.markDirty();
-      await syncService.pushChanged({ namespace });
-      pushed = true;
-    }
+    const migrated = await runCommandInRootUnit(
+      repoContext,
+      {
+        push: syncService
+          ? async () => {
+            if (pushed) await syncService.pushChanged({ namespace });
+          }
+          : undefined,
+        pushWhen: "completed",
+      },
+      async (root) => {
+        const result = await migrateConfigToDatastore(
+          repoDir,
+          lockfileSourcePath,
+          configRoot,
+          pulledExtensionsSource,
+        );
+
+        const managedConfigSet = await ensureManagedConfig(
+          markerRepo,
+          repoPath,
+          marker,
+        );
+        if (managedConfigSet && ctx.outputMode !== "json") {
+          ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
+        }
+
+        if (result.alreadyMigrated) {
+          if (ctx.outputMode === "json") {
+            writeOutput(
+              JSON.stringify({ alreadyMigrated: true, managedConfigSet }),
+            );
+          } else {
+            ctx.logger.info`Config migration already completed`;
+          }
+          return undefined;
+        }
+
+        const copied = [
+          result.copiedModels && "models",
+          result.copiedWorkflows && "workflows",
+          result.copiedVaults && "vaults",
+          result.copiedLockfile && "lockfile",
+          result.copiedPulledExtensions && "pulled-extensions",
+        ].filter(Boolean);
+
+        if (syncService && (copied.length > 0 || managedConfigSet)) {
+          await root.stage({
+            kind: "bulk",
+            reason: "datastore config migrate",
+          });
+          pushed = true;
+        }
+        return { result, managedConfigSet, copied };
+      },
+    );
+    if (migrated === undefined) return;
+    const { result, managedConfigSet, copied } = migrated;
 
     if (ctx.outputMode === "json") {
       writeOutput(JSON.stringify({

@@ -64,11 +64,12 @@ async function editedVaultYaml(repos: RowRepos): Promise<string> {
 function vaultCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault create${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({
@@ -84,11 +85,12 @@ function vaultCreateRow(managedConfig: boolean): AnyRow {
 function vaultEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault edit${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: editedVaultYaml,
@@ -113,11 +115,12 @@ function vaultMigrateRow(
 ): AnyRow {
   return row({
     name: `vault migrate${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: managedConfig ? ["push"] : [] },
-    // With managedConfig the CLI pushes config through a bulk mark after the
-    // use case: managed_config_sync.ts pushManagedConfigChanges /
-    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    // With managedConfig the CLI stages a bulk mark through the command's
+    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
+    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: async (repos) => {

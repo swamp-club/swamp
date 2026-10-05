@@ -265,6 +265,37 @@ function unitOfWorkSeamCallers(files: readonly SourceFile[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 4c: CLI commands run in a root unit of work (swamp-club#3033)
+// ---------------------------------------------------------------------------
+
+const CLI_COMMANDS_DIR = "src/cli/commands/";
+const CLI_ROOT_CALL =
+  /\b(?:runCommandInRootUnit|runManagedConfigMutation)\s*\(/g;
+const LOCK_FLUSH_REFERENCE = /\blockResult\.flush\b/g;
+const PUSH_CALL = /\.pushChanged\s*\(/g;
+
+/** One key per non-comment match of `pattern` in files `include` keeps. */
+function referenceKeys(
+  files: readonly SourceFile[],
+  pattern: RegExp,
+  include: (rel: string) => boolean,
+): string[] {
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    if (!include(rel)) continue;
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+      for (const _match of line.matchAll(pattern)) {
+        keys.push(`${rel}: ${owners[i]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+const inCliCommands = (rel: string) => rel.startsWith(CLI_COMMANDS_DIR);
+
+// ---------------------------------------------------------------------------
 // Rule 5: typed changes repositories stage
 // ---------------------------------------------------------------------------
 
@@ -388,22 +419,22 @@ function hookReferencesOutsideSignalChange(
 // ---------------------------------------------------------------------------
 
 const PINNED_MARK_CALL_SITES: readonly string[] = [
-  // CLI commands that mark before pushing (several send bare marks).
-  "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
-  "src/cli/commands/access_group.ts: runGroupMethod",
-  "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
-  "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
+  // CLI marks that stay outside a root unit (swamp-club#3033); the CLI write
+  // commands stage theirs through their root instead.
+  // A bulk migration of the whole tree.
   "src/cli/commands/datastore_namespace.ts: buildMigrateDeps",
+  // The sync command itself, which owns its pull and push.
   "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
+  // Serve's start-up (swamp-club#3034 covers serve).
   "src/cli/commands/serve.ts: serveCommand",
-  "src/cli/commands/worker_prune.ts: workerPruneCommand",
-  "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
-  "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
-  // Managed-config push helpers.
+  // Managed-config push helpers. The commands publish through
+  // runManagedConfigMutation's root; these remain for the deferred variants
+  // and the remote-failure suite, and have no command callers.
   "src/cli/managed_config_sync.ts: pushManagedConfigChanges",
   "src/cli/managed_config_sync.ts: pushManagedConfigPaths",
-  // The mark hook itself, and the catalog export.
+  // The mark hook itself.
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
+  // Written outside any repository, at push time.
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
   // The legacy unit of work forwarding staged changes to the mark hook
   // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
@@ -415,7 +446,8 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // it stages into an ambient unit of work bound to the hook, or calls the
   // hook (swamp-club#2971). Exactly one call.
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
-  // Use cases that mark directly.
+  // Use cases that mark directly. datastoreNamespaceMigrate: a bulk
+  // migration of the whole tree.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
   // Serve handlers marking written paths before pushChanged.
@@ -630,8 +662,8 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/data/delete.ts: createDataDeleteDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/data/prune.ts: createDataPruneDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/data/rename.ts: createDataRenameDeps: FileSystemUnifiedDataRepository",
-  // The CLI writes through these, then pushManagedConfigChanges sends a bare mark
-  // (managedConfig only); serve injects the hooked repository.
+  // The CLI writes through these, then runManagedConfigMutation sends a bare
+  // mark (managedConfig only); serve injects the hooked repository.
   "src/libswamp/models/create.ts: createModelCreateDeps: YamlDefinitionRepository",
   "src/libswamp/models/edit.ts: createModelEditDeps: YamlDefinitionRepository",
   "src/libswamp/workflows/create.ts: createWorkflowCreateDeps: YamlWorkflowRepository",
@@ -656,7 +688,7 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/list_keys.ts: createVaultListKeysDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
-  // The CLI writes vault configs through these, then pushManagedConfigChanges
+  // The CLI writes vault configs through these, then runManagedConfigMutation
   // sends a bare mark (managedConfig only); serve injects the hooked
   // repository.
   "src/libswamp/vaults/create.ts: createVaultCreateDeps: YamlVaultConfigRepository",
@@ -752,6 +784,70 @@ const PINNED_UNIT_OF_WORK_SEAM_CALLERS: readonly string[] = [];
 // first argument. Empty since the datastore rework Phase 1 repository moves
 // (swamp-club#2996): repositories never call, pass on or store their hook.
 const PINNED_HOOK_MISUSES: readonly string[] = [];
+
+// CLI write commands that run in a root unit of work whose flush is the push
+// the command performs (swamp-club#3033). Commands on the global lock (data
+// gc, data prune, workflow delete, the --all evaluates) still push through
+// the process-exit coordinator and open no root.
+const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
+  "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
+  "src/cli/commands/access_grant.ts: accessGrantRevokeCommand",
+  "src/cli/commands/access_group.ts: runGroupMethod",
+  "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
+  "src/cli/commands/access_token_revoke.ts: accessTokenRevokeCommand",
+  "src/cli/commands/access_token_rotate.ts: accessTokenRotateCommand",
+  "src/cli/commands/data_delete.ts: dataDeleteCommand",
+  "src/cli/commands/data_rename.ts: dataRenameCommand",
+  "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
+  "src/cli/commands/model_create.ts: modelCreateCommand",
+  "src/cli/commands/model_delete.ts: modelDeleteCommand",
+  "src/cli/commands/model_edit.ts: modelEditCommand",
+  "src/cli/commands/model_evaluate.ts: modelEvaluateCommand",
+  "src/cli/commands/model_method_run.ts: modelMethodRunCommand",
+  "src/cli/commands/vault_create.ts: vaultCreateCommand",
+  "src/cli/commands/vault_edit.ts: vaultEditCommand",
+  "src/cli/commands/vault_migrate.ts: vaultMigrateCommand",
+  "src/cli/commands/worker_prune.ts: workerPruneCommand",
+  "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
+  "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  "src/cli/commands/workflow_create.ts: workflowCreateCommand",
+  "src/cli/commands/workflow_edit.ts: workflowEditCommand",
+  "src/cli/commands/workflow_evaluate.ts: workflowEvaluateCommand",
+  "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
+  "src/cli/commands/workflow_run.ts: workflowRunCommand",
+];
+
+// Callers of ModelLockResult.flush (push, then release) that open no root.
+// No CLI command remains (swamp-club#3033).
+const PINNED_LOCK_FLUSH_CALLERS: readonly string[] = [
+  // Per-step locks inside a workflow run: a step's push, not the command's,
+  // which runs inside the command's root.
+  "src/domain/workflows/execution_service.ts: DefaultStepExecutor",
+  // Serve's method runs (swamp-club#3034).
+  "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
+];
+
+// pushChanged calls in CLI commands (swamp-club#3033).
+const PINNED_CLI_PUSH_CALLS: readonly string[] = [
+  // The root's push: the call sits in the push a command gives its root.
+  "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
+  "src/cli/commands/access_group.ts: runGroupMethod",
+  "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
+  "src/cli/commands/worker_prune.ts: workerPruneCommand",
+  "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
+  "src/cli/commands/workflow_run.ts: workflowRunCommand",
+  // Mid-command pushes: the token is published before it is read back (and
+  // revoked tokens before the lock push), and a root cannot push
+  // mid-command, since a nested root with its own push is refused
+  // (swamp-club#3032). The root still makes the end-of-command lock push.
+  "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
+  "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
+  "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  // The sync command itself, which owns its push.
+  "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
+  // Serve's start-up and token GC (swamp-club#3034 covers serve).
+  "src/cli/commands/serve.ts: serveCommand (x2)",
+];
 
 const files = await sourceFiles();
 
@@ -1052,4 +1148,59 @@ Deno.test("datastore write seams: the hook reference scan catches calls and pass
   assertEquals(hookReferencesOutsideSignalChange([probe]), [
     "src/infrastructure/persistence/probe.ts: YamlOutputRepository (x4)",
   ]);
+});
+
+Deno.test("datastore write seams: CLI commands that run in a root unit of work are pinned (swamp-club#3033)", () => {
+  assertPinnedSet(
+    referenceKeys(files, CLI_ROOT_CALL, inCliCommands),
+    PINNED_CLI_ROOT_UNIT_COMMANDS,
+    "CLI commands opening a root unit of work",
+    "A CLI write command runs its write section in runCommandInRootUnit (or\n" +
+      "runManagedConfigMutation), whose flush is the command's push. Add the\n" +
+      "command here when it adopts a root.",
+  );
+});
+
+Deno.test("datastore write seams: callers of a lock's combined flush are pinned (swamp-club#3033)", () => {
+  assertPinnedSet(
+    referenceKeys(files, LOCK_FLUSH_REFERENCE, () => true),
+    PINNED_LOCK_FLUSH_CALLERS,
+    "ModelLockResult.flush references",
+    "A CLI command pushes through its root unit (lockResult.push as the\n" +
+      "root's flush) and releases with lockResult.release after the root\n" +
+      "ends. Use flush() only where no root is opened, and say why here.",
+  );
+});
+
+Deno.test("datastore write seams: pushes in CLI commands are pinned (swamp-club#3033)", () => {
+  assertPinnedSet(
+    referenceKeys(files, PUSH_CALL, inCliCommands),
+    PINNED_CLI_PUSH_CALLS,
+    "pushChanged calls in src/cli/commands",
+    "A CLI command pushes through its root unit's flush. A push outside one\n" +
+      "must be pinned here with the reason it cannot be the root's push.",
+  );
+});
+
+Deno.test("datastore write seams: the reference scan counts calls per owner, not comments", () => {
+  const probe: SourceFile = {
+    rel: "src/cli/commands/probe.ts",
+    code: "",
+    lines: [
+      "export const probeCommand = async () => {",
+      "  await runCommandInRootUnit(repoContext, {}, () => work());",
+      "  // runCommandInRootUnit(repoContext, {}, fn) in a comment",
+      "  await syncService.pushChanged({ namespace });",
+      "  await syncService.pushChanged({ namespace });",
+      "};",
+    ],
+    owners: Array(6).fill("probeCommand"),
+  };
+  assertEquals(referenceKeys([probe], CLI_ROOT_CALL, inCliCommands), [
+    "src/cli/commands/probe.ts: probeCommand",
+  ]);
+  assertEquals(referenceKeys([probe], PUSH_CALL, inCliCommands), [
+    "src/cli/commands/probe.ts: probeCommand (x2)",
+  ]);
+  assertEquals(referenceKeys([probe], PUSH_CALL, () => false), []);
 });

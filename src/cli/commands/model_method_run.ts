@@ -36,6 +36,7 @@ import {
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
@@ -445,7 +446,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           repoContext.definitionRepo,
           modelIdOrName,
         );
-        let flushModelLocks: (() => Promise<void>) | null = null;
         let modelLocks: ModelLockResult | undefined;
         let mutating = true;
         if (preResult) {
@@ -477,7 +477,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               repoContext.catalogStore,
             );
             if (lockResult.synced) repoContext.catalogStore.invalidate();
-            flushModelLocks = lockResult.flush;
             modelLocks = lockResult;
           }
         }
@@ -493,82 +492,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           )
           : [cliInputs];
 
-        try {
-          for (let i = 0; i < inputSets.length; i++) {
-            if (inputSets.length > 1) {
-              ctx.logger
-                .info`Running method ${methodName} [${
-                i + 1
-              }/${inputSets.length}]`;
-            }
-
-            const renderer = createModelMethodRunRenderer(ctx.outputMode, {
-              modelName: modelIdOrName,
-              methodName,
-              quiet: ctx.verbosity === "quiet",
-              verbose: ctx.verbosity === "verbose",
-            });
-
-            await runUnderModelLocks(modelLocks, () =>
-              consumeStream(
-                modelMethodRun(libCtx, deps, {
-                  modelIdOrName,
-                  methodName,
-                  inputs: inputSets[i],
-                  lastEvaluated: options.lastEvaluated as boolean,
-                  typeArg,
-                  definitionName,
-                  runtimeTags,
-                  skipCheckNames: options.skipCheck as string[] | undefined,
-                  skipCheckLabels: options.skipCheckLabel as
-                    | string[]
-                    | undefined,
-                  skipAllChecks: options.skipChecks as boolean | undefined,
-                  skipReportNames: options.skipReport as string[] | undefined,
-                  skipReportLabels: options.skipReportLabel as
-                    | string[]
-                    | undefined,
-                  skipAllReports: options.skipReports as boolean | undefined,
-                  reportNames: options.report as string[] | undefined,
-                  reportLabels: options.reportLabel as string[] | undefined,
-                  swampSha: GIT_SHA || undefined,
-                  autoGc,
-                  traceparent: resolveTraceparent(
-                    options.traceparent as string | undefined,
-                  ),
-                  tracestate: resolveTracestate(
-                    options.tracestate as string | undefined,
-                  ),
-                  initiatedBy,
-                }),
-                renderer.handlers(),
-              ));
-
-            if (abort.signal.aborted) {
-              Deno.exitCode = 1;
-              return;
-            }
-
-            if (renderer.runFailed()) {
-              Deno.exitCode = 1;
-              return;
-            }
-          }
-        } catch (error) {
-          if (error instanceof UserError) {
-            throw error;
-          }
-          const message = error instanceof Error
-            ? error.message
-            : String(error);
-          throw new UserError(`Method execution failed: ${message}`);
-        } finally {
-          shutdownHandle.dispose();
-          exitSuppress.dispose();
-          if (flushModelLocks) {
-            try {
-              await flushModelLocks();
-            } catch (releaseError) {
+        const finished = await runCommandInRootUnit(
+          repoContext,
+          {
+            push: modelLocks?.push,
+            release: modelLocks?.release,
+            onCleanupError: (releaseError) => {
               ctx.logger.warn(
                 "Failed to release locks during cleanup: {error}",
                 {
@@ -577,9 +506,90 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     : String(releaseError),
                 },
               );
+            },
+          },
+          async () => {
+            try {
+              for (let i = 0; i < inputSets.length; i++) {
+                if (inputSets.length > 1) {
+                  ctx.logger
+                    .info`Running method ${methodName} [${
+                    i + 1
+                  }/${inputSets.length}]`;
+                }
+
+                const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+                  modelName: modelIdOrName,
+                  methodName,
+                  quiet: ctx.verbosity === "quiet",
+                  verbose: ctx.verbosity === "verbose",
+                });
+
+                await runUnderModelLocks(modelLocks, () =>
+                  consumeStream(
+                    modelMethodRun(libCtx, deps, {
+                      modelIdOrName,
+                      methodName,
+                      inputs: inputSets[i],
+                      lastEvaluated: options.lastEvaluated as boolean,
+                      typeArg,
+                      definitionName,
+                      runtimeTags,
+                      skipCheckNames: options.skipCheck as string[] | undefined,
+                      skipCheckLabels: options.skipCheckLabel as
+                        | string[]
+                        | undefined,
+                      skipAllChecks: options.skipChecks as boolean | undefined,
+                      skipReportNames: options.skipReport as
+                        | string[]
+                        | undefined,
+                      skipReportLabels: options.skipReportLabel as
+                        | string[]
+                        | undefined,
+                      skipAllReports: options.skipReports as
+                        | boolean
+                        | undefined,
+                      reportNames: options.report as string[] | undefined,
+                      reportLabels: options.reportLabel as string[] | undefined,
+                      swampSha: GIT_SHA || undefined,
+                      autoGc,
+                      traceparent: resolveTraceparent(
+                        options.traceparent as string | undefined,
+                      ),
+                      tracestate: resolveTracestate(
+                        options.tracestate as string | undefined,
+                      ),
+                      initiatedBy,
+                    }),
+                    renderer.handlers(),
+                  ));
+
+                if (abort.signal.aborted) {
+                  Deno.exitCode = 1;
+                  return false;
+                }
+
+                if (renderer.runFailed()) {
+                  Deno.exitCode = 1;
+                  return false;
+                }
+              }
+              return true;
+            } catch (error) {
+              if (error instanceof UserError) {
+                throw error;
+              }
+              const message = error instanceof Error
+                ? error.message
+                : String(error);
+              throw new UserError(`Method execution failed: ${message}`);
+            } finally {
+              shutdownHandle.dispose();
+              exitSuppress.dispose();
             }
-          }
-        }
+          },
+        );
+        if (!finished) return;
 
         ctx.logger.debug("Method run command completed");
       } finally {

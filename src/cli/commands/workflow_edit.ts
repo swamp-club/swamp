@@ -37,7 +37,7 @@ import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -150,15 +150,21 @@ export const workflowEditCommand = withRemoteOptions(
     const deps = createWorkflowEditDeps(repoDir, repoContext.workflowRepo);
 
     const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
-    await consumeStream(
-      workflowEdit(libCtx, deps, {
-        workflowIdOrName,
-        stdinContent,
-      }),
-      renderer.handlers(),
+    await runManagedConfigMutation(
+      repoContext,
+      syncService,
+      datastoreConfig,
+      marker,
+      "workflow edit",
+      () =>
+        consumeStream(
+          workflowEdit(libCtx, deps, {
+            workflowIdOrName,
+            stdinContent,
+          }),
+          renderer.handlers(),
+        ),
     );
-
-    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
     cliCtx.logger.debug("Workflow edit command completed");
   },

@@ -33,7 +33,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -126,6 +126,7 @@ export const modelCreateCommand = withRemoteOptions(
       datastoreConfig,
       datastoreResolver: resolver,
       syncService,
+      repoContext,
     } = await requireInitializedRepoUnlocked({
       repoDir: resolvedRepoDir,
       outputMode: cliCtx.outputMode,
@@ -141,12 +142,18 @@ export const modelCreateCommand = withRemoteOptions(
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createModelCreateDeps(repoDir, definitionsDir);
     const renderer = createModelCreateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelCreate(ctx, deps, { typeArg, name, globalArguments }),
-      renderer.handlers(),
+    await runManagedConfigMutation(
+      repoContext,
+      syncService,
+      datastoreConfig,
+      marker,
+      "model create",
+      () =>
+        consumeStream(
+          modelCreate(ctx, deps, { typeArg, name, globalArguments }),
+          renderer.handlers(),
+        ),
     );
-
-    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
     cliCtx.logger.debug("Model create command completed");
   },

@@ -44,6 +44,7 @@ import {
 } from "../remote_run.ts";
 import type { DataRenameResponse } from "../../serve/protocol.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 
 export const dataRenameCommand = withRemoteOptions(
   new Command()
@@ -161,35 +162,39 @@ export const dataRenameCommand = withRemoteOptions(
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
 
-    try {
-      const ctx = libSwampContextForRepo(repoContext, {
-        logger: cliCtx.logger,
-      });
-      const deps = createDataRenameDeps(
-        repoDir,
-        datastoreResolver,
-        repoContext.unifiedDataRepo,
-      );
-      const renderer = createDataRenameRenderer(cliCtx.outputMode);
-      await consumeStream(
-        dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
-        renderer.handlers(),
-      );
-
-      cliCtx.logger.debug("Data rename command completed");
-    } finally {
-      try {
-        await lockResult.flush();
-      } catch (releaseError) {
-        cliCtx.logger.warn(
-          "Failed to release locks during cleanup: {error}",
-          {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          },
+    await runCommandInRootUnit(
+      repoContext,
+      {
+        push: lockResult.push,
+        release: lockResult.release,
+        onCleanupError: (releaseError) => {
+          cliCtx.logger.warn(
+            "Failed to release locks during cleanup: {error}",
+            {
+              error: releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError),
+            },
+          );
+        },
+      },
+      async () => {
+        const ctx = libSwampContextForRepo(repoContext, {
+          logger: cliCtx.logger,
+        });
+        const deps = createDataRenameDeps(
+          repoDir,
+          datastoreResolver,
+          repoContext.unifiedDataRepo,
         );
-      }
-    }
+        const renderer = createDataRenameRenderer(cliCtx.outputMode);
+        await consumeStream(
+          dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
+          renderer.handlers(),
+        );
+
+        cliCtx.logger.debug("Data rename command completed");
+      },
+    );
   },
 );

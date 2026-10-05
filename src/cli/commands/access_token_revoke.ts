@@ -26,9 +26,11 @@ import {
 import {
   acquireModelLocks,
   libSwampContextForRepo,
+  type ModelLockResult,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
@@ -103,7 +105,7 @@ export const accessTokenRevokeCommand = withRemoteOptions(
     repoContext.definitionRepo,
     name,
   );
-  let flushModelLocks: (() => Promise<void>) | null = null;
+  let modelLocks: ModelLockResult | undefined;
   if (preResult) {
     const lockResult = await acquireModelLocks(
       datastoreConfig,
@@ -118,33 +120,15 @@ export const accessTokenRevokeCommand = withRemoteOptions(
       repoContext.catalogStore,
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
-    flushModelLocks = lockResult.flush;
+    modelLocks = lockResult;
   }
 
-  try {
-    let data: ServerTokenRevokeData | undefined;
-    await consumeStream(
-      serverTokenRevoke(libCtx, deps, { name }),
-      withDefaults<ServerTokenRevokeEvent>({
-        completed: (event) => {
-          data = event.data;
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
-    );
-    if (data === undefined) {
-      throw new UserError(
-        `Revoking token '${name}' ended without completing`,
-      );
-    }
-    renderServerTokenRevoke(data, cliCtx.outputMode);
-  } finally {
-    if (flushModelLocks) {
-      try {
-        await flushModelLocks();
-      } catch (releaseError) {
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: modelLocks?.push,
+      release: modelLocks?.release,
+      onCleanupError: (releaseError) => {
         cliCtx.logger.warn(
           "Failed to release locks during cleanup: {error}",
           {
@@ -153,9 +137,29 @@ export const accessTokenRevokeCommand = withRemoteOptions(
               : String(releaseError),
           },
         );
+      },
+    },
+    async () => {
+      let data: ServerTokenRevokeData | undefined;
+      await consumeStream(
+        serverTokenRevoke(libCtx, deps, { name }),
+        withDefaults<ServerTokenRevokeEvent>({
+          completed: (event) => {
+            data = event.data;
+          },
+          error: (event) => {
+            throw new UserError(event.error.message);
+          },
+        }),
+      );
+      if (data === undefined) {
+        throw new UserError(
+          `Revoking token '${name}' ended without completing`,
+        );
       }
-    }
-  }
+      renderServerTokenRevoke(data, cliCtx.outputMode);
+    },
+  );
 
   cliCtx.logger.debug("Server token revoke command completed");
 });

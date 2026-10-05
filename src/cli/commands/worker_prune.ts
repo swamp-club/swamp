@@ -28,6 +28,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
@@ -268,27 +269,42 @@ export const workerPruneCommand = withRemoteOptions(
     }
   }
 
-  result = undefined;
-  await consumeStream(
-    workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: false }),
-    withDefaults<WorkerPruneEvent>({
-      completed: (event) => {
-        result = event.result;
-      },
-      error: (event) => {
-        throw new UserError(event.error.message);
-      },
-    }),
+  // The prune marks the whole cache and pushes it, only once it completed.
+  let marked = false;
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: syncService
+        ? async () => {
+          if (marked) await syncService.pushChanged({ namespace });
+        }
+        : undefined,
+      pushWhen: "completed",
+    },
+    async (root) => {
+      result = undefined;
+      await consumeStream(
+        workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: false }),
+        withDefaults<WorkerPruneEvent>({
+          completed: (event) => {
+            result = event.result;
+          },
+          error: (event) => {
+            throw new UserError(event.error.message);
+          },
+        }),
+      );
+
+      if (result) {
+        renderWorkerPruneResult(result, cliCtx.outputMode);
+      }
+
+      if (!dryRun && syncService) {
+        await root.stage({ kind: "bulk", reason: "worker prune" });
+        marked = true;
+      }
+    },
   );
-
-  if (result) {
-    renderWorkerPruneResult(result, cliCtx.outputMode);
-  }
-
-  if (!dryRun && syncService) {
-    await syncService.markDirty();
-    await syncService.pushChanged({ namespace });
-  }
 
   cliCtx.logger.debug("Worker prune command completed");
 });

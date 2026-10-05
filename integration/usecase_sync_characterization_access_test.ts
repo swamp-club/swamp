@@ -145,10 +145,11 @@ async function managedConfigMarked(repos: RowRepos): Promise<boolean> {
 const ROWS: AnyRow[] = [
   row({
     name: "access grant create",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // access_grant.ts accessGrantCreateCommand in PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: [
@@ -171,6 +172,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access grant revoke",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: createGrant,
@@ -183,10 +185,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access group create",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // access_group.ts runGroupMethod in PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: ["access", "group", "create", "ops", ...json(repos)],
@@ -197,10 +200,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token mint",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // access_token_mint.ts accessTokenMintCommand in PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
@@ -226,6 +230,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token revoke",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
@@ -248,6 +253,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token rotate",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
@@ -271,11 +277,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token create",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // worker_token_create.ts workerTokenCreateCommand in
-    // PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
@@ -296,11 +302,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token revoke",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "push", "prepare", "commit", "release"] },
-    // CLI bulk mark before the push, outside any use case:
-    // worker_token_revoke.ts workerTokenRevokeCommand in
-    // PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: async (repos) => {
       await runCli({
@@ -322,10 +328,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker prune",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // worker_prune.ts workerPruneCommand in PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: staleWorker,
     cli: (repos) => ({
@@ -345,11 +352,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "datastore config migrate",
+    rootUnit: { cli: true },
     // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark before the push, outside any use case:
-    // datastore_config_migrate.ts datastoreConfigMigrateCommand in
-    // PINNED_MARK_CALL_SITES.
+    // CLI bulk mark outside any use case, staged through the command's root
+    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     options: {
       remote: { capabilities: { twoPhaseSync: true, configRefresh: true } },

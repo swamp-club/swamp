@@ -40,6 +40,7 @@ import {
 import { createModelEvaluateRenderer } from "../../presentation/renderers/model_evaluate.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -151,19 +152,26 @@ export const modelEvaluateCommand = withRemoteOptions(
       repoContext.catalogStore,
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
-    const flushModelLocks = lockResult.flush;
 
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
     const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 
-    try {
-      await consumeStream(
-        modelEvaluate(ctx, deps, { modelIdOrName }),
-        renderer.handlers(),
-      );
-    } finally {
-      await flushModelLocks();
-    }
+    await runCommandInRootUnit(
+      repoContext,
+      {
+        push: lockResult.push,
+        release: lockResult.release,
+        onCleanupError: (error) => {
+          throw error;
+        },
+      },
+      async () => {
+        await consumeStream(
+          modelEvaluate(ctx, deps, { modelIdOrName }),
+          renderer.handlers(),
+        );
+      },
+    );
   },
 );

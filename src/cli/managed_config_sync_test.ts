@@ -37,6 +37,7 @@ import {
   pushManagedConfigChanges,
   pushManagedConfigPaths,
   pushManagedConfigPathsDeferred,
+  runManagedConfigMutation,
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
@@ -169,6 +170,137 @@ Deno.test("pushManagedConfigChanges: a push error throws ManagedConfigUnpublishe
   );
   assertUnpublished(error, cause);
   assertStringIncludes((error as Error).message, "S3 unreachable");
+});
+
+/**
+ * A repo context whose mark hook forwards a bare mark to `service`, as
+ * `buildMarkDirtyHook` does, and records the order of marks and pushes.
+ */
+function rootRepoContext(service: DatastoreSyncService, events: string[]) {
+  const recorded = {
+    ...service,
+    markDirty: (opts?: unknown) => {
+      events.push("mark");
+      return service.markDirty(opts as never);
+    },
+    pushChanged: (opts?: { namespace?: string }) => {
+      events.push("push");
+      return service.pushChanged(opts);
+    },
+  } as DatastoreSyncService;
+  return {
+    syncService: recorded,
+    repoContext: { markDirty: () => recorded.markDirty() },
+  };
+}
+
+Deno.test("runManagedConfigMutation: marks bare after the mutation, then pushes through the root", async () => {
+  const { service, markDirtyCalls, pushCalls } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  const value = await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    S3_CONFIG,
+    makeMarker({ managedConfig: true }),
+    "model create",
+    () => {
+      events.push("mutate");
+      return Promise.resolve("created");
+    },
+  );
+
+  assertEquals(value, "created");
+  assertEquals(events, ["mutate", "mark", "push"]);
+  assertEquals(markDirtyCalls, [undefined]);
+  assertEquals(pushCalls, [{ namespace: "ns1" }]);
+});
+
+Deno.test("runManagedConfigMutation: a failed mutation marks and pushes nothing", async () => {
+  const { service } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  await assertRejects(
+    () =>
+      runManagedConfigMutation(
+        repoContext,
+        syncService,
+        S3_CONFIG,
+        makeMarker({ managedConfig: true }),
+        "model create",
+        () => Promise.reject(new Error("invalid model")),
+      ),
+    Error,
+    "invalid model",
+  );
+  assertEquals(events, []);
+});
+
+Deno.test("runManagedConfigMutation: without managedConfig nothing is marked or pushed", async () => {
+  const { service } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    S3_CONFIG,
+    makeMarker({ managedConfig: false }),
+    "model create",
+    () => Promise.resolve(),
+  );
+  assertEquals(events, []);
+});
+
+Deno.test("runManagedConfigMutation: a push error throws ManagedConfigUnpublishedError", async () => {
+  const cause = new Error("S3 unreachable");
+  const service = {
+    markDirty: () => Promise.resolve(),
+    pushChanged: () => Promise.reject(cause),
+    pullChanged: () => Promise.resolve(0),
+    capabilities: () => ({}),
+  } as unknown as DatastoreSyncService;
+
+  const error = await assertRejects(() =>
+    runManagedConfigMutation(
+      { markDirty: () => service.markDirty() },
+      service,
+      S3_CONFIG,
+      makeMarker({ managedConfig: true }),
+      "model create",
+      () => Promise.resolve(),
+    )
+  );
+  assertUnpublished(error, cause);
+});
+
+Deno.test("runManagedConfigMutation: a mark error throws ManagedConfigUnpublishedError and skips the push", async () => {
+  const cause = new Error("cache unwritable");
+  const pushes: unknown[] = [];
+  const service = {
+    markDirty: () => Promise.reject(cause),
+    pushChanged: (opts?: unknown) => {
+      pushes.push(opts);
+      return Promise.resolve();
+    },
+    pullChanged: () => Promise.resolve(0),
+    capabilities: () => ({}),
+  } as unknown as DatastoreSyncService;
+
+  const error = await assertRejects(() =>
+    runManagedConfigMutation(
+      { markDirty: () => service.markDirty() },
+      service,
+      S3_CONFIG,
+      makeMarker({ managedConfig: true }),
+      "model create",
+      () => Promise.resolve(),
+    )
+  );
+  assertUnpublished(error, cause);
+  assertEquals(pushes, []);
 });
 
 Deno.test("ManagedConfigUnpublishedError: does not double a trailing period from the cause", () => {

@@ -26,9 +26,11 @@ import {
 import {
   acquireModelLocks,
   libSwampContextForRepo,
+  type ModelLockResult,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -126,7 +128,7 @@ seconds.`,
     repoContext.definitionRepo,
     name,
   );
-  let flushModelLocks: (() => Promise<void>) | null = null;
+  let modelLocks: ModelLockResult | undefined;
   if (preResult) {
     const lockResult = await acquireModelLocks(
       datastoreConfig,
@@ -141,38 +143,15 @@ seconds.`,
       repoContext.catalogStore,
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
-    flushModelLocks = lockResult.flush;
+    modelLocks = lockResult;
   }
 
-  try {
-    let data: WorkerTokenRevokeData | undefined;
-    await consumeStream(
-      workerTokenRevoke(libCtx, deps, { name }),
-      withDefaults<WorkerTokenRevokeEvent>({
-        completed: (event) => {
-          data = event.data;
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
-    );
-    if (data === undefined) {
-      throw new UserError(
-        `Revoking token '${name}' ended without completing`,
-      );
-    }
-    renderWorkerTokenRevoke(data, cliCtx.outputMode);
-
-    if (syncService) {
-      await syncService.markDirty();
-      await syncService.pushChanged({ namespace });
-    }
-  } finally {
-    if (flushModelLocks) {
-      try {
-        await flushModelLocks();
-      } catch (releaseError) {
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: modelLocks?.push,
+      release: modelLocks?.release,
+      onCleanupError: (releaseError) => {
         cliCtx.logger.warn(
           "Failed to release locks during cleanup: {error}",
           {
@@ -181,9 +160,36 @@ seconds.`,
               : String(releaseError),
           },
         );
+      },
+    },
+    async (root) => {
+      let data: WorkerTokenRevokeData | undefined;
+      await consumeStream(
+        workerTokenRevoke(libCtx, deps, { name }),
+        withDefaults<WorkerTokenRevokeEvent>({
+          completed: (event) => {
+            data = event.data;
+          },
+          error: (event) => {
+            throw new UserError(event.error.message);
+          },
+        }),
+      );
+      if (data === undefined) {
+        throw new UserError(
+          `Revoking token '${name}' ended without completing`,
+        );
       }
-    }
-  }
+      renderWorkerTokenRevoke(data, cliCtx.outputMode);
+
+      if (syncService) {
+        await root.stage({ kind: "bulk", reason: "worker token revoke" });
+        // Published here, and again by the root's push when the command
+        // ends: a root cannot push mid-command (PINNED_CLI_PUSH_CALLS).
+        await syncService.pushChanged({ namespace });
+      }
+    },
+  );
 
   cliCtx.logger.debug("Worker token revoke command completed");
 });

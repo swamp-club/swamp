@@ -35,6 +35,8 @@ import {
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { RootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
@@ -50,6 +52,7 @@ import {
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
+import { runCommandInRootUnit } from "./command_root_unit.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
@@ -113,6 +116,75 @@ export async function pushManagedConfigChanges(
   } catch (error) {
     throw toUnpublishedError(error);
   }
+}
+
+/**
+ * The mark half of {@link pushManagedConfigChanges} for a command that runs
+ * in a root unit of work (swamp-club#3033): stages the same bare mark
+ * through the root, which forwards it as the identical `markDirty()` call.
+ * A failed mark throws {@link ManagedConfigUnpublishedError}.
+ */
+export async function stageManagedConfigChanges(
+  root: RootUnitOfWork,
+  reason: string,
+): Promise<void> {
+  try {
+    await root.stage({ kind: "bulk", reason });
+  } catch (error) {
+    throw toUnpublishedError(error);
+  }
+}
+
+/**
+ * The push half of {@link pushManagedConfigChanges}: the root's push. A
+ * failed push throws {@link ManagedConfigUnpublishedError}; the local write
+ * is kept.
+ */
+export async function publishManagedConfigChanges(
+  syncService: DatastoreSyncService,
+  datastoreConfig: DatastoreConfig,
+): Promise<void> {
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
+  try {
+    await syncService.pushChanged({ namespace });
+  } catch (error) {
+    throw toUnpublishedError(error);
+  }
+}
+
+/**
+ * Runs a config-tier mutation in a root unit of work and publishes it as
+ * {@link pushManagedConfigChanges} does: when managedConfig is active and
+ * `mutate` completed, {@link stageManagedConfigChanges} stages the bare mark
+ * and the root's push is {@link publishManagedConfigChanges}. When `mutate`
+ * fails nothing is marked or pushed, as before.
+ */
+export async function runManagedConfigMutation<T>(
+  repoContext: Pick<RepositoryContext, "markDirty">,
+  syncService: DatastoreSyncService | undefined,
+  datastoreConfig: DatastoreConfig,
+  marker: RepoMarkerData | null,
+  reason: string,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const publishes = syncService !== undefined &&
+    marker?.datastore?.managedConfig === true;
+  return await runCommandInRootUnit(
+    repoContext,
+    {
+      push: publishes
+        ? () => publishManagedConfigChanges(syncService, datastoreConfig)
+        : undefined,
+      pushWhen: "completed",
+    },
+    async (root) => {
+      const value = await mutate();
+      if (publishes) await stageManagedConfigChanges(root, reason);
+      return value;
+    },
+  );
 }
 
 /**
@@ -243,11 +315,27 @@ export async function flushAfterManagedConfigMutation(
   try {
     await flush();
   } catch (error) {
-    if (mutated && marker?.datastore?.managedConfig === true) {
-      throw toUnpublishedError(error);
-    }
-    onCleanupError(error);
+    reportManagedConfigCleanupError(error, mutated, marker, onCleanupError);
   }
+}
+
+/**
+ * The decision {@link flushAfterManagedConfigMutation} makes about a failed
+ * flush, for a command whose push and lock release run as cleanup of a root
+ * unit of work (swamp-club#3033): after a completed mutation under
+ * managedConfig it throws {@link ManagedConfigUnpublishedError}; otherwise
+ * the error goes to `onCleanupError`.
+ */
+export function reportManagedConfigCleanupError(
+  error: unknown,
+  mutated: boolean,
+  marker: RepoMarkerData | null,
+  onCleanupError: (error: unknown) => void,
+): void {
+  if (mutated && marker?.datastore?.managedConfig === true) {
+    throw toUnpublishedError(error);
+  }
+  onCleanupError(error);
 }
 
 /**

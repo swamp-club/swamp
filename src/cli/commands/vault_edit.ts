@@ -37,7 +37,7 @@ import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -161,22 +161,28 @@ value for them other than the server's defaults, and stores those defaults.`,
   const deps = createVaultEditDeps(repoDir);
 
   const renderer = createVaultEditRenderer(cliCtx.outputMode);
-  await consumeStream(
-    vaultEdit(libCtx, deps, {
-      vaultNameOrId,
-      vaultType,
-      stdinContent,
-      // A local user can already write the vault file, so a config that no
-      // longer parses may be replaced from stdin.
-      authorizeRepair: () => true,
-      // A local user owns this host, so the vault may name its own key
-      // source; over --server the server keeps it (swamp-club#2690).
-      trustKeySource: true,
-    }),
-    renderer.handlers(),
+  await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    datastoreConfig,
+    marker,
+    "vault edit",
+    () =>
+      consumeStream(
+        vaultEdit(libCtx, deps, {
+          vaultNameOrId,
+          vaultType,
+          stdinContent,
+          // A local user can already write the vault file, so a config that no
+          // longer parses may be replaced from stdin.
+          authorizeRepair: () => true,
+          // A local user owns this host, so the vault may name its own key
+          // source; over --server the server keeps it (swamp-club#2690).
+          trustKeySource: true,
+        }),
+        renderer.handlers(),
+      ),
   );
-
-  await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
   cliCtx.logger.debug("Vault edit command completed");
 });
