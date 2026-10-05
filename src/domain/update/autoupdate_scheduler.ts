@@ -52,7 +52,8 @@ export const SCHEDULER_EX_CONFIG = 78;
  * Result of re-registering the scheduled job after the binary changed:
  * `refreshed` — re-registered; `not_needed` — the job is healthy and not
  * pinned to a binary, so it was left as it is; `skipped` — the job is
- * running, or its state could not be read, so it was left alone for now;
+ * running, so it was left alone for now; `unknown` — the scheduler's
+ * report on the job could not be read, so it was left alone;
  * `not_installed` — no job to refresh, or the scheduler needs no
  * re-registration.
  */
@@ -60,6 +61,7 @@ export type SchedulerRefreshResult =
   | "refreshed"
   | "not_needed"
   | "skipped"
+  | "unknown"
   | "not_installed";
 
 export interface AutoupdateScheduler {

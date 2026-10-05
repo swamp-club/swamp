@@ -294,7 +294,7 @@ Deno.test("LaunchdScheduler.refresh: leaves the job alone when its state cannot 
         return { stdout: "a format launchd has not used before", code: 0 };
       }, () => new LaunchdScheduler("agent").refresh());
 
-      assertEquals(result, "skipped");
+      assertEquals(result, "unknown");
       assertEquals(launchctlCalls(calls), ["print"]);
     },
   );

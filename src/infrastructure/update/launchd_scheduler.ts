@@ -330,8 +330,8 @@ export class LaunchdScheduler implements AutoupdateScheduler {
    * rewritten first so Background Task Management sees a changed item.
    *
    * Leaves the job alone when it is running (a scheduled update may be
-   * mid-way through writing its log entry), when its state cannot be read,
-   * and when it is healthy and not pinned to a binary. A job that is not
+   * mid-way through writing its log entry), when its state cannot be read
+   * (`unknown`), and when it is healthy and not pinned to a binary. A job that is not
    * loaded at all is loaded.
    */
   async refresh(): Promise<SchedulerRefreshResult> {
@@ -355,7 +355,8 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     const printed = await launchctl(["print", target]);
     if (printed.code === 0) {
       const runtime = parseLaunchctlPrint(printed.stdout);
-      if (!runtime || runtime.running) return "skipped";
+      if (!runtime) return "unknown";
+      if (runtime.running) return "skipped";
       const healthy = !runtime.pinnedToBinary && !runtime.needsRepair &&
         (runtime.lastExitCode === null || runtime.lastExitCode === 0);
       if (healthy) return "not_needed";

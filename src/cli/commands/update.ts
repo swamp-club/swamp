@@ -623,6 +623,7 @@ export const updateCommand = new Command()
         // launchd can refuse to start the replaced binary until its
         // autoupdate job is registered again (swamp-club#3007).
         if (renderer.newVersion) {
+          spinner?.update("Re-registering the autoupdate scheduler...");
           const refresh = await refreshAutoupdateSchedulerIfOwed(
             createAutoupdateRefreshDeps(),
             renderer.newVersion,

@@ -116,6 +116,18 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: writes nothing while the job is run
   assertEquals(deps.written, []);
 });
 
+Deno.test("refreshAutoupdateSchedulerIfOwed: an unreadable job state waits a day before re-checking", async () => {
+  const deps = fakeDeps({ refresh: () => Promise.resolve("unknown") });
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result, { outcome: "skipped" });
+  assertEquals(deps.written, [{
+    enabled: true,
+    cadence: "daily",
+    lastSchedulerRefreshAttempt: NOW.toISOString(),
+  }]);
+});
+
 Deno.test("refreshAutoupdateSchedulerIfOwed: does nothing once refreshed for this version", async () => {
   const deps = fakeDeps({
     prefs: {
