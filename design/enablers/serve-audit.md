@@ -42,13 +42,15 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    `flush-interval` (and on flush) a checkpoint on the same queue flushes
    StoreSink and then deletes the segments delivered before it, so the WAL
    holds only events the store has not confirmed. StoreSink's flush waits for
-   batch writes already running and rejects if any batch since the last
-   flush, including one its own timer wrote, failed to reach a store; the
-   checkpoint then keeps those segments for replay on the next start. Replay
-   can store a batch twice when it reached one store but not another. A
-   segment whose delivery fails also stays on disk for replay. `flush` waits
-   up to 30s for queued work before leaving it in the WAL. Max size is
-   configurable (default 100MB).
+   batch writes already running. A batch that reached some stores but not
+   others is retried on each flush for the stores that missed it, under the
+   same key so a landed retry never stores it twice; up to 32MB of these are
+   held, the oldest dropped for that one store past that. A batch that
+   reached no store makes the flush reject, and the checkpoint delivers its
+   segments again at the next checkpoint, as it does for a segment whose
+   delivery failed; nothing waits for a restart. `flush` waits up to 30s for
+   queued work before leaving it in the WAL, where it is replayed on the next
+   start. Max size is configurable (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention; old
@@ -96,7 +98,11 @@ other sink:
   shutdown a stalled write — including one that stalls during shutdown's own
   flush — gets up to the sink timeout to settle; if it does not, the events
   after it are written on their own and a warning names the sequence the
-  stalled write ends at, so shutdown can take up to two sink timeouts. That
+  stalled write ends at. With a hung store, shutdown can take the WalSink
+  delivery wait (30s) plus up to two sink timeouts. If the store is still
+  hung when serve exits, StoreSink's own close can run alongside a checkpoint
+  still queued behind it; that last checkpoint may then miss a failure and
+  delete segments it should keep. That
   last write is the one time a sink has two writes open; WalSink appends each
   write to its own segment file, so they do not collide.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per

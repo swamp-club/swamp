@@ -35,12 +35,22 @@ export interface AuditStoreWithRetention {
   readonly retentionDays?: number;
 }
 
+interface PendingPut {
+  readonly store: AuditStore;
+  readonly key: string;
+  readonly data: Uint8Array;
+}
+
+const DEFAULT_MAX_RETRY_BYTES = 32 * 1024 * 1024;
+
 export interface StoreSinkOptions {
   readonly stores: readonly (AuditStore | AuditStoreWithRetention)[];
   readonly batchSize?: number;
   readonly flushIntervalMs?: number;
   readonly signal?: AbortSignal;
   readonly gcIntervalMs?: number;
+  /** Most bytes of failed per-store puts held for retry. Default 32MB. */
+  readonly maxRetryBytes?: number;
 }
 
 function unwrapStore(
@@ -62,8 +72,12 @@ export class StoreSink implements AuditSink {
   #batch: AuditEvent[] = [];
   // Batch writes still running, so flush can wait for them.
   readonly #writing = new Set<Promise<void>>();
-  // Set when a batch fails to reach a store; flush reports it and clears it.
+  // Set when a batch reaches no store; flush reports it and clears it.
   #failedSinceFlush = false;
+  // Puts that failed for some stores of a batch others stored.
+  #retries: PendingPut[] = [];
+  #retryBytes = 0;
+  readonly #maxRetryBytes: number;
   #timer: ReturnType<typeof setInterval> | null = null;
   #gcTimer: ReturnType<typeof setInterval> | null = null;
   readonly #encoder = new TextEncoder();
@@ -73,6 +87,7 @@ export class StoreSink implements AuditSink {
     this.#batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.#flushIntervalMs = options.flushIntervalMs ??
       DEFAULT_FLUSH_INTERVAL_MS;
+    this.#maxRetryBytes = options.maxRetryBytes ?? DEFAULT_MAX_RETRY_BYTES;
 
     this.#timer = runDetached(() =>
       setInterval(() => {
@@ -123,21 +138,20 @@ export class StoreSink implements AuditSink {
   }
 
   /**
-   * Writes the pending batch and waits for batch writes already running.
-   * Rejects when any batch since the previous flush failed to reach a store,
-   * including one the interval timer wrote, so a caller holding the events
-   * elsewhere (the WAL) knows to keep them.
+   * Writes the pending batch, waits for batch writes already running, and
+   * retries puts that failed for some stores. Rejects when a batch since the
+   * previous flush reached no store at all, including one the interval timer
+   * wrote, so a caller holding the events elsewhere (the WAL) keeps them.
    */
   async flush(): Promise<void> {
     if (this.#batch.length > 0) {
       await this.#writeBatch();
     }
     await Promise.all([...this.#writing]);
+    await this.#retryFailedPuts();
     if (this.#failedSinceFlush) {
       this.#failedSinceFlush = false;
-      throw new Error(
-        "An audit batch failed to reach a store since the last flush",
-      );
+      throw new Error("An audit batch reached no store since the last flush");
     }
   }
 
@@ -227,11 +241,14 @@ export class StoreSink implements AuditSink {
       const data = this.#encoder.encode(jsonl);
       const key = `events/${dateKey}/${crypto.randomUUID()}.jsonl`;
 
+      let stored = 0;
+      const failed: AuditStore[] = [];
       for (const { store } of this.#stores) {
         try {
           await store.put(key, data);
+          stored++;
         } catch (error: unknown) {
-          this.#failedSinceFlush = true;
+          failed.push(store);
           logger.warn(
             "Failed to write audit batch to store for {date}: {error}",
             {
@@ -241,6 +258,49 @@ export class StoreSink implements AuditSink {
           );
         }
       }
+      if (stored === 0) {
+        // No store has it: the caller still holds it (the WAL) and is told.
+        this.#failedSinceFlush = true;
+      } else {
+        for (const store of failed) this.#queueRetry({ store, key, data });
+      }
+    }
+  }
+
+  /**
+   * A batch that reached some stores but not this one is retried on flush,
+   * under the same key, so a retry that lands never stores it twice.
+   */
+  #queueRetry(retry: PendingPut): void {
+    this.#retries.push(retry);
+    this.#retryBytes += retry.data.byteLength;
+    while (this.#retryBytes > this.#maxRetryBytes && this.#retries.length > 1) {
+      const dropped = this.#retries.shift()!;
+      this.#retryBytes -= dropped.data.byteLength;
+      logger.warn(
+        "Audit store retry queue is full; batch {key} is dropped for one store, the others have it",
+        { key: dropped.key },
+      );
+    }
+  }
+
+  async #retryFailedPuts(): Promise<void> {
+    const retries = this.#retries.splice(0);
+    this.#retryBytes = 0;
+    let stillFailing = 0;
+    for (const retry of retries) {
+      try {
+        await retry.store.put(retry.key, retry.data);
+      } catch {
+        stillFailing++;
+        this.#queueRetry(retry);
+      }
+    }
+    if (stillFailing > 0) {
+      logger.warn(
+        "{count} audit batch(es) are still waiting to reach a store that failed; the other stores have them",
+        { count: stillFailing },
+      );
     }
   }
 }

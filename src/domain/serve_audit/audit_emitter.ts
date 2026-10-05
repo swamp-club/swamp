@@ -104,7 +104,7 @@ export class AuditEmitter {
   readonly #buffer: RingBuffer<AuditEvent>;
   #sinks: AuditSink[];
   #keys: Map<AuditSink, string> = new Map();
-  #sharedNames = "";
+  #sharedNames = "[]";
   readonly #cursors: Map<string, number> = new Map();
   readonly #deniedRequests = new Set<string>();
   readonly #chainState: AuditChainState;
@@ -351,7 +351,7 @@ export class AuditEmitter {
     this.#sharedNames = signature;
     for (const [name, count] of shared) {
       logger.warn(
-        "{count} audit sinks share the name {sink}; the later ones are reported as {later} onwards, and delivery state follows their order, so removing or reordering them on hot-reload moves it",
+        "{count} audit sinks share the name {sink}; later ones are reported as {later} onwards, and their delivery state follows config order",
         { count, sink: name, later: `${name}#2` },
       );
     }
@@ -630,7 +630,7 @@ export class AuditEmitter {
     };
     if (sink.durable) {
       logger.warn(
-        "Audit sink {sink} has had a durable write outstanding for {seconds}s, nothing is being delivered to it; with fail-open false, serve rejects requests until it settles",
+        "Audit sink {sink} has had a durable write outstanding for {seconds}s, nothing is being delivered to it; with audit fail-open: false in serve.yaml, serve rejects requests until it settles",
         fields,
       );
     } else {

@@ -185,12 +185,64 @@ Deno.test("StoreSink: store failure does not crash", async () => {
   });
 
   await sink.write([makeEvent("test")]);
-  await assertRejects(() => sink.flush(), Error, "failed to reach a store");
-  // Reported once; the next flush has nothing new to report.
+  // The good store has the batch, so flush does not report it.
   await sink.flush();
   await sink.close();
 
   assertEquals(goodStore.written.size, 1);
+});
+
+Deno.test("StoreSink: a batch one store missed is retried there under the same key", async () => {
+  const keys: string[] = [];
+  let down = true;
+  const flakyStore: AuditStore = {
+    put(key: string): Promise<void> {
+      keys.push(key);
+      return down ? Promise.reject(new Error("store down")) : Promise.resolve();
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const goodStore = createMockStore();
+  const sink = new StoreSink({
+    stores: [goodStore, flakyStore],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await sink.flush();
+  await sink.flush();
+  down = false;
+  await sink.flush();
+  await sink.flush();
+
+  // First put, two failed retries, one that landed, then nothing more.
+  assertEquals(keys.length, 4);
+  assertEquals(new Set(keys).size, 1);
+  assertEquals([...goodStore.written.keys()], [keys[0]]);
+  await sink.close();
+});
+
+Deno.test("StoreSink: flush rejects when a batch reached no store", async () => {
+  const failingStore: AuditStore = {
+    put: () => Promise.reject(new Error("store down")),
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const sink = new StoreSink({
+    stores: [failingStore],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await assertRejects(() => sink.flush(), Error, "reached no store");
+  // Reported once; the WAL holds the batch, so it is not retried here.
+  await sink.flush();
+  await sink.close();
 });
 
 Deno.test("StoreSink: flush reports a batch the interval timer failed to store", async () => {
@@ -212,7 +264,7 @@ Deno.test("StoreSink: flush reports a batch the interval timer failed to store",
 
   await sink.write([makeEvent("test")]);
   await waitFor(() => puts === 1, "timer flush");
-  await assertRejects(() => sink.flush(), Error, "failed to reach a store");
+  await assertRejects(() => sink.flush(), Error, "reached no store");
   await sink.close();
 });
 

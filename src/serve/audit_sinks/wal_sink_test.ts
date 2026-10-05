@@ -378,12 +378,13 @@ Deno.test(
     const sink = new WalSink({ wal, downstream });
 
     await sink.write([makeEvent("one")]);
+    // "one" is read back and being delivered before the limit drops it.
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
     await sink.write([makeEvent("two")]);
     await sink.write([makeEvent("three")]);
-    // Only the newest segment is kept; the first was already being delivered.
+    // Only the newest segment is kept.
     assertEquals(wal.segmentCount, 1);
 
-    await waitFor(() => downstream.outstanding === 1, "first delivery");
     downstream.release();
     await waitFor(() => downstream.written.length === 1, "first delivered");
     await waitFor(() => downstream.outstanding === 1, "next delivery");
@@ -453,7 +454,7 @@ Deno.test(
 );
 
 Deno.test(
-  "WalSink: segments whose store flush failed stay in the WAL past later checkpoints",
+  "WalSink: a segment the store did not confirm is delivered again at the next checkpoint",
   withTempDir(async (dir) => {
     const wal = new AuditWal({ dir });
     await wal.initialize();
@@ -474,9 +475,30 @@ Deno.test(
 
     await sink.write([makeEvent("confirmed")]);
     await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["unconfirmed", "confirmed", "unconfirmed"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: a segment whose delivery failed is delivered again at the next checkpoint",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createFailingSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([makeEvent("retry-me")]);
+    await sink.flush();
     assertEquals(wal.segmentCount, 1);
-    const kept = await wal.readSegment(wal.listSegments()[0]);
-    assertEquals(kept.map((e) => e.action), ["unconfirmed"]);
+
+    downstream.failWrites = false;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
     await sink.close();
   }),
 );

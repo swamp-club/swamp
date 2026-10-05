@@ -50,6 +50,9 @@ export class WalSink implements AuditSink {
   readonly #wal: AuditWal;
   readonly #downstream: AuditSink;
   readonly #delivered = new Set<string>();
+  // Segments to send again: their delivery failed, or the store did not
+  // confirm them at a checkpoint.
+  #redeliver: string[] = [];
   readonly #deliveryWaitMs: number;
   // Deliveries to the downstream sink run one at a time, in WAL order, on
   // this chain. It never rejects; flush and close wait on it.
@@ -72,7 +75,9 @@ export class WalSink implements AuditSink {
     if (checkpointMs > 0) {
       this.#checkpointTimer = runDetached(() =>
         setInterval(() => {
-          if (this.#delivered.size > 0) this.#queueCheckpoint();
+          if (this.#delivered.size > 0 || this.#redeliver.length > 0) {
+            this.#queueCheckpoint();
+          }
         }, checkpointMs)
       );
       Deno.unrefTimer(this.#checkpointTimer);
@@ -101,7 +106,20 @@ export class WalSink implements AuditSink {
   /** Delivers one segment downstream; never rejects. */
   async #deliver(segmentName: string): Promise<void> {
     try {
-      // Read back from disk, so a long queue holds segment names, not events.
+      await this.#deliverSegment(segmentName);
+    } finally {
+      this.#queued--;
+      this.#completed++;
+    }
+  }
+
+  /**
+   * Sends one segment downstream, reading it back from disk so a long queue
+   * holds segment names, not events. A segment the size limit has dropped is
+   * skipped; one that fails is delivered again at the next checkpoint.
+   */
+  async #deliverSegment(segmentName: string): Promise<void> {
+    try {
       let events: AuditEvent[];
       try {
         events = await this.#wal.readSegment(segmentName);
@@ -113,6 +131,7 @@ export class WalSink implements AuditSink {
       await this.#downstream.write(events);
       this.#delivered.add(segmentName);
     } catch (error: unknown) {
+      this.#redeliver.push(segmentName);
       logger.warn(
         "Downstream sink failed, events persisted to WAL segment {segment}: {error}",
         {
@@ -120,9 +139,6 @@ export class WalSink implements AuditSink {
           error: error instanceof Error ? error.message : String(error),
         },
       );
-    } finally {
-      this.#queued--;
-      this.#completed++;
     }
   }
 
@@ -188,17 +204,23 @@ export class WalSink implements AuditSink {
   }
 
   async #removeConfirmedSegments(): Promise<void> {
+    for (const segmentName of this.#redeliver.splice(0)) {
+      await this.#deliverSegment(segmentName);
+    }
     const delivered = [...this.#delivered];
     if (delivered.length === 0) return;
     try {
       await this.#downstream.flush();
     } catch (error: unknown) {
-      // The store did not confirm these. They stay in the WAL for replay on
-      // the next start, and are no longer tracked as delivered, so a later
-      // checkpoint cannot delete them.
-      for (const segmentName of delivered) this.#delivered.delete(segmentName);
+      // The store did not confirm these. They stay in the WAL and are no
+      // longer tracked as delivered, so this checkpoint cannot delete them;
+      // the next one delivers them again.
+      for (const segmentName of delivered) {
+        this.#delivered.delete(segmentName);
+        this.#redeliver.push(segmentName);
+      }
       logger.warn(
-        "Downstream flush failed, {count} WAL segment(s) kept for replay on the next start: {error}",
+        "Downstream flush failed, {count} WAL segment(s) will be delivered again at the next checkpoint: {error}",
         {
           count: delivered.length,
           error: error instanceof Error ? error.message : String(error),
