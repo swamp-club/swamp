@@ -42,6 +42,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -100,26 +101,22 @@ export function renderApprovals(
             { inputs: inputsDigest },
           );
         }
-        cliCtx.logger.info(
-          "  swamp workflow approve {workflowName} {stepName} --run {runId}",
-          {
-            workflowName: item.workflowName,
-            stepName: item.stepName,
-            runId: item.runId,
-          },
-        );
-        cliCtx.logger.info(
-          "  swamp workflow reject  {workflowName} {stepName} --run {runId}",
-          {
-            workflowName: item.workflowName,
-            stepName: item.stepName,
-            runId: item.runId,
-          },
-        );
-        cliCtx.logger.info(
-          "  After approval: swamp workflow resume {workflowName} --run {runId}",
-          { workflowName: item.workflowName, runId: item.runId },
-        );
+        // Commands go through writeOutput: LogTape quotes interpolated values
+        // and the pretty sink wraps long lines, and either breaks a
+        // copy-pasted command (swamp-club#2977). `--quiet` hides them, as it
+        // hides the logger's info lines.
+        const quiet = cliCtx.verbosity === "quiet";
+        if (!quiet) {
+          writeOutput(
+            `  swamp workflow approve ${item.workflowName} ${item.stepName} --run ${item.runId}`,
+          );
+          writeOutput(
+            `  swamp workflow reject  ${item.workflowName} ${item.stepName} --run ${item.runId}`,
+          );
+          writeOutput(
+            `  After approval: swamp workflow resume ${item.workflowName} --run ${item.runId}`,
+          );
+        }
         // A nested workflow's gate: its parent resumes after it
         // (swamp-club#2736).
         if (item.parentRun) {
@@ -131,13 +128,9 @@ export function renderApprovals(
                 parentRunId: item.parentRun.runId,
               },
             );
-          } else {
-            cliCtx.logger.info(
-              "  Nested run of {parentWorkflow}: once this run finishes, swamp workflow resume {parentWorkflow} --run {parentRunId}",
-              {
-                parentWorkflow: item.parentRun.workflowName,
-                parentRunId: item.parentRun.runId,
-              },
+          } else if (!quiet) {
+            writeOutput(
+              `  Nested run of ${item.parentRun.workflowName}: once this run finishes, swamp workflow resume ${item.parentRun.workflowName} --run ${item.parentRun.runId}`,
             );
           }
         }
