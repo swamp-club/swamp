@@ -1189,7 +1189,7 @@ operation inside a unit of work:
     mint and worker token create and revoke also push mid-command (mint and
     create then read the token back). That push is the root's checkpoint
     (`runCommandInRootUnit`'s `checkpoint` option, swamp-club#3053), pinned
-    in `PINNED_ROOT_CHECKPOINT_USERS` and under the checkpoint group of
+    in `PINNED_CHECKPOINT_CALLS` and under the checkpoint group of
     `PINNED_CLI_PUSH_CALLS`, and the root still makes the end-of-command lock
     push.
   - Commands on the global lock (data gc, data prune, workflow delete, the

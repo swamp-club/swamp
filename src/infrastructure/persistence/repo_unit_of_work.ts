@@ -142,7 +142,9 @@ export interface RootUnitOfWork extends Pick<UnitOfWork, "stage" | "staged"> {
    * checkpoint (`CatalogStore.checkpoint`). Waits for every mark the root
    * and its children sent before the call, as ending the root does, then
    * awaits the `checkpoint` option the root was opened with. The root stays
-   * open and still runs its flush once when it ends.
+   * open and still runs its flush once when it ends. The wait covers legacy
+   * units only: a unit a test factory builds any other way
+   * (`useUnitOfWorkFactoryForTesting`) is not waited on.
    *
    * Throws when the root was opened without a `checkpoint` option, when the
    * call that opened it became a child of an outer root (the outer root owns

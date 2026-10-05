@@ -1132,6 +1132,8 @@ Deno.test("worker token revoke: a failed mid-command push throws the push error,
       "wt1",
     ]);
     assertInjectedPushError(error);
+    // The push is the root's flush, the model lock's push when the command
+    // ends, not runCliRejecting's best-effort flushDatastoreSync.
     assertEquals(syncOrder(repos, base), ["pull", "push", "release"]);
     assertEquals(getRegisteredLockKeys(), [], "locks released");
     assertEquals(await dirtyOnA(repos), []);
