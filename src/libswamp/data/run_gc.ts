@@ -32,6 +32,7 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { parseDuration } from "./search.ts";
@@ -170,38 +171,39 @@ export async function runGcPreview(
 }
 
 export async function* runGc(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: RunGcDeps,
   input: RunGcInput,
 ): AsyncIterable<RunGcEvent> {
-  yield* withGeneratorSpan(
-    "swamp.run.gc",
-    { "gc.dry_run": input.dryRun },
-    (async function* () {
-      yield { kind: "collecting" } as const;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.run.gc",
+      { "gc.dry_run": input.dryRun },
+      (async function* () {
+        yield { kind: "collecting" } as const;
 
-      const result = await deps.gcAll({
-        workflowRunRetentionDays: input.workflowRunRetentionDays ??
-          DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
-        outputRetentionDays: input.outputRetentionDays ??
-          DEFAULT_OUTPUT_RETENTION_DAYS,
-        dryRun: input.dryRun,
-      });
+        const result = await deps.gcAll({
+          workflowRunRetentionDays: input.workflowRunRetentionDays ??
+            DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
+          outputRetentionDays: input.outputRetentionDays ??
+            DEFAULT_OUTPUT_RETENTION_DAYS,
+          dryRun: input.dryRun,
+        });
 
-      yield {
-        kind: "completed" as const,
-        data: {
-          workflowRunsDeleted: result.workflowRunsDeleted,
-          workflowRunBytesReclaimed: result.workflowRunBytesReclaimed,
-          outputsDeleted: result.outputsDeleted,
-          outputBytesReclaimed: result.outputBytesReclaimed,
-          evaluatedSnapshotsDeleted: result.snapshotsDeleted,
-          evaluatedSnapshotBytesReclaimed: result.snapshotBytesReclaimed,
-          totalBytesReclaimed: result.workflowRunBytesReclaimed +
-            result.outputBytesReclaimed + result.snapshotBytesReclaimed,
-          dryRun: result.dryRun,
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed" as const,
+          data: {
+            workflowRunsDeleted: result.workflowRunsDeleted,
+            workflowRunBytesReclaimed: result.workflowRunBytesReclaimed,
+            outputsDeleted: result.outputsDeleted,
+            outputBytesReclaimed: result.outputBytesReclaimed,
+            evaluatedSnapshotsDeleted: result.snapshotsDeleted,
+            evaluatedSnapshotBytesReclaimed: result.snapshotBytesReclaimed,
+            totalBytesReclaimed: result.workflowRunBytesReclaimed +
+              result.outputBytesReclaimed + result.snapshotBytesReclaimed,
+            dryRun: result.dryRun,
+          },
+        };
+      })(),
+    ));
 }

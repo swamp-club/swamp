@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createLibSwampContext,
   createVaultEditDeps,
   vaultEdit,
   type VaultEditData,
@@ -34,7 +33,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  libSwampContextForRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { pushManagedConfigChanges } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -126,7 +128,7 @@ value for them other than the server's defaults, and stores those defaults.`,
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
   const vaultType = options.type as string | undefined;
-  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
 
   // Interactive search mode when no argument provided
   if (!vaultNameOrId) {

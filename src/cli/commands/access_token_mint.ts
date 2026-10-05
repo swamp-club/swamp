@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -33,7 +34,6 @@ import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createServerTokenCreateDeps,
   parseDuration,
   serverTokenCreate,
@@ -170,7 +170,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     },
   );
 
-  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
   const deps = await createServerTokenCreateDeps(
     libCtx,
     repoDir,

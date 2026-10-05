@@ -30,6 +30,7 @@
  */
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createLibSwampContext,
   createWorkerModelRunDeps,
@@ -1151,7 +1152,9 @@ export class WorkerGateway {
       this.#options.repoDir,
       this.#options.repoContext,
     );
-    const libCtx = createLibSwampContext({});
+    const libCtx = createLibSwampContext({
+      openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
+    });
     for await (
       const event of modelMethodRun(libCtx, deps, {
         modelIdOrName: input.definitionName,

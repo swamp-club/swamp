@@ -28,6 +28,7 @@ import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolv
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -97,131 +98,132 @@ export function createWorkflowRejectDeps(
 }
 
 export async function* workflowReject(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowRejectDeps,
   input: WorkflowRejectInput,
 ): AsyncIterable<WorkflowRejectEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.reject",
-    {
-      "workflow.id_or_name": input.workflowIdOrName,
-      "step.name": input.stepName,
-    },
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.reject",
+      {
+        "workflow.id_or_name": input.workflowIdOrName,
+        "step.name": input.stepName,
+      },
+      (async function* () {
+        yield { kind: "resolving" };
 
-      let resolved: {
-        run: WorkflowRun;
-        workflowName: string;
-        workflowId: string;
-        workflow: Workflow;
-      };
-      try {
-        resolved = await resolveSuspendedRun(
-          deps.workflowRepo,
-          deps.runRepo,
-          input.workflowIdOrName,
-          input.runId,
-          { byId: input.byId, expectedName: input.expectedName },
-        );
-      } catch (error) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+        let resolved: {
+          run: WorkflowRun;
+          workflowName: string;
+          workflowId: string;
+          workflow: Workflow;
         };
-        return;
-      }
-
-      const { run, workflowName, workflowId, workflow } = resolved;
-
-      let step:
-        | import("../../domain/workflows/workflow_run.ts").StepRun
-        | undefined;
-      let matchedJob:
-        | import("../../domain/workflows/workflow_run.ts").JobRun
-        | undefined;
-      let jobName: string | undefined;
-      for (const job of run.jobs) {
-        const s = job.getStep(input.stepName);
-        // A nested workflow step waiting on its child run is not a gate.
-        if (s && s.status === "waiting_approval" && !s.isNestedWait) {
-          step = s;
-          matchedJob = job;
-          jobName = job.jobName;
-          break;
-        }
-      }
-      if (!step || !matchedJob) {
-        yield {
-          kind: "error",
-          error: nestedWaitGateError(run, input.stepName) ??
-            validationFailed(
-              `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+        try {
+          resolved = await resolveSuspendedRun(
+            deps.workflowRepo,
+            deps.runRepo,
+            input.workflowIdOrName,
+            input.runId,
+            { byId: input.byId, expectedName: input.expectedName },
+          );
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
             ),
-        };
-        return;
-      }
+          };
+          return;
+        }
 
-      const wfJob = workflow.jobs.find((j) => j.name === jobName);
-      const wfStep = wfJob?.steps.find((s) => s.name === input.stepName);
-      const timeout = evaluateApprovalTimeout(
-        step.startedAt,
-        wfStep?.task.data,
-        new Date(),
-      );
-      if (timeout?.expired) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Approval timed out: step "${input.stepName}" has been waiting ${
-              Math.round(timeout.elapsedSeconds)
-            }s (timeout: ${timeout.timeoutSeconds}s)`,
-          ),
-        };
-        return;
-      }
+        const { run, workflowName, workflowId, workflow } = resolved;
 
-      const decidedBy = input.decidedBy ?? Deno.env.get("USER") ??
-        Deno.env.get("USERNAME") ?? "unknown";
-      step.recordApprovalDecision({
-        approved: false,
-        reason: input.reason,
-        decidedBy,
-        decidedAt: new Date().toISOString(),
-      });
-      step.fail(input.reason ?? "Approval rejected");
-      matchedJob.fail();
-      run.complete();
-      await deps.runRepo.save(createWorkflowId(workflowId), run);
-      if (deps.runTracker) {
-        deps.runTracker.complete(run.id, "failed");
-      }
-      // The decision is saved: an unreadable linked run must not turn it
-      // into an error, so these reads are best effort.
-      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
-        () => [],
-      );
-      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
-        undefined
-      );
+        let step:
+          | import("../../domain/workflows/workflow_run.ts").StepRun
+          | undefined;
+        let matchedJob:
+          | import("../../domain/workflows/workflow_run.ts").JobRun
+          | undefined;
+        let jobName: string | undefined;
+        for (const job of run.jobs) {
+          const s = job.getStep(input.stepName);
+          // A nested workflow step waiting on its child run is not a gate.
+          if (s && s.status === "waiting_approval" && !s.isNestedWait) {
+            step = s;
+            matchedJob = job;
+            jobName = job.jobName;
+            break;
+          }
+        }
+        if (!step || !matchedJob) {
+          yield {
+            kind: "error",
+            error: nestedWaitGateError(run, input.stepName) ??
+              validationFailed(
+                `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+              ),
+          };
+          return;
+        }
 
-      yield {
-        kind: "completed",
-        data: {
-          runId: run.id,
-          workflowId,
-          workflowName,
-          stepName: input.stepName,
+        const wfJob = workflow.jobs.find((j) => j.name === jobName);
+        const wfStep = wfJob?.steps.find((s) => s.name === input.stepName);
+        const timeout = evaluateApprovalTimeout(
+          step.startedAt,
+          wfStep?.task.data,
+          new Date(),
+        );
+        if (timeout?.expired) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Approval timed out: step "${input.stepName}" has been waiting ${
+                Math.round(timeout.elapsedSeconds)
+              }s (timeout: ${timeout.timeoutSeconds}s)`,
+            ),
+          };
+          return;
+        }
+
+        const decidedBy = input.decidedBy ?? Deno.env.get("USER") ??
+          Deno.env.get("USERNAME") ?? "unknown";
+        step.recordApprovalDecision({
           approved: false,
+          reason: input.reason,
           decidedBy,
-          reason: input.reason ?? null,
-          runStatus: "failed",
-          ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
-          ...(awaitingParent ? { awaitingParent } : {}),
-        },
-      };
-    })(),
-  );
+          decidedAt: new Date().toISOString(),
+        });
+        step.fail(input.reason ?? "Approval rejected");
+        matchedJob.fail();
+        run.complete();
+        await deps.runRepo.save(createWorkflowId(workflowId), run);
+        if (deps.runTracker) {
+          deps.runTracker.complete(run.id, "failed");
+        }
+        // The decision is saved: an unreadable linked run must not turn it
+        // into an error, so these reads are best effort.
+        const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+          () => [],
+        );
+        const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+          undefined
+        );
+
+        yield {
+          kind: "completed",
+          data: {
+            runId: run.id,
+            workflowId,
+            workflowName,
+            stepName: input.stepName,
+            approved: false,
+            decidedBy,
+            reason: input.reason ?? null,
+            runStatus: "failed",
+            ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+            ...(awaitingParent ? { awaitingParent } : {}),
+          },
+        };
+      })(),
+    ));
 }

@@ -25,12 +25,12 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowEvaluateDeps,
   workflowEvaluate,
   type WorkflowEvaluateAllData,
@@ -122,7 +122,9 @@ export const workflowEvaluateCommand = withRemoteOptions(
           outputMode: cliCtx.outputMode,
         });
 
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createWorkflowEvaluateDeps(
         repoDir,
         repoContext.workflowRepo,
@@ -232,7 +234,9 @@ export const workflowEvaluateCommand = withRemoteOptions(
       repoDir = unlocked.repoDir;
     }
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const ctx = libSwampContextForRepo(unlocked.repoContext, {
+      logger: cliCtx.logger,
+    });
     const deps = createWorkflowEvaluateDeps(
       repoDir,
       workflowRepo,

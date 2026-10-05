@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -152,7 +153,7 @@ export const modelEvaluateCommand = withRemoteOptions(
     if (lockResult.synced) repoContext.catalogStore.invalidate();
     const flushModelLocks = lockResult.flush;
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
     const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 

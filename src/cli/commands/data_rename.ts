@@ -21,7 +21,6 @@ import { Command } from "@cliffy/command";
 import {
   consumeStream,
   createDataRenameDeps,
-  createLibSwampContext,
   dataRename,
   type DataRenameData,
 } from "../../libswamp/mod.ts";
@@ -33,6 +32,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -162,7 +162,9 @@ export const dataRenameCommand = withRemoteOptions(
     if (lockResult.synced) repoContext.catalogStore.invalidate();
 
     try {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createDataRenameDeps(
         repoDir,
         datastoreResolver,

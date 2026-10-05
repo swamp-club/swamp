@@ -45,6 +45,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
@@ -322,131 +323,132 @@ export async function* vaultMigrate(
   deps: VaultMigrateDeps,
   input: VaultMigrateInput,
 ): AsyncIterable<VaultMigrateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.vault.migrate",
-    {},
-    (async function* () {
-      ctx.logger
-        .debug`Migrating vault: ${input.vaultName} to ${input.targetType}`;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.vault.migrate",
+      {},
+      (async function* () {
+        ctx.logger
+          .debug`Migrating vault: ${input.vaultName} to ${input.targetType}`;
 
-      // Load source vault config
-      const sourceConfig = await deps.findVaultConfig(input.vaultName);
-      if (!sourceConfig) {
-        yield {
-          kind: "error",
-          error: notFound("Vault", input.vaultName),
-        };
-        return;
-      }
-
-      // Same-type guard — prevent config deletion when source and target
-      // paths are identical (saveConfig then deleteConfig on the same file).
-      if (
-        sourceConfig.type.toLowerCase() === input.targetType.toLowerCase()
-      ) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Cannot migrate to the same type. Vault '${input.vaultName}' is already type '${sourceConfig.type}'.`,
-          ),
-        };
-        return;
-      }
-
-      const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
-
-      // Resolve target config
-      await deps.resolveExtensionVaultType(input.targetType);
-      const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
-      if (!targetTypeInfo) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Unknown vault type: ${input.targetType}`,
-          ),
-        };
-        return;
-      }
-
-      const targetConfig = resolveTargetConfig(
-        input.targetType,
-        input.targetConfig,
-        targetTypeInfo,
-        input.repoDir,
-        input.trustKeySource,
-        input.vaultName,
-        rerunHint,
-      );
-
-      // Create target provider
-      const targetProvider = deps.createProvider(
-        input.targetType,
-        input.vaultName,
-        targetConfig,
-      );
-
-      // Load source vault service and copy secrets
-      const vaultService = await deps.loadSourceVaultService();
-      const keys = await vaultService.list(input.vaultName);
-
-      try {
-        for (let i = 0; i < keys.length; i++) {
+        // Load source vault config
+        const sourceConfig = await deps.findVaultConfig(input.vaultName);
+        if (!sourceConfig) {
           yield {
-            kind: "copying_secret",
-            index: i + 1,
-            total: keys.length,
-            key: keys[i],
+            kind: "error",
+            error: notFound("Vault", input.vaultName),
           };
-          const value = await vaultService.get(
-            input.vaultName,
-            keys[i],
-            "cli:vault-migrate",
-          );
-          await targetProvider.put(keys[i], value);
-          ctx.logger.debug`Copied secret ${i + 1}/${keys.length}`;
+          return;
         }
 
-        // Swap config: save new first, then delete old
-        yield { kind: "updating_config" };
-        const newConfig = VaultConfig.create(
-          sourceConfig.id,
-          sourceConfig.name,
+        // Same-type guard — prevent config deletion when source and target
+        // paths are identical (saveConfig then deleteConfig on the same file).
+        if (
+          sourceConfig.type.toLowerCase() === input.targetType.toLowerCase()
+        ) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Cannot migrate to the same type. Vault '${input.vaultName}' is already type '${sourceConfig.type}'.`,
+            ),
+          };
+          return;
+        }
+
+        const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
+
+        // Resolve target config
+        await deps.resolveExtensionVaultType(input.targetType);
+        const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
+        if (!targetTypeInfo) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Unknown vault type: ${input.targetType}`,
+            ),
+          };
+          return;
+        }
+
+        const targetConfig = resolveTargetConfig(
           input.targetType,
+          input.targetConfig,
+          targetTypeInfo,
+          input.repoDir,
+          input.trustKeySource,
+          input.vaultName,
+          rerunHint,
+        );
+
+        // Create target provider
+        const targetProvider = deps.createProvider(
+          input.targetType,
+          input.vaultName,
           targetConfig,
         );
-        await deps.saveConfig(newConfig);
-        ctx.logger.debug`Saved new vault config`;
+
+        // Load source vault service and copy secrets
+        const vaultService = await deps.loadSourceVaultService();
+        const keys = await vaultService.list(input.vaultName);
 
         try {
-          await deps.deleteConfig(sourceConfig);
-          ctx.logger.debug`Deleted old vault config`;
-        } catch (deleteErr) {
-          ctx.logger
-            .warn`Failed to delete old vault config file (vault still works): ${deleteErr}`;
-        }
-      } catch (err) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Migration failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          ),
-        };
-        return;
-      }
+          for (let i = 0; i < keys.length; i++) {
+            yield {
+              kind: "copying_secret",
+              index: i + 1,
+              total: keys.length,
+              key: keys[i],
+            };
+            const value = await vaultService.get(
+              input.vaultName,
+              keys[i],
+              "cli:vault-migrate",
+            );
+            await targetProvider.put(keys[i], value);
+            ctx.logger.debug`Copied secret ${i + 1}/${keys.length}`;
+          }
 
-      yield {
-        kind: "completed",
-        data: {
-          vaultName: input.vaultName,
-          previousType: sourceConfig.type,
-          newType: input.targetType,
-          newTypeName: targetTypeInfo.name,
-          secretsMigrated: keys.length,
-          timestamp: new Date().toISOString(),
-        },
-      };
-    })(),
-  );
+          // Swap config: save new first, then delete old
+          yield { kind: "updating_config" };
+          const newConfig = VaultConfig.create(
+            sourceConfig.id,
+            sourceConfig.name,
+            input.targetType,
+            targetConfig,
+          );
+          await deps.saveConfig(newConfig);
+          ctx.logger.debug`Saved new vault config`;
+
+          try {
+            await deps.deleteConfig(sourceConfig);
+            ctx.logger.debug`Deleted old vault config`;
+          } catch (deleteErr) {
+            ctx.logger
+              .warn`Failed to delete old vault config file (vault still works): ${deleteErr}`;
+          }
+        } catch (err) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Migration failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            ),
+          };
+          return;
+        }
+
+        yield {
+          kind: "completed",
+          data: {
+            vaultName: input.vaultName,
+            previousType: sourceConfig.type,
+            newType: input.targetType,
+            newTypeName: targetTypeInfo.name,
+            secretsMigrated: keys.length,
+            timestamp: new Date().toISOString(),
+          },
+        };
+      })(),
+    ));
 }

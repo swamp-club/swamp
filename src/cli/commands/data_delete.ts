@@ -22,7 +22,6 @@ import {
   type BatchDeleteFilter,
   consumeStream,
   createDataDeleteDeps,
-  createLibSwampContext,
   dataBatchDelete,
   dataBatchDeletePreview,
   dataDelete,
@@ -40,6 +39,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -241,7 +241,9 @@ export const dataDeleteCommand = withRemoteOptions(
     if (lockResult.synced) repoContext.catalogStore.invalidate();
 
     try {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createDataDeleteDeps(
         repoDir,
         datastoreResolver,

@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createLibSwampContext,
   createRunGcDeps,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   parseDuration,
@@ -40,6 +39,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  libSwampContextForRepo,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
@@ -119,7 +119,7 @@ export const runGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
   const deps = createRunGcDeps(
     repoDir,
     datastoreResolver,

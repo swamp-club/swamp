@@ -26,6 +26,7 @@
  */
 
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
@@ -150,83 +151,84 @@ function isServiceTokenRequest(principalId: string): boolean {
 }
 
 export async function* serverTokenCreate(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: ServerTokenCreateDeps,
   input: ServerTokenCreateInput,
 ): AsyncGenerator<ServerTokenCreateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.access.token.create",
-    { "token.name": input.name },
-    (async function* () {
-      if (isServiceTokenRequest(input.principalId)) {
-        yield {
-          kind: "error" as const,
-          error: validationFailed(
-            `Principal "${input.principalId}" is a built-in service principal and cannot hold a credential`,
-          ),
-        };
-        return;
-      }
-      const resolved = await resolveVaultName(deps, input.vaultName);
-      if (!resolved.ok) {
-        yield {
-          kind: "error" as const,
-          error: validationFailed(resolved.message),
-        };
-        return;
-      }
-      const vaultName = resolved.vaultName;
-
-      yield { kind: "minting" as const, name: input.name, vaultName };
-
-      let tokenRecord: Record<string, unknown> | undefined;
-      for await (
-        const event of deps.runMint({
-          name: input.name,
-          principalId: input.principalId,
-          principalEmail: input.principalEmail,
-          durationMs: input.durationMs,
-          vaultName,
-        })
-      ) {
-        if (event.kind === "error") {
-          yield { kind: "error" as const, error: event.error };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.access.token.create",
+      { "token.name": input.name },
+      (async function* () {
+        if (isServiceTokenRequest(input.principalId)) {
+          yield {
+            kind: "error" as const,
+            error: validationFailed(
+              `Principal "${input.principalId}" is a built-in service principal and cannot hold a credential`,
+            ),
+          };
           return;
         }
-        if (event.kind === "completed") {
-          tokenRecord = event.run.dataArtifacts.find(
-            (artifact) => artifact.name === TOKEN_DATA_NAME,
-          )?.attributes;
+        const resolved = await resolveVaultName(deps, input.vaultName);
+        if (!resolved.ok) {
+          yield {
+            kind: "error" as const,
+            error: validationFailed(resolved.message),
+          };
+          return;
         }
-      }
+        const vaultName = resolved.vaultName;
 
-      if (
-        tokenRecord === undefined ||
-        typeof tokenRecord.expiresAt !== "string" ||
-        typeof tokenRecord.secretKey !== "string"
-      ) {
+        yield { kind: "minting" as const, name: input.name, vaultName };
+
+        let tokenRecord: Record<string, unknown> | undefined;
+        for await (
+          const event of deps.runMint({
+            name: input.name,
+            principalId: input.principalId,
+            principalEmail: input.principalEmail,
+            durationMs: input.durationMs,
+            vaultName,
+          })
+        ) {
+          if (event.kind === "error") {
+            yield { kind: "error" as const, error: event.error };
+            return;
+          }
+          if (event.kind === "completed") {
+            tokenRecord = event.run.dataArtifacts.find(
+              (artifact) => artifact.name === TOKEN_DATA_NAME,
+            )?.attributes;
+          }
+        }
+
+        if (
+          tokenRecord === undefined ||
+          typeof tokenRecord.expiresAt !== "string" ||
+          typeof tokenRecord.secretKey !== "string"
+        ) {
+          yield {
+            kind: "error" as const,
+            error: {
+              code: "token_record_missing",
+              message: `Mint completed but the '${TOKEN_DATA_NAME}' record ` +
+                `for token '${input.name}' was not produced`,
+            },
+          };
+          return;
+        }
+
+        const secretKey = tokenRecord.secretKey;
+
         yield {
-          kind: "error" as const,
-          error: {
-            code: "token_record_missing",
-            message: `Mint completed but the '${TOKEN_DATA_NAME}' record ` +
-              `for token '${input.name}' was not produced`,
+          kind: "completed" as const,
+          data: {
+            name: input.name,
+            principalId: input.principalId,
+            expiresAt: tokenRecord.expiresAt as string,
+            vaultRef: { vaultName, secretKey },
           },
         };
-        return;
-      }
-
-      const secretKey = tokenRecord.secretKey;
-
-      yield {
-        kind: "completed" as const,
-        data: {
-          name: input.name,
-          principalId: input.principalId,
-          expiresAt: tokenRecord.expiresAt as string,
-          vaultRef: { vaultName, secretKey },
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

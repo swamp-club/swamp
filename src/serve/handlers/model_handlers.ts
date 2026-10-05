@@ -25,7 +25,6 @@ import { isControlPlaneModelType } from "../../domain/models/control_plane_types
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createModelCreateDeps,
   createModelDeleteDeps,
   createModelEditDeps,
@@ -127,6 +126,7 @@ import {
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
+  handlerLibSwampContext,
   isAdminOnlyModelType,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
@@ -372,7 +372,7 @@ export async function handleModelMethodRun(
           defaultVault: ctx.defaultVault,
         },
       );
-      const libCtx = createLibSwampContext({ signal: controller.signal });
+      const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
 
       if (ctx.cancelRegistry) {
         ctx.cancelRegistry.register("method-run", requestId, controller);
@@ -591,7 +591,7 @@ export async function handleModelMethodRun(
           defaultVault: ctx.defaultVault,
         },
       );
-      const libCtx = createLibSwampContext({
+      const libCtx = handlerLibSwampContext(ctx, {
         signal: runController.signal,
       });
 
@@ -757,7 +757,7 @@ export async function handleModelSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: ModelSearchDeps = {
       findAllGlobal: () => ctx.repoContext.definitionRepo.findAllGlobal(),
       isInternalType: (type: string) => modelRegistry.isInternal(type),
@@ -840,7 +840,7 @@ export async function handleModelMethodDescribe(
 
   try {
     await modelRegistry.ensureLoaded();
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createModelMethodDescribeDeps(
       ctx.repoDir,
       ctx.repoContext.definitionRepo,
@@ -915,7 +915,7 @@ export async function handleModelGet(
   const model = targetArgument(target, payload.modelIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createModelGetDeps(
       ctx.repoDir,
       ctx.repoContext.definitionRepo,
@@ -997,7 +997,7 @@ export async function handleModelCreate(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createModelCreateDeps(
       ctx.repoDir,
       ctx.managedDefinitionsDir,
@@ -1091,7 +1091,7 @@ export async function handleModelDelete(
   const model = targetArgument(target, payload.modelIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createModelDeleteDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -1238,7 +1238,7 @@ export async function handleModelOutputGet(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1319,7 +1319,7 @@ export async function handleModelOutputData(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1405,7 +1405,7 @@ export async function handleModelOutputLogs(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1466,7 +1466,7 @@ export async function handleModelOutputSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
@@ -1565,7 +1565,7 @@ export async function handleModelMethodHistoryGet(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1651,7 +1651,7 @@ export async function handleModelMethodHistoryLogs(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1723,7 +1723,7 @@ export async function handleModelMethodHistorySearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
@@ -1829,7 +1829,7 @@ export async function handleModelValidate(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createModelValidateDeps(
       ctx.repoDir,
       {
@@ -1924,7 +1924,7 @@ export async function handleModelEvaluate(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createModelEvaluateDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -2043,7 +2043,7 @@ export async function handleModelEdit(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createModelEditDeps(
       ctx.repoDir,
       ctx.repoContext.definitionRepo,
@@ -2161,7 +2161,7 @@ export async function handleModelTypeDescribe(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createTypeDescribeDeps();
     const modelType = ModelType.create(payload.typeArg);
 
@@ -2215,7 +2215,7 @@ export async function handleModelTypeSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     await modelRegistry.ensureLoaded();
     const deps: TypeSearchDeps = {
       getRegisteredTypes: () => modelRegistry.publicTypes(),

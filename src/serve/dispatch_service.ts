@@ -37,6 +37,7 @@ import {
   modelMethodRun,
 } from "../libswamp/mod.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import {
   STEP_LEASE_INSTANCE_NAME,
@@ -807,7 +808,9 @@ export class DispatchService {
       this.#options.repoDir,
       this.#options.repoContext,
     );
-    const libCtx = createLibSwampContext({});
+    const libCtx = createLibSwampContext({
+      openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
+    });
     for await (
       const event of modelMethodRun(libCtx, deps, {
         modelIdOrName: input.definitionName,

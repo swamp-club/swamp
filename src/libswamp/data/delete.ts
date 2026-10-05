@@ -34,6 +34,7 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -183,50 +184,51 @@ export async function* dataDelete(
   deps: DataDeleteDeps,
   input: DataDeleteInput,
 ): AsyncIterable<DataDeleteEvent> {
-  yield* withGeneratorSpan(
-    "swamp.data.delete",
-    {
-      "data.name": input.dataName,
-      "data.version": input.version ?? -1,
-    },
-    (async function* () {
-      yield { kind: "deleting" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.data.delete",
+      {
+        "data.name": input.dataName,
+        "data.version": input.version ?? -1,
+      },
+      (async function* () {
+        yield { kind: "deleting" };
 
-      ctx.logger
-        .debug`Deleting data: model=${input.modelIdOrName}, dataName=${input.dataName}, version=${input.version}`;
+        ctx.logger
+          .debug`Deleting data: model=${input.modelIdOrName}, dataName=${input.dataName}, version=${input.version}`;
 
-      let result: DeleteResult;
-      try {
-        result = await deps.delete(
-          input.modelIdOrName,
-          input.dataName,
-          input.version,
-          input.byId,
-          input.expectedName,
-        );
-      } catch (error) {
+        let result: DeleteResult;
+        try {
+          result = await deps.delete(
+            input.modelIdOrName,
+            input.dataName,
+            input.version,
+            input.byId,
+            input.expectedName,
+          );
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+
         yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+          kind: "completed",
+          data: {
+            modelId: result.modelId,
+            modelName: result.modelName,
+            modelType: result.modelType,
+            dataName: result.dataName,
+            version: result.version,
+            versionsDeleted: result.versionsDeleted,
+          },
         };
-        return;
-      }
-
-      yield {
-        kind: "completed",
-        data: {
-          modelId: result.modelId,
-          modelName: result.modelName,
-          modelType: result.modelType,
-          dataName: result.dataName,
-          version: result.version,
-          versionsDeleted: result.versionsDeleted,
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }
 
 /** Data structure for the batch delete completed event. */
@@ -289,25 +291,54 @@ export async function* dataBatchDelete(
   deps: DataDeleteDeps,
   input: DataBatchDeleteInput,
 ): AsyncIterable<DataBatchDeleteEvent> {
-  yield* withGeneratorSpan(
-    "swamp.data.batch_delete",
-    {
-      "batch.filter_kind": input.filter.kind,
-      "batch.dry_run": input.dryRun,
-    },
-    (async function* () {
-      yield { kind: "deleting" } as const;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.data.batch_delete",
+      {
+        "batch.filter_kind": input.filter.kind,
+        "batch.dry_run": input.dryRun,
+      },
+      (async function* () {
+        yield { kind: "deleting" } as const;
 
-      ctx.logger
-        .debug`Batch deleting data: model=${input.modelIdOrName}, filter=${input.filter.kind}, dryRun=${input.dryRun}`;
+        ctx.logger
+          .debug`Batch deleting data: model=${input.modelIdOrName}, filter=${input.filter.kind}, dryRun=${input.dryRun}`;
 
-      if (input.dryRun) {
-        let preview: BatchDeletePreview;
+        if (input.dryRun) {
+          let preview: BatchDeletePreview;
+          try {
+            preview = await deps.batchPreview(
+              input.modelIdOrName,
+              input.filter,
+            );
+          } catch (error) {
+            yield {
+              kind: "error" as const,
+              error: validationFailed(
+                error instanceof Error ? error.message : String(error),
+              ),
+            };
+            return;
+          }
+
+          yield {
+            kind: "completed" as const,
+            data: {
+              modelId: preview.modelId,
+              modelName: preview.modelName,
+              modelType: preview.modelType,
+              totalDeleted: preview.totalItems,
+              totalVersionsDeleted: preview.totalVersions,
+              failed: [],
+              dryRun: true,
+            },
+          };
+          return;
+        }
+
+        let result: BatchDeleteResult;
         try {
-          preview = await deps.batchPreview(
-            input.modelIdOrName,
-            input.filter,
-          );
+          result = await deps.batchDelete(input.modelIdOrName, input.filter);
         } catch (error) {
           yield {
             kind: "error" as const,
@@ -321,43 +352,15 @@ export async function* dataBatchDelete(
         yield {
           kind: "completed" as const,
           data: {
-            modelId: preview.modelId,
-            modelName: preview.modelName,
-            modelType: preview.modelType,
-            totalDeleted: preview.totalItems,
-            totalVersionsDeleted: preview.totalVersions,
-            failed: [],
-            dryRun: true,
+            modelId: result.modelId,
+            modelName: result.modelName,
+            modelType: result.modelType,
+            totalDeleted: result.totalDeleted,
+            totalVersionsDeleted: result.totalVersionsDeleted,
+            failed: result.failed,
+            dryRun: false,
           },
         };
-        return;
-      }
-
-      let result: BatchDeleteResult;
-      try {
-        result = await deps.batchDelete(input.modelIdOrName, input.filter);
-      } catch (error) {
-        yield {
-          kind: "error" as const,
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
-        };
-        return;
-      }
-
-      yield {
-        kind: "completed" as const,
-        data: {
-          modelId: result.modelId,
-          modelName: result.modelName,
-          modelType: result.modelType,
-          totalDeleted: result.totalDeleted,
-          totalVersionsDeleted: result.totalVersionsDeleted,
-          failed: result.failed,
-          dryRun: false,
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

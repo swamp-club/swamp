@@ -86,6 +86,13 @@ async function installedExtension(
 const ROWS: AnyRow[] = [
   row({
     name: "extension install (publish pending)",
+    // The lockfile publish marks the lockfile outside any use case:
+    // createDatastoreLockfileSync (CLI) and extensionLockfileTransaction
+    // (serve) in PINNED_MARK_CALL_SITES.
+    outsideUseCase: {
+      cli: ["markDirty config/upstream_extensions.json"],
+      serve: ["markDirty config/upstream_extensions.json"],
+    },
     options: { managedConfig: true },
     // The seed is the unpublished lockfile change install publishes, so it
     // must not be settled onto the remote first.
@@ -102,6 +109,13 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "extension rm",
+    // The lockfile publish marks the lockfile outside any use case:
+    // createDatastoreLockfileSync (CLI) and extensionLockfileTransaction
+    // (serve) in PINNED_MARK_CALL_SITES.
+    outsideUseCase: {
+      cli: ["markDirty config/upstream_extensions.json"],
+      serve: ["markDirty config/upstream_extensions.json"],
+    },
     options: { managedConfig: true },
     seed: (repos) => installedExtension(repos, false),
     cli: (repos) => ({

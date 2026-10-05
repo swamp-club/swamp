@@ -47,6 +47,7 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
 /** Evaluation result for a single model. */
@@ -296,20 +297,22 @@ async function* evaluateSingle(
 
 /** Evaluates model definitions, replacing CEL expressions with values. */
 export async function* modelEvaluate(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: ModelEvaluateDeps,
   input: ModelEvaluateInput,
 ): AsyncIterable<ModelEvaluateEvent> {
-  yield { kind: "evaluating" };
+  yield* withUnitOfWork(ctx, async function* () {
+    yield { kind: "evaluating" };
 
-  if (!input.modelIdOrName) {
-    yield* evaluateAll(deps, input.include);
-  } else {
-    yield* evaluateSingle(
-      deps,
-      input.modelIdOrName,
-      input.byId ?? false,
-      input.expectedName,
-    );
-  }
+    if (!input.modelIdOrName) {
+      yield* evaluateAll(deps, input.include);
+    } else {
+      yield* evaluateSingle(
+        deps,
+        input.modelIdOrName,
+        input.byId ?? false,
+        input.expectedName,
+      );
+    }
+  });
 }

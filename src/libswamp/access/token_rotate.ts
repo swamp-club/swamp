@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
@@ -81,89 +82,90 @@ export async function createServerTokenRotateDeps(
 const TOKEN_DATA_NAME = "token-main";
 
 export async function* serverTokenRotate(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: ServerTokenRotateDeps,
   input: ServerTokenRotateInput,
 ): AsyncGenerator<ServerTokenRotateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.access.token.rotate",
-    { "token.name": input.name },
-    (async function* () {
-      if (input.vaultName !== undefined) {
-        const available = await deps.listVaultNames();
-        if (!available.includes(input.vaultName)) {
-          const hint = available.length > 0
-            ? `Available vaults: ${available.join(", ")}`
-            : "No vaults are configured. Create one with: swamp vault create <type> <name>";
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.access.token.rotate",
+      { "token.name": input.name },
+      (async function* () {
+        if (input.vaultName !== undefined) {
+          const available = await deps.listVaultNames();
+          if (!available.includes(input.vaultName)) {
+            const hint = available.length > 0
+              ? `Available vaults: ${available.join(", ")}`
+              : "No vaults are configured. Create one with: swamp vault create <type> <name>";
+            yield {
+              kind: "error" as const,
+              error: validationFailed(
+                `Vault '${input.vaultName}' is not configured. ${hint}`,
+              ),
+            };
+            return;
+          }
+        }
+
+        yield { kind: "rotating" as const, name: input.name };
+
+        let tokenRecord: Record<string, unknown> | undefined;
+        for await (
+          const event of deps.runRotate({
+            name: input.name,
+            durationMs: input.durationMs,
+            vaultName: input.vaultName,
+          })
+        ) {
+          if (event.kind === "error") {
+            const error = event.error.code === "model_not_found"
+              ? {
+                code: event.error.code,
+                message: `Server token '${input.name}' not found. ` +
+                  "Use 'swamp access token list' to see existing tokens.",
+              }
+              : event.error;
+            yield { kind: "error" as const, error };
+            return;
+          }
+          if (event.kind === "completed") {
+            tokenRecord = event.run.dataArtifacts.find(
+              (artifact) => artifact.name === TOKEN_DATA_NAME,
+            )?.attributes;
+          }
+        }
+
+        if (
+          tokenRecord === undefined ||
+          typeof tokenRecord.expiresAt !== "string" ||
+          typeof tokenRecord.secretKey !== "string" ||
+          typeof tokenRecord.vaultName !== "string"
+        ) {
           yield {
             kind: "error" as const,
-            error: validationFailed(
-              `Vault '${input.vaultName}' is not configured. ${hint}`,
-            ),
+            error: {
+              code: "token_record_missing",
+              message: `Rotate completed but the '${TOKEN_DATA_NAME}' record ` +
+                `for token '${input.name}' was not produced`,
+            },
           };
           return;
         }
-      }
 
-      yield { kind: "rotating" as const, name: input.name };
-
-      let tokenRecord: Record<string, unknown> | undefined;
-      for await (
-        const event of deps.runRotate({
-          name: input.name,
-          durationMs: input.durationMs,
-          vaultName: input.vaultName,
-        })
-      ) {
-        if (event.kind === "error") {
-          const error = event.error.code === "model_not_found"
-            ? {
-              code: event.error.code,
-              message: `Server token '${input.name}' not found. ` +
-                "Use 'swamp access token list' to see existing tokens.",
-            }
-            : event.error;
-          yield { kind: "error" as const, error };
-          return;
-        }
-        if (event.kind === "completed") {
-          tokenRecord = event.run.dataArtifacts.find(
-            (artifact) => artifact.name === TOKEN_DATA_NAME,
-          )?.attributes;
-        }
-      }
-
-      if (
-        tokenRecord === undefined ||
-        typeof tokenRecord.expiresAt !== "string" ||
-        typeof tokenRecord.secretKey !== "string" ||
-        typeof tokenRecord.vaultName !== "string"
-      ) {
         yield {
-          kind: "error" as const,
-          error: {
-            code: "token_record_missing",
-            message: `Rotate completed but the '${TOKEN_DATA_NAME}' record ` +
-              `for token '${input.name}' was not produced`,
+          kind: "completed" as const,
+          data: {
+            name: input.name,
+            principalId: typeof tokenRecord.principalId === "string"
+              ? tokenRecord.principalId
+              : "",
+            expiresAt: tokenRecord.expiresAt,
+            vaultRef: {
+              vaultName: tokenRecord.vaultName,
+              secretKey: tokenRecord.secretKey,
+            },
           },
         };
-        return;
-      }
-
-      yield {
-        kind: "completed" as const,
-        data: {
-          name: input.name,
-          principalId: typeof tokenRecord.principalId === "string"
-            ? tokenRecord.principalId
-            : "",
-          expiresAt: tokenRecord.expiresAt,
-          vaultRef: {
-            vaultName: tokenRecord.vaultName,
-            secretKey: tokenRecord.secretKey,
-          },
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

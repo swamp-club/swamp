@@ -30,7 +30,6 @@ import {
   createDataPruneDeps,
   createDataRenameDeps,
   createDataVersionsDeps,
-  createLibSwampContext,
   createRunGcDeps,
   createSummariseDeps,
   dataDelete,
@@ -84,6 +83,7 @@ import {
   type ConnectionContext,
   DEFAULT_QUERY_LIMIT,
   filterByResources,
+  handlerLibSwampContext,
   isAuthorized,
   LibSwampStreamError,
   MAX_QUERY_RESULTS,
@@ -176,7 +176,7 @@ export async function handleDataGet(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataGetDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -472,7 +472,7 @@ export async function handleDataQuery(
     (await canonical.dataOwners(record)).every(readable);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const queryService = ctx.repoContext.dataQueryService;
     const latestRunResolver = servedLatestRunResolver(
       socket,
@@ -615,7 +615,7 @@ export async function handleDataList(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataListDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -740,7 +740,7 @@ export async function handleDataSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const definitionRepo = ctx.repoContext.definitionRepo;
     const dataQueryService = ctx.repoContext.dataQueryService;
     const catalogStore = ctx.repoContext.catalogStore;
@@ -842,7 +842,7 @@ export async function handleDataVersions(
   const model = targetArgument(target, payload.modelIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataVersionsDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -925,7 +925,7 @@ export async function handleDataDelete(
   const model = targetArgument(target, payload.modelIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataDeleteDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -1005,7 +1005,7 @@ export async function handleDataRename(
   const model = targetArgument(target, payload.modelIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataRenameDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -1074,7 +1074,7 @@ export async function handleSummarise(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createSummariseDeps({
       outputRepo: ctx.repoContext.outputRepo,
       workflowRunRepo: ctx.repoContext.workflowRunRepo,
@@ -1135,7 +1135,7 @@ export async function handleDataGc(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataGcDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -1189,7 +1189,7 @@ export async function handleDataPrune(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createDataPruneDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -1244,7 +1244,7 @@ export async function handleRunGc(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createRunGcDeps(
       ctx.repoDir,
       ctx.datastoreResolver,

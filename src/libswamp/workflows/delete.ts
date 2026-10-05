@@ -32,6 +32,7 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
@@ -199,52 +200,53 @@ export async function* workflowDelete(
   deps: WorkflowDeleteDeps,
   input: WorkflowDeleteInput,
 ): AsyncIterable<WorkflowDeleteEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.delete",
-    { "workflow.id_or_name": input.workflowIdOrName },
-    (async function* () {
-      yield { kind: "deleting" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.delete",
+      { "workflow.id_or_name": input.workflowIdOrName },
+      (async function* () {
+        yield { kind: "deleting" };
 
-      const workflow = await findWorkflow(deps, input);
-      if (!workflow) {
+        const workflow = await findWorkflow(deps, input);
+        if (!workflow) {
+          yield {
+            kind: "error",
+            error: notFound("Workflow", input.workflowIdOrName),
+          };
+          return;
+        }
+
+        const workflowPath = deps.getPath(workflow.id);
+
+        // Collect the run IDs (from the run filenames) before the runs are
+        // deleted; the snapshots go after the runs, so a failed run delete
+        // never leaves surviving runs without their snapshots.
+        const runIds = await deps.listRunIds(workflow.id);
+
+        // Delete runs
+        ctx.logger.debug`Deleting workflow runs`;
+        const runsDeleted = await deps.deleteRuns(workflow.id);
+
+        ctx.logger.debug`Deleting run snapshots`;
+        await deps.deleteRunSnapshots(runIds);
+
+        // Delete evaluated workflow
+        ctx.logger.debug`Deleting evaluated workflow`;
+        await deps.deleteEvaluated(workflow.id);
+
+        // Delete workflow
+        ctx.logger.debug`Deleting workflow: ${workflow.id}`;
+        await deps.deleteWorkflow(workflow.id, workflow.name);
+
         yield {
-          kind: "error",
-          error: notFound("Workflow", input.workflowIdOrName),
+          kind: "completed",
+          data: {
+            id: workflow.id,
+            name: workflow.name,
+            workflowPath,
+            runsDeleted,
+          },
         };
-        return;
-      }
-
-      const workflowPath = deps.getPath(workflow.id);
-
-      // Collect the run IDs (from the run filenames) before the runs are
-      // deleted; the snapshots go after the runs, so a failed run delete
-      // never leaves surviving runs without their snapshots.
-      const runIds = await deps.listRunIds(workflow.id);
-
-      // Delete runs
-      ctx.logger.debug`Deleting workflow runs`;
-      const runsDeleted = await deps.deleteRuns(workflow.id);
-
-      ctx.logger.debug`Deleting run snapshots`;
-      await deps.deleteRunSnapshots(runIds);
-
-      // Delete evaluated workflow
-      ctx.logger.debug`Deleting evaluated workflow`;
-      await deps.deleteEvaluated(workflow.id);
-
-      // Delete workflow
-      ctx.logger.debug`Deleting workflow: ${workflow.id}`;
-      await deps.deleteWorkflow(workflow.id, workflow.name);
-
-      yield {
-        kind: "completed",
-        data: {
-          id: workflow.id,
-          name: workflow.name,
-          workflowPath,
-          runsDeleted,
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

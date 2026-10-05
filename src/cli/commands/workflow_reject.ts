@@ -21,7 +21,6 @@ import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowRejectDeps,
   userErrorFromSwampError,
   workflowReject,
@@ -33,7 +32,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  libSwampContextForRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -129,7 +131,9 @@ export const workflowRejectCommand = withRemoteOptions(
 
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     try {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createWorkflowRejectDeps(
         repoContext.workflowRepo,
         repoContext.workflowRunRepo,

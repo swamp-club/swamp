@@ -49,6 +49,7 @@ import {
   EditorService,
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import {
   alreadyExists,
@@ -753,136 +754,139 @@ export async function* vaultEdit(
   deps: VaultEditDeps,
   input: VaultEditInput,
 ): AsyncIterable<VaultEditEvent> {
-  yield* withGeneratorSpan(
-    "swamp.vault.edit",
-    {},
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.vault.edit",
+      {},
+      (async function* () {
+        yield { kind: "resolving" };
 
-      const { vaultNameOrId, vaultType } = input;
+        const { vaultNameOrId, vaultType } = input;
 
-      ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
+        ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
 
-      const stdinContent = input.stdinContent ?? null;
-      let config: VaultEditConfigInfo | null;
-      // Set when the requested vault's own file does not parse: it can
-      // still be opened to fix it, or replaced when repair is authorized.
-      let broken = false;
-      try {
-        config = input.byId && vaultType
-          ? await deps.findById(vaultType, vaultNameOrId)
-          : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
-      } catch (error) {
-        if (
-          !isBrokenTarget(deps, error, vaultNameOrId, vaultType) ||
-          (stdinContent !== null && !input.authorizeRepair)
-        ) {
-          throw error;
+        const stdinContent = input.stdinContent ?? null;
+        let config: VaultEditConfigInfo | null;
+        // Set when the requested vault's own file does not parse: it can
+        // still be opened to fix it, or replaced when repair is authorized.
+        let broken = false;
+        try {
+          config = input.byId && vaultType
+            ? await deps.findById(vaultType, vaultNameOrId)
+            : await findVaultByNameOrId(deps, vaultNameOrId, vaultType);
+        } catch (error) {
+          if (
+            !isBrokenTarget(deps, error, vaultNameOrId, vaultType) ||
+            (stdinContent !== null && !input.authorizeRepair)
+          ) {
+            throw error;
+          }
+          broken = true;
+          config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
         }
-        broken = true;
-        config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
-      }
 
-      // If type was specified, verify it matches
-      if (config && vaultType && config.type !== vaultType) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
-          ),
-        };
-        return;
-      }
+        // If type was specified, verify it matches
+        if (config && vaultType && config.type !== vaultType) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
+            ),
+          };
+          return;
+        }
 
-      if (!config) {
-        const typeHint = vaultType ? ` of type '${vaultType}'` : "";
-        yield {
-          kind: "error",
-          error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
-        };
-        return;
-      }
+        if (!config) {
+          const typeHint = vaultType ? ` of type '${vaultType}'` : "";
+          yield {
+            kind: "error",
+            error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
+          };
+          return;
+        }
 
-      ctx.logger
-        .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
+        ctx.logger
+          .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
 
-      const filePath = deps.getVaultPath(config);
+        const filePath = deps.getVaultPath(config);
 
-      // Check if file exists
-      const exists = await deps.fileExists(filePath);
-      if (!exists) {
-        yield {
-          kind: "error",
-          error: notFound(
-            "Vault configuration file",
+        // Check if file exists
+        const exists = await deps.fileExists(filePath);
+        if (!exists) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Vault configuration file",
+              filePath,
+            ),
+          };
+          return;
+        }
+
+        if (broken && stdinContent !== null && input.authorizeRepair) {
+          ctx.logger.debug`Repairing vault from stdin: ${config.id}`;
+          yield* repairVaultFromStdin(
+            deps,
+            input,
+            input.authorizeRepair,
+            config,
             filePath,
-          ),
+            stdinContent,
+          );
+          return;
+        }
+
+        if (stdinContent !== null) {
+          ctx.logger.debug`Updating vault from stdin: ${config.name}`;
+          yield* updateVaultFromStdin(
+            deps,
+            input,
+            config,
+            filePath,
+            stdinContent,
+          );
+          return;
+        }
+
+        // A config that no longer parses can still be opened to fix it; there
+        // is then no stored name to compare a rename against.
+        const stored = broken
+          ? null
+          : await deps.readConfigData(config).catch(() => null);
+
+        ctx.logger.debug`Opening file: ${filePath}`;
+        const launch = await deps.prepareEditor(filePath);
+        yield {
+          kind: "launching",
+          data: {
+            editor: launch.editor,
+            path: filePath,
+            waitsForExit: launch.waitsForExit,
+          },
         };
-        return;
-      }
+        const result = await launch.open();
 
-      if (broken && stdinContent !== null && input.authorizeRepair) {
-        ctx.logger.debug`Repairing vault from stdin: ${config.id}`;
-        yield* repairVaultFromStdin(
-          deps,
-          input,
-          input.authorizeRepair,
-          config,
-          filePath,
-          stdinContent,
-        );
-        return;
-      }
+        const rename = stored
+          ? await reconcileEditorRename(deps, stored)
+          : null;
+        if (rename && "error" in rename) {
+          yield { kind: "error", error: rename.error };
+          return;
+        }
 
-      if (stdinContent !== null) {
-        ctx.logger.debug`Updating vault from stdin: ${config.name}`;
-        yield* updateVaultFromStdin(
-          deps,
-          input,
-          config,
-          filePath,
-          stdinContent,
-        );
-        return;
-      }
-
-      // A config that no longer parses can still be opened to fix it; there
-      // is then no stored name to compare a rename against.
-      const stored = broken
-        ? null
-        : await deps.readConfigData(config).catch(() => null);
-
-      ctx.logger.debug`Opening file: ${filePath}`;
-      const launch = await deps.prepareEditor(filePath);
-      yield {
-        kind: "launching",
-        data: {
-          editor: launch.editor,
-          path: filePath,
-          waitsForExit: launch.waitsForExit,
-        },
-      };
-      const result = await launch.open();
-
-      const rename = stored ? await reconcileEditorRename(deps, stored) : null;
-      if (rename && "error" in rename) {
-        yield { kind: "error", error: rename.error };
-        return;
-      }
-
-      yield {
-        kind: "completed",
-        data: {
-          path: filePath,
-          editor: result.editor,
-          status: "opened",
-          name: rename ? rename.renamedTo : config.name,
-          type: config.type,
-          ...(rename
-            ? { renamedFrom: config.name, secretsMoved: rename.secretsMoved }
-            : {}),
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed",
+          data: {
+            path: filePath,
+            editor: result.editor,
+            status: "opened",
+            name: rename ? rename.renamedTo : config.name,
+            type: config.type,
+            ...(rename
+              ? { renamedFrom: config.name, secretsMoved: rename.secretsMoved }
+              : {}),
+          },
+        };
+      })(),
+    ));
 }

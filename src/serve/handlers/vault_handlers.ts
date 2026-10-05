@@ -23,7 +23,6 @@
 
 import {
   consumeStream,
-  createLibSwampContext,
   createVaultAnnotateDeps,
   createVaultAuditTrailDeps,
   createVaultCreateDeps,
@@ -86,6 +85,7 @@ import {
   authorizeOrReject,
   clientErrorDetails,
   type ConnectionContext,
+  handlerLibSwampContext,
   LibSwampStreamError,
   rejectEditWithoutContent,
   resourceDecider,
@@ -181,7 +181,7 @@ export async function handleVaultGet(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultGetDeps(
       ctx.repoDir,
       ctx.repoContext.vaultConfigRepo,
@@ -270,7 +270,7 @@ export async function handleVaultPut(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultPutDeps(ctx.repoDir, ctx.repoContext.eventBus);
 
     const preview = await vaultPutPreview(
@@ -391,7 +391,7 @@ export async function handleVaultDelete(
 
   let vaultType = "";
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultDeleteDeps(ctx.repoDir, ctx.repoContext.eventBus);
 
     const preview = await vaultDeletePreview(
@@ -520,7 +520,7 @@ export async function handleVaultDescribe(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultDescribeDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -580,7 +580,7 @@ export async function handleVaultInspect(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultInspectDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -643,7 +643,7 @@ export async function handleVaultListKeys(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createVaultListKeysDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -698,7 +698,7 @@ export async function handleVaultSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: VaultSearchDeps = {
       findAllVaults: () => ctx.repoContext.vaultConfigRepo.findAll(),
     };
@@ -755,7 +755,7 @@ export async function handleVaultAnnotate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultAnnotateDeps(
       ctx.repoDir,
       ctx.repoContext.eventBus,
@@ -836,7 +836,7 @@ export async function handleVaultCreate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     // The shared repository's mark hook signals the config it writes.
     const deps = await createVaultCreateDeps(
       ctx.repoDir,
@@ -975,7 +975,7 @@ export async function handleVaultEdit(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultEditDeps(ctx.repoDir, vaultConfigRepo);
 
     let result: Record<string, unknown> | undefined;
@@ -1125,7 +1125,7 @@ export async function handleVaultAuditTrail(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultAuditTrailDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -1187,7 +1187,7 @@ export async function handleVaultReadSecret(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createVaultReadSecretDeps(
       ctx.repoDir,
       ctx.repoContext.eventBus,
@@ -1246,7 +1246,7 @@ export async function handleVaultTypeSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     await vaultTypeRegistry.ensureLoaded();
     const deps: VaultTypeSearchDeps = {
       getVaultTypes: () => getVaultTypes(),

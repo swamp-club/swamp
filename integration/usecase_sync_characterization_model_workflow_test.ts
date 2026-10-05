@@ -114,6 +114,10 @@ async function suspendAtGate(
 function modelCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model create${managedConfig ? " (managedConfig)" : ""}`,
+    // With managedConfig the CLI pushes config through a bulk mark after the
+    // use case: managed_config_sync.ts pushManagedConfigChanges /
+    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({
       args: [
@@ -143,6 +147,10 @@ function modelCreateRow(managedConfig: boolean): AnyRow {
 function modelEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model edit${managedConfig ? " (managedConfig)" : ""}`,
+    // With managedConfig the CLI pushes config through a bulk mark after the
+    // use case: managed_config_sync.ts pushManagedConfigChanges /
+    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedModelYaml(repos, "m1"),
     cli: (repos, content) => ({
@@ -166,6 +174,10 @@ function modelEditRow(managedConfig: boolean): AnyRow {
 function workflowCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow create${managedConfig ? " (managedConfig)" : ""}`,
+    // With managedConfig the CLI pushes config through a bulk mark after the
+    // use case: managed_config_sync.ts pushManagedConfigChanges /
+    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({ args: ["workflow", "create", "wf2", ...json(repos)] }),
     serve: () => ({ type: "workflow.create", payload: { name: "wf2" } }),
@@ -179,6 +191,10 @@ function workflowCreateRow(managedConfig: boolean): AnyRow {
 function workflowEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow edit${managedConfig ? " (managedConfig)" : ""}`,
+    // With managedConfig the CLI pushes config through a bulk mark after the
+    // use case: managed_config_sync.ts pushManagedConfigChanges /
+    // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
+    outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedWorkflowYaml(repos, "wf1"),
     cli: (repos, content) => ({
@@ -345,6 +361,13 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow cancel",
+    // CLI workflow cancel saves the run through repoContext.workflowRunRepo
+    // itself, not through a use case, so the save marks through
+    // signalChange's hook fallback (unit_of_work_scope.ts signalChange in
+    // PINNED_MARK_CALL_SITES). Serve goes through workflowCancelSuspended.
+    outsideUseCase: {
+      cli: ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
+    },
     seed: suspendAtGate,
     serveCtx: (run: SuspendedRun) => ({ activeRunRegistry: run.registry }),
     cli: (repos, run: SuspendedRun) => ({

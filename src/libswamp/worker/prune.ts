@@ -30,6 +30,7 @@
  */
 
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { ModelMethodRunEvent } from "../models/run.ts";
@@ -125,114 +126,50 @@ function isPrunable(
  * Prunes stale disconnected workers and their enrollment-token bindings.
  */
 export async function* workerPrune(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkerPruneDeps,
   input: WorkerPruneInput,
 ): AsyncGenerator<WorkerPruneEvent> {
-  yield* withGeneratorSpan(
-    "swamp.worker.prune",
-    {
-      "prune.grace_period_ms": input.gracePeriodMs,
-      "prune.dry_run": input.dryRun,
-    },
-    (async function* () {
-      const nowMs = (deps.now ?? Date.now)();
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.worker.prune",
+      {
+        "prune.grace_period_ms": input.gracePeriodMs,
+        "prune.dry_run": input.dryRun,
+      },
+      (async function* () {
+        const nowMs = (deps.now ?? Date.now)();
 
-      let allWorkers: PrunableWorker[];
-      try {
-        allWorkers = await deps.listWorkers();
-      } catch (error) {
-        yield {
-          kind: "error" as const,
-          error: {
-            code: "worker_prune_list_failed",
-            message: error instanceof Error ? error.message : String(error),
-          },
-        };
-        return;
-      }
-
-      const prunable = allWorkers.filter((w) =>
-        isPrunable(w, input.gracePeriodMs, nowMs)
-      );
-
-      yield {
-        kind: "previewing" as const,
-        workers: prunable,
-        dryRun: input.dryRun,
-      };
-
-      if (input.dryRun || prunable.length === 0) {
-        yield {
-          kind: "completed" as const,
-          result: {
-            workersDeleted: 0,
-            workersFailed: 0,
-            bindingsPruned: 0,
-            tokensCleaned: 0,
-          },
-        };
-        return;
-      }
-
-      let workersDeleted = 0;
-      let workersFailed = 0;
-      const affectedTokens = new Set<string>();
-
-      for (const worker of prunable) {
-        yield { kind: "deleting_worker" as const, name: worker.name };
+        let allWorkers: PrunableWorker[];
         try {
-          let deleteCompleted = false;
-          for await (const event of deps.deleteWorker(worker.definitionName)) {
-            if (event.kind === "completed") deleteCompleted = true;
-            if (event.kind === "error") {
-              throw new Error(event.error.message);
-            }
-          }
-          if (!deleteCompleted) {
-            throw new Error("delete stream ended without completing");
-          }
-          workersDeleted++;
-          yield { kind: "worker_deleted" as const, name: worker.name };
-          affectedTokens.add(worker.tokenName);
+          allWorkers = await deps.listWorkers();
         } catch (error) {
-          workersFailed++;
           yield {
-            kind: "worker_delete_failed" as const,
-            name: worker.name,
-            error: error instanceof Error ? error.message : String(error),
+            kind: "error" as const,
+            error: {
+              code: "worker_prune_list_failed",
+              message: error instanceof Error ? error.message : String(error),
+            },
           };
-        }
-      }
-
-      let bindingsPruned = 0;
-      let tokensCleaned = 0;
-
-      if (affectedTokens.size > 0 && deps.resolveStaleBindings) {
-        let tokens: PrunableToken[];
-        try {
-          tokens = await deps.listTokens();
-        } catch {
-          tokens = [];
+          return;
         }
 
-        const tokensByName = new Map(tokens.map((t) => [t.name, t]));
+        const prunable = allWorkers.filter((w) =>
+          isPrunable(w, input.gracePeriodMs, nowMs)
+        );
 
-        let remainingWorkers: PrunableWorker[] | null;
-        try {
-          remainingWorkers = await deps.listWorkers();
-        } catch {
-          remainingWorkers = null;
-        }
+        yield {
+          kind: "previewing" as const,
+          workers: prunable,
+          dryRun: input.dryRun,
+        };
 
-        if (remainingWorkers === null) {
-          // Cannot determine which bindings are stale without the worker
-          // list — skip binding cleanup to avoid over-pruning active bindings.
+        if (input.dryRun || prunable.length === 0) {
           yield {
             kind: "completed" as const,
             result: {
-              workersDeleted,
-              workersFailed,
+              workersDeleted: 0,
+              workersFailed: 0,
               bindingsPruned: 0,
               tokensCleaned: 0,
             },
@@ -240,64 +177,131 @@ export async function* workerPrune(
           return;
         }
 
-        for (const tokenName of affectedTokens) {
-          const token = tokensByName.get(tokenName);
-          if (!token || token.bindings.length === 0) continue;
+        let workersDeleted = 0;
+        let workersFailed = 0;
+        const affectedTokens = new Set<string>();
 
-          const remainingNames = remainingWorkers
-            .filter((w) => w.tokenName === tokenName)
-            .map((w) => w.name);
-
-          const staleIds = await deps.resolveStaleBindings(
-            token,
-            remainingNames,
-          );
-          if (!staleIds || staleIds.length === 0) continue;
-
-          yield {
-            kind: "pruning_bindings" as const,
-            tokenName,
-            machineIds: staleIds,
-          };
-
+        for (const worker of prunable) {
+          yield { kind: "deleting_worker" as const, name: worker.name };
           try {
-            let pruneCompleted = false;
+            let deleteCompleted = false;
             for await (
-              const event of deps.pruneBindings(tokenName, staleIds)
+              const event of deps.deleteWorker(worker.definitionName)
             ) {
-              if (event.kind === "completed") pruneCompleted = true;
+              if (event.kind === "completed") deleteCompleted = true;
               if (event.kind === "error") {
                 throw new Error(event.error.message);
               }
             }
-            if (pruneCompleted) {
-              bindingsPruned += staleIds.length;
-              tokensCleaned++;
-              yield {
-                kind: "bindings_pruned" as const,
-                tokenName,
-                count: staleIds.length,
-              };
+            if (!deleteCompleted) {
+              throw new Error("delete stream ended without completing");
             }
+            workersDeleted++;
+            yield { kind: "worker_deleted" as const, name: worker.name };
+            affectedTokens.add(worker.tokenName);
           } catch (error) {
+            workersFailed++;
             yield {
-              kind: "bindings_prune_failed" as const,
-              tokenName,
+              kind: "worker_delete_failed" as const,
+              name: worker.name,
               error: error instanceof Error ? error.message : String(error),
             };
           }
         }
-      }
 
-      yield {
-        kind: "completed" as const,
-        result: {
-          workersDeleted,
-          workersFailed,
-          bindingsPruned,
-          tokensCleaned,
-        },
-      };
-    })(),
-  );
+        let bindingsPruned = 0;
+        let tokensCleaned = 0;
+
+        if (affectedTokens.size > 0 && deps.resolveStaleBindings) {
+          let tokens: PrunableToken[];
+          try {
+            tokens = await deps.listTokens();
+          } catch {
+            tokens = [];
+          }
+
+          const tokensByName = new Map(tokens.map((t) => [t.name, t]));
+
+          let remainingWorkers: PrunableWorker[] | null;
+          try {
+            remainingWorkers = await deps.listWorkers();
+          } catch {
+            remainingWorkers = null;
+          }
+
+          if (remainingWorkers === null) {
+            // Cannot determine which bindings are stale without the worker
+            // list — skip binding cleanup to avoid over-pruning active bindings.
+            yield {
+              kind: "completed" as const,
+              result: {
+                workersDeleted,
+                workersFailed,
+                bindingsPruned: 0,
+                tokensCleaned: 0,
+              },
+            };
+            return;
+          }
+
+          for (const tokenName of affectedTokens) {
+            const token = tokensByName.get(tokenName);
+            if (!token || token.bindings.length === 0) continue;
+
+            const remainingNames = remainingWorkers
+              .filter((w) => w.tokenName === tokenName)
+              .map((w) => w.name);
+
+            const staleIds = await deps.resolveStaleBindings(
+              token,
+              remainingNames,
+            );
+            if (!staleIds || staleIds.length === 0) continue;
+
+            yield {
+              kind: "pruning_bindings" as const,
+              tokenName,
+              machineIds: staleIds,
+            };
+
+            try {
+              let pruneCompleted = false;
+              for await (
+                const event of deps.pruneBindings(tokenName, staleIds)
+              ) {
+                if (event.kind === "completed") pruneCompleted = true;
+                if (event.kind === "error") {
+                  throw new Error(event.error.message);
+                }
+              }
+              if (pruneCompleted) {
+                bindingsPruned += staleIds.length;
+                tokensCleaned++;
+                yield {
+                  kind: "bindings_pruned" as const,
+                  tokenName,
+                  count: staleIds.length,
+                };
+              }
+            } catch (error) {
+              yield {
+                kind: "bindings_prune_failed" as const,
+                tokenName,
+                error: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }
+        }
+
+        yield {
+          kind: "completed" as const,
+          result: {
+            workersDeleted,
+            workersFailed,
+            bindingsPruned,
+            tokensCleaned,
+          },
+        };
+      })(),
+    ));
 }

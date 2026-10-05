@@ -44,8 +44,12 @@ import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
+import type { Logger } from "@logtape/logtape";
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
+  createLibSwampContext,
   enumeratePulledExtensionDirs,
+  type LibSwampContext,
   modelLockKey,
   parseModelLockKey,
   stripNamespacePrefix,
@@ -199,6 +203,23 @@ export async function refreshExtensionWorkflowDirs(
 }
 
 /**
+ * A `LibSwampContext` for a CLI command whose write use cases go through
+ * `repoContext`'s repositories. Each use case's unit of work is bound to
+ * `repoContext.markDirty` itself, so the repositories stage into it (datastore
+ * rework Phase 2, swamp-club#3025). With no hook (filesystem datastores,
+ * read-only contexts) it behaves as `createLibSwampContext`.
+ */
+export function libSwampContextForRepo(
+  repoContext: Pick<RepositoryContext, "markDirty">,
+  options?: { logger?: Logger; signal?: AbortSignal },
+): LibSwampContext {
+  return createLibSwampContext({
+    ...options,
+    openUnitOfWork: repoUnitOfWorkFactory(repoContext),
+  });
+}
+
+/**
  * Bridges a `DatastoreSyncService` into a `MarkDirtyHook` that repositories
  * can call without knowing the cache root. Repositories pass the absolute
  * path of the about-to-be-written file (or `undefined` for bulk mutations);
@@ -227,19 +248,32 @@ export function buildMarkDirtyHook(
   cacheRoot: string,
   repoDir: string,
 ): MarkDirtyHook {
-  const repoSwampDir = swampPath(repoDir);
   return (absPath?: string) => {
     if (absPath === undefined) {
       return syncService.markDirty();
     }
-    let rel = relative(cacheRoot, absPath);
-    if (escapesRoot(rel)) {
-      rel = relative(repoSwampDir, absPath);
-      if (escapesRoot(rel)) return Promise.resolve();
-    }
-    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    const relPath = cacheRelativeMarkPath(absPath, cacheRoot, repoDir);
+    if (relPath === undefined) return Promise.resolve();
     return syncService.markDirty({ relPath });
   };
+}
+
+/**
+ * The cache-relative, forward-slash path {@link buildMarkDirtyHook} marks for
+ * `absPath`, or undefined for a path outside both roots, which it never
+ * marks. Exported so tests can map staged changes to the marks they cause.
+ */
+export function cacheRelativeMarkPath(
+  absPath: string,
+  cacheRoot: string,
+  repoDir: string,
+): string | undefined {
+  let rel = relative(cacheRoot, absPath);
+  if (escapesRoot(rel)) {
+    rel = relative(swampPath(repoDir), absPath);
+    if (escapesRoot(rel)) return undefined;
+  }
+  return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
 }
 
 function buildHydrateFileHook(
