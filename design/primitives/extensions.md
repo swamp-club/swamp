@@ -890,12 +890,37 @@ env:
 
 steps:
   - uses: actions/checkout@v4
-  - run: swamp extension push extensions/my-ext/manifest.yaml --yes
+  - run: swamp extension push extensions/my-ext/manifest.yaml --yes --accept-warnings
 ```
 
 Precedence: `SWAMP_EXTENSION_REVIEW_DIR` > `TMPDIR` > `TMP` > `TEMP` > `/tmp`.
 The `baseTmpDir` parameter on `reviewReportPath()`, used by tests, overrides all
 env vars.
+
+### Push confirmation and warning acceptance are separate consents
+
+`swamp extension push` asks for two things on the way to a publish: that the
+warnings it found are acceptable, and that the push itself should happen. They
+are separate flags because they are separate decisions (issue #3015):
+
+- `--yes` (and its alias `--force`) confirms the push. It never waives a
+  warning. CI can confirm a publish without blanket-accepting every finding.
+- `--accept-warnings` is the only waiver for safety and review warnings. The
+  dry-run and completed summaries, in log and JSON, record which warnings it
+  waived (`acceptedWarnings`), so the audit trail shows what was accepted
+  rather than a silent pass.
+- A non-interactive run (`--json`, or stdin not a terminal) that meets a
+  warning without `--accept-warnings` exits non-zero and names the flag. It
+  never skips the gate the way `--json` once did.
+- A dry run exits non-zero exactly when the real run would, and never prompts:
+  declining a prompt on a dry run confirms nothing, and a CI pre-check should
+  learn about the missing flag at the check, not at the publish. Interactive
+  dry runs print a hint instead.
+
+Advisory warnings (dependency trust, version drift, missing upgrade entries)
+never gated a push and are outside both flags. Per-rule suppression in the
+manifest (#3021) is the complementary mechanism for warnings an author has
+reasoned about once and does not want to re-accept on every push.
 
 ## Dependencies
 
