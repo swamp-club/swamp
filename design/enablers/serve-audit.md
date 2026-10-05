@@ -59,13 +59,26 @@ other sink:
   the buffer, `swamp audit verify` reports the gap as a broken chain.
 - **One sink's lag is its own.** Each sink has its own cursor. A sink more than
   the buffer's capacity behind is moved up to the oldest event still held; the
-  events it missed are counted and logged against that sink only.
-- **One write at a time.** A non-durable sink has at most one `write` in
-  flight. A write that outlives the 30s timeout counts as a failure, but the
-  sink is not written to again until that call settles. While it is
+  events it missed are counted and logged against that sink only. Cursors and
+  drop counts are kept per sink, under its name; when several sinks share a
+  name (two webhooks on one host), the later ones are told apart as `name#2`,
+  `name#3` by their order in the config, and a warning names the collision.
+  Hot-reload hands each cursor to the sink in the same position, so swapping
+  two same-named sinks in `serve.yaml` swaps their delivery state.
+- **One write at a time.** Every sink, durable or not, has at most one `write`
+  in flight. A write that outlives the 30s timeout is not sent again until that
+  call settles, so the same events are never written twice. While it is
   outstanding the emitter warns once a minute and keeps counting what the sink
   misses; when it settles, delivery resumes, and a late success counts as
-  delivered.
+  delivered. A non-durable sink counts the timeout as a failure and backs off;
+  a durable sink retries a late failure as soon as it settles.
+- **Stalled durable writes and fail-secure.** While a durable write is
+  outstanding past the timeout, new events reach no durable sink, not even the
+  WAL, and are held only in memory. With `fail-open: false`, serve rejects
+  requests with `audit_unavailable` until the write settles, as it does when
+  the WAL is full. A remote store slower than the 30s timeout therefore
+  rejects requests for as long as each put takes. With `fail-open: true`
+  nothing is rejected.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink
@@ -112,6 +125,13 @@ config in `.swamp.yaml` (see
 A store entry without `type` + `config` uses the repo's existing control-plane
 store (the shared datastore). That works for development but logs a startup
 warning; production should use a dedicated store.
+
+An external sink (`audit.sinks`, webhook or syslog) may take a `filter` block
+with `categories`, `tier` (`management`, `data` or `all`) and `outcomes`.
+Startup and hot-reload warn about each bad value: a filter that is not a
+mapping, an unknown key, a list given as a single value, or an unknown
+category, tier or outcome. The config still loads, and the sink filters by the
+value as written, so a misspelt `tier` still means the sink receives nothing.
 
 ## What is audited
 

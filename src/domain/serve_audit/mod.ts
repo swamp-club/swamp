@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export {
+  AUDIT_CATEGORIES,
+  AUDIT_OUTCOMES,
   type AuditCategory,
   type AuditDecision,
   type AuditEvent,
@@ -82,6 +84,7 @@ export {
   matchesSinkFilter,
   parseSinkFilter,
   type SinkFilterConfig,
+  validateSinkFilter,
 } from "./sink_filter.ts";
 
 export { RingBuffer } from "./ring_buffer.ts";

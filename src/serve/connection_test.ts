@@ -417,6 +417,53 @@ Deno.test("handleMessage cancel refused for lack of a run grant is silent and au
   assertEquals(audit[0].resourceName, "deploy");
 });
 
+function sendAuditGatedRequest(
+  failOpen: boolean,
+  durableStalled: boolean,
+): MockSocket {
+  const ctx = {
+    ...makeCtx(modeTokenConfig, []),
+    instanceId: "inst-1",
+    auditEmitter: { emit: () => {}, durableStalled },
+    auditFailOpen: failOpen,
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "req-audit",
+      payload: { workflowIdOrName: "deploy" },
+    })),
+    testPrincipal,
+  );
+  return mock;
+}
+
+function auditUnavailableSent(mock: MockSocket): boolean {
+  return mock.sent.some((frame) =>
+    (JSON.parse(frame) as { error?: { code?: string } }).error?.code ===
+      "audit_unavailable"
+  );
+}
+
+Deno.test("handleMessage rejects requests in fail-secure mode while a durable audit write is stalled", () => {
+  const mock = sendAuditGatedRequest(false, true);
+  assertEquals(auditUnavailableSent(mock), true);
+});
+
+Deno.test("handleMessage does not reject for a stalled durable audit write in fail-open mode", () => {
+  const mock = sendAuditGatedRequest(true, true);
+  assertEquals(auditUnavailableSent(mock), false);
+});
+
+Deno.test("handleMessage does not reject in fail-secure mode when no durable audit write is stalled", () => {
+  const mock = sendAuditGatedRequest(false, false);
+  assertEquals(auditUnavailableSent(mock), false);
+});
+
 // ── handleMessage: duplicate request ID ─────────────────────────────────
 
 Deno.test("handleMessage rejects duplicate request ID", () => {

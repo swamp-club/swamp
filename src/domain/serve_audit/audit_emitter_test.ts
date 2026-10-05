@@ -109,6 +109,7 @@ function createFlakySink(
 
 function createHangingSink(
   name: string,
+  durable = false,
 ): AuditSink & {
   writes: number;
   batches: AuditEvent[][];
@@ -119,7 +120,7 @@ function createHangingSink(
   const failing: ((error: Error) => void)[] = [];
   const sink = {
     name,
-    durable: false,
+    durable,
     writes: 0,
     batches: [] as AuditEvent[][],
     write(events: readonly AuditEvent[]): Promise<void> {
@@ -379,6 +380,127 @@ Deno.test("AuditEmitter: a timed-out write that later fails backs off from when 
   await emitter.flush();
   assertEquals(hanging.writes, 2);
   hanging.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: a timed-out durable write is not written again while it is pending", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+    durableRetryMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assert(emitter.durableStalled);
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  durableSink.release();
+  await waitFor(() => durableSink.writes === 2, "delivery to resume by itself");
+  // The late success counted as delivered, so only the newer event is sent.
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
+  durableSink.release();
+  await waitFor(() => !emitter.durableStalled, "the stall to clear");
+  await emitter.close();
+  assertEquals(durableSink.writes, 2);
+});
+
+Deno.test("AuditEmitter: a timed-out durable write that later fails is retried once it settles", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+    durableRetryMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  durableSink.fail();
+  await waitFor(
+    () => durableSink.writes === 2,
+    "the failed batch to be retried",
+  );
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["first"]);
+  durableSink.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: sinks with the same name each receive every event when one fails", async () => {
+  const first = createFlakySink("webhook:siem.example.com", false);
+  const second = createFlakySink("webhook:siem.example.com", false);
+  second.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), first, second],
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("one"));
+  emitter.emit(makeEvent("two"));
+  await emitter.flush();
+  assertEquals(first.received.length, 2);
+
+  second.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return second.received.length === 2;
+  }, "the failed sink to catch up");
+  assertEquals(second.received.map((e) => e.action), ["one", "two"]);
+  assertEquals(emitter.droppedEvents("webhook:siem.example.com#2"), 0);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: replaceSinks keeps the cursor of each same-named sink", async () => {
+  const durableSink = createMockSink("durable");
+  const first = createFlakySink("syslog:collector:514", false);
+  const second = createFlakySink("syslog:collector:514", false);
+  second.failing = true;
+  const emitter = new AuditEmitter({ sinks: [durableSink, first, second] });
+
+  emitter.emit(makeEvent("before"));
+  await emitter.flush();
+
+  const newFirst = createFlakySink("syslog:collector:514", false);
+  const newSecond = createFlakySink("syslog:collector:514", false);
+  emitter.replaceSinks([durableSink, newFirst, newSecond]);
+  emitter.emit(makeEvent("after"));
+  await emitter.flush();
+
+  assertEquals(newFirst.received.map((e) => e.action), ["after"]);
+  assertEquals(newSecond.received.map((e) => e.action), ["before", "after"]);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: a replaced sink's late success does not move its replacement's cursor", async () => {
+  const durableSink = createMockSink("durable");
+  const hanging = createHangingSink("external");
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, hanging],
+    sinkTimeoutMs: 20,
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(hanging.writes, 1);
+
+  const replacement = createFlakySink("external", false);
+  replacement.failing = true;
+  emitter.replaceSinks([durableSink, replacement]);
+  hanging.release();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+
+  replacement.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return replacement.received.length === 2;
+  }, "the replacement to receive both events");
+  assertEquals(replacement.received.map((e) => e.action), ["first", "second"]);
   await emitter.close();
 });
 

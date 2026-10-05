@@ -25,6 +25,7 @@ import { AuditEmitter } from "./audit_emitter.ts";
 import type { AuditEvent, ChainedAuditEvent } from "./audit_event.ts";
 import { createAuditEvent } from "./audit_event.ts";
 import type { AuditSink } from "./audit_sink.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 await initializeLogging({});
 
@@ -132,6 +133,206 @@ Deno.test("AuditEmitter property: durable output is complete, ordered and chaine
             emitted.length,
           true,
         );
+      },
+    ),
+    { numRuns: 100 },
+  );
+});
+
+function makeEvent(index: number): AuditEvent {
+  return createAuditEvent({
+    instanceId: "inst-1",
+    category: "auth",
+    stage: "response",
+    outcome: "success",
+    action: `action-${index}`,
+    resourceKind: "access",
+    resourceName: "*",
+    principalKind: "user",
+    principalId: "test-user",
+    initiatedBy: "user:test-user",
+    sourceIp: "127.0.0.1",
+    requestId: crypto.randomUUID(),
+  });
+}
+
+type DurableStep =
+  | { kind: "emit" }
+  | { kind: "hang" }
+  | { kind: "settle"; succeed: boolean };
+
+const durableStepArb: fc.Arbitrary<DurableStep> = fc.oneof(
+  { weight: 4, arbitrary: fc.constant<DurableStep>({ kind: "emit" }) },
+  { weight: 2, arbitrary: fc.constant<DurableStep>({ kind: "hang" }) },
+  {
+    weight: 2,
+    arbitrary: fc.boolean().map((succeed): DurableStep => ({
+      kind: "settle",
+      succeed,
+    })),
+  },
+);
+
+/**
+ * A durable sink whose writes hang while `hanging` is set, until settled.
+ * Counts how many of its writes are outstanding at once.
+ */
+function hangingDurableSink(): AuditSink & {
+  hanging: boolean;
+  received: ChainedAuditEvent[];
+  outstanding: number;
+  maxOutstanding: number;
+  settle(succeed: boolean): void;
+} {
+  const pending: {
+    events: ChainedAuditEvent[];
+    succeed(): void;
+    fail(): void;
+  }[] = [];
+  const sink = {
+    name: "wal",
+    durable: true,
+    hanging: false,
+    received: [] as ChainedAuditEvent[],
+    outstanding: 0,
+    maxOutstanding: 0,
+    write(events: readonly AuditEvent[]): Promise<void> {
+      sink.outstanding++;
+      sink.maxOutstanding = Math.max(sink.maxOutstanding, sink.outstanding);
+      const batch = [...events] as ChainedAuditEvent[];
+      if (!sink.hanging) {
+        sink.outstanding--;
+        sink.received.push(...batch);
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve, reject) => {
+        pending.push({
+          events: batch,
+          succeed: () => {
+            sink.outstanding--;
+            sink.received.push(...batch);
+            resolve();
+          },
+          fail: () => {
+            sink.outstanding--;
+            reject(new Error("late failure"));
+          },
+        });
+      });
+    },
+    settle(succeed: boolean): void {
+      for (const write of pending.splice(0)) {
+        if (succeed) write.succeed();
+        else write.fail();
+      }
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
+  return sink;
+}
+
+Deno.test("AuditEmitter property: a durable write that times out is never sent again while pending, and nothing is stored twice", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(durableStepArb, { maxLength: 25 }),
+      async (steps) => {
+        const durable = hangingDurableSink();
+        const emitter = new AuditEmitter({
+          sinks: [durable],
+          capacity: 1_000,
+          sinkTimeoutMs: 2,
+          durableRetryMs: 1,
+        });
+
+        let emitted = 0;
+        for (const step of steps) {
+          if (step.kind === "hang") durable.hanging = true;
+          if (step.kind === "settle") {
+            durable.hanging = false;
+            durable.settle(step.succeed);
+          }
+          if (step.kind === "emit") emitter.emit(makeEvent(emitted++));
+          await emitter.flush();
+        }
+        durable.hanging = false;
+        durable.settle(true);
+        await waitFor(async () => {
+          await emitter.flush();
+          return durable.received.length >= emitted;
+        }, "the durable sink to catch up once every write settled");
+        await emitter.close();
+
+        assertEquals(durable.maxOutstanding <= 1, true);
+        assertEquals(
+          durable.received.map((e) => e.sequence),
+          Array.from({ length: emitted }, (_, i) => i + 1),
+        );
+        assertEquals((await verifyChain(durable.received)).valid, true);
+      },
+    ),
+    { numRuns: 40 },
+  );
+});
+
+type PairStep =
+  | { kind: "emit" }
+  | { kind: "fail" | "recover"; sink: 0 | 1 }
+  | { kind: "advance"; ms: number };
+
+const pairStepArb: fc.Arbitrary<PairStep> = fc.oneof(
+  { weight: 4, arbitrary: fc.constant<PairStep>({ kind: "emit" }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      kind: fc.constantFrom<"fail" | "recover">("fail", "recover"),
+      sink: fc.constantFrom<0 | 1>(0, 1),
+    }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.integer({ min: 1, max: 120_000 }).map((ms): PairStep => ({
+      kind: "advance",
+      ms,
+    })),
+  },
+);
+
+Deno.test("AuditEmitter property: sinks that share a name each receive every event whatever the other does", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(pairStepArb, { maxLength: 40 }),
+      async (steps) => {
+        let now = 0;
+        const durable = collectingSink("durable", true);
+        const pair = [
+          collectingSink("webhook:siem.example.com", false),
+          collectingSink("webhook:siem.example.com", false),
+        ];
+        const emitter = new AuditEmitter({
+          sinks: [durable, ...pair],
+          capacity: 1_000,
+          now: () => now,
+        });
+
+        let emitted = 0;
+        for (const step of steps) {
+          if (step.kind === "fail") pair[step.sink].failing = true;
+          if (step.kind === "recover") pair[step.sink].failing = false;
+          if (step.kind === "advance") now += step.ms;
+          if (step.kind === "emit") emitter.emit(makeEvent(emitted++));
+          await emitter.flush();
+        }
+        for (const sink of pair) sink.failing = false;
+        now += 120_000;
+        await emitter.flush();
+        await emitter.close();
+
+        const sequences = durable.received.map((e) => e.sequence);
+        assertEquals(sequences.length, emitted);
+        for (const sink of pair) {
+          assertEquals(sink.received.map((e) => e.sequence), sequences);
+        }
       },
     ),
     { numRuns: 100 },

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { matchesSinkFilter, parseSinkFilter } from "./sink_filter.ts";
+import {
+  matchesSinkFilter,
+  parseSinkFilter,
+  validateSinkFilter,
+} from "./sink_filter.ts";
 import { createAuditEvent } from "./audit_event.ts";
 
 function makeEvent(
@@ -125,4 +129,61 @@ Deno.test("parseSinkFilter: parses filter from raw config", () => {
   assertEquals(filter.categories, ["auth", "secrets"]);
   assertEquals(filter.tier, "all");
   assertEquals(filter.outcomes, ["denied"]);
+});
+
+Deno.test("validateSinkFilter: no problems for an absent or valid filter", () => {
+  assertEquals(validateSinkFilter({}), []);
+  assertEquals(validateSinkFilter({ filter: null }), []);
+  assertEquals(
+    validateSinkFilter({
+      filter: {
+        categories: [
+          "auth",
+          "access",
+          "execution",
+          "secrets",
+          "admin",
+          "data",
+          "system",
+        ],
+        tier: "data",
+        outcomes: ["success", "failure", "denied"],
+      },
+    }),
+    [],
+  );
+  assertEquals(validateSinkFilter({ filter: { tier: "all" } }), []);
+});
+
+Deno.test("validateSinkFilter: a filter that is not a mapping is one problem", () => {
+  assertEquals(validateSinkFilter({ filter: "management" }), [
+    'filter must be a mapping, got "management"',
+  ]);
+  assertEquals(validateSinkFilter({ filter: ["auth"] }).length, 1);
+});
+
+Deno.test("validateSinkFilter: reports unknown keys, a bad tier and bad list values", () => {
+  assertEquals(
+    validateSinkFilter({
+      filter: {
+        tiers: "data",
+        categories: ["auth", "authz", 3],
+        tier: "managment",
+        outcomes: "denied",
+      },
+    }),
+    [
+      "filter has unknown key tiers (expected categories, tier, outcomes)",
+      'filter.categories has unknown value "authz" (expected one of auth, access, execution, secrets, admin, data, system)',
+      "filter.categories has unknown value 3 (expected one of auth, access, execution, secrets, admin, data, system)",
+      'filter.tier has unknown value "managment" (expected one of management, data, all)',
+      'filter.outcomes must be a list, got "denied"',
+    ],
+  );
+});
+
+Deno.test("validateSinkFilter: parseSinkFilter still reads a bad filter as written", () => {
+  const raw = { filter: { tier: "managment" } };
+  assertEquals(validateSinkFilter(raw).length, 1);
+  assertEquals(parseSinkFilter(raw).tier, "managment" as never);
 });
