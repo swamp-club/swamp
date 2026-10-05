@@ -134,7 +134,8 @@ Deno.test("serve root units: a workflow.approve whose use case fails still pushe
 
 /**
  * Runs `workflowName` through executeWorkflowWithLocks under an observed
- * gate, and returns its last event kind with the run's status.
+ * gate, and returns how it stopped as `<kind>:<status>` when it suspended
+ * or was cancelled, or undefined otherwise.
  */
 async function runWorkflow(
   repos: Parameters<Parameters<typeof withRowRepos>[1]>[0],
@@ -284,12 +285,26 @@ Deno.test("serve root units: concurrent requests get separate roots, each pushin
       "push",
       "release",
     ]);
-    const ops = observe(repos, base).ops;
-    const firstPush = ops.findIndex((op) => op.startsWith("push"));
-    assertEquals(ops.filter((op) => op.startsWith("push")).length, 2);
+    const ops = repos.remote.ops().slice(base.opCount)
+      .filter((op) => op.instance === "A");
+    assertEquals(ops.filter((op) => op.op === "push").length, 2);
+    // Op-log length at the first gate exit, relative to the baseline.
+    const firstExit = repos.releases[base.releaseCount] - base.opCount;
+    const firstPush = ops.findIndex((op) => op.op === "push");
     assertEquals(
-      ops.slice(0, firstPush).every((op) => op.startsWith("markDirty")),
+      ops.slice(0, firstPush).every((op) => op.op === "markDirty"),
       true,
+      "the first request marks, then pushes",
+    );
+    assertEquals(
+      ops.slice(firstPush + 1, firstExit).some((op) => op.op === "markDirty"),
+      false,
+      "the second request marked before the first left the gate",
+    );
+    assertEquals(
+      ops.slice(firstExit).some((op) => op.op === "markDirty"),
+      true,
+      "the second request's marks follow the first gate exit",
     );
   });
 });

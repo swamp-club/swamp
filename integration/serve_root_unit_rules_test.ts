@@ -241,8 +241,9 @@ function rootEntryPoints(sources: ServeSource[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Calls to `pushChangedToRemote(ctx)` that are not a root's flush. Empty:
- * every serve handler that pushes through it does so as its root's flush.
+ * Calls to `pushChangedToRemote`, with any argument, that are not a root's
+ * flush. Empty: every serve handler that pushes through it does so as its
+ * root's flush.
  */
 const PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS: readonly string[] = [];
 
@@ -309,7 +310,7 @@ const sources = await serveSources();
 
 Deno.test("serve root units: pushChangedToRemote runs only as a root's flush (swamp-club#3034)", () => {
   assertPinnedSet(
-    pushesOutsideRoots(sources, /\bpushChangedToRemote\(ctx\)/g),
+    pushesOutsideRoots(sources, /(?<!function )\bpushChangedToRemote\(/g),
     PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS,
     "Direct pushChangedToRemote calls in serve",
     "A serve handler pushes through its request's root unit of work: wrap the\n" +
@@ -370,7 +371,7 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     owners: topLevelOwners(lines),
   };
   assertEquals(
-    pushesOutsideRoots([probe], /\bpushChangedToRemote\(ctx\)/g),
+    pushesOutsideRoots([probe], /(?<!function )\bpushChangedToRemote\(/g),
     ["probe.ts: handler"],
   );
   assertEquals(rootEntryPoints([probe]), [
