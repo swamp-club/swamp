@@ -25,10 +25,14 @@ import {
   assertThrows,
 } from "@std/assert";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
+import type {
+  StagedChange,
+  UnitOfWork,
+} from "../../domain/datastore/unit_of_work.ts";
 import { assertUnitOfWorkContract } from "../testing/unit_of_work_contract.ts";
 import {
   createLegacyUnitOfWork,
+  legacyUnitOfWorkParent,
   legacyUnitOfWorkTarget,
 } from "./legacy_unit_of_work.ts";
 
@@ -78,19 +82,38 @@ function recordingHook(): {
 Deno.test("createLegacyUnitOfWork: meets the unit of work contract", async () => {
   await assertUnitOfWorkContract(() => {
     const { hook, calls, failNext, holdNext, pending } = recordingHook();
-    const listeners: Array<() => Promise<void>> = [];
-    const unit = createLegacyUnitOfWork(hook, {
+    const listeners = {
+      commit: [] as Array<() => Promise<void>>,
+      abandon: [] as Array<() => Promise<void>>,
+    };
+    // A legacy unit flushes on either ending; the wrapper tells the flush
+    // which one is running.
+    let ending: "commit" | "abandon" = "commit";
+    const real = createLegacyUnitOfWork(hook, {
       flush: async () => {
-        for (const listener of listeners) await listener();
+        for (const listener of listeners[ending]) await listener();
       },
     });
+    const unit: UnitOfWork = {
+      stage: (change) => real.stage(change),
+      commit: () => {
+        ending = "commit";
+        return real.commit();
+      },
+      abandon: () => {
+        ending = "abandon";
+        return real.abandon();
+      },
+      staged: () => real.staged(),
+    };
     return {
       unit,
       forwarded: () => calls,
       failNext,
       holdNext,
       pendingForwards: pending,
-      onCommit: (listener) => listeners.push(listener),
+      onCommit: (listener) => listeners.commit.push(listener),
+      onAbandon: (listener) => listeners.abandon.push(listener),
     };
   });
 });
@@ -380,7 +403,224 @@ Deno.test("legacyUnitOfWorkTarget: is undefined for a unit of work built any oth
       return Promise.resolve();
     },
     commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
     staged: () => staged,
   };
   assertStrictEquals(legacyUnitOfWorkTarget(uow), undefined);
+});
+
+Deno.test("createLegacyUnitOfWork: abandon with a flush flushes once", async () => {
+  const { hook, calls } = recordingHook();
+  let flushes = 0;
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      flushes++;
+      return Promise.resolve();
+    },
+  });
+  await unit.stage({ kind: "write", path: "/cache/data/a" });
+  await unit.abandon();
+  assertEquals(flushes, 1);
+  assertEquals(calls, ["/cache/data/a"]);
+  await assertRejects(
+    () => unit.abandon(),
+    Error,
+    "unit of work already abandoned",
+  );
+  assertEquals(flushes, 1);
+});
+
+Deno.test("createLegacyUnitOfWork: abandon without a flush sends nothing more", async () => {
+  const { hook, calls } = recordingHook();
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
+  await unit.stage({ kind: "bulk", reason: "test" });
+  await unit.abandon();
+  assertEquals(calls, [undefined]);
+  assertEquals(unit.staged(), [{ kind: "bulk", reason: "test" }]);
+});
+
+Deno.test("createLegacyUnitOfWork: afterCommit forward sends a change staged after abandon to the hook", async () => {
+  const { hook, calls } = recordingHook();
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    afterCommit: "forward",
+  });
+  await unit.abandon();
+  await unit.stage({ kind: "write", path: "/cache/data/late" });
+  assertEquals(calls, ["/cache/data/late"]);
+  assertEquals(unit.staged(), []);
+});
+
+Deno.test("createLegacyUnitOfWork: a child forwards at once and records in itself and every open ancestor", async () => {
+  const { hook, calls } = recordingHook();
+  const root = createLegacyUnitOfWork(hook, { flush: undefined });
+  const child = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const grandchild = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: child,
+  });
+  assertStrictEquals(legacyUnitOfWorkParent(root), undefined);
+  assertStrictEquals(legacyUnitOfWorkParent(child), root);
+  assertStrictEquals(legacyUnitOfWorkParent(grandchild), child);
+
+  await root.stage({ kind: "write", path: "/cache/data/r" });
+  await child.stage({ kind: "remove", path: "/cache/data/c" });
+  await grandchild.stage({ kind: "bulk", reason: "nested" });
+  await child.stage({ kind: "write", path: "/cache/data/c2" });
+
+  assertEquals(calls, [
+    "/cache/data/r",
+    "/cache/data/c",
+    undefined,
+    "/cache/data/c2",
+  ]);
+  assertEquals(grandchild.staged(), [{ kind: "bulk", reason: "nested" }]);
+  assertEquals(child.staged(), [
+    { kind: "remove", path: "/cache/data/c" },
+    { kind: "bulk", reason: "nested" },
+    { kind: "write", path: "/cache/data/c2" },
+  ]);
+  assertEquals(root.staged(), [
+    { kind: "write", path: "/cache/data/r" },
+    { kind: "remove", path: "/cache/data/c" },
+    { kind: "bulk", reason: "nested" },
+    { kind: "write", path: "/cache/data/c2" },
+  ]);
+});
+
+Deno.test("createLegacyUnitOfWork: a child's commit and abandon only spend it; the root flushes", async () => {
+  const { hook } = recordingHook();
+  let flushes = 0;
+  const root = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      flushes++;
+      return Promise.resolve();
+    },
+  });
+  const committed = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const abandoned = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  await committed.stage({ kind: "write", path: "/cache/data/a" });
+  await committed.commit();
+  await abandoned.abandon();
+  assertEquals(flushes, 0);
+  await root.commit();
+  assertEquals(flushes, 1);
+});
+
+Deno.test("createLegacyUnitOfWork: a child cannot be given a flush", () => {
+  const { hook } = recordingHook();
+  const root = createLegacyUnitOfWork(hook, { flush: undefined });
+  assertThrows(
+    () =>
+      createLegacyUnitOfWork(hook, {
+        flush: () => Promise.resolve(),
+        parent: root,
+      }),
+    Error,
+    "a child unit of work cannot flush",
+  );
+});
+
+Deno.test("createLegacyUnitOfWork: a parent that is spent, bound to another hook, or not legacy makes a root", async () => {
+  const { hook } = recordingHook();
+  const other = recordingHook();
+  const spent = createLegacyUnitOfWork(hook, { flush: undefined });
+  await spent.commit();
+  const otherHook = createLegacyUnitOfWork(other.hook, { flush: undefined });
+  const foreign: UnitOfWork = {
+    stage: () => Promise.resolve(),
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [],
+  };
+  for (const parent of [spent, otherHook, foreign]) {
+    const unit = createLegacyUnitOfWork(hook, {
+      flush: () => Promise.resolve(),
+      parent,
+    });
+    assertStrictEquals(legacyUnitOfWorkParent(unit), undefined);
+    await unit.stage({ kind: "write", path: "/cache/data/a" });
+    assertEquals(otherHook.staged(), []);
+  }
+  const unbound = createLegacyUnitOfWork(undefined, {
+    flush: undefined,
+    parent: createLegacyUnitOfWork(undefined, { flush: undefined }),
+  });
+  assertStrictEquals(legacyUnitOfWorkParent(unbound), undefined);
+});
+
+Deno.test("createLegacyUnitOfWork: a change staged on a spent child goes to its nearest open ancestor", async () => {
+  const { hook, calls } = recordingHook();
+  const root = createLegacyUnitOfWork(hook, { flush: undefined });
+  const child = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const grandchild = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: child,
+  });
+  await grandchild.commit();
+  await child.abandon();
+  await grandchild.stage({ kind: "write", path: "/cache/data/late" });
+  assertEquals(calls, ["/cache/data/late"]);
+  assertEquals(root.staged(), [{ kind: "write", path: "/cache/data/late" }]);
+  assertEquals(child.staged(), []);
+  assertEquals(grandchild.staged(), []);
+});
+
+Deno.test("createLegacyUnitOfWork: with no open ancestor a spent child follows afterCommit", async () => {
+  const { hook, calls } = recordingHook();
+  const root = createLegacyUnitOfWork(hook, { flush: undefined });
+  const rejecting = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const forwarding = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+    afterCommit: "forward",
+  });
+  await rejecting.commit();
+  await forwarding.commit();
+  await root.commit();
+  await assertRejects(
+    () => rejecting.stage({ kind: "write", path: "/cache/data/x" }),
+    Error,
+    "unit of work already committed",
+  );
+  await forwarding.stage({ kind: "write", path: "/cache/data/y" });
+  assertEquals(calls, ["/cache/data/y"]);
+  assertEquals(root.staged(), []);
+});
+
+Deno.test("createLegacyUnitOfWork: ending a root waits for a child's mark in flight", async () => {
+  const { hook, holdNext, pending } = recordingHook();
+  let pendingAtFlush: number | undefined;
+  const root = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      pendingAtFlush = pending();
+      return Promise.resolve();
+    },
+  });
+  const child = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const release = holdNext();
+  const stage = child.stage({ kind: "write", path: "/cache/data/a" });
+  const commit = root.commit();
+  release();
+  await stage;
+  await commit;
+  assertEquals(pendingAtFlush, 0);
 });

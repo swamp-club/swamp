@@ -64,6 +64,12 @@ export interface UnitOfWorkProbe {
    * A listener that rejects makes that commit reject with the same error.
    */
   onCommit(listener: () => Promise<void>): void;
+  /**
+   * Runs `listener` each time the unit finishes abandoning downstream: the
+   * legacy adapter's flush, or a commit-log adapter's discard. A listener
+   * that rejects makes that abandon reject with the same error.
+   */
+  onAbandon(listener: () => Promise<void>): void;
 }
 
 /** Builds a fresh probe for each contract case. */
@@ -80,17 +86,14 @@ const WRITE_A: StagedChange = { kind: "write", path: "/cache/data/a" };
 const REMOVE_B: StagedChange = { kind: "remove", path: "/cache/data/b" };
 const BULK: StagedChange = { kind: "bulk", reason: "contract bulk" };
 
-async function assertSpent(unit: UnitOfWork): Promise<void> {
-  await assertRejects(
-    () => unit.stage(REMOVE_B),
-    Error,
-    "unit of work already committed",
-  );
-  await assertRejects(
-    () => unit.commit(),
-    Error,
-    "unit of work already committed",
-  );
+async function assertSpent(
+  unit: UnitOfWork,
+  ended: "committed" | "abandoned",
+): Promise<void> {
+  const message = `unit of work already ${ended}`;
+  await assertRejects(() => unit.stage(REMOVE_B), Error, message);
+  await assertRejects(() => unit.commit(), Error, message);
+  await assertRejects(() => unit.abandon(), Error, message);
 }
 
 const CASES: readonly ContractCase[] = [
@@ -140,7 +143,7 @@ const CASES: readonly ContractCase[] = [
       });
       await unit.stage(WRITE_A);
       await unit.commit();
-      await assertSpent(unit);
+      await assertSpent(unit, "committed");
       assertEquals(commits, 1);
       assertEquals(unit.staged(), [WRITE_A]);
     },
@@ -153,7 +156,56 @@ const CASES: readonly ContractCase[] = [
       await unit.stage(WRITE_A);
       const rejected = await assertRejects(() => unit.commit());
       assertStrictEquals(rejected, error);
-      await assertSpent(unit);
+      await assertSpent(unit, "committed");
+    },
+  },
+  {
+    name: "abandon happens once and spends the unit",
+    run: async ({ unit, onAbandon, onCommit }) => {
+      let abandons = 0;
+      let commits = 0;
+      onAbandon(() => {
+        abandons++;
+        return Promise.resolve();
+      });
+      onCommit(() => {
+        commits++;
+        return Promise.resolve();
+      });
+      await unit.stage(WRITE_A);
+      await unit.abandon();
+      await assertSpent(unit, "abandoned");
+      assertEquals(abandons, 1);
+      assertEquals(commits, 0);
+      assertEquals(unit.staged(), [WRITE_A]);
+    },
+  },
+  {
+    name: "a failed abandon spends the unit",
+    run: async ({ unit, onAbandon }) => {
+      const error = new Error("abandon failed");
+      onAbandon(() => Promise.reject(error));
+      await unit.stage(WRITE_A);
+      const rejected = await assertRejects(() => unit.abandon());
+      assertStrictEquals(rejected, error);
+      await assertSpent(unit, "abandoned");
+    },
+  },
+  {
+    name: "abandon waits for a stage in flight",
+    run: async ({ unit, holdNext, pendingForwards, onAbandon }) => {
+      const release = holdNext();
+      const stage = unit.stage(WRITE_A);
+      let pendingAtAbandon: number | undefined;
+      onAbandon(() => {
+        pendingAtAbandon = pendingForwards();
+        return Promise.resolve();
+      });
+      const abandon = unit.abandon();
+      release();
+      await stage;
+      await abandon;
+      assertEquals(pendingAtAbandon, 0);
     },
   },
   {

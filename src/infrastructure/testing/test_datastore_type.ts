@@ -42,6 +42,15 @@ export interface TestDatastoreType {
   dispose: () => void;
 }
 
+/** Options for {@link registerTestDatastoreType}. */
+export interface TestDatastoreTypeOptions {
+  /**
+   * Called each time one of the type's locks is released, including at the
+   * end of `withLock`, so a test can place pushes relative to lock release.
+   */
+  onLockRelease?: () => void;
+}
+
 /**
  * Registers a per-run `@test/remote-<uuid>` datastore type whose sync
  * service is `remote.connect(cachePath)`. The cache lives at
@@ -50,7 +59,9 @@ export interface TestDatastoreType {
  */
 export function registerTestDatastoreType(
   remote: Pick<InMemoryRemote, "connect">,
+  options: TestDatastoreTypeOptions = {},
 ): TestDatastoreType {
+  const released = (): void => options.onLockRelease?.();
   const typeName = `@test/remote-${crypto.randomUUID()}`;
   datastoreTypeRegistry.register({
     type: typeName,
@@ -60,8 +71,17 @@ export function registerTestDatastoreType(
     createProvider: () => ({
       createLock: () => ({
         acquire: () => Promise.resolve(),
-        release: () => Promise.resolve(),
-        withLock: <T>(fn: () => Promise<T>) => fn(),
+        release: () => {
+          released();
+          return Promise.resolve();
+        },
+        withLock: async <T>(fn: () => Promise<T>) => {
+          try {
+            return await fn();
+          } finally {
+            released();
+          }
+        },
         inspect: () => Promise.resolve(null),
         forceRelease: () => Promise.resolve(true),
       }),

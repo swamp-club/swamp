@@ -1123,17 +1123,44 @@ operation inside a unit of work:
 - `LibSwampContext.openUnitOfWork()` opens one per operation. Children from
   `withTimeout` and `withSignal` keep the factory. A context built without one
   opens an unbound unit, which no repository stages into.
-- `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) is the only production code
-  that opens a scope. It runs each step of the use case's stream inside the
-  unit and commits once after a `completed` stream finishes. A stream that
-  yields `error`, throws, ends on another terminal or is stopped early is
-  abandoned, its marks already sent. `workflowRun` ends `suspended` or
-  `cancelled` too, so those runs abandon their unit. The step that moves the
-  push into `commit` must decide how a suspended run's state is pushed. Work
-  that outlives an abandoned unit's stream (a detached nested run) keeps
-  appending its changes to that unit while it runs; the marks still reach the
-  hook, so only memory is held, for the life of that work. That step should
-  release abandoned units too.
+- `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) opens a scope around each
+  use case. It runs each step of the use case's stream inside the unit and
+  commits once after a `completed` stream finishes. Every other ending calls
+  `abandon` once: the stream yields `error`, throws, ends on another terminal
+  (`workflowRun` ends `suspended` or `cancelled`), or the consumer stops early.
+  `result()` stops at `completed`, so most use cases end through abandon even
+  when they succeed. For legacy units the ending does not change what is
+  pushed, because the root decides. A Phase 3 unit that discards on abandon
+  must treat `completed` followed by `return()` as success, and decide what to
+  commit on `suspended` and `cancelled`.
+- `abandon` is on the port (swamp-club#3032): the operation ended without
+  completing, and the staged changes are not committed. It spends the unit like
+  `commit`. A legacy unit's changes have already reached the hook and today's
+  paths push them on failure too, so a legacy unit with a flush also flushes on
+  abandon. A Phase 3 commit-log unit discards instead; the difference is
+  deliberate. A change staged after a unit ended goes to its nearest open
+  ancestor, or follows `afterCommit`; an abandoned unit no longer collects work
+  that outlives its stream (a detached nested run).
+- **Root and child units (swamp-club#3032).** `runInRootUnitOfWork`
+  (`src/infrastructure/persistence/repo_unit_of_work.ts`) runs one command or
+  request in a root unit over `repoContext.markDirty` with the push as its
+  flush. It always ends the root: `commit` when the work resolved, `abandon`
+  when it threw, so a legacy root pushes once on every outcome, as the CLI and
+  serve do today. If the work threw and the push failed too, the work's error
+  is rethrown and the push error goes to `onFlushError` or a warn log; if only
+  the push failed, its error is thrown. A unit opened while a unit for the same
+  hook is ambient is a child: it forwards each change to the hook at once,
+  records it in itself and every open ancestor, and its `commit` and `abandon`
+  never flush. Nested use cases roll up the same way, and a nested
+  `runInRootUnitOfWork` opens a child, so nothing pushes twice. Composition
+  code stages its hand marks through the root: `root.stage({ kind: "bulk" })`
+  replaces a bare mark, and `root.stage({ kind: "write" | "remove", path })` a
+  per-path mark, each forwarded as the identical hook call. No CLI command or
+  serve handler uses the root yet; swamp-club#3033 (CLI) and swamp-club#3034
+  (serve) adopt it, switching on `rootUnit` rows in the use-case sync
+  characterization, which then check that the root staged every mark and that
+  pushes keep their place relative to lock release and gate exit
+  (`syncOrder`).
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`

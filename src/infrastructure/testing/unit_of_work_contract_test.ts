@@ -45,6 +45,7 @@ Deno.test("assertUnitOfWorkContract: names the failing case and keeps the origin
         return Promise.resolve();
       },
       commit: () => Promise.resolve(),
+      abandon: () => Promise.resolve(),
       staged: () => [...changes],
     };
     return {
@@ -54,6 +55,7 @@ Deno.test("assertUnitOfWorkContract: names the failing case and keeps the origin
       holdNext: () => () => {},
       pendingForwards: () => 0,
       onCommit: () => {},
+      onAbandon: () => {},
     };
   };
 
