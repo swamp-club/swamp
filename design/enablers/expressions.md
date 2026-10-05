@@ -301,6 +301,19 @@ latest local on-disk state, with no cache of their own to go stale. The
 `model.*.resource` and `model.*.file` patterns are **deprecated** and will be
 removed in a future release.
 
+Data carries a `modelName` tag that records the model's name at write time and
+is not updated when a model instance is renamed (same id, new name). So for a
+name with no namespace prefix, `data.latest()`, `data.version()`,
+`data.listVersions()` and `data.findBySpec()` match the tag and also read the
+data of the definition with that name by type and id, and data written before
+the rename is still returned (swamp-club#3029). Namespaced (`ns:`) and wildcard
+(`*:`) names match the tag only. `data.listVersions()` is synchronous, so in
+the lightweight context — used when an expression reads no `model.*` or
+`file.*` namespace — it relies on async evaluation having resolved the
+definition first. That covers a model name written as a literal. A name
+computed at runtime, or a call on the synchronous evaluation path, matches the
+tag only there.
+
 ### data.latest(modelName, dataName)
 
 Returns the latest version of a model's data artifact:
@@ -424,8 +437,9 @@ a missing result is a bug that should fail loudly.
 
 ### data.findBySpec(modelName, specName)
 
-Returns all of a model's data records that match an output spec name. Shortcut
-for `data.query('modelName == "..." && specName == "..."')`. Often used in
+Returns all of a model's data records that match an output spec name. Close
+to `data.query('modelName == "..." && specName == "..."')`, but it also finds
+data written before the model instance was renamed (see above). Often used in
 `task.inputs` or `forEach.in` to iterate over variable-length output.
 
 ```yaml

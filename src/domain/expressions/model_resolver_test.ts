@@ -38,10 +38,15 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import type { DataRecord } from "../data/data_record.ts";
+import type { Namespace } from "../data/namespace.ts";
 import {
   createEphemeralStore,
   wrapWithEphemeral,
 } from "../../infrastructure/persistence/ephemeral_store.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-resolver-" });
@@ -2756,5 +2761,316 @@ Deno.test("buildContext: control-plane records stored under an @-prefixed type a
     assertEquals(await ctx.data.latest("grant-at", "grant-main"), null);
     assertEquals(ctx.data.specInstanceNames!("grant-at", "grant"), []);
     catalog.close();
+  });
+});
+
+// ============================================================================
+// Model instance renames (swamp-club#3029)
+// ============================================================================
+
+/** Counts name lookups, the definition walks the light context may make. */
+class CountingDefinitionRepository extends YamlDefinitionRepository {
+  nameLookups = 0;
+
+  override findByNameGlobal(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    this.nameLookups++;
+    return super.findByNameGlobal(name);
+  }
+}
+
+type ContextKind = "full" | "light";
+
+interface RenameFixture {
+  repoDir: string;
+  defRepo: CountingDefinitionRepository;
+  dataRepo: FileSystemUnifiedDataRepository;
+  type: ModelType;
+  /** The id the model kept when it was renamed from old-name to new-name. */
+  modelId: string;
+  /** Writes a version of `name` under `modelId` (or another id). */
+  write: (
+    name: string,
+    specName: string,
+    modelName: string,
+    modelId?: string,
+  ) => Promise<void>;
+  /** Builds a context of `kind` over a freshly populated catalog. */
+  context: (kind: ContextKind) => Promise<ExpressionContext>;
+}
+
+/**
+ * A model renamed from old-name to new-name: its definition is saved under
+ * the new name, and data is written by the caller with whichever modelName
+ * tag the write would have carried.
+ */
+async function withRenamedModel(
+  fn: (fixture: RenameFixture) => Promise<void>,
+  namespace?: Namespace,
+): Promise<void> {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new CountingDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+        undefined,
+        undefined,
+        namespace,
+      );
+      const type = ModelType.create("test/model");
+      const model = Definition.create({
+        name: "new-name",
+        globalArguments: {},
+      });
+      await defRepo.save(type, model);
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await fn({
+        repoDir,
+        defRepo,
+        dataRepo,
+        type,
+        modelId: model.id,
+        write: async (name, specName, modelName, modelId = model.id) => {
+          await dataRepo.save(
+            type,
+            modelId,
+            Data.create({
+              name,
+              contentType: "application/json",
+              lifetime: "infinite",
+              garbageCollection: 10,
+              tags: { type: "resource", modelName, specName },
+              ownerDefinition: owner,
+            }),
+            new TextEncoder().encode(JSON.stringify({ modelName })),
+          );
+        },
+        context: async (kind) => {
+          catalog.invalidate();
+          await dqs.query('name == ""');
+          const resolver = new ModelResolver(defRepo, {
+            repoDir,
+            dataRepo,
+            dataQueryService: dqs,
+          });
+          return kind === "full"
+            ? await resolver.buildContext(new RunSensitiveValues())
+            : resolver.buildLightContext(new RunSensitiveValues());
+        },
+      });
+    } finally {
+      catalog.close();
+    }
+  });
+}
+
+for (const kind of ["full", "light"] as const) {
+  Deno.test(`data accessors (${kind} context): return data written before the model instance was renamed (swamp-club#3029)`, async () => {
+    await withRenamedModel(async ({ write, context }) => {
+      await write("result", "result", "old-name");
+      await write("result", "result", "old-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+      await ctx.data.resolveModelNames?.(
+        'data.listVersions("new-name", "result")',
+      );
+
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => [r.name, r.version]), [["result", 2]]);
+      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 2]);
+      assertEquals(
+        (await ctx.data.version("new-name", "result", 1))?.version,
+        1,
+      );
+      assertEquals((await ctx.data.latest("new-name", "result"))?.version, 2);
+    });
+  });
+
+  Deno.test(`data accessors (${kind} context): return each version once when written under both names`, async () => {
+    await withRenamedModel(async ({ write, context }) => {
+      await write("result", "result", "old-name");
+      await write("result", "result", "old-name");
+      await write("result", "result", "new-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+      await ctx.data.resolveModelNames?.(
+        'data.listVersions("new-name", "result")',
+      );
+
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => [r.name, r.version]), [["result", 3]]);
+      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 2, 3]);
+      assertEquals(
+        (await ctx.data.version("new-name", "result", 1))?.version,
+        1,
+      );
+      assertEquals(
+        (await ctx.data.version("new-name", "result", 3))?.version,
+        3,
+      );
+      assertEquals((await ctx.data.latest("new-name", "result"))?.version, 3);
+    });
+  });
+
+  Deno.test(`data accessors (${kind} context): keep orphan data under an earlier id and exclude other models`, async () => {
+    await withRenamedModel(async ({ defRepo, type, write, context }) => {
+      const orphanId = crypto.randomUUID();
+      await write("orphan", "result", "new-name", orphanId);
+      await write("result", "result", "old-name");
+      const other = Definition.create({ name: "other", globalArguments: {} });
+      await defRepo.save(type, other);
+      await write("theirs", "result", "other", other.id);
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => r.name).sort(), ["orphan", "result"]);
+      assertEquals(
+        (await ctx.data.version("new-name", "orphan", 1))?.modelId,
+        orphanId,
+      );
+    });
+  });
+
+  Deno.test(`data accessors (${kind} context): a name with no definition reads by name tag only`, async () => {
+    await withRenamedModel(async ({ write, context }) => {
+      await write("result", "result", "old-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+
+      // old-name has no definition now; its name tag still matches.
+      const bySpec = await ctx.data.findBySpec("old-name", "result");
+      assertEquals(bySpec.map((r) => r.name), ["result"]);
+      assertEquals(ctx.data.listVersions("old-name", "result"), [1]);
+      assertEquals(await ctx.data.findBySpec("ghost", "result"), []);
+      assertEquals(await ctx.data.version("ghost", "result", 1), null);
+    });
+  });
+
+  Deno.test(`data accessors (${kind} context): namespaced and wildcard names read by name tag only`, async () => {
+    await withRenamedModel(async ({ dataRepo, write, context }) => {
+      await write("result", "result", "old-name");
+      await write("result", "result", "new-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+      const named = `${dataRepo.namespace}:new-name`;
+      await ctx.data.resolveModelNames?.(
+        `data.listVersions("${named}", "result")`,
+      );
+
+      for (const ref of [named, "*:new-name"]) {
+        assertEquals(ctx.data.listVersions(ref, "result"), [2]);
+        assertEquals(await ctx.data.version(ref, "result", 1), null);
+      }
+    }, "team" as Namespace);
+  });
+}
+
+Deno.test("data accessors (full context): make no definition lookup", async () => {
+  await withRenamedModel(async ({ defRepo, write, context }) => {
+    await write("result", "result", "old-name");
+    const ctx = await context("full");
+    assertExists(ctx.data);
+    const before = defRepo.nameLookups;
+
+    await ctx.data.resolveModelNames?.(
+      'data.listVersions("new-name", "result") + data.latest("ghost", "x")',
+    );
+    await ctx.data.findBySpec("new-name", "result");
+    await ctx.data.version("ghost", "result", 1);
+    await ctx.data.latest("new-name", "result");
+    ctx.data.listVersions("new-name", "result");
+    assertEquals(defRepo.nameLookups, before);
+  });
+});
+
+Deno.test("data accessors (light context): look each name up once, misses included", async () => {
+  await withRenamedModel(async ({ defRepo, write, context }) => {
+    await write("result", "result", "old-name");
+    const ctx = await context("light");
+    assertExists(ctx.data);
+    assertEquals(defRepo.nameLookups, 0);
+
+    await Promise.all([
+      ctx.data.findBySpec("new-name", "result"),
+      ctx.data.latest("new-name", "result"),
+    ]);
+    await ctx.data.version("new-name", "result", 1);
+    await ctx.data.findBySpec("ghost", "result");
+    await ctx.data.latest("ghost", "result");
+    await ctx.data.resolveModelNames?.(
+      'data.listVersions("new-name", "result") + data.listVersions("ghost", "x")',
+    );
+    assertEquals(defRepo.nameLookups, 2);
+  });
+});
+
+Deno.test("data.listVersions (light context): reads by name tag only until the name is resolved", async () => {
+  await withRenamedModel(async ({ write, context }) => {
+    await write("result", "result", "old-name");
+    const ctx = await context("light");
+    assertExists(ctx.data);
+
+    assertEquals(ctx.data.listVersions("new-name", "result"), []);
+    await ctx.data.latest("new-name", "result");
+    assertEquals(ctx.data.listVersions("new-name", "result"), [1]);
+  });
+});
+
+Deno.test("data.listVersions (light context): async evaluation resolves the name first (swamp-club#3029)", async () => {
+  await withRenamedModel(async ({ write, context }) => {
+    await write("result", "result", "old-name");
+    await write("result", "result", "old-name");
+    const ctx = await context("light");
+
+    const result = await new CelEvaluator().evaluateAsync(
+      'data.listVersions("new-name", "result")',
+      ctx as unknown as Record<string, unknown>,
+    );
+    assertEquals(result, [1, 2]);
+  });
+});
+
+Deno.test("data accessors (light context): a name backed only by an auto-definition reads by name tag only", async () => {
+  await withRenamedModel(async ({ repoDir, defRepo, type, write, context }) => {
+    const autoRepo = new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+      false,
+    );
+    const auto = Definition.create({ name: "auto-model", globalArguments: {} });
+    await autoRepo.save(type, auto);
+    assertEquals(
+      (await defRepo.findByNameGlobal("auto-model"))?.definition.id,
+      auto.id,
+    );
+    await write("result", "result", "auto-old", auto.id);
+    await write("tagged", "result", "auto-model", auto.id);
+    const ctx = await context("light");
+    assertExists(ctx.data);
+
+    const bySpec = await ctx.data.findBySpec("auto-model", "result");
+    assertEquals(bySpec.map((r) => r.name), ["tagged"]);
+    assertEquals(await ctx.data.latest("auto-model", "result"), null);
+  });
+});
+
+Deno.test("data accessors (light context): control-plane definitions are not read by identity", async () => {
+  await withRenamedModel(async ({ defRepo, write, context }) => {
+    const grantType = ModelType.create("@swamp/grant");
+    const grant = Definition.create({ name: "grant-new", globalArguments: {} });
+    await defRepo.save(grantType, grant);
+    await write("grant-main", "grant", "grant-old", grant.id);
+    const ctx = await context("light");
+    assertExists(ctx.data);
+
+    assertEquals(await ctx.data.findBySpec("grant-new", "grant"), []);
+    assertEquals(await ctx.data.latest("grant-new", "grant-main"), null);
   });
 });
