@@ -209,7 +209,8 @@ export const UNGATED_PUSH_HANDLERS: ReadonlySet<string> = new Set([
   // start — nothing can overlap it.
   "hydrateLocalCache",
   // The gate's own plumbing: this helper contains the pushChanged call every
-  // gated handler routes through.
+  // gated handler routes through. Its callers take the gate: dispatch-gated
+  // handlers at dispatch, run paths around the call (swamp-club#3035).
   "pushChangedToRemote",
 ]);
 

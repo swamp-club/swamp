@@ -1205,12 +1205,25 @@ operation inside a unit of work:
   stage their per-path re-marks through `stageWritesThenPush`
   (`src/serve/stage_writes_then_push.ts`), a root that covers only the marks and
   the push, as a failed write pushed nothing before. Its flush pushes only once
-  every mark was staged, because a legacy root also flushes on abandon. The
+  every mark was staged, because a legacy root also flushes on abandon.
+- **Serve success-only, method run and resume roots (swamp-club#3035).** The
+  handlers that push only after a successful reply (model, vault and workflow
+  create, edit and delete, and `vault.migrate`) run their work in a root whose
+  flush pushes only once that reply was sent. A root always commits there,
+  because those handlers answer their own failures, so the flush checks the
+  reply rather than the outcome. `model.method.run` runs the run in a root
+  whose flush is its push under the gate's shared mode, once the run completed
+  (a use case that reports an error still completes). A run that took model
+  locks still pushes through the locks' flush when it releases them, outside
+  the root. `workflow.resume` and the detached resume (`startDetachedResume`,
+  `src/serve/resume_launcher.ts`) push on every outcome as their root's flush.
+  The detached resume's root ends after its terminal frame; its cleanup and
+  the parent's auto-resume run after that, so the parent's resume opens a root
+  of its own rather than one nested in the child's, which would throw. If its
+  root cannot open, it still ends its stream with an error frame. The
   serve pushes not yet a root's flush are pinned in `PINNED_SERVE_RAW_PUSHES`
-  (`integration/serve_root_unit_rules_test.ts`): handlers that push only on
-  success after their reply (model, vault and workflow create, edit and delete,
-  and `vault.migrate`) and the model method run and resume paths
-  (swamp-club#3035), plus background garbage collection.
+  (`integration/serve_root_unit_rules_test.ts`): background garbage collection
+  only.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`

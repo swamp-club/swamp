@@ -28,7 +28,6 @@ import { mapWorkflowExecutionEvent } from "../libswamp/mod.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { serializeEvent } from "./serializer.ts";
-import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
@@ -48,6 +47,7 @@ import {
   type DecisionSubject,
   emitSystemAuditEvent,
   lockTimeoutErrorForClient,
+  pushChangedToRemote,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
@@ -64,6 +64,7 @@ import {
 import { principalToString } from "../domain/access/principal.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "resume"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -221,115 +222,132 @@ export async function startDetachedResume(
       ctx.syncGate,
     );
 
-    let ephemeral: ReturnType<typeof createEphemeralStore> | null = null;
+    // Assigned in the root below, which control flow analysis cannot see.
+    let ephemeral = null as ReturnType<typeof createEphemeralStore> | null;
     let terminal: BufferTerminal = { kind: "done" };
     try {
-      const deps = await createWorkflowRunDeps(
-        ctx.repoDir,
+      // The root covers the resume and its terminal frame; its flush is the
+      // post-resume push. The cleanup and the parent's auto-resume run after
+      // it ends, so that resume opens a root of its own (swamp-club#3035).
+      await runInRootUnitOfWork(
         ctx.repoContext,
-        ctx.datastoreConfig,
-        stepLockHook,
-        ctx.runTracker,
+        {
+          flush: () =>
+            withSharedSyncGate(
+              ctx.syncGate,
+              () =>
+                pushChangedToRemote(ctx, {
+                  onError: (error) =>
+                    logger.warn(
+                      "Post-resume push failed; terminal status may be delayed: {error}",
+                      { error },
+                    ),
+                }),
+            ),
+        },
+        async () => {
+          try {
+            const deps = await createWorkflowRunDeps(
+              ctx.repoDir,
+              ctx.repoContext,
+              ctx.datastoreConfig,
+              stepLockHook,
+              ctx.runTracker,
+            );
+
+            ephemeral = createEphemeralStore(
+              ctx.repoContext.unifiedDataRepo.namespace,
+              { isResume: true },
+            );
+
+            const service = deps.createExecutionService(
+              workflowRepo,
+              runRepo,
+              ctx.repoDir,
+              ctx.repoContext.catalogStore,
+              ephemeral.repo,
+              ephemeral.catalog,
+            );
+
+            const doResume = async () => {
+              for await (
+                const event of service.resume(workflowName, resolvedRun.id, {
+                  signal: runController.signal,
+                  inputs: request.inputs ?? {},
+                  fromStep: request.from,
+                  suspendedOnly: request.suspendedOnly,
+                  instanceId: ctx.instanceId,
+                })
+              ) {
+                const mapped = mapWorkflowExecutionEvent(event, runRepo);
+                const serialized = serializeEvent(
+                  mapped as { kind: string; [key: string]: unknown },
+                );
+                buffer.push(serialized);
+              }
+            };
+
+            if (request.traceparent) {
+              const headers: Record<string, string> = {
+                traceparent: request.traceparent,
+              };
+              if (request.tracestate) headers.tracestate = request.tracestate;
+              const traceCtx = extractTraceContext(headers);
+              await runWithParentTrace(traceCtx, doResume);
+            } else {
+              await doResume();
+            }
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+              terminal = {
+                kind: "error",
+                code: "cancelled",
+                message: "Operation was cancelled",
+              };
+            } else if (error instanceof LockTimeoutError) {
+              const lt = lockTimeoutErrorForClient(error);
+              terminal = {
+                kind: "error",
+                code: lt.code,
+                message: lt.message,
+                details: lt.details,
+              };
+            } else if (error instanceof NestedRunPendingError) {
+              // The resume checks the nested runs again, and one may have
+              // changed since the check above.
+              terminal = {
+                kind: "error",
+                code: "workflow_resume_failed",
+                message: await nestedPendingRefusalForClient(
+                  error,
+                  request.canReadWorkflow,
+                ),
+              };
+            } else {
+              terminal = {
+                kind: "error",
+                code: "workflow_resume_failed",
+                message: sanitizeErrorForClient(error),
+              };
+            }
+          } finally {
+            buffer.finish(terminal);
+          }
+        },
       );
-
-      ephemeral = createEphemeralStore(
-        ctx.repoContext.unifiedDataRepo.namespace,
-        { isResume: true },
-      );
-
-      const service = deps.createExecutionService(
-        workflowRepo,
-        runRepo,
-        ctx.repoDir,
-        ctx.repoContext.catalogStore,
-        ephemeral.repo,
-        ephemeral.catalog,
-      );
-
-      const doResume = async () => {
-        for await (
-          const event of service.resume(workflowName, resolvedRun.id, {
-            signal: runController.signal,
-            inputs: request.inputs ?? {},
-            fromStep: request.from,
-            suspendedOnly: request.suspendedOnly,
-            instanceId: ctx.instanceId,
-          })
-        ) {
-          const mapped = mapWorkflowExecutionEvent(event, runRepo);
-          const serialized = serializeEvent(
-            mapped as { kind: string; [key: string]: unknown },
-          );
-          buffer.push(serialized);
-        }
-      };
-
-      if (request.traceparent) {
-        const headers: Record<string, string> = {
-          traceparent: request.traceparent,
-        };
-        if (request.tracestate) headers.tracestate = request.tracestate;
-        const traceCtx = extractTraceContext(headers);
-        await runWithParentTrace(traceCtx, doResume);
-      } else {
-        await doResume();
-      }
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        terminal = {
-          kind: "error",
-          code: "cancelled",
-          message: "Operation was cancelled",
-        };
-      } else if (error instanceof LockTimeoutError) {
-        const lt = lockTimeoutErrorForClient(error);
-        terminal = {
-          kind: "error",
-          code: lt.code,
-          message: lt.message,
-          details: lt.details,
-        };
-      } else if (error instanceof NestedRunPendingError) {
-        // The resume checks the nested runs again, and one may have changed
-        // since the check above.
-        terminal = {
-          kind: "error",
-          code: "workflow_resume_failed",
-          message: await nestedPendingRefusalForClient(
-            error,
-            request.canReadWorkflow,
-          ),
-        };
-      } else {
+      // The resume answers its own errors, so only a root that could not
+      // open lands here before the terminal frame was sent.
+      if (!buffer.finished) {
         terminal = {
           kind: "error",
           code: "workflow_resume_failed",
           message: sanitizeErrorForClient(error),
         };
       }
+      throw error;
     } finally {
-      buffer.finish(terminal);
-      if (ctx.syncService) {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
-        const syncService = ctx.syncService;
-        try {
-          await withSharedSyncGate(
-            ctx.syncGate,
-            () => syncService.pushChanged({ namespace }),
-          );
-        } catch (pushErr) {
-          logger.warn(
-            "Post-resume push failed; terminal status may be delayed: {error}",
-            {
-              error: pushErr instanceof Error
-                ? pushErr.message
-                : String(pushErr),
-            },
-          );
-        }
-      }
+      if (!buffer.finished) buffer.finish(terminal);
       try {
         ephemeral?.dispose();
       } catch (disposeErr) {

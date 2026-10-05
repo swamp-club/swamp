@@ -95,24 +95,43 @@ export function handlerLibSwampContext(
   });
 }
 
+/** How {@link pushChangedToRemote} reports a failed push. */
+export interface PushChangedOptions {
+  /**
+   * Reports a failed push's message; by default a `serve.sync` warning.
+   * Handlers pass their own so their log category and text stay their own.
+   */
+  onError?: (error: string) => void;
+}
+
 /**
  * Pushes local data mutations to the remote datastore. Call after any
  * handler that writes data locally — without this push, mutations are
- * lost on cold boot when the local filesystem is ephemeral.
+ * lost on cold boot when the local filesystem is ephemeral. A failed push
+ * is reported, never thrown.
  */
 export async function pushChangedToRemote(
   ctx: ConnectionContext,
+  options: PushChangedOptions = {},
 ): Promise<void> {
-  if (!ctx.syncService) return;
+  const syncService = ctx.syncService;
+  if (!syncService) return;
   const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
     ? ctx.datastoreConfig.namespace
     : undefined;
   try {
-    await ctx.syncService.pushChanged({ namespace });
+    await syncService.pushChanged({ namespace });
   } catch (pushError) {
-    pushLogger.warn("Failed to push changes to remote datastore: {error}", {
-      error: pushError instanceof Error ? pushError.message : String(pushError),
-    });
+    const error = pushError instanceof Error
+      ? pushError.message
+      : String(pushError);
+    if (options.onError) {
+      options.onError(error);
+    } else {
+      pushLogger.warn("Failed to push changes to remote datastore: {error}", {
+        error,
+      });
+    }
   }
 }
 

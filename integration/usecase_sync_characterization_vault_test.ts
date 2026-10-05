@@ -64,9 +64,13 @@ async function editedVaultYaml(repos: RowRepos): Promise<string> {
 function vaultCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault create${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -85,9 +89,13 @@ function vaultCreateRow(managedConfig: boolean): AnyRow {
 function vaultEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault edit${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -115,9 +123,13 @@ function vaultMigrateRow(
 ): AnyRow {
   return row({
     name: `vault migrate${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
