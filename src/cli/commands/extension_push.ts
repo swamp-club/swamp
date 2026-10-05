@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
+  isStdinTty,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
@@ -44,9 +45,11 @@ import {
   RUBRIC_VERSION,
 } from "../../libswamp/mod.ts";
 import {
+  type AcceptedWarnings,
   createExtensionPushRenderer,
   renderExtensionPushCancelled,
 } from "../../presentation/renderers/extension_push.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   checkVersionBumpWithoutUpgrade,
@@ -69,12 +72,83 @@ interface ExtensionPushOptions extends GlobalOptions {
   extensionsDir?: string;
   yes?: boolean;
   force?: boolean;
+  acceptWarnings?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
   channel?: string;
   visibility?: string;
   versionSuffix?: string;
   skipUpgradeCheck?: boolean;
+}
+
+/** What the warnings gate decided for this run. */
+export type WarningsGateDecision =
+  | {
+    kind: "proceed";
+    /** True when `--accept-warnings` waived the warnings. */
+    accepted: boolean;
+    /** True when an interactive dry run should say what a real run would need. */
+    hint: boolean;
+  }
+  | { kind: "prompt" }
+  | { kind: "refuse"; message: string };
+
+/**
+ * Decides whether safety and review warnings stop, prompt, or pass a push.
+ *
+ * `--accept-warnings` is the only waiver; `--yes` and `--force` confirm the
+ * push and never enter this decision. A non-interactive run (`--json`, or
+ * stdin not a terminal) refuses rather than silently waiving, and names the
+ * flag it needs. A dry run exits exactly when the real run would but never
+ * prompts, because declining a prompt on a dry run confirms nothing.
+ */
+export function resolveWarningsGate(input: {
+  warningCount: number;
+  acceptWarnings: boolean;
+  dryRun: boolean;
+  outputMode: OutputMode;
+  stdinIsTty: () => boolean;
+}): WarningsGateDecision {
+  if (input.warningCount === 0) {
+    return { kind: "proceed", accepted: false, hint: false };
+  }
+  if (input.acceptWarnings) {
+    return { kind: "proceed", accepted: true, hint: false };
+  }
+  if (input.outputMode === "json" || !input.stdinIsTty()) {
+    const noun = input.warningCount === 1 ? "warning" : "warnings";
+    return {
+      kind: "refuse",
+      message:
+        `Extension has ${input.warningCount} ${noun} that need review. Pass --accept-warnings to acknowledge them and continue, or run interactively in a terminal to answer the prompt.`,
+    };
+  }
+  if (input.dryRun) {
+    return { kind: "proceed", accepted: false, hint: true };
+  }
+  return { kind: "prompt" };
+}
+
+/**
+ * Collects the warnings the gate covers into the record the summary prints
+ * when they are accepted. Review findings drop their report skeleton: the
+ * `reviewRuleWarnings` document already carries it, and repeating it would
+ * bury the summary.
+ */
+export function buildAcceptedWarnings(prepared: {
+  safetyWarnings: SafetyIssue[];
+  reviewRulesResult: { warnings: ReviewFinding[] };
+}): AcceptedWarnings {
+  return {
+    safety: prepared.safetyWarnings,
+    review: prepared.reviewRulesResult.warnings.map((w) => ({
+      ruleId: w.ruleId,
+      dimension: w.dimension,
+      severity: w.severity,
+      file: w.file,
+      message: w.message,
+    })),
+  };
 }
 
 /**
@@ -194,8 +268,15 @@ export const extensionPushCommand = new Command()
     "--extensions-dir <dir:string>",
     "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
   )
-  .option("-y, --yes", "Skip confirmation prompts")
-  .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
+  .option(
+    "-y, --yes",
+    "Confirm the push without prompting (does not accept warnings)",
+  )
+  .option("-f, --force", "Alias for --yes")
+  .option(
+    "--accept-warnings",
+    "Accept safety and review warnings and continue; the summary records which were accepted",
+  )
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
     "--visibility <visibility:string>",
@@ -546,16 +627,23 @@ export const extensionPushCommand = new Command()
       renderer.renderSafetyWarnings(prepared.safetyWarnings);
     }
 
-    // 6c. A single consolidated confirmation covers safety and review-rule
-    // warnings, so the user isn't prompted twice. Skipped on --dry-run, which
-    // performs no push and so has nothing to confirm.
-    const hasBlockableWarnings = prepared.safetyWarnings.length > 0 ||
-      prepared.reviewRulesResult.warnings.length > 0;
-    if (
-      hasBlockableWarnings && !prepared.isDryRun && !options.yes &&
-      !options.force &&
-      cliCtx.outputMode === "log"
-    ) {
+    // 6c. One gate covers safety and review-rule warnings, so the user is
+    // never prompted twice. --yes confirms the push only; --accept-warnings
+    // is the sole waiver, and the summary records what it waived. The
+    // warnings were rendered above, so a refused non-interactive run still
+    // shows them (and the review skeleton) ahead of the error.
+    const gatedWarnings = buildAcceptedWarnings(prepared);
+    const gate = resolveWarningsGate({
+      warningCount: gatedWarnings.safety.length + gatedWarnings.review.length,
+      acceptWarnings: options.acceptWarnings ?? false,
+      dryRun: prepared.isDryRun,
+      outputMode: cliCtx.outputMode,
+      stdinIsTty: isStdinTty,
+    });
+    if (gate.kind === "refuse") {
+      throw new UserError(gate.message);
+    }
+    if (gate.kind === "prompt") {
       const confirmed = await promptConfirmation(
         "Continue with push despite warnings?",
       );
@@ -564,6 +652,12 @@ export const extensionPushCommand = new Command()
         return;
       }
     }
+    if (gate.kind === "proceed" && gate.hint) {
+      renderer.renderAcceptWarningsHint();
+    }
+    const acceptedWarnings = gate.kind === "proceed" && gate.accepted
+      ? gatedWarnings
+      : undefined;
 
     // 6d. Version-drift check (advisory warning only)
     // Fetch the last-published version from the registry to compare
@@ -627,6 +721,7 @@ export const extensionPushCommand = new Command()
         version: prepared.manifest.version,
         archiveSize: prepared.archiveBytes.length,
         visibility: prepared.resolvedData.visibility,
+        acceptedWarnings,
       });
       return;
     }
@@ -653,7 +748,7 @@ export const extensionPushCommand = new Command()
         releaseNotes: options.releaseNotes,
         channel: options.channel,
       }),
-      renderer.handlers(),
+      renderer.handlers({ acceptedWarnings }),
     );
 
     cliCtx.logger.debug("Extension push command completed");
