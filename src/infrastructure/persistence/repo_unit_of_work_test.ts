@@ -159,12 +159,14 @@ Deno.test("runInRootUnitOfWork: a use case's unit inside the root is a child tha
   const push = countingFlush();
   let child: UnitOfWork | undefined;
   let rootSeen: RootUnitOfWork | undefined;
+  let rootUnit: UnitOfWork | undefined;
   await runInRootUnitOfWork(
     { markDirty: hook },
     { flush: push.flush },
     async (root) => {
       rootSeen = root;
-      assertStrictEquals(currentUnitOfWork(), root);
+      // fn gets a view of the root; the ambient unit is the root itself.
+      rootUnit = currentUnitOfWork();
       child = openRepoUnitOfWork(hook);
       await child.stage({ kind: "write", path: "/cache/data/a" });
       await child.commit();
@@ -174,7 +176,7 @@ Deno.test("runInRootUnitOfWork: a use case's unit inside the root is a child tha
       assertEquals(push.calls(), 0);
     },
   );
-  assertStrictEquals(legacyUnitOfWorkParent(child!), rootSeen);
+  assertStrictEquals(legacyUnitOfWorkParent(child!), rootUnit);
   assertEquals(calls, ["/cache/data/a", "/cache/data/b"]);
   assertEquals(rootSeen!.staged(), [
     { kind: "write", path: "/cache/data/a" },
@@ -234,9 +236,10 @@ Deno.test("runInRootUnitOfWork: two concurrent roots stay separate", async () =>
       { flush: undefined },
       async (root) => {
         roots.push(root);
+        const rootUnit = currentUnitOfWork();
         await new Promise((resolve) => setTimeout(resolve, 0));
         const child = openRepoUnitOfWork(hook);
-        assertStrictEquals(legacyUnitOfWorkParent(child), root);
+        assertStrictEquals(legacyUnitOfWorkParent(child), rootUnit);
         await child.stage({ kind: "write", path });
         await child.commit();
       },
@@ -354,7 +357,10 @@ Deno.test("runInRootUnitOfWork: with no hook the root is unbound and still flush
     { markDirty: undefined },
     { flush: push.flush },
     async (root) => {
-      assertStrictEquals(legacyUnitOfWorkTarget(root as UnitOfWork), undefined);
+      assertStrictEquals(
+        legacyUnitOfWorkTarget(currentUnitOfWork()!),
+        undefined,
+      );
       await root.stage({ kind: "bulk", reason: "filesystem" });
     },
   );
@@ -399,13 +405,14 @@ Deno.test("runInRootUnitOfWork: a nested root without a push becomes a child tha
     { flush: outerPush.flush },
     async (root) => {
       outerRoot = root;
+      const rootUnit = currentUnitOfWork();
       await runInRootUnitOfWork(
         { markDirty: hook },
         { flush: undefined },
         async (inner) => {
           assertStrictEquals(
-            legacyUnitOfWorkParent(inner as UnitOfWork),
-            root as UnitOfWork,
+            legacyUnitOfWorkParent(currentUnitOfWork()!),
+            rootUnit,
           );
           await inner.stage({ kind: "write", path: "/cache/data/a" });
           assertEquals(outerPush.calls(), 0);
@@ -426,13 +433,13 @@ Deno.test("useUnitOfWorkFactoryForTesting: receives the flush, parent and role p
     seen.push(options);
     return createLegacyUnitOfWork(markDirty, options);
   });
-  let root: RootUnitOfWork | undefined;
+  let root: UnitOfWork | undefined;
   try {
     await runInRootUnitOfWork(
       { markDirty: hook },
       { flush: push.flush },
-      (r) => {
-        root = r;
+      () => {
+        root = currentUnitOfWork();
         openRepoUnitOfWork(hook);
         return Promise.resolve();
       },
@@ -455,13 +462,14 @@ Deno.test("openRepoUnitOfWork: when the ambient unit has ended, the new unit rol
     { flush: undefined },
     async (root) => {
       rootSeen = root;
+      const rootUnit = currentUnitOfWork();
       const useCase = openRepoUnitOfWork(hook);
       // Work started in the use case's scope that outlives its unit.
       const { promise: go, resolve } = Promise.withResolvers<void>();
       const escaped = runInUnitOfWork(useCase, async () => {
         await go;
         const late = openRepoUnitOfWork(hook);
-        assertStrictEquals(legacyUnitOfWorkParent(late), root as UnitOfWork);
+        assertStrictEquals(legacyUnitOfWorkParent(late), rootUnit);
         await late.stage({ kind: "write", path: "/cache/data/late" });
         await late.commit();
       });
@@ -481,17 +489,18 @@ Deno.test("runInRootUnitOfWork: under an ended ambient unit with an open ancesto
   await runInRootUnitOfWork(
     { markDirty: hook },
     { flush: outerPush.flush },
-    async (root) => {
+    async () => {
+      const rootUnit = currentUnitOfWork();
       const useCase = openRepoUnitOfWork(hook);
       await useCase.commit();
       await runInUnitOfWork(useCase, () =>
         runInRootUnitOfWork(
           { markDirty: hook },
           { flush: undefined },
-          (inner) => {
+          () => {
             assertStrictEquals(
-              legacyUnitOfWorkParent(inner as UnitOfWork),
-              root as UnitOfWork,
+              legacyUnitOfWorkParent(currentUnitOfWork()!),
+              rootUnit,
             );
             return Promise.resolve();
           },
@@ -510,13 +519,212 @@ Deno.test("runInRootUnitOfWork: under an ended ambient unit with no open ancesto
     runInRootUnitOfWork(
       { markDirty: hook },
       { flush: push.flush },
-      (root) => {
+      () => {
         assertStrictEquals(
-          legacyUnitOfWorkParent(root as UnitOfWork),
+          legacyUnitOfWorkParent(currentUnitOfWork()!),
           undefined,
         );
         return Promise.resolve();
       },
     ));
+  assertEquals(push.calls(), 1);
+});
+
+/** A mark hook whose next call stays in flight until released. */
+function holdingHook(): {
+  hook: MarkDirtyHook;
+  holdNext: () => () => void;
+  settled: () => number;
+} {
+  let hold: Promise<void> | undefined;
+  let settled = 0;
+  return {
+    hook: async () => {
+      const held = hold;
+      hold = undefined;
+      await held;
+      settled++;
+    },
+    holdNext: () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      hold = promise;
+      return () => resolve();
+    },
+    settled: () => settled,
+  };
+}
+
+Deno.test("runInRootUnitOfWork: checkpoint waits for a mark in flight, including a child's, before it pushes", async () => {
+  const { hook, holdNext, settled } = holdingHook();
+  let settledAtCheckpoint: number | undefined;
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: undefined,
+      checkpoint: () => {
+        settledAtCheckpoint = settled();
+        return Promise.resolve();
+      },
+    },
+    async (root) => {
+      const releaseRoot = holdNext();
+      const rootMark = root.stage({ kind: "bulk", reason: "root" });
+      const child = openRepoUnitOfWork(hook);
+      const releaseChild = holdNext();
+      const childMark = child.stage({ kind: "write", path: "/cache/data/a" });
+      const checkpoint = root.checkpoint();
+      releaseChild();
+      releaseRoot();
+      await Promise.all([rootMark, childMark, checkpoint]);
+      await child.commit();
+    },
+  );
+  assertEquals(settledAtCheckpoint, 2);
+});
+
+Deno.test("runInRootUnitOfWork: two checkpoints then the end push three times, in order, and the root flushes once", async () => {
+  const { hook } = recordingHook();
+  const pushes: string[] = [];
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: () => {
+        pushes.push("flush");
+        return Promise.resolve();
+      },
+      checkpoint: () => {
+        pushes.push("checkpoint");
+        return Promise.resolve();
+      },
+    },
+    async (root) => {
+      await root.stage({ kind: "bulk", reason: "first" });
+      await root.checkpoint();
+      assertEquals(pushes, ["checkpoint"]);
+      await root.stage({ kind: "bulk", reason: "second" });
+      await root.checkpoint();
+      assertEquals(pushes, ["checkpoint", "checkpoint"]);
+    },
+  );
+  assertEquals(pushes, ["checkpoint", "checkpoint", "flush"]);
+});
+
+Deno.test("runInRootUnitOfWork: checkpoint throws when the root has no checkpoint option", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: push.flush },
+    async (root) => {
+      await assertRejects(
+        () => root.checkpoint(),
+        Error,
+        "opened without a checkpoint option",
+      );
+    },
+  );
+  assertEquals(push.calls(), 1);
+});
+
+Deno.test("runInRootUnitOfWork: checkpoint throws from a nested call, which is a child; the outer root owns it", async () => {
+  const { hook } = recordingHook();
+  let checkpoints = 0;
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: undefined,
+      checkpoint: () => {
+        checkpoints++;
+        return Promise.resolve();
+      },
+    },
+    async (root) => {
+      await runInRootUnitOfWork(
+        { markDirty: hook },
+        { flush: undefined },
+        async (inner) => {
+          await assertRejects(
+            () => inner.checkpoint(),
+            Error,
+            "the outer root owns the checkpoint",
+          );
+        },
+      );
+      await root.checkpoint();
+    },
+  );
+  assertEquals(checkpoints, 1);
+});
+
+Deno.test("runInRootUnitOfWork: a nested call given its own checkpoint throws instead of dropping it", async () => {
+  const { hook } = recordingHook();
+  const outerPush = countingFlush();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: outerPush.flush },
+    async () => {
+      const error = await assertRejects(() =>
+        runInRootUnitOfWork(
+          { markDirty: hook },
+          { flush: undefined, checkpoint: () => Promise.resolve() },
+          () => Promise.resolve(),
+        )
+      );
+      assertStringIncludes(String(error), "its own checkpoint");
+    },
+  );
+  assertEquals(outerPush.calls(), 1);
+});
+
+Deno.test("runInRootUnitOfWork: checkpoint throws after the root has ended", async () => {
+  const { hook } = recordingHook();
+  let checkpoints = 0;
+  let escaped: RootUnitOfWork | undefined;
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: undefined,
+      checkpoint: () => {
+        checkpoints++;
+        return Promise.resolve();
+      },
+    },
+    (root) => {
+      escaped = root;
+      return Promise.resolve();
+    },
+  );
+  await assertRejects(
+    () => escaped!.checkpoint(),
+    Error,
+    "after its root unit of work ended",
+  );
+  assertEquals(checkpoints, 0);
+});
+
+Deno.test("runInRootUnitOfWork: a failing checkpoint rejects inside fn, the root abandons, and the flush still runs", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  const checkpointError = new Error("checkpoint push failed");
+  let caughtInFn: unknown;
+  const rejected = await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      {
+        flush: push.flush,
+        checkpoint: () => Promise.reject(checkpointError),
+      },
+      async (root) => {
+        try {
+          await root.checkpoint();
+        } catch (error) {
+          caughtInFn = error;
+          throw error;
+        }
+      },
+    )
+  );
+  assertStrictEquals(caughtInFn, checkpointError);
+  assertStrictEquals(rejected, checkpointError);
   assertEquals(push.calls(), 1);
 });

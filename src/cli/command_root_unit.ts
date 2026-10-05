@@ -44,6 +44,12 @@ export interface CommandRootUnitOptions {
    * resolved, as a push that follows the mutation in sequence does.
    */
   pushWhen?: "always" | "completed";
+  /**
+   * The mid-command push the command performs today, run by
+   * `root.checkpoint()` (swamp-club#3053). Its error rejects inside `fn`, as
+   * the direct call did; it never reaches `onCleanupError`.
+   */
+  checkpoint?: () => Promise<void>;
   /** Releases the command's model locks after the root has ended. */
   release?: () => Promise<void>;
   /**
@@ -91,7 +97,10 @@ export async function runCommandInRootUnit<T>(
   let outcome: { value: T } | { error: unknown };
   try {
     outcome = {
-      value: await runInRootUnitOfWork(repoContext, { flush }, async (root) => {
+      value: await runInRootUnitOfWork(repoContext, {
+        flush,
+        checkpoint: options.checkpoint,
+      }, async (root) => {
         const value = await fn(root);
         completed = true;
         return value;

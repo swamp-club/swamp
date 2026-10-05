@@ -150,6 +150,11 @@ seconds.`,
     repoContext,
     {
       push: modelLocks?.push,
+      checkpoint: syncService
+        ? async () => {
+          await syncService.pushChanged({ namespace });
+        }
+        : undefined,
       release: modelLocks?.release,
       onCleanupError: (releaseError) => {
         cliCtx.logger.warn(
@@ -184,10 +189,10 @@ seconds.`,
 
       if (syncService) {
         await root.stage({ kind: "bulk", reason: "worker token revoke" });
-        // Published here; a root cannot push mid-command
-        // (PINNED_CLI_PUSH_CALLS). When a model lock is held, the root's lock
-        // push publishes again when the command ends.
-        await syncService.pushChanged({ namespace });
+        // Published here through the root's checkpoint (swamp-club#3053).
+        // When a model lock is held, the root's lock push publishes again when
+        // the command ends.
+        await root.checkpoint();
       }
     },
   );

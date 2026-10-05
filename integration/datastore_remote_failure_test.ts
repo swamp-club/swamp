@@ -59,6 +59,7 @@ import {
   pushManagedConfigChanges,
 } from "../src/cli/managed_config_sync.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
+import { UserError } from "../src/domain/errors.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -70,9 +71,14 @@ import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpe
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { saveData, saveModel } from "./serve_request_harness.ts";
 import {
+  baseline,
   cacheDir,
   type RowRepoOptions,
   type RowRepos,
+  runCli,
+  runCliRejecting,
+  settle,
+  syncOrder,
   UNSET_ENV,
   withRowRepos,
 } from "./usecase_sync_fixtures.ts";
@@ -996,3 +1002,140 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
     });
   });
 }
+
+// --- CLI token commands: a failed mid-command push ----------------------
+//
+// Access token mint and worker token create and revoke push mid-command,
+// before the read-back (swamp-club#3053 moves that push onto the root's
+// checkpoint). Recorded before the move: the injected error reaches the
+// caller unchanged, so the command exits as it did, and the root's
+// end-of-command lock push and release behave as before. A first mint or
+// create holds no model lock (its pull and release are the token's name
+// lock), so nothing pushes after the failure and the writes stay dirty.
+// Revoke holds the token's model lock, whose push publishes them.
+
+/** A's dirty paths with model ids and timestamps replaced. */
+async function dirtyShapeOnA(repos: RowRepos): Promise<string[]> {
+  return (await dirtyOnA(repos)).map((path) =>
+    path
+      .replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+        "<id>",
+      )
+      .replace(/\d{4}-\d{2}-\d{2}T[\d-]+Z/g, "<time>")
+  );
+}
+
+/** The dirty shape a first mint of `kind/name` leaves behind. */
+function mintedTokenShape(kind: string, name: string): string[] {
+  const data = `data/swamp/${kind}/<id>`;
+  return [
+    `auto-definitions/swamp/${kind}/${name}.yaml`,
+    ...[
+      "report-swamp-method-summary-json",
+      "report-swamp-method-summary",
+      "token-main",
+    ]
+      .flatMap((item) => [
+        `${data}/${item}/1/metadata.yaml`,
+        `${data}/${item}/1/raw`,
+        `${data}/${item}/latest`,
+      ]),
+    `definitions-evaluated/swamp/${kind}/${name}.yaml`,
+    `outputs/swamp/${kind}/mint/<id>-<time>.yaml`,
+  ];
+}
+
+/** Fails A's next push, runs the command, and returns the error it threw. */
+function runWithFailedPush(
+  repos: RowRepos,
+  args: string[],
+): Promise<unknown> {
+  repos.remote.failNext("push", new Error("injected push failure"), {
+    instance: "A",
+  });
+  return runCliRejecting({
+    args: [...args, "--repo-dir", repos.repoA, "--json"],
+  });
+}
+
+/** The error a failed push throws: the remote's own, not a UserError. */
+function assertInjectedPushError(error: unknown): void {
+  assertInstanceOf(error, Error);
+  assert(!(error instanceof UserError), "not a UserError");
+  assertEquals(error.message, "injected push failure");
+}
+
+Deno.test("access token mint: a failed mid-command push throws the push error, pushes nothing more, and keeps the token dirty (swamp-club#3053)", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    const base = baseline(repos);
+    const error = await runWithFailedPush(repos, [
+      "access",
+      "token",
+      "mint",
+      "tok1",
+      "--principal",
+      "user:adam",
+    ]);
+    assertInjectedPushError(error);
+    assertEquals(syncOrder(repos, base), ["pull", "release"]);
+    assertEquals(getRegisteredLockKeys(), [], "locks released");
+    assertEquals(
+      await dirtyShapeOnA(repos),
+      mintedTokenShape("server-token", "tok1"),
+    );
+  });
+});
+
+Deno.test("worker token create: a failed mid-command push throws the push error, pushes nothing more, and keeps the token dirty (swamp-club#3053)", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    const base = baseline(repos);
+    const error = await runWithFailedPush(repos, [
+      "worker",
+      "token",
+      "create",
+      "wt1",
+      "--duration",
+      "1h",
+    ]);
+    assertInjectedPushError(error);
+    assertEquals(syncOrder(repos, base), []);
+    assertEquals(getRegisteredLockKeys(), [], "locks released");
+    assertEquals(
+      await dirtyShapeOnA(repos),
+      mintedTokenShape("enrollment-token", "wt1"),
+    );
+  });
+});
+
+Deno.test("worker token revoke: a failed mid-command push throws the push error, then the lock push publishes and the lock is released (swamp-club#3053)", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    await runCli({
+      args: [
+        "worker",
+        "token",
+        "create",
+        "wt1",
+        "--duration",
+        "1h",
+        "--repo-dir",
+        repos.repoA,
+        "--json",
+      ],
+    });
+    await settle(repos);
+    const base = baseline(repos);
+    const error = await runWithFailedPush(repos, [
+      "worker",
+      "token",
+      "revoke",
+      "wt1",
+    ]);
+    assertInjectedPushError(error);
+    // The push is the root's flush, the model lock's push when the command
+    // ends, not runCliRejecting's best-effort flushDatastoreSync.
+    assertEquals(syncOrder(repos, base), ["pull", "push", "release"]);
+    assertEquals(getRegisteredLockKeys(), [], "locks released");
+    assertEquals(await dirtyOnA(repos), []);
+  });
+});

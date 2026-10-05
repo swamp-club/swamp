@@ -273,6 +273,11 @@ const CLI_ROOT_CALL =
   /\b(?:runCommandInRootUnit|runManagedConfigMutation)\s*\(/g;
 const LOCK_FLUSH_REFERENCE = /\blockResult\.flush\b/g;
 const PUSH_CALL = /\.pushChanged\s*\(/g;
+// Every `.checkpoint(` call, whatever the receiver is named, so a root's
+// mid-operation push (swamp-club#3053) can't escape the pin under another
+// parameter name. The catalog's WAL checkpoint shares the name and is
+// pinned in its own group.
+const CHECKPOINT_CALL = /\.checkpoint\s*\(/g;
 
 /** One key per non-comment match of `pattern` in files `include` keeps. */
 function referenceKeys(
@@ -839,10 +844,10 @@ const PINNED_CLI_PUSH_CALLS: readonly string[] = [
   "src/cli/commands/worker_prune.ts: workerPruneCommand",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
-  // Mid-command pushes: the token is published before it is read back (and
-  // revoked tokens before the lock push), and a root cannot push
-  // mid-command, since a nested root with its own push is refused
-  // (swamp-club#3032). The root still makes the end-of-command lock push.
+  // The root's checkpoint: the call sits in the checkpoint a command gives
+  // its root, a mid-command push that publishes the token before it is read
+  // back (and revoked tokens before the lock push) (swamp-club#3053). The
+  // root still makes the end-of-command lock push.
   "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
@@ -850,6 +855,23 @@ const PINNED_CLI_PUSH_CALLS: readonly string[] = [
   "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
   // Serve's start-up and token GC (swamp-club#3034 covers serve).
   "src/cli/commands/serve.ts: serveCommand (x2)",
+];
+
+// Every `.checkpoint(` call in src.
+const PINNED_CHECKPOINT_CALLS: readonly string[] = [
+  // A root's checkpoint (swamp-club#3053): the CLI commands that push
+  // mid-command. Serve needs none today.
+  "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
+  "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
+  "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  // The root running the checkpoint option it was given.
+  "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
+  // The catalog's SQLite WAL checkpoint, which shares the name and pushes
+  // nothing.
+  "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
+  "src/libswamp/data/gc.ts: createDataGcDeps",
+  "src/libswamp/data/prune.ts: createDataPruneDeps",
+  "src/libswamp/datastores/compact.ts: datastoreCompact",
 ];
 
 const files = await sourceFiles();
@@ -1180,8 +1202,19 @@ Deno.test("datastore write seams: pushes in CLI commands are pinned (swamp-club#
     referenceKeys(files, PUSH_CALL, inCliCommands),
     PINNED_CLI_PUSH_CALLS,
     "pushChanged calls in src/cli/commands",
-    "A CLI command pushes through its root unit's flush. A push outside one\n" +
-      "must be pinned here with the reason it cannot be the root's push.",
+    "A CLI command pushes through its root unit's flush or checkpoint. A\n" +
+      "push outside them must be pinned here with the reason it cannot be\n" +
+      "the root's push.",
+  );
+});
+
+Deno.test("datastore write seams: checkpoint calls are pinned (swamp-club#3053)", () => {
+  assertPinnedSet(
+    referenceKeys(files, CHECKPOINT_CALL, () => true),
+    PINNED_CHECKPOINT_CALLS,
+    ".checkpoint() calls",
+    "A mid-operation push goes through the root's checkpoint. Add the caller\n" +
+      "here, in the group it belongs to, with the push it replaces.",
   );
 });
 
@@ -1195,9 +1228,12 @@ Deno.test("datastore write seams: the reference scan counts calls per owner, not
       "  // runCommandInRootUnit(repoContext, {}, fn) in a comment",
       "  await syncService.pushChanged({ namespace });",
       "  await syncService.pushChanged({ namespace });",
+      "  await root.checkpoint();",
+      "  // await root.checkpoint() in a comment",
+      "  catalogStore.checkpoint();",
       "};",
     ],
-    owners: Array(6).fill("probeCommand"),
+    owners: Array(9).fill("probeCommand"),
   };
   assertEquals(referenceKeys([probe], CLI_ROOT_CALL, inCliCommands), [
     "src/cli/commands/probe.ts: probeCommand",
@@ -1206,4 +1242,7 @@ Deno.test("datastore write seams: the reference scan counts calls per owner, not
     "src/cli/commands/probe.ts: probeCommand (x2)",
   ]);
   assertEquals(referenceKeys([probe], PUSH_CALL, () => false), []);
+  assertEquals(referenceKeys([probe], CHECKPOINT_CALL, () => true), [
+    "src/cli/commands/probe.ts: probeCommand (x2)",
+  ]);
 });

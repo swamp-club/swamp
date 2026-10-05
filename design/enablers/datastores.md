@@ -1158,6 +1158,17 @@ operation inside a unit of work:
   replaces a bare mark, and `root.stage({ kind: "write" | "remove", path })` a
   per-path mark, each forwarded as the identical hook call. swamp-club#3034
   adopts it for serve.
+- **Root checkpoints (swamp-club#3053).** A root can push partway through:
+  `runInRootUnitOfWork` takes a `checkpoint` option, the mid-operation push
+  the caller makes, and `root.checkpoint()` waits for every mark the root and
+  its children sent before the call, then runs it. The root stays open and
+  still flushes once when it ends. A root opened without the option throws,
+  as does a nested call's child (the outer root owns the checkpoint) and a
+  nested call given its own checkpoint, so a checkpoint is never dropped. A
+  failing checkpoint rejects inside the work, as a direct push did.
+  `checkpoint` lives on `RootUnitOfWork` and the legacy adapter, not on the
+  domain `UnitOfWork` port: what a Phase 3 commit-log unit means by a partial
+  commit is a Phase 3 decision.
 - **CLI commands in root units (swamp-club#3033).** Every CLI write command
   runs its write section in `runCommandInRootUnit`
   (`src/cli/command_root_unit.ts`), whose flush is the push the command made
@@ -1176,10 +1187,11 @@ operation inside a unit of work:
     hides the command's own error.
   - Former bare marks are `root.stage({ kind: "bulk", reason })`. Access token
     mint and worker token create and revoke also push mid-command (mint and
-    create then read the token back). A root cannot push mid-command (a nested
-    root with its own push is refused), so that push stays a direct call,
-    pinned in `PINNED_CLI_PUSH_CALLS`, and the root makes the end-of-command
-    lock push.
+    create then read the token back). That push is the root's checkpoint
+    (`runCommandInRootUnit`'s `checkpoint` option, swamp-club#3053), pinned
+    in `PINNED_CHECKPOINT_CALLS` and under the checkpoint group of
+    `PINNED_CLI_PUSH_CALLS`, and the root still makes the end-of-command lock
+    push.
   - Commands on the global lock (data gc, data prune, workflow delete, the
     `--all` evaluates) still push through the process-exit coordinator and
     open no root.

@@ -219,6 +219,11 @@ export const accessTokenMintCommand = withRemoteOptions(
       repoContext,
       {
         push: modelLocks?.push,
+        checkpoint: syncService
+          ? async () => {
+            await syncService.pushChanged({ namespace });
+          }
+          : undefined,
         release: modelLocks?.release,
         onCleanupError: (releaseError) => {
           cliCtx.logger.warn(
@@ -260,10 +265,10 @@ export const accessTokenMintCommand = withRemoteOptions(
 
         if (syncService) {
           await root.stage({ kind: "bulk", reason: "access token mint" });
-          // Published here, before the read-back below; a root cannot push
-          // mid-command (PINNED_CLI_PUSH_CALLS). When a model lock is held, the
-          // root's lock push publishes again when the command ends.
-          await syncService.pushChanged({ namespace });
+          // Published here, before the read-back below, through the root's
+          // checkpoint (swamp-club#3053). When a model lock is held, the root's
+          // lock push publishes again when the command ends.
+          await root.checkpoint();
 
           repoContext.catalogStore.invalidate();
           const verifyResult = await findDefinitionByIdOrName(

@@ -215,3 +215,62 @@ Deno.test("runCommandInRootUnit: a use case's unit opened inside fn rolls up int
   assertEquals(staged, ["/cache/a", "bulk"]);
   assertEquals(events, ["mark /cache/a", "mark(bulk)", "push"]);
 });
+
+Deno.test("runCommandInRootUnit: the checkpoint pushes mid-command, then the root pushes and releases at the end", async () => {
+  const { events, repoContext, push, release } = recorder();
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push,
+      release,
+      checkpoint: () => {
+        events.push("checkpoint");
+        return Promise.resolve();
+      },
+    },
+    async (root) => {
+      await root.stage({ kind: "bulk", reason: "test" });
+      await root.checkpoint();
+      events.push("read back");
+    },
+  );
+  assertEquals(events, [
+    "mark(bulk)",
+    "checkpoint",
+    "read back",
+    "push",
+    "release",
+  ]);
+});
+
+Deno.test("runCommandInRootUnit: a failing checkpoint rejects inside fn, skips the cleanup handler, and the push and release still run", async () => {
+  const { events, repoContext, push, release } = recorder();
+  const cleanupErrors: unknown[] = [];
+  let caughtInFn: unknown;
+  const error = await assertRejects(
+    () =>
+      runCommandInRootUnit(
+        repoContext,
+        {
+          push,
+          release,
+          checkpoint: () => Promise.reject(new Error("checkpoint failed")),
+          onCleanupError: (cleanupError) => cleanupErrors.push(cleanupError),
+        },
+        async (root) => {
+          await root.stage({ kind: "bulk", reason: "test" });
+          try {
+            await root.checkpoint();
+          } catch (checkpointError) {
+            caughtInFn = checkpointError;
+            throw checkpointError;
+          }
+        },
+      ),
+    Error,
+    "checkpoint failed",
+  );
+  assertEquals(caughtInFn, error);
+  assertEquals(cleanupErrors, []);
+  assertEquals(events, ["mark(bulk)", "push", "release"]);
+});

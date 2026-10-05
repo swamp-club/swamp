@@ -231,7 +231,9 @@ Deno.test("withUnitOfWork: inside a root unit, a wrapped use case stages into a 
         return Promise.resolve();
       },
     },
-    async (root) => {
+    async () => {
+      // The ambient unit is the root itself; fn gets a view of it.
+      const root = currentUnitOfWork()!;
       async function* body(): AsyncGenerator<Event> {
         child = currentUnitOfWork();
         await signalChange(hook, { kind: "write", path: "/cache/data/a" });
