@@ -256,7 +256,11 @@ Deno.test("workflow cancel finds and settles a suspended run whose workflow file
     const { workflowRepo, workflowRunRepo: runRepo } = fixture.repo;
     await Deno.remove(workflowRepo.getPath(workflow.id));
     assertEquals(await workflowRepo.findByName(workflow.name), null);
-    const lookup = { workflowRepo, runRepo };
+    const lookup = {
+      workflowRepo,
+      runRepo,
+      listBrokenWorkflows: () => Promise.resolve([]),
+    };
 
     for (
       const input of [
@@ -270,7 +274,8 @@ Deno.test("workflow cancel finds and settles a suspended run whose workflow file
       assertEquals(found.run.id, suspended.id, JSON.stringify(input));
       assertEquals(found.workflow, undefined);
     }
-    const active = await findAllActiveRuns(lookup);
+    const { active, unloadable } = await findAllActiveRuns(lookup);
+    assertEquals(unloadable, []);
     assertEquals(
       active.map(({ run, workflow }) => [run.id, workflow]),
       [[suspended.id, undefined]],
@@ -304,7 +309,7 @@ Deno.test("workflow cancel finds and settles a suspended run whose workflow file
       "teardown": "failed",
       "teardown/t": "failed",
     });
-    assertEquals(await findAllActiveRuns(lookup), []);
+    assertEquals((await findAllActiveRuns(lookup)).active, []);
     assertEquals(fixture.executions, []);
   });
 });

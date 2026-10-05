@@ -26,7 +26,10 @@ import {
   type WorkflowRunInput,
 } from "../../domain/workflows/workflow_run.ts";
 import { CLEANUP_GRACE_TIMEOUT_MS } from "../../domain/workflows/execution_service.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -50,7 +53,7 @@ import {
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { DatabaseSync } from "node:sqlite";
 import { hostname } from "node:os";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -60,6 +63,7 @@ import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reape
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
+import type { BrokenWorkflow } from "../../libswamp/mod.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -1502,6 +1506,19 @@ function gatedWorkflow(id: string = WORKFLOW_ID, name = "test-workflow") {
   });
 }
 
+/** What cancel looks runs up through, with `workflows` as the definitions. */
+function lookup(
+  runRepo: YamlWorkflowRunRepository,
+  workflows: Workflow[] = [],
+  broken: BrokenWorkflow[] = [],
+): CancelTargetDeps {
+  return {
+    workflowRepo: definitions(...workflows),
+    runRepo,
+    listBrokenWorkflows: () => Promise.resolve(broken),
+  };
+}
+
 /** A workflow repository holding only `workflows`. */
 function definitions(
   ...workflows: Workflow[]
@@ -1645,7 +1662,7 @@ Deno.test("resolveLocalCancelTarget: finds a run whose definition is gone by its
     const run = await saveGatedRun(runRepo);
 
     const target = await resolveLocalCancelTarget(
-      { workflowRepo: definitions(), runRepo },
+      lookup(runRepo),
       { runId: run.id },
     );
 
@@ -1661,7 +1678,7 @@ Deno.test("resolveLocalCancelTarget: a run id with the deleted workflow's record
 
     for (const workflowIdOrName of ["test-workflow", WORKFLOW_ID]) {
       const target = await resolveLocalCancelTarget(
-        { workflowRepo: definitions(), runRepo },
+        lookup(runRepo),
         { workflowIdOrName, runId: run.id },
       );
       assertEquals(target.run.id, run.id);
@@ -1676,7 +1693,7 @@ Deno.test("resolveLocalCancelTarget: a run id returns the run's definition when 
     const run = await saveGatedRun(runRepo);
     // Renamed since the run recorded "test-workflow".
     const renamed = gatedWorkflow(WORKFLOW_ID, "renamed");
-    const deps = { workflowRepo: definitions(renamed), runRepo };
+    const deps = lookup(runRepo, [renamed]);
 
     for (
       const workflowIdOrName of [undefined, "renamed", "test-workflow"]
@@ -1696,7 +1713,7 @@ Deno.test("resolveLocalCancelTarget: a run of another workflow than the one name
     const runRepo = new YamlWorkflowRunRepository(dir);
     const run = await saveGatedRun(runRepo);
     const other = gatedWorkflow(OTHER_WORKFLOW_ID, "other");
-    const deps = { workflowRepo: definitions(other), runRepo };
+    const deps = lookup(runRepo, [other]);
 
     await assertRejects(
       () =>
@@ -1723,7 +1740,7 @@ Deno.test("resolveLocalCancelTarget: an unknown run id is not found, whatever it
   await withTempDir(async (dir) => {
     const runRepo = new YamlWorkflowRunRepository(dir);
     await saveGatedRun(runRepo);
-    const deps = { workflowRepo: definitions(gatedWorkflow()), runRepo };
+    const deps = lookup(runRepo, [gatedWorkflow()]);
 
     for (const runId of [crypto.randomUUID(), "not-a-uuid", "../escape"]) {
       await assertRejects(
@@ -1765,7 +1782,7 @@ Deno.test("resolveLocalCancelTarget: a workflow alone picks its latest active ru
     const workflow = gatedWorkflow();
 
     const target = await resolveLocalCancelTarget(
-      { workflowRepo: definitions(workflow), runRepo },
+      lookup(runRepo, [workflow]),
       { workflowIdOrName: "test-workflow" },
     );
 
@@ -1781,7 +1798,7 @@ Deno.test("resolveLocalCancelTarget: a workflow with a definition and no active 
     await assertRejects(
       () =>
         resolveLocalCancelTarget(
-          { workflowRepo: definitions(gatedWorkflow()), runRepo },
+          lookup(runRepo, [gatedWorkflow()]),
           { workflowIdOrName: "test-workflow" },
         ),
       UserError,
@@ -1803,7 +1820,7 @@ Deno.test("resolveLocalCancelTarget: a deleted workflow's name or id picks its l
       workflowName: "other",
       startedAt: "2026-07-20T23:00:00.000Z",
     });
-    const deps = { workflowRepo: definitions(), runRepo };
+    const deps = lookup(runRepo);
 
     for (const workflowIdOrName of ["test-workflow", WORKFLOW_ID]) {
       const target = await resolveLocalCancelTarget(deps, {
@@ -1829,10 +1846,9 @@ Deno.test("resolveLocalCancelTarget: a name no definition or active run carries 
       workflowId: OTHER_WORKFLOW_ID,
       workflowName: "old-name",
     });
-    const deps = {
-      workflowRepo: definitions(gatedWorkflow(OTHER_WORKFLOW_ID, "new-name")),
-      runRepo,
-    };
+    const deps = lookup(runRepo, [
+      gatedWorkflow(OTHER_WORKFLOW_ID, "new-name"),
+    ]);
 
     for (const workflowIdOrName of ["test-workflow", "old-name", "nope"]) {
       await assertRejects(
@@ -1849,7 +1865,7 @@ Deno.test("resolveLocalCancelTarget: a name reused by a newer workflow means the
     const runRepo = new YamlWorkflowRunRepository(dir);
     const orphaned = await saveGatedRun(runRepo);
     const reused = gatedWorkflow(OTHER_WORKFLOW_ID, "test-workflow");
-    const deps = { workflowRepo: definitions(reused), runRepo };
+    const deps = lookup(runRepo, [reused]);
 
     await assertRejects(
       () =>
@@ -1882,15 +1898,13 @@ Deno.test("findAllActiveRuns: includes the active runs of deleted workflows", as
     });
     const workflow = gatedWorkflow();
 
-    const active = await findAllActiveRuns({
-      workflowRepo: definitions(workflow),
-      runRepo,
-    });
+    const active = await findAllActiveRuns(lookup(runRepo, [workflow]));
 
     assertEquals(
-      new Map(active.map(({ run, workflow }) => [run.id, workflow])),
+      new Map(active.active.map(({ run, workflow }) => [run.id, workflow])),
       new Map([[defined.id, workflow], [orphaned.id, undefined]]),
     );
+    assertEquals(active.unloadable, []);
   });
 });
 
@@ -1916,16 +1930,15 @@ Deno.test("findAllActiveRuns: groups runs by workflow in definition order, delet
       startedAt: "2026-07-20T22:00:00.000Z",
     });
 
-    const active = await findAllActiveRuns({
-      workflowRepo: definitions(
+    const active = await findAllActiveRuns(
+      lookup(runRepo, [
         gatedWorkflow(),
         gatedWorkflow(OTHER_WORKFLOW_ID, "other"),
-      ),
-      runRepo,
-    });
+      ]),
+    );
 
     assertEquals(
-      active.map(({ run, workflow }) => [run.id, workflow?.name]),
+      active.active.map(({ run, workflow }) => [run.id, workflow?.name]),
       [
         [firstNew.id, "test-workflow"],
         [firstOld.id, "test-workflow"],
@@ -1933,5 +1946,187 @@ Deno.test("findAllActiveRuns: groups runs by workflow in definition order, delet
         [orphaned.id, undefined],
       ],
     );
+  });
+});
+
+/** A workflow file that fails to load, as `listBrokenWorkflows` reports it. */
+function brokenFile(overrides: Partial<BrokenWorkflow> = {}): BrokenWorkflow {
+  return {
+    file: "/repo/workflows/workflow-test-workflow.yaml",
+    id: WORKFLOW_ID,
+    name: "test-workflow",
+    error: "bad indentation at line 4, column 1:\n    jobs: [\n    ^",
+    ...overrides,
+  };
+}
+
+/** Writes a run file that is not valid YAML into `workflowId`'s directory. */
+async function saveDamagedRun(
+  runRepo: YamlWorkflowRunRepository,
+  workflowId: string,
+): Promise<void> {
+  const path = runRepo.getPath(
+    createWorkflowId(workflowId),
+    createWorkflowRunId(crypto.randomUUID()),
+  );
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeTextFile(path, "id: x\njobs: [\n");
+}
+
+Deno.test("resolveLocalCancelTarget: a damaged run file elsewhere does not break a deleted or mistyped name", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+    // Damaged records under a workflow with a definition and under another
+    // deleted workflow.
+    await saveDamagedRun(runRepo, OTHER_WORKFLOW_ID);
+    await saveDamagedRun(runRepo, "c0000000-0000-4000-8000-000000000003");
+    const deps = lookup(runRepo, [gatedWorkflow(OTHER_WORKFLOW_ID, "other")]);
+
+    const target = await resolveLocalCancelTarget(deps, {
+      workflowIdOrName: "test-workflow",
+    });
+    assertEquals(target.run.id, run.id);
+    await assertRejects(
+      () => resolveLocalCancelTarget(deps, { workflowIdOrName: "typo" }),
+      UserError,
+      "Workflow not found: typo",
+    );
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a name no definition carries loads only the runs that could be its own", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    // A workflow with a definition, a deleted one with another name, and the
+    // deleted one named: one finished run and one active.
+    await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "other",
+    });
+    await saveGatedRun(runRepo, {
+      workflowId: "c0000000-0000-4000-8000-000000000003",
+      workflowName: "gone",
+    });
+    await saveGatedRun(runRepo, {
+      status: "cancelled",
+      completedAt: "2026-07-20T22:00:01.000Z",
+    });
+    const active = await saveGatedRun(runRepo);
+    const loaded: string[] = [];
+    const counting = Object.create(runRepo) as YamlWorkflowRunRepository;
+    counting.findById = (workflowId, runId) => {
+      loaded.push(runId);
+      return runRepo.findById(workflowId, runId);
+    };
+    counting.findAllByWorkflowId = () =>
+      Promise.reject(new Error("unexpected full read of a run directory"));
+    counting.findAllGlobal = () =>
+      Promise.reject(new Error("unexpected full read of the run store"));
+    const deps = lookup(counting, [gatedWorkflow(OTHER_WORKFLOW_ID, "other")]);
+
+    const target = await resolveLocalCancelTarget(deps, {
+      workflowIdOrName: "test-workflow",
+    });
+    assertEquals(target.run.id, active.id);
+    assertEquals(loaded, [active.id]);
+
+    loaded.length = 0;
+    await assertRejects(
+      () => resolveLocalCancelTarget(deps, { workflowIdOrName: "typo" }),
+      UserError,
+      "Workflow not found: typo",
+    );
+    assertEquals(loaded, []);
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a workflow whose file fails to load is not a deleted one", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+
+    // The file names the workflow by id, by name, or only by its file name.
+    for (
+      const broken of [
+        brokenFile({ name: null }),
+        brokenFile({ id: null }),
+        brokenFile({ id: null, name: null }),
+        brokenFile({
+          id: null,
+          name: null,
+          file: `/repo/workflows/workflow-${WORKFLOW_ID}.yaml`,
+        }),
+      ]
+    ) {
+      const deps = lookup(runRepo, [], [broken]);
+      const error = await assertRejects(
+        () =>
+          resolveLocalCancelTarget(deps, {
+            workflowIdOrName: "test-workflow",
+          }),
+        UserError,
+      );
+      assertEquals(
+        error.message,
+        `Workflow file ${broken.file} could not be loaded (bad indentation at line 4, column 1), so run ${run.id} was left as it is. ` +
+          `Fix the file, or cancel the run by its id: swamp workflow cancel --run ${run.id}`,
+      );
+      // Naming the run cancels it whatever state its workflow file is in.
+      const target = await resolveLocalCancelTarget(deps, { runId: run.id });
+      assertEquals(target.run.id, run.id);
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: another workflow's broken file does not hold back a deleted workflow's run", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+    const deps = lookup(runRepo, [], [
+      brokenFile({
+        id: OTHER_WORKFLOW_ID,
+        name: "other",
+        file: "/repo/workflows/workflow-other.yaml",
+      }),
+    ]);
+
+    const target = await resolveLocalCancelTarget(deps, {
+      workflowIdOrName: "test-workflow",
+    });
+    assertEquals(target.run.id, run.id);
+  });
+});
+
+Deno.test("findAllActiveRuns: sets apart the runs of a workflow whose file fails to load", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const unloadable = await saveGatedRun(runRepo);
+    const orphaned = await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "gone",
+    });
+    const broken = brokenFile();
+
+    const found = await findAllActiveRuns(lookup(runRepo, [], [broken]));
+
+    assertEquals(
+      found.active.map(({ run, workflow }) => [run.id, workflow]),
+      [[orphaned.id, undefined]],
+    );
+    assertEquals(
+      found.unloadable.map((entry) => [entry.run.id, entry.broken]),
+      [[unloadable.id, broken]],
+    );
+  });
+});
+
+Deno.test("findAllActiveRuns: a damaged run file under a deleted workflow fails the lookup", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    await saveGatedRun(runRepo);
+    await saveDamagedRun(runRepo, OTHER_WORKFLOW_ID);
+
+    await assertRejects(() => findAllActiveRuns(lookup(runRepo)));
   });
 });
