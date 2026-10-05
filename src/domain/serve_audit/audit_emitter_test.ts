@@ -109,14 +109,20 @@ function createFlakySink(
 
 function createHangingSink(
   name: string,
-): AuditSink & { writes: number; release(): void } {
+): AuditSink & {
+  writes: number;
+  batches: AuditEvent[][];
+  release(): void;
+} {
   const pending: (() => void)[] = [];
   const sink = {
     name,
     durable: false,
     writes: 0,
-    write(): Promise<void> {
+    batches: [] as AuditEvent[][],
+    write(events: readonly AuditEvent[]): Promise<void> {
       sink.writes++;
+      sink.batches.push([...events]);
       return new Promise<void>((resolve) => pending.push(resolve));
     },
     release(): void {
@@ -317,6 +323,75 @@ Deno.test("AuditEmitter: timed-out sink gets no second write while the first is 
   await emitter.close();
 });
 
+Deno.test("AuditEmitter: a timed-out write that later succeeds resumes delivery without a new event", async () => {
+  const hanging = createHangingSink("hanging");
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), hanging],
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  assertEquals(hanging.writes, 1);
+
+  hanging.release();
+  await waitFor(() => hanging.writes === 2, "delivery to resume by itself");
+
+  // The late success counted as delivered, so only the newer event is sent.
+  assertEquals(hanging.batches[1].map((e) => e.action), ["second"]);
+  hanging.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: a sink whose write never settles keeps counting what it misses", async () => {
+  const hanging = createHangingSink("hanging");
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), hanging],
+    capacity: 2,
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  for (let i = 0; i < 5; i++) {
+    emitter.emit(makeEvent(`more-${i}`));
+    await emitter.flush();
+  }
+
+  assertEquals(hanging.writes, 1);
+  assertEquals(emitter.droppedEvents("hanging"), 4);
+  hanging.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: events lost to buffer overflow are not counted as a sink's lag", async () => {
+  const now = 0;
+  const durableSink = createFlakySink("durable", true);
+  const failingSink = createFlakySink("failing", false);
+  failingSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, failingSink],
+    capacity: 2,
+    now: () => now,
+  });
+
+  emitter.emit(makeEvent("action-1"));
+  await emitter.flush();
+  // Four events before the next drain: two are overwritten unchained.
+  for (let i = 2; i <= 5; i++) emitter.emit(makeEvent(`action-${i}`));
+  await emitter.flush();
+
+  assertEquals(
+    durableSink.received.map((e) => e.action),
+    ["action-1", "action-4", "action-5"],
+  );
+  assertEquals(emitter.droppedEvents("durable"), 0);
+  assertEquals(emitter.droppedEvents("failing"), 1);
+  await emitter.close();
+});
+
 Deno.test("AuditEmitter: always-throwing sink is retried on a backoff, not back to back", async () => {
   let now = 0;
   const failingSink = createFlakySink("failing", false);
@@ -444,6 +519,7 @@ Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {
 
   emitter.emit(makeEvent("test"));
   await emitter.flush();
+  await emitter.close();
 });
 
 Deno.test("AuditEmitter: close flushes then closes all sinks", async () => {
@@ -733,4 +809,5 @@ Deno.test("AuditEmitter: sink timeout prevents drain loop blocking", async () =>
 
   emitter.emit(makeEvent("test"));
   await emitter.flush();
+  await emitter.close();
 });

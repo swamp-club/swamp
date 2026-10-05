@@ -62,11 +62,15 @@ other sink:
   events it missed are counted and logged against that sink only.
 - **One write at a time.** A non-durable sink has at most one `write` in
   flight. A write that outlives the 30s timeout counts as a failure, but the
-  sink is not written to again until that call settles.
+  sink is not written to again until that call settles. While it is
+  outstanding the emitter warns once a minute and keeps counting what the sink
+  misses; when it settles, delivery resumes, and a late success counts as
+  delivered.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink
-  that is backing off at shutdown are not delivered to that sink.
+  that is backing off at shutdown are not delivered to that sink; they do not
+  appear in its drop count.
 
 ## Configuration
 

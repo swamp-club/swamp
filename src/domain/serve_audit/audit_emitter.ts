@@ -42,6 +42,7 @@ const DEFAULT_SINK_TIMEOUT_MS = 30_000;
 const DEFAULT_SINK_BACKOFF_BASE_MS = 1_000;
 const DEFAULT_SINK_BACKOFF_MAX_MS = 60_000;
 const DEFAULT_DURABLE_RETRY_MS = 1_000;
+const STUCK_SINK_LOG_INTERVAL_MS = 60_000;
 
 export interface AuditEmitterOptions {
   readonly sinks: AuditSink[];
@@ -60,6 +61,8 @@ export interface AuditEmitterOptions {
   readonly now?: () => number;
 }
 
+class SinkTimeoutError extends Error {}
+
 /** Delivery state for one non-durable sink object. */
 interface SinkDelivery {
   /** The delivery loop, while one is running. */
@@ -69,6 +72,9 @@ interface SinkDelivery {
   failures: number;
   retryAt: number;
   timer: ReturnType<typeof setTimeout> | null;
+  /** When the outstanding write timed out, until it settles. */
+  stuckSince: number | null;
+  stuckLoggedAt: number;
 }
 
 export class AuditEmitter {
@@ -253,12 +259,14 @@ export class AuditEmitter {
         "Audit buffer overflowed, {count} event(s) lost before reaching any sink",
         { count: startSeq - caughtUp - 1 },
       );
-      // No sink was behind on these; the per-sink drop count is for lag.
+      // Every sink moves past the gap. Only what a sink was already behind
+      // on counts as its own drop; the gap itself reached no sink.
       for (const [name, cursor] of this.#cursors) {
-        if (cursor >= caughtUp && cursor < startSeq - 1) {
-          this.#cursors.set(name, startSeq - 1);
-        }
+        if (cursor >= startSeq - 1) continue;
+        if (cursor < caughtUp) this.#recordDropped(name, caughtUp - cursor);
+        this.#cursors.set(name, startSeq - 1);
       }
+      this.#chained.clear();
       this.#chainedThroughSeq = startSeq - 1;
     }
 
@@ -276,28 +284,34 @@ export class AuditEmitter {
     return chained;
   }
 
+  #recordDropped(sinkName: string, count: number): void {
+    this.#dropped.set(sinkName, this.droppedEvents(sinkName) + count);
+    logger.warn(
+      "Audit sink {sink} fell behind the audit buffer, {count} event(s) dropped for this sink",
+      { sink: sinkName, count },
+    );
+  }
+
   /**
-   * The chained events a sink has not received yet. A sink that has fallen
-   * behind what is still held is moved up to the oldest held event, and the
-   * events it missed are counted against that sink alone.
+   * Moves a sink that has fallen behind what is still held up to the oldest
+   * held event, counting the events it missed against that sink alone.
    */
+  #clampCursor(sink: AuditSink): number {
+    const cursor = this.#cursors.get(sink.name) ?? 0;
+    const oldestHeld: number = this.#chained.keys().next().value ??
+      this.#chainedThroughSeq + 1;
+    if (cursor + 1 >= oldestHeld) return cursor;
+    this.#recordDropped(sink.name, oldestHeld - 1 - cursor);
+    this.#cursors.set(sink.name, oldestHeld - 1);
+    return oldestHeld - 1;
+  }
+
+  /** The chained events a sink has not received yet. */
   #batchFor(
     sink: AuditSink,
   ): { events: ChainedAuditEvent[]; throughSeq: number } {
     const throughSeq = this.#chainedThroughSeq;
-    let cursor = this.#cursors.get(sink.name) ?? 0;
-    const oldestHeld: number = this.#chained.keys().next().value ??
-      throughSeq + 1;
-    if (cursor + 1 < oldestHeld) {
-      const missed = oldestHeld - 1 - cursor;
-      this.#dropped.set(sink.name, this.droppedEvents(sink.name) + missed);
-      logger.warn(
-        "Audit sink {sink} fell behind the audit buffer, {count} event(s) dropped for this sink",
-        { sink: sink.name, count: missed },
-      );
-      cursor = oldestHeld - 1;
-      this.#cursors.set(sink.name, cursor);
-    }
+    const cursor = this.#clampCursor(sink);
     const events: ChainedAuditEvent[] = [];
     for (let seq = cursor + 1; seq <= throughSeq; seq++) {
       const event = this.#chained.get(seq);
@@ -408,10 +422,10 @@ export class AuditEmitter {
     }
     this.#scheduleDurableRetry(durableFailed);
 
+    this.#pruneChained();
     for (const sink of sinks) {
       if (!sink.durable) this.#pump(sink);
     }
-    this.#pruneChained();
 
     if (webhookPromises.length > 0) {
       await Promise.allSettled(webhookPromises);
@@ -443,6 +457,8 @@ export class AuditEmitter {
         failures: 0,
         retryAt: 0,
         timer: null,
+        stuckSince: null,
+        stuckLoggedAt: 0,
       };
       this.#deliveries.set(sink, delivery);
     }
@@ -454,8 +470,13 @@ export class AuditEmitter {
    * still has a write outstanding, or is backing off after a failure.
    */
   #pump(sink: AuditSink): void {
+    if (!this.#sinks.includes(sink)) return;
     const delivery = this.#deliveryFor(sink);
-    if (delivery.pump || delivery.inFlight) return;
+    if (delivery.pump) return;
+    if (delivery.inFlight) {
+      this.#reportStuck(sink, delivery);
+      return;
+    }
     if (this.#now() < delivery.retryAt) return;
     const pump: Promise<void> = this.#runPump(sink, delivery).catch(
       (error: unknown) => {
@@ -470,6 +491,51 @@ export class AuditEmitter {
     delivery.pump = pump;
   }
 
+  /**
+   * A sink whose write timed out and has still not settled receives nothing.
+   * Keeps its drop count moving and says so, at most once a minute.
+   */
+  #reportStuck(sink: AuditSink, delivery: SinkDelivery): void {
+    if (delivery.stuckSince === null) return;
+    this.#clampCursor(sink);
+    const now = this.#now();
+    if (now - delivery.stuckLoggedAt < STUCK_SINK_LOG_INTERVAL_MS) return;
+    delivery.stuckLoggedAt = now;
+    logger.warn(
+      "Audit sink {sink} has had a write outstanding for {seconds}s, nothing is being delivered to it",
+      {
+        sink: sink.name,
+        seconds: Math.round((now - delivery.stuckSince) / 1000),
+      },
+    );
+  }
+
+  /**
+   * A write that outlived its timeout has settled: take a late success as
+   * delivered, then pick delivery back up without waiting for a new event.
+   */
+  #resumeAfterLateSettle(
+    sink: AuditSink,
+    delivery: SinkDelivery,
+    succeeded: boolean,
+    throughSeq: number,
+  ): void {
+    delivery.stuckSince = null;
+    if (succeeded) {
+      delivery.failures = 0;
+      delivery.retryAt = 0;
+      this.#advanceCursor(sink, throughSeq);
+      this.#pruneChained();
+    }
+    if (this.#closed) return;
+    const wait = delivery.retryAt - this.#now();
+    if (wait <= 0) {
+      this.#pump(sink);
+    } else if (delivery.timer === null) {
+      this.#scheduleSinkRetry(sink, delivery, wait);
+    }
+  }
+
   async #runPump(sink: AuditSink, delivery: SinkDelivery): Promise<void> {
     while (this.#sinks.includes(sink)) {
       const { events, throughSeq } = this.#batchFor(sink);
@@ -478,12 +544,17 @@ export class AuditEmitter {
       const write = (async () => {
         await sink.write(events);
       })();
-      const settled: Promise<void> = write.then(() => {}, () => {}).then(
-        () => {
-          if (delivery.inFlight === settled) delivery.inFlight = null;
+      const settled: Promise<void> = write.then(() => true, () => false).then(
+        (succeeded) => {
+          if (delivery.inFlight !== settled) return;
+          delivery.inFlight = null;
+          if (delivery.stuckSince !== null) {
+            this.#resumeAfterLateSettle(sink, delivery, succeeded, throughSeq);
+          }
         },
       );
       delivery.inFlight = settled;
+      delivery.stuckSince = null;
 
       try {
         await this.#withSinkTimeout(sink, write);
@@ -494,6 +565,12 @@ export class AuditEmitter {
           this.#sinkBackoffBaseMs * 2 ** (delivery.failures - 1),
         );
         delivery.retryAt = this.#now() + delay;
+        if (
+          error instanceof SinkTimeoutError && delivery.inFlight === settled
+        ) {
+          delivery.stuckSince = this.#now();
+          delivery.stuckLoggedAt = delivery.stuckSince;
+        }
         logger.warn(
           "Audit sink {sink} write failed, retrying in {delay}ms: {error}",
           {
@@ -523,6 +600,8 @@ export class AuditEmitter {
     const timer = runDetached(() =>
       setTimeout(() => {
         delivery.timer = null;
+        // The timer is the backoff; a wall clock that moved must not undo it.
+        delivery.retryAt = 0;
         this.#pump(sink);
       }, delay)
     );
@@ -549,7 +628,7 @@ export class AuditEmitter {
         new Promise<never>((_, reject) => {
           controller.signal.addEventListener("abort", () => {
             reject(
-              new Error(
+              new SinkTimeoutError(
                 `Audit sink "${sink.name}" timed out after ${this.#sinkTimeoutMs}ms`,
               ),
             );
