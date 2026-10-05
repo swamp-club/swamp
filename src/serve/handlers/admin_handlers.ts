@@ -2104,10 +2104,11 @@ export async function handleWorkerTokenCreate(
             name: payload.name,
             durationMs: payload.durationMs,
             // An explicit --vault wins: redeem reads the secret from the vault
-            // recorded on the token, so any configured vault works. Without one,
-            // use the control-plane vault, as the local CLI path does. Leaving it
-            // unset makes resolveVaultName count _token-secrets alongside any
-            // user vault and fail with "Multiple vaults are configured".
+            // recorded on the token, so any configured vault works. Without
+            // one, use the control-plane vault, as the local CLI path does.
+            // Leaving it unset makes resolveVaultName count _token-secrets
+            // alongside any user vault and fail with "Multiple vaults are
+            // configured".
             vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
             maxEnrollments: payload.maxEnrollments,
           }),

@@ -49,7 +49,7 @@ import { createResourceWriter } from "../domain/models/data_writer.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
-import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { stageWritesThenPush } from "./stage_writes_then_push.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 
@@ -491,29 +491,19 @@ async function mintServerTokenImpl(
       // a delete and clears the mark, so mark the token's paths again now
       // that both writes are done. Per path, not bare: a bare markDirty()
       // sets bulkInvalidated and turns every login's push into a walk of the
-      // whole cache (swamp-club#2408). The marks are staged through a root
-      // unit of work whose flush is the push. A legacy root flushes when it
-      // is abandoned too, but a failed mark skipped the push before, so the
-      // flush pushes only once every mark was staged.
-      let marked = false;
-      await runInRootUnitOfWork(repoContext, {
-        flush: async () => {
-          if (marked) await syncService.pushChanged({ namespace });
-        },
-      }, async (root) => {
-        if (savedDefinitionPath) {
-          await root.stage({ kind: "write", path: savedDefinitionPath });
-        }
-        await root.stage({
-          kind: "write",
-          path: repoContext.unifiedDataRepo.getDataNameDir(
+      // whole cache (swamp-club#2408).
+      await stageWritesThenPush(
+        repoContext,
+        [
+          ...(savedDefinitionPath ? [savedDefinitionPath] : []),
+          repoContext.unifiedDataRepo.getDataNameDir(
             SERVER_TOKEN_MODEL_TYPE,
             def.id,
             TOKEN_DATA_NAME,
           ),
-        });
-        marked = true;
-      });
+        ],
+        { flush: () => syncService.pushChanged({ namespace }) },
+      );
     });
 
     await withSpan("swamp.serve.auth.mint.verify", {}, async () => {

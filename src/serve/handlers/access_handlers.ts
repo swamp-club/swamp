@@ -53,6 +53,7 @@ import {
 } from "../../domain/access/grant_file_reconciler.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { stageWritesThenPush } from "../stage_writes_then_push.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   type Grant,
@@ -803,21 +804,10 @@ export async function handleAccessReload(
         // Per path, not bare: a bare markDirty() sets bulkInvalidated and
         // turns every reload's push into a walk of the whole cache
         // (swamp-club#2415). A reload that changed nothing marks nothing,
-        // and still pushes. The marks are staged through a root unit of
-        // work whose flush is the push. A legacy root flushes when it is
-        // abandoned too, but a failed mark skipped the push before, so the
-        // flush pushes only once every path was staged.
+        // and still pushes.
         const syncService = ctx.syncService;
-        let marked = false;
-        await runInRootUnitOfWork(ctx.repoContext, {
-          flush: async () => {
-            if (marked) await syncService.pushChanged({ namespace });
-          },
-        }, async (root) => {
-          for (const path of writtenPaths) {
-            await root.stage({ kind: "write", path });
-          }
-          marked = true;
+        await stageWritesThenPush(ctx.repoContext, writtenPaths, {
+          flush: () => syncService.pushChanged({ namespace }),
         });
       } catch (error) {
         logger
@@ -968,8 +958,8 @@ export async function handleAccessTokenRevoke(
         }
 
         // The revoke is persisted even if the request was cancelled, so every
-        // session opened with any mint of the name ends. Runs after the reply so a
-        // caller revoking their own token still gets it.
+        // session opened with any mint of the name ends. Runs after the reply
+        // so a caller revoking their own token still gets it.
         terminateTokenSessions(payload.name, {
           code: 4003,
           reason: TOKEN_REVOKED_REASON,
@@ -1125,10 +1115,10 @@ export async function handleAccessTokenMint(
             principalId: payload.principalId,
             principalEmail: payload.principalEmail,
             durationMs: payload.durationMs,
-            // serve always registers the control-plane vault at boot, so name it
-            // explicitly (as the local CLI path does). Leaving it unset makes
-            // resolveVaultName count _token-secrets alongside any user vault and
-            // fail with "Multiple vaults are configured".
+            // serve always registers the control-plane vault at boot, so name
+            // it explicitly (as the local CLI path does). Leaving it unset
+            // makes resolveVaultName count _token-secrets alongside any user
+            // vault and fail with "Multiple vaults are configured".
             vaultName: TOKEN_SECRETS_VAULT_NAME,
           }),
           withDefaults({

@@ -48,11 +48,13 @@ interface Call {
 
 /**
  * Every `<callee>(...)` call in `source`, from the callee name to its
- * matching close paren, with the span of each top-level argument.
+ * matching close paren, with the span of each top-level argument. A
+ * `function <callee>(` declaration is not a call.
  */
 function calls(source: string, callee: string): Call[] {
   const found: Call[] = [];
-  for (const match of source.matchAll(new RegExp(`\\b${callee}\\(`, "g"))) {
+  const pattern = new RegExp(`(?<!function )\\b${callee}\\(`, "g");
+  for (const match of source.matchAll(pattern)) {
     const start = match.index;
     const args: [number, number][] = [];
     let depth = 0;
@@ -102,12 +104,34 @@ function ownerAt(source: ServeSource, offset: number): string {
 }
 
 /**
- * Whether `offset` sits in the options argument (the second) of a
- * `runInRootUnitOfWork(...)` call: a push there is the root's flush.
+ * The functions that open a root unit of work, each with the index of its
+ * options argument, whose `flush` is the root's push.
  */
-function inRootFlush(roots: Call[], offset: number): boolean {
-  return roots.some(({ args }) =>
-    args.length >= 2 && offset > args[1][0] && offset < args[1][1]
+const ROOT_OPENERS: Readonly<Record<string, number>> = {
+  runInRootUnitOfWork: 1,
+  // Stages per-path writes through a root, then pushes (swamp-club#3034).
+  stageWritesThenPush: 2,
+};
+
+/** Every call in `source` that opens a root, with its options argument. */
+function rootCalls(
+  source: string,
+): { start: number; options?: [number, number] }[] {
+  return Object.entries(ROOT_OPENERS).flatMap(([callee, index]) =>
+    calls(source, callee).map(({ start, args }) => ({
+      start,
+      options: args[index],
+    }))
+  );
+}
+
+/** Whether `offset` sits in a root's options argument: the root's flush. */
+function inRootFlush(
+  roots: { options?: [number, number] }[],
+  offset: number,
+): boolean {
+  return roots.some(({ options }) =>
+    options !== undefined && offset > options[0] && offset < options[1]
   );
 }
 
@@ -118,7 +142,7 @@ function pushesOutsideRoots(
 ): string[] {
   const keys: string[] = [];
   for (const source of sources) {
-    const roots = calls(source.code, "runInRootUnitOfWork");
+    const roots = rootCalls(source.code);
     for (const match of source.code.matchAll(pattern)) {
       if (!inRootFlush(roots, match.index)) {
         keys.push(ownerAt(source, match.index));
@@ -128,13 +152,11 @@ function pushesOutsideRoots(
   return countedKeys(keys);
 }
 
-/** Owners of every `runInRootUnitOfWork(...)` call in serve. */
+/** Owners of every call in serve that opens a root. */
 function rootEntryPoints(sources: ServeSource[]): string[] {
   return countedKeys(
     sources.flatMap((source) =>
-      calls(source.code, "runInRootUnitOfWork").map(({ start }) =>
-        ownerAt(source, start)
-      )
+      rootCalls(source.code).map(({ start }) => ownerAt(source, start))
     ),
   );
 }
@@ -169,11 +191,13 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // Workflow runs from the workflow.run handler, webhooks and the scheduler:
   // the post-run push. Each step's model lock still pushes on its own.
   "src/serve/deps.ts: executeWorkflowWithLocks",
-  // Hand marks re-staged just before their push. Each root covers only the
-  // marks and the push, as a failed write pushed nothing before.
+  // Hand marks re-staged just before their push, through
+  // stageWritesThenPush. Each root covers only the marks and the push, as a
+  // failed write pushed nothing before.
   "src/serve/device_auth_handler.ts: mintServerTokenImpl",
   "src/serve/grant_write_tracking.ts: publishGrantWrites",
   "src/serve/handlers/access_handlers.ts: handleAccessReload",
+  "src/serve/stage_writes_then_push.ts: stageWritesThenPush",
 ];
 
 /**
@@ -251,6 +275,12 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     "  });",
     "  // await pushChangedToRemote(ctx);",
     "}",
+    "async function stageWritesThenPush(context, paths, options) {}",
+    "async function caller() {",
+    "  await stageWritesThenPush(ctx.repoContext, [], {",
+    "    flush: () => pushChangedToRemote(ctx),",
+    "  });",
+    "}",
   ].join("\n");
   const lines = code.split("\n");
   const probe: ServeSource = {
@@ -262,5 +292,8 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     pushesOutsideRoots([probe], /\bpushChangedToRemote\(ctx\)/g),
     ["probe.ts: handler"],
   );
-  assertEquals(rootEntryPoints([probe]), ["probe.ts: handler"]);
+  assertEquals(rootEntryPoints([probe]), [
+    "probe.ts: caller",
+    "probe.ts: handler",
+  ]);
 });
