@@ -752,6 +752,8 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
 | `model("<literal>")` | `WHERE type_normalized = ? AND model_id = ?` | Top-level AND conjuncts only, with the resolved definition |
 | `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
+| `modelType == "<literal>"` | `WHERE type_normalized = ?` | Top-level AND conjuncts only; `modelType` is the column value |
+| `modelId == "<literal>"` | `WHERE model_id = ?` | Top-level AND conjuncts only |
 | `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR
@@ -768,8 +770,8 @@ in CEL.
 ```
 1. Parse predicate into AST
 2. Validate field references
-3. Extract SQL pushdown clauses (isLatest, modelName and specName equality,
-   model()); resolve rename forwards for a latest-only `name == "<literal>"`
+3. Extract SQL pushdown clauses (isLatest, modelName, specName, modelType
+   and modelId equality, model()); resolve rename forwards for a latest-only `name == "<literal>"`
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown

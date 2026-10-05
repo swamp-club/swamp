@@ -394,6 +394,8 @@ const vpc = records[0]?.attributes as { VpcId: string } | undefined;
 - Signature: `(modelName: string, specName?: string) => Promise<DataRecord[]>`
 - Returns the **latest** version of each matching data item; an empty array when
   the model has no data or does not exist.
+- Includes data written before the model instance was renamed: the read matches
+  the model's current definition as well as the name recorded on each item.
 - Each `DataRecord` carries the parsed JSON in `attributes`, plus `name`,
   `version`, `specName`, `modelId`, `modelType` and `tags`.
 

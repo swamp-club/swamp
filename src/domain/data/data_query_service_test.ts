@@ -4444,3 +4444,94 @@ Deno.test("DataQueryService rename forwards: a stale catalog row under the old n
   assertEquals(names(service.querySync('name == "old"')), ["new"]);
   catalog.close();
 });
+
+// ── modelType / modelId pushdown (swamp-club#3011) ──────────────────────
+
+function seedModelIdentities(catalog: CatalogStore): void {
+  catalog.upsert(makeRow({
+    type_normalized: "test-model",
+    model_id: "model-001",
+    data_name: "a",
+    id: "data-a",
+  }));
+  catalog.upsert(makeRow({
+    type_normalized: "test-model",
+    model_id: "model-002",
+    data_name: "b",
+    id: "data-b",
+    model_name: "other",
+  }));
+  catalog.upsert(makeRow({
+    type_normalized: "other-model",
+    model_id: "model-001",
+    data_name: "c",
+    id: "data-c",
+  }));
+}
+
+function recordedFilters(catalog: CatalogStore): string[] {
+  const filters: string[] = [];
+  const original = catalog.iterateFiltered.bind(catalog);
+  catalog.iterateFiltered = (where, params) => {
+    filters.push(where);
+    return original(where, params);
+  };
+  return filters;
+}
+
+function sortedNames(results: unknown[]): string[] {
+  return (results as DataRecord[]).map((r) => r.name).sort();
+}
+
+Deno.test("DataQueryService: pushes modelType and modelId literal equalities down to SQL", () => {
+  const { catalog, service } = setupTest();
+  seedModelIdentities(catalog);
+  const filters = recordedFilters(catalog);
+
+  const results = service.querySync(
+    'modelType == "test-model" && modelId == "model-001"',
+  );
+  assertEquals(sortedNames(results), ["a"]);
+  assertEquals(filters.length, 1);
+  assertStringIncludes(filters[0], "type_normalized = ?");
+  assertStringIncludes(filters[0], "model_id = ?");
+  catalog.close();
+});
+
+Deno.test("DataQueryService: modelType and modelId pushdown matches the unpushed predicate", () => {
+  const { catalog, service } = setupTest();
+  seedModelIdentities(catalog);
+
+  const cases: Array<[string, string]> = [
+    ['modelId == "model-001"', 'modelId in ["model-001"]'],
+    ['modelType == "test-model"', 'modelType in ["test-model"]'],
+    [
+      'modelType == "test-model" && modelId == "model-002"',
+      'modelType in ["test-model"] && modelId in ["model-002"]',
+    ],
+    [
+      'modelId == "model-002" || modelType == "other-model"',
+      'modelId in ["model-002"] || modelType in ["other-model"]',
+    ],
+    ['modelId != "model-001"', '!(modelId in ["model-001"])'],
+  ];
+  for (const [pushed, unpushed] of cases) {
+    assertEquals(
+      sortedNames(service.querySync(pushed)),
+      sortedNames(service.querySync(unpushed)),
+      pushed,
+    );
+  }
+  catalog.close();
+});
+
+Deno.test("DataQueryService: does not push modelId down from an OR branch", () => {
+  const { catalog, service } = setupTest();
+  seedModelIdentities(catalog);
+  const filters = recordedFilters(catalog);
+
+  service.querySync('modelId == "model-002" || name == "a"');
+  assertEquals(filters.length, 1);
+  assertEquals(filters[0].includes("model_id = ?"), false);
+  catalog.close();
+});

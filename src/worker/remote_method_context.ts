@@ -40,7 +40,15 @@ import { ModelType } from "../domain/models/model_type.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { Data } from "../domain/data/data.ts";
 import { createDataId, generateDataId } from "../domain/data/data_id.ts";
-import { SOLO_NAMESPACE } from "../domain/data/namespace.ts";
+import {
+  parseNamespacedModelName,
+  SOLO_NAMESPACE,
+} from "../domain/data/namespace.ts";
+import {
+  mergeModelData,
+  modelIdentityPredicate,
+} from "../domain/data/data_access_service.ts";
+import type { DataRecord } from "../domain/data/data_record.ts";
 import type { DefinitionRepository } from "../domain/definitions/repositories.ts";
 import type { OutputRepository } from "../domain/models/repositories.ts";
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
@@ -568,16 +576,61 @@ export function createRemoteMethodContext(
     await options.client.deleteResource({ name: instanceName }, signal);
   };
 
+  // Definitions readModelData resolved by name, including misses: each
+  // lookup is an RPC that may walk every definition on the orchestrator, so
+  // a name read repeatedly in one dispatch is resolved once.
+  const identities = new Map<
+    string,
+    { modelType: string; modelId: string } | undefined
+  >();
   const readModelData = async (modelName: string, specName?: string) => {
     const predicate = specName === undefined
       ? `modelName == ${JSON.stringify(modelName)}`
       : `modelName == ${JSON.stringify(modelName)} && specName == ${
         JSON.stringify(specName)
       }`;
-    return await channel.call<never[]>(RemoteMethod.queryData, {
+    const byName = await channel.call<DataRecord[]>(RemoteMethod.queryData, {
       predicate,
       options: { loadAttributes: true },
     }, { signal });
+    if (parseNamespacedModelName(modelName).namespace !== undefined) {
+      return byName;
+    }
+
+    // The name tag records the name at write time, so data written before
+    // the instance was renamed is also read by the definition's identity
+    // (swamp-club#3011). resolveModel also matches ids, so only a definition
+    // with this exact name counts.
+    let identity: { modelType: string; modelId: string } | undefined;
+    if (modelName === execution.definitionMeta.name) {
+      identity = {
+        modelType: modelType.normalized,
+        modelId: execution.modelId,
+      };
+    } else if (identities.has(modelName)) {
+      identity = identities.get(modelName);
+    } else {
+      const resolved = await definitionRepository.findByNameGlobal(modelName);
+      if (resolved && resolved.definition.name === modelName) {
+        identity = {
+          modelType: resolved.type.normalized,
+          modelId: resolved.definition.id,
+        };
+      }
+      identities.set(modelName, identity);
+    }
+    if (!identity) {
+      return byName;
+    }
+    const byIdentity = await channel.call<DataRecord[]>(
+      RemoteMethod.queryData,
+      {
+        predicate: modelIdentityPredicate(identity, specName),
+        options: { loadAttributes: true },
+      },
+      { signal },
+    );
+    return mergeModelData(byName, byIdentity);
   };
 
   const extensionFilesDir = options.extensionFilesDir;

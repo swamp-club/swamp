@@ -230,7 +230,11 @@ export class InProcessExecutor {
       this.context.dataQueryService,
     );
     const readModelData = (modelName: string, specName?: string) =>
-      dataAccessService.readModelData(modelName, specName);
+      dataAccessService.readModelData(modelName, specName, {
+        modelType: this.context.modelType,
+        modelId: this.context.modelId,
+        modelName: this.definition.name,
+      });
 
     // Prefer an explicitly-set queryData (test fixtures), otherwise derive
     // a binding from dataQueryService. Production callers supply only
