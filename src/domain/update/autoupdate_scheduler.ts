@@ -64,12 +64,20 @@ export type SchedulerRefreshResult =
   | "unknown"
   | "not_installed";
 
+export interface SchedulerRefreshOptions {
+  loadIfNotLoaded?: boolean;
+}
+
 export interface AutoupdateScheduler {
   install(binaryPath: string, cadence: UpdateCadence): Promise<void>;
   remove(): Promise<void>;
   status(): Promise<ScheduleStatus>;
-  /** Re-register the job so the OS will start the binary now at its path. */
-  refresh(): Promise<SchedulerRefreshResult>;
+  /**
+   * Re-register the job so the OS will start the binary now at its path.
+   * `loadIfNotLoaded` also loads a job the OS does not have — set it when an
+   * earlier refresh failed, since that may have unloaded the job.
+   */
+  refresh(options?: SchedulerRefreshOptions): Promise<SchedulerRefreshResult>;
 }
 
 // TODO(windows): Implement Windows Task Scheduler support when swamp update

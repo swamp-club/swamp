@@ -278,6 +278,53 @@ Deno.test("LaunchdScheduler.refresh: leaves a job launchd has not loaded alone (
   });
 });
 
+Deno.test("LaunchdScheduler.refresh: loads an unloaded job after an earlier failed refresh", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async (plistPath) => {
+      const { result, calls } = await withMockedCommand(
+        (cmd, args) => {
+          if (cmd === "id") return { stdout: "501\n", code: 0 };
+          if (args[0] === "print") return printJobMissing(args);
+          return { stdout: "", code: 0 };
+        },
+        () => new LaunchdScheduler("agent").refresh({ loadIfNotLoaded: true }),
+      );
+
+      assertEquals(result, "refreshed");
+      assertEquals(launchctlCalls(calls), ["print", "print", "bootstrap"]);
+      assertEquals(
+        calls.find((c) => c.args[0] === "bootstrap")!.args,
+        ["bootstrap", "gui/501", plistPath],
+      );
+    },
+  );
+});
+
+Deno.test("LaunchdScheduler.refresh: a bootstrap that fails once is tried again", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async () => {
+      let booted = true;
+      let bootstraps = 0;
+      const { result } = await withMockedCommand((cmd, args) => {
+        if (cmd === "id") return { stdout: "501\n", code: 0 };
+        if (args[0] === "print") {
+          return booted ? { stdout: STUCK_PRINT, code: 0 } : NOT_FOUND;
+        }
+        if (args[0] === "bootout") booted = false;
+        if (args[0] === "bootstrap" && bootstraps++ === 0) {
+          return { stdout: "", stderr: "Bootstrap failed: 5", code: 5 };
+        }
+        return { stdout: "", code: 0 };
+      }, () => new LaunchdScheduler("agent").refresh());
+
+      assertEquals(result, "refreshed");
+      assertEquals(bootstraps, 2);
+    },
+  );
+});
+
 Deno.test("LaunchdScheduler.refresh: a missing launchd domain (SSH, no desktop login) is unknown", async () => {
   const plist = buildPlist("/usr/local/bin/swamp", "daily");
   await withAgentPlist(plist, async (plistPath) => {
@@ -406,7 +453,12 @@ Deno.test("LaunchdScheduler.refresh: reports launchd's reason when bootstrap fai
           Error,
         );
         assert(error.message.includes("Input/output error"));
-      });
+      }).then(({ calls }) =>
+        assertEquals(
+          launchctlCalls(calls).filter((c) => c === "bootstrap").length,
+          2,
+        )
+      );
     },
   );
 });

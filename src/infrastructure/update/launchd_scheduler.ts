@@ -21,6 +21,7 @@ import { dirname, join } from "@std/path";
 import {
   type AutoupdateScheduler,
   SCHEDULER_EX_CONFIG,
+  type SchedulerRefreshOptions,
   type SchedulerRefreshResult,
   type SchedulerRuntime,
   type ScheduleStatus,
@@ -339,9 +340,11 @@ export class LaunchdScheduler implements AutoupdateScheduler {
    * mid-way through writing its log entry), when its state cannot be read
    * (`unknown`, which includes a launchd domain that does not exist, as over
    * SSH with nobody logged in to the desktop), and when it is healthy and
-   * not pinned to a binary, or not loaded at all.
+   * not pinned to a binary, or not loaded at all (unless `loadIfNotLoaded`).
    */
-  async refresh(): Promise<SchedulerRefreshResult> {
+  async refresh(
+    options: SchedulerRefreshOptions = {},
+  ): Promise<SchedulerRefreshResult> {
     const path = plistPathForMode(this.mode);
     let content: string;
     try {
@@ -365,8 +368,11 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       // reads as unknown. A domain without the job means it is not loaded —
       // for example turned off in Login Items — so launchd holds no stale
       // requirement for it and there is nothing to repair.
+      // An earlier failed refresh may have booted the job out without
+      // loading it again, so that case loads it.
       if ((await launchctl(["print", domain])).code !== 0) return "unknown";
-      return "not_needed";
+      if (!options.loadIfNotLoaded) return "not_needed";
+      return await this.bootstrap(domain, path);
     }
     const runtime = parseLaunchctlPrint(printed.stdout);
     if (!runtime) return "unknown";
@@ -395,7 +401,18 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       );
     }
 
-    const result = await launchctl(["bootstrap", domain, path]);
+    return await this.bootstrap(domain, path);
+  }
+
+  /** Loads the job, trying a second time before reporting launchd's reason. */
+  private async bootstrap(
+    domain: string,
+    path: string,
+  ): Promise<SchedulerRefreshResult> {
+    let result = await launchctl(["bootstrap", domain, path]);
+    if (result.code !== 0) {
+      result = await launchctl(["bootstrap", domain, path]);
+    }
     if (result.code !== 0) {
       const reason = result.stderr.trim();
       throw new Error(

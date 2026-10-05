@@ -42,12 +42,15 @@ function fakeDeps(
 ): AutoupdateRefreshDeps & {
   written: UpdatePreferences[];
   refreshes: string[];
+  refreshOptions: { loadIfNotLoaded?: boolean }[];
 } {
   const written: UpdatePreferences[] = [];
   const refreshes: string[] = [];
+  const refreshOptions: { loadIfNotLoaded?: boolean }[] = [];
   return {
     written,
     refreshes,
+    refreshOptions,
     os: options.os ?? "darwin",
     readPreferences: () =>
       Promise.resolve(options.prefs ?? { enabled: true, cadence: "daily" }),
@@ -59,8 +62,9 @@ function fakeDeps(
       Promise.resolve(options.job === undefined ? "agent" : options.job),
     isRoot: () => false,
     configDirOwned: () => true,
-    refreshScheduler: (job) => {
+    refreshScheduler: (job, opts) => {
       refreshes.push(job);
+      refreshOptions.push(opts);
       return options.refresh?.() ?? Promise.resolve("refreshed");
     },
     withRefreshLock: (fn) => options.lockHeld ? Promise.resolve(null) : fn(),
@@ -106,6 +110,22 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: records the attempt when refresh fa
     cadence: "daily",
     lastSchedulerRefreshAttempt: NOW.toISOString(),
   }]);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only after a failed attempt", async () => {
+  const fresh = fakeDeps();
+  await refreshAutoupdateSchedulerIfOwed(fresh, VERSION);
+  assertEquals(fresh.refreshOptions, [{ loadIfNotLoaded: false }]);
+
+  const afterFailure = fakeDeps({
+    prefs: {
+      enabled: true,
+      cadence: "daily",
+      lastSchedulerRefreshAttempt: "2026-10-01T00:00:00.000Z",
+    },
+  });
+  await refreshAutoupdateSchedulerIfOwed(afterFailure, VERSION);
+  assertEquals(afterFailure.refreshOptions, [{ loadIfNotLoaded: true }]);
 });
 
 Deno.test("refreshAutoupdateSchedulerIfOwed: writes nothing while the job is running", async () => {

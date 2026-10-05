@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { SchedulerRefreshResult } from "../domain/update/autoupdate_scheduler.ts";
+import type {
+  SchedulerRefreshOptions,
+  SchedulerRefreshResult,
+} from "../domain/update/autoupdate_scheduler.ts";
 import { shouldRefreshScheduler } from "../domain/update/autoupdate_staleness.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
 import { join } from "@std/path";
@@ -39,7 +42,10 @@ export interface AutoupdateRefreshDeps {
   detectInstalledLaunchdJob(): Promise<LaunchdJob | null>;
   isRoot(): boolean;
   configDirOwned(): boolean;
-  refreshScheduler(job: LaunchdJob): Promise<SchedulerRefreshResult>;
+  refreshScheduler(
+    job: LaunchdJob,
+    options: SchedulerRefreshOptions,
+  ): Promise<SchedulerRefreshResult>;
   /**
    * Runs `fn` while holding the refresh lock, or returns null without
    * running it when another swamp process holds it.
@@ -96,7 +102,10 @@ export async function refreshAutoupdateSchedulerIfOwed(
 
         let result: SchedulerRefreshResult;
         try {
-          result = await deps.refreshScheduler(job);
+          // A failed attempt may have left the job unloaded; load it then.
+          result = await deps.refreshScheduler(job, {
+            loadIfNotLoaded: prefs.lastSchedulerRefreshAttempt !== undefined,
+          });
         } catch (error) {
           await deps.writePreferences({
             ...prefs,
@@ -174,7 +183,8 @@ export function createAutoupdateRefreshDeps(): AutoupdateRefreshDeps {
     detectInstalledLaunchdJob: () => detectInstalledLaunchdMode(),
     isRoot: () => isRunningAsRoot(),
     configDirOwned: () => processOwnsConfigDir(),
-    refreshScheduler: (job) => new LaunchdScheduler(job).refresh(),
+    refreshScheduler: (job, options) =>
+      new LaunchdScheduler(job).refresh(options),
     withRefreshLock: async (fn) => {
       const dir = getSwampConfigDir();
       await Deno.mkdir(dir, { recursive: true });
