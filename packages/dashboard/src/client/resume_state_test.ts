@@ -75,16 +75,9 @@ Deno.test("activeRunIds: lists the runs serve is driving", () => {
 });
 
 Deno.test("activeRunsKey: ignores order and fields other than the run id", () => {
-  assertEquals(
-    activeRunsKey([
-      { runId: "run-2", durationMs: 10 } as { runId: string },
-      { runId: "run-1" },
-    ]),
-    activeRunsKey([
-      { runId: "run-1" },
-      { runId: "run-2", durationMs: 5010 } as { runId: string },
-    ]),
-  );
+  const early = [{ runId: "run-2", durationMs: 10 }, { runId: "run-1" }];
+  const later = [{ runId: "run-1" }, { runId: "run-2", durationMs: 5010 }];
+  assertEquals(activeRunsKey(early), activeRunsKey(later));
   assertEquals(activeRunsKey(undefined), "");
 });
 
