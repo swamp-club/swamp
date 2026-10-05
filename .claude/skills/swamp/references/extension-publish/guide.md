@@ -14,15 +14,15 @@ start → repo_verified → auth_verified → manifest_validated
 
 ## Quick Reference
 
-| State              | What it checks                         | Key command                                               |
-| ------------------ | -------------------------------------- | --------------------------------------------------------- |
-| repo_verified      | `.swamp.yaml` exists                   | `ls .swamp.yaml`                                          |
-| auth_verified      | Authenticated with registry            | `swamp auth whoami --json`                                |
-| manifest_validated | `manifest.yaml` is valid               | `swamp extension fmt manifest.yaml --check`               |
-| versioned          | Version bumped since last push         | `swamp extension version --manifest manifest.yaml --json` |
-| formatted          | Code is formatted                      | `swamp extension fmt manifest.yaml`                       |
-| quality_checked    | Quality score ≥ threshold              | `swamp extension quality manifest.yaml --json`            |
-| dry_run_passed     | Dry run builds; no unaccepted warnings | `swamp extension push manifest.yaml --dry-run --json`     |
-| pushed             | Published to registry                  | `swamp extension push manifest.yaml --json`               |
+| State              | What it checks                 | Key command                                               |
+| ------------------ | ------------------------------ | --------------------------------------------------------- |
+| repo_verified      | `.swamp.yaml` exists           | `ls .swamp.yaml`                                          |
+| auth_verified      | Authenticated with registry    | `swamp auth whoami --json`                                |
+| manifest_validated | `manifest.yaml` is valid       | `swamp extension fmt manifest.yaml --check`               |
+| versioned          | Version bumped since last push | `swamp extension version --manifest manifest.yaml --json` |
+| formatted          | Code is formatted              | `swamp extension fmt manifest.yaml`                       |
+| quality_checked    | Quality score ≥ threshold      | `swamp extension quality manifest.yaml --json`            |
+| dry_run_passed     | Dry-run push succeeds          | `swamp extension push manifest.yaml --dry-run`            |
+| pushed             | Published to registry          | `swamp extension push manifest.yaml --json`               |
 
 For detailed walkthroughs of each state, see [reference.md](reference.md).

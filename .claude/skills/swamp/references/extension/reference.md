@@ -177,10 +177,9 @@ All extension types follow the same lifecycle:
 >
 > `swamp extension push` warns and prompts for confirmation unless a complete,
 > content-hash-bound review report exists for the exact code being pushed. The
-> prompt is the gate — do not answer it blindly or pass `--accept-warnings` to
-> dodge the review (`--yes` confirms the push only and never waives it; without
-> a terminal the push refuses and names `--accept-warnings`). Editing any source
-> (or bumping the version) changes the content hash and asks for a fresh report.
+> prompt is the gate — do not answer it blindly or pass `--yes` to dodge the
+> review. Editing any source (or bumping the version) changes the content hash
+> and asks for a fresh report.
 >
 > After authoring or **significantly modifying** extension code, and BEFORE
 > running smoke tests or unit tests:

@@ -373,12 +373,8 @@ reports:
    — see the `swamp-extension` skill for the rubric. Packages and caches the
    tarball at `.swamp/cache/packages/<hash>/`; the cache is reused by the
    dry-run and push below if source hasn't changed.
-5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json` —
-   exits non-zero while unaccepted safety or review warnings stand (the warnings
-   and review skeleton are still printed). Resolve them; pass
-   `--accept-warnings` only for warnings the user explicitly accepts.
-6. **Push**: `swamp extension push manifest.yaml --yes --json` — `--yes`
-   confirms the push only. Add `--accept-warnings` if step 5 needed it.
+5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
+6. **Push**: `swamp extension push manifest.yaml --yes --json`
 
 ### Opportunistic package cache
 
@@ -436,11 +432,8 @@ swamp extension push manifest.yaml --channel beta --json
 # Validate locally without pushing (builds archive, runs safety checks)
 swamp extension push manifest.yaml --dry-run --json
 
-# Confirm the push without prompting (does not accept warnings)
+# Skip all confirmation prompts
 swamp extension push manifest.yaml -y --json
-
-# Accept safety and review warnings; the summary records which were accepted
-swamp extension push manifest.yaml -y --accept-warnings --json
 
 # Specify a different repo directory
 swamp extension push manifest.yaml --repo-dir /path/to/repo --json
@@ -468,7 +461,7 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 8. **Bare specifier check** — scans source files for bare import specifiers
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning is added to the review warnings
-   that gate the push (see Safety Rules below).
+   prompting the user to confirm before push.
 9. **Bundle TypeScript** — compiles each entry point (models, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
@@ -521,13 +514,10 @@ message directing you to run `swamp extension fmt <manifest-path>` to fix them.
 ## Safety Rules
 
 The safety analyzer scans all files before push. Issues are classified as
-**errors** (block the push) or **warnings** (gated). Safety and review warnings
-share one gate: an interactive run asks "Continue with push despite warnings?";
-a run without a terminal (`--json`, CI, coding agents) exits non-zero and names
-`--accept-warnings` instead of waiving silently. `--yes` confirms the push only.
-`--accept-warnings` is the sole waiver, and the dry-run and push summaries then
-list the accepted warnings under `acceptedWarnings`. A dry run exits exactly
-when the real run would and never prompts.
+**errors** (block the push) or **warnings** (prompt for confirmation). `--yes`
+(or `--force`) answers that prompt along with the push confirmation; the dry-run
+and push summaries then list what it waived under `acceptedWarnings`, in log and
+JSON output.
 
 ### Errors (block push)
 
@@ -542,7 +532,7 @@ when the real run would and never prompts.
 | Too many files              | Maximum 150 files per extension                                                                                                                                                                                                                                                                                                       |
 | Archive too large           | The built `.tar.gz` (after bundling) must be at most 50 MiB — larger archives cannot be installed                                                                                                                                                                                                                                     |
 
-### Warnings (gated)
+### Warnings (prompted)
 
 | Rule             | Detail                                              |
 | ---------------- | --------------------------------------------------- |

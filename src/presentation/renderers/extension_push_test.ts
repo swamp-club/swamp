@@ -198,10 +198,26 @@ Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omit
     visibility: "public" as const,
   };
   const withRecord = await capture(() =>
-    renderer.renderDryRun({ ...base, acceptedWarnings: accepted })
+    renderer.renderDryRun({
+      ...base,
+      accepted: { warnings: accepted, waivedBy: "--yes" },
+    })
   );
-  assertEquals(JSON.parse(withRecord[0]).acceptedWarnings, accepted);
-  assertEquals(JSON.parse(withRecord[0]).status, "dry_run");
+  const parsed = JSON.parse(withRecord[0]);
+  assertEquals(parsed.acceptedWarnings, accepted);
+  assertEquals(parsed.status, "dry_run");
+  // The waiving flag is a log-mode detail; the document carries the record
+  // under the key that shipped and nothing else about the waiver.
+  assertEquals("accepted" in parsed, false);
+  assertEquals("waivedBy" in parsed, false);
+  assertEquals(Object.keys(parsed), [
+    "name",
+    "version",
+    "archiveSize",
+    "visibility",
+    "acceptedWarnings",
+    "status",
+  ]);
 
   const without = await capture(() => renderer.renderDryRun(base));
   assertEquals("acceptedWarnings" in JSON.parse(without[0]), false);
@@ -210,11 +226,13 @@ Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omit
 Deno.test("extensionPushRenderer: JSON completed summary carries acceptedWarnings and omits it when none", async () => {
   const renderer = createExtensionPushRenderer("json");
   const withRecord = await capture(() =>
-    renderer.handlers({ acceptedWarnings: accepted }).completed(completedEvent)
+    renderer.handlers({ accepted: { warnings: accepted, waivedBy: "--force" } })
+      .completed(completedEvent)
   );
   const parsed = JSON.parse(withRecord[0]);
   assertEquals(parsed.acceptedWarnings, accepted);
   assertEquals(parsed.extensionId, "ext-123");
+  assertEquals("waivedBy" in parsed, false);
 
   const without = await capture(() =>
     renderer.handlers().completed(completedEvent)
@@ -222,7 +240,7 @@ Deno.test("extensionPushRenderer: JSON completed summary carries acceptedWarning
   assertEquals("acceptedWarnings" in JSON.parse(without[0]), false);
 });
 
-Deno.test("extensionPushRenderer: log dry run lists accepted warnings after the summary", async () => {
+Deno.test("extensionPushRenderer: log dry run lists accepted warnings after the summary, naming --yes", async () => {
   const renderer = createExtensionPushRenderer("log");
   const logs = await capture(() =>
     renderer.renderDryRun({
@@ -230,13 +248,11 @@ Deno.test("extensionPushRenderer: log dry run lists accepted warnings after the 
       version: "2026.09.16.1",
       archiveSize: 100,
       visibility: "public",
-      acceptedWarnings: accepted,
+      accepted: { warnings: accepted, waivedBy: "--yes" },
     })
   );
   const output = logs.join("\n");
-  const headerAt = output.indexOf(
-    "Accepted 2 warnings with --accept-warnings:",
-  );
+  const headerAt = output.indexOf("Accepted 2 warnings with --yes:");
   assertEquals(headerAt > output.indexOf("No API calls were made."), true);
   assertStringIncludes(output, "models/a.ts");
   assertStringIncludes(output, "No adversarial review recorded");
@@ -244,15 +260,16 @@ Deno.test("extensionPushRenderer: log dry run lists accepted warnings after the 
   assertEquals(output.includes("Write the report to"), false);
 });
 
-Deno.test("extensionPushRenderer: log completed summary lists accepted warnings, singular when one", async () => {
+Deno.test("extensionPushRenderer: log completed summary lists accepted warnings, singular when one, naming --force", async () => {
   const renderer = createExtensionPushRenderer("log");
   const one: AcceptedWarnings = { safety: accepted.safety, review: [] };
   const logs = await capture(() =>
-    renderer.handlers({ acceptedWarnings: one }).completed(completedEvent)
+    renderer.handlers({ accepted: { warnings: one, waivedBy: "--force" } })
+      .completed(completedEvent)
   );
   const output = logs.join("\n");
   assertStringIncludes(output, 'Pushed "@test/ext"@"2026.09.16.1"');
-  assertStringIncludes(output, "Accepted 1 warning with --accept-warnings:");
+  assertStringIncludes(output, "Accepted 1 warning with --force:");
   assertStringIncludes(output, "models/a.ts");
 });
 
@@ -267,18 +284,5 @@ Deno.test("extensionPushRenderer: log summaries say nothing about acceptance whe
     });
     await renderer.handlers().completed(completedEvent);
   });
-  assertEquals(logs.join("\n").includes("--accept-warnings"), false);
-});
-
-Deno.test("extensionPushRenderer: the accept-warnings hint renders in log mode only", async () => {
-  const logLines = await capture(() =>
-    createExtensionPushRenderer("log").renderAcceptWarningsHint()
-  );
-  assertEquals(logLines.length, 1);
-  assertStringIncludes(logLines[0], "--accept-warnings");
-
-  const jsonLines = await capture(() =>
-    createExtensionPushRenderer("json").renderAcceptWarningsHint()
-  );
-  assertEquals(jsonLines, []);
+  assertEquals(logs.join("\n").includes("Accepted"), false);
 });
