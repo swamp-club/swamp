@@ -72,7 +72,6 @@ import type {
   VaultTypeSearchPayload,
 } from "../protocol.ts";
 import { acquireVaultSync } from "../../cli/repo_context.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   type Principal,
   principalToString,
@@ -87,6 +86,7 @@ import {
   type ConnectionContext,
   handlerLibSwampContext,
   LibSwampStreamError,
+  pushChangedToRemote,
   rejectEditWithoutContent,
   resourceDecider,
   sanitizeErrorForClient,
@@ -99,6 +99,7 @@ import {
   type AccessResource,
   kindResource,
 } from "../../domain/access/access_decision_service.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -835,69 +836,71 @@ export async function handleVaultCreate(
     ).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    // The shared repository's mark hook signals the config it writes.
-    const deps = await createVaultCreateDeps(
-      ctx.repoDir,
-      ctx.repoContext.vaultConfigRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      vaultCreate(libCtx, deps, {
-        vaultType: payload.vaultType,
-        name: payload.name,
-        config: payload.config,
-        repoDir: ctx.repoDir,
-        auditReads: payload.auditReads,
-        // No trustKeySource: the client does not own this host, so a
-        // local_encryption vault gets the server's key source
-        // (swamp-club#2690).
-      }),
-      {
-        creating: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "vault.create",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push vault create to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push vault create to remote datastore: {error}",
+        const libCtx = handlerLibSwampContext(ctx);
+        // The shared repository's mark hook signals the config it writes.
+        const deps = await createVaultCreateDeps(
+          ctx.repoDir,
+          ctx.repoContext.vaultConfigRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          vaultCreate(libCtx, deps, {
+            vaultType: payload.vaultType,
+            name: payload.name,
+            config: payload.config,
+            repoDir: ctx.repoDir,
+            auditReads: payload.auditReads,
+            // No trustKeySource: the client does not own this host, so a
+            // local_encryption vault gets the server's key source
+            // (swamp-club#2690).
+          }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            creating: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "vault.create",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "vault_create_failed", message);
       }
-    }
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "vault_create_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleVaultEdit(
@@ -974,52 +977,53 @@ export async function handleVaultEdit(
     return;
   }
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createVaultEditDeps(ctx.repoDir, vaultConfigRepo);
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push vault edit to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createVaultEditDeps(ctx.repoDir, vaultConfigRepo);
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      vaultEdit(libCtx, deps, {
-        vaultNameOrId: target.id,
-        vaultType: target.type,
-        byId: true,
-        stdinContent: payload.content,
-        // No trustKeySource: the client does not own this host, so a
-        // local_encryption vault keeps its stored key source, and a repair
-        // gets the defaults under this repo (swamp-club#2690).
-        repoDir: ctx.repoDir,
-        // Every save is authorized against the edited vault too, so a rename
-        // needs write on the new name, as vault.create requires for the name
-        // it creates. A repair request was authorized by id only, so if the
-        // file parses again by now its stored name is checked as well.
-        authorizeUpdate: (before, after) =>
-          (!repairTarget ||
-            authorizeOrReject(
-              socket,
-              requestId,
-              principal,
-              "write",
-              vaultAccessResource(before.name),
-              ctx,
-            ).allowed) &&
-          authorizeOrReject(
-            socket,
-            requestId,
-            principal,
-            "write",
-            vaultAccessResource(after.name),
-            ctx,
-          ).allowed,
-        ...(repairTarget
-          ? {
-            authorizeRepair: (_target, after) =>
-              authorizeOrReject(socket, requestId, principal, "admin", {
-                kind: "access",
-                name: "*",
-                fields: {},
-              }, ctx).allowed &&
-              !rejectReservedVault(socket, requestId, after.name) &&
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          vaultEdit(libCtx, deps, {
+            vaultNameOrId: target.id,
+            vaultType: target.type,
+            byId: true,
+            stdinContent: payload.content,
+            // No trustKeySource: the client does not own this host, so a
+            // local_encryption vault keeps its stored key source, and a repair
+            // gets the defaults under this repo (swamp-club#2690).
+            repoDir: ctx.repoDir,
+            // Every save is authorized against the edited vault too, so a
+            // rename needs write on the new name, as vault.create requires for
+            // the name it creates. A repair request was authorized by id only,
+            // so if the file parses again by now its stored name is checked as
+            // well.
+            authorizeUpdate: (before, after) =>
+              (!repairTarget ||
+                authorizeOrReject(
+                  socket,
+                  requestId,
+                  principal,
+                  "write",
+                  vaultAccessResource(before.name),
+                  ctx,
+                ).allowed) &&
               authorizeOrReject(
                 socket,
                 requestId,
@@ -1028,69 +1032,71 @@ export async function handleVaultEdit(
                 vaultAccessResource(after.name),
                 ctx,
               ).allowed,
-          }
-          : {}),
-      }),
-      {
-        resolving: () => {},
-        launching: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    if (repairTarget && result?.repaired === true) {
-      // vault.edit is audited against every vault, so record which one an
-      // admin replaced.
-      logger.info(
-        "Repaired vault {type}/{id} as {name} for {principal}",
-        {
-          type: target.type,
-          id: target.id,
-          name: result.name,
-          principal: principal ? principalToString(principal) : "(none)",
-        },
-      );
-    }
-
-    send(socket, {
-      type: "vault.edit",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
-      try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push vault edit to remote datastore: {error}",
+            ...(repairTarget
+              ? {
+                authorizeRepair: (_target, after) =>
+                  authorizeOrReject(socket, requestId, principal, "admin", {
+                    kind: "access",
+                    name: "*",
+                    fields: {},
+                  }, ctx).allowed &&
+                  !rejectReservedVault(socket, requestId, after.name) &&
+                  authorizeOrReject(
+                    socket,
+                    requestId,
+                    principal,
+                    "write",
+                    vaultAccessResource(after.name),
+                    ctx,
+                  ).allowed,
+              }
+              : {}),
+          }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            resolving: () => {},
+            launching: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        if (repairTarget && result?.repaired === true) {
+          // vault.edit is audited against every vault, so record which one an
+          // admin replaced.
+          logger.info(
+            "Repaired vault {type}/{id} as {name} for {principal}",
+            {
+              type: target.type,
+              id: target.id,
+              name: result.name,
+              principal: principal ? principalToString(principal) : "(none)",
+            },
+          );
+        }
+
+        send(socket, {
+          type: "vault.edit",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        // A denied rename was already reported by authorizeOrReject.
+        if (wasRequestErrored(socket, requestId)) return;
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "vault_edit_failed", message);
       }
-    }
-  } catch (error) {
-    // A denied rename was already reported by authorizeOrReject.
-    if (wasRequestErrored(socket, requestId)) return;
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "vault_edit_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleVaultAuditTrail(

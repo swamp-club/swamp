@@ -91,7 +91,6 @@ import type {
   WorkflowTriggerSetPayload,
   WorkflowValidatePayload,
 } from "../protocol.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   resolveResumableRun,
   resolveSuspendedRun,
@@ -1776,140 +1775,147 @@ export async function handleWorkflowResume(
 
   const registry = ctx.activeRunRegistry;
   if (!registry) {
-    try {
-      const workflowRepo = ctx.repoContext.workflowRepo;
-      const runRepo = ctx.repoContext.workflowRunRepo;
-
-      const { run, workflowName } = await resolveResumableRun(
-        workflowRepo,
-        runRepo,
-        workflow.idOrName,
-        payload.runId,
-        {
-          fromStep: payload.from,
-          byId: workflow.byId,
-          expectedName: workflow.expectedName,
-        },
-      );
-
-      const stepLockHook = createStepLockHook(
-        ctx.repoDir,
-        ctx.repoContext,
-        ctx.datastoreConfig,
-        ctx.syncService,
-        ctx.syncGate,
-      );
-
-      const deps = await createWorkflowRunDeps(
-        ctx.repoDir,
-        ctx.repoContext,
-        ctx.datastoreConfig,
-        stepLockHook,
-        ctx.runTracker,
-      );
-
-      const resumeInputs = payload.inputs ?? {};
-      const ephemeral = createEphemeralStore(
-        ctx.repoContext.unifiedDataRepo.namespace,
-        { isResume: true },
-      );
-
-      const service = deps.createExecutionService(
-        workflowRepo,
-        runRepo,
-        ctx.repoDir,
-        ctx.repoContext.catalogStore,
-        ephemeral.repo,
-        ephemeral.catalog,
-      );
-
-      const resumeGenerator = async function* (): AsyncGenerator<
-        WorkflowRunEvent
-      > {
-        for await (
-          const event of service.resume(workflowName, run.id, {
-            signal: controller.signal,
-            inputs: resumeInputs,
-            fromStep: payload.from,
-            instanceId: ctx.instanceId,
-          })
-        ) {
-          yield mapWorkflowExecutionEvent(event, runRepo);
-        }
-      };
-
-      const canRead = nestedRunReadDecider(ctx, socket, principal);
-      const run_ = async () => {
-        try {
-          for await (const event of resumeGenerator()) {
-            if (socket.readyState !== WebSocket.OPEN) break;
-            const serialized = await redactStreamEvent(
-              serializeEvent(
-                event as { kind: string; [key: string]: unknown },
-              ),
-              canRead,
-            );
-            send(socket, { type: "event", id: requestId, event: serialized });
-          }
-        } finally {
-          ephemeral.dispose();
-        }
-        send(socket, { type: "done", id: requestId });
-      };
-
-      if (payload.traceparent) {
-        const headers: Record<string, string> = {
-          traceparent: payload.traceparent,
-        };
-        if (payload.tracestate) headers.tracestate = payload.tracestate;
-        const traceCtx = extractTraceContext(headers);
-        await runWithParentTrace(traceCtx, run_);
-      } else {
-        await run_();
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      } else if (error instanceof LockTimeoutError) {
-        const lt = lockTimeoutErrorForClient(error);
-        sendError(socket, requestId, lt.code, lt.message, lt.details);
-      } else if (error instanceof NestedRunPendingError) {
-        sendError(
-          socket,
-          requestId,
-          "workflow_resume_failed",
-          await nestedPendingRefusalForClient(
-            error,
-            nestedRunReadDecider(ctx, socket, principal),
-          ),
-        );
-      } else {
-        const message = sanitizeErrorForClient(error);
-        sendError(socket, requestId, "workflow_resume_failed", message);
-      }
-    } finally {
-      if (ctx.syncService) {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
-        const syncService = ctx.syncService;
-        try {
-          await withSharedSyncGate(
+    // The root's flush is the post-resume push, on every outcome.
+    await runInRootUnitOfWork(
+      ctx.repoContext,
+      {
+        flush: () =>
+          withSharedSyncGate(
             ctx.syncGate,
-            () => syncService.pushChanged({ namespace }),
-          );
-        } catch (pushErr) {
-          logger.warn(
-            "Post-resume push failed; terminal status may be delayed: {error}",
+            () =>
+              pushChangedToRemote(ctx, {
+                onError: (error) =>
+                  logger.warn(
+                    "Post-resume push failed; terminal status may be delayed: {error}",
+                    { error },
+                  ),
+              }),
+          ),
+      },
+      async () => {
+        try {
+          const workflowRepo = ctx.repoContext.workflowRepo;
+          const runRepo = ctx.repoContext.workflowRunRepo;
+
+          const { run, workflowName } = await resolveResumableRun(
+            workflowRepo,
+            runRepo,
+            workflow.idOrName,
+            payload.runId,
             {
-              error: pushErr instanceof Error
-                ? pushErr.message
-                : String(pushErr),
+              fromStep: payload.from,
+              byId: workflow.byId,
+              expectedName: workflow.expectedName,
             },
           );
+
+          const stepLockHook = createStepLockHook(
+            ctx.repoDir,
+            ctx.repoContext,
+            ctx.datastoreConfig,
+            ctx.syncService,
+            ctx.syncGate,
+          );
+
+          const deps = await createWorkflowRunDeps(
+            ctx.repoDir,
+            ctx.repoContext,
+            ctx.datastoreConfig,
+            stepLockHook,
+            ctx.runTracker,
+          );
+
+          const resumeInputs = payload.inputs ?? {};
+          const ephemeral = createEphemeralStore(
+            ctx.repoContext.unifiedDataRepo.namespace,
+            { isResume: true },
+          );
+
+          const service = deps.createExecutionService(
+            workflowRepo,
+            runRepo,
+            ctx.repoDir,
+            ctx.repoContext.catalogStore,
+            ephemeral.repo,
+            ephemeral.catalog,
+          );
+
+          const resumeGenerator = async function* (): AsyncGenerator<
+            WorkflowRunEvent
+          > {
+            for await (
+              const event of service.resume(workflowName, run.id, {
+                signal: controller.signal,
+                inputs: resumeInputs,
+                fromStep: payload.from,
+                instanceId: ctx.instanceId,
+              })
+            ) {
+              yield mapWorkflowExecutionEvent(event, runRepo);
+            }
+          };
+
+          const canRead = nestedRunReadDecider(ctx, socket, principal);
+          const run_ = async () => {
+            try {
+              for await (const event of resumeGenerator()) {
+                if (socket.readyState !== WebSocket.OPEN) break;
+                const serialized = await redactStreamEvent(
+                  serializeEvent(
+                    event as { kind: string; [key: string]: unknown },
+                  ),
+                  canRead,
+                );
+                send(socket, {
+                  type: "event",
+                  id: requestId,
+                  event: serialized,
+                });
+              }
+            } finally {
+              ephemeral.dispose();
+            }
+            send(socket, { type: "done", id: requestId });
+          };
+
+          if (payload.traceparent) {
+            const headers: Record<string, string> = {
+              traceparent: payload.traceparent,
+            };
+            if (payload.tracestate) headers.tracestate = payload.tracestate;
+            const traceCtx = extractTraceContext(headers);
+            await runWithParentTrace(traceCtx, run_);
+          } else {
+            await run_();
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            sendError(
+              socket,
+              requestId,
+              "cancelled",
+              "Operation was cancelled",
+            );
+          } else if (error instanceof LockTimeoutError) {
+            const lt = lockTimeoutErrorForClient(error);
+            sendError(socket, requestId, lt.code, lt.message, lt.details);
+          } else if (error instanceof NestedRunPendingError) {
+            sendError(
+              socket,
+              requestId,
+              "workflow_resume_failed",
+              await nestedPendingRefusalForClient(
+                error,
+                nestedRunReadDecider(ctx, socket, principal),
+              ),
+            );
+          } else {
+            const message = sanitizeErrorForClient(error);
+            sendError(socket, requestId, "workflow_resume_failed", message);
+          }
         }
-      }
-    }
+      },
+    );
     return;
   }
 
@@ -1958,59 +1964,61 @@ export async function handleWorkflowCreate(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowCreateDeps(
-      ctx.repoDir,
-      ctx.repoContext.workflowRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      workflowCreate(libCtx, deps, { name: payload.name }),
-      {
-        creating: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "workflow.create",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push workflow create to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push workflow create to remote datastore: {error}",
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createWorkflowCreateDeps(
+          ctx.repoDir,
+          ctx.repoContext.workflowRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          workflowCreate(libCtx, deps, { name: payload.name }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            creating: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "workflow.create",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_create_failed", message);
       }
-    }
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_create_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleWorkflowDelete(
@@ -2037,65 +2045,67 @@ export async function handleWorkflowDelete(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowDeleteDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.markDirty,
-      ctx.repoContext.workflowRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      workflowDelete(libCtx, deps, {
-        workflowIdOrName: workflow.idOrName,
-        byId: workflow.byId,
-        expectedName: workflow.expectedName,
-      }),
-      {
-        deleting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "workflow.delete",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push workflow delete to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push workflow delete to remote datastore: {error}",
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createWorkflowDeleteDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.markDirty,
+          ctx.repoContext.workflowRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          workflowDelete(libCtx, deps, {
+            workflowIdOrName: workflow.idOrName,
+            byId: workflow.byId,
+            expectedName: workflow.expectedName,
+          }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            deleting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "workflow.delete",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_delete_failed", message);
       }
-    }
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_delete_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleWorkflowEdit(
@@ -2135,78 +2145,80 @@ export async function handleWorkflowEdit(
     return;
   }
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowEditDeps(
-      ctx.repoDir,
-      ctx.repoContext.workflowRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      // By id only, so the edit acts on the workflow authorized above.
-      workflowEdit(libCtx, deps, {
-        workflowIdOrName: workflow.id,
-        byId: true,
-        expectedName: workflow.name,
-        stdinContent: payload.content,
-        // Every save is authorized against the edited workflow too, so a
-        // rename or retag needs write on the result. It runs on every save
-        // rather than only on a detected change, so a concurrent retag
-        // between the lookup above and the save cannot skip it.
-        authorizeUpdate: (_before, after) =>
-          authorizeOrReject(socket, requestId, principal, "write", {
-            kind: "workflow",
-            name: after.name,
-            fields: workflowAccessFields(after),
-          }, ctx).allowed,
-      }),
-      {
-        resolving: () => {},
-        launching: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "workflow.edit",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push workflow edit to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push workflow edit to remote datastore: {error}",
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createWorkflowEditDeps(
+          ctx.repoDir,
+          ctx.repoContext.workflowRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          // By id only, so the edit acts on the workflow authorized above.
+          workflowEdit(libCtx, deps, {
+            workflowIdOrName: workflow.id,
+            byId: true,
+            expectedName: workflow.name,
+            stdinContent: payload.content,
+            // Every save is authorized against the edited workflow too, so a
+            // rename or retag needs write on the result. It runs on every save
+            // rather than only on a detected change, so a concurrent retag
+            // between the lookup above and the save cannot skip it.
+            authorizeUpdate: (_before, after) =>
+              authorizeOrReject(socket, requestId, principal, "write", {
+                kind: "workflow",
+                name: after.name,
+                fields: workflowAccessFields(after),
+              }, ctx).allowed,
+          }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            resolving: () => {},
+            launching: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "workflow.edit",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        // A denied rename or retag was already reported by authorizeOrReject.
+        if (wasRequestErrored(socket, requestId)) return;
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_edit_failed", message);
       }
-    }
-  } catch (error) {
-    // A denied rename or retag was already reported by authorizeOrReject.
-    if (wasRequestErrored(socket, requestId)) return;
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_edit_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleWorkflowValidate(

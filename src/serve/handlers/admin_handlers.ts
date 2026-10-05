@@ -1269,78 +1269,84 @@ export async function handleVaultMigrate(
     ).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const repoDir = ctx.repoDir;
-    // The shared repository's mark hook signals the config it writes and the
-    // one it removes, which the scoped push then deletes remotely.
-    const deps = await createVaultMigrateDeps(repoDir, {
-      repo: ctx.repoContext.vaultConfigRepo,
-    });
-
-    // No trustKeySource: the client does not own this host, so a
-    // local_encryption target gets the server's key source (swamp-club#2690).
-    await vaultMigratePreview(libCtx, deps, {
-      vaultName: payload.vaultName,
-      targetType: payload.targetType,
-      targetConfig: payload.targetConfig,
-      repoDir,
-    });
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      vaultMigrate(libCtx, deps, {
-        vaultName: payload.vaultName,
-        targetType: payload.targetType,
-        targetConfig: payload.targetConfig,
-        repoDir,
-      }),
-      {
-        copying_secret: () => {},
-        updating_config: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "vault.migrate",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push changes to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
+        const libCtx = handlerLibSwampContext(ctx);
+        const repoDir = ctx.repoDir;
+        // The shared repository's mark hook signals the config it writes and
+        // the one it removes, which the scoped push then deletes remotely.
+        const deps = await createVaultMigrateDeps(repoDir, {
+          repo: ctx.repoContext.vaultConfigRepo,
         });
+
+        // No trustKeySource: the client does not own this host, so a
+        // local_encryption target gets the server's key source
+        // (swamp-club#2690).
+        await vaultMigratePreview(libCtx, deps, {
+          vaultName: payload.vaultName,
+          targetType: payload.targetType,
+          targetConfig: payload.targetConfig,
+          repoDir,
+        });
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          vaultMigrate(libCtx, deps, {
+            vaultName: payload.vaultName,
+            targetType: payload.targetType,
+            targetConfig: payload.targetConfig,
+            repoDir,
+          }),
+          {
+            copying_secret: () => {},
+            updating_config: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "vault.migrate",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        const raw = error instanceof Error
+          ? error
+          : typeof error === "object" && error !== null && "message" in error
+          ? (error as { message: string }).message
+          : error;
+        const message = sanitizeErrorForClient(raw);
+        sendError(socket, requestId, "vault_migrate_failed", message);
       }
-    }
-  } catch (error) {
-    const raw = error instanceof Error
-      ? error
-      : typeof error === "object" && error !== null && "message" in error
-      ? (error as { message: string }).message
-      : error;
-    const message = sanitizeErrorForClient(raw);
-    sendError(socket, requestId, "vault_migrate_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleDoctorVaults(

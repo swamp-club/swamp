@@ -818,13 +818,15 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
 ];
 
-// Callers of ModelLockResult.flush (push, then release) that open no root.
-// No CLI command remains (swamp-club#3033).
+// Callers of ModelLockResult.flush (push, then release) whose push is not a
+// root's flush. No CLI command remains (swamp-club#3033).
 const PINNED_LOCK_FLUSH_CALLERS: readonly string[] = [
   // Per-step locks inside a workflow run: a step's push, not the command's,
   // which runs inside the command's root.
   "src/domain/workflows/execution_service.ts: DefaultStepExecutor",
-  // Serve's method runs (swamp-club#3034).
+  // Serve's method runs. Each opens a root for its no-lock push
+  // (swamp-club#3035); the locks' flush stays outside that root, by that
+  // issue's scope.
   "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
 ];
 

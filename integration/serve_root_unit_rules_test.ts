@@ -19,8 +19,8 @@
 
 /**
  * Serve commits through root units of work (datastore rework Phase 2,
- * swamp-club#3034). A serve request or run that pushes runs in one
- * `runInRootUnitOfWork` root whose flush is the push. These ratchets pin
+ * swamp-club#3034, swamp-club#3035). A serve request or run that pushes runs
+ * in one `runInRootUnitOfWork` root whose flush is the push. These ratchets pin
  * where serve opens a root, and every push that is not yet a root's flush,
  * so a new push cannot bypass the unit of work unnoticed.
  */
@@ -264,6 +264,25 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprove",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowReject",
   "src/serve/suspended_run_cancel.ts: cancelLocatedRunAndPush",
+  // Request handlers that push only once their success reply was sent
+  // (swamp-club#3035).
+  "src/serve/handlers/admin_handlers.ts: handleVaultMigrate",
+  "src/serve/handlers/model_handlers.ts: handleModelCreate",
+  "src/serve/handlers/model_handlers.ts: handleModelDelete",
+  "src/serve/handlers/model_handlers.ts: handleModelEdit",
+  "src/serve/handlers/vault_handlers.ts: handleVaultCreate",
+  "src/serve/handlers/vault_handlers.ts: handleVaultEdit",
+  "src/serve/handlers/workflow_handlers.ts: handleWorkflowCreate",
+  "src/serve/handlers/workflow_handlers.ts: handleWorkflowDelete",
+  "src/serve/handlers/workflow_handlers.ts: handleWorkflowEdit",
+  // Model method runs and resumes, whose push runs under the shared gate
+  // (swamp-club#3035). A method run that took model locks still pushes
+  // through the locks' flush, outside the root. The detached resume
+  // launches its parent's auto-resume only after its root has ended, and
+  // every caller launches it outside an open root.
+  "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
+  "src/serve/handlers/workflow_handlers.ts: handleWorkflowResume",
+  "src/serve/resume_launcher.ts: startDetachedResume",
   // Workflow runs from the workflow.run handler, webhooks and the scheduler:
   // the post-run push. Each step's model lock still pushes on its own.
   "src/serve/deps.ts: executeWorkflowWithLocks",
@@ -283,20 +302,6 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
 const PINNED_SERVE_RAW_PUSHES: readonly string[] = [
   // The push the converted handlers flush through.
   "src/serve/handlers/shared.ts: pushChangedToRemote",
-  // Handlers that push only on success, after the reply (swamp-club#3035).
-  "src/serve/handlers/admin_handlers.ts: handleVaultMigrate",
-  "src/serve/handlers/model_handlers.ts: handleModelCreate",
-  "src/serve/handlers/model_handlers.ts: handleModelDelete",
-  "src/serve/handlers/model_handlers.ts: handleModelEdit",
-  "src/serve/handlers/vault_handlers.ts: handleVaultCreate",
-  "src/serve/handlers/vault_handlers.ts: handleVaultEdit",
-  "src/serve/handlers/workflow_handlers.ts: handleWorkflowCreate",
-  "src/serve/handlers/workflow_handlers.ts: handleWorkflowDelete",
-  "src/serve/handlers/workflow_handlers.ts: handleWorkflowEdit",
-  // Model method runs and resumes, under the shared gate (swamp-club#3035).
-  "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
-  "src/serve/handlers/workflow_handlers.ts: handleWorkflowResume",
-  "src/serve/resume_launcher.ts: startDetachedResume",
   // Background garbage collection, outside any request.
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/worker_gc_service.ts: pruneWorkersAndPush",

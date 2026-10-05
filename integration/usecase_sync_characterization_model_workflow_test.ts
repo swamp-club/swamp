@@ -42,6 +42,8 @@ import {
   row,
   type RowRepos,
   runCli,
+  runServe,
+  serveCtx,
 } from "./usecase_sync_fixtures.ts";
 
 await initializeLogging({});
@@ -115,9 +117,13 @@ async function suspendAtGate(
 function modelCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model create${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -151,9 +157,13 @@ function modelCreateRow(managedConfig: boolean): AnyRow {
 function modelEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model edit${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -181,9 +191,13 @@ function modelEditRow(managedConfig: boolean): AnyRow {
 function workflowCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow create${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -201,9 +215,13 @@ function workflowCreateRow(managedConfig: boolean): AnyRow {
 function workflowEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow edit${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: managedConfig ? ["push"] : [],
+      serve: ["push", "release"],
+    },
     // With managedConfig the CLI stages a bulk mark through the command's
     // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
     // and the root pushes it.
@@ -233,9 +251,13 @@ const seedModelAndWorkflow = async (repos: RowRepos) => {
 function modelDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model delete${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: {
+      cli: ["pull", "prepare", "commit", "release"],
+      serve: ["push", "release"],
+    },
     options: { managedConfig },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
@@ -260,6 +282,9 @@ function modelDeleteRow(managedConfig: boolean): AnyRow {
 function workflowDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow delete${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { serve: true },
+    // Recorded before serve adopted a root unit (swamp-club#3035).
+    syncOrder: { serve: ["push", "release"] },
     options: { managedConfig },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
@@ -358,17 +383,22 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model method run",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: [] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: { cli: [], serve: [] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
     },
     cli: (repos) => ({
       args: ["model", "method", "run", "m1", "noop", ...json(repos)],
     }),
-    // The serve side of this use case belongs to swamp-club#3034.
-    serve: null,
+    // The run is detached; runServe returns once it leaves the registry,
+    // which it does only after its push.
+    serve: () => ({
+      type: "model.method.run",
+      payload: { modelIdOrName: "m1", methodName: "noop" },
+    }),
   }),
   row({
     name: "workflow run",
@@ -382,9 +412,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow resume",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["release", "push"] },
+    rootUnit: { cli: true, serve: true },
+    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
+    // adopted a root unit.
+    syncOrder: { cli: ["release", "push"], serve: ["push", "release"] },
     // workflow_resume.ts drives WorkflowExecutionService directly, not
     // through a libswamp use case, so no use-case unit stages these marks.
     outsideUseCase: {
@@ -395,9 +426,31 @@ const ROWS: AnyRow[] = [
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
+      // Serve's resume (startDetachedResume) drives the same service.
+      serve: [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
     },
     seed: async (repos, composition) => {
       const run = await suspendAtGate(repos, composition);
+      if (composition === "serve") {
+        // The CLI refuses a serve-owned run, so serve approves it. The
+        // workflow does not opt into auto-resume, so the approval only
+        // decides the gate.
+        await runServe(serveCtx(repos), {
+          type: "workflow.approve",
+          payload: {
+            workflowIdOrName: run.workflowName,
+            stepName: "gate",
+            runId: run.runId,
+          },
+        });
+        return run;
+      }
       await runCli({
         args: [
           "workflow",
@@ -411,11 +464,16 @@ const ROWS: AnyRow[] = [
       });
       return run;
     },
+    serveCtx: (run: SuspendedRun) => ({ activeRunRegistry: run.registry }),
     cli: (repos, run: SuspendedRun) => ({
       args: ["workflow", "resume", run.workflowName, ...json(repos)],
     }),
-    // The serve side of this use case belongs to swamp-club#3034.
-    serve: null,
+    // The resume is detached; runServe returns once it leaves the registry,
+    // which it does only after its push.
+    serve: (_repos, run: SuspendedRun) => ({
+      type: "workflow.resume",
+      payload: { workflowIdOrName: run.workflowName, runId: run.runId },
+    }),
   }),
   row({
     name: "workflow approve",
@@ -536,7 +594,19 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": [],
       },
     },
-    serve: null,
+    serve: {
+      "ops": [
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+      ],
+      "remote": {
+        "added": [],
+        "removed": [],
+        "changed": [],
+      },
+    },
   },
   "workflow run": {
     cli: {
@@ -611,7 +681,30 @@ const EXPECTED: Record<string, PinnedRow> = {
         ],
       },
     },
-    serve: null,
+    serve: {
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[7]",
+      ],
+      "remote": {
+        "added": [
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/latest",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary/latest",
+        ],
+        "removed": [],
+        "changed": [
+          "workflow-runs/<id>/workflow-run-<id>.yaml",
+        ],
+      },
+    },
   },
   "model create": {
     // Without managedConfig, definitions are repo-local: nothing is marked or

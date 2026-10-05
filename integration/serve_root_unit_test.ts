@@ -19,9 +19,12 @@
 
 /**
  * Serve commits through root units of work with no behaviour change
- * (swamp-club#3034). The use-case sync characterization rows cover each
- * converted handler's success path; these cover what they do not: failed
- * requests, suspended and cancelled workflow runs, and concurrent requests.
+ * (swamp-club#3034, swamp-club#3035). The use-case sync characterization
+ * rows cover each converted handler's success path; these cover what they
+ * do not: failed, refused and cancelled requests, replies sent before a
+ * success-only push, model method runs with and without model locks,
+ * suspended and cancelled workflow runs, resumes and the auto-resumes they
+ * launch, and concurrent requests.
  * Each test pins today's marks, pushes and replies, and checks the work ran
  * in exactly one root unit that staged every mark.
  */
@@ -36,13 +39,20 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
-import { useUnitOfWorkFactoryForTesting } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  runInRootUnitOfWork,
+  useUnitOfWorkFactoryForTesting,
+} from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { handleMessage } from "../src/serve/connection.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import { handleWorkflowEdit } from "../src/serve/handlers/workflow_handlers.ts";
+import { startDetachedResume } from "../src/serve/resume_launcher.ts";
+import type { BufferTerminal } from "../src/serve/run_event_buffer.ts";
 import {
   CALLER,
+  errorFrame,
   type Frame,
   saveData,
   saveGatedWorkflow,
@@ -463,7 +473,579 @@ Deno.test("serve root units: a workflow.reject whose reply fails after the save 
     } finally {
       dispose();
     }
-    // The reject's root pushed exactly once; the resume pushes on its own.
+    // The reject's root pushed exactly once, then the parent's resume, in a
+    // root of its own (swamp-club#3035).
+    assertEquals(rootFlushes, [1, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Success-only handlers, model method runs and resumes (swamp-club#3035)
+// ---------------------------------------------------------------------------
+
+type Repos = Parameters<Parameters<typeof withRowRepos>[1]>[0];
+
+/**
+ * Runs `fn` with every root's flush counting the pushes it made, and
+ * returns those counts in the order the roots ended. A root with no flush
+ * is not counted.
+ */
+async function countRootFlushes(
+  repos: Repos,
+  fn: () => Promise<void>,
+): Promise<number[]> {
+  const pushes = () =>
+    repos.remote.ops().filter((op) => op.instance === "A" && op.op === "push")
+      .length;
+  const rootFlushes: number[] = [];
+  const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+    const flush = options.flush;
+    return createLegacyUnitOfWork(markDirty, {
+      flush: options.role === "root" && flush !== undefined
+        ? async () => {
+          const before = pushes();
+          await flush();
+          rootFlushes.push(pushes() - before);
+        }
+        : flush,
+      parent: options.parent,
+      afterCommit: "forward",
+    });
+  });
+  try {
+    await fn();
+  } finally {
+    dispose();
+  }
+  return rootFlushes;
+}
+
+/**
+ * Sends one request on a socket that records, with each frame, how many
+ * pushes instance A had made since the request when it was sent.
+ */
+async function sendCountingPushes(
+  repos: Repos,
+  ctx: ReturnType<typeof serveCtx>,
+  request: { type: string; payload: Record<string, unknown> },
+): Promise<{ type: string; pushesBefore: number }[]> {
+  const pushes = () =>
+    repos.remote.ops().filter((op) => op.instance === "A" && op.op === "push")
+      .length;
+  const start = pushes();
+  const sent: { type: string; pushesBefore: number }[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send(data: string) {
+      sent.push({
+        type: JSON.parse(data).type,
+        pushesBefore: pushes() - start,
+      });
+    },
+    close() {},
+  };
+  const id = crypto.randomUUID();
+  const active = new Map<string, AbortController>();
+  handleMessage(
+    socket as unknown as WebSocket,
+    ctx,
+    active,
+    new MessageEvent("message", { data: JSON.stringify({ id, ...request }) }),
+    CALLER,
+  );
+  await waitFor(
+    () => !active.has(id) && (ctx.activeRunRegistry?.size ?? 0) === 0,
+    `request ${request.type} finished`,
+  );
+  return sent;
+}
+
+Deno.test("serve root units: a model.create whose use case fails pushes nothing and answers with its error", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    let frames: Frame[] = [];
+    const units = await captureUnits(async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "model.create",
+        payload: { typeArg: repos.modelType.normalized, name: "m1" },
+      });
+    });
+    const observation = observe(repos, base);
+
+    assertEquals(errorOf(frames), {
+      code: "model_create_failed",
+      message: "Model already exists: m1",
+    });
+    assertEquals(observation.ops, []);
+    assertRootUnit(
+      {
+        name: "model create (failed)",
+        syncOrder: { serve: ["release"] },
+      },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: a model.delete refused for its data pushes nothing", async () => {
+  await withRowRepos({}, async (repos) => {
+    const model = await saveModel(repos.serveRepo, "m1");
+    await saveData(repos.serveRepo, model, "first");
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    let frames: Frame[] = [];
+    const units = await captureUnits(async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "model.delete",
+        payload: { modelIdOrName: "m1" },
+      });
+    });
+    const observation = observe(repos, base);
+
+    assertEquals((errorOf(frames) as { code: string }).code, "has_data");
+    assertEquals(observation.ops, []);
+    assertRootUnit(
+      {
+        name: "model delete (has data)",
+        syncOrder: { serve: ["release"] },
+      },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: a workflow.edit cancelled during its save pushes nothing and answers cancelled", async () => {
+  await withRowRepos({}, async (repos) => {
+    const model = await saveModel(repos.serveRepo, "m1");
+    const workflow = await saveWorkflow(repos.serveRepo, "wf1", model);
+    const path = repos.a.repoContext.workflowRepo.getPath(workflow.id);
+    const content = (await Deno.readTextFile(path)).replace(
+      "name: wf1",
+      "name: wf1\ndescription: edited",
+    );
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    const sent: Frame[] = [];
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(data: string) {
+        sent.push(JSON.parse(data) as Frame);
+      },
+      close() {},
+    };
+    const controller = new AbortController();
+    controller.abort();
+    const units = await captureUnits(async () => {
+      await handleWorkflowEdit(
+        socket as unknown as WebSocket,
+        ctx,
+        "edit-1",
+        { workflowIdOrName: "wf1", content },
+        controller,
+        CALLER,
+      );
+    });
+    const observation = observe(repos, base);
+
+    assertEquals(sent.map((frame) => frame.type), ["error"]);
+    assertEquals(sent[0].error?.code, "cancelled");
+    assertEquals(observation.ops, []);
+    assertRootUnit(
+      { name: "workflow edit (cancelled)", syncOrder: { serve: [] } },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: a vault.create replies before it pushes, and pushes once", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    let sent: { type: string; pushesBefore: number }[] = [];
+    const rootFlushes = await countRootFlushes(repos, async () => {
+      sent = await sendCountingPushes(repos, ctx, {
+        type: "vault.create",
+        payload: { vaultType: "local_encryption", name: "v1" },
+      });
+    });
+
+    assertEquals(sent, [{ type: "vault.create", pushesBefore: 0 }]);
     assertEquals(rootFlushes, [1]);
+  });
+});
+
+Deno.test("serve root units: a model.method.run by type pushes once after the run, under the gate", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    let frames: Frame[] = [];
+    const units = await captureUnits(async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "model.method.run",
+        payload: {
+          modelIdOrName: "fresh",
+          typeArg: repos.modelType.normalized,
+          definitionName: "fresh",
+          methodName: "noop",
+        },
+      });
+    });
+    const observation = observe(repos, base);
+
+    assertEquals(errorFrame(frames), undefined);
+    assertEquals(observation.ops.filter((op) => op.startsWith("push")), [
+      "push[3]",
+    ]);
+    assertRootUnit(
+      {
+        name: "model method run by type",
+        syncOrder: { serve: ["push", "release"] },
+      },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: a model.method.run whose use case reports an error still pushes once, after the run", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    let frames: Frame[] = [];
+    const units = await captureUnits(async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "model.method.run",
+        payload: {
+          modelIdOrName: "fresh",
+          typeArg: repos.modelType.normalized,
+          definitionName: "fresh",
+          methodName: "missing",
+        },
+      });
+    });
+    const observation = observe(repos, base);
+
+    // The use case reports the error as an event and the run completes, so
+    // the push still runs: it follows the run, not the method's success.
+    const events = frames.flatMap((frame) =>
+      frame.type === "event" ? [frame.event as { kind: string }] : []
+    );
+    assertEquals(events.some((event) => event.kind === "error"), true);
+    assertEquals(frames.at(-1)?.type, "done");
+    assertEquals(observation.ops, ["push[0]"]);
+    assertRootUnit(
+      {
+        name: "model method run (use case error)",
+        syncOrder: { serve: ["push", "release"] },
+      },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: a model.method.run that takes model locks pushes only through its lock flush", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    const ctx = serveCtx(repos);
+    const base = baseline(repos);
+    let frames: Frame[] = [];
+    const rootFlushes = await countRootFlushes(repos, async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "model.method.run",
+        payload: { modelIdOrName: "m1", methodName: "touch" },
+      });
+    });
+    const observation = observe(repos, base);
+
+    assertEquals(errorFrame(frames), undefined);
+    // The lock flush commits the run's changes when the locks are released;
+    // the root's flush, which owns only the no-lock push, pushes nothing.
+    assertEquals(observation.ops, [
+      "pull[0]",
+      "markDirty definitions-evaluated/<type>/m1.yaml",
+      "markDirty outputs/<type>/touch/<id>-<time>.yaml",
+      "markDirty data/<type>/<id>/report-swamp-method-summary",
+      "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+      "prepare[8]",
+      "commit[8]",
+    ]);
+    assertEquals(rootFlushes, [0]);
+  });
+});
+
+Deno.test("serve root units: a workflow.resume without a run registry whose resume fails pushes once, after its error reply", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveGatedWorkflow(repos.serveRepo, "gated", "gate");
+    await settle(repos);
+    const ctx = { ...serveCtx(repos), activeRunRegistry: undefined };
+    const base = baseline(repos);
+    const runId = crypto.randomUUID();
+    let sent: { type: string; pushesBefore: number }[] = [];
+    const units = await captureUnits(async () => {
+      sent = await sendCountingPushes(repos, ctx, {
+        type: "workflow.resume",
+        payload: { workflowIdOrName: "gated", runId },
+      });
+    });
+    const observation = observe(repos, base);
+
+    assertEquals(sent, [{ type: "error", pushesBefore: 0 }]);
+    assertEquals(observation.ops, ["push[0]"]);
+    assertRootUnit(
+      {
+        name: "workflow resume (failed)",
+        syncOrder: { serve: ["push", "release"] },
+      },
+      "serve",
+      repos,
+      units,
+      observation,
+      syncOrder(repos, base),
+    );
+  });
+});
+
+Deno.test("serve root units: resuming an approved nested child still auto-resumes its parent, each resume pushing once", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    const { parent, child } = await saveParentAwaitingGatedChild(repos);
+    await executeWorkflowWithLocks(
+      repos.a.repoDir,
+      repos.a.repoContext,
+      repos.a.datastoreConfig,
+      {
+        workflowIdOrName: parent.name,
+        inputs: {},
+        instanceId: crypto.randomUUID(),
+      },
+      new AbortController().signal,
+      () => {},
+      repos.a.syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    const runRepo = repos.a.repoContext.workflowRunRepo;
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(parentRun.status, "suspended");
+    assertEquals(childRun.status, "suspended");
+    await settle(repos);
+
+    const registry = new ActiveRunRegistry();
+    const ctx = serveCtx(repos, { activeRunRegistry: registry });
+    // The child workflow does not opt into auto-resume, so the approval
+    // only decides its gate.
+    const approved = await sendRequest(ctx, {
+      id: crypto.randomUUID(),
+      type: "workflow.approve",
+      payload: {
+        workflowIdOrName: child.name,
+        runId: childRun.id,
+        stepName: "gate",
+      },
+    });
+    assertEquals(errorFrame(approved), undefined);
+
+    const rootFlushes = await countRootFlushes(repos, async () => {
+      const resumed = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "workflow.resume",
+        payload: { workflowIdOrName: child.name, runId: childRun.id },
+      });
+      assertEquals(errorFrame(resumed), undefined);
+      // The child's resume launches the parent's once the child's own push
+      // is done; the parent then runs to completion.
+      await waitFor(
+        async () =>
+          (await runRepo.findById(parent.id, parentRun.id))?.status ===
+            "succeeded" && registry.size === 0,
+        "the parent resumed after its child completed",
+      );
+    });
+    assertEquals(
+      (await runRepo.findById(child.id, childRun.id))?.status,
+      "succeeded",
+    );
+    // The child's resume and the parent's each push once, in their own root.
+    assertEquals(rootFlushes, [1, 1]);
+  });
+});
+
+Deno.test("serve root units: an approve that auto-resumes its run pushes once for the approval and once for the resume", async () => {
+  await withRowRepos({}, async (repos) => {
+    const gated = Workflow.create({
+      name: "auto-gated",
+      autoResume: true,
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await repos.a.repoContext.workflowRepo.save(gated);
+    let runId: string | undefined;
+    await executeWorkflowWithLocks(
+      repos.a.repoDir,
+      repos.a.repoContext,
+      repos.a.datastoreConfig,
+      {
+        workflowIdOrName: gated.name,
+        inputs: {},
+        instanceId: crypto.randomUUID(),
+      },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "started") runId = event.runId;
+      },
+      repos.a.syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    if (runId === undefined) throw new Error("the gated run never started");
+    const gatedRunId: string = runId;
+    await settle(repos);
+
+    const registry = new ActiveRunRegistry();
+    const ctx = serveCtx(repos, { activeRunRegistry: registry });
+    let frames: Frame[] = [];
+    const rootFlushes = await countRootFlushes(repos, async () => {
+      frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type: "workflow.approve",
+        payload: {
+          workflowIdOrName: gated.name,
+          runId: gatedRunId,
+          stepName: "gate",
+        },
+      });
+      await waitFor(
+        async () =>
+          (await repos.a.repoContext.workflowRunRepo.findAllByWorkflowId(
+              gated.id,
+            ))[0]?.status === "succeeded" && registry.size === 0,
+        "the approved run resumed and completed",
+      );
+    });
+
+    assertEquals(
+      (frames[0].payload?.data as { autoResumed?: boolean }).autoResumed,
+      true,
+    );
+    // The approval's root pushes, then the resume's.
+    assertEquals(rootFlushes, [1, 1]);
+  });
+});
+
+Deno.test("serve root units: a detached resume whose root cannot open still ends its stream with an error and leaves the registry", async () => {
+  await withRowRepos({}, async (repos) => {
+    const workflow = await saveGatedWorkflow(repos.serveRepo, "gated", "gate");
+    let runId: string | undefined;
+    await executeWorkflowWithLocks(
+      repos.a.repoDir,
+      repos.a.repoContext,
+      repos.a.datastoreConfig,
+      {
+        workflowIdOrName: workflow.name,
+        inputs: {},
+        instanceId: crypto.randomUUID(),
+      },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "started") runId = event.runId;
+      },
+      repos.a.syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    if (runId === undefined) throw new Error("the gated run never started");
+    const registry = new ActiveRunRegistry();
+    const ctx = serveCtx(repos, { activeRunRegistry: registry });
+    const approved = await sendRequest(ctx, {
+      id: crypto.randomUUID(),
+      type: "workflow.approve",
+      payload: { workflowIdOrName: workflow.name, runId, stepName: "gate" },
+    });
+    assertEquals(errorFrame(approved), undefined);
+
+    // Launched inside an open root for the same hook, the resume's own root
+    // refuses to nest, so the resume never starts.
+    let terminals: BufferTerminal[] = [];
+    let onTerminal: BufferTerminal | undefined;
+    await runInRootUnitOfWork(
+      repos.a.repoContext,
+      { flush: undefined },
+      async () => {
+        const launched = await startDetachedResume(ctx, registry, {
+          workflowIdOrName: workflow.name,
+          runId,
+          principalId: null,
+          onTerminal: (terminal) => {
+            onTerminal = terminal;
+          },
+        });
+        assertEquals(launched.ok, true);
+        if (!launched.ok) return;
+        const seen: BufferTerminal[] = [];
+        launched.buffer.subscribe({
+          onEvent: () => {},
+          onTerminal: (terminal) => seen.push(terminal),
+          onDetach: () => {},
+        });
+        terminals = seen;
+      },
+    );
+    await waitFor(
+      () => registry.size === 0 && onTerminal !== undefined,
+      "the resume left the registry",
+    );
+
+    const expected: BufferTerminal = {
+      kind: "error",
+      code: "workflow_resume_failed",
+      message:
+        "a root unit of work was opened inside another for the same hook " +
+        "with its own push; give that push to the outer root, or run it " +
+        "outside",
+    };
+    assertEquals(terminals, [expected]);
+    assertEquals(onTerminal, expected);
   });
 });
