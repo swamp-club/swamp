@@ -1213,10 +1213,11 @@ each site):
 - `swamp datastore sync`, which owns its pull and push
   (`src/cli/commands/datastore_sync.ts`). The other CLI write commands stage
   their marks through their root unit (swamp-club#3033).
-- `pushManagedConfigChanges` and `pushManagedConfigPaths`
-  (`src/cli/managed_config_sync.ts`), which send bare marks. No command calls
-  them since swamp-club#3033: the managed-config commands stage the bare mark
-  through `runManagedConfigMutation`'s root.
+- `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`), which sends
+  a bare mark. No command calls it since swamp-club#3033: the managed-config
+  commands stage the bare mark through `runManagedConfigMutation`'s root. The
+  per-path `pushManagedConfigPaths` and both deferred variants had no callers
+  and were removed.
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
@@ -1315,9 +1316,7 @@ The CLI extension commands follow the same rule. `extension pull`, `update`,
 transaction, which marks the config-tier lockfile by path and pushes it,
 bounded by the datastore's sync timeout, instead of the bulk mark that
 `runManagedConfigMutation` stages. It publishes only when the lockfile changed
-or an earlier publish is still pending. `pushManagedConfigPaths`, used by the
-other per-path config writers, drops any path outside the namespace's cache
-tree rather than forwarding it. An extension that keeps its dirty set in
+or an earlier publish is still pending. An extension that keeps its dirty set in
 memory still walks the whole cache on a fresh process (rule 4), so "exact
 paths" means the marks sent, not the objects the extension compares. The
 lockfile is uploaded either way.
@@ -1333,8 +1332,8 @@ lockfile is uploaded either way.
   `.markDirty?.()` forms on any receiver, and names the top-level function that
   makes the call.
 - A third checks a pinned list of CLI extension writers. None may call
-  `pushManagedConfigChanges`, `pushManagedConfigChangesDeferred` or
-  `pushManagedConfigPaths(Deferred)`, and each must run its change in
+  `pushManagedConfigChanges` or `runManagedConfigMutation` (a bulk mark), or a
+  per-path publish helper that skips the fetch, and each must run its change in
   `withManagedLockfileTransaction(createManagedLockfileTransaction(...))`.
   A fourth requires serve's extension handlers to do the same and not push
   after the change (swamp-club#2838).

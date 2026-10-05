@@ -169,25 +169,16 @@ async function runGroupMethod(
           : undefined),
       release: modelLocks?.release,
       onCleanupError: (cleanupError) => {
-        if (modelLocks) {
-          ctx.logger.warn(
-            "Failed to release locks during cleanup: {error}",
-            {
-              error: cleanupError instanceof Error
-                ? cleanupError.message
-                : String(cleanupError),
-            },
-          );
-        } else {
-          ctx.logger.warn(
-            "Failed to push changes to remote datastore: {error}",
-            {
-              error: cleanupError instanceof Error
-                ? cleanupError.message
-                : String(cleanupError),
-            },
-          );
-        }
+        ctx.logger.warn(
+          modelLocks
+            ? "Failed to release locks during cleanup: {error}"
+            : "Failed to push changes to remote datastore: {error}",
+          {
+            error: cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+          },
+        );
       },
     },
     async (root) => {

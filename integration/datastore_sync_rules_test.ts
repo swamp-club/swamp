@@ -395,9 +395,8 @@ Deno.test("extension writers change the lockfile inside a managed lockfile trans
   assertEquals(
     bulk,
     [],
-    "Extension writers must not call pushManagedConfigChanges, " +
-      "pushManagedConfigChangesDeferred or runManagedConfigMutation: their " +
-      "bare markDirty() turns the " +
+    "Extension writers must not call pushManagedConfigChanges or " +
+      "runManagedConfigMutation: their bare markDirty() turns the " +
       "push into a full-cache walk that never detects deletions.",
   );
   assertEquals(

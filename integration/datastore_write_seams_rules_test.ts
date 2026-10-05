@@ -427,11 +427,10 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
   // Serve's start-up (swamp-club#3034 covers serve).
   "src/cli/commands/serve.ts: serveCommand",
-  // Managed-config push helpers. The commands publish through
-  // runManagedConfigMutation's root; these remain for the deferred variants
-  // and the remote-failure suite, and have no command callers.
+  // The one-call managed-config publish the remote-failure suite exercises.
+  // No command calls it: they publish through runManagedConfigMutation's
+  // root unit (swamp-club#3033).
   "src/cli/managed_config_sync.ts: pushManagedConfigChanges",
-  "src/cli/managed_config_sync.ts: pushManagedConfigPaths",
   // The mark hook itself.
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
   // Written outside any repository, at push time.

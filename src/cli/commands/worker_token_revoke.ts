@@ -184,8 +184,9 @@ seconds.`,
 
       if (syncService) {
         await root.stage({ kind: "bulk", reason: "worker token revoke" });
-        // Published here, and again by the root's push when the command
-        // ends: a root cannot push mid-command (PINNED_CLI_PUSH_CALLS).
+        // Published here; a root cannot push mid-command
+        // (PINNED_CLI_PUSH_CALLS). When a model lock is held, the root's lock
+        // push publishes again when the command ends.
         await syncService.pushChanged({ namespace });
       }
     },
