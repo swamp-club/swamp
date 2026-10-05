@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -501,6 +501,190 @@ Deno.test("cancelLocalRun: stops the owner first, then settles the stored record
       (await runRepo.findById(workflowId, snapshot.id))?.status,
       "cancelled",
     );
+  });
+});
+
+/** The run suspended at a gate, with no live owner, as cancel first reads it. */
+function suspendedData(runId: string): WorkflowRunInput {
+  return { ...snapshotData(runId, null), status: "suspended" };
+}
+
+Deno.test("cancelLocalRun: stops a process that took the run over before the claim, and saves nothing over it first", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    await runRepo.save(workflowId, snapshot);
+    // A `workflow resume` took the run over after cancel read it suspended.
+    const RESUMER_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, RESUMER_PID)),
+    );
+
+    const killed: number[] = [];
+    const statusAtKill: (string | undefined)[] = [];
+    const result = await cancelLocalRun(
+      snapshot,
+      WORKFLOW,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...untracked,
+        liveness: {
+          hostname: hostname(),
+          isDead: (pid) => killed.includes(pid),
+        },
+        killProcess: async (pid) => {
+          statusAtKill.push(
+            (await runRepo.findById(workflowId, snapshot.id))?.status,
+          );
+          killed.push(pid);
+          return true;
+        },
+      },
+    );
+
+    assertEquals(killed, [RESUMER_PID]);
+    // The record still read running when the resumer was stopped.
+    assertEquals(statusAtKill, ["running"]);
+    assertEquals(result?.status, "cancelled");
+    assertEquals(
+      (await runRepo.findById(workflowId, snapshot.id))?.status,
+      "cancelled",
+    );
+  });
+});
+
+Deno.test("cancelLocalRun: keeps the record a taken-over run's process saved when it was stopped", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    const RESUMER_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, RESUMER_PID)),
+    );
+
+    const killed: number[] = [];
+    const result = await cancelLocalRun(
+      snapshot,
+      WORKFLOW,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...untracked,
+        liveness: {
+          hostname: hostname(),
+          isDead: (pid) => killed.includes(pid),
+        },
+        // The resumer saves its own cancelled record while handling SIGTERM.
+        killProcess: async (pid) => {
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(runId, "cancelled")),
+          );
+          killed.push(pid);
+          return true;
+        },
+      },
+    );
+
+    assertEquals(killed, [RESUMER_PID]);
+    assertEquals(result?.status, "cancelled");
+    assertEquals(result?.tags["cancel_reason"], "No longer needed");
+    assertEquals(stepSummary(result!), ["build-1:failed", "rollback:skipped"]);
+  });
+});
+
+Deno.test("cancelLocalRun: gives up, saving nothing, when the run keeps being taken over", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    let nextPid = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, nextPid)),
+    );
+
+    const killed: number[] = [];
+    await assertRejects(
+      () =>
+        cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
+          runRepo,
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
+          ...untracked,
+          liveness: {
+            hostname: hostname(),
+            isDead: (pid) => killed.includes(pid),
+          },
+          // Each stop is followed by another process taking the run over.
+          killProcess: async (pid) => {
+            killed.push(pid);
+            nextPid++;
+            await runRepo.save(
+              workflowId,
+              WorkflowRun.fromData(snapshotData(runId, nextPid)),
+            );
+            return true;
+          },
+        }),
+      UserError,
+      `is running under another process (pid ${Deno.pid + 5})`,
+    );
+
+    assertEquals(killed.length, 3);
+    assertEquals(
+      (await runRepo.findById(workflowId, snapshot.id))?.status,
+      "running",
+    );
+  });
+});
+
+Deno.test("cancelAllLocalRuns: stops a process that took a listed run over before its claim", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    const RESUMER_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, RESUMER_PID)),
+    );
+
+    const killed: number[] = [];
+    const result = await cancelAllLocalRuns(
+      [{ run: snapshot, workflow: WORKFLOW }],
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...untracked,
+        liveness: {
+          hostname: hostname(),
+          isDead: (pid) => killed.includes(pid),
+        },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    assertEquals(killed, [RESUMER_PID]);
+    assertEquals(result.cancelled.map((entry) => entry.runId), [runId]);
   });
 });
 

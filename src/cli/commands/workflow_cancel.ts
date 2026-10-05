@@ -275,6 +275,52 @@ async function closeStoppedOwnerRuns(
   }
 }
 
+/** A live process that took the run over before cancel claimed it. */
+interface TakenOver {
+  takenOverBy: number;
+}
+
+/**
+ * How many times one cancel stops a process that took the run over before
+ * giving up. Each needs a new `workflow resume` to win the run's claim in the
+ * moment between a stop and the settle that follows it.
+ */
+const MAX_TAKE_OVER_STOPS = 3;
+
+/**
+ * Settles the run's record (see {@link settleCancelledRun}), first stopping
+ * any process that took the run over since the caller stopped its owners.
+ * `stopped` holds the pids already stopped and gains each one stopped here.
+ */
+async function settleStoppingNewOwners(
+  run: WorkflowRun,
+  workflow: Workflow,
+  reason: string,
+  stopped: Set<number>,
+  killProcess: NonNullable<CancelLocalRunDeps["killProcess"]>,
+  deps: Omit<CancelLocalRunDeps, "killProcess">,
+): Promise<WorkflowRun | null> {
+  for (let stops = 0;; stops++) {
+    const outcome = await settleCancelledRun(
+      run,
+      workflow,
+      reason,
+      stopped,
+      deps,
+    );
+    if (outcome === null || !("takenOverBy" in outcome)) return outcome;
+    const pid = outcome.takenOverBy;
+    if (stops >= MAX_TAKE_OVER_STOPS) {
+      throw new UserError(
+        `Run ${run.id} is running under another process (pid ${pid}) and was not cancelled. Cancel it again.`,
+      );
+    }
+    await stopOwner(pid, killProcess);
+    await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
+    stopped.add(pid);
+  }
+}
+
 /**
  * Re-reads a run whose owner was stopped: the owner saves its own final
  * record while handling SIGTERM, and saving the pre-kill snapshot would
@@ -287,21 +333,39 @@ async function closeStoppedOwnerRuns(
  *
  * The read, the settlement and the save hold the run's claim, so an approve
  * or reject of the same run lands wholly before or wholly after them.
+ *
+ * A resume can take the run over after the caller chose which owners to stop
+ * and before the claim is taken here. The record then reads `running` under a
+ * live process that is not in `stopped`. Nothing is saved over it: its pid is
+ * returned as {@link TakenOver} for the caller to stop first.
  */
 async function settleCancelledRun(
   run: WorkflowRun,
   workflow: Workflow,
   reason: string,
-  { runRepo, findEvaluatedWorkflow, runClaims }: Pick<
+  stopped: ReadonlySet<number>,
+  {
+    runRepo,
+    findEvaluatedWorkflow,
+    runClaims,
+    liveness = localOwnerLiveness(),
+  }: Pick<
     CancelLocalRunDeps,
-    "runRepo" | "findEvaluatedWorkflow" | "runClaims"
+    "runRepo" | "findEvaluatedWorkflow" | "runClaims" | "liveness"
   >,
-): Promise<WorkflowRun | null> {
+): Promise<WorkflowRun | TakenOver | null> {
   const workflowId = workflow.id;
   return await runClaims.withClaim(run.id, async () => {
     const current = await runRepo.findById(workflowId, run.id);
     if (!current) {
       return null;
+    }
+    const owner = ownerPidToStop(current);
+    if (
+      current.status === "running" && owner !== undefined &&
+      !stopped.has(owner) && !liveness.isDead(owner)
+    ) {
+      return { takenOverBy: owner };
     }
     if (current.isCancellable) {
       cancelAndSettle(
@@ -330,8 +394,9 @@ async function settleCancelledRun(
  * Cancels a locally-owned run. Stops the owning process first, giving it
  * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, closes
  * what it left open (see {@link closeStoppedOwnerRuns}), then settles the
- * record (see {@link settleCancelledRun}). Returns the persisted run, or null
- * when the record no longer exists.
+ * record (see {@link settleCancelledRun}), stopping a process that took the
+ * run over in between. Returns the persisted run, or null when the record no
+ * longer exists.
  */
 export async function cancelLocalRun(
   run: WorkflowRun,
@@ -339,12 +404,21 @@ export async function cancelLocalRun(
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
+  const stopped = new Set<number>();
   const pid = ownerPidToStop(run);
   if (pid !== undefined) {
     await stopOwner(pid, killProcess);
     await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
+    stopped.add(pid);
   }
-  return await settleCancelledRun(run, workflow, reason, deps);
+  return await settleStoppingNewOwners(
+    run,
+    workflow,
+    reason,
+    stopped,
+    killProcess,
+    deps,
+  );
 }
 
 /** Runs `fn` with the repository's run tracker open. */
@@ -401,7 +475,14 @@ export async function cancelAllLocalRuns(
   for (const { run, workflow } of runs) {
     const workflowName = workflow.name;
     const previousStatus = run.status;
-    const finalRun = await settleCancelledRun(run, workflow, reason, deps);
+    const finalRun = await settleStoppingNewOwners(
+      run,
+      workflow,
+      reason,
+      pids,
+      killProcess,
+      deps,
+    );
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {

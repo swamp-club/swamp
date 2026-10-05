@@ -271,19 +271,24 @@ async function interleave<A, B>(
   second: () => Promise<B>,
 ): Promise<[A, PromiseSettledResult<B>]> {
   const firstDone = first();
-  await waitFor(
-    () => events.includes("first:at-save"),
-    "the first writer to reach its save",
-  );
-  const secondDone = second().then(
-    (value): PromiseSettledResult<B> => ({ status: "fulfilled", value }),
-    (reason): PromiseSettledResult<B> => ({ status: "rejected", reason }),
-  );
-  await waitFor(
-    () => events.includes("second:found-claim-held"),
-    "the second writer to find the claim held",
-  );
-  letGo();
+  let secondDone: Promise<PromiseSettledResult<B>>;
+  try {
+    await waitFor(
+      () => events.includes("first:at-save"),
+      "the first writer to reach its save",
+    );
+    secondDone = second().then(
+      (value): PromiseSettledResult<B> => ({ status: "fulfilled", value }),
+      (reason): PromiseSettledResult<B> => ({ status: "rejected", reason }),
+    );
+    await waitFor(
+      () => events.includes("second:found-claim-held"),
+      "the second writer to find the claim held",
+    );
+  } finally {
+    // Also on a failed wait, so the first writer is never left parked.
+    letGo();
+  }
   const firstResult = await firstDone;
   return [firstResult, await secondDone];
 }

@@ -1463,12 +1463,19 @@ first saved:
 - Cancel after a reject leaves the run `failed` and reports that status.
 - Resume after a cancel is refused before it changes anything. A cancel after
   a resume has taken the run over finds it `running` under the resuming
-  process and stops that process, as for any running run.
+  process and stops that process, as for any running run. That holds when the
+  resume takes over after cancel chose which process to stop: cancel checks
+  the owner again under the claim, saves nothing over a live process it has
+  not stopped, stops it, and settles again (`settleStoppingNewOwners`,
+  `src/cli/commands/workflow_cancel.ts`).
 
 The local commands back the claim with a datastore lock per run
 (`createWorkflowRunClaims`, `src/cli/repo_context.ts`; the key is under
 "Concurrency Control" in `design/enablers/datastores.md`), so it holds across
-processes. Stopping a run's owner process happens before the claim is taken,
+processes that write the same datastore directory. With a custom datastore that
+has a local cache, the provider's lock orders writers on every machine, but
+each machine reads the run from its own cache and these commands do not pull
+under the claim, so two machines can still decide from different copies. Stopping a run's owner process happens before the claim is taken,
 and a resume releases the claim before any step runs: the claim is never held
 while work executes. `swamp serve` keeps other writers in its own process off a
 run with its active-run registry reservation instead, and passes

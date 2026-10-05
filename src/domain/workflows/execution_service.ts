@@ -3458,7 +3458,11 @@ export class WorkflowExecutionService {
       suspendedOnly?: boolean;
       instanceId?: string;
     },
-  ) {
+  ): Promise<{
+    existingRun: WorkflowRun;
+    snapshot: WorkflowRunData;
+    resumeInputs: Record<string, unknown>;
+  }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
       createWorkflowRunId(runId),
