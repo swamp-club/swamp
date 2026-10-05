@@ -404,10 +404,13 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
     }
     if (!unloaded) {
+      // bootout was issued, so launchd may still finish unloading the job
+      // after we stop waiting: report it as possibly left unloaded.
       const reason = bootout.stderr.trim();
-      throw new Error(
-        `launchctl bootout did not unload ${target}; the job was left as it was` +
+      throw new SchedulerRefreshError(
+        `launchctl bootout did not unload ${target} in time` +
           (reason ? `: ${reason}` : ""),
+        true,
       );
     }
 

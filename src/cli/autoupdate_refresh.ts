@@ -102,6 +102,7 @@ export async function refreshAutoupdateSchedulerIfOwed(
         const { prefs, job } = owed;
 
         let result: SchedulerRefreshResult;
+        let unloadMarked = false;
         try {
           // Load a job that is not loaded only when our own failed refresh
           // left it that way, never one the user turned off.
@@ -110,13 +111,20 @@ export async function refreshAutoupdateSchedulerIfOwed(
             // Recorded before the job is taken out, so a process killed
             // before loading it again still leaves the next command the
             // trail to recover it.
-            beforeUnload: () =>
-              deps.writePreferences({ ...prefs, schedulerLeftUnloaded: true }),
+            beforeUnload: async () => {
+              await deps.writePreferences({
+                ...prefs,
+                schedulerLeftUnloaded: true,
+              });
+              unloadMarked = true;
+            },
           });
         } catch (error) {
-          const leftUnloaded = error instanceof SchedulerRefreshError
-            ? error.leftUnloaded
-            : prefs.schedulerLeftUnloaded === true;
+          // Once the job may have been taken out, only a successful refresh
+          // clears the mark; no failure after that point may drop it.
+          const leftUnloaded = unloadMarked ||
+            prefs.schedulerLeftUnloaded === true ||
+            (error instanceof SchedulerRefreshError && error.leftUnloaded);
           await deps.writePreferences({
             ...prefs,
             lastSchedulerRefreshAttempt: deps.now().toISOString(),

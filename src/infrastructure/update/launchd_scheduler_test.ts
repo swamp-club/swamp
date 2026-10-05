@@ -476,13 +476,14 @@ Deno.test("LaunchdScheduler.refresh: fails without bootstrapping when bootout do
         if (cmd === "id") return { stdout: "501\n", code: 0 };
         return { stdout: STUCK_PRINT, code: 0 };
       }, async () => {
-        await assertRejects(
+        const error = await assertRejects(
           () =>
             new LaunchdScheduler("agent", { bootoutPollIntervalMs: 0 })
               .refresh(),
-          Error,
+          SchedulerRefreshError,
           "did not unload",
         );
+        assertEquals(error.leftUnloaded, true);
       });
       assertEquals(launchctlCalls(calls).includes("bootstrap"), false);
     },

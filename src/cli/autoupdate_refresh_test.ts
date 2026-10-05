@@ -167,6 +167,19 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: records the unloaded mark before bo
   assertEquals(deps.written.at(-1)?.schedulerLeftUnloaded, undefined);
 });
 
+Deno.test("refreshAutoupdateSchedulerIfOwed: a failure after the unload mark never clears it", async () => {
+  const deps = fakeDeps({
+    refresh: async (opts) => {
+      await opts.beforeUnload?.();
+      throw new Error("anything that is not a SchedulerRefreshError");
+    },
+  });
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result.outcome, "failed");
+  assertEquals(deps.written.at(-1)?.schedulerLeftUnloaded, true);
+});
+
 Deno.test("refreshAutoupdateSchedulerIfOwed: remembers a refresh that left the job unloaded", async () => {
   const deps = fakeDeps({
     refresh: () =>
