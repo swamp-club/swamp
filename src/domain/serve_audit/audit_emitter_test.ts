@@ -20,7 +20,9 @@
 import { assert, assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
-import type { AuditEvent } from "./audit_event.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { verifyChain } from "./audit_chain.ts";
+import type { AuditEvent, ChainedAuditEvent } from "./audit_event.ts";
 import { createAuditEvent } from "./audit_event.ts";
 import type { AuditSink } from "./audit_sink.ts";
 import { type AlertRuleConfig, AlertRuleEngine } from "./audit_alerts.ts";
@@ -75,6 +77,53 @@ function createMockSink(
       sink.closed = true;
       return Promise.resolve();
     },
+  };
+  return sink;
+}
+
+function createFlakySink(
+  name: string,
+  durable: boolean,
+): AuditSink & {
+  failing: boolean;
+  writes: number;
+  received: ChainedAuditEvent[];
+} {
+  const sink = {
+    name,
+    durable,
+    failing: false,
+    writes: 0,
+    received: [] as ChainedAuditEvent[],
+    write(events: readonly AuditEvent[]): Promise<void> {
+      sink.writes++;
+      if (sink.failing) return Promise.reject(new Error(`${name} failed`));
+      sink.received.push(...(events as ChainedAuditEvent[]));
+      return Promise.resolve();
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
+  return sink;
+}
+
+function createHangingSink(
+  name: string,
+): AuditSink & { writes: number; release(): void } {
+  const pending: (() => void)[] = [];
+  const sink = {
+    name,
+    durable: false,
+    writes: 0,
+    write(): Promise<void> {
+      sink.writes++;
+      return new Promise<void>((resolve) => pending.push(resolve));
+    },
+    release(): void {
+      for (const resolve of pending.splice(0)) resolve();
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
   };
   return sink;
 }
@@ -144,29 +193,237 @@ Deno.test("AuditEmitter: chain state preserved when non-durable sink fails but d
   assertEquals(emitter.chainState.sequence, initialSeq + 1);
 });
 
-Deno.test("AuditEmitter: chain state rolled back when only non-durable sink succeeds", async () => {
-  const failingDurable: AuditSink = {
-    name: "durable",
-    durable: true,
-    write(): Promise<void> {
-      return Promise.reject(new Error("durable failed"));
-    },
-    flush(): Promise<void> {
-      return Promise.resolve();
-    },
-    close(): Promise<void> {
-      return Promise.resolve();
-    },
-  };
+Deno.test("AuditEmitter: durable retry delivers the sequence and digest other sinks saw", async () => {
+  const durableSink = createFlakySink("durable", true);
+  durableSink.failing = true;
   const nonDurableSink = createMockSink("non-durable", false);
-  const emitter = new AuditEmitter([failingDurable, nonDurableSink]);
+  const emitter = new AuditEmitter([durableSink, nonDurableSink]);
   const initialSeq = emitter.chainState.sequence;
 
   emitter.emit(makeEvent("test"));
   await emitter.flush();
 
   assertEquals(nonDurableSink.written.length, 1);
-  assertEquals(emitter.chainState.sequence, initialSeq);
+  assertEquals(durableSink.received.length, 0);
+
+  durableSink.failing = false;
+  await emitter.flush();
+
+  const [seen] = nonDurableSink.written.flat() as ChainedAuditEvent[];
+  assertEquals(durableSink.received.length, 1);
+  assertEquals(durableSink.received[0].sequence, seen.sequence);
+  assertEquals(durableSink.received[0].digest, seen.digest);
+  assertEquals(emitter.chainState.sequence, initialSeq + 1);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: durable sink receives every event while a non-durable sink keeps failing", async () => {
+  let now = 0;
+  const durableSink = createFlakySink("durable", true);
+  const failingSink = createFlakySink("failing", false);
+  failingSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, failingSink],
+    capacity: 4,
+    now: () => now,
+  });
+
+  const actions: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    actions.push(`action-${i}`);
+    emitter.emit(makeEvent(`action-${i}`));
+    await emitter.flush();
+  }
+
+  assertEquals(durableSink.received.map((e) => e.action), actions);
+  assertEquals((await verifyChain(durableSink.received)).valid, true);
+
+  // Once its backoff ends the failing sink is moved up to what is still
+  // held, and the events it missed are counted against it alone.
+  now += 60_000;
+  await emitter.flush();
+  assertEquals(emitter.droppedEvents("failing"), 8);
+  assertEquals(emitter.droppedEvents("durable"), 0);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: replay to a lagging sink keeps the durable chain valid", async () => {
+  let now = 0;
+  const durableSink = createFlakySink("durable", true);
+  const laggingSink = createFlakySink("lagging", false);
+  laggingSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, laggingSink],
+    now: () => now,
+  });
+
+  for (let i = 0; i < 3; i++) {
+    emitter.emit(makeEvent(`action-${i}`));
+    await emitter.flush();
+    now += 60_000;
+  }
+  laggingSink.failing = false;
+  emitter.emit(makeEvent("action-3"));
+  await emitter.flush();
+
+  assertEquals(durableSink.received.map((e) => e.sequence), [1, 2, 3, 4]);
+  assertEquals((await verifyChain(durableSink.received)).valid, true);
+  // The replayed copies are the ones the durable sink recorded.
+  assertEquals(laggingSink.received, durableSink.received);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: hanging non-durable sink does not delay durable writes", async () => {
+  const hanging = createHangingSink("hanging");
+  const durableSink = createFlakySink("durable", true);
+  const emitter = new AuditEmitter([hanging, durableSink]);
+
+  emitter.emit(makeEvent("test"));
+  await waitFor(
+    () => durableSink.received.length === 1,
+    "durable write while the non-durable sink hangs",
+  );
+  assertEquals(hanging.writes, 1);
+
+  hanging.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: timed-out sink gets no second write while the first is pending", async () => {
+  let now = 0;
+  const hanging = createHangingSink("hanging");
+  const durableSink = createFlakySink("durable", true);
+  const emitter = new AuditEmitter({
+    sinks: [hanging, durableSink],
+    sinkTimeoutMs: 20,
+    now: () => now,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  now += 60_000;
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+
+  assertEquals(durableSink.received.length, 2);
+  assertEquals(hanging.writes, 1);
+
+  hanging.release();
+  await waitFor(async () => {
+    now += 60_000;
+    await emitter.flush();
+    return hanging.writes === 2;
+  }, "a new write once the pending one settled");
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: always-throwing sink is retried on a backoff, not back to back", async () => {
+  let now = 0;
+  const failingSink = createFlakySink("failing", false);
+  failingSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), failingSink],
+    sinkBackoffBaseMs: 1_000,
+    now: () => now,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(failingSink.writes, 1);
+
+  for (let i = 0; i < 5; i++) {
+    emitter.emit(makeEvent(`more-${i}`));
+    await emitter.flush();
+  }
+  assertEquals(failingSink.writes, 1);
+
+  now += 1_000;
+  await emitter.flush();
+  assertEquals(failingSink.writes, 2);
+
+  // The second failure doubles the wait.
+  now += 1_999;
+  await emitter.flush();
+  assertEquals(failingSink.writes, 2);
+  now += 1;
+  await emitter.flush();
+  assertEquals(failingSink.writes, 3);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: failed durable write is retried without a new event", async () => {
+  const durableSink = createFlakySink("durable", true);
+  durableSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    durableRetryMs: 5,
+  });
+
+  emitter.emit(makeEvent("test"));
+  await emitter.flush();
+  assertEquals(durableSink.received.length, 0);
+
+  durableSink.failing = false;
+  await waitFor(
+    () => durableSink.received.length === 1,
+    "durable retry timer to redeliver",
+  );
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: replaceSinks clears the backoff of a replaced sink", async () => {
+  const now = 0;
+  const durableSink = createMockSink("durable");
+  const failingSink = createFlakySink("external", false);
+  failingSink.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, failingSink],
+    now: () => now,
+  });
+
+  emitter.emit(makeEvent("before"));
+  await emitter.flush();
+  assertEquals(failingSink.writes, 1);
+
+  const replacement = createFlakySink("external", false);
+  emitter.replaceSinks([durableSink, replacement]);
+  emitter.emit(makeEvent("after"));
+  await emitter.flush();
+
+  assertEquals(
+    replacement.received.map((e) => e.action),
+    ["before", "after"],
+  );
+  assertEquals(failingSink.writes, 1);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: alert rules count an event once however often it is replayed", async () => {
+  let now = 0;
+  const durableSink = createFlakySink("durable", true);
+  const failingSink = createFlakySink("failing", false);
+  failingSink.failing = true;
+  const rule: AlertRuleConfig = {
+    name: "two-denials",
+    match: { category: "auth", outcome: "denied" },
+    threshold: { count: 2, windowSeconds: 60 },
+    action: { type: "log" },
+  };
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, failingSink],
+    alertEngine: new AlertRuleEngine([rule]),
+    now: () => now,
+  });
+
+  emitter.emit({ ...makeEvent("login"), outcome: "denied" });
+  for (let i = 0; i < 3; i++) {
+    await emitter.flush();
+    now += 60_000;
+  }
+
+  assertEquals(failingSink.writes, 3);
+  assertEquals(durableSink.received.map((e) => e.action), ["login"]);
+  await emitter.close();
 });
 
 Deno.test("AuditEmitter: sink error does not propagate to caller", async () => {

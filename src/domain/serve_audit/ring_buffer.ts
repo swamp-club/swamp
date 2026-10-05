@@ -58,9 +58,16 @@ export class RingBuffer<T> {
     return this.#seq;
   }
 
-  readFrom(afterSeq: number): { items: T[]; throughSeq: number } {
+  /**
+   * Returns the items after `afterSeq`. `startSeq` is the sequence of the
+   * first returned item, which is later than `afterSeq + 1` once the buffer
+   * has overwritten the items in between.
+   */
+  readFrom(
+    afterSeq: number,
+  ): { items: T[]; startSeq: number; throughSeq: number } {
     if (afterSeq >= this.#seq || this.#items.length === 0) {
-      return { items: [], throughSeq: this.#seq };
+      return { items: [], startSeq: this.#seq + 1, throughSeq: this.#seq };
     }
 
     const oldest = this.oldestSeq;
@@ -73,6 +80,6 @@ export class RingBuffer<T> {
         this.#capacity;
       result.push(this.#items[bufferIndex]);
     }
-    return { items: result, throughSeq: this.#seq };
+    return { items: result, startSeq, throughSeq: this.#seq };
   }
 }
