@@ -19,10 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import type { PendingApproval } from "../../libswamp/mod.ts";
-import {
-  captureStdout,
-  hintTestContext,
-} from "./approval_hint_test_helpers.ts";
+import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderApprovals } from "./workflow_approvals.ts";
 
 const RUN_ID = "8603d973-24ca-4f36-9c04-7b7c39a4a41a";

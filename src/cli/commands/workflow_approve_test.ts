@@ -19,10 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import type { WorkflowApproveData } from "../../libswamp/mod.ts";
-import {
-  captureStdout,
-  hintTestContext,
-} from "./approval_hint_test_helpers.ts";
+import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderApproveResult, serveIsResuming } from "./workflow_approve.ts";
 
 Deno.test("serveIsResuming: true only when serve reports it resumed the run", () => {

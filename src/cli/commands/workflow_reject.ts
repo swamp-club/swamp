@@ -37,6 +37,7 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import {
   renderAwaitingParent,
   renderDetachedNestedRuns,
+  type ThroughServe,
 } from "./nested_run_hints.ts";
 import {
   requestServerResponse,
@@ -115,7 +116,9 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
-              logNestedRunFollowUps(cliCtx, e.data);
+              logNestedRunFollowUps(cliCtx, e.data, {
+                server: options.server as string | undefined,
+              });
             }
           },
           error: (e) => {
@@ -177,7 +180,10 @@ export const workflowRejectCommand = withRemoteOptions(
 function logNestedRunFollowUps(
   cliCtx: CommandContext,
   data: WorkflowRejectData,
+  remote?: ThroughServe,
 ): void {
-  renderDetachedNestedRuns(cliCtx, data.detachedNestedRuns ?? []);
-  if (data.awaitingParent) renderAwaitingParent(cliCtx, data.awaitingParent);
+  renderDetachedNestedRuns(cliCtx, data.detachedNestedRuns ?? [], remote);
+  if (data.awaitingParent) {
+    renderAwaitingParent(cliCtx, data.awaitingParent, remote);
+  }
 }

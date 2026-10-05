@@ -554,7 +554,9 @@ export const workflowCancelCommand = withRemoteOptions(
         if (recordedReason !== undefined) {
           cliCtx.logger.info`Reason: ${recordedReason}`;
         }
-        renderDetachedNestedRuns(cliCtx, remoteDetached);
+        renderDetachedNestedRuns(cliCtx, remoteDetached, {
+          server: options.server as string | undefined,
+        });
       }
       return;
     }

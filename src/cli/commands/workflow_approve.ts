@@ -43,6 +43,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { parentResumeCommand } from "./nested_run_hints.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -87,14 +88,11 @@ export function renderApproveResult(
   }
   const parent = data.awaitingParent;
   if (parent) {
-    // Through serve, both runs live on the server this command reached, so
-    // its target replaces the `--server <url>` placeholder that serve puts in
-    // `resumeCommand` (it cannot know the address the client used).
     writeOutput(
       remote
-        ? `Once it finishes, resume the parent run unless serve resumes it automatically: swamp workflow resume ${
-          quoteShellWord(parent.workflowName)
-        } --run ${parent.runId}${target}`
+        ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${
+          parentResumeCommand(parent, remote)
+        }`
         : `Once it finishes, resume the parent run: ${parent.resumeCommand}`,
     );
   }
