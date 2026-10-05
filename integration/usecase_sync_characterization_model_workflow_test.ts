@@ -309,9 +309,9 @@ function modelDeleteRow(managedConfig: boolean): AnyRow {
 function workflowDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow delete${managedConfig ? " (managedConfig)" : ""}`,
-    rootUnit: { serve: true },
-    // Recorded before serve adopted a root unit (swamp-club#3035), and while
-    // the CLI pushed only at the coordinator's teardown flush
+    rootUnit: { cli: true, serve: true },
+    // Recorded before serve adopted a root unit (swamp-club#3035), and before
+    // the CLI's coordinator root, while it pushed only at the teardown flush
     // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     options: { managedConfig },
@@ -376,6 +376,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model evaluate (all)",
+    rootUnit: { cli: true },
     // Recorded while the CLI pushed only at the coordinator's teardown flush
     // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
@@ -407,6 +408,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow evaluate (all)",
+    rootUnit: { cli: true },
     // Recorded while the CLI pushed only at the coordinator's teardown flush
     // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
@@ -418,9 +420,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow evaluate (dynamic model references)",
-    // The CLI runs in a root unit with no push of its own and takes the
-    // global lock; recorded while it pushed only at the coordinator's
-    // teardown flush (swamp-club#3055).
+    // The CLI's root unit takes the coordinator's push for the global lock
+    // (swamp-club#3055); syncOrder was recorded while the root had no push
+    // and the lock pushed only at the teardown flush.
     rootUnit: { cli: true },
     syncOrder: { cli: ["pull", "push", "release"] },
     seed: seedModelAndDynamicWorkflow,
@@ -431,6 +433,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow delete (use case fails)",
+    rootUnit: { cli: true },
     // Recorded while the CLI pushed only at the coordinator's flush, which
     // mod.ts runs best-effort after a failed command (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
@@ -442,6 +445,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model validate (with check options)",
+    rootUnit: { cli: true },
     // Check options open with requireInitializedRepo; nothing is written.
     // Recorded while the CLI pushed only at the coordinator's teardown flush
     // (swamp-club#3055).
@@ -456,6 +460,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "run gc",
+    rootUnit: { cli: true },
     // Recorded while the CLI pushed only at the coordinator's teardown flush
     // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },

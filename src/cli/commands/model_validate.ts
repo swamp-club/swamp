@@ -27,6 +27,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -115,7 +116,7 @@ export const modelValidateCommand = withRemoteOptions(
     const method = options.method as string | undefined;
     const hasCheckOptions = (labels && labels.length > 0) || method;
 
-    const { repoDir, datastoreResolver } = hasCheckOptions
+    const { repoDir, repoContext, datastoreResolver } = hasCheckOptions
       ? await requireInitializedRepo({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
@@ -125,22 +126,26 @@ export const modelValidateCommand = withRemoteOptions(
         outputMode: cliCtx.outputMode,
       });
 
-    await modelRegistry.ensureLoaded();
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelValidateDeps(
-      repoDir,
-      { labels, method },
-      datastoreResolver,
-    );
+    // Pushes and releases the global lock when the command ends, as the
+    // teardown flush did (swamp-club#3055).
+    await runInCoordinatorRoot(repoContext, async () => {
+      await modelRegistry.ensureLoaded();
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createModelValidateDeps(
+        repoDir,
+        { labels, method },
+        datastoreResolver,
+      );
 
-    const renderer = createModelValidateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelValidate(ctx, deps, { modelIdOrName }),
-      renderer.handlers(),
-    );
+      const renderer = createModelValidateRenderer(cliCtx.outputMode);
+      await consumeStream(
+        modelValidate(ctx, deps, { modelIdOrName }),
+        renderer.handlers(),
+      );
 
-    if (!renderer.passed()) {
-      Deno.exitCode = 1;
-    }
+      if (!renderer.passed()) {
+        Deno.exitCode = 1;
+      }
+    });
   },
 );

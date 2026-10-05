@@ -132,9 +132,9 @@ const ROWS: AnyRow[] = [
     name: "data gc",
     // Serve runs the handler in a root unit of work (swamp-club#3034),
     // pinned to push before the gate exit, as it did before.
-    rootUnit: { serve: true },
-    // The CLI's syncOrder was recorded while it pushed only at the
-    // coordinator's teardown flush (swamp-club#3055).
+    // The CLI runs in a coordinator root (swamp-club#3055); its syncOrder
+    // was recorded while it pushed only at the teardown flush.
+    rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     // collectGarbage removes versions in parallel batches, so it marks them
     // in filesystem order.
@@ -150,9 +150,9 @@ const ROWS: AnyRow[] = [
     name: "data prune",
     // Serve runs the handler in a root unit of work (swamp-club#3034),
     // pinned to push before the gate exit, as it did before.
-    rootUnit: { serve: true },
-    // The CLI's syncOrder was recorded while it pushed only at the
-    // coordinator's teardown flush (swamp-club#3055).
+    // The CLI runs in a coordinator root (swamp-club#3055); its syncOrder
+    // was recorded while it pushed only at the teardown flush.
+    rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     seed: async (repos) => {
       // Data whose model definition was never saved is orphaned.
@@ -164,9 +164,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "datastore compact",
-    // Takes the global lock and writes nothing to the datastore; pinned
-    // while it pushed only at the coordinator's teardown flush
-    // (swamp-club#3055).
+    // Takes the global lock and writes nothing to the datastore. Runs in a
+    // coordinator root (swamp-club#3055); syncOrder was recorded while it
+    // pushed only at the teardown flush.
+    rootUnit: { cli: true },
     syncOrder: { cli: ["pull", "push", "release"] },
     cli: (repos) => ({ args: ["datastore", "compact", ...json(repos)] }),
     serve: null,

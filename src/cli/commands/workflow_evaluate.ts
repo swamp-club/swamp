@@ -30,6 +30,8 @@ import {
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
+import { pushGlobalLockAtEnd } from "../push_paths.ts";
 import {
   consumeStream,
   createWorkflowEvaluateDeps,
@@ -124,20 +126,24 @@ export const workflowEvaluateCommand = withRemoteOptions(
           outputMode: cliCtx.outputMode,
         });
 
-      const ctx = libSwampContextForRepo(repoContext, {
-        logger: cliCtx.logger,
-      });
-      const deps = createWorkflowEvaluateDeps(
-        repoDir,
-        repoContext.workflowRepo,
-        datastoreResolver,
-      );
-      const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
+      // Pushes and releases the global lock when the command ends, as the
+      // teardown flush did (swamp-club#3055).
+      await runInCoordinatorRoot(repoContext, async () => {
+        const ctx = libSwampContextForRepo(repoContext, {
+          logger: cliCtx.logger,
+        });
+        const deps = createWorkflowEvaluateDeps(
+          repoDir,
+          repoContext.workflowRepo,
+          datastoreResolver,
+        );
+        const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
-      await consumeStream(
-        workflowEvaluate(ctx, deps, { inputs }),
-        renderer.handlers(),
-      );
+        await consumeStream(
+          workflowEvaluate(ctx, deps, { inputs }),
+          renderer.handlers(),
+        );
+      });
       return;
     }
 
@@ -184,6 +190,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
     );
 
     let modelLocks: ModelLockResult | undefined;
+    let globalLock = false;
     let repoDir: string;
     let datastoreResolver = unlocked.datastoreResolver;
 
@@ -221,7 +228,10 @@ export const workflowEvaluateCommand = withRemoteOptions(
 
       repoDir = unlocked.repoDir;
     } else if (modelRefs === null) {
-      // Dynamic references — fall back to global lock
+      // Dynamic references — fall back to global lock. The root below pushes
+      // and releases it when the command ends, as the teardown flush did
+      // (swamp-club#3055).
+      globalLock = true;
       const logger = getSwampLogger(["workflow", "evaluate"]);
       logger
         .info`Workflow contains dynamic model references — using global lock`;
@@ -249,7 +259,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
     await runCommandInRootUnit(
       unlocked.repoContext,
       {
-        push: modelLocks?.push,
+        push: globalLock ? pushGlobalLockAtEnd : modelLocks?.push,
         release: modelLocks?.release,
         onCleanupError: (error) => {
           throw error;

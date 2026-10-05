@@ -158,10 +158,26 @@ export interface RootUnitOfWork extends Pick<UnitOfWork, "stage" | "staged"> {
   checkpoint(): Promise<void>;
 }
 
+/** How the operation a root ran ended, as its flush sees it. */
+export interface RootFlushOutcome {
+  /** `fn` resolved; false when it threw. */
+  completed: boolean;
+}
+
 /** Options for {@link runInRootUnitOfWork}. */
 export interface RootUnitOfWorkOptions {
-  /** The push the root runs once when it ends, on every outcome. */
-  flush: (() => Promise<void>) | undefined;
+  /**
+   * The push the root runs once when it ends, given how `fn` ended. It runs
+   * on every outcome unless `pushWhen` says otherwise.
+   */
+  flush: ((outcome: RootFlushOutcome) => Promise<void>) | undefined;
+  /**
+   * When the flush runs: `"always"` (the default) on every outcome, or
+   * `"completed"` only when `fn` resolved, for an operation that pushed
+   * only on success. A flush whose push depends on more than the outcome
+   * reads `outcome.completed` itself instead.
+   */
+  pushWhen?: "always" | "completed";
   /**
    * The mid-operation push `root.checkpoint()` runs; absent when the
    * operation never pushes partway through. See
@@ -189,7 +205,8 @@ export interface RootUnitOfWorkOptions {
  *   `abandon`.
  * - The root always ends: `commit` when `fn` resolved, `abandon` when it
  *   threw. A legacy root flushes either way, as today's paths push on every
- *   outcome.
+ *   outcome, unless `pushWhen: "completed"` skips the flush when `fn` threw.
+ *   The flush receives the outcome either way.
  * - When `fn` threw and the flush also throws, `fn`'s error is rethrown and
  *   the flush error goes to `onFlushError` (or a warn log). When `fn`
  *   resolved and the flush throws, the flush error is thrown.
@@ -221,8 +238,14 @@ export async function runInRootUnitOfWork<T>(
         "its own checkpoint; give that checkpoint to the outer root",
     );
   }
+  const flush = options.flush;
+  const pushWhen = options.pushWhen ?? "always";
+  let completed = false;
   const root = openUnit(markDirty, {
-    flush: options.flush,
+    flush: flush === undefined ? undefined : async () => {
+      if (pushWhen === "completed" && !completed) return;
+      await flush({ completed });
+    },
     parent,
     role: "root",
   });
@@ -268,6 +291,7 @@ export async function runInRootUnitOfWork<T>(
     throw error;
   }
   ended = true;
+  completed = true;
   await root.commit();
   return value;
 }

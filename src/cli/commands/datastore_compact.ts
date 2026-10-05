@@ -31,6 +31,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import {
   catalogDbPath,
   createCatalogStore,
@@ -62,34 +63,39 @@ export const datastoreCompactCommand = new Command()
       "compact",
     ]);
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepo({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+
+    // Pushes and releases the global lock when the command ends, as the
+    // teardown flush did (swamp-club#3055).
+    await runInCoordinatorRoot(repoContext, async () => {
+      const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+      // Use the centralized catalog-path helper — the catalog is repo-local and
+      // its location must match createCatalogStore exactly, never be recomputed.
+      const dbPath = catalogDbPath(repoDir, datastoreResolver);
+
+      const deps: DatastoreCompactDeps = {
+        checkpoint: () => catalogStore.checkpoint(),
+        vacuum: () => catalogStore.vacuum(),
+        catalogDbSize: async () => {
+          try {
+            const stat = await Deno.stat(dbPath);
+            return stat.size;
+          } catch {
+            return 0;
+          }
+        },
+      };
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const renderer = createDatastoreCompactRenderer(cliCtx.outputMode);
+      try {
+        await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
+      } finally {
+        catalogStore.close();
+      }
     });
-
-    const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-    // Use the centralized catalog-path helper — the catalog is repo-local and
-    // its location must match createCatalogStore exactly, never be recomputed.
-    const dbPath = catalogDbPath(repoDir, datastoreResolver);
-
-    const deps: DatastoreCompactDeps = {
-      checkpoint: () => catalogStore.checkpoint(),
-      vacuum: () => catalogStore.vacuum(),
-      catalogDbSize: async () => {
-        try {
-          const stat = await Deno.stat(dbPath);
-          return stat.size;
-        } catch {
-          return 0;
-        }
-      },
-    };
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const renderer = createDatastoreCompactRenderer(cliCtx.outputMode);
-    try {
-      await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
-    } finally {
-      catalogStore.close();
-    }
   });

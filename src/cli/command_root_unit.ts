@@ -27,6 +27,7 @@
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
+  type RootFlushOutcome,
   type RootUnitOfWork,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -34,10 +35,10 @@ import {
 /** Options for {@link runCommandInRootUnit}. */
 export interface CommandRootUnitOptions {
   /**
-   * The push the command performs today, run as the root's flush; undefined
-   * when the command pushes nothing on this path.
+   * The push the command performs today, run as the root's flush and given
+   * how `fn` ended; undefined when the command pushes nothing on this path.
    */
-  push: (() => Promise<void>) | undefined;
+  push: ((outcome: RootFlushOutcome) => Promise<void>) | undefined;
   /**
    * When the push runs. `"always"` (the default) pushes on every outcome, as
    * a push in a `finally` does. `"completed"` pushes only when `fn`
@@ -72,7 +73,7 @@ const logger = getSwampLogger(["cli", "root-unit"]);
  *   the identical `markDirty()` call. Use cases `fn` runs open children of
  *   the root.
  * - The root's flush runs `options.push` once when the root ends (subject to
- *   `pushWhen`). Its error is held until the locks are released, so the
+ *   `pushWhen`, which the root applies). Its error is held until the locks are released, so the
  *   release always runs and the push error reaches the same handler a
  *   combined push-then-release did.
  */
@@ -82,29 +83,25 @@ export async function runCommandInRootUnit<T>(
   fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
   const push = options.push;
-  const pushWhen = options.pushWhen ?? "always";
-  let completed = false;
   let cleanup: { error: unknown } | undefined;
-  const flush = push === undefined ? undefined : async () => {
-    if (pushWhen === "completed" && !completed) return;
-    try {
-      await push();
-    } catch (error) {
-      cleanup = { error };
-    }
-  };
+  const flush = push === undefined
+    ? undefined
+    : async (outcome: RootFlushOutcome) => {
+      try {
+        await push(outcome);
+      } catch (error) {
+        cleanup = { error };
+      }
+    };
 
   let outcome: { value: T } | { error: unknown };
   try {
     outcome = {
       value: await runInRootUnitOfWork(repoContext, {
         flush,
+        pushWhen: options.pushWhen,
         checkpoint: options.checkpoint,
-      }, async (root) => {
-        const value = await fn(root);
-        completed = true;
-        return value;
-      }),
+      }, fn),
     };
   } catch (error) {
     outcome = { error };
