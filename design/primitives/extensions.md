@@ -629,8 +629,19 @@ collective, so an extension cannot register types under another collective.
 
 ### Workflows
 
-Workflow YAML files get unique archive names derived from their directory path,
-so they don't collide.
+Each workflow lands at `workflows/<archive name>` in the archive. A manifest
+entry whose directory holds exactly one listed workflow is named after that
+directory (`namespace-debug/workflow.yaml` → `namespace-debug.yaml`), the
+one-workflow-per-folder layout where every file is called `workflow.yaml`. A
+directory listed more than once keeps each file's basename
+(`workflows/a.yaml`, `workflows/b.yaml` → `a.yaml`, `b.yaml`), as a bare entry
+always does. Two entries that still map to one archive name, including a
+workflow pulled in by dependency resolution, fail every command that resolves
+the manifest (`push`, `push --dry-run`, `quality`, `fmt`) with an error naming
+both; a file listed twice is rejected as a duplicate entry. A package never
+drops a workflow silently.
+Consumers never depend on these file names: pull discovers workflows by the
+`name` field inside each YAML.
 
 ### Additional Files
 

@@ -590,6 +590,8 @@ swamp extension version --manifest manifest.yaml --json
 | "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array                                                             |
 | "Model file not found"            | Check path is relative to `extensions/models/`                                                                                     |
 | "Workflow file not found"         | Check path is relative to `workflows/`                                                                                             |
+| "would both be packaged as"       | Two workflow entries map to one archive file name; rename one file, or move it into its own directory                              |
+| "is listed twice in the manifest" | The same workflow file appears twice in `workflows`; remove one entry                                                              |
 | "eval() or new Function()"        | Remove dynamic code at the listed `line:column` locations; rename a method called as `x.eval(...)`, or import the library from npm |
 | "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                                                                      |
 | "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                                                                          |
