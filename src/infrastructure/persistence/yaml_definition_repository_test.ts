@@ -2509,6 +2509,43 @@ Deno.test("YamlDefinitionRepository.save: a file folded at 80 columns stays fold
   });
 });
 
+Deno.test("YamlDefinitionRepository.save: a file swamp folded stays folded beside a token too long to fold", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // A fresh write folds what it can, and a URL with nowhere to break still
+    // runs past 80 columns inside its block scalar. So does a long line of a
+    // multi-line string, which is written as a literal block.
+    const definition = Definition.create({
+      name: "folded-with-url",
+      globalArguments: {
+        expr: LONG_EXPRESSION,
+        url: `https://example.com/${"a-long-path-segment/".repeat(5)}`,
+        script: `first line\n${"a long second line ".repeat(6)}\n`,
+      },
+    });
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "folded-with-url.yaml");
+    const written = await Deno.readTextFile(filePath);
+    assertEquals(
+      written.split("\n").some((line) => line.length > 80),
+      true,
+      "the fresh write has a line past 80 columns",
+    );
+
+    definition.setTag("env", "prod");
+    await repo.save(testType, definition);
+
+    const withoutTags = (yaml: string) =>
+      yaml.replace(/^tags:.*\n(?: {2}.*\n)*/m, "");
+    assertEquals(
+      withoutTags(await Deno.readTextFile(filePath)),
+      withoutTags(written),
+    );
+  });
+});
+
 Deno.test("YamlDefinitionRepository.save: a quoted timestamp string keeps its quotes when the file migrates", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

@@ -37,6 +37,8 @@ import {
   isMap,
   isSeq,
   parseDocument,
+  Scalar,
+  visit,
   type YAMLMap,
 } from "yaml";
 import { assertSafePath } from "./safe_path.ts";
@@ -836,8 +838,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (!unchanged) {
         // Data changed — merge onto existing document to preserve comments
         const doc = parseDocument(source.raw, { version: "1.1" });
+        const lineWidth = mergeLineWidth(source.raw, doc);
         mergeIntoDocument(doc, cleanData);
-        content = doc.toString({ lineWidth: mergeLineWidth(source.raw) });
+        content = doc.toString({ lineWidth });
       }
       await atomicWriteTextFile(targetPath, content);
 
@@ -1317,13 +1320,36 @@ function canonicalJson(data: Record<string, unknown>): string {
  * every scalar, changed or not, so the width follows what the file already
  * does: a file with a line past 80 columns is never folded, which keeps a long
  * single-line expression on its line, and any other file is folded at 80 as
- * swamp wrote it. Comment lines are not scalars and do not count.
+ * swamp wrote it. Comment lines are not scalars and do not count. Nor do the
+ * lines of a block scalar: a fresh write folds into block scalars, and a token
+ * with nowhere to break still runs past 80 columns inside one.
  */
-function mergeLineWidth(raw: string): number {
-  const hasLongLine = raw.split(/\r?\n/).some((line) =>
-    line.length > 80 && !line.trimStart().startsWith("#")
-  );
-  return hasLongLine ? 0 : 80;
+function mergeLineWidth(raw: string, doc: YamlDocument): number {
+  const blocks: [number, number][] = [];
+  visit(doc, {
+    Scalar(_key, node) {
+      if (
+        node.range &&
+        (node.type === Scalar.BLOCK_FOLDED ||
+          node.type === Scalar.BLOCK_LITERAL)
+      ) {
+        blocks.push([node.range[0], node.range[1]]);
+      }
+    },
+  });
+
+  let offset = 0;
+  for (const line of raw.split("\n")) {
+    const start = offset;
+    offset += line.length + 1;
+    const text = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (text.length <= 80 || text.trimStart().startsWith("#")) continue;
+    // A block scalar's range starts at its header, on the line before its
+    // first content line.
+    if (blocks.some(([from, to]) => start > from && start < to)) continue;
+    return 0;
+  }
+  return 80;
 }
 
 function mergeIntoDocument(
