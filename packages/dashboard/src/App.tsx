@@ -202,6 +202,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             <RunDetail
               workflowName={detail.workflowName}
               runId={detail.runId}
+              health={health}
               onBack={closeDetail}
             />
           )
@@ -242,7 +243,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <Webhooks health={health} denied={healthDenied} />
               )}
               {view === "approvals" && (
-                <Approvals onApprovalsChanged={refetchApprovals} />
+                <Approvals
+                  health={health}
+                  onApprovalsChanged={refetchApprovals}
+                />
               )}
               {view === "activity" && <Activity auditStream={auditStream} />}
               {view === "data" && <Data />}

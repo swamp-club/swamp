@@ -27,6 +27,8 @@ import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { ResumeAction } from "../components/ResumeAction";
+import { activeRunIds } from "../client/resume_state";
+import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import { HealthUnavailable } from "../components/HealthUnavailable";
 
 interface WorkflowRunSearchItem {
@@ -99,6 +101,13 @@ export function Overview(
   const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Runs serve drives now, whoever approved them (swamp-club#3005).
+  const servedRuns = activeRunIds(health?.activeRuns);
+  const refetchRunsAndApprovals = useCallback(() => {
+    refetchRuns();
+    refetchApprovals();
+  }, [refetchRuns, refetchApprovals]);
+  useActiveRunsRefetch(health?.activeRuns, runs, refetchRunsAndApprovals);
 
   const decide = useCallback(
     async (type: "workflow.approve" | "workflow.reject", a: ApprovalInfo) => {
@@ -220,7 +229,8 @@ export function Overview(
                   <ResumeAction
                     run={run}
                     onResumed={refresh}
-                    resuming={resumingRuns.has(run.runId)}
+                    resuming={resumingRuns.has(run.runId) ||
+                      servedRuns.has(run.runId)}
                   />
                 </div>
                 <span className="run-duration">

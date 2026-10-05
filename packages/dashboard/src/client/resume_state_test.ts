@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { resumeStateFor } from "./resume_state.ts";
+import {
+  activeRunIds,
+  activeRunsKey,
+  resumeStateFor,
+  shouldRefetchRuns,
+} from "./resume_state.ts";
 
 const base = { runId: "run-1", workflowName: "gated" };
 
@@ -56,4 +61,48 @@ Deno.test("resumeStateFor: nothing to resume for a run that is not suspended", (
     resumeStateFor({ ...base, status: "running", awaitingResume: true }),
     null,
   );
+});
+
+Deno.test("activeRunIds: empty without a health snapshot", () => {
+  assertEquals(activeRunIds(undefined).size, 0);
+  assertEquals(activeRunIds([]).size, 0);
+});
+
+Deno.test("activeRunIds: lists the runs serve is driving", () => {
+  const ids = activeRunIds([{ runId: "run-1" }, { runId: "run-2" }]);
+  assertEquals(ids.has("run-1"), true);
+  assertEquals(ids.has("run-3"), false);
+});
+
+Deno.test("activeRunsKey: ignores order and fields other than the run id", () => {
+  const early = [{ runId: "run-2", durationMs: 10 }, { runId: "run-1" }];
+  const later = [{ runId: "run-1" }, { runId: "run-2", durationMs: 5010 }];
+  assertEquals(activeRunsKey(early), activeRunsKey(later));
+  assertEquals(activeRunsKey(undefined), "");
+});
+
+Deno.test("shouldRefetchRuns: refetches when a run starts or stops", () => {
+  const rows = [{ runId: "run-1", status: "running" }];
+  assertEquals(shouldRefetchRuns("", [{ runId: "run-1" }], rows), true);
+  assertEquals(shouldRefetchRuns("run-1", [], rows), true);
+});
+
+Deno.test("shouldRefetchRuns: refetches while a driven run still reads suspended", () => {
+  assertEquals(
+    shouldRefetchRuns("run-1", [{ runId: "run-1" }], [
+      { runId: "run-1", status: "suspended" },
+    ]),
+    true,
+  );
+});
+
+Deno.test("shouldRefetchRuns: no refetch when nothing changed", () => {
+  assertEquals(
+    shouldRefetchRuns("run-1", [{ runId: "run-1" }], [
+      { runId: "run-1", status: "running" },
+      { runId: "run-2", status: "suspended" },
+    ]),
+    false,
+  );
+  assertEquals(shouldRefetchRuns("", undefined, []), false);
 });

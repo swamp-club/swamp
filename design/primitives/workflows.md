@@ -214,6 +214,16 @@ same repository never triggers it. A suspended run with every gate decided
 carries the derived `awaitingResume: true`, so the run index and
 `workflow.run.search` can list it.
 
+Serve registers the resume before it saves the run as `running`, so a search
+right after an approval can still list the run as suspended and awaiting
+resume. The dashboard therefore takes "serve is driving this run" from the
+health stream's active runs, not from the approval that started it
+(swamp-club#3005). A run listed there shows as being resumed, with no Resume
+action, whoever approved it. A view refetches its runs when a run starts or
+stops, or while a run serve drives still reads suspended. Without a health
+snapshot, only an approval made in the same view (its `autoResumed: true`)
+hides Resume.
+
 `swamp workflow reject <workflow> <step> --run <id>` marks the step and the run
 as failed. No resume is needed.
 
