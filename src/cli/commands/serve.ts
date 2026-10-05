@@ -2255,6 +2255,12 @@ export const serveCommand = new Command()
       options.config as string | undefined,
       repoDir,
     );
+    // The file trigger overrides and webhooks were loaded from. Hot reload
+    // and the workflow.trigger handlers re-read it, so they must use the
+    // same path, not the default under the repo.
+    const serveConfigPath = options.config === undefined
+      ? undefined
+      : resolve(options.config as string);
     const explicitFlags = parseExplicitFlags(Deno.args);
     const merged = mergeServeOptions(configFile, options, explicitFlags);
 
@@ -3908,6 +3914,7 @@ export const serveCommand = new Command()
         grantsFile: externalGrantsFilePath,
         grantsDir: externalGrantsDirPath,
         hotReload: merged.hotReload,
+        serveConfigPath,
         ...(Object.keys(resolvedUserNames).length > 0
           ? { resolvedUserNames }
           : {}),
@@ -5837,6 +5844,7 @@ export const serveCommand = new Command()
             workflowReloader: connectionCtx.workflowReloader,
             extensionDiscoverer: sighupDiscoverer,
             webhookUpdater,
+            configPath: serveConfigPath,
           };
         performServeReload(
           resolvedRepoDir,

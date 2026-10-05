@@ -212,6 +212,90 @@ Deno.test("performServeReload: calls triggerOverrideUpdater with overrides from 
   }
 });
 
+Deno.test("performServeReload: reads trigger overrides and webhooks from configPath, not .swamp/serve.yaml", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `triggers:\n  my-workflow:\n    schedule: "0 5 * * *"\n`,
+    );
+    const configPath = join(tmpDir, "cfg", "serve.yaml");
+    await Deno.mkdir(join(tmpDir, "cfg"));
+    await Deno.writeTextFile(
+      configPath,
+      [
+        "triggers:",
+        "  my-workflow:",
+        '    schedule: "44 10 * * *"',
+        "    inputs:",
+        "      target: production",
+        "webhooks:",
+        "  - route: /hooks/deploy",
+        "    workflow: deploy",
+        "    secret: s3cret",
+        "",
+      ].join("\n"),
+    );
+
+    let receivedOverrides: ReadonlyMap<string, unknown> | undefined;
+    let receivedWebhooks: readonly unknown[] | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        configPath,
+        triggerOverrideUpdater: (overrides) => {
+          receivedOverrides = overrides;
+          return Promise.resolve(overrides.size);
+        },
+        webhookUpdater: (configs) => {
+          receivedWebhooks = configs;
+          return Promise.resolve(configs.length);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(receivedOverrides?.get("my-workflow"), {
+      schedule: "44 10 * * *",
+      inputs: { target: "production" },
+    });
+    assertEquals(receivedWebhooks?.length, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: keeps configPath overrides when .swamp/serve.yaml is absent", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configPath = join(tmpDir, "serve.yaml");
+    await Deno.writeTextFile(
+      configPath,
+      `triggers:\n  my-workflow:\n    schedule: "21 7 * * *"\n`,
+    );
+
+    let receivedOverrides: ReadonlyMap<string, unknown> | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        configPath,
+        triggerOverrideUpdater: (overrides) => {
+          receivedOverrides = overrides;
+          return Promise.resolve(overrides.size);
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(receivedOverrides?.size, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("performServeReload: passes empty map when serve.yaml has no triggers", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

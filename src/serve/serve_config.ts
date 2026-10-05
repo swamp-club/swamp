@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { Cron } from "croner";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
@@ -1400,10 +1400,15 @@ export function mergeServeOptions(
 
 export const SERVE_CONFIG_PATH = DEFAULT_CONFIG_PATH;
 
+/**
+ * Reads the serve config file serve was started with: `configPath` (the
+ * resolved `--config` file) when given, otherwise `<repoDir>/.swamp/serve.yaml`.
+ */
 export async function readServeConfigFile(
   repoDir: string,
+  configPath?: string,
 ): Promise<ServeConfigFile | null> {
-  const path = join(repoDir, DEFAULT_CONFIG_PATH);
+  const path = configPath ?? join(repoDir, DEFAULT_CONFIG_PATH);
   let content: string;
   try {
     content = await Deno.readTextFile(path);
@@ -1443,17 +1448,28 @@ export async function readServeConfigFile(
   return parsed as ServeConfigFile;
 }
 
+/**
+ * Writes the serve config file at `configPath` when given, otherwise at
+ * `<repoDir>/.swamp/serve.yaml`. An existing file is written through its real
+ * path, so the atomic rename replaces a symlink's target, not the symlink.
+ */
 export async function writeServeConfigFile(
   repoDir: string,
   config: ServeConfigFile,
+  configPath?: string,
 ): Promise<void> {
-  const path = join(repoDir, DEFAULT_CONFIG_PATH);
-  const dir = join(repoDir, ".swamp");
-  await Deno.mkdir(dir, { recursive: true });
+  const path = configPath ?? join(repoDir, DEFAULT_CONFIG_PATH);
+  let target = path;
+  try {
+    target = await Deno.realPath(path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  await Deno.mkdir(dirname(target), { recursive: true });
   const content = stringifyYaml(
     config as unknown as Record<string, unknown>,
   );
-  await atomicWriteTextFile(path, content);
+  await atomicWriteTextFile(target, content);
 }
 
 // ── Audit Config ─────────────────────────────────────────────────────

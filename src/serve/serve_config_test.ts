@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
@@ -1290,6 +1295,51 @@ Deno.test("writeServeConfigFile: creates file when it does not exist", async () 
       await Deno.remove(dir, { recursive: true });
     } catch { /* Windows EBUSY */ }
   }
+});
+
+Deno.test("readServeConfigFile/writeServeConfigFile: an explicit config path is used instead of .swamp/serve.yaml", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const configPath = join(dir, "cfg", "serve.yaml");
+    await writeServeConfigFile(dir, {
+      triggers: { "my-workflow": { schedule: "0 3 * * *" } },
+    }, configPath);
+    const result = await readServeConfigFile(dir, configPath);
+    assertEquals(result?.triggers?.["my-workflow"]?.schedule, "0 3 * * *");
+    assertEquals(await readServeConfigFile(dir), null);
+  } finally {
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch { /* Windows EBUSY */ }
+  }
+});
+
+Deno.test({
+  name:
+    "writeServeConfigFile: writes through a symlinked config path and keeps the symlink",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const target = join(dir, "managed", "serve.yaml");
+      await Deno.mkdir(join(dir, "managed"));
+      await Deno.writeTextFile(target, "port: 9090\n");
+      const link = join(dir, "serve.yaml");
+      await Deno.symlink(target, link, { type: "file" });
+
+      await writeServeConfigFile(dir, {
+        port: 9090,
+        triggers: { "my-workflow": { schedule: "0 3 * * *" } },
+      }, link);
+
+      assertEquals((await Deno.lstat(link)).isSymlink, true);
+      assertStringIncludes(await Deno.readTextFile(target), "0 3 * * *");
+    } finally {
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch { /* Windows EBUSY */ }
+    }
+  },
 });
 
 Deno.test("writeServeConfigFile: preserves other config sections", async () => {

@@ -895,6 +895,30 @@ Deno.test("ScheduledExecutionService: no trigger overrides works as before", asy
 
 // ── updateTriggerOverrides ──────────────────────────────────────────
 
+Deno.test("getTriggerOverride: returns the override the service applies, before and after an update", async () => {
+  const wf = createTestWorkflow("scheduled-wf", "0 12 * * *");
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([
+      ["scheduled-wf", { schedule: "0 3 * * *", inputs: { env: "prod" } }],
+    ]),
+  });
+
+  await service.start();
+  assertEquals(service.getTriggerOverride("scheduled-wf"), {
+    schedule: "0 3 * * *",
+    inputs: { env: "prod" },
+  });
+  assertEquals(service.getTriggerOverride("other-wf"), undefined);
+
+  await service.updateTriggerOverrides(new Map());
+  assertEquals(service.getTriggerOverride("scheduled-wf"), undefined);
+
+  await service.stop();
+});
+
 Deno.test("updateTriggerOverrides: adding a new override registers the schedule", async () => {
   const wf = createTestWorkflow("unscheduled-wf");
   const events: ScheduledExecutionEvent[] = [];

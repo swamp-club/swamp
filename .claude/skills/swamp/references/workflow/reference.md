@@ -134,7 +134,8 @@ the security caveat on headers.
 
 Extension-bundled workflows are read-only — their YAML cannot be edited to add
 or change a trigger. Use the `trigger` subcommands to manage per-workflow
-overrides in `.swamp/serve.yaml`:
+overrides in the serve config file (`.swamp/serve.yaml`, or the file serve was
+started with via `--config`):
 
 ```bash
 # Set a trigger override (replace semantics — writes the full entry)
@@ -147,16 +148,21 @@ swamp workflow trigger get @swamp/cve/researcher
 swamp workflow trigger remove @swamp/cve/researcher
 ```
 
-All three commands support `--server` for remote execution against a running
-`swamp serve` instance. Overrides are read at startup — the running serve
-instance must be restarted for changes to take effect.
+Without `--server`, the commands edit `.swamp/serve.yaml` locally; a running
+serve picks the change up on `swamp serve reload` (needs `--hot-reload`) or a
+restart. With `--server`, they act on the config file that serve was started
+with and apply the change to its scheduler immediately. `set` and `remove`
+rewrite that file, dropping YAML comments, and are refused when it is not
+writable (e.g. a read-only ConfigMap mount): edit it directly, then run
+`swamp serve reload`.
 
 **`set` behavior:** `--schedule` is required. Each call replaces the entire
 override entry (not a merge). To keep existing inputs, re-specify them.
 
 **`get` output:** Shows three sections — built-in (from workflow YAML), override
-(from serve.yaml), and effective (merged). Override schedule wins over built-in;
-override inputs are merged on top of built-in inputs.
+(with `--server`, the one the scheduler applies), and effective (merged).
+Override schedule wins over built-in; override inputs are merged on top of
+built-in inputs.
 
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`

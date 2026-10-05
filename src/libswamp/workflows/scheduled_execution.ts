@@ -377,6 +377,14 @@ export class ScheduledExecutionService {
   }
 
   /**
+   * Returns the trigger override this service currently applies for a
+   * workflow name, or undefined when it holds none.
+   */
+  getTriggerOverride(workflowName: string): TriggerOverride | undefined {
+    return this.triggerOverrides.get(workflowName);
+  }
+
+  /**
    * Returns all registered schedules and their next fire times.
    */
   listSchedules(): Array<ScheduleEntry & { workflowName: string }> {

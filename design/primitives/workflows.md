@@ -1027,12 +1027,13 @@ produce a warning and are ignored (`src/serve/serve_config.ts`).
   live-reloaded workflows respect overrides.
 - Overrides for unknown workflow names are logged as warnings and skipped.
 - Overrides are read at startup. Two paths apply changes to a running instance:
-  1. `swamp workflow trigger set/remove --server` writes `serve.yaml`, then
+  1. `swamp workflow trigger set/remove --server` writes the config file serve
+     was started with (`--config`, or `.swamp/serve.yaml`), then
      calls `updateTriggerOverrides` directly on the `ScheduledExecutionService`.
      No `--hot-reload` flag is needed
      (`src/serve/handlers/workflow_handlers.ts`).
   2. `swamp serve reload` (SIGHUP or WebSocket `serve.reload`) re-reads all
-     overrides from `serve.yaml` as part of a full reload. This requires
+     overrides from that same file as part of a full reload. This requires
      `--hot-reload`.
 - Works with both extension and local workflows. The main use case is extension
   workflows that cannot be edited directly.
