@@ -1156,12 +1156,38 @@ operation inside a unit of work:
   when it is given one, so a push is never dropped silently. Composition
   code stages its hand marks through the root: `root.stage({ kind: "bulk" })`
   replaces a bare mark, and `root.stage({ kind: "write" | "remove", path })` a
-  per-path mark, each forwarded as the identical hook call. No CLI command or
-  serve handler uses the root yet; swamp-club#3033 (CLI) and swamp-club#3034
-  (serve) adopt it, switching on `rootUnit` rows in the use-case sync
-  characterization, which then check that the root staged every mark and that
-  pushes keep their place relative to lock release and gate exit
-  (`syncOrder`).
+  per-path mark, each forwarded as the identical hook call. swamp-club#3034
+  adopts it for serve.
+- **CLI commands in root units (swamp-club#3033).** Every CLI write command
+  runs its write section in `runCommandInRootUnit`
+  (`src/cli/command_root_unit.ts`), whose flush is the push the command made
+  before, at the same point:
+  - Model-lock commands split `ModelLockResult.flush()` into `push()` and
+    `release()`. `push` is the root's flush, and `release` runs after the root
+    has ended, so the locks are released after the push, as before. `flush()`
+    is still push-then-release for callers that open no root: per-step locks
+    inside a workflow run, and serve.
+  - Commands that pushed only once their mutation completed (the
+    managed-config commands through `runManagedConfigMutation`, worker prune,
+    datastore config migrate) pass `pushWhen: "completed"`, so a failed
+    command still pushes nothing.
+  - A push or release failure reaches the handler the command used before:
+    the release error replaces the push error, as a `finally` did, and neither
+    hides the command's own error.
+  - Former bare marks are `root.stage({ kind: "bulk", reason })`. Access token
+    mint and worker token create and revoke also push mid-command (mint and
+    create then read the token back). A root cannot push mid-command (a nested
+    root with its own push is refused), so that push stays a direct call,
+    pinned in `PINNED_CLI_PUSH_CALLS`, and the root makes the end-of-command
+    lock push.
+  - Commands on the global lock (data gc, data prune, workflow delete, the
+    `--all` evaluates) still push through the process-exit coordinator and
+    open no root.
+  - The use-case sync characterization switches on `rootUnit` for these rows,
+    checking that the root staged every mark and that pushes keep their place
+    relative to lock release (`syncOrder`, recorded before the change).
+    `PINNED_CLI_ROOT_UNIT_COMMANDS` and `PINNED_LOCK_FLUSH_CALLERS` list the
+    commands with a root and the callers of the combined flush.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`
@@ -1184,12 +1210,14 @@ no hook to bind to, so nothing changes for them.
 What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
 each site):
 
-- CLI commands that mark before pushing, several with bare marks: access grant,
-  access group, access token mint, datastore config migrate, datastore sync,
-  worker prune and worker token create and revoke (`src/cli/commands/`).
-- `pushManagedConfigChanges` and `pushManagedConfigPaths`
-  (`src/cli/managed_config_sync.ts`), which send bare marks after the CLI writes
-  managed config through unhooked repositories.
+- `swamp datastore sync`, which owns its pull and push
+  (`src/cli/commands/datastore_sync.ts`). The other CLI write commands stage
+  their marks through their root unit (swamp-club#3033).
+- `pushManagedConfigChanges` (`src/cli/managed_config_sync.ts`), which sends
+  a bare mark. No command calls it since swamp-club#3033: the managed-config
+  commands stage the bare mark through `runManagedConfigMutation`'s root. The
+  per-path `pushManagedConfigPaths` and both deferred variants had no callers
+  and were removed.
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
@@ -1287,10 +1315,8 @@ The CLI extension commands follow the same rule. `extension pull`, `update`,
 `doctor extensions --repair` run their lockfile change in a managed lockfile
 transaction, which marks the config-tier lockfile by path and pushes it,
 bounded by the datastore's sync timeout, instead of the bulk mark that
-`pushManagedConfigChanges` sends. It publishes only when the lockfile changed
-or an earlier publish is still pending. `pushManagedConfigPaths`, used by the
-other per-path config writers, drops any path outside the namespace's cache
-tree rather than forwarding it. An extension that keeps its dirty set in
+`runManagedConfigMutation` stages. It publishes only when the lockfile changed
+or an earlier publish is still pending. An extension that keeps its dirty set in
 memory still walks the whole cache on a fresh process (rule 4), so "exact
 paths" means the marks sent, not the objects the extension compares. The
 lockfile is uploaded either way.
@@ -1306,8 +1332,8 @@ lockfile is uploaded either way.
   `.markDirty?.()` forms on any receiver, and names the top-level function that
   makes the call.
 - A third checks a pinned list of CLI extension writers. None may call
-  `pushManagedConfigChanges`, `pushManagedConfigChangesDeferred` or
-  `pushManagedConfigPaths(Deferred)`, and each must run its change in
+  `pushManagedConfigChanges` or `runManagedConfigMutation` (a bulk mark), or a
+  per-path publish helper that skips the fetch, and each must run its change in
   `withManagedLockfileTransaction(createManagedLockfileTransaction(...))`.
   A fourth requires serve's extension handlers to do the same and not push
   after the change (swamp-club#2838).
@@ -2235,16 +2261,17 @@ S3) as the only source of truth for configuration.
 
 Every CLI command and serve handler that changes config-tier files writes to the
 `config/` subdirectory resolved by `DatastorePathResolver`, then pushes to the
-remote through `src/cli/managed_config_sync.ts`: `pushManagedConfigChanges` for
-definitions and vault configs, and the per-path helpers for the extension
+remote through `src/cli/managed_config_sync.ts`: `runManagedConfigMutation` for
+definitions and vault configs (a bulk mark staged through the command's root
+unit, which pushes it), and the per-path helpers for the extension
 lockfile:
 
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
-| Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Model definition delete | `config/models/` | Per-model lock flush, through `flushAfterManagedConfigMutation` | Via per-model lock flush |
-| Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
+| Model definition create/edit | `config/models/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
+| Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
+| Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
+| Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
 | Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |

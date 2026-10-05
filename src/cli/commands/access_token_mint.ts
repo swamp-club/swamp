@@ -26,9 +26,11 @@ import {
 import {
   acquireModelLocks,
   libSwampContextForRepo,
+  type ModelLockResult,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { parseCredentialPrincipal } from "../../domain/access/service_principal.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -182,7 +184,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     repoContext.definitionRepo,
     name,
   );
-  let flushModelLocks: (() => Promise<void>) | null = null;
+  let modelLocks: ModelLockResult | undefined;
   if (preResult) {
     const lockResult = await acquireModelLocks(
       datastoreConfig,
@@ -197,99 +199,15 @@ export const accessTokenMintCommand = withRemoteOptions(
       repoContext.catalogStore,
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
-    flushModelLocks = lockResult.flush;
+    modelLocks = lockResult;
   }
 
-  try {
-    let data: ServerTokenCreateData | undefined;
-    await consumeStream(
-      serverTokenCreate(libCtx, deps, {
-        name,
-        principalId: principal,
-        principalEmail: email,
-        durationMs,
-        vaultName: TOKEN_SECRETS_VAULT_NAME,
-      }),
-      withDefaults<ServerTokenCreateEvent>({
-        completed: (event) => {
-          data = event.data;
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
-    );
-    if (data === undefined) {
-      throw new UserError(
-        `Minting token '${name}' ended without completing`,
-      );
-    }
-
-    renderServerTokenCreate(data, cliCtx.outputMode);
-
-    const migrationVaultService = await VaultService.fromRepository(
-      repoDir,
-      { vaultsDir },
-    );
-    await migrateTokenSecrets({
-      tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
-      vaultService: migrationVaultService,
-      dataQueryService: repoContext.dataQueryService,
-      updateTokenVaultName: async (
-        tokenName,
-        newVaultName,
-        currentAttrs,
-      ) => {
-        const def = await repoContext.definitionRepo.findByName(
-          SERVER_TOKEN_MODEL_TYPE,
-          tokenName,
-        );
-        if (!def) {
-          throw new Error(
-            `Definition not found for token '${tokenName}' — skipping migration`,
-          );
-        }
-        const { writeResource } = createResourceWriter(
-          repoContext.unifiedDataRepo,
-          SERVER_TOKEN_MODEL_TYPE,
-          def.id,
-          serverTokenModel.resources!,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          tokenName,
-        );
-        await writeResource(
-          "token",
-          "token-main",
-          { ...currentAttrs, vaultName: newVaultName },
-        );
-      },
-    });
-
-    if (syncService) {
-      await syncService.markDirty();
-      await syncService.pushChanged({ namespace });
-
-      repoContext.catalogStore.invalidate();
-      const verifyResult = await findDefinitionByIdOrName(
-        repoContext.definitionRepo,
-        name,
-      );
-      if (!verifyResult) {
-        throw new UserError(
-          `Server token '${name}' was minted but its definition could not be ` +
-            `read back after sync — the token will not be usable by serve. ` +
-            `Re-mint the token after resolving the datastore issue.`,
-        );
-      }
-    }
-  } finally {
-    if (flushModelLocks) {
-      try {
-        await flushModelLocks();
-      } catch (releaseError) {
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: modelLocks?.push,
+      release: modelLocks?.release,
+      onCleanupError: (releaseError) => {
         cliCtx.logger.warn(
           "Failed to release locks during cleanup: {error}",
           {
@@ -298,9 +216,98 @@ export const accessTokenMintCommand = withRemoteOptions(
               : String(releaseError),
           },
         );
+      },
+    },
+    async (root) => {
+      let data: ServerTokenCreateData | undefined;
+      await consumeStream(
+        serverTokenCreate(libCtx, deps, {
+          name,
+          principalId: principal,
+          principalEmail: email,
+          durationMs,
+          vaultName: TOKEN_SECRETS_VAULT_NAME,
+        }),
+        withDefaults<ServerTokenCreateEvent>({
+          completed: (event) => {
+            data = event.data;
+          },
+          error: (event) => {
+            throw new UserError(event.error.message);
+          },
+        }),
+      );
+      if (data === undefined) {
+        throw new UserError(
+          `Minting token '${name}' ended without completing`,
+        );
       }
-    }
-  }
+
+      renderServerTokenCreate(data, cliCtx.outputMode);
+
+      const migrationVaultService = await VaultService.fromRepository(
+        repoDir,
+        { vaultsDir },
+      );
+      await migrateTokenSecrets({
+        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+        vaultService: migrationVaultService,
+        dataQueryService: repoContext.dataQueryService,
+        updateTokenVaultName: async (
+          tokenName,
+          newVaultName,
+          currentAttrs,
+        ) => {
+          const def = await repoContext.definitionRepo.findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            tokenName,
+          );
+          if (!def) {
+            throw new Error(
+              `Definition not found for token '${tokenName}' — skipping migration`,
+            );
+          }
+          const { writeResource } = createResourceWriter(
+            repoContext.unifiedDataRepo,
+            SERVER_TOKEN_MODEL_TYPE,
+            def.id,
+            serverTokenModel.resources!,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            tokenName,
+          );
+          await writeResource(
+            "token",
+            "token-main",
+            { ...currentAttrs, vaultName: newVaultName },
+          );
+        },
+      });
+
+      if (syncService) {
+        await root.stage({ kind: "bulk", reason: "access token mint" });
+        // Published here, before the read-back below; a root cannot push
+        // mid-command (PINNED_CLI_PUSH_CALLS). When a model lock is held, the
+        // root's lock push publishes again when the command ends.
+        await syncService.pushChanged({ namespace });
+
+        repoContext.catalogStore.invalidate();
+        const verifyResult = await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          name,
+        );
+        if (!verifyResult) {
+          throw new UserError(
+            `Server token '${name}' was minted but its definition could not be ` +
+              `read back after sync — the token will not be usable by serve. ` +
+              `Re-mint the token after resolving the datastore issue.`,
+          );
+        }
+      }
+    },
+  );
 
   cliCtx.logger.debug("Server token mint command completed");
 });

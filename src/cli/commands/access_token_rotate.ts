@@ -29,6 +29,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -217,45 +218,48 @@ export const accessTokenRotateCommand = withRemoteOptions(
     repoContext.catalogStore,
   );
   if (lockResult.synced) repoContext.catalogStore.invalidate();
-  const flushModelLocks = lockResult.flush;
 
-  try {
-    let data: ServerTokenRotateData | undefined;
-    await consumeStream(
-      serverTokenRotate(libCtx, deps, {
-        name,
-        durationMs,
-        vaultName: TOKEN_SECRETS_VAULT_NAME,
-      }),
-      withDefaults<ServerTokenRotateEvent>({
-        completed: (event) => {
-          data = event.data;
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
-    );
-    if (data === undefined) {
-      throw new UserError(
-        `Rotating token '${name}' ended without completing`,
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: lockResult.push,
+      release: lockResult.release,
+      onCleanupError: (releaseError) => {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          },
+        );
+      },
+    },
+    async () => {
+      let data: ServerTokenRotateData | undefined;
+      await consumeStream(
+        serverTokenRotate(libCtx, deps, {
+          name,
+          durationMs,
+          vaultName: TOKEN_SECRETS_VAULT_NAME,
+        }),
+        withDefaults<ServerTokenRotateEvent>({
+          completed: (event) => {
+            data = event.data;
+          },
+          error: (event) => {
+            throw new UserError(event.error.message);
+          },
+        }),
       );
-    }
-    renderServerTokenRotate(data, cliCtx.outputMode);
-  } finally {
-    try {
-      await flushModelLocks();
-    } catch (releaseError) {
-      cliCtx.logger.warn(
-        "Failed to release locks during cleanup: {error}",
-        {
-          error: releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError),
-        },
-      );
-    }
-  }
+      if (data === undefined) {
+        throw new UserError(
+          `Rotating token '${name}' ended without completing`,
+        );
+      }
+      renderServerTokenRotate(data, cliCtx.outputMode);
+    },
+  );
 
   cliCtx.logger.debug("Server token rotate command completed");
 });

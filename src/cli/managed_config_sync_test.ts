@@ -18,25 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  assert,
   assertEquals,
   assertInstanceOf,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join, resolve } from "@std/path";
+import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
   buildManagedLockfileTransaction,
   createManagedLockfileTransaction,
-  flushAfterManagedConfigMutation,
   ManagedConfigUnpublishedError,
   ManagedLockfileUnavailableError,
   pullManagedConfigAtBoot,
   pushManagedConfigChanges,
-  pushManagedConfigPaths,
-  pushManagedConfigPathsDeferred,
+  reportManagedConfigCleanupError,
+  runManagedConfigMutation,
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
@@ -171,6 +170,137 @@ Deno.test("pushManagedConfigChanges: a push error throws ManagedConfigUnpublishe
   assertStringIncludes((error as Error).message, "S3 unreachable");
 });
 
+/**
+ * A repo context whose mark hook forwards a bare mark to `service`, as
+ * `buildMarkDirtyHook` does, and records the order of marks and pushes.
+ */
+function rootRepoContext(service: DatastoreSyncService, events: string[]) {
+  const recorded = {
+    ...service,
+    markDirty: (opts?: unknown) => {
+      events.push("mark");
+      return service.markDirty(opts as never);
+    },
+    pushChanged: (opts?: { namespace?: string }) => {
+      events.push("push");
+      return service.pushChanged(opts);
+    },
+  } as DatastoreSyncService;
+  return {
+    syncService: recorded,
+    repoContext: { markDirty: () => recorded.markDirty() },
+  };
+}
+
+Deno.test("runManagedConfigMutation: marks bare after the mutation, then pushes through the root", async () => {
+  const { service, markDirtyCalls, pushCalls } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  const value = await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    S3_CONFIG,
+    makeMarker({ managedConfig: true }),
+    "model create",
+    () => {
+      events.push("mutate");
+      return Promise.resolve("created");
+    },
+  );
+
+  assertEquals(value, "created");
+  assertEquals(events, ["mutate", "mark", "push"]);
+  assertEquals(markDirtyCalls, [undefined]);
+  assertEquals(pushCalls, [{ namespace: "ns1" }]);
+});
+
+Deno.test("runManagedConfigMutation: a failed mutation marks and pushes nothing", async () => {
+  const { service } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  await assertRejects(
+    () =>
+      runManagedConfigMutation(
+        repoContext,
+        syncService,
+        S3_CONFIG,
+        makeMarker({ managedConfig: true }),
+        "model create",
+        () => Promise.reject(new Error("invalid model")),
+      ),
+    Error,
+    "invalid model",
+  );
+  assertEquals(events, []);
+});
+
+Deno.test("runManagedConfigMutation: without managedConfig nothing is marked or pushed", async () => {
+  const { service } = createMockSyncService();
+  const events: string[] = [];
+  const { syncService, repoContext } = rootRepoContext(service, events);
+
+  await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    S3_CONFIG,
+    makeMarker({ managedConfig: false }),
+    "model create",
+    () => Promise.resolve(),
+  );
+  assertEquals(events, []);
+});
+
+Deno.test("runManagedConfigMutation: a push error throws ManagedConfigUnpublishedError", async () => {
+  const cause = new Error("S3 unreachable");
+  const service = {
+    markDirty: () => Promise.resolve(),
+    pushChanged: () => Promise.reject(cause),
+    pullChanged: () => Promise.resolve(0),
+    capabilities: () => ({}),
+  } as unknown as DatastoreSyncService;
+
+  const error = await assertRejects(() =>
+    runManagedConfigMutation(
+      { markDirty: () => service.markDirty() },
+      service,
+      S3_CONFIG,
+      makeMarker({ managedConfig: true }),
+      "model create",
+      () => Promise.resolve(),
+    )
+  );
+  assertUnpublished(error, cause);
+});
+
+Deno.test("runManagedConfigMutation: a mark error throws ManagedConfigUnpublishedError and skips the push", async () => {
+  const cause = new Error("cache unwritable");
+  const pushes: unknown[] = [];
+  const service = {
+    markDirty: () => Promise.reject(cause),
+    pushChanged: (opts?: unknown) => {
+      pushes.push(opts);
+      return Promise.resolve();
+    },
+    pullChanged: () => Promise.resolve(0),
+    capabilities: () => ({}),
+  } as unknown as DatastoreSyncService;
+
+  const error = await assertRejects(() =>
+    runManagedConfigMutation(
+      { markDirty: () => service.markDirty() },
+      service,
+      S3_CONFIG,
+      makeMarker({ managedConfig: true }),
+      "model create",
+      () => Promise.resolve(),
+    )
+  );
+  assertUnpublished(error, cause);
+  assertEquals(pushes, []);
+});
+
 Deno.test("ManagedConfigUnpublishedError: does not double a trailing period from the cause", () => {
   const error = new ManagedConfigUnpublishedError(new Error("S3 down."));
   assertStringIncludes(error.message, "datastore: S3 down. Run");
@@ -191,191 +321,6 @@ Deno.test("pushManagedConfigChanges: passes undefined namespace for filesystem c
 
   assertEquals(pushCalls.length, 1);
   assertEquals(pushCalls[0].namespace, undefined);
-});
-
-function createRecordingSyncService(): {
-  service: DatastoreSyncService;
-  events: Array<
-    | { kind: "mark"; relPath: string | undefined }
-    | { kind: "push"; namespace?: string; hasSignal: boolean }
-  >;
-} {
-  const events: Array<
-    | { kind: "mark"; relPath: string | undefined }
-    | { kind: "push"; namespace?: string; hasSignal: boolean }
-  > = [];
-  const service = {
-    markDirty: (opts?: { relPath?: string }) => {
-      events.push({ kind: "mark", relPath: opts?.relPath });
-      return Promise.resolve();
-    },
-    pushChanged: (opts?: { namespace?: string; signal?: AbortSignal }) => {
-      events.push({
-        kind: "push",
-        namespace: opts?.namespace,
-        hasSignal: opts?.signal instanceof AbortSignal,
-      });
-      return Promise.resolve(1);
-    },
-    pullChanged: () => Promise.resolve(0),
-  } as unknown as DatastoreSyncService;
-  return { service, events };
-}
-
-const PATHS_REPO = resolve("swamp-paths-test-repo");
-const PATHS_CACHE = resolve("swamp-paths-test-cache");
-const PATHS_CONFIG: CustomDatastoreConfig = {
-  type: "@swamp/s3-datastore",
-  config: { bucket: "test" },
-  datastorePath: PATHS_CACHE,
-  cachePath: PATHS_CACHE,
-  namespace: "ns1",
-};
-const TIER_LOCKFILE = join(
-  PATHS_CACHE,
-  "ns1",
-  "config",
-  "upstream_extensions.json",
-);
-
-Deno.test("pushManagedConfigPaths: marks each path with its namespaced cache-relative key, then pushes", async () => {
-  const { service, events } = createRecordingSyncService();
-  const archive = join(PATHS_CACHE, "ns1", "config", "archives", "a.tgz");
-
-  await pushManagedConfigPaths(
-    service,
-    PATHS_CONFIG,
-    makeMarker({ managedConfig: true }),
-    PATHS_REPO,
-    [TIER_LOCKFILE, archive],
-  );
-
-  assertEquals(events, [
-    { kind: "mark", relPath: "ns1/config/upstream_extensions.json" },
-    { kind: "mark", relPath: "ns1/config/archives/a.tgz" },
-    { kind: "push", namespace: "ns1", hasSignal: true },
-  ]);
-});
-
-Deno.test("pushManagedConfigPaths: drops paths outside the namespace's cache tree", async () => {
-  const { service, events } = createRecordingSyncService();
-
-  await pushManagedConfigPaths(
-    service,
-    PATHS_CONFIG,
-    makeMarker({ managedConfig: true }),
-    PATHS_REPO,
-    [
-      // The in-repo lockfile: the mark hook would map it to an
-      // un-namespaced config/ key.
-      join(PATHS_REPO, ".swamp", "config", "upstream_extensions.json"),
-      join(PATHS_CACHE, "other-ns", "config", "upstream_extensions.json"),
-      join(PATHS_CACHE, "ns1"),
-    ],
-  );
-
-  assertEquals(events, []);
-});
-
-Deno.test("pushManagedConfigPaths: without a namespace, keys are relative to the cache root", async () => {
-  const { service, events } = createRecordingSyncService();
-
-  await pushManagedConfigPaths(
-    service,
-    { ...PATHS_CONFIG, namespace: undefined },
-    makeMarker({ managedConfig: true }),
-    PATHS_REPO,
-    [join(PATHS_CACHE, "config", "upstream_extensions.json")],
-  );
-
-  assertEquals(events, [
-    { kind: "mark", relPath: "config/upstream_extensions.json" },
-    { kind: "push", namespace: undefined, hasSignal: true },
-  ]);
-});
-
-Deno.test("pushManagedConfigPaths: no-op without managedConfig, a sync service or a cache", async () => {
-  const { service, events } = createRecordingSyncService();
-
-  await pushManagedConfigPaths(
-    service,
-    PATHS_CONFIG,
-    makeMarker({ managedConfig: false }),
-    PATHS_REPO,
-    [TIER_LOCKFILE],
-  );
-  await pushManagedConfigPaths(
-    undefined,
-    PATHS_CONFIG,
-    makeMarker({ managedConfig: true }),
-    PATHS_REPO,
-    [TIER_LOCKFILE],
-  );
-  await pushManagedConfigPaths(
-    service,
-    { ...PATHS_CONFIG, cachePath: undefined },
-    makeMarker({ managedConfig: true }),
-    PATHS_REPO,
-    [TIER_LOCKFILE],
-  );
-  await pushManagedConfigPaths(
-    service,
-    FS_CONFIG,
-    makeMarker({ managedConfig: true, type: "filesystem" }),
-    PATHS_REPO,
-    [TIER_LOCKFILE],
-  );
-
-  assertEquals(events, []);
-});
-
-Deno.test("pushManagedConfigPaths: a push error throws ManagedConfigUnpublishedError", async () => {
-  const { service, events } = createRecordingSyncService();
-  const cause = new Error("S3 unreachable");
-  service.pushChanged = () => Promise.reject(cause);
-
-  const error = await assertRejects(() =>
-    pushManagedConfigPaths(
-      service,
-      PATHS_CONFIG,
-      makeMarker({ managedConfig: true }),
-      PATHS_REPO,
-      [TIER_LOCKFILE],
-    )
-  );
-
-  assertUnpublished(error, cause);
-  assertEquals(events, [
-    { kind: "mark", relPath: "ns1/config/upstream_extensions.json" },
-  ]);
-});
-
-Deno.test("pushManagedConfigPathsDeferred: a failure to resolve the datastore throws ManagedConfigUnpublishedError", async () => {
-  await withTempDir(async (dir) => {
-    // Not an initialized repo, so resolving the datastore fails.
-    const error = await assertRejects(() =>
-      pushManagedConfigPathsDeferred(
-        dir,
-        makeMarker({ managedConfig: true }),
-        [join(dir, "upstream_extensions.json")],
-      )
-    );
-    assertInstanceOf(error, ManagedConfigUnpublishedError);
-    assertStringIncludes(error.message, "Not a swamp repository");
-  });
-});
-
-Deno.test("pushManagedConfigPathsDeferred: no-op without managedConfig or paths", async () => {
-  await withTempDir(async (dir) => {
-    await pushManagedConfigPathsDeferred(dir, makeMarker(), [
-      join(dir, "upstream_extensions.json"),
-    ]);
-    await pushManagedConfigPathsDeferred(
-      dir,
-      makeMarker({ managedConfig: true }),
-      [],
-    );
-  });
 });
 
 function createLockfileSyncService(
@@ -767,13 +712,13 @@ Deno.test("createManagedLockfileTransaction: none unless the lockfile is shared 
   );
 });
 
-Deno.test("flushAfterManagedConfigMutation: a failed flush after the mutation throws ManagedConfigUnpublishedError", async () => {
+Deno.test("reportManagedConfigCleanupError: a failed push after the mutation throws ManagedConfigUnpublishedError", () => {
   const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  const error = await assertRejects(() =>
-    flushAfterManagedConfigMutation(
-      () => Promise.reject(cause),
+  const error = assertThrows(() =>
+    reportManagedConfigCleanupError(
+      cause,
       true,
       makeMarker({ managedConfig: true }),
       (e) => cleanupErrors.push(e),
@@ -784,12 +729,12 @@ Deno.test("flushAfterManagedConfigMutation: a failed flush after the mutation th
   assertEquals(cleanupErrors, []);
 });
 
-Deno.test("flushAfterManagedConfigMutation: before the mutation completed, a failed flush only reports", async () => {
+Deno.test("reportManagedConfigCleanupError: before the mutation completed, a failure only reports", () => {
   const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  await flushAfterManagedConfigMutation(
-    () => Promise.reject(cause),
+  reportManagedConfigCleanupError(
+    cause,
     false,
     makeMarker({ managedConfig: true }),
     (e) => cleanupErrors.push(e),
@@ -798,58 +743,18 @@ Deno.test("flushAfterManagedConfigMutation: before the mutation completed, a fai
   assertEquals(cleanupErrors, [cause]);
 });
 
-Deno.test("flushAfterManagedConfigMutation: an in-flight error is not replaced by the flush failure", async () => {
-  const original = new Error("delete failed");
-  const cleanupErrors: unknown[] = [];
-  let mutated = false;
-
-  const error = await assertRejects(async () => {
-    try {
-      await Promise.reject(original);
-      mutated = true;
-    } finally {
-      await flushAfterManagedConfigMutation(
-        () => Promise.reject(new Error("push failed")),
-        mutated,
-        makeMarker({ managedConfig: true }),
-        (e) => cleanupErrors.push(e),
-      );
-    }
-  });
-
-  assertEquals(error, original);
-  assertEquals(cleanupErrors.length, 1);
-});
-
-Deno.test("flushAfterManagedConfigMutation: without managedConfig a failed flush only reports", async () => {
+Deno.test("reportManagedConfigCleanupError: without managedConfig a failure only reports", () => {
+  const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  await flushAfterManagedConfigMutation(
-    () => Promise.reject(new Error("push failed")),
+  reportManagedConfigCleanupError(
+    cause,
     true,
     makeMarker({ managedConfig: false }),
     (e) => cleanupErrors.push(e),
   );
 
-  assertEquals(cleanupErrors.length, 1);
-});
-
-Deno.test("flushAfterManagedConfigMutation: a successful flush neither throws nor reports", async () => {
-  const cleanupErrors: unknown[] = [];
-  let flushed = false;
-
-  await flushAfterManagedConfigMutation(
-    () => {
-      flushed = true;
-      return Promise.resolve();
-    },
-    true,
-    makeMarker({ managedConfig: true }),
-    (e) => cleanupErrors.push(e),
-  );
-
-  assert(flushed);
-  assertEquals(cleanupErrors, []);
+  assertEquals(cleanupErrors, [cause]);
 });
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

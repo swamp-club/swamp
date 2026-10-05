@@ -367,7 +367,8 @@ const EXTENSION_WRITER_FILES: readonly string[] = [
   "src/cli/commands/extension_update.ts",
   "src/cli/commands/repo_init.ts",
 ];
-const BULK_PUSH_HELPER_CALL = /\bpushManagedConfigChanges(?:Deferred)?\s*\(/;
+const BULK_PUSH_HELPER_CALL =
+  /\b(?:pushManagedConfigChanges(?:Deferred)?|runManagedConfigMutation)\s*\(/;
 const UNFETCHED_PUSH_HELPER_CALL = /\bpushManagedConfigPaths(?:Deferred)?\s*\(/;
 const TRANSACTION_CALLS = [
   /\bcreateManagedLockfileTransaction\s*\(/,
@@ -395,7 +396,7 @@ Deno.test("extension writers change the lockfile inside a managed lockfile trans
     bulk,
     [],
     "Extension writers must not call pushManagedConfigChanges or " +
-      "pushManagedConfigChangesDeferred: their bare markDirty() turns the " +
+      "runManagedConfigMutation: their bare markDirty() turns the " +
       "push into a full-cache walk that never detects deletions.",
   );
   assertEquals(

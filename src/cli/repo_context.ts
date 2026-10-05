@@ -1582,7 +1582,17 @@ function heldForOtherRunsMessage(
  *          (and pushes changes for sync-capable datastores).
  */
 export interface ModelLockResult {
+  /** {@link push}, then {@link release} even when the push fails. */
   flush: () => Promise<void>;
+  /**
+   * Pushes changed files for sync-capable datastores (single- or two-phase),
+   * without releasing the locks. A command that runs in a root unit of work
+   * passes this as the root's flush and calls {@link release} after the root
+   * has ended (swamp-club#3033).
+   */
+  push: () => Promise<void>;
+  /** Releases every per-model lock these locks took. */
+  release: () => Promise<void>;
   /**
    * True if a remote datastore pull during lock acquisition may have changed
    * the local cache, so callers must invalidate the catalog. False when every
@@ -1909,65 +1919,73 @@ export async function acquireModelLocks(
   // concurrent lock holders in this process cannot clear it under each other.
   processLockHolderMarker.markHoldingLocks();
 
+  const push = async () => {
+    // For custom sync-capable datastores: push changes to remote
+    if (
+      customSyncService && customProvider && isCustomDatastoreConfig(config)
+    ) {
+      const pushNs = config.namespace;
+      const provider = customProvider;
+      const syncService = customSyncService;
+
+      if (
+        caps?.twoPhaseSync && syncService.preparePush &&
+        syncService.commitPush
+      ) {
+        // Two-phase push: file uploads outside global lock, index
+        // merge under global lock. Narrows the critical section from
+        // "entire sync" to "index read-modify-write" only.
+        await wrapSync(() =>
+          flushTwoPhasePush(
+            provider,
+            syncService,
+            config,
+            caps,
+            unique,
+            pushNs,
+            catalogStore,
+            logger,
+            progressWriter,
+          )
+        );
+      } else {
+        // Single-phase fallback: everything under global lock
+        await wrapSync(() =>
+          flushSinglePhasePush(
+            provider,
+            syncService,
+            config,
+            caps,
+            unique,
+            pushNs,
+            catalogStore,
+            logger,
+            progressWriter,
+          )
+        );
+      }
+    }
+  };
+
+  const release = async () => {
+    for (const key of lockKeys) {
+      await flushDatastoreSyncNamed(key);
+    }
+  };
+
   const flush = async () => {
     try {
-      // For custom sync-capable datastores: push changes to remote
-      if (
-        customSyncService && customProvider && isCustomDatastoreConfig(config)
-      ) {
-        const pushNs = config.namespace;
-        const provider = customProvider;
-        const syncService = customSyncService;
-
-        if (
-          caps?.twoPhaseSync && syncService.preparePush &&
-          syncService.commitPush
-        ) {
-          // Two-phase push: file uploads outside global lock, index
-          // merge under global lock. Narrows the critical section from
-          // "entire sync" to "index read-modify-write" only.
-          await wrapSync(() =>
-            flushTwoPhasePush(
-              provider,
-              syncService,
-              config,
-              caps,
-              unique,
-              pushNs,
-              catalogStore,
-              logger,
-              progressWriter,
-            )
-          );
-        } else {
-          // Single-phase fallback: everything under global lock
-          await wrapSync(() =>
-            flushSinglePhasePush(
-              provider,
-              syncService,
-              config,
-              caps,
-              unique,
-              pushNs,
-              catalogStore,
-              logger,
-              progressWriter,
-            )
-          );
-        }
-      }
+      await push();
     } finally {
       // Always release per-model locks, even if push fails
-      for (const key of lockKeys) {
-        await flushDatastoreSyncNamed(key);
-      }
+      await release();
     }
   };
 
   const heldLockIds = heldLocks.flatMap((lock) =>
     lock instanceof FileLock && lock.heldNonce ? [lock.heldNonce] : []
   );
-  return { flush, synced, heldLockIds };
+  return { flush, push, release, synced, heldLockIds };
 }
 
 /**
