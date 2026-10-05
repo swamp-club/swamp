@@ -23,13 +23,15 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  libSwampContextForRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createModelDeleteDeps,
   createWorkerListDeps,
   createWorkerModelRunDeps,
@@ -149,7 +151,7 @@ export const workerPruneCommand = withRemoteOptions(
     ? datastoreConfig.namespace
     : undefined;
 
-  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
 
   const listDeps = createWorkerListDeps(repoContext.dataQueryService);
 

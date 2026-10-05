@@ -26,6 +26,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -36,11 +37,7 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { GIT_SHA } from "./version.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  modelMethodRun,
-} from "../../libswamp/mod.ts";
+import { consumeStream, modelMethodRun } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
   type Group,
@@ -166,7 +163,7 @@ async function runGroupMethod(
     const definitionName = isDirectExecution ? instanceName : undefined;
 
     await consumeStream(
-      modelMethodRun(createLibSwampContext(), deps, {
+      modelMethodRun(libSwampContextForRepo(repoContext), deps, {
         modelIdOrName: isDirectExecution
           ? `@${GROUP_MODEL_TYPE.normalized}`
           : instanceName,

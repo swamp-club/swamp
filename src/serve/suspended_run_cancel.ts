@@ -20,7 +20,6 @@
 import {
   CANCEL_SUSPENDED_NOT_SUSPENDED,
   type CancelTargetWorkflow,
-  createLibSwampContext,
   createWorkflowCancelSuspendedDeps,
   locateSuspendedRunToCancel,
   type SwampError,
@@ -29,6 +28,7 @@ import {
 } from "../libswamp/mod.ts";
 import {
   type ConnectionContext,
+  handlerLibSwampContext,
   pushChangedToRemote,
 } from "./handlers/shared.ts";
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
@@ -154,11 +154,15 @@ async function cancelLocatedRunAndPush(
       let failure: SwampError | undefined;
       let result: SuspendedRunCancelResult | undefined;
       for await (
-        const event of workflowCancelSuspended(createLibSwampContext(), deps, {
-          runId: request.runId,
-          workflowId,
-          reason: request.reason,
-        })
+        const event of workflowCancelSuspended(
+          handlerLibSwampContext(ctx),
+          deps,
+          {
+            runId: request.runId,
+            workflowId,
+            reason: request.reason,
+          },
+        )
       ) {
         if (event.kind === "completed") {
           result = {

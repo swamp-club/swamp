@@ -76,6 +76,7 @@ import {
 } from "../../domain/workflows/persisted_workflow.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import { notFound, type SwampError } from "../errors.ts";
 import { coerceInputTypes } from "../../domain/inputs/mod.ts";
 
@@ -551,18 +552,20 @@ export async function* workflowEvaluate(
   deps: WorkflowEvaluateDeps,
   input: WorkflowEvaluateInput,
 ): AsyncIterable<WorkflowEvaluateEvent> {
-  yield { kind: "evaluating" };
+  yield* withUnitOfWork(ctx, async function* () {
+    yield { kind: "evaluating" };
 
-  if (!input.workflowIdOrName) {
-    yield* evaluateAll(ctx, deps, input.inputs, input.include);
-  } else {
-    yield* evaluateSingle(
-      ctx,
-      deps,
-      input.workflowIdOrName,
-      input.inputs,
-      input.byId ?? false,
-      input.expectedName,
-    );
-  }
+    if (!input.workflowIdOrName) {
+      yield* evaluateAll(ctx, deps, input.inputs, input.include);
+    } else {
+      yield* evaluateSingle(
+        ctx,
+        deps,
+        input.workflowIdOrName,
+        input.inputs,
+        input.byId ?? false,
+        input.expectedName,
+      );
+    }
+  });
 }

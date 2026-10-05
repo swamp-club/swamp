@@ -29,6 +29,7 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 import {
@@ -134,156 +135,157 @@ export async function* modelCreate(
   deps: ModelCreateDeps,
   input: ModelCreateInput,
 ): AsyncIterable<ModelCreateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.model.create",
-    { "model.type": input.typeArg, "model.name": input.name },
-    (async function* () {
-      yield { kind: "creating" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.model.create",
+      { "model.type": input.typeArg, "model.name": input.name },
+      (async function* () {
+        yield { kind: "creating" };
 
-      ctx.logger
-        .debug`Creating model: type=${input.typeArg}, name=${input.name}`;
+        ctx.logger
+          .debug`Creating model: type=${input.typeArg}, name=${input.name}`;
 
-      // Validate the name before type resolution, which can auto-install an
-      // extension, so a create that would fail does no network work.
-      const nameViolation = definitionNameViolation(input.name);
-      if (nameViolation) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Invalid model name: ${input.name}. ${nameViolation}`,
-          ),
-        };
-        return;
-      }
-
-      // Validate and resolve the model type
-      const modelType = ModelType.create(input.typeArg);
-      const resolvedDef = await deps.resolveModelType(input.typeArg);
-      if (!resolvedDef) {
-        const availableTypes = deps.listAvailableTypes().join(", ");
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Unknown model type: ${input.typeArg}. Available types: ${
-              availableTypes || "none"
-            }`,
-          ),
-        };
-        return;
-      }
-
-      // Check name uniqueness
-      const exists = await deps.findByNameGlobal(input.name);
-      if (exists) {
-        yield {
-          kind: "error",
-          error: alreadyExists("Model", input.name),
-        };
-        return;
-      }
-
-      // Validate global arguments against model schema if present
-      const modelDef = deps.getModelDef(modelType);
-      let globalArguments = input.globalArguments;
-      if (globalArguments && modelDef?.globalArguments) {
-        globalArguments = coerceMethodArgs(
-          globalArguments,
-          modelDef.globalArguments,
-        );
-        const globalArgsSchema = modelDef.globalArguments;
-        const shape = getObjectShape(globalArgsSchema);
-        if (shape) {
-          const unknownKeys = Object.keys(globalArguments).filter(
-            (k) => !Object.hasOwn(shape, k),
-          );
-          if (unknownKeys.length > 0) {
-            const validKeys = Object.keys(shape).join(", ");
-            yield {
-              kind: "error",
-              error: validationFailed(
-                `Unknown global argument(s) for type '${modelType.normalized}': ${
-                  unknownKeys.join(", ")
-                }. Valid arguments are: ${validKeys || "none"}`,
-              ),
-            };
-            return;
-          }
-        }
-        // Validate only the static (non-expression) fields against the schema.
-        // Fields holding a `${{ ... }}` expression (e.g. a `vault.get(...)`
-        // reference) are resolved at runtime and validated then — running them
-        // through the schema now would reject a sentinel string against a
-        // constrained field (e.g. `z.string().min(20)`), making the vault
-        // remediation for a sensitive argument impossible. Mirrors the
-        // strip-then-validate behavior in validation_service.
-        const staticArgs = stripExpressionFields(globalArguments);
-        const hasExpressionArgs =
-          Object.keys(staticArgs).length < Object.keys(globalArguments).length;
-        if (!hasExpressionArgs) {
-          const result = globalArgsSchema.safeParse(globalArguments);
-          if (!result.success) {
-            const issues = result.error.issues.map((i) => {
-              const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
-              return `  ${path}${i.message}`;
-            }).join("\n");
-            yield {
-              kind: "error",
-              error: validationFailed(
-                `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
-              ),
-            };
-            return;
-          }
-          globalArguments = result.data as Record<string, unknown>;
-        }
-
-        // Refuse a literal value for a sensitive global argument before it is
-        // persisted in cleartext. The persistence chokepoint
-        // (YamlDefinitionRepository.save) enforces this for every writer; doing
-        // it here as well gives `model create` a clean, typed error instead of
-        // a raw thrown one. Expression values (vault.get) pass through.
-        const leakedArgs = findLiteralSensitiveGlobalArgs(
-          modelDef.globalArguments,
-          globalArguments,
-        );
-        if (leakedArgs.length > 0) {
+        // Validate the name before type resolution, which can auto-install an
+        // extension, so a create that would fail does no network work.
+        const nameViolation = definitionNameViolation(input.name);
+        if (nameViolation) {
           yield {
             kind: "error",
             error: validationFailed(
-              literalSensitiveGlobalArgsMessage(leakedArgs),
+              `Invalid model name: ${input.name}. ${nameViolation}`,
             ),
           };
           return;
         }
-      }
 
-      // Create and save the definition
-      const definition = await deps.createAndSave(
-        modelType,
-        input.name,
-        modelDef?.version,
-        globalArguments,
-      );
+        // Validate and resolve the model type
+        const modelType = ModelType.create(input.typeArg);
+        const resolvedDef = await deps.resolveModelType(input.typeArg);
+        if (!resolvedDef) {
+          const availableTypes = deps.listAvailableTypes().join(", ");
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Unknown model type: ${input.typeArg}. Available types: ${
+                availableTypes || "none"
+              }`,
+            ),
+          };
+          return;
+        }
 
-      ctx.logger.debug`Created definition with ID: ${definition.id}`;
+        // Check name uniqueness
+        const exists = await deps.findByNameGlobal(input.name);
+        if (exists) {
+          yield {
+            kind: "error",
+            error: alreadyExists("Model", input.name),
+          };
+          return;
+        }
 
-      const data: ModelCreateData = {
-        id: definition.id,
-        type: modelType.normalized,
-        name: definition.name,
-        path: deps.getPath(modelType, definition.id),
-        version: modelDef?.version,
-        globalArguments: modelDef?.globalArguments
-          ? zodToJsonSchema(modelDef.globalArguments)
-          : undefined,
-        methods: modelDef
-          ? Object.entries(modelDef.methods).map(
-            ([name, method]) => toMethodDescribeData(name, method),
-          )
-          : undefined,
-      };
+        // Validate global arguments against model schema if present
+        const modelDef = deps.getModelDef(modelType);
+        let globalArguments = input.globalArguments;
+        if (globalArguments && modelDef?.globalArguments) {
+          globalArguments = coerceMethodArgs(
+            globalArguments,
+            modelDef.globalArguments,
+          );
+          const globalArgsSchema = modelDef.globalArguments;
+          const shape = getObjectShape(globalArgsSchema);
+          if (shape) {
+            const unknownKeys = Object.keys(globalArguments).filter(
+              (k) => !Object.hasOwn(shape, k),
+            );
+            if (unknownKeys.length > 0) {
+              const validKeys = Object.keys(shape).join(", ");
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  `Unknown global argument(s) for type '${modelType.normalized}': ${
+                    unknownKeys.join(", ")
+                  }. Valid arguments are: ${validKeys || "none"}`,
+                ),
+              };
+              return;
+            }
+          }
+          // Validate only the static (non-expression) fields against the schema.
+          // Fields holding a `${{ ... }}` expression (e.g. a `vault.get(...)`
+          // reference) are resolved at runtime and validated then — running them
+          // through the schema now would reject a sentinel string against a
+          // constrained field (e.g. `z.string().min(20)`), making the vault
+          // remediation for a sensitive argument impossible. Mirrors the
+          // strip-then-validate behavior in validation_service.
+          const staticArgs = stripExpressionFields(globalArguments);
+          const hasExpressionArgs = Object.keys(staticArgs).length <
+            Object.keys(globalArguments).length;
+          if (!hasExpressionArgs) {
+            const result = globalArgsSchema.safeParse(globalArguments);
+            if (!result.success) {
+              const issues = result.error.issues.map((i) => {
+                const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
+                return `  ${path}${i.message}`;
+              }).join("\n");
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
+                ),
+              };
+              return;
+            }
+            globalArguments = result.data as Record<string, unknown>;
+          }
 
-      yield { kind: "completed", data };
-    })(),
-  );
+          // Refuse a literal value for a sensitive global argument before it is
+          // persisted in cleartext. The persistence chokepoint
+          // (YamlDefinitionRepository.save) enforces this for every writer; doing
+          // it here as well gives `model create` a clean, typed error instead of
+          // a raw thrown one. Expression values (vault.get) pass through.
+          const leakedArgs = findLiteralSensitiveGlobalArgs(
+            modelDef.globalArguments,
+            globalArguments,
+          );
+          if (leakedArgs.length > 0) {
+            yield {
+              kind: "error",
+              error: validationFailed(
+                literalSensitiveGlobalArgsMessage(leakedArgs),
+              ),
+            };
+            return;
+          }
+        }
+
+        // Create and save the definition
+        const definition = await deps.createAndSave(
+          modelType,
+          input.name,
+          modelDef?.version,
+          globalArguments,
+        );
+
+        ctx.logger.debug`Created definition with ID: ${definition.id}`;
+
+        const data: ModelCreateData = {
+          id: definition.id,
+          type: modelType.normalized,
+          name: definition.name,
+          path: deps.getPath(modelType, definition.id),
+          version: modelDef?.version,
+          globalArguments: modelDef?.globalArguments
+            ? zodToJsonSchema(modelDef.globalArguments)
+            : undefined,
+          methods: modelDef
+            ? Object.entries(modelDef.methods).map(
+              ([name, method]) => toMethodDescribeData(name, method),
+            )
+            : undefined,
+        };
+
+        yield { kind: "completed", data };
+      })(),
+    ));
 }

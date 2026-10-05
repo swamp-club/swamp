@@ -23,6 +23,11 @@
 
 import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  createLibSwampContext,
+  type LibSwampContext,
+} from "../../libswamp/mod.ts";
 import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
@@ -73,6 +78,22 @@ import type { SyncGate } from "../sync_gate.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
+
+/**
+ * The `LibSwampContext` for a serve request. Each write use case's unit of
+ * work is bound to the serve process's `repoContext.markDirty` itself, so
+ * the repositories stage into it (datastore rework Phase 2, swamp-club#3025).
+ * Read use cases never open a unit, so every handler uses it.
+ */
+export function handlerLibSwampContext(
+  ctx: Pick<ConnectionContext, "repoContext">,
+  options?: { signal?: AbortSignal },
+): LibSwampContext {
+  return createLibSwampContext({
+    ...options,
+    openUnitOfWork: repoUnitOfWorkFactory(ctx.repoContext),
+  });
+}
 
 /**
  * Pushes local data mutations to the remote datastore. Call after any

@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -184,7 +185,6 @@ import { selectCheckConfigToken } from "../serve_check_config_token.ts";
 import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createModelDeleteDeps,
   createWorkerListDeps,
   createWorkerModelRunDeps,
@@ -6311,7 +6311,7 @@ export const serveCommand = new Command()
 
     // Worker GC — prunes disconnected worker records and stale token bindings
     {
-      const libCtx = createLibSwampContext();
+      const libCtx = libSwampContextForRepo(repoContext);
       const listDeps = createWorkerListDeps(
         repoContext.dataQueryService,
       );
@@ -6469,7 +6469,7 @@ export const serveCommand = new Command()
           vaultService: await VaultService.fromRepository(resolvedRepoDir, {
             defaultVaultName: repoMarker?.defaultVault,
           }),
-          libCtx: createLibSwampContext(),
+          libCtx: libSwampContextForRepo(repoContext),
           pushChanged: tokenGcSync
             ? async () => {
               await tokenGcSync.pushChanged({ namespace: serveNamespace });

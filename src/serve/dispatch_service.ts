@@ -30,6 +30,7 @@
  * fails the run.
  */
 
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { join } from "@std/path";
 import {
   createLibSwampContext,
@@ -807,7 +808,9 @@ export class DispatchService {
       this.#options.repoDir,
       this.#options.repoContext,
     );
-    const libCtx = createLibSwampContext({});
+    const libCtx = createLibSwampContext({
+      openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
+    });
     for await (
       const event of modelMethodRun(libCtx, deps, {
         modelIdOrName: input.definitionName,

@@ -23,6 +23,7 @@
  * decoupled from Cliffy options parsing.
  */
 
+import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type {
@@ -466,7 +467,10 @@ export async function executeWorkflowWithLocks(
     runTracker,
     { telemetrySink: runTelemetry?.sink },
   );
-  const libCtx = createLibSwampContext({ signal });
+  const libCtx = createLibSwampContext({
+    signal,
+    openUnitOfWork: repoUnitOfWorkFactory(repoContext),
+  });
 
   // Layer the workflow's trigger.inputs under any caller-supplied inputs so
   // scheduled and webhook trigger-fired runs get baseline values at fire

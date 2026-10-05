@@ -49,6 +49,7 @@ import {
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 
@@ -169,148 +170,149 @@ export async function* vaultCreate(
   deps: VaultCreateDeps,
   input: VaultCreateInput,
 ): AsyncIterable<VaultCreateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.vault.create",
-    {},
-    (async function* () {
-      yield { kind: "creating" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.vault.create",
+      {},
+      (async function* () {
+        yield { kind: "creating" };
 
-      ctx.logger
-        .debug`Creating vault: type=${input.vaultType}, name=${input.name}`;
+        ctx.logger
+          .debug`Creating vault: type=${input.vaultType}, name=${input.name}`;
 
-      const rerunHint = createRerunHint(input.vaultType, input.name);
+        const rerunHint = createRerunHint(input.vaultType, input.name);
 
-      // Auto-resolve extension vault types if not already registered
-      await deps.resolveExtensionVaultType(input.vaultType);
+        // Auto-resolve extension vault types if not already registered
+        await deps.resolveExtensionVaultType(input.vaultType);
 
-      // Validate the vault type
-      const typeInfo = deps.getVaultTypeInfo(input.vaultType);
-      if (!typeInfo) {
-        const renamed = RENAMED_VAULT_TYPES[input.vaultType.toLowerCase()];
-        if (renamed) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `The type '${input.vaultType}' has been renamed to '${renamed}'. Use type '${renamed}' instead.`,
-            ),
-          };
-          return;
-        }
-        const availableTypes = deps.listAvailableTypes().join(", ");
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Unknown vault type: ${input.vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
-          ),
-        };
-        return;
-      }
-
-      // Validate vault name format
-      if (!isValidVaultName(input.name)) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Invalid vault name: ${input.name}. ${VAULT_NAME_RULE}`,
-          ),
-        };
-        return;
-      }
-
-      // Check name uniqueness
-      const exists = await deps.findByName(input.name);
-      if (exists) {
-        yield {
-          kind: "error",
-          error: alreadyExists("Vault", input.name),
-        };
-        return;
-      }
-
-      // Resolve provider configuration
-      let providerConfig: Record<string, unknown>;
-
-      if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
-        // Extension vault type: use provided config, defaulting to {}
-        providerConfig = input.config ?? {};
-
-        // Validate against configSchema if provided
-        if (typeInfo.configSchema) {
-          const result = typeInfo.configSchema.safeParse(providerConfig);
-          if (!result.success) {
+        // Validate the vault type
+        const typeInfo = deps.getVaultTypeInfo(input.vaultType);
+        if (!typeInfo) {
+          const renamed = RENAMED_VAULT_TYPES[input.vaultType.toLowerCase()];
+          if (renamed) {
             yield {
               kind: "error",
               error: validationFailed(
-                explainVaultConfigIssues({
-                  vaultType: input.vaultType,
-                  config: providerConfig,
-                  issues: result.error.issues,
-                  fields: describeVaultConfigFields(typeInfo.configSchema),
-                  rerunHint,
-                }),
+                `The type '${input.vaultType}' has been renamed to '${renamed}'. Use type '${renamed}' instead.`,
               ),
             };
             return;
           }
-        }
-      } else if (
-        input.config && !input.trustKeySource &&
-        isLocalEncryptionType(input.vaultType)
-      ) {
-        // The key source names files on this host, so a caller that does not
-        // own it gets the server defaults.
-        const refused = findNonDefaultKeySourceFields(
-          input.config,
-          input.repoDir,
-        );
-        if (refused.length > 0) {
+          const availableTypes = deps.listAvailableTypes().join(", ");
           yield {
             kind: "error",
             error: validationFailed(
-              `Cannot set ${refused.join(", ")} for vault '${input.name}': ` +
-                `a local_encryption vault created remotely uses the server's ` +
-                `key source. Leave these fields out, or run the command on the host running swamp.`,
+              `Unknown vault type: ${input.vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
             ),
           };
           return;
         }
-        providerConfig = withServerDefaultKeySource(
-          input.config,
-          input.repoDir,
-        );
-      } else if (input.config) {
-        // Built-in type with explicit config
-        providerConfig = input.config;
-      } else {
-        // Built-in vault type: resolve defaults
-        providerConfig = resolveBuiltInProviderConfig(
+
+        // Validate vault name format
+        if (!isValidVaultName(input.name)) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Invalid vault name: ${input.name}. ${VAULT_NAME_RULE}`,
+            ),
+          };
+          return;
+        }
+
+        // Check name uniqueness
+        const exists = await deps.findByName(input.name);
+        if (exists) {
+          yield {
+            kind: "error",
+            error: alreadyExists("Vault", input.name),
+          };
+          return;
+        }
+
+        // Resolve provider configuration
+        let providerConfig: Record<string, unknown>;
+
+        if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
+          // Extension vault type: use provided config, defaulting to {}
+          providerConfig = input.config ?? {};
+
+          // Validate against configSchema if provided
+          if (typeInfo.configSchema) {
+            const result = typeInfo.configSchema.safeParse(providerConfig);
+            if (!result.success) {
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  explainVaultConfigIssues({
+                    vaultType: input.vaultType,
+                    config: providerConfig,
+                    issues: result.error.issues,
+                    fields: describeVaultConfigFields(typeInfo.configSchema),
+                    rerunHint,
+                  }),
+                ),
+              };
+              return;
+            }
+          }
+        } else if (
+          input.config && !input.trustKeySource &&
+          isLocalEncryptionType(input.vaultType)
+        ) {
+          // The key source names files on this host, so a caller that does not
+          // own it gets the server defaults.
+          const refused = findNonDefaultKeySourceFields(
+            input.config,
+            input.repoDir,
+          );
+          if (refused.length > 0) {
+            yield {
+              kind: "error",
+              error: validationFailed(
+                `Cannot set ${refused.join(", ")} for vault '${input.name}': ` +
+                  `a local_encryption vault created remotely uses the server's ` +
+                  `key source. Leave these fields out, or run the command on the host running swamp.`,
+              ),
+            };
+            return;
+          }
+          providerConfig = withServerDefaultKeySource(
+            input.config,
+            input.repoDir,
+          );
+        } else if (input.config) {
+          // Built-in type with explicit config
+          providerConfig = input.config;
+        } else {
+          // Built-in vault type: resolve defaults
+          providerConfig = resolveBuiltInProviderConfig(
+            input.vaultType,
+            input.repoDir,
+          );
+        }
+
+        // Create and save
+        const vaultId = createVaultConfigId(crypto.randomUUID());
+        const vaultConfig = VaultConfig.create(
+          vaultId,
+          input.name,
           input.vaultType,
-          input.repoDir,
+          providerConfig,
+          input.auditReads,
         );
-      }
+        await deps.save(vaultConfig);
 
-      // Create and save
-      const vaultId = createVaultConfigId(crypto.randomUUID());
-      const vaultConfig = VaultConfig.create(
-        vaultId,
-        input.name,
-        input.vaultType,
-        providerConfig,
-        input.auditReads,
-      );
-      await deps.save(vaultConfig);
+        ctx.logger.debug`Vault created: ${input.name}`;
 
-      ctx.logger.debug`Vault created: ${input.name}`;
+        const data: VaultCreateData = {
+          id: vaultId,
+          name: input.name,
+          type: input.vaultType,
+          typeName: typeInfo.name,
+          config: providerConfig,
+        };
 
-      const data: VaultCreateData = {
-        id: vaultId,
-        name: input.name,
-        type: input.vaultType,
-        typeName: typeInfo.name,
-        config: providerConfig,
-      };
-
-      yield { kind: "completed", data };
-    })(),
-  );
+        yield { kind: "completed", data };
+      })(),
+    ));
 }

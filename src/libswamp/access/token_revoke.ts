@@ -26,6 +26,7 @@
  */
 
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
@@ -72,74 +73,76 @@ export async function createServerTokenRevokeDeps(
 const TOKEN_DATA_NAME = "token-main";
 
 export async function* serverTokenRevoke(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: ServerTokenRevokeDeps,
   input: ServerTokenRevokeInput,
 ): AsyncGenerator<ServerTokenRevokeEvent> {
-  yield* withGeneratorSpan(
-    "swamp.access.token.revoke",
-    { "token.name": input.name },
-    (async function* () {
-      yield { kind: "revoking" as const, name: input.name };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.access.token.revoke",
+      { "token.name": input.name },
+      (async function* () {
+        yield { kind: "revoking" as const, name: input.name };
 
-      let tokenRecord: Record<string, unknown> | undefined;
-      let completed = false;
-      for await (const event of deps.runRevoke(input.name)) {
-        if (event.kind === "error") {
-          const error = event.error.code === "model_not_found"
-            ? {
-              code: event.error.code,
-              message: `Server token '${input.name}' not found. ` +
-                "Use 'swamp access token list' to see existing tokens.",
-            }
-            : event.error;
-          yield { kind: "error" as const, error };
+        let tokenRecord: Record<string, unknown> | undefined;
+        let completed = false;
+        for await (const event of deps.runRevoke(input.name)) {
+          if (event.kind === "error") {
+            const error = event.error.code === "model_not_found"
+              ? {
+                code: event.error.code,
+                message: `Server token '${input.name}' not found. ` +
+                  "Use 'swamp access token list' to see existing tokens.",
+              }
+              : event.error;
+            yield { kind: "error" as const, error };
+            return;
+          }
+          if (event.kind === "completed") {
+            completed = true;
+            tokenRecord = event.run.dataArtifacts.find(
+              (artifact) => artifact.name === TOKEN_DATA_NAME,
+            )?.attributes;
+          }
+        }
+
+        if (!completed) {
+          yield {
+            kind: "error" as const,
+            error: {
+              code: "revoke_incomplete",
+              message:
+                `Revoke of token '${input.name}' ended without completing`,
+            },
+          };
           return;
         }
-        if (event.kind === "completed") {
-          completed = true;
-          tokenRecord = event.run.dataArtifacts.find(
-            (artifact) => artifact.name === TOKEN_DATA_NAME,
-          )?.attributes;
+
+        if (tokenRecord === undefined) {
+          yield {
+            kind: "completed" as const,
+            data: {
+              name: input.name,
+              state: "revoked",
+              alreadyRevoked: true,
+            },
+          };
+          return;
         }
-      }
 
-      if (!completed) {
-        yield {
-          kind: "error" as const,
-          error: {
-            code: "revoke_incomplete",
-            message: `Revoke of token '${input.name}' ended without completing`,
-          },
-        };
-        return;
-      }
-
-      if (tokenRecord === undefined) {
         yield {
           kind: "completed" as const,
           data: {
             name: input.name,
-            state: "revoked",
-            alreadyRevoked: true,
+            state: typeof tokenRecord.state === "string"
+              ? tokenRecord.state
+              : "revoked",
+            revokedAt: typeof tokenRecord.revokedAt === "string"
+              ? tokenRecord.revokedAt
+              : undefined,
+            alreadyRevoked: false,
           },
         };
-        return;
-      }
-
-      yield {
-        kind: "completed" as const,
-        data: {
-          name: input.name,
-          state: typeof tokenRecord.state === "string"
-            ? tokenRecord.state
-            : "revoked",
-          revokedAt: typeof tokenRecord.revokedAt === "string"
-            ? tokenRecord.revokedAt
-            : undefined,
-          alreadyRevoked: false,
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

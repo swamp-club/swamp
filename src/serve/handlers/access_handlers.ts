@@ -89,6 +89,7 @@ import {
   type ConnectionContext,
   getConnectionCollectives,
   getConnectionGroups,
+  handlerLibSwampContext,
   pushChangedToRemote,
   resolveDisplayPrincipal,
   sanitizeErrorForClient,
@@ -103,7 +104,6 @@ import { readServerTokenRecord } from "../token_auth.ts";
 
 import {
   consumeStream,
-  createLibSwampContext,
   createServerTokenCreateDeps,
   createServerTokenListDeps,
   createServerTokenRevokeDeps,
@@ -201,7 +201,7 @@ export async function handleAccessGrantList(
     }
 
     if (unresolvedSubs.size > 0) {
-      const libCtx = createLibSwampContext();
+      const libCtx = handlerLibSwampContext(ctx);
       const deps = createServerTokenListDeps(
         ctx.repoContext.dataQueryService,
       );
@@ -869,7 +869,7 @@ export async function handleAccessTokenList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createServerTokenListDeps(
       ctx.repoContext.dataQueryService,
     );
@@ -920,7 +920,7 @@ export async function handleAccessTokenRevoke(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createServerTokenRevokeDeps(
       libCtx,
       ctx.repoDir,
@@ -986,7 +986,7 @@ export async function handleAccessTokenRotate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createServerTokenRotateDeps(
       libCtx,
       ctx.repoDir,
@@ -1086,7 +1086,7 @@ export async function handleAccessTokenMint(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createServerTokenCreateDeps(
       libCtx,
       ctx.repoDir,

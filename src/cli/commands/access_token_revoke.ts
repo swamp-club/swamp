@@ -25,13 +25,13 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   createServerTokenRevokeDeps,
   serverTokenRevoke,
   type ServerTokenRevokeData,
@@ -92,7 +92,7 @@ export const accessTokenRevokeCommand = withRemoteOptions(
 
   cliCtx.logger.debug`Revoking server token ${name}`;
 
-  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
   const deps = await createServerTokenRevokeDeps(
     libCtx,
     repoDir,

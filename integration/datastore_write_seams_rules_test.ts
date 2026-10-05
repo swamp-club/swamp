@@ -216,6 +216,55 @@ function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 4b: transactional use cases and the unit-of-work test seam
+// ---------------------------------------------------------------------------
+
+const TRANSACTION_MODULE = "src/libswamp/unit_of_work.ts";
+const TRANSACTION_WRAP = /\b(?:return|yield\*)\s+withUnitOfWork\s*\(/g;
+const EXPORTED_FUNCTION = /^export (?:async )?function\*?\s+(\w+)/gm;
+
+/**
+ * One key per exported libswamp use case that runs its body through
+ * `withUnitOfWork`, as "<file>: <export>". The helper module itself and
+ * non-exported helpers do not count.
+ */
+function transactionalUseCases(files: readonly SourceFile[]): string[] {
+  const keys: string[] = [];
+  for (const { rel, code, lines, owners } of files) {
+    if (!rel.startsWith("src/libswamp/") || rel === TRANSACTION_MODULE) {
+      continue;
+    }
+    const exported = new Set(
+      [...code.matchAll(EXPORTED_FUNCTION)].map((match) => match[1]),
+    );
+    lines.forEach((line, i) => {
+      if (isCommentLine(line) || !exported.has(owners[i])) return;
+      for (const _match of line.matchAll(TRANSACTION_WRAP)) {
+        keys.push(`${rel}: ${owners[i]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+const SEAM_MODULE = "src/infrastructure/persistence/repo_unit_of_work.ts";
+const SEAM_REFERENCE = /\buseUnitOfWorkFactoryForTesting\b/g;
+
+function unitOfWorkSeamCallers(files: readonly SourceFile[]): string[] {
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    if (rel === SEAM_MODULE) continue;
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+      for (const _match of line.matchAll(SEAM_REFERENCE)) {
+        keys.push(`${rel}: ${owners[i]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+// ---------------------------------------------------------------------------
 // Rule 5: typed changes repositories stage
 // ---------------------------------------------------------------------------
 
@@ -358,7 +407,9 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
   // The legacy unit of work forwarding staged changes to the mark hook
   // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
-  // phases stage through the unit of work rather than adding calls here.
+  // phases stage through the unit of work rather than adding calls here. A
+  // change staged after commit under afterCommit "forward" (swamp-club#3025)
+  // goes through the same call.
   "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
   // The one routing helper the repositories stage their changes through:
   // it stages into an ambient unit of work bound to the hook, or calls the
@@ -642,11 +693,55 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository write",
 ];
 
-// Production code that opens an ambient unit of work. Empty in datastore
-// rework Phase 1 (swamp-club#2971): repositories can stage into a scope, but
-// nothing opens one, so behaviour is unchanged by construction. Phase 2 adds
-// use cases here on purpose.
-const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [];
+// Production code that opens an ambient unit of work. Datastore rework
+// Phase 2 (swamp-club#3025): only withUnitOfWork, which runs each write use
+// case inside the unit its context opens (its import, and its three calls:
+// creating the inner stream, each next(), and a forwarded return()). Use
+// cases never open a scope themselves; they go through withUnitOfWork.
+const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
+  "src/libswamp/unit_of_work.ts: <module>",
+  "src/libswamp/unit_of_work.ts: withUnitOfWork (x3)",
+];
+
+// libswamp use cases that run inside a unit of work (swamp-club#3025): every
+// use case that writes through a datastore-tier repository. A use case
+// gaining or losing its unit shows up here. Read-only use cases, and those
+// that write only secrets, lockfiles, credentials or raw files, are not
+// wrapped.
+const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
+  "src/libswamp/access/token_create.ts: serverTokenCreate",
+  "src/libswamp/access/token_revoke.ts: serverTokenRevoke",
+  "src/libswamp/access/token_rotate.ts: serverTokenRotate",
+  "src/libswamp/data/delete.ts: dataBatchDelete",
+  "src/libswamp/data/delete.ts: dataDelete",
+  "src/libswamp/data/gc.ts: dataGc",
+  "src/libswamp/data/prune.ts: dataPrune",
+  "src/libswamp/data/rename.ts: dataRename",
+  "src/libswamp/data/run_gc.ts: runGc",
+  "src/libswamp/models/create.ts: modelCreate",
+  "src/libswamp/models/delete.ts: modelDelete",
+  "src/libswamp/models/edit.ts: modelEdit",
+  "src/libswamp/models/evaluate.ts: modelEvaluate",
+  "src/libswamp/models/run.ts: modelMethodRun",
+  "src/libswamp/vaults/create.ts: vaultCreate",
+  "src/libswamp/vaults/edit.ts: vaultEdit",
+  "src/libswamp/vaults/migrate.ts: vaultMigrate",
+  "src/libswamp/worker/prune.ts: workerPrune",
+  "src/libswamp/worker/token_create.ts: workerTokenCreate",
+  "src/libswamp/worker/token_revoke.ts: workerTokenRevoke",
+  "src/libswamp/workflows/approve.ts: workflowApprove",
+  "src/libswamp/workflows/cancel_suspended.ts: workflowCancelSuspended",
+  "src/libswamp/workflows/create.ts: workflowCreate",
+  "src/libswamp/workflows/delete.ts: workflowDelete",
+  "src/libswamp/workflows/edit.ts: workflowEdit",
+  "src/libswamp/workflows/evaluate.ts: workflowEvaluate",
+  "src/libswamp/workflows/reject.ts: workflowReject",
+  "src/libswamp/workflows/run.ts: workflowRun",
+];
+
+// Production references to the unit-of-work test seam. Empty: only tests
+// install a factory, so production units always forward late changes.
+const PINNED_UNIT_OF_WORK_SEAM_CALLERS: readonly string[] = [];
 
 // Hook references in datastore-tier repositories other than signalChange's
 // first argument. Empty since the datastore rework Phase 1 repository moves
@@ -719,9 +814,9 @@ Deno.test("datastore write seams: production code opening a unit-of-work scope i
     unitOfWorkScopes(files),
     PINNED_UNIT_OF_WORK_SCOPES,
     "Production runInUnitOfWork references (calls and imports)",
-    "Phase 1 keeps the ambient unit of work inert: no production code opens\n" +
-      "a scope yet. Opening one is datastore rework Phase 2; if this is that\n" +
-      "work, add the caller here with a reason.",
+    "Only withUnitOfWork opens a unit-of-work scope. A use case that needs\n" +
+      "one wraps its body in withUnitOfWork instead of calling\n" +
+      "runInUnitOfWork itself.",
   );
 });
 
@@ -742,6 +837,67 @@ Deno.test("datastore write seams: the unit-of-work scope scan finds calls and al
     "src/libswamp/probe.ts: <module>",
     "src/libswamp/probe.ts: probe",
   ]);
+});
+
+Deno.test("datastore write seams: use cases that run inside a unit of work are pinned (swamp-club#3025)", () => {
+  assertPinnedSet(
+    transactionalUseCases(files),
+    PINNED_TRANSACTIONAL_USE_CASES,
+    "libswamp use cases wrapped in withUnitOfWork",
+    "A write use case must run its body through withUnitOfWork so its\n" +
+      "repositories stage into one unit of work. Add new write use cases here;\n" +
+      "remove one only when it no longer writes through a datastore-tier\n" +
+      "repository.",
+  );
+});
+
+Deno.test("datastore write seams: the transactional use-case scan counts exported wraps, not helpers or comments", () => {
+  const probe: SourceFile = {
+    rel: "src/libswamp/probe.ts",
+    code: [
+      "export async function* probeWrite(ctx) {",
+      "export function probeReturn(ctx) {",
+      "async function* helper(ctx) {",
+    ].join("\n"),
+    lines: [
+      "export async function* probeWrite(ctx) {",
+      "  yield* withUnitOfWork(ctx, () =>",
+      "}",
+      "export function probeReturn(ctx) {",
+      "  return withUnitOfWork(ctx, () => body());",
+      "  // yield* withUnitOfWork(ctx, fn) in a comment does not count",
+      "}",
+      "async function* helper(ctx) {",
+      "  yield* withUnitOfWork(ctx, () => body());",
+      "}",
+    ],
+    owners: [
+      "probeWrite",
+      "probeWrite",
+      "probeWrite",
+      "probeReturn",
+      "probeReturn",
+      "probeReturn",
+      "probeReturn",
+      "helper",
+      "helper",
+      "helper",
+    ],
+  };
+  assertEquals(transactionalUseCases([probe]), [
+    "src/libswamp/probe.ts: probeReturn",
+    "src/libswamp/probe.ts: probeWrite",
+  ]);
+});
+
+Deno.test("datastore write seams: the unit-of-work test seam has no production callers (swamp-club#3025)", () => {
+  assertPinnedSet(
+    unitOfWorkSeamCallers(files),
+    PINNED_UNIT_OF_WORK_SEAM_CALLERS,
+    "Production references to useUnitOfWorkFactoryForTesting",
+    "Only tests may install a unit-of-work factory. Production units must\n" +
+      "forward a change staged after commit instead of rejecting it.",
+  );
 });
 
 Deno.test("datastore write seams: typed changes repositories stage are pinned (swamp-club#2979)", () => {

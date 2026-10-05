@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowApproveDeps,
   userErrorFromSwampError,
   workflowApprove,
@@ -32,7 +31,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  libSwampContextForRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -141,7 +143,7 @@ export const workflowApproveCommand = withRemoteOptions(
       outputMode: cliCtx.outputMode,
     });
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createWorkflowApproveDeps(
       repoContext.workflowRepo,
       repoContext.workflowRunRepo,

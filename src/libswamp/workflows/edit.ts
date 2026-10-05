@@ -33,6 +33,7 @@ import {
   EditorService,
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { forbidden, notFound, validationFailed } from "../errors.ts";
 import {
@@ -170,167 +171,172 @@ export async function* workflowEdit(
   deps: WorkflowEditDeps,
   input: WorkflowEditInput,
 ): AsyncIterable<WorkflowEditEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.edit",
-    {},
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.edit",
+      {},
+      (async function* () {
+        yield { kind: "resolving" };
 
-      const { workflowIdOrName, stdinContent } = input;
+        const { workflowIdOrName, stdinContent } = input;
 
-      let workflow: Workflow | null = null;
-      let filePath: string | null = null;
+        let workflow: Workflow | null = null;
+        let filePath: string | null = null;
 
-      // Name first, then exact id — or id only when the caller resolved it.
-      if (!input.byId) {
-        ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
-        try {
-          workflow = await deps.findByName(workflowIdOrName);
-        } catch (error) {
-          ctx.logger
-            .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
-        }
-      }
-      if (!workflow && isUuid(workflowIdOrName)) {
-        ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
-        try {
-          const id: WorkflowId = createWorkflowId(workflowIdOrName);
-          workflow = input.byId && input.expectedName !== undefined
-            ? await findWorkflowById(deps, workflowIdOrName, input.expectedName)
-            : await deps.findById(id);
-        } catch (error) {
-          ctx.logger
-            .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
-        }
-      }
-
-      if (workflow) {
-        filePath = deps.getPath(workflow.id);
-      } else {
-        const resolvedPath = input.byId
-          ? null
-          : await deps.resolveSymlink(workflowIdOrName);
-        if (resolvedPath) {
-          ctx.logger
-            .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
-          filePath = resolvedPath;
-        } else {
-          const broken = await deps.findBrokenWorkflow(workflowIdOrName);
-          if (
-            broken &&
-            (!input.byId ||
-              (broken.id === workflowIdOrName &&
-                (input.expectedName === undefined ||
-                  broken.name === input.expectedName)))
-          ) {
+        // Name first, then exact id — or id only when the caller resolved it.
+        if (!input.byId) {
+          ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
+          try {
+            workflow = await deps.findByName(workflowIdOrName);
+          } catch (error) {
             ctx.logger
-              .debug`Found broken workflow, opening file: ${broken.file}`;
-            filePath = broken.file;
-          } else {
-            yield {
-              kind: "error",
-              error: notFound("Workflow", workflowIdOrName),
-            };
-            return;
+              .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
           }
         }
-      }
+        if (!workflow && isUuid(workflowIdOrName)) {
+          ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
+          try {
+            const id: WorkflowId = createWorkflowId(workflowIdOrName);
+            workflow = input.byId && input.expectedName !== undefined
+              ? await findWorkflowById(
+                deps,
+                workflowIdOrName,
+                input.expectedName,
+              )
+              : await deps.findById(id);
+          } catch (error) {
+            ctx.logger
+              .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
+          }
+        }
 
-      // If the primary path doesn't exist but we found the workflow,
-      // it's an extension workflow — try to find its actual source file.
-      if (filePath && workflow) {
-        const exists = await deps.fileExists(filePath);
-        if (!exists) {
-          const resolvedPath = await deps.resolveSymlink(workflow.name);
+        if (workflow) {
+          filePath = deps.getPath(workflow.id);
+        } else {
+          const resolvedPath = input.byId
+            ? null
+            : await deps.resolveSymlink(workflowIdOrName);
           if (resolvedPath) {
+            ctx.logger
+              .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
             filePath = resolvedPath;
+          } else {
+            const broken = await deps.findBrokenWorkflow(workflowIdOrName);
+            if (
+              broken &&
+              (!input.byId ||
+                (broken.id === workflowIdOrName &&
+                  (input.expectedName === undefined ||
+                    broken.name === input.expectedName)))
+            ) {
+              ctx.logger
+                .debug`Found broken workflow, opening file: ${broken.file}`;
+              filePath = broken.file;
+            } else {
+              yield {
+                kind: "error",
+                error: notFound("Workflow", workflowIdOrName),
+              };
+              return;
+            }
           }
         }
-      }
 
-      ctx.logger.debug`Using file path: ${filePath}`;
-
-      // Stdin update mode
-      if (stdinContent !== undefined && stdinContent !== null) {
-        ctx.logger.debug`Reading workflow content from stdin`;
-
-        if (!workflow) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              "Cannot update workflow from stdin: the workflow's YAML is broken and must be fixed in an editor first",
-            ),
-          };
-          return;
+        // If the primary path doesn't exist but we found the workflow,
+        // it's an extension workflow — try to find its actual source file.
+        if (filePath && workflow) {
+          const exists = await deps.fileExists(filePath);
+          if (!exists) {
+            const resolvedPath = await deps.resolveSymlink(workflow.name);
+            if (resolvedPath) {
+              filePath = resolvedPath;
+            }
+          }
         }
 
-        try {
-          const before = editTarget(workflow);
-          const authorizeUpdate = input.authorizeUpdate;
-          const beforeSave = authorizeUpdate
-            ? (candidate: Workflow) =>
-              Promise.resolve(authorizeUpdate(before, editTarget(candidate)))
-            : undefined;
-          const updated = await deps.updateFromStdin(
-            workflow,
-            stdinContent,
-            beforeSave,
-          );
-          if (!updated) {
+        ctx.logger.debug`Using file path: ${filePath}`;
+
+        // Stdin update mode
+        if (stdinContent !== undefined && stdinContent !== null) {
+          ctx.logger.debug`Reading workflow content from stdin`;
+
+          if (!workflow) {
             yield {
               kind: "error",
-              error: forbidden(
-                `Not allowed to save workflow '${workflow.name}' with the edited name or tags`,
+              error: validationFailed(
+                "Cannot update workflow from stdin: the workflow's YAML is broken and must be fixed in an editor first",
               ),
             };
             return;
           }
 
-          yield {
-            kind: "completed",
-            data: {
-              path: filePath,
-              status: "updated",
-              name: updated.name,
-              id: updated.id,
-            },
-          };
-        } catch (error) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `Invalid workflow YAML from stdin: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            ),
-          };
+          try {
+            const before = editTarget(workflow);
+            const authorizeUpdate = input.authorizeUpdate;
+            const beforeSave = authorizeUpdate
+              ? (candidate: Workflow) =>
+                Promise.resolve(authorizeUpdate(before, editTarget(candidate)))
+              : undefined;
+            const updated = await deps.updateFromStdin(
+              workflow,
+              stdinContent,
+              beforeSave,
+            );
+            if (!updated) {
+              yield {
+                kind: "error",
+                error: forbidden(
+                  `Not allowed to save workflow '${workflow.name}' with the edited name or tags`,
+                ),
+              };
+              return;
+            }
+
+            yield {
+              kind: "completed",
+              data: {
+                path: filePath,
+                status: "updated",
+                name: updated.name,
+                id: updated.id,
+              },
+            };
+          } catch (error) {
+            yield {
+              kind: "error",
+              error: validationFailed(
+                `Invalid workflow YAML from stdin: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              ),
+            };
+          }
+          return;
         }
-        return;
-      }
 
-      // Editor mode
-      ctx.logger.debug`Opening file: ${filePath}`;
-      const launch = await deps.prepareEditor(filePath);
-      yield {
-        kind: "launching",
-        data: {
-          editor: launch.editor,
-          path: filePath,
-          waitsForExit: launch.waitsForExit,
-        },
-      };
-      const result = await launch.open();
+        // Editor mode
+        ctx.logger.debug`Opening file: ${filePath}`;
+        const launch = await deps.prepareEditor(filePath);
+        yield {
+          kind: "launching",
+          data: {
+            editor: launch.editor,
+            path: filePath,
+            waitsForExit: launch.waitsForExit,
+          },
+        };
+        const result = await launch.open();
 
-      yield {
-        kind: "completed",
-        data: {
-          path: filePath,
-          editor: result.editor,
-          status: "opened",
-          name: workflow?.name ?? workflowIdOrName,
-          id: workflow?.id ?? "unknown",
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed",
+          data: {
+            path: filePath,
+            editor: result.editor,
+            status: "opened",
+            name: workflow?.name ?? workflowIdOrName,
+            id: workflow?.id ?? "unknown",
+          },
+        };
+      })(),
+    ));
 }

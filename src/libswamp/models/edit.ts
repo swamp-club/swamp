@@ -37,6 +37,7 @@ import {
   EditorService,
 } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { forbidden, notFound, validationFailed } from "../errors.ts";
 
@@ -194,156 +195,157 @@ export async function* modelEdit(
   deps: ModelEditDeps,
   input: ModelEditInput,
 ): AsyncIterable<ModelEditEvent> {
-  yield* withGeneratorSpan(
-    "swamp.model.edit",
-    {},
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.model.edit",
+      {},
+      (async function* () {
+        yield { kind: "resolving" };
 
-      const { modelIdOrName, stdinContent } = input;
+        const { modelIdOrName, stdinContent } = input;
 
-      // Look up the model definition
-      let definition: Definition | null = null;
-      let modelType: ModelType | null = null;
-      let filePath: string | null = null;
+        // Look up the model definition
+        let definition: Definition | null = null;
+        let modelType: ModelType | null = null;
+        let filePath: string | null = null;
 
-      ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      try {
-        const result = input.byId
-          ? await deps.lookupDefinitionById(modelIdOrName, input.expectedName)
-          : await deps.lookupDefinition(modelIdOrName);
-        if (result) {
-          definition = result.definition;
-          modelType = result.type;
-          filePath = deps.getDefinitionPath(modelType, definition.id);
-        }
-      } catch (error) {
-        ctx.logger
-          .debug`Model lookup failed, will try symlink fallback: ${error}`;
-      }
-
-      // If normal lookup didn't find the model, try symlink fallback
-      if (!filePath) {
-        const resolvedPath = await deps.resolveSymlink(modelIdOrName);
-        if (resolvedPath) {
-          ctx.logger
-            .debug`Using symlink fallback for broken model: ${resolvedPath}`;
-          filePath = resolvedPath;
-        } else {
-          yield { kind: "error", error: notFound("Model", modelIdOrName) };
-          return;
-        }
-      }
-
-      ctx.logger.debug`Using file path: ${filePath}`;
-
-      // Stdin update mode
-      if (stdinContent !== undefined && stdinContent !== null) {
-        ctx.logger.debug`Reading model content from stdin`;
-
-        if (!definition || !modelType) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              "Cannot update model from stdin: the model's YAML is broken and must be fixed in an editor first",
-            ),
-          };
-          return;
-        }
-
+        ctx.logger.debug`Looking up model: ${modelIdOrName}`;
         try {
-          const type = modelType;
-          const before = editTarget(definition, type);
-          const authorizeUpdate = input.authorizeUpdate;
-          const beforeSave = authorizeUpdate
-            ? (candidate: Definition) =>
-              Promise.resolve(
-                authorizeUpdate(before, editTarget(candidate, type)),
-              )
-            : undefined;
-          const updated = await deps.updateFromStdin(
-            definition,
-            modelType,
-            stdinContent,
-            beforeSave,
-          );
-          if (!updated) {
+          const result = input.byId
+            ? await deps.lookupDefinitionById(modelIdOrName, input.expectedName)
+            : await deps.lookupDefinition(modelIdOrName);
+          if (result) {
+            definition = result.definition;
+            modelType = result.type;
+            filePath = deps.getDefinitionPath(modelType, definition.id);
+          }
+        } catch (error) {
+          ctx.logger
+            .debug`Model lookup failed, will try symlink fallback: ${error}`;
+        }
+
+        // If normal lookup didn't find the model, try symlink fallback
+        if (!filePath) {
+          const resolvedPath = await deps.resolveSymlink(modelIdOrName);
+          if (resolvedPath) {
+            ctx.logger
+              .debug`Using symlink fallback for broken model: ${resolvedPath}`;
+            filePath = resolvedPath;
+          } else {
+            yield { kind: "error", error: notFound("Model", modelIdOrName) };
+            return;
+          }
+        }
+
+        ctx.logger.debug`Using file path: ${filePath}`;
+
+        // Stdin update mode
+        if (stdinContent !== undefined && stdinContent !== null) {
+          ctx.logger.debug`Reading model content from stdin`;
+
+          if (!definition || !modelType) {
             yield {
               kind: "error",
-              error: forbidden(
-                `Not allowed to save model '${definition.name}' with the edited name or tags`,
+              error: validationFailed(
+                "Cannot update model from stdin: the model's YAML is broken and must be fixed in an editor first",
               ),
             };
             return;
           }
 
-          const warning = typeVersionWarning(updated);
-          yield {
-            kind: "completed",
-            data: {
-              path: filePath,
-              status: "updated",
-              name: updated.name,
-              type: modelType.normalized,
-              editType: "definition",
-              ...(warning ? { warnings: [warning] } : {}),
-            },
-          };
-        } catch (error) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `Invalid model YAML from stdin: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            ),
-          };
+          try {
+            const type = modelType;
+            const before = editTarget(definition, type);
+            const authorizeUpdate = input.authorizeUpdate;
+            const beforeSave = authorizeUpdate
+              ? (candidate: Definition) =>
+                Promise.resolve(
+                  authorizeUpdate(before, editTarget(candidate, type)),
+                )
+              : undefined;
+            const updated = await deps.updateFromStdin(
+              definition,
+              modelType,
+              stdinContent,
+              beforeSave,
+            );
+            if (!updated) {
+              yield {
+                kind: "error",
+                error: forbidden(
+                  `Not allowed to save model '${definition.name}' with the edited name or tags`,
+                ),
+              };
+              return;
+            }
+
+            const warning = typeVersionWarning(updated);
+            yield {
+              kind: "completed",
+              data: {
+                path: filePath,
+                status: "updated",
+                name: updated.name,
+                type: modelType.normalized,
+                editType: "definition",
+                ...(warning ? { warnings: [warning] } : {}),
+              },
+            };
+          } catch (error) {
+            yield {
+              kind: "error",
+              error: validationFailed(
+                `Invalid model YAML from stdin: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              ),
+            };
+          }
+          return;
         }
-        return;
-      }
 
-      // Editor mode
-      ctx.logger.debug`Opening file: ${filePath}`;
-      const launch = await deps.prepareEditor(filePath);
-      yield {
-        kind: "launching",
-        data: {
-          editor: launch.editor,
-          path: filePath,
-          waitsForExit: launch.waitsForExit,
-        },
-      };
-      const result = await launch.open();
+        // Editor mode
+        ctx.logger.debug`Opening file: ${filePath}`;
+        const launch = await deps.prepareEditor(filePath);
+        yield {
+          kind: "launching",
+          data: {
+            editor: launch.editor,
+            path: filePath,
+            waitsForExit: launch.waitsForExit,
+          },
+        };
+        const result = await launch.open();
 
-      // Only worth re-reading when the launch actually waited for the editor to
-      // close. A non-blocking editor returns before the human has typed
-      // anything, so checking here would report on the pre-edit content.
-      // A re-read that fails is not itself worth reporting: the file may have
-      // been renamed or left mid-edit, and `model edit` already tolerates YAML
-      // it cannot parse.
-      let warnings: string[] | undefined;
-      if (launch.waitsForExit) {
-        try {
-          const reread = await deps.lookupDefinition(modelIdOrName);
-          const warning = reread && typeVersionWarning(reread.definition);
-          if (warning) warnings = [warning];
-        } catch {
-          // Left unreported for the reason above.
+        // Only worth re-reading when the launch actually waited for the editor to
+        // close. A non-blocking editor returns before the human has typed
+        // anything, so checking here would report on the pre-edit content.
+        // A re-read that fails is not itself worth reporting: the file may have
+        // been renamed or left mid-edit, and `model edit` already tolerates YAML
+        // it cannot parse.
+        let warnings: string[] | undefined;
+        if (launch.waitsForExit) {
+          try {
+            const reread = await deps.lookupDefinition(modelIdOrName);
+            const warning = reread && typeVersionWarning(reread.definition);
+            if (warning) warnings = [warning];
+          } catch {
+            // Left unreported for the reason above.
+          }
         }
-      }
 
-      yield {
-        kind: "completed",
-        data: {
-          path: filePath,
-          editor: result.editor,
-          status: "opened",
-          name: definition?.name ?? modelIdOrName,
-          type: modelType?.normalized ?? "unknown",
-          editType: "definition",
-          ...(warnings ? { warnings } : {}),
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed",
+          data: {
+            path: filePath,
+            editor: result.editor,
+            status: "opened",
+            name: definition?.name ?? modelIdOrName,
+            type: modelType?.normalized ?? "unknown",
+            editType: "definition",
+            ...(warnings ? { warnings } : {}),
+          },
+        };
+      })(),
+    ));
 }

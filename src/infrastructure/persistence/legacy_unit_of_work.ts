@@ -22,6 +22,18 @@ import type {
   StagedChange,
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
+import { getSwampLogger } from "../logging/logger.ts";
+
+/**
+ * What a legacy unit of work does with a change staged after it committed.
+ *
+ * - `"reject"`: `stage` rejects with "unit of work already committed". Tests
+ *   use it, so a write that escapes its use case fails the test.
+ * - `"forward"`: `stage` sends the change straight to the hook, as a write
+ *   outside any unit of work would, and logs it at debug. Production uses it,
+ *   so a write that escapes its use case never fails a command.
+ */
+export type AfterCommitPolicy = "reject" | "forward";
 
 /** Options for {@link createLegacyUnitOfWork}. */
 export interface LegacyUnitOfWorkOptions {
@@ -31,7 +43,11 @@ export interface LegacyUnitOfWorkOptions {
    * (filesystem datastores), because `commit` then pushes nothing.
    */
   flush: (() => Promise<void>) | undefined;
+  /** Late-stage handling; defaults to `"reject"`. See {@link AfterCommitPolicy}. */
+  afterCommit?: AfterCommitPolicy;
 }
+
+const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
 /**
  * The hook each legacy unit of work forwards to, by unit. Kept beside the
@@ -72,10 +88,16 @@ export function legacyUnitOfWorkTarget(
  * hook (filesystem datastores) `stage` only records the change.
  *
  * `commit` waits for any mark still in flight, then awaits `options.flush`
- * when one is given. In Phase 1 no production code calls `commit`: the
- * existing flush paths (`acquireModelLocks().flush`, `flushDatastoreSync`,
- * `pushManagedConfigChanges`, serve's `pushChangedToRemote`) keep pushing as
- * they do today. Phase 2 wires `commit` to them.
+ * when one is given. Use cases commit their unit through `withUnitOfWork`
+ * (`src/libswamp/unit_of_work.ts`), but every production unit has no flush
+ * yet: the existing flush paths (`acquireModelLocks().flush`,
+ * `flushDatastoreSync`, `pushManagedConfigChanges`, serve's
+ * `pushChangedToRemote`) keep pushing as they do today. A later Phase 2 step
+ * moves the push into `commit`.
+ *
+ * A change staged after `commit` follows `options.afterCommit`. With
+ * `"forward"` it is not recorded in `staged()`: the unit is spent, and the
+ * change reaches the hook exactly as it would outside any unit of work.
  */
 export function createLegacyUnitOfWork(
   markDirty: MarkDirtyHook | undefined,
@@ -83,6 +105,7 @@ export function createLegacyUnitOfWork(
 ): UnitOfWork {
   const changes: StagedChange[] = [];
   const marks: Promise<void>[] = [];
+  const afterCommit = options.afterCommit ?? "reject";
   let committed = false;
 
   const refuseIfCommitted = (): void => {
@@ -91,13 +114,20 @@ export function createLegacyUnitOfWork(
 
   const uow: UnitOfWork = {
     async stage(change: StagedChange): Promise<void> {
-      refuseIfCommitted();
-      changes.push(Object.freeze({ ...change }));
+      const late = committed;
+      if (late && afterCommit === "reject") refuseIfCommitted();
+      if (late) {
+        const target = change.kind === "bulk" ? change.reason : change.path;
+        logger
+          .debug`Change staged after its unit of work committed, sent to the hook: ${change.kind} ${target}`;
+      } else {
+        changes.push(Object.freeze({ ...change }));
+      }
       if (markDirty === undefined) return;
       const mark = markDirty(
         change.kind === "bulk" ? undefined : change.path,
       );
-      marks.push(mark);
+      if (!late) marks.push(mark);
       await mark;
     },
     async commit(): Promise<void> {

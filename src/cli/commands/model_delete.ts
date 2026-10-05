@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createLibSwampContext,
   createModelDeleteDeps,
   modelDelete,
   type ModelDeleteData,
@@ -37,6 +36,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { flushAfterManagedConfigMutation } from "../managed_config_sync.ts";
@@ -144,7 +144,9 @@ export const modelDeleteCommand = withRemoteOptions(
 
     let deleted = false;
     try {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createModelDeleteDeps(
         repoDir,
         datastoreResolver,

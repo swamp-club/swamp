@@ -37,6 +37,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import {
@@ -194,65 +195,66 @@ export async function locateSuspendedRunToCancel(
  * off the run for the whole call, so the load here is a fresh read.
  */
 export async function* workflowCancelSuspended(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowCancelSuspendedDeps,
   input: WorkflowCancelSuspendedInput,
 ): AsyncIterable<WorkflowCancelSuspendedEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.cancel_suspended",
-    { "workflow.run_id": input.runId },
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.cancel_suspended",
+      { "workflow.run_id": input.runId },
+      (async function* () {
+        yield { kind: "resolving" };
 
-      const found = await findAuthorizedRun(deps, input);
-      if (!found) {
-        yield { kind: "error", error: cancelNotFound(input.runId) };
-        return;
-      }
-      const { run, workflowId, target, workflow } = found;
+        const found = await findAuthorizedRun(deps, input);
+        if (!found) {
+          yield { kind: "error", error: cancelNotFound(input.runId) };
+          return;
+        }
+        const { run, workflowId, target, workflow } = found;
 
-      if (run.status !== "suspended") {
+        if (run.status !== "suspended") {
+          yield {
+            kind: "error",
+            error: {
+              ...validationFailed(
+                `Run ${run.id} is not suspended (status: ${run.status})`,
+              ),
+              code: CANCEL_SUSPENDED_NOT_SUSPENDED,
+            },
+          };
+          return;
+        }
+
+        cancelAndSettle(
+          run,
+          await resolveSettlementWorkflow(
+            run,
+            workflow,
+            deps.findEvaluatedWorkflow,
+          ),
+          input.reason,
+        );
+        await deps.runRepo.save(workflowId, run);
+        if (deps.runTracker) {
+          deps.runTracker.complete(run.id, "cancelled", input.reason);
+        }
+        const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+          () => [],
+        );
+
         yield {
-          kind: "error",
-          error: {
-            ...validationFailed(
-              `Run ${run.id} is not suspended (status: ${run.status})`,
-            ),
-            code: CANCEL_SUSPENDED_NOT_SUSPENDED,
+          kind: "completed",
+          data: {
+            runId: run.id,
+            workflowName: target.name,
+            previousStatus: "suspended",
+            status: "cancelled",
+            ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
           },
         };
-        return;
-      }
-
-      cancelAndSettle(
-        run,
-        await resolveSettlementWorkflow(
-          run,
-          workflow,
-          deps.findEvaluatedWorkflow,
-        ),
-        input.reason,
-      );
-      await deps.runRepo.save(workflowId, run);
-      if (deps.runTracker) {
-        deps.runTracker.complete(run.id, "cancelled", input.reason);
-      }
-      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
-        () => [],
-      );
-
-      yield {
-        kind: "completed",
-        data: {
-          runId: run.id,
-          workflowName: target.name,
-          previousStatus: "suspended",
-          status: "cancelled",
-          ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }
 
 /**

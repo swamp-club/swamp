@@ -21,7 +21,6 @@ import { Command } from "@cliffy/command";
 import {
   consumeStream,
   createDataGcDeps,
-  createLibSwampContext,
   dataGc,
   type DataGcData,
   dataGcPreview,
@@ -37,6 +36,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  libSwampContextForRepo,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
@@ -101,7 +101,7 @@ export const dataGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
   const deps = createDataGcDeps(
     repoDir,
     datastoreResolver,

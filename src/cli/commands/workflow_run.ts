@@ -32,6 +32,7 @@ import {
 import {
   acquireModelLocks,
   createLockProgressWriter,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -82,7 +83,6 @@ import { parseTags } from "../../libswamp/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   workflowRun,
   type WorkflowRunDeps,
   type WorkflowRunEvent,
@@ -499,7 +499,9 @@ export const workflowRunCommand = new Command()
         handler: () => abort.abort(),
         forceExitOnRepeat: true,
       });
-      const baseLibCtx = createLibSwampContext({ signal: abort.signal });
+      const baseLibCtx = libSwampContextForRepo(repoContext, {
+        signal: abort.signal,
+      });
       const libCtx = timeoutMs !== undefined
         ? baseLibCtx.withTimeout(timeoutMs)
         : baseLibCtx;

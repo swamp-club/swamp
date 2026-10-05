@@ -19,6 +19,7 @@
 
 import { cancelled, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type {
   WorkflowExecutionEvent,
   WorkflowExecutionService,
@@ -706,229 +707,232 @@ export async function* workflowRun(
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
 ): AsyncGenerator<WorkflowRunEvent> {
-  yield* withGeneratorTraceContext(
-    input.traceparent,
-    input.tracestate,
-    withGeneratorSpan(
-      "swamp.workflow.run.command",
-      { "workflow.id_or_name": input.workflowIdOrName },
-      (async function* () {
-        let resolvedInput = input;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorTraceContext(
+      input.traceparent,
+      input.tracestate,
+      withGeneratorSpan(
+        "swamp.workflow.run.command",
+        { "workflow.id_or_name": input.workflowIdOrName },
+        (async function* () {
+          let resolvedInput = input;
 
-        yield { kind: "validating_inputs" };
+          yield { kind: "validating_inputs" };
 
-        // Look up workflow
-        const workflow = input.byId
-          ? await findWorkflowById(
-            deps.workflowRepo,
-            input.workflowIdOrName,
-            input.expectedName,
-          )
-          : await deps.lookupWorkflow(
-            deps.workflowRepo,
-            input.workflowIdOrName,
-          );
-        if (!workflow) {
-          // A file carrying the requested name/id may exist but fail
-          // schema parsing, making it invisible to the repository lookup.
-          // Surface the parse error instead of a misleading "not found".
-          const found = await findBrokenWorkflow(
-            workflowsDirFor(deps.repoDir),
-            input.workflowIdOrName,
-          );
-          const broken = input.byId &&
-              (found?.id !== input.workflowIdOrName ||
-                (input.expectedName !== undefined &&
-                  found?.name !== input.expectedName))
-            ? null
-            : found;
-          yield {
-            kind: "error",
-            error: broken
-              ? workflowLoadFailed(input.workflowIdOrName, broken)
-              : workflowNotFound(input.workflowIdOrName),
-          };
-          return;
-        }
-
-        // Coerce and validate inputs
-        if (workflow.inputs && !input.lastEvaluated) {
-          const coercedInputs = coerceInputTypes(
-            input.inputs ?? {},
-            workflow.inputs,
-          );
-          const validationService = new InputValidationService();
-          const inputsWithDefaults = validationService.applyDefaults(
-            coercedInputs,
-            workflow.inputs,
-          );
-          const result = validationService.validate(
-            inputsWithDefaults,
-            workflow.inputs,
-          );
-          if (!result.valid) {
+          // Look up workflow
+          const workflow = input.byId
+            ? await findWorkflowById(
+              deps.workflowRepo,
+              input.workflowIdOrName,
+              input.expectedName,
+            )
+            : await deps.lookupWorkflow(
+              deps.workflowRepo,
+              input.workflowIdOrName,
+            );
+          if (!workflow) {
+            // A file carrying the requested name/id may exist but fail
+            // schema parsing, making it invisible to the repository lookup.
+            // Surface the parse error instead of a misleading "not found".
+            const found = await findBrokenWorkflow(
+              workflowsDirFor(deps.repoDir),
+              input.workflowIdOrName,
+            );
+            const broken = input.byId &&
+                (found?.id !== input.workflowIdOrName ||
+                  (input.expectedName !== undefined &&
+                    found?.name !== input.expectedName))
+              ? null
+              : found;
             yield {
               kind: "error",
-              error: inputValidationFailed(result.errors),
+              error: broken
+                ? workflowLoadFailed(input.workflowIdOrName, broken)
+                : workflowNotFound(input.workflowIdOrName),
             };
             return;
           }
-          resolvedInput = { ...input, inputs: inputsWithDefaults };
-        } else if (workflow.inputs) {
-          // lastEvaluated: still coerce types but skip validation
-          resolvedInput = {
-            ...input,
-            inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
-          };
-        }
 
-        if (!resolvedInput.noSupersede && deps.supersede) {
-          const { cancelledRunIds, detachedNestedRuns } =
-            await supersedeSuspendedRuns(
-              workflow,
-              resolvedInput.inputs ?? {},
-              deps.supersede,
-              deps.runRepo,
+          // Coerce and validate inputs
+          if (workflow.inputs && !input.lastEvaluated) {
+            const coercedInputs = coerceInputTypes(
+              input.inputs ?? {},
+              workflow.inputs,
             );
-          if (cancelledRunIds.length > 0) {
-            yield {
-              kind: "superseded_runs",
-              cancelledRunIds,
-              ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+            const validationService = new InputValidationService();
+            const inputsWithDefaults = validationService.applyDefaults(
+              coercedInputs,
+              workflow.inputs,
+            );
+            const result = validationService.validate(
+              inputsWithDefaults,
+              workflow.inputs,
+            );
+            if (!result.valid) {
+              yield {
+                kind: "error",
+                error: inputValidationFailed(result.errors),
+              };
+              return;
+            }
+            resolvedInput = { ...input, inputs: inputsWithDefaults };
+          } else if (workflow.inputs) {
+            // lastEvaluated: still coerce types but skip validation
+            resolvedInput = {
+              ...input,
+              inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
             };
           }
-        }
 
-        yield { kind: "evaluating_workflow" };
-
-        // Created here — after the input-validation early returns above — so the
-        // scratch store is only allocated once the run will actually execute,
-        // and those early-return paths never leak it. Disposed in the finally
-        // below on every exit, including early consumer abandonment.
-        const ephemeral = createEphemeralStore(deps.dataRepo?.namespace);
-        const service = deps.createExecutionService(
-          deps.workflowRepo,
-          deps.runRepo,
-          deps.repoDir,
-          deps.catalogStore,
-          ephemeral.repo,
-          ephemeral.catalog,
-        );
-
-        // Gate service intentionally not wired here — approving/rejecting
-        // workflow gates from model code bypasses authorization. Use the
-        // CLI (swamp workflow approve/reject) or WebSocket API instead.
-
-        // Per-method-invocation telemetry bridge. Constructed once per
-        // stream consumption and finalized in the outer try/finally so
-        // any in-flight invocations on cancellation / throw are still
-        // recorded as error child entries.
-        const telemetryBridge = deps.telemetrySink
-          ? new WorkflowTelemetryBridge(deps.telemetrySink)
-          : undefined;
-
-        try {
-          // Aggregate report results from both method-scope (yielded during
-          // step execution) and workflow-scope (yielded by the execution
-          // service after run.complete()). All report_completed and
-          // report_failed events arrive before the completed event, so the
-          // accumulated list is attached to the run view at that point.
-          const reportResults: ReportResultView[] = [];
-
-          for await (
-            const event of service.run(resolvedInput.workflowIdOrName, {
-              byId: resolvedInput.byId,
-              expectedName: resolvedInput.expectedName,
-              lastEvaluated: resolvedInput.lastEvaluated,
-              inputs: resolvedInput.inputs,
-              runtimeTags: resolvedInput.runtimeTags,
-              signal: ctx.signal,
-              reportFilterOptions: {
-                skipAllReports: resolvedInput.skipAllReports,
-                skipReportNames: resolvedInput.skipReportNames,
-                skipReportLabels: resolvedInput.skipReportLabels,
-                reportNames: resolvedInput.reportNames,
-                reportLabels: resolvedInput.reportLabels,
-              },
-              swampSha: resolvedInput.swampSha,
-              skipCheckNames: resolvedInput.skipCheckNames,
-              skipCheckLabels: resolvedInput.skipCheckLabels,
-              skipAllChecks: resolvedInput.skipAllChecks,
-              assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
-              initiatedBy: resolvedInput.initiatedBy,
-              instanceId: resolvedInput.instanceId,
-              triggerSource: resolvedInput.triggerSource,
-            })
-          ) {
-            if (event.kind === "report_completed") {
-              reportResults.push({
-                name: event.reportName,
-                scope: event.scope,
-                success: true,
-                markdown: event.markdown,
-                json: event.json,
-              });
-            } else if (event.kind === "report_failed") {
-              reportResults.push({
-                name: event.reportName,
-                scope: event.scope,
-                success: false,
-                error: event.error,
-              });
-            }
-
-            let mapped = mapWorkflowExecutionEvent(
-              event,
-              deps.runRepo,
-              resolvedInput.verbose,
-            );
-
-            // Per-method telemetry observer — runs alongside existing
-            // event handling. Skipped when telemetry is disabled. It takes
-            // the domain event: pairing a step's events needs the owning
-            // run's id, which the mapped event deliberately omits.
-            if (telemetryBridge) {
-              await telemetryBridge.observe(event);
-            }
-
-            if (
-              (mapped.kind === "completed" || mapped.kind === "cancelled" ||
-                mapped.kind === "suspended") &&
-              reportResults.length > 0
-            ) {
-              mapped = {
-                ...mapped,
-                run: { ...mapped.run, reports: reportResults },
+          if (!resolvedInput.noSupersede && deps.supersede) {
+            const { cancelledRunIds, detachedNestedRuns } =
+              await supersedeSuspendedRuns(
+                workflow,
+                resolvedInput.inputs ?? {},
+                deps.supersede,
+                deps.runRepo,
+              );
+            if (cancelledRunIds.length > 0) {
+              yield {
+                kind: "superseded_runs",
+                cancelledRunIds,
+                ...(detachedNestedRuns.length > 0
+                  ? { detachedNestedRuns }
+                  : {}),
               };
             }
+          }
 
-            yield mapped;
+          yield { kind: "evaluating_workflow" };
+
+          // Created here — after the input-validation early returns above — so the
+          // scratch store is only allocated once the run will actually execute,
+          // and those early-return paths never leak it. Disposed in the finally
+          // below on every exit, including early consumer abandonment.
+          const ephemeral = createEphemeralStore(deps.dataRepo?.namespace);
+          const service = deps.createExecutionService(
+            deps.workflowRepo,
+            deps.runRepo,
+            deps.repoDir,
+            deps.catalogStore,
+            ephemeral.repo,
+            ephemeral.catalog,
+          );
+
+          // Gate service intentionally not wired here — approving/rejecting
+          // workflow gates from model code bypasses authorization. Use the
+          // CLI (swamp workflow approve/reject) or WebSocket API instead.
+
+          // Per-method-invocation telemetry bridge. Constructed once per
+          // stream consumption and finalized in the outer try/finally so
+          // any in-flight invocations on cancellation / throw are still
+          // recorded as error child entries.
+          const telemetryBridge = deps.telemetrySink
+            ? new WorkflowTelemetryBridge(deps.telemetrySink)
+            : undefined;
+
+          try {
+            // Aggregate report results from both method-scope (yielded during
+            // step execution) and workflow-scope (yielded by the execution
+            // service after run.complete()). All report_completed and
+            // report_failed events arrive before the completed event, so the
+            // accumulated list is attached to the run view at that point.
+            const reportResults: ReportResultView[] = [];
+
+            for await (
+              const event of service.run(resolvedInput.workflowIdOrName, {
+                byId: resolvedInput.byId,
+                expectedName: resolvedInput.expectedName,
+                lastEvaluated: resolvedInput.lastEvaluated,
+                inputs: resolvedInput.inputs,
+                runtimeTags: resolvedInput.runtimeTags,
+                signal: ctx.signal,
+                reportFilterOptions: {
+                  skipAllReports: resolvedInput.skipAllReports,
+                  skipReportNames: resolvedInput.skipReportNames,
+                  skipReportLabels: resolvedInput.skipReportLabels,
+                  reportNames: resolvedInput.reportNames,
+                  reportLabels: resolvedInput.reportLabels,
+                },
+                swampSha: resolvedInput.swampSha,
+                skipCheckNames: resolvedInput.skipCheckNames,
+                skipCheckLabels: resolvedInput.skipCheckLabels,
+                skipAllChecks: resolvedInput.skipAllChecks,
+                assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
+                initiatedBy: resolvedInput.initiatedBy,
+                instanceId: resolvedInput.instanceId,
+                triggerSource: resolvedInput.triggerSource,
+              })
+            ) {
+              if (event.kind === "report_completed") {
+                reportResults.push({
+                  name: event.reportName,
+                  scope: event.scope,
+                  success: true,
+                  markdown: event.markdown,
+                  json: event.json,
+                });
+              } else if (event.kind === "report_failed") {
+                reportResults.push({
+                  name: event.reportName,
+                  scope: event.scope,
+                  success: false,
+                  error: event.error,
+                });
+              }
+
+              let mapped = mapWorkflowExecutionEvent(
+                event,
+                deps.runRepo,
+                resolvedInput.verbose,
+              );
+
+              // Per-method telemetry observer — runs alongside existing
+              // event handling. Skipped when telemetry is disabled. It takes
+              // the domain event: pairing a step's events needs the owning
+              // run's id, which the mapped event deliberately omits.
+              if (telemetryBridge) {
+                await telemetryBridge.observe(event);
+              }
+
+              if (
+                (mapped.kind === "completed" || mapped.kind === "cancelled" ||
+                  mapped.kind === "suspended") &&
+                reportResults.length > 0
+              ) {
+                mapped = {
+                  ...mapped,
+                  run: { ...mapped.run, reports: reportResults },
+                };
+              }
+
+              yield mapped;
+            }
+          } catch (error) {
+            if (
+              error instanceof DOMException && error.name === "AbortError"
+            ) {
+              yield { kind: "error", error: cancelled(error) };
+              return;
+            }
+            yield {
+              kind: "error",
+              error: workflowExecutionFailed(error),
+            };
+          } finally {
+            // Drain any in-flight method invocations as error entries. Runs
+            // on every stream termination — normal completion, thrown
+            // errors, and AbortSignal cancellation — so methods that
+            // started but never received a terminal event don't disappear
+            // from telemetry.
+            if (telemetryBridge) {
+              await telemetryBridge.finalize();
+            }
+            ephemeral.dispose();
           }
-        } catch (error) {
-          if (
-            error instanceof DOMException && error.name === "AbortError"
-          ) {
-            yield { kind: "error", error: cancelled(error) };
-            return;
-          }
-          yield {
-            kind: "error",
-            error: workflowExecutionFailed(error),
-          };
-        } finally {
-          // Drain any in-flight method invocations as error entries. Runs
-          // on every stream termination — normal completion, thrown
-          // errors, and AbortSignal cancellation — so methods that
-          // started but never received a terminal event don't disappear
-          // from telemetry.
-          if (telemetryBridge) {
-            await telemetryBridge.finalize();
-          }
-          ephemeral.dispose();
-        }
-      })(),
-    ),
-  );
+        })(),
+      ),
+    ));
 }
 
 /**
