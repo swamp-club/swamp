@@ -81,6 +81,8 @@ export class StoreSink implements AuditSink {
   #unknownUnstored = false;
   // Puts that failed for some stores of a batch others stored.
   #retries: PendingPut[] = [];
+  // Keys of retried date objects no store has yet, with their sequences.
+  readonly #unheld = new Map<string, readonly number[] | null>();
   #retryBytes = 0;
   readonly #maxRetryBytes: number;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -154,13 +156,24 @@ export class StoreSink implements AuditSink {
     }
     await Promise.all([...this.#writing]);
     await this.#retryFailedPuts();
-    if (this.#unstored.size > 0 || this.#unknownUnstored) {
+    let pending: Set<number> | null = new Set();
+    for (const sequences of this.#unheld.values()) {
+      if (sequences === null) pending = null;
+      else if (pending !== null) {
+        for (const seq of sequences) pending.add(seq);
+      }
+    }
+    if (
+      this.#unstored.size > 0 || this.#unknownUnstored ||
+      pending === null || pending.size > 0
+    ) {
       const sequences = this.#unknownUnstored ? null : this.#unstored;
       this.#unstored = new Set();
       this.#unknownUnstored = false;
       throw new UnconfirmedEventsError(
-        "An audit batch reached no store since the last flush",
+        "Audit events are not yet in any store",
         sequences,
+        pending,
       );
     }
   }
@@ -251,16 +264,19 @@ export class StoreSink implements AuditSink {
     // Only a batch no part of which reached any store is reported.
     let anyStored = false;
     const missed: PendingPut[] = [];
+    const unheld = new Map<string, number[] | null>();
     for (const [dateKey, partitionEvents] of partitions) {
       const jsonl = partitionEvents.map((e) => JSON.stringify(e)).join("\n") +
         "\n";
       const data = this.#encoder.encode(jsonl);
       const key = `events/${dateKey}/${crypto.randomUUID()}.jsonl`;
 
+      let partitionStored = false;
       for (const { store } of this.#stores) {
         try {
           await store.put(key, data);
           anyStored = true;
+          partitionStored = true;
         } catch (error: unknown) {
           missed.push({ store, key, data });
           logger.warn(
@@ -272,8 +288,12 @@ export class StoreSink implements AuditSink {
           );
         }
       }
+      if (!partitionStored) unheld.set(key, sequencesOf(partitionEvents));
     }
     if (anyStored) {
+      // A date object no store took is retried here; until it lands, flush
+      // reports its events as pending so the caller keeps them.
+      for (const [key, sequences] of unheld) this.#unheld.set(key, sequences);
       for (const retry of missed) this.#queueRetry(retry);
       return;
     }
@@ -295,8 +315,24 @@ export class StoreSink implements AuditSink {
     while (this.#retryBytes > this.#maxRetryBytes && this.#retries.length > 1) {
       const dropped = this.#retries.shift()!;
       this.#retryBytes -= dropped.data.byteLength;
+      const unheld = this.#unheld.get(dropped.key);
+      if (
+        unheld === undefined ||
+        this.#retries.some((retry) => retry.key === dropped.key)
+      ) {
+        logger.warn(
+          "Audit store retry queue is full; batch {key} is dropped for one store, the others have it",
+          { key: dropped.key },
+        );
+        continue;
+      }
+      // No store has it and it is no longer retried: report it as lost, so
+      // the caller sends it again.
+      this.#unheld.delete(dropped.key);
+      if (unheld === null) this.#unknownUnstored = true;
+      else for (const sequence of unheld) this.#unstored.add(sequence);
       logger.warn(
-        "Audit store retry queue is full; batch {key} is dropped for one store, the others have it",
+        "Audit store retry queue is full; batch {key}, which no store has, is handed back to be sent again",
         { key: dropped.key },
       );
     }
@@ -309,6 +345,7 @@ export class StoreSink implements AuditSink {
     for (const retry of retries) {
       try {
         await retry.store.put(retry.key, retry.data);
+        this.#unheld.delete(retry.key);
       } catch {
         stillFailing++;
         this.#queueRetry(retry);
@@ -316,9 +353,20 @@ export class StoreSink implements AuditSink {
     }
     if (stillFailing > 0) {
       logger.warn(
-        "{count} audit batch(es) are still waiting to reach a store that failed; the other stores have them",
+        "{count} audit batch put(s) are still waiting to reach a store that failed",
         { count: stillFailing },
       );
     }
   }
+}
+
+/** The chain sequences of some events, or null when any event lacks one. */
+function sequencesOf(events: readonly AuditEvent[]): number[] | null {
+  const sequences: number[] = [];
+  for (const event of events) {
+    const sequence = (event as { sequence?: unknown }).sequence;
+    if (typeof sequence !== "number") return null;
+    sequences.push(sequence);
+  }
+  return sequences;
 }

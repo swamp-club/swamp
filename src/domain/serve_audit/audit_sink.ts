@@ -28,16 +28,23 @@ export interface AuditSink {
 }
 
 /**
- * Thrown by a sink's flush when events it was given did not reach any store.
- * `sequences` names them by chain sequence, or is null when the sink cannot
- * tell which; a caller holding the events elsewhere keeps those.
+ * Thrown by a sink's flush when events it was given are not yet in any store.
+ * `sequences` are lost to the sink and must be sent again; `pending` are
+ * still being retried by the sink and must be kept but not sent again. Either
+ * is null when the sink cannot tell which events it covers, meaning all.
  */
 export class UnconfirmedEventsError extends Error {
   readonly sequences: ReadonlySet<number> | null;
+  readonly pending: ReadonlySet<number> | null;
 
-  constructor(message: string, sequences: ReadonlySet<number> | null) {
+  constructor(
+    message: string,
+    sequences: ReadonlySet<number> | null,
+    pending: ReadonlySet<number> | null = new Set(),
+  ) {
     super(message);
     this.name = "UnconfirmedEventsError";
     this.sequences = sequences;
+    this.pending = pending;
   }
 }

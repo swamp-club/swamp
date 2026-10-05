@@ -625,3 +625,59 @@ Deno.test(
     assertEquals(wal.segmentCount, 2);
   }),
 );
+
+Deno.test(
+  "WalSink with a StoreSink: a segment whose second date no store took is kept, not resent, until the retry lands",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    let failDate: string | null = "2026-10-07";
+    const stored: number[] = [];
+    const store: AuditStore = {
+      put(key: string, data: Uint8Array): Promise<void> {
+        if (failDate !== null && key.includes(failDate)) {
+          return Promise.reject(new Error("store down"));
+        }
+        for (const line of new TextDecoder().decode(data).split("\n")) {
+          if (line.trim()) {
+            stored.push((JSON.parse(line) as { sequence: number }).sequence);
+          }
+        }
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    };
+    const storeSink = new StoreSink({
+      stores: [store],
+      batchSize: 100,
+      flushIntervalMs: 60_000,
+    });
+    const sink = new WalSink({
+      wal,
+      downstream: storeSink,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([
+      {
+        ...chained("before-midnight", 1),
+        timestamp: "2026-10-06T23:59:59.000Z",
+      },
+      {
+        ...chained("after-midnight", 2),
+        timestamp: "2026-10-07T00:00:01.000Z",
+      },
+    ]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    assertEquals(stored, [1]);
+
+    failDate = null;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(stored, [1, 2]);
+    await sink.close();
+  }),
+);

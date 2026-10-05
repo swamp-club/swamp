@@ -197,8 +197,7 @@ export class WalSink implements AuditSink {
         logger.warn(
           "Downstream sink still has {count} WAL segment(s) to deliver after {seconds}s; they stay in the WAL and are replayed on the next start",
           {
-            count: this.#queue.filter((entry) => entry !== CHECKPOINT).length +
-              1,
+            count: this.#queue.filter((entry) => entry !== CHECKPOINT).length,
             seconds: Math.round(this.#deliveryWaitMs / 1000),
           },
         );
@@ -237,18 +236,25 @@ export class WalSink implements AuditSink {
     if (delivered.length === 0) return;
     for (const [segmentName] of delivered) this.#delivered.delete(segmentName);
 
-    let unconfirmed: (segmentSequences: readonly number[] | null) => boolean =
-      () => false;
+    type Check = (segmentSequences: readonly number[] | null) => boolean;
+    let unconfirmed: Check = () => false;
+    let stillPending: Check = () => false;
     try {
       await this.#downstream.flush();
     } catch (error: unknown) {
       const sequences = error instanceof UnconfirmedEventsError
         ? error.sequences
         : null;
+      const pending = error instanceof UnconfirmedEventsError
+        ? error.pending
+        : new Set<number>();
       // Without the sequences, every segment is treated as unconfirmed.
       unconfirmed = (segmentSequences) =>
         sequences === null || segmentSequences === null ||
         segmentSequences.some((seq) => sequences.has(seq));
+      stillPending = (segmentSequences) =>
+        pending === null || segmentSequences === null ||
+        segmentSequences.some((seq) => pending.has(seq));
       logger.warn(
         "Downstream flush failed; WAL segments it did not confirm will be delivered again at the next checkpoint: {error}",
         { error: error instanceof Error ? error.message : String(error) },
@@ -259,6 +265,12 @@ export class WalSink implements AuditSink {
       if (this.#closed) return;
       if (unconfirmed(segmentSequences)) {
         this.#redeliver.push(segmentName);
+        continue;
+      }
+      if (stillPending(segmentSequences)) {
+        // The downstream sink is still retrying these: keep the segment,
+        // without sending it again, and check it at the next checkpoint.
+        this.#delivered.set(segmentName, segmentSequences);
         continue;
       }
       try {

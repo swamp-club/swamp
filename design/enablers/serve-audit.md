@@ -46,9 +46,13 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    others is retried on each flush for the stores that missed it, under the
    same key so a landed retry never stores it twice; up to 32MB of these are
    held, the oldest dropped for that one store past that. A batch is written
-   as one object per date, and counts as stored once any of them reached a
-   store; its other objects are retried the same way. A batch none of which
-   reached any store makes the flush reject with the sequences it held
+   as one object per date. A date object that no store took, in a batch
+   another date of which landed, is retried the same way, and until it lands
+   the flush rejects with its sequences as `pending`: the caller keeps those
+   segments without sending them again, so the landed date is not stored
+   twice and the missed one is not lost. If the retry queue evicts such an
+   object, its sequences move to the lost set. A batch none of which reached
+   any store makes the flush reject with its sequences as lost
    (`UnconfirmedEventsError`). Each WAL segment goes into exactly one
    StoreSink batch, so the checkpoint deletes the segments whose sequences
    were confirmed and delivers only the others again at the next checkpoint,

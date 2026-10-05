@@ -32,6 +32,7 @@ import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import { withCapturedSpans } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { StoreSink } from "./store_sink.ts";
+import { UnconfirmedEventsError } from "../../domain/serve_audit/audit_sink.ts";
 
 await initializeLogging({});
 
@@ -239,7 +240,7 @@ Deno.test("StoreSink: flush rejects when a batch reached no store", async () => 
   });
 
   await sink.write([makeEvent("test")]);
-  await assertRejects(() => sink.flush(), Error, "reached no store");
+  await assertRejects(() => sink.flush(), Error, "not yet in any store");
   // Reported once; the WAL holds the batch, so it is not retried here.
   await sink.flush();
   await sink.close();
@@ -264,7 +265,7 @@ Deno.test("StoreSink: flush reports a batch the interval timer failed to store",
 
   await sink.write([makeEvent("test")]);
   await waitFor(() => puts === 1, "timer flush");
-  await assertRejects(() => sink.flush(), Error, "reached no store");
+  await assertRejects(() => sink.flush(), Error, "not yet in any store");
   await sink.close();
 });
 
@@ -476,7 +477,7 @@ Deno.test("StoreSink: a tick runs with no active span when started under one", a
   });
 });
 
-Deno.test("StoreSink: a batch spanning two dates counts as stored once one date lands, and the other is retried under its key", async () => {
+Deno.test("StoreSink: a date object no store took is retried under its key and reported pending until it lands", async () => {
   let failDate: string | null = "2026-10-07";
   const keys: string[] = [];
   const store = createMockStore();
@@ -495,10 +496,25 @@ Deno.test("StoreSink: a batch spanning two dates counts as stored once one date 
   });
 
   await sink.write([
-    { ...makeEvent("before"), timestamp: "2026-10-06T23:59:59.000Z" },
-    { ...makeEvent("after"), timestamp: "2026-10-07T00:00:01.000Z" },
+    {
+      ...makeEvent("before"),
+      timestamp: "2026-10-06T23:59:59.000Z",
+      sequence: 1,
+    } as AuditEvent,
+    {
+      ...makeEvent("after"),
+      timestamp: "2026-10-07T00:00:01.000Z",
+      sequence: 2,
+    } as AuditEvent,
   ]);
-  await sink.flush();
+  // The landed date is not sent again; the missed one is reported pending,
+  // so the caller keeps it until the retry lands.
+  const error = await assertRejects(
+    () => sink.flush(),
+    UnconfirmedEventsError,
+  );
+  assertEquals([...error.sequences ?? []], []);
+  assertEquals([...error.pending ?? []], [2]);
   failDate = null;
   await sink.flush();
 
@@ -508,4 +524,40 @@ Deno.test("StoreSink: a batch spanning two dates counts as stored once one date 
   assertEquals(new Set(lateKeys).size, 1);
   assertEquals(store.written.size, 2);
   await sink.close();
+});
+
+Deno.test("StoreSink: a retried date object no store has is handed back when the retry queue evicts it", async () => {
+  const store = createMockStore();
+  const put = store.put.bind(store);
+  store.put = (key: string, data: Uint8Array) =>
+    key.includes("2026-10-07")
+      ? Promise.reject(new Error("store down"))
+      : put(key, data);
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+    maxRetryBytes: 1,
+  });
+  const event = (sequence: number, timestamp: string) =>
+    ({ ...makeEvent(`e${sequence}`), timestamp, sequence }) as AuditEvent;
+
+  await sink.write([
+    event(1, "2026-10-06T23:59:58.000Z"),
+    event(2, "2026-10-07T00:00:01.000Z"),
+  ]);
+  await assertRejects(() => sink.flush(), UnconfirmedEventsError);
+  await sink.write([
+    event(3, "2026-10-06T23:59:59.000Z"),
+    event(4, "2026-10-07T00:00:02.000Z"),
+  ]);
+  const error = await assertRejects(
+    () => sink.flush(),
+    UnconfirmedEventsError,
+  );
+  // Event 2's object was evicted to make room and is now to be sent again;
+  // event 4's is still being retried.
+  assertEquals([...error.sequences ?? []], [2]);
+  assertEquals([...error.pending ?? []], [4]);
+  await sink.close().catch(() => {});
 });
