@@ -1446,6 +1446,43 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Finding the run.** A local cancel looks the run up in the run store, not
+through the workflow's definition (`resolveLocalCancelTarget`,
+`src/cli/commands/workflow_cancel.ts`), so a run outlives its workflow file: a
+run whose definition was deleted is still cancelled, and settled as described
+below.
+
+- `--run <id>` finds the run by its id alone, and needs no workflow argument.
+  A workflow given with it must be the run's own: its workflow id, the name the
+  run recorded, or its definition's current name. Otherwise the run is not
+  found.
+- A workflow alone picks its latest active run. A name or id that resolves no
+  definition falls back to the active runs of deleted workflows that carry it,
+  matched on the workflow id or the name the run recorded. A name a newer
+  workflow reuses therefore means the newer one; the deleted workflow's runs
+  stay reachable by run id.
+- `--all` cancels the active runs of every workflow, then those of deleted
+  workflows, reported under the name they recorded and listed last. An
+  unreadable run file fails `--all` with its read error before anything is
+  cancelled.
+
+The runs of deleted workflows are found without reading the rest of the run
+store. Only run directories that no loaded definition owns are looked at, each
+through its run index, and a run is loaded only when the index says it is
+active and, for a lookup by name, that it carries that name or id. So a
+mistyped name costs a listing of the run directories, not a parse of every
+run. On a lookup by name, a run directory that cannot be read is skipped with a
+warning, so a damaged record elsewhere does not turn `Workflow not found` into
+a read error.
+
+A workflow whose file exists but fails to load is not a deleted workflow. The
+repository skips such a file, so its runs look like a deleted workflow's;
+`listBrokenWorkflows` tells them apart, by the file's id or name or, for a file
+too broken to give either, by its file name. `--all` leaves those runs as they
+are and lists them under `notCancelled` with the file and its error; a cancel
+by the workflow's name is refused the same way. `--run <id>` still cancels the
+run, since it names it.
+
 **Run claims.** Approve, reject, cancel, supersede and the start of a resume
 each load a run's record, change it and save the whole record back. Two of them
 on one run at once would save over each other, and the first to save would have

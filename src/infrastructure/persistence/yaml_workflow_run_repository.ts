@@ -864,6 +864,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
+   * Returns the IDs of the workflows that have a runs directory, whether or
+   * not a workflow definition still exists for them. No run file is read.
+   */
+  async listWorkflowIds(): Promise<WorkflowId[]> {
+    const ids: WorkflowId[] = [];
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (entry.isDirectory) ids.push(entry.name as WorkflowId);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return ids;
+  }
+
+  /**
    * Returns the IDs of a workflow's stored runs, read from the
    * `workflow-run-{runId}.yaml` filenames without parsing any YAML. Empty or
    * unparseable run files are included; a record body's `id` is never used.

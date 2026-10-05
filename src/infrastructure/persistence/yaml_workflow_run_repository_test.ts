@@ -1556,6 +1556,36 @@ Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: lists one workflow's
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.listWorkflowIds: lists every runs directory without reading a run file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    assertEquals(await repo.listWorkflowIds(), []);
+
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    // A directory no definition owns, holding a file that is not a run.
+    const otherId = crypto.randomUUID();
+    const otherDir = join(dir, ".swamp", "workflow-runs", otherId);
+    await ensureDir(otherDir);
+    await Deno.writeTextFile(
+      join(otherDir, `workflow-run-${crypto.randomUUID()}.yaml`),
+      "id: x\njobs: [\n",
+    );
+    // A stray file beside the directories is not a workflow.
+    await Deno.writeTextFile(
+      join(dir, ".swamp", "workflow-runs", "notes.txt"),
+      "",
+    );
+
+    assertEquals(
+      (await repo.listWorkflowIds()).map(String).sort(),
+      [workflow.id as string, otherId].sort(),
+    );
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.save: stages a write of the run file", async () => {
   await withTempDir(async (dir) => {
     const { markDirty, marks, uow } = recordingUnitOfWork();

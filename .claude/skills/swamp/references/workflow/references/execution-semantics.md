@@ -162,7 +162,16 @@ run has not completed when the timeout expires, it is cancelled. The `--timeout`
 applies to the total wall-clock time of the run, not individual steps.
 
 `swamp workflow cancel <workflow>` cancels an in-flight run from another
-terminal or via `--server`.
+terminal or via `--server`. `swamp workflow cancel --run <id>` cancels a run by
+its id alone.
+
+A run whose workflow file was deleted is still cancellable: by `--run <id>`, by
+the deleted workflow's name or id, or by `--all`. If a newer workflow reuses the
+name, the name means the newer one, so use `--run <id>`.
+
+A workflow file that fails to load is not a deleted workflow: `--all` leaves its
+runs alone and lists them under `notCancelled`, and a cancel by name is refused.
+Fix the file, or cancel the run with `--run <id>`.
 
 A cancelled run's record holds no job `running` and no step `running` or
 `waiting_approval`. Cancel and supersede settle unfinished work as an abort
