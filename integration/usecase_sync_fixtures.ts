@@ -476,6 +476,35 @@ export async function runCli(invocation: CliInvocation): Promise<string[]> {
   return stdout;
 }
 
+/**
+ * Parses the real command in-process and returns the error it threw, then
+ * flushes registered syncs best-effort, as `src/cli/mod.ts` does when a
+ * command fails. Fails when the command resolved.
+ */
+export async function runCliRejecting(
+  invocation: CliInvocation,
+): Promise<unknown> {
+  const originalLog = console.log;
+  const previousExitCode = Deno.exitCode;
+  console.log = () => {};
+  try {
+    try {
+      await root().parse(invocation.args);
+    } catch (error) {
+      try {
+        await flushDatastoreSync();
+      } catch {
+        // Best effort, as mod.ts: the command's error takes precedence.
+      }
+      return error;
+    }
+    throw new Error(`swamp ${invocation.args.join(" ")} did not fail`);
+  } finally {
+    console.log = originalLog;
+    Deno.exitCode = previousExitCode;
+  }
+}
+
 /** A serve request type and payload. */
 export interface ServeInvocation {
   type: string;
