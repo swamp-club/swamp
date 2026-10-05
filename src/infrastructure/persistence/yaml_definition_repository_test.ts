@@ -2285,3 +2285,429 @@ Deno.test("YamlDefinitionRepository.delete: stages a write when the file holds a
     assertEquals(await pathExists(path), true);
   });
 });
+
+// --- Comment preservation when the definition file moves (swamp-club#3012) ---
+//
+// A definition's file moves when a legacy uuid-named file migrates to its
+// name-based path, and when the definition is renamed. Both used to rewrite
+// the file from scratch, dropping every comment and re-wrapping long scalars.
+
+const LONG_EXPRESSION =
+  '${{ data.latest("some-other-model-with-a-long-name", "some-resource-name").attributes.someField }}';
+
+/** A hand-written definition file: comments, and one line past 80 columns. */
+function commentedDefinitionYaml(
+  id: string,
+  name: string,
+  type: ModelType = testType,
+): string {
+  return [
+    "# Design note: this definition derives its host from live data.",
+    `type: ${type.normalized}`,
+    "typeVersion: 2026.01.01.1",
+    `id: ${id}`,
+    `name: ${name}`,
+    "version: 1",
+    "tags: {}",
+    "globalArguments:",
+    "  # the filter exists because of overlapping CIDRs",
+    "  key: value",
+    `  expr: ${LONG_EXPRESSION}`,
+    "methods: {}",
+    "",
+  ].join("\n");
+}
+
+/** The definition `yaml` declares, with `overrides` applied. */
+function definitionFromYaml(
+  yaml: string,
+  overrides: Record<string, unknown> = {},
+): Definition {
+  return Definition.fromData(
+    {
+      ...(parseYaml(yaml) as Record<string, unknown>),
+      ...overrides,
+    } as Parameters<typeof Definition.fromData>[0],
+  );
+}
+
+Deno.test("YamlDefinitionRepository.save: a uuid-named file keeps its comments and layout when it migrates with a change", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const original = commentedDefinitionYaml(id, "moved-changed");
+    await Deno.writeTextFile(uuidPath, original);
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.10.05.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(join(typeDir, "moved-changed.yaml")),
+      original.replace(
+        "typeVersion: 2026.01.01.1",
+        "typeVersion: 2026.10.05.1",
+      ),
+    );
+    assertEquals(await fileExists(uuidPath), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a uuid-named file migrates byte-identically when nothing changed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const original = commentedDefinitionYaml(id, "moved-unchanged");
+    await Deno.writeTextFile(uuidPath, original);
+
+    await repo.save(testType, definitionFromYaml(original));
+
+    assertEquals(
+      await Deno.readTextFile(join(typeDir, "moved-unchanged.yaml")),
+      original,
+    );
+    assertEquals(await fileExists(uuidPath), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: renaming a definition keeps its comments and removes the old file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const oldPath = join(typeDir, "old-name.yaml");
+    const original = commentedDefinitionYaml(id, "old-name");
+    await Deno.writeTextFile(oldPath, original);
+
+    const loaded = await repo.findByName(testType, "old-name");
+    await repo.save(
+      testType,
+      Definition.fromData({ ...loaded!.toData(), name: "new-name" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(join(typeDir, "new-name.yaml")),
+      original.replace("name: old-name", "name: new-name"),
+    );
+    assertEquals(await fileExists(oldPath), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a stale cached path holding another definition is neither merged from nor removed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("hinted");
+    await repo.save(testType, definition);
+
+    // Another definition takes over the file behind the repository's back.
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const hintedPath = join(typeDir, "hinted.yaml");
+    const other = commentedDefinitionYaml(crypto.randomUUID(), "hinted");
+    await Deno.writeTextFile(hintedPath, other);
+
+    await repo.save(
+      testType,
+      Definition.fromData({ ...definition.toData(), name: "hinted-renamed" }),
+    );
+
+    assertEquals(await Deno.readTextFile(hintedPath), other);
+    const saved = await Deno.readTextFile(
+      join(typeDir, "hinted-renamed.yaml"),
+    );
+    assertEquals(saved.includes("#"), false);
+    assertEquals(
+      (parseYaml(saved) as Record<string, unknown>).id,
+      definition.id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a uuid-named file holding another definition is not removed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = createTestDefinition("has-a-namesake");
+
+    // A different definition that is *named* with this definition's id lives
+    // at the same path a legacy file for it would.
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${definition.id}.yaml`);
+    const other = commentedDefinitionYaml(crypto.randomUUID(), definition.id);
+    await Deno.writeTextFile(uuidPath, other);
+
+    await repo.save(testType, definition);
+
+    assertEquals(await Deno.readTextFile(uuidPath), other);
+    const saved = await Deno.readTextFile(
+      join(typeDir, "has-a-namesake.yaml"),
+    );
+    assertEquals(saved.includes("#"), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a long single-line expression is not re-wrapped when another key changes", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const filePath = join(typeDir, "long-line.yaml");
+    const original = commentedDefinitionYaml(id, "long-line");
+    await Deno.writeTextFile(filePath, original);
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.10.05.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(filePath),
+      original.replace(
+        "typeVersion: 2026.01.01.1",
+        "typeVersion: 2026.10.05.1",
+      ),
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a file folded at 80 columns stays folded, even under a long comment", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "folded",
+      globalArguments: { expr: LONG_EXPRESSION },
+    });
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "folded.yaml");
+    const written = await Deno.readTextFile(filePath);
+    const folded = written.match(/ {2}expr: >-\n(?: {4}.*\n)+/)?.[0];
+    assertEquals(
+      folded?.trimEnd().split("\n").length,
+      3,
+      "a fresh write folds the expression across lines",
+    );
+    const longComment = `# ${"why this exists ".repeat(8)}\n`;
+    await Deno.writeTextFile(filePath, longComment + written);
+
+    definition.setTag("env", "prod");
+    await repo.save(testType, definition);
+
+    const saved = await Deno.readTextFile(filePath);
+    assertStringIncludes(saved, longComment);
+    assertStringIncludes(saved, folded!);
+    assertStringIncludes(saved, "env: prod");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a file swamp folded stays folded beside a token too long to fold", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // A fresh write folds what it can, and a URL with nowhere to break still
+    // runs past 80 columns inside its block scalar. So does a long line of a
+    // multi-line string, which is written as a literal block.
+    const definition = Definition.create({
+      name: "folded-with-url",
+      globalArguments: {
+        expr: LONG_EXPRESSION,
+        url: `https://example.com/${"a-long-path-segment/".repeat(5)}`,
+        script: `first line\n${"a long second line ".repeat(6)}\n`,
+      },
+    });
+    await repo.save(testType, definition);
+
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    const filePath = join(typeDir, "folded-with-url.yaml");
+    const written = await Deno.readTextFile(filePath);
+    assertEquals(
+      written.split("\n").some((line) => line.length > 80),
+      true,
+      "the fresh write has a line past 80 columns",
+    );
+
+    definition.setTag("env", "prod");
+    await repo.save(testType, definition);
+
+    const withoutTags = (yaml: string) =>
+      yaml.replace(/^tags:.*\n(?: {2}.*\n)*/m, "");
+    assertEquals(
+      withoutTags(await Deno.readTextFile(filePath)),
+      withoutTags(written),
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a quoted timestamp string keeps its quotes when the file migrates", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const original = [
+      "# keep me",
+      `type: ${testType.normalized}`,
+      `id: ${id}`,
+      "name: dated",
+      "version: 1",
+      "tags: {}",
+      "globalArguments:",
+      '  rolloutDate: "2026-09-03"',
+      "  dates:",
+      '    - "2026-09-03T01:02:03Z"',
+      "methods: {}",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(join(typeDir, `${id}.yaml`), original);
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { tags: { env: "prod" } }),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "dated.yaml"));
+    assertStringIncludes(saved, "# keep me");
+    const globalArgs = (parseYaml(saved) as Record<string, unknown>)
+      .globalArguments as Record<string, unknown>;
+    assertEquals(globalArgs.rolloutDate, "2026-09-03");
+    assertEquals(globalArgs.dates, ["2026-09-03T01:02:03Z"]);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a uuid-named file with a literal sensitive global arg is refused and left in place", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(
+      dir,
+      "models",
+      SENSITIVE_SAVE_TYPE.toDirectoryPath(),
+    );
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const original = [
+      "# hand-written, and leaking",
+      `type: ${SENSITIVE_SAVE_TYPE.normalized}`,
+      `id: ${id}`,
+      "name: leaky-legacy",
+      "version: 1",
+      "tags: {}",
+      "globalArguments:",
+      "  apiKey: SUPERSECRET123",
+      "  region: us-east-1",
+      "methods: {}",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(uuidPath, original);
+
+    await assertRejects(
+      () => repo.save(SENSITIVE_SAVE_TYPE, definitionFromYaml(original)),
+      UserError,
+    );
+
+    assertEquals(await Deno.readTextFile(uuidPath), original);
+    assertEquals(
+      await fileExists(join(typeDir, "leaky-legacy.yaml")),
+      false,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a uuid-named auto-definition keeps its comments and stays an auto-definition", async () => {
+  await withTempDir(async (dir) => {
+    const fx = autoDefinitionFixture(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(fx.secondaryDir, testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const original = commentedDefinitionYaml(id, "auto-commented");
+    await Deno.writeTextFile(join(typeDir, `${id}.yaml`), original);
+
+    const repo = fx.sharedRepo();
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.10.05.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(join(typeDir, "auto-commented.yaml")),
+      original.replace(
+        "typeVersion: 2026.01.01.1",
+        "typeVersion: 2026.10.05.1",
+      ),
+    );
+    assertEquals(await listYamlFiles(fx.secondaryDir), [
+      join(typeDir, "auto-commented.yaml"),
+    ]);
+    assertEquals(await listYamlFiles(fx.primaryDir), []);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: an empty file at the target path does not stop the merge from the uuid-named file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const namePath = join(typeDir, "beside-empty.yaml");
+    const original = commentedDefinitionYaml(id, "beside-empty");
+    await Deno.writeTextFile(uuidPath, original);
+    await Deno.writeTextFile(namePath, "");
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.10.05.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(namePath),
+      original.replace(
+        "typeVersion: 2026.01.01.1",
+        "typeVersion: 2026.10.05.1",
+      ),
+    );
+    assertEquals(await fileExists(uuidPath), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: an unreadable uuid-named file fails the save instead of being replaced", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const original = commentedDefinitionYaml(id, "unreadable");
+    await Deno.writeTextFile(uuidPath, original);
+    const definition = definitionFromYaml(original, {
+      typeVersion: "2026.10.05.1",
+    });
+
+    const originalReadTextFile = Deno.readTextFile;
+    Deno.readTextFile = (path, options) => {
+      if (String(path) === uuidPath) {
+        throw Object.assign(new Error("Permission denied (os error 13)"), {
+          code: "EACCES",
+        });
+      }
+      return originalReadTextFile(path, options);
+    };
+    try {
+      const error = await assertRejects(() => repo.save(testType, definition));
+      assertStringIncludes(String(error), "Permission denied");
+    } finally {
+      Deno.readTextFile = originalReadTextFile;
+    }
+
+    assertEquals(await Deno.readTextFile(uuidPath), original);
+    assertEquals(await fileExists(join(typeDir, "unreadable.yaml")), false);
+  });
+});
