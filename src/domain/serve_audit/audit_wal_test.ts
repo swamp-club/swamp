@@ -285,3 +285,29 @@ Deno.test(
     assertEquals(wal.totalBytes < bytesAfterFirst * 2, true);
   }),
 );
+
+Deno.test(
+  "AuditWal: saveChainState replaces chain-state.json by rename, never writing into it",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.saveChainState({ sequence: 1, previousDigest: "d1" });
+    const path = join(dir, "chain-state.json");
+    const before = await Deno.stat(path);
+
+    await wal.saveChainState({ sequence: 2, previousDigest: "d2" });
+
+    // A new file took its place, so a crash mid-write leaves the old one.
+    const after = await Deno.stat(path);
+    assertEquals(after.ino === before.ino, false);
+    assertEquals(await wal.loadChainState(), {
+      sequence: 2,
+      previousDigest: "d2",
+    });
+    const leftovers = [];
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.name.endsWith(".tmp")) leftovers.push(entry.name);
+    }
+    assertEquals(leftovers, []);
+  }),
+);

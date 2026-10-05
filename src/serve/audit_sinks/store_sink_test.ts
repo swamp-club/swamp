@@ -577,3 +577,62 @@ Deno.test("StoreSink: close reports unconfirmed events instead of rejecting", as
   await sink.write([makeEvent("unstored")]);
   await sink.close();
 });
+
+Deno.test("StoreSink: evicting one store's retry does not report an object lost while another store's retry of it is in flight", async () => {
+  let lateKey: string | null = null;
+  let lateAttempts = 0;
+  let landLate: () => void = () => {};
+  const storeA: AuditStore = {
+    put: (key: string) =>
+      key.includes("2026-10-07")
+        ? Promise.reject(new Error("A down"))
+        : Promise.resolve(),
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const storeB: AuditStore = {
+    put(key: string): Promise<void> {
+      if (!key.includes("2026-10-07")) return Promise.resolve();
+      lateKey ??= key;
+      if (key !== lateKey) return Promise.resolve();
+      lateAttempts++;
+      if (lateAttempts === 1) return Promise.reject(new Error("B down"));
+      return new Promise((resolve) => {
+        landLate = resolve;
+      });
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const event = (sequence: number, timestamp: string) =>
+    ({ ...makeEvent(`e${sequence}`), timestamp, sequence }) as AuditEvent;
+  // Room for two one-event objects: both stores' retries of event 2 fit,
+  // and a later two-event object evicts the older of them.
+  const oneEvent = new TextEncoder().encode(
+    JSON.stringify(event(2, "2026-10-07T00:00:01.000Z")) + "\n",
+  ).byteLength;
+  const sink = new StoreSink({
+    stores: [storeA, storeB],
+    batchSize: 2,
+    flushIntervalMs: 60_000,
+    maxRetryBytes: 2 * oneEvent,
+  });
+
+  // Neither store takes event 2's object; the other date lands.
+  await sink.write([
+    event(1, "2026-10-06T23:59:58.000Z"),
+    event(2, "2026-10-07T00:00:01.000Z"),
+  ]);
+  const flushing = sink.flush();
+  await waitFor(() => lateAttempts === 2, "store B's retry in flight");
+  // A new batch queues a retry, which evicts store A's retry of event 2.
+  await sink.write([
+    event(3, "2026-10-07T00:00:02.000Z"),
+    event(4, "2026-10-07T00:00:03.000Z"),
+  ]);
+  landLate();
+  await flushing;
+  await sink.close();
+});

@@ -735,3 +735,33 @@ Deno.test(
     await sink.close();
   }),
 );
+
+Deno.test(
+  "WalSink: an unexpected flush error does not resend a segment the store said it is still retrying",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    const flushes: (() => Promise<void>)[] = [
+      () =>
+        Promise.reject(
+          new UnconfirmedEventsError("pending", new Set(), new Set([1])),
+        ),
+      () => Promise.reject(new TypeError("store client blew up")),
+      () => Promise.resolve(),
+    ];
+    downstream.flush = () => flushes.shift()!();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([chained("retried-by-store", 1)]);
+    await sink.flush();
+    await sink.flush();
+    assertEquals(downstream.written.length, 1);
+    assertEquals(wal.segmentCount, 1);
+
+    await sink.flush();
+    assertEquals(downstream.written.length, 1);
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
+  }),
+);

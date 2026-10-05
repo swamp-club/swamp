@@ -61,7 +61,9 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    as it does for a segment whose delivery failed; nothing is stored twice
    and nothing waits for a restart. Before deleting confirmed segments a
    checkpoint records the highest confirmed chain position in
-   `chain-state.json` (never moving it backwards), because startup recovers
+   `chain-state.json` (never moving it backwards, and by writing a temporary
+   file and renaming it, so a crash never leaves it half written), because
+   startup recovers
    the chain position from the segments on disk or that file; without it a
    crash would restart the chain from an older sequence. The delivery queue holds segment names
    only, and names the WAL size limit has evicted are pruned from it. `flush` waits up to 30s for

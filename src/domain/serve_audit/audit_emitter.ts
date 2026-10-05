@@ -91,13 +91,15 @@ function deliveryKeys(sinks: readonly AuditSink[]): {
 } {
   const keys = new Map<AuditSink, string>();
   const seen = new Map<string, number>();
+  const lastSuffix = new Map<string, number>();
   const used = new Set<string>();
   for (const sink of sinks) {
-    let count = (seen.get(sink.name) ?? 0) + 1;
-    let key = count === 1 ? sink.name : `${sink.name}#${count}`;
+    seen.set(sink.name, (seen.get(sink.name) ?? 0) + 1);
+    let suffix = (lastSuffix.get(sink.name) ?? 0) + 1;
+    let key = suffix === 1 ? sink.name : `${sink.name}#${suffix}`;
     // A sink may itself be named like a generated key (`x#2`); skip past it.
-    while (used.has(key)) key = `${sink.name}#${++count}`;
-    seen.set(sink.name, count);
+    while (used.has(key)) key = `${sink.name}#${++suffix}`;
+    lastSuffix.set(sink.name, suffix);
     used.add(key);
     keys.set(sink, key);
   }

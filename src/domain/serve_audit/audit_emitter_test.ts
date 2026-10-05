@@ -1120,3 +1120,31 @@ Deno.test("AuditEmitter: a sink named like a generated key keeps its own deliver
   }, "the literally named sink to catch up");
   await emitter.close();
 });
+
+Deno.test("AuditEmitter: a sink named like a generated key is not counted as a shared name", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const emitter = new AuditEmitter([
+      createMockSink("durable"),
+      createMockSink("x", false),
+      createMockSink("x", false),
+      createMockSink("x#2", false),
+    ]);
+    const shared = captured
+      .filter((r) => r.properties.later !== undefined)
+      .map((r) => [r.properties.sink, r.properties.count]);
+    assertEquals(shared, [["x", 2]]);
+    await emitter.close();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+});

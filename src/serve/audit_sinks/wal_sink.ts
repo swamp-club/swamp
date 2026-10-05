@@ -236,25 +236,27 @@ export class WalSink implements AuditSink {
     if (delivered.length === 0) return;
     for (const [segmentName] of delivered) this.#delivered.delete(segmentName);
 
-    type Check = (sequences: readonly number[] | null) => boolean;
+    type Check = (segment: DeliveredSegment) => boolean;
     let unconfirmed: Check = () => false;
     let stillPending: Check = () => false;
     try {
       await this.#downstream.flush();
     } catch (error: unknown) {
-      const sequences = error instanceof UnconfirmedEventsError
-        ? error.sequences
-        : null;
-      const pending = error instanceof UnconfirmedEventsError
-        ? error.pending
-        : new Set<number>();
-      // Without the sequences, every segment is treated as unconfirmed.
-      unconfirmed = (segmentSequences) =>
-        sequences === null || segmentSequences === null ||
-        segmentSequences.some((seq) => sequences.has(seq));
-      stillPending = (segmentSequences) =>
-        pending === null || segmentSequences === null ||
-        segmentSequences.some((seq) => pending.has(seq));
+      if (error instanceof UnconfirmedEventsError) {
+        const { sequences, pending } = error;
+        unconfirmed = ({ sequences: held }) =>
+          sequences === null || held === null ||
+          held.some((seq) => sequences.has(seq));
+        stillPending = ({ sequences: held }) =>
+          pending === null || held === null ||
+          held.some((seq) => pending.has(seq));
+      } else {
+        // An error that names nothing: send everything again, except what
+        // the sink last said it is still retrying itself, which would then
+        // be stored twice.
+        unconfirmed = (segment) => !segment.pending;
+        stillPending = (segment) => segment.pending;
+      }
       logger.warn(
         "Downstream flush failed; WAL segments it did not confirm will be delivered again at the next checkpoint: {error}",
         { error: error instanceof Error ? error.message : String(error) },
@@ -265,14 +267,14 @@ export class WalSink implements AuditSink {
     const confirmed: string[] = [];
     let last: ChainPosition | null = null;
     for (const [segmentName, segment] of delivered) {
-      if (unconfirmed(segment.sequences)) {
+      if (unconfirmed(segment)) {
         this.#redeliver.push(segmentName);
         continue;
       }
-      if (stillPending(segment.sequences)) {
+      if (stillPending(segment)) {
         // The downstream sink is still retrying these: keep the segment,
         // without sending it again, and check it at the next checkpoint.
-        this.#delivered.set(segmentName, segment);
+        this.#delivered.set(segmentName, { ...segment, pending: true });
         continue;
       }
       confirmed.push(segmentName);
@@ -373,6 +375,8 @@ interface DeliveredSegment {
   readonly sequences: readonly number[] | null;
   /** The segment's last chain position, when its events carry one. */
   readonly last: ChainPosition | null;
+  /** The downstream sink has said it is still retrying these events. */
+  readonly pending: boolean;
 }
 
 function describe(events: readonly AuditEvent[]): DeliveredSegment {
@@ -392,5 +396,5 @@ function describe(events: readonly AuditEvent[]): DeliveredSegment {
       last = { sequence, digest };
     }
   }
-  return { sequences, last };
+  return { sequences, last, pending: false };
 }

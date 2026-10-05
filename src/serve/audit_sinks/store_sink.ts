@@ -81,6 +81,7 @@ export class StoreSink implements AuditSink {
   #unknownUnstored = false;
   // Puts that failed for some stores of a batch others stored.
   #retries: PendingPut[] = [];
+  #retrying: PendingPut[] = [];
   // Keys of retried date objects no store has yet, with their sequences.
   readonly #unheld = new Map<string, readonly number[] | null>();
   #retryBytes = 0;
@@ -332,7 +333,10 @@ export class StoreSink implements AuditSink {
         );
         continue;
       }
-      if (this.#retries.some((retry) => retry.key === dropped.key)) {
+      if (
+        this.#retries.some((retry) => retry.key === dropped.key) ||
+        this.#retrying.some((retry) => retry.key === dropped.key)
+      ) {
         logger.warn(
           "Audit store retry queue is full; batch {key}, which no store has yet, is dropped for one store and still retried for another",
           { key: dropped.key },
@@ -352,17 +356,25 @@ export class StoreSink implements AuditSink {
   }
 
   async #retryFailedPuts(): Promise<void> {
-    const retries = this.#retries.splice(0);
+    // Puts still to try this round stay visible to eviction, which must know
+    // whether another store's retry of the same object is still coming.
+    this.#retrying = this.#retries.splice(0);
     this.#retryBytes = 0;
     let stillFailing = 0;
-    for (const retry of retries) {
+    while (this.#retrying.length > 0) {
+      // Taken off only once its put settles, so it counts as coming while
+      // it is in flight.
+      const retry = this.#retrying[0];
+      let landed = false;
       try {
         await retry.store.put(retry.key, retry.data);
-        this.#unheld.delete(retry.key);
+        landed = true;
       } catch {
         stillFailing++;
-        this.#queueRetry(retry);
       }
+      this.#retrying.shift();
+      if (landed) this.#unheld.delete(retry.key);
+      else this.#queueRetry(retry);
     }
     if (stillFailing > 0) {
       logger.warn(
