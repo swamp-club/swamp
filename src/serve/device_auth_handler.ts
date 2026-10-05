@@ -49,6 +49,7 @@ import { createResourceWriter } from "../domain/models/data_writer.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
+import { stageWritesThenPush } from "./stage_writes_then_push.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 
@@ -491,17 +492,18 @@ async function mintServerTokenImpl(
       // that both writes are done. Per path, not bare: a bare markDirty()
       // sets bulkInvalidated and turns every login's push into a walk of the
       // whole cache (swamp-club#2408).
-      if (savedDefinitionPath) {
-        await repoContext.markDirty?.(savedDefinitionPath);
-      }
-      await repoContext.markDirty?.(
-        repoContext.unifiedDataRepo.getDataNameDir(
-          SERVER_TOKEN_MODEL_TYPE,
-          def.id,
-          TOKEN_DATA_NAME,
-        ),
+      await stageWritesThenPush(
+        repoContext,
+        [
+          ...(savedDefinitionPath ? [savedDefinitionPath] : []),
+          repoContext.unifiedDataRepo.getDataNameDir(
+            SERVER_TOKEN_MODEL_TYPE,
+            def.id,
+            TOKEN_DATA_NAME,
+          ),
+        ],
+        { flush: () => syncService.pushChanged({ namespace }) },
       );
-      await syncService.pushChanged({ namespace });
     });
 
     await withSpan("swamp.serve.auth.mint.verify", {}, async () => {

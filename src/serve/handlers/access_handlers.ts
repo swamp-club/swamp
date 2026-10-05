@@ -53,6 +53,8 @@ import {
 } from "../../domain/access/grant_file_reconciler.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { stageWritesThenPush } from "../stage_writes_then_push.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -801,11 +803,12 @@ export async function handleAccessReload(
       try {
         // Per path, not bare: a bare markDirty() sets bulkInvalidated and
         // turns every reload's push into a walk of the whole cache
-        // (swamp-club#2415). A reload that changed nothing marks nothing.
-        for (const path of writtenPaths) {
-          await ctx.repoContext.markDirty?.(path);
-        }
-        await ctx.syncService.pushChanged({ namespace });
+        // (swamp-club#2415). A reload that changed nothing marks nothing,
+        // and still pushes.
+        const syncService = ctx.syncService;
+        await stageWritesThenPush(ctx.repoContext, writtenPaths, {
+          flush: () => syncService.pushChanged({ namespace }),
+        });
       } catch (error) {
         logger
           .warn`Remote access data push failed, proceeding with local reload: ${
@@ -919,54 +922,58 @@ export async function handleAccessTokenRevoke(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenRevokeDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenRevokeDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenRevoke(libCtx, deps, { name: payload.name }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenRevoke(libCtx, deps, { name: payload.name }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      send(socket, {
-        type: "access.token.revoke",
-        id: requestId,
-        payload: { data: result ?? {} },
-      });
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        } else {
+          send(socket, {
+            type: "access.token.revoke",
+            id: requestId,
+            payload: { data: result ?? {} },
+          });
+        }
 
-    // The revoke is persisted even if the request was cancelled, so every
-    // session opened with any mint of the name ends. Runs after the reply so a
-    // caller revoking their own token still gets it.
-    terminateTokenSessions(payload.name, {
-      code: 4003,
-      reason: TOKEN_REVOKED_REASON,
-      cause: "revoked",
-      initiatedBy: initiatorOf(principal, ctx),
-      requestId,
-      audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_revoke_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        // The revoke is persisted even if the request was cancelled, so every
+        // session opened with any mint of the name ends. Runs after the reply
+        // so a caller revoking their own token still gets it.
+        terminateTokenSessions(payload.name, {
+          code: 4003,
+          reason: TOKEN_REVOKED_REASON,
+          cause: "revoked",
+          initiatedBy: initiatorOf(principal, ctx),
+          requestId,
+          audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_revoke_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleAccessTokenRotate(
@@ -985,48 +992,52 @@ export async function handleAccessTokenRotate(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenRotateDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenRotateDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenRotate(libCtx, deps, {
-        name: payload.name,
-        durationMs: payload.durationMs,
-      }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenRotate(libCtx, deps, {
+            name: payload.name,
+            durationMs: payload.durationMs,
+          }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      send(socket, {
-        type: "access.token.rotate",
-        id: requestId,
-        payload: { data: result ?? {} },
-      });
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        } else {
+          send(socket, {
+            type: "access.token.rotate",
+            id: requestId,
+            payload: { data: result ?? {} },
+          });
+        }
 
-    // The rotation is persisted even if the request was cancelled.
-    await terminateRotatedSessions(payload.name, ctx, requestId, principal);
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_rotate_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        // The rotation is persisted even if the request was cancelled.
+        await terminateRotatedSessions(payload.name, ctx, requestId, principal);
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_rotate_failed", message);
+      }
+    },
+  );
 }
 
 function initiatorOf(
@@ -1085,53 +1096,57 @@ export async function handleAccessTokenMint(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenCreateDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenCreateDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenCreate(libCtx, deps, {
-        name: payload.name,
-        principalId: payload.principalId,
-        principalEmail: payload.principalEmail,
-        durationMs: payload.durationMs,
-        // serve always registers the control-plane vault at boot, so name it
-        // explicitly (as the local CLI path does). Leaving it unset makes
-        // resolveVaultName count _token-secrets alongside any user vault and
-        // fail with "Multiple vaults are configured".
-        vaultName: TOKEN_SECRETS_VAULT_NAME,
-      }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenCreate(libCtx, deps, {
+            name: payload.name,
+            principalId: payload.principalId,
+            principalEmail: payload.principalEmail,
+            durationMs: payload.durationMs,
+            // serve always registers the control-plane vault at boot, so name
+            // it explicitly (as the local CLI path does). Leaving it unset
+            // makes resolveVaultName count _token-secrets alongside any user
+            // vault and fail with "Multiple vaults are configured".
+            vaultName: TOKEN_SECRETS_VAULT_NAME,
+          }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "access.token.mint",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_mint_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "access.token.mint",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_mint_failed", message);
+      }
+    },
+  );
 }
 
 /**

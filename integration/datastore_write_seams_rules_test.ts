@@ -449,10 +449,8 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // migration of the whole tree.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
-  // Serve handlers marking written paths before pushChanged.
-  "src/serve/device_auth_handler.ts: mintServerTokenImpl (x2)",
-  "src/serve/grant_write_tracking.ts: publishGrantWrites",
-  "src/serve/handlers/access_handlers.ts: handleAccessReload",
+  // The serve extension lockfile, deferred to its own Phase 2 issue. The
+  // other serve hand marks stage through a root unit (swamp-club#3034).
   "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
 ];
 

@@ -36,6 +36,7 @@ import { withSyncGate } from "./sync_gate.ts";
 import type { DetachedNestedRunData } from "../libswamp/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -134,7 +135,8 @@ export async function cancelSuspendedRunAndPush(
 /**
  * The gated half of {@link cancelSuspendedRunAndPush}: reserves the run id,
  * cancels the run read afresh from the workflow it was located in, releases
- * the reservation however that settles, and pushes.
+ * the reservation however that settles, and pushes. It runs in the request's
+ * root unit of work, whose flush is that push, on every outcome.
  */
 async function cancelLocatedRunAndPush(
   ctx: ConnectionContext,
@@ -143,51 +145,53 @@ async function cancelLocatedRunAndPush(
   request: SuspendedRunCancelRequest,
   workflowId: string,
 ): Promise<SuspendedRunCancelResult> {
-  try {
-    const release = registry.reserve(request.runId);
-    if (!release) {
-      return registry.get(request.runId)
-        ? { status: "active" }
-        : { status: "busy", message: SUSPENDED_RUN_BUSY_MESSAGE };
-    }
-    try {
-      let failure: SwampError | undefined;
-      let result: SuspendedRunCancelResult | undefined;
-      for await (
-        const event of workflowCancelSuspended(
-          handlerLibSwampContext(ctx),
-          deps,
-          {
-            runId: request.runId,
-            workflowId,
-            reason: request.reason,
-          },
-        )
-      ) {
-        if (event.kind === "completed") {
-          result = {
-            status: "cancelled",
-            runId: event.data.runId,
-            workflowName: event.data.workflowName,
-            ...(event.data.detachedNestedRuns
-              ? { detachedNestedRuns: event.data.detachedNestedRuns }
-              : {}),
-          };
-        } else if (event.kind === "error") {
-          failure = event.error;
+  return await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      const release = registry.reserve(request.runId);
+      if (!release) {
+        return registry.get(request.runId)
+          ? { status: "active" }
+          : { status: "busy", message: SUSPENDED_RUN_BUSY_MESSAGE };
+      }
+      try {
+        let failure: SwampError | undefined;
+        let result: SuspendedRunCancelResult | undefined;
+        for await (
+          const event of workflowCancelSuspended(
+            handlerLibSwampContext(ctx),
+            deps,
+            {
+              runId: request.runId,
+              workflowId,
+              reason: request.reason,
+            },
+          )
+        ) {
+          if (event.kind === "completed") {
+            result = {
+              status: "cancelled",
+              runId: event.data.runId,
+              workflowName: event.data.workflowName,
+              ...(event.data.detachedNestedRuns
+                ? { detachedNestedRuns: event.data.detachedNestedRuns }
+                : {}),
+            };
+          } else if (event.kind === "error") {
+            failure = event.error;
+          }
         }
+        if (result) return result;
+        if (failure?.code === CANCEL_SUSPENDED_NOT_SUSPENDED) {
+          return { status: "not_suspended", message: failure.message };
+        }
+        return suspendedRunNotFound(request.runId);
+      } finally {
+        release();
       }
-      if (result) return result;
-      if (failure?.code === CANCEL_SUSPENDED_NOT_SUSPENDED) {
-        return { status: "not_suspended", message: failure.message };
-      }
-      return suspendedRunNotFound(request.runId);
-    } finally {
-      release();
-    }
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+    },
+  );
 }
 
 /** How long a cancel waits for an aborted run to leave the registry. */
