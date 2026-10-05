@@ -29,6 +29,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -55,7 +56,10 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   serverTokenModel,
 } from "../../domain/models/access/server_token_model.ts";
-import { migrateTokenSecrets } from "../../serve/token_secret_migration.ts";
+import {
+  createTokenMigrationLockDeps,
+  migrateTokenSecrets,
+} from "../../serve/token_secret_migration.ts";
 import { createResourceWriter } from "../../domain/models/data_writer.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 
@@ -184,6 +188,12 @@ export const accessTokenRotateCommand = withRemoteOptions(
         { ...currentAttrs, vaultName: newVaultName },
       );
     },
+    ...createTokenMigrationLockDeps({
+      datastoreConfig,
+      repoContext,
+      syncService,
+      syncGate: undefined,
+    }),
   });
 
   const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
@@ -194,72 +204,76 @@ export const accessTokenRotateCommand = withRemoteOptions(
     { vaultsDir },
   );
 
-  const preResult = await findDefinitionByIdOrName(
-    repoContext.definitionRepo,
-    name,
-  );
-  if (!preResult) {
-    throw new UserError(
-      `Server token '${name}' not found. ` +
-        "Use 'swamp access token list' to see existing tokens.",
+  // Name lock first, then the model lock: every writer of a token takes
+  // them in that order (swamp-club#2482).
+  await withServerTokenLock(datastoreConfig, name, async () => {
+    const preResult = await findDefinitionByIdOrName(
+      repoContext.definitionRepo,
+      name,
     );
-  }
-
-  const lockResult = await acquireModelLocks(
-    datastoreConfig,
-    [
-      {
-        modelType: preResult.type.normalized,
-        modelId: preResult.definition.id,
-      },
-    ],
-    repoDir,
-    syncService,
-    repoContext.catalogStore,
-  );
-  if (lockResult.synced) repoContext.catalogStore.invalidate();
-
-  await runCommandInRootUnit(
-    repoContext,
-    {
-      push: lockResult.push,
-      release: lockResult.release,
-      onCleanupError: (releaseError) => {
-        cliCtx.logger.warn(
-          "Failed to release locks during cleanup: {error}",
-          {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          },
-        );
-      },
-    },
-    async () => {
-      let data: ServerTokenRotateData | undefined;
-      await consumeStream(
-        serverTokenRotate(libCtx, deps, {
-          name,
-          durationMs,
-          vaultName: TOKEN_SECRETS_VAULT_NAME,
-        }),
-        withDefaults<ServerTokenRotateEvent>({
-          completed: (event) => {
-            data = event.data;
-          },
-          error: (event) => {
-            throw new UserError(event.error.message);
-          },
-        }),
+    if (!preResult) {
+      throw new UserError(
+        `Server token '${name}' not found. ` +
+          "Use 'swamp access token list' to see existing tokens.",
       );
-      if (data === undefined) {
-        throw new UserError(
-          `Rotating token '${name}' ended without completing`,
+    }
+
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+    );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+    await runCommandInRootUnit(
+      repoContext,
+      {
+        push: lockResult.push,
+        release: lockResult.release,
+        onCleanupError: (releaseError) => {
+          cliCtx.logger.warn(
+            "Failed to release locks during cleanup: {error}",
+            {
+              error: releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError),
+            },
+          );
+        },
+      },
+      async () => {
+        let data: ServerTokenRotateData | undefined;
+        await consumeStream(
+          serverTokenRotate(libCtx, deps, {
+            name,
+            durationMs,
+            vaultName: TOKEN_SECRETS_VAULT_NAME,
+          }),
+          withDefaults<ServerTokenRotateEvent>({
+            completed: (event) => {
+              data = event.data;
+            },
+            error: (event) => {
+              throw new UserError(event.error.message);
+            },
+          }),
         );
-      }
-      renderServerTokenRotate(data, cliCtx.outputMode);
-    },
-  );
+        if (data === undefined) {
+          throw new UserError(
+            `Rotating token '${name}' ended without completing`,
+          );
+        }
+        renderServerTokenRotate(data, cliCtx.outputMode);
+      },
+    );
+  });
 
   cliCtx.logger.debug("Server token rotate command completed");
 });

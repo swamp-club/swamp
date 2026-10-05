@@ -26,6 +26,7 @@ import {
   type ServerTokenRevealEvent,
 } from "./token_reveal.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+import { serverTokenSecretFingerprint } from "../../domain/models/access/server_token_model.ts";
 
 function tokenRecord(
   name: string,
@@ -144,4 +145,36 @@ Deno.test("serverTokenReveal: errors when query fails", async () => {
   assertEquals(error.kind, "error");
   assertEquals(error.error.code, "token_query_failed");
   assertStringIncludes(error.error.message, "datastore unreachable");
+});
+
+Deno.test("serverTokenReveal: reveals a token whose fingerprint matches its secret", async () => {
+  const secretFingerprint = await serverTokenSecretFingerprint("abc123secret");
+  const deps = makeDeps({
+    query: () =>
+      Promise.resolve([tokenRecord("test-token", { secretFingerprint })]),
+  });
+  const events = await collect<ServerTokenRevealEvent>(
+    serverTokenReveal(createLibSwampContext(), deps, "test-token"),
+  );
+  assertEquals(events[1].kind, "completed");
+});
+
+Deno.test("serverTokenReveal: refuses a token whose secret is from another mint", async () => {
+  const secretFingerprint = await serverTokenSecretFingerprint("other-secret");
+  const deps = makeDeps({
+    query: () =>
+      Promise.resolve([tokenRecord("test-token", { secretFingerprint })]),
+  });
+  const events = await collect<ServerTokenRevealEvent>(
+    serverTokenReveal(createLibSwampContext(), deps, "test-token"),
+  );
+
+  const error = events[1] as Extract<ServerTokenRevealEvent, { kind: "error" }>;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "token_inconsistent");
+  assertStringIncludes(
+    error.error.message,
+    "swamp access token rotate test-token",
+  );
+  assertEquals(JSON.stringify(events).includes("abc123secret"), false);
 });

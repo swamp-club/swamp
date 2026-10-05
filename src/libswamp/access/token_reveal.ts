@@ -31,6 +31,8 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
+  ServerTokenSecretMismatchError,
+  verifyServerTokenSecret,
 } from "../../domain/models/access/server_token_model.ts";
 
 const TOKEN_DATA_NAME = "token-main";
@@ -153,6 +155,22 @@ export async function* serverTokenReveal(
               `Failed to read secret for token '${name}' from vault '${vaultName}': ${
                 error instanceof Error ? error.message : String(error)
               }`,
+          },
+        };
+        return;
+      }
+
+      // Serve rejects a credential whose secret is not the one the record
+      // was minted with, so do not hand one out (swamp-club#2482).
+      try {
+        await verifyServerTokenSecret(token, plaintext);
+      } catch (error) {
+        if (!(error instanceof ServerTokenSecretMismatchError)) throw error;
+        yield {
+          kind: "error" as const,
+          error: {
+            code: "token_inconsistent",
+            message: `${error.message} with: swamp access token rotate ${name}`,
           },
         };
         return;

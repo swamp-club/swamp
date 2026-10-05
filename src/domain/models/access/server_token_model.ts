@@ -57,6 +57,9 @@ export const ServerTokenSchema = z.object({
   lastUsedAt: z.string().datetime().optional(),
   vaultName: z.string(),
   secretKey: z.string(),
+  secretFingerprint: z.string().optional().describe(
+    "SHA-256 of the secret this record was minted with; absent on records minted before swamp-club#2482",
+  ),
   revokedAt: z.string().datetime().optional(),
 });
 
@@ -112,6 +115,55 @@ export function validateServerToken(
     throw new Error(`Server token '${name}' does not match`);
   }
   return presentedSecret;
+}
+
+/**
+ * The value a token record stores to name the secret it was minted with: the
+ * hex SHA-256 of the plaintext. The plaintext is 32 random bytes, so the
+ * unsalted hash reveals nothing about it.
+ */
+export async function serverTokenSecretFingerprint(
+  secret: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(secret),
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * The record and the vault secret of a token come from different mints
+ * (swamp-club#2482). The token cannot authenticate until it is rotated.
+ */
+export class ServerTokenSecretMismatchError extends Error {
+  constructor(name: string) {
+    super(
+      `Server token '${name}' is inconsistent: its record and its secret ` +
+        `come from different mints — rotate it`,
+    );
+    this.name = "ServerTokenSecretMismatchError";
+  }
+}
+
+/**
+ * Checks that the secret read from the vault is the one the record was minted
+ * with. The record and the secret live in separate stores, so two writers of
+ * one name can leave one mint's record beside another's secret. A record
+ * without a fingerprint predates the check and passes.
+ */
+export async function verifyServerTokenSecret(
+  token: ServerToken,
+  secret: string,
+): Promise<void> {
+  if (token.secretFingerprint === undefined) return;
+  const actual = await serverTokenSecretFingerprint(secret);
+  if (!timingSafeEqual(token.secretFingerprint, actual)) {
+    throw new ServerTokenSecretMismatchError(token.name);
+  }
 }
 
 async function readToken(context: MethodContext): Promise<ServerToken> {
@@ -179,6 +231,7 @@ async function mint(
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName: args.vaultName,
     secretKey,
+    secretFingerprint: await serverTokenSecretFingerprint(plaintext),
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
   return { dataHandles: [handle] };
@@ -206,6 +259,7 @@ async function redeem(
     "model:server-token-verify",
   );
   validateServerToken(token, name, args.presentedToken, nowMs, secret);
+  await verifyServerTokenSecret(token, secret);
 
   const updated: ServerToken = {
     ...token,
@@ -251,6 +305,7 @@ async function rotate(
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName,
     secretKey,
+    secretFingerprint: await serverTokenSecretFingerprint(plaintext),
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
   return { dataHandles: [handle] };

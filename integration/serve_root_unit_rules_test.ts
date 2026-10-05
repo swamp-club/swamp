@@ -274,6 +274,10 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/grant_write_tracking.ts: publishGrantWrites",
   "src/serve/handlers/access_handlers.ts: handleAccessReload",
   "src/serve/stage_writes_then_push.ts: stageWritesThenPush",
+  // The token secret migration, one root per token under that token's name
+  // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
+  // commands before or after their own root, never inside one.
+  "src/serve/token_secret_migration.ts: createTokenMigrationLockDeps",
 ];
 
 /**

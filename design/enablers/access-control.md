@@ -69,6 +69,12 @@ lifecycle check and timing-safe comparison as the model's `redeem` method, but
 read-only: it does not write `lastUsedAt`, run a model method, or create a model
 run. Calling `redeem` directly still updates usage.
 
+The record also names the secret it was minted with, as a SHA-256
+`secretFingerprint`. A credential that matches the vault secret but not that
+fingerprint is rejected: the record, and so the principal, belongs to a
+different mint of the name (swamp-club#2482). See "Tokens" in
+`design/primitives/serve.md`.
+
 Implementation: `src/serve/token_auth.ts`,
 `src/domain/models/access/server_token_model.ts`.
 

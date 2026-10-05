@@ -20,12 +20,15 @@
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { createServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   handleAccessCanI,
   handleAccessCheck,
   handleAccessReload,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
+  withServerTokenWriteLock,
 } from "./access_handlers.ts";
 import {
   type ConnectionContext,
@@ -739,5 +742,106 @@ Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their 
     } finally {
       repoContext.catalogStore.close();
     }
+  });
+});
+
+// ── the token name lock around mint, rotate and revoke ──────────────────
+
+function lockCtx(dir: string, allow: boolean): ConnectionContext {
+  const { service } = createMockDecisionService();
+  const ctx = createCtx(
+    allow ? service : { ...service, decide: () => null },
+  );
+  return {
+    ...ctx,
+    datastoreConfig: { type: "filesystem", path: dir },
+  } as ConnectionContext;
+}
+
+Deno.test("withServerTokenWriteLock: an admin's operation runs holding the token's name lock", async () => {
+  await withTempDir(async (dir) => {
+    const ctx = lockCtx(dir, true);
+    const name = `tok-${crypto.randomUUID()}`;
+    const observer = await createServerTokenLock(ctx.datastoreConfig, name);
+    let heldDuring = false;
+
+    await withServerTokenWriteLock(
+      createMockSocket(),
+      ctx,
+      "req-1",
+      { kind: "user", id: "admin" },
+      name,
+      async () => {
+        heldDuring = (await observer.inspect()) !== null;
+      },
+    );
+
+    assertEquals(heldDuring, true);
+    assertEquals(await observer.inspect(), null);
+  });
+});
+
+Deno.test("withServerTokenWriteLock: a caller the handler will refuse takes no lock", async () => {
+  await withTempDir(async (dir) => {
+    const ctx = lockCtx(dir, false);
+    const name = `tok-${crypto.randomUUID()}`;
+    const observer = await createServerTokenLock(ctx.datastoreConfig, name);
+    const socket = createMockSocket();
+    let ran = false;
+    let heldDuring = true;
+
+    await withServerTokenWriteLock(
+      socket,
+      ctx,
+      "req-1",
+      { kind: "user", id: "mallory" },
+      name,
+      async () => {
+        ran = true;
+        heldDuring = (await observer.inspect()) !== null;
+      },
+    );
+
+    // The handler still runs, to reply and audit the refusal itself.
+    assertEquals(ran, true);
+    assertEquals(heldDuring, false);
+    assertEquals(socket.sent, []);
+  });
+});
+
+Deno.test("withServerTokenWriteLock: a lock held elsewhere is reported to the client, and the operation does not run", async () => {
+  await withTempDir(async (dir) => {
+    const ctx = lockCtx(dir, true);
+    const name = `tok-${crypto.randomUUID()}`;
+    const holder = await createServerTokenLock(ctx.datastoreConfig, name);
+    const socket = createMockSocket();
+    let ran = false;
+
+    await holder.acquire();
+    try {
+      await withMockedEnv(
+        { SWAMP_LOCK_TIMEOUT_MS: "200" },
+        () =>
+          withServerTokenWriteLock(
+            socket,
+            ctx,
+            "req-1",
+            { kind: "user", id: "admin" },
+            name,
+            () => {
+              ran = true;
+              return Promise.resolve();
+            },
+          ),
+      );
+    } finally {
+      await holder.release();
+    }
+
+    assertEquals(ran, false);
+    const reply = JSON.parse(socket.sent[0]);
+    assertEquals(reply.type, "error");
+    assertEquals(reply.error.code, "access_token_locked");
+    assert(reply.error.message.includes(name));
   });
 });

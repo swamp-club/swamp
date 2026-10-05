@@ -1728,6 +1728,16 @@ run's sensitive values under it, which can read a vault). The file is named
 on it, and outside `workflow-runs/`, so the run repository never reads it. See
 "Run claims" in `design/primitives/workflows.md` for what takes it.
 
+The writers of one server token share a lock as well:
+`{namespace}/server-token-locks/{sha256(name)}/.lock`, built by
+`serverTokenLockKey()` and created by `createServerTokenLock`
+(`src/infrastructure/persistence/server_token_lock.ts`). The key holds a
+digest of the token name rather than the name, because the name arrives from a
+client before any definition has validated it. Like the run claim it uses the
+per-model retry settings, is named `.lock`, and sits outside `data/`. It is
+taken before a per-model lock, never after. See "Tokens" in
+`design/primitives/serve.md` for what takes it.
+
 ### Lock Timeout and Retry Behavior
 
 The default lock timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`). That is

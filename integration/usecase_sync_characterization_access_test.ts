@@ -204,7 +204,12 @@ const ROWS: AnyRow[] = [
     // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
     // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
-    syncOrder: { cli: ["push"], serve: ["push", "release"] },
+    // The pull and the push both run under the token's name lock, whose
+    // release is the CLI's `release` (swamp-club#2482).
+    syncOrder: {
+      cli: ["pull", "push", "release"],
+      serve: ["pull", "push", "release"],
+    },
     // CLI bulk mark outside any use case, staged through the command's root
     // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -236,9 +241,11 @@ const ROWS: AnyRow[] = [
     // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
     // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
+    // Serve pulls under the token's name lock before it writes
+    // (swamp-club#2482).
     syncOrder: {
       cli: ["pull", "prepare", "commit", "release"],
-      serve: ["push", "release"],
+      serve: ["pull", "push", "release"],
     },
     seed: async (repos) => {
       await runCli({
@@ -538,6 +545,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     // it. Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
+        // Pulled under the token's name lock (swamp-club#2482).
+        "pull[0]",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
         "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
         "markDirty data/swamp/server-token/<id>/token-main",
@@ -568,6 +577,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
+        // Pulled under the token's name lock (swamp-club#2482).
+        "pull[0]",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
         "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
         "markDirty data/swamp/server-token/<id>/token-main",
@@ -630,6 +641,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
+        // Pulled under the token's name lock (swamp-club#2482).
+        "pull[0]",
         "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
         "markDirty data/swamp/server-token/<id>/token-main",
         "markDirty outputs/swamp/server-token/revoke/<id>-<time>.yaml",
