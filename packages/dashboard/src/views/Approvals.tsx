@@ -21,7 +21,13 @@ import { useCallback, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
-import { type ResumableRun, resumeStateFor } from "../client/resume_state";
+import {
+  activeRunIds,
+  type ResumableRun,
+  resumeStateFor,
+} from "../client/resume_state";
+import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
+import type { HealthSnapshot } from "../client/useHealthStream";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
 
@@ -39,11 +45,13 @@ interface ApprovalInfo {
 }
 
 interface ApprovalsProps {
+  /** Serve's live health snapshot; its active runs are runs serve drives. */
+  health?: HealthSnapshot | null;
   /** Called after a gate decision or resume, so the sidebar count refreshes. */
   onApprovalsChanged?: () => void;
 }
 
-export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
+export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const { request } = useSwamp();
   const { data, refetch } = useRequest("workflow.approvals");
   const { data: suspendedData, refetch: refetchSuspended } = useRequest(
@@ -51,9 +59,17 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
     { status: "suspended", limit: 200 },
   );
   const approvals = extractArray<ApprovalInfo>(data);
-  const awaitingResume = extractArray<ResumableRun>(suspendedData).filter(
+  const suspendedRuns = extractArray<ResumableRun>(suspendedData);
+  const awaitingResume = suspendedRuns.filter(
     (run) => resumeStateFor(run) !== null,
   );
+  // Runs serve drives now, whoever approved them (swamp-club#3005).
+  const servedRuns = activeRunIds(health?.activeRuns);
+  const refetchGatesAndRuns = useCallback(() => {
+    refetch();
+    refetchSuspended();
+  }, [refetch, refetchSuspended]);
+  useActiveRunsRefetch(health?.activeRuns, suspendedRuns, refetchGatesAndRuns);
   const [notice, setNotice] = useState<string | null>(null);
   const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -243,7 +259,8 @@ export function Approvals({ onApprovalsChanged }: ApprovalsProps) {
                 <ResumeAction
                   run={run}
                   onResumed={refresh}
-                  resuming={resumingRuns.has(run.runId)}
+                  resuming={resumingRuns.has(run.runId) ||
+                    servedRuns.has(run.runId)}
                 />
               </div>
             </div>

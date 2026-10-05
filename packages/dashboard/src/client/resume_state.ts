@@ -49,3 +49,44 @@ export function resumeStateFor(run: ResumableRun): ResumeState | null {
     ? { command: `${command} --input <key>=<value>`, needsInputs: true }
     : { command, needsInputs: false };
 }
+
+/** An entry in the health snapshot's active runs: a run serve drives now. */
+export interface ActiveRunRef {
+  runId: string;
+}
+
+/**
+ * The runs serve is driving right now. A run in this set is already being
+ * resumed (or run), so it is not offered for a resume, whoever approved it.
+ * Empty without a health snapshot.
+ */
+export function activeRunIds(
+  activeRuns: readonly ActiveRunRef[] | undefined,
+): ReadonlySet<string> {
+  return new Set((activeRuns ?? []).map((run) => run.runId));
+}
+
+/** A key that changes only when a run starts or stops being driven. */
+export function activeRunsKey(
+  activeRuns: readonly ActiveRunRef[] | undefined,
+): string {
+  return [...activeRunIds(activeRuns)].sort().join(",");
+}
+
+/**
+ * Whether a health snapshot calls for a fresh run search: a run started or
+ * stopped since `previousKey`, or a run serve drives still reads suspended in
+ * `rows`. Serve registers a resume before it saves the run as running, so a
+ * search right after the start can still see the run suspended.
+ */
+export function shouldRefetchRuns(
+  previousKey: string,
+  activeRuns: readonly ActiveRunRef[] | undefined,
+  rows: readonly { runId: string; status: string }[],
+): boolean {
+  if (activeRunsKey(activeRuns) !== previousKey) return true;
+  const active = activeRunIds(activeRuns);
+  return rows.some((row) =>
+    row.status === "suspended" && active.has(row.runId)
+  );
+}

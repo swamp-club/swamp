@@ -17,9 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { useCallback } from "react";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
-import { type ResumableRun, resumeStateFor } from "../client/resume_state";
+import {
+  activeRunIds,
+  type ResumableRun,
+  resumeStateFor,
+} from "../client/resume_state";
+import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
+import type { HealthSnapshot } from "../client/useHealthStream";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
 import { StatusDot } from "../components/StatusDot";
@@ -90,10 +97,14 @@ interface WorkflowRun {
 interface RunDetailProps {
   workflowName: string;
   runId?: string;
+  /** Serve's live health snapshot; its active runs are runs serve drives. */
+  health?: HealthSnapshot | null;
   onBack: () => void;
 }
 
-export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
+export function RunDetail(
+  { workflowName, runId, health, onBack }: RunDetailProps,
+) {
   const { data, loading, error, refetch } = useRequest(
     "workflow.history.get",
     { workflowIdOrName: runId ?? workflowName },
@@ -103,12 +114,19 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
     "workflow.run.search",
     { workflow: workflowName, status: "suspended" },
   );
+  const suspendedRuns = extractArray<ResumableRun>(suspendedData);
   // Only a run with every gate decided gets the resume panel.
   const resumable = runId
-    ? extractArray<ResumableRun>(suspendedData).find((r) =>
-      r.runId === runId && resumeStateFor(r) !== null
-    )
+    ? suspendedRuns.find((r) => r.runId === runId && resumeStateFor(r) !== null)
     : undefined;
+  // A run serve drives now is not offered a resume (swamp-club#3005).
+  const served = runId !== undefined &&
+    activeRunIds(health?.activeRuns).has(runId);
+  const refetchRun = useCallback(() => {
+    refetch();
+    refetchSuspended();
+  }, [refetch, refetchSuspended]);
+  useActiveRunsRefetch(health?.activeRuns, suspendedRuns, refetchRun);
   const { data: logsData } = useRequest(
     "workflow.history.logs",
     { runIdOrWorkflow: runId ?? workflowName, tail: 200 },
@@ -178,10 +196,8 @@ export function RunDetail({ workflowName, runId, onBack }: RunDetailProps) {
         >
           <ResumeAction
             run={resumable}
-            onResumed={() => {
-              refetch();
-              refetchSuspended();
-            }}
+            onResumed={refetchRun}
+            resuming={served}
           />
         </div>
       )}
