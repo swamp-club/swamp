@@ -123,9 +123,11 @@ export function parsePlistJob(
  *
  * `has LWCR` in the properties means launchd holds a lightweight code
  * requirement for the job's executable — for an ad-hoc signed binary, its
- * exact cdhash, so a replaced binary will be refused. `needs LWCR update`
- * means it already has been: the state an ad-hoc signed binary is left in
- * after it replaces itself.
+ * exact cdhash, so a replaced binary will be refused. With `has LWCR`,
+ * `needs LWCR update` means it already has been: the state an ad-hoc signed
+ * binary is left in after it replaces itself. Without it, the job was just
+ * registered again and launchd will compute a fresh requirement from the
+ * binary on disk at its next launch.
  */
 export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
   const state = text.match(/^\tstate = (.+)$/m);
@@ -139,12 +141,16 @@ export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
     .split("|")
     .map((p) => p.trim());
 
+  const pinnedToBinary = properties.includes("has LWCR");
   return {
     running: state[1].trim() === "running",
     lastExitCode,
-    needsRepair: properties.includes("needs LWCR update") ||
-      lastExitCode === SCHEDULER_EX_CONFIG,
-    pinnedToBinary: properties.includes("has LWCR"),
+    // `needs LWCR update` alone is the normal state of a freshly registered
+    // job awaiting its first launch; it is only stuck while launchd still
+    // holds the old requirement, or once it has refused a launch.
+    needsRepair: lastExitCode === SCHEDULER_EX_CONFIG ||
+      (pinnedToBinary && properties.includes("needs LWCR update")),
+    pinnedToBinary,
   };
 }
 

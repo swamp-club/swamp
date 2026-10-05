@@ -73,6 +73,18 @@ const UNPINNED_PRINT = `gui/501/club.swamp.autoupdate = {
 }
 `;
 
+// us.zoom.updater on macOS 27 straight after bootout + bootstrap of a job
+// Background Task Management pinned at login: the old requirement is gone
+// and a fresh one is computed at the next launch.
+const RELOADED_MANAGED_PRINT = `gui/501/us.zoom.updater = {
+	active count = 0
+	state = not running
+	runs = 0
+	last exit code = (never exited)
+	properties = inferred program | untrusted | needs LWCR update | managed LWCR
+}
+`;
+
 const RUNNING_PRINT = `gui/501/club.swamp.autoupdate = {
 	active count = 1
 	state = running
@@ -124,6 +136,15 @@ Deno.test("parseLaunchctlPrint: a job loaded from the command line is not pinned
 Deno.test("parseLaunchctlPrint: a running job that has never exited", () => {
   assertEquals(parseLaunchctlPrint(RUNNING_PRINT), {
     running: true,
+    lastExitCode: null,
+    needsRepair: false,
+    pinnedToBinary: false,
+  });
+});
+
+Deno.test("parseLaunchctlPrint: a freshly re-registered managed job is not stuck", () => {
+  assertEquals(parseLaunchctlPrint(RELOADED_MANAGED_PRINT), {
+    running: false,
     lastExitCode: null,
     needsRepair: false,
     pinnedToBinary: false,
@@ -292,6 +313,18 @@ Deno.test("LaunchdScheduler.refresh: leaves a healthy unpinned job as it is", as
     assertEquals(result, "not_needed");
     assertEquals(launchctlCalls(calls), ["print"]);
     assertEquals(await Deno.readTextFile(plistPath), plist);
+  });
+});
+
+Deno.test("LaunchdScheduler.refresh: leaves a job awaiting its fresh requirement as it is", async () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily");
+  await withAgentPlist(plist, async () => {
+    const { result } = await withMockedCommand((cmd) => {
+      if (cmd === "id") return { stdout: "501\n", code: 0 };
+      return { stdout: RELOADED_MANAGED_PRINT, code: 0 };
+    }, () => new LaunchdScheduler("agent").refresh());
+
+    assertEquals(result, "not_needed");
   });
 });
 
