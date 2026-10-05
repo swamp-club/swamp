@@ -526,14 +526,24 @@ export class AuditEmitter {
       delivery.retryAt = 0;
       this.#advanceCursor(sink, throughSeq);
       this.#pruneChained();
+    } else {
+      // The sink has only now answered, so its backoff starts here.
+      delivery.retryAt = this.#now() + this.#backoffDelay(delivery.failures);
     }
     if (this.#closed) return;
     const wait = delivery.retryAt - this.#now();
     if (wait <= 0) {
       this.#pump(sink);
-    } else if (delivery.timer === null) {
+    } else if (!succeeded || delivery.timer === null) {
       this.#scheduleSinkRetry(sink, delivery, wait);
     }
+  }
+
+  #backoffDelay(failures: number): number {
+    return Math.min(
+      this.#sinkBackoffMaxMs,
+      this.#sinkBackoffBaseMs * 2 ** (failures - 1),
+    );
   }
 
   async #runPump(sink: AuditSink, delivery: SinkDelivery): Promise<void> {
@@ -560,10 +570,7 @@ export class AuditEmitter {
         await this.#withSinkTimeout(sink, write);
       } catch (error: unknown) {
         delivery.failures++;
-        const delay = Math.min(
-          this.#sinkBackoffMaxMs,
-          this.#sinkBackoffBaseMs * 2 ** (delivery.failures - 1),
-        );
+        const delay = this.#backoffDelay(delivery.failures);
         delivery.retryAt = this.#now() + delay;
         if (
           error instanceof SinkTimeoutError && delivery.inFlight === settled
@@ -667,7 +674,8 @@ export class AuditEmitter {
   }
 
   async close(): Promise<void> {
-    await this.flush();
+    // Stop the retry timers before the last flush: one firing while the
+    // sinks flush would start a drain that writes to sinks being closed.
     this.#closed = true;
     if (this.#durableRetryTimer !== null) {
       clearTimeout(this.#durableRetryTimer);
@@ -677,6 +685,7 @@ export class AuditEmitter {
       if (delivery.timer !== null) clearTimeout(delivery.timer);
       delivery.timer = null;
     }
+    await this.flush();
     for (const sink of this.#sinks) {
       try {
         await sink.close();

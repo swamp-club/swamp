@@ -113,8 +113,10 @@ function createHangingSink(
   writes: number;
   batches: AuditEvent[][];
   release(): void;
+  fail(): void;
 } {
   const pending: (() => void)[] = [];
+  const failing: ((error: Error) => void)[] = [];
   const sink = {
     name,
     durable: false,
@@ -123,10 +125,18 @@ function createHangingSink(
     write(events: readonly AuditEvent[]): Promise<void> {
       sink.writes++;
       sink.batches.push([...events]);
-      return new Promise<void>((resolve) => pending.push(resolve));
+      return new Promise<void>((resolve, reject) => {
+        pending.push(resolve);
+        failing.push(reject);
+      });
     },
     release(): void {
+      failing.length = 0;
       for (const resolve of pending.splice(0)) resolve();
+    },
+    fail(): void {
+      pending.length = 0;
+      for (const reject of failing.splice(0)) reject(new Error("late failure"));
     },
     flush: () => Promise.resolve(),
     close: () => Promise.resolve(),
@@ -343,6 +353,53 @@ Deno.test("AuditEmitter: a timed-out write that later succeeds resumes delivery 
   assertEquals(hanging.batches[1].map((e) => e.action), ["second"]);
   hanging.release();
   await emitter.close();
+});
+
+Deno.test("AuditEmitter: a timed-out write that later fails backs off from when it failed", async () => {
+  let now = 0;
+  const hanging = createHangingSink("hanging");
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), hanging],
+    sinkTimeoutMs: 20,
+    sinkBackoffBaseMs: 1_000,
+    now: () => now,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(hanging.writes, 1);
+
+  // The sink answers with an error long after the timeout's own backoff.
+  now += 5_000;
+  hanging.fail();
+  await emitter.flush();
+  assertEquals(hanging.writes, 1);
+
+  now += 1_000;
+  await emitter.flush();
+  assertEquals(hanging.writes, 2);
+  hanging.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: close does not retry a failed durable write while sinks flush", async () => {
+  const durableSink = createFlakySink("durable", true);
+  durableSink.failing = true;
+  let writesWhenFlushBegan = -1;
+  durableSink.flush = async () => {
+    writesWhenFlushBegan = durableSink.writes;
+    // Outlast the retry delay, so a retry timer left armed would fire here.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  };
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    durableRetryMs: 1,
+  });
+
+  emitter.emit(makeEvent("test"));
+  await emitter.close();
+
+  assertEquals(durableSink.writes, writesWhenFlushBegan);
 });
 
 Deno.test("AuditEmitter: a sink whose write never settles keeps counting what it misses", async () => {
