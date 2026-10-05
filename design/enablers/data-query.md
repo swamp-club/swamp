@@ -771,7 +771,8 @@ in CEL.
 1. Parse predicate into AST
 2. Validate field references
 3. Extract SQL pushdown clauses (isLatest, modelName, specName, modelType
-   and modelId equality, model()); resolve rename forwards for a latest-only `name == "<literal>"`
+   and modelId equality, model()); resolve rename forwards for a
+   latest-only `name == "<literal>"`
 4. Detect whether the filter or the select expression references
    `attributes` or `content` (referencesAttributes / referencesContent)
 5. SELECT * from catalog with WHERE pushdown
