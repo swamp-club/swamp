@@ -159,6 +159,8 @@ export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
 /** How long refresh() waits for launchd to finish booting the job out. */
 const BOOTOUT_POLL_ATTEMPTS = 20;
 const BOOTOUT_POLL_INTERVAL_MS = 250;
+/** launchd can briefly refuse a bootstrap straight after a bootout. */
+const BOOTSTRAP_RETRY_DELAY_MS = 1000;
 
 export function autoupdateLogDir(mode: LaunchdMode = "agent"): string {
   if (mode === "daemon") {
@@ -248,14 +250,20 @@ async function launchctl(
 export class LaunchdScheduler implements AutoupdateScheduler {
   readonly mode: LaunchdMode;
   private readonly bootoutPollIntervalMs: number;
+  private readonly bootstrapRetryDelayMs: number;
 
   constructor(
     mode: LaunchdMode = "agent",
-    options: { bootoutPollIntervalMs?: number } = {},
+    options: {
+      bootoutPollIntervalMs?: number;
+      bootstrapRetryDelayMs?: number;
+    } = {},
   ) {
     this.mode = mode;
     this.bootoutPollIntervalMs = options.bootoutPollIntervalMs ??
       BOOTOUT_POLL_INTERVAL_MS;
+    this.bootstrapRetryDelayMs = options.bootstrapRetryDelayMs ??
+      BOOTSTRAP_RETRY_DELAY_MS;
   }
 
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
@@ -417,7 +425,10 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     return await this.bootstrap(domain, path, true);
   }
 
-  /** Loads the job, trying a second time before reporting launchd's reason. */
+  /**
+   * Loads the job, trying a second time after a short pause before reporting
+   * launchd's reason.
+   */
   private async bootstrap(
     domain: string,
     path: string,
@@ -425,6 +436,7 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   ): Promise<SchedulerRefreshResult> {
     let result = await launchctl(["bootstrap", domain, path]);
     if (result.code !== 0) {
+      await new Promise((r) => setTimeout(r, this.bootstrapRetryDelayMs));
       result = await launchctl(["bootstrap", domain, path]);
     }
     if (result.code !== 0) {

@@ -378,7 +378,9 @@ Deno.test("LaunchdScheduler.refresh: a bootstrap that fails once is tried again"
           return { stdout: "", stderr: "Bootstrap failed: 5", code: 5 };
         }
         return { stdout: "", code: 0 };
-      }, () => new LaunchdScheduler("agent").refresh());
+      }, () =>
+        new LaunchdScheduler("agent", { bootstrapRetryDelayMs: 0 })
+          .refresh());
 
       assertEquals(result, "refreshed");
       assertEquals(bootstraps, 2);
@@ -511,7 +513,9 @@ Deno.test("LaunchdScheduler.refresh: reports launchd's reason when bootstrap fai
         return { stdout: "", code: 0 };
       }, async () => {
         const error = await assertRejects(
-          () => new LaunchdScheduler("agent").refresh(),
+          () =>
+            new LaunchdScheduler("agent", { bootstrapRetryDelayMs: 0 })
+              .refresh(),
           SchedulerRefreshError,
         );
         assert(error.message.includes("Input/output error"));
