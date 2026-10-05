@@ -205,10 +205,9 @@ export async function* dataQuery(
 
       // Unlimited by default — callers pass an explicit limit when they
       // need a cap. `limited` in the completed event reflects whether
-      // the query service actually hit the supplied limit. A single-result
-      // query stays unlimited: the query service applies a limit before it
-      // drops stale catalog rows, so a limit of 2 could keep one live match
-      // and miss a second, reporting it as the only one.
+      // the query service actually hit the supplied limit; the service fills
+      // a limited page from records that survive its stale-row check
+      // (swamp-club#2985). A single-result query stays unlimited.
       const limit = input.single ? undefined : input.limit;
 
       try {
