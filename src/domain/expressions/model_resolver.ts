@@ -178,10 +178,14 @@ function checkWildcardAmbiguity(
  *
  * @param modelName - Treat every record as this model's, whatever its tag
  *   says: records read by definition identity may carry an earlier name.
+ * @param preferred - Breaks a tie between duplicates created in the same
+ *   millisecond: a preferred record wins over one that is not
+ *   (swamp-club#3043). Without it, the first record read wins.
  */
 function deduplicateByName(
   records: DataRecord[],
   modelName?: string,
+  preferred?: (record: DataRecord) => boolean,
 ): DataRecord[] {
   const byKey = new Map<string, DataRecord>();
   for (const record of records) {
@@ -190,7 +194,11 @@ function deduplicateByName(
       ? `${name}\0${record.name}\0${record.stepName}`
       : record.id;
     const existing = byKey.get(key);
-    if (!existing || record.createdAt > existing.createdAt) {
+    if (
+      !existing || record.createdAt > existing.createdAt ||
+      (record.createdAt === existing.createdAt && preferred !== undefined &&
+        preferred(record) && !preferred(existing))
+    ) {
       byKey.set(key, record);
     }
   }
@@ -1300,8 +1308,16 @@ export class ModelResolver {
           }
           if (identityReads.length > 0) {
             // Every record now belongs to this name, by tag or by identity,
-            // whatever name its tag recorded.
-            return dropMissingPaths(deduplicateByName(results, ns.modelName));
+            // whatever name its tag recorded. On a tie, the definition's own
+            // record wins, as latest() reads it first.
+            const ownRecord = (record: DataRecord) =>
+              coords.some(({ modelType, modelId }) =>
+                record.modelType === modelType.normalized &&
+                record.modelId === modelId
+              );
+            return dropMissingPaths(
+              deduplicateByName(results, ns.modelName, ownRecord),
+            );
           }
         }
         return dropMissingPaths(deduplicateByName(results));

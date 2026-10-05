@@ -2795,6 +2795,7 @@ interface RenameFixture {
     specName: string,
     modelName: string,
     modelId?: string,
+    createdAt?: string,
   ) => Promise<void>;
   /**
    * Builds a context of `kind` over a freshly populated catalog, from one
@@ -2843,8 +2844,14 @@ async function withRenamedModel(
         dataRepo,
         type,
         modelId: model.id,
-        write: async (name, specName, modelName, modelId = model.id) => {
-          await dataRepo.save(
+        write: async (
+          name,
+          specName,
+          modelName,
+          modelId = model.id,
+          createdAt,
+        ) => {
+          const { version } = await dataRepo.save(
             type,
             modelId,
             Data.create({
@@ -2856,6 +2863,24 @@ async function withRenamedModel(
               ownerDefinition: owner,
             }),
             new TextEncoder().encode(JSON.stringify({ modelName })),
+          );
+          if (createdAt === undefined) return;
+          // save() stamps createdAt itself, so pin it in the metadata the
+          // catalog is rebuilt from: Data.toData() writes it as a top-level
+          // createdAt key.
+          const metadataPath = dataRepo.getMetadataPath(
+            type,
+            modelId,
+            name,
+            version,
+          );
+          const metadata = await Deno.readTextFile(metadataPath);
+          await Deno.writeTextFile(
+            metadataPath,
+            metadata.replace(
+              /^createdAt: .*$/m,
+              `createdAt: ${JSON.stringify(createdAt)}`,
+            ),
           );
         },
         context: async (kind) => {
@@ -2992,6 +3017,41 @@ for (const kind of ["full", "light"] as const) {
       assertEquals(ctx.data.listVersions("new-name", "result"), [1, 1, 2]);
       const bySpec = await ctx.data.findBySpec("new-name", "result");
       assertEquals(bySpec.map((r) => r.modelId), [modelId]);
+    });
+  });
+
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors prefer the current id's record when a renamed model's write ties an earlier id's (swamp-club#3043)`, async () => {
+    await withRenamedModel(async ({ modelId, write, context }) => {
+      const earlierId = crypto.randomUUID();
+      const at = "2026-01-01T00:00:00.000Z";
+      await write("result", "result", "new-name", earlierId, at);
+      await write("result", "result", "new-name", earlierId, at);
+      await write("result", "result", "tmp-name", undefined, at);
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => [r.modelId, r.createdAt]), [[
+        modelId,
+        at,
+      ]]);
+    });
+  });
+
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors prefer the current id's record when an earlier id of the same name ties it (swamp-club#3043)`, async () => {
+    await withRenamedModel(async ({ modelId, write, context }) => {
+      const earlierId = crypto.randomUUID();
+      const at = "2026-01-01T00:00:00.000Z";
+      await write("result", "result", "new-name", earlierId, at);
+      await write("result", "result", "new-name", earlierId, at);
+      await write("result", "result", "new-name", undefined, at);
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => [r.modelId, r.version, r.createdAt]), [
+        [modelId, 1, at],
+      ]);
     });
   });
 
