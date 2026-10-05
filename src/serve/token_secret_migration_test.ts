@@ -75,6 +75,22 @@ function createMockDataQuery(
   } as TokenSecretMigrationDeps["dataQueryService"];
 }
 
+/**
+ * Lock deps that take no lock and re-read from the same records the query
+ * returned, so the record under the lock is the one that was listed.
+ */
+function unchangedRecordLockDeps(
+  records: { attributes: Record<string, unknown> }[],
+): Pick<TokenSecretMigrationDeps, "withTokenLock" | "readTokenRecord"> {
+  return {
+    withTokenLock: (_name, fn) => fn(),
+    readTokenRecord: (name) =>
+      Promise.resolve(
+        records.find((r) => r.attributes.name === name)?.attributes ?? null,
+      ),
+  };
+}
+
 Deno.test("migrateTokenSecrets: migrates a vault-backed token to _token-secrets", async () => {
   const { secrets, vaultService } = createMockVault();
   secrets.set(
@@ -104,6 +120,7 @@ Deno.test("migrateTokenSecrets: migrates a vault-backed token to _token-secrets"
     tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
     vaultService,
     dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
     updateTokenVaultName: (name, vault, _attrs) => {
       updatedRecords.push({ name, vault });
       return Promise.resolve();
@@ -155,6 +172,7 @@ Deno.test("migrateTokenSecrets: skips tokens already in _token-secrets", async (
     tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
     vaultService,
     dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
     updateTokenVaultName: () => Promise.resolve(),
   });
 
@@ -181,6 +199,7 @@ Deno.test("migrateTokenSecrets: skips token when vault secret is missing", async
     tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
     vaultService,
     dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
     updateTokenVaultName: () => Promise.resolve(),
   });
 
@@ -212,6 +231,7 @@ Deno.test("migrateTokenSecrets: migrates server token even when OAuth access tok
     tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
     vaultService,
     dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
     updateTokenVaultName: () => Promise.resolve(),
   });
 
@@ -262,9 +282,141 @@ Deno.test("migrateTokenSecrets: continues on per-token failure", async () => {
     tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
     vaultService,
     dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
     updateTokenVaultName: () => Promise.resolve(),
   });
 
   assertEquals(result.migrated, 1);
   assertEquals(result.skipped, 1);
+});
+
+function legacyRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    attributes: {
+      name: "legacy",
+      state: "active",
+      vaultName: "user-vault",
+      secretKey: "server-token-legacy",
+      principalId: "user:123",
+      principalEmail: "u@example.com",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z",
+      ...overrides,
+    },
+  };
+}
+
+Deno.test("migrateTokenSecrets: leaves a token rotated after it was listed untouched", async () => {
+  const { secrets, vaultService } = createMockVault();
+  secrets.set("user-vault", new Map([["server-token-legacy", "old-secret"]]));
+  const listed = legacyRecord();
+  // The rotation lands between the query and the migration's turn under the
+  // lock: a new secret in the same vault and a record with a new createdAt.
+  const rotated = legacyRecord({ createdAt: "2026-01-15T00:00:00.000Z" });
+  let updates = 0;
+
+  const result = await migrateTokenSecrets({
+    tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+    vaultService,
+    dataQueryService: createMockDataQuery([listed]),
+    updateTokenVaultName: () => {
+      updates++;
+      return Promise.resolve();
+    },
+    withTokenLock: (_name, fn) => {
+      secrets.get("user-vault")!.set("server-token-legacy", "new-secret");
+      return fn();
+    },
+    readTokenRecord: () => Promise.resolve(rotated.attributes),
+  });
+
+  assertEquals(result, { migrated: 0, skipped: 1, failed: 0 });
+  assertEquals(updates, 0);
+  assertEquals(
+    secrets.get("user-vault")?.get("server-token-legacy"),
+    "new-secret",
+  );
+  assertEquals(secrets.has(TOKEN_SECRETS_VAULT_NAME), false);
+});
+
+Deno.test("migrateTokenSecrets: reads the record and secret under the lock", async () => {
+  const { secrets, vaultService } = createMockVault();
+  secrets.set("user-vault", new Map([["server-token-legacy", "secret"]]));
+  const record = legacyRecord();
+  const events: string[] = [];
+
+  await migrateTokenSecrets({
+    tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+    vaultService,
+    dataQueryService: createMockDataQuery([record]),
+    updateTokenVaultName: () => {
+      events.push("write");
+      return Promise.resolve();
+    },
+    withTokenLock: async (name, fn) => {
+      events.push(`lock:${name}`);
+      const result = await fn();
+      events.push("unlock");
+      return result;
+    },
+    readTokenRecord: () => {
+      events.push("read");
+      return Promise.resolve(record.attributes);
+    },
+  });
+
+  assertEquals(events, ["lock:legacy", "read", "write", "unlock"]);
+});
+
+Deno.test("migrateTokenSecrets: skips a token whose record is gone or already migrated under the lock", async () => {
+  for (
+    const current of [
+      null,
+      legacyRecord({ vaultName: TOKEN_SECRETS_VAULT_NAME }).attributes,
+    ]
+  ) {
+    const { secrets, vaultService } = createMockVault();
+    secrets.set("user-vault", new Map([["server-token-legacy", "secret"]]));
+    let updates = 0;
+
+    const result = await migrateTokenSecrets({
+      tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+      vaultService,
+      dataQueryService: createMockDataQuery([legacyRecord()]),
+      updateTokenVaultName: () => {
+        updates++;
+        return Promise.resolve();
+      },
+      withTokenLock: (_name, fn) => fn(),
+      readTokenRecord: () => Promise.resolve(current),
+    });
+
+    assertEquals(result, { migrated: 0, skipped: 1, failed: 0 });
+    assertEquals(updates, 0);
+  }
+});
+
+Deno.test("migrateTokenSecrets: a token whose lock cannot be taken fails alone", async () => {
+  const { secrets, vaultService } = createMockVault();
+  secrets.set(
+    "user-vault",
+    new Map([["server-token-legacy", "a"], ["server-token-other", "b"]]),
+  );
+  const records = [
+    legacyRecord(),
+    legacyRecord({ name: "other", secretKey: "server-token-other" }),
+  ];
+
+  const result = await migrateTokenSecrets({
+    tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+    vaultService,
+    dataQueryService: createMockDataQuery(records),
+    updateTokenVaultName: () => Promise.resolve(),
+    ...unchangedRecordLockDeps(records),
+    withTokenLock: (name, fn) =>
+      name === "legacy" ? Promise.reject(new Error("lock timed out")) : fn(),
+  });
+
+  assertEquals(result, { migrated: 1, skipped: 0, failed: 1 });
+  assertEquals(secrets.get("user-vault")?.has("server-token-legacy"), true);
 });

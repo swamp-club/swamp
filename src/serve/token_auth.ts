@@ -24,6 +24,7 @@ import {
   type ServerToken,
   ServerTokenSchema,
   validateServerToken,
+  verifyServerTokenSecret,
 } from "../domain/models/access/server_token_model.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
@@ -179,6 +180,7 @@ export type TokenAuthRejectionReason =
   | "expired"
   | "revoked"
   | "secret-mismatch"
+  | "mispaired-secret"
   | "invalid-principal"
   | "no-definition"
   | "invalid-format"
@@ -204,6 +206,7 @@ export type ServerTokenAuthResult =
 export function classifyRedeemError(message: string): TokenAuthRejectionReason {
   if (message.includes("has expired")) return "expired";
   if (message.includes("has been revoked")) return "revoked";
+  if (message.includes("come from different mints")) return "mispaired-secret";
   if (message.includes("does not match")) return "secret-mismatch";
   if (message.includes("does not exist")) return "no-definition";
   if (message.includes("Invalid token format")) return "invalid-format";
@@ -255,6 +258,10 @@ export async function authenticateServerToken(
     validateServerToken(token, split.name, presented, nowMs);
     const secret = await deps.readSecret(token.vaultName, token.secretKey);
     validateServerToken(token, split.name, presented, nowMs, secret);
+    // The presented secret is the vault's; it must also be the one this
+    // record was minted with, or the credential would authenticate as another
+    // mint's principal (swamp-club#2482).
+    await verifyServerTokenSecret(token, secret);
 
     // Every caller parses the principal after a successful authentication;
     // a stored principal that does not parse (minted before mint validated

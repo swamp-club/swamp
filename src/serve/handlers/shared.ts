@@ -1142,6 +1142,22 @@ function replyToOutcome(
 }
 
 /**
+ * The decision {@link authorizeOrReject} will make, with no reply and no
+ * audit. For a dispatch site that has to know the outcome before the handler
+ * runs and reports it.
+ */
+export function wouldAuthorize(
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  return decideAccess(socket, principal, action, resource, ctx).kind ===
+    "allowed";
+}
+
+/**
  * Makes the same decision as {@link authorizeOrReject} and audits a refusal
  * the same way, but sends nothing to the client. For a handler whose reply
  * must not reveal what the caller was refused, such as the name of the

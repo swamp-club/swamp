@@ -43,6 +43,7 @@ import { Definition } from "../domain/definitions/definition.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   serverTokenModel,
+  serverTokenSecretFingerprint,
   serverTokenSecretKey,
 } from "../domain/models/access/server_token_model.ts";
 import { createResourceWriter } from "../domain/models/data_writer.ts";
@@ -460,6 +461,7 @@ async function mintServerTokenImpl(
     expiresAt: new Date(now + DEFAULT_DURATION_MS).toISOString(),
     vaultName,
     secretKey,
+    secretFingerprint: await serverTokenSecretFingerprint(plaintext),
   };
 
   await withSpan("swamp.serve.auth.mint.token_write", {}, async () => {

@@ -86,6 +86,11 @@ import {
 } from "./resource_resolution.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  serverTokenLockName,
+  withServerTokenLock,
+} from "../../infrastructure/persistence/server_token_lock.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -100,6 +105,7 @@ import {
   terminateTokenSessions,
   TOKEN_REVOKED_REASON,
   TOKEN_ROTATED_REASON,
+  wouldAuthorize,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
@@ -906,6 +912,81 @@ export async function handleAccessTokenList(
   }
 }
 
+/**
+ * Runs a token mint, rotate or revoke holding the token's name lock, so the
+ * handler's pull, writes and push are one critical section across every
+ * process that writes the datastore (swamp-club#2482).
+ *
+ * Called at the dispatch site, around the sync gate: a replica must never
+ * wait on a distributed lock while it holds the gate. A caller the handler
+ * is about to refuse takes no lock, so only an admin can make serve create
+ * or wait on one.
+ */
+export async function withServerTokenWriteLock(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  tokenIdOrName: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const admin = wouldAuthorize(socket, principal, "admin", {
+    kind: "access",
+    name: "*",
+    fields: {},
+  }, ctx);
+  if (!admin) return await fn();
+
+  // Until the handler starts, nothing has replied to the client, so a
+  // failure to resolve or take the lock is answered here. Once it has
+  // started it replies to its own failures.
+  let started = false;
+  try {
+    // Rotate and revoke accept a definition id; lock the name it resolves to
+    // so they exclude the same token's writers by name.
+    const tokenName = await serverTokenLockName(
+      ctx.repoContext.definitionRepo,
+      tokenIdOrName,
+    );
+    await withServerTokenLock(ctx.datastoreConfig, tokenName, () => {
+      started = true;
+      return fn();
+    });
+  } catch (error) {
+    if (started) throw error;
+    if (error instanceof LockTimeoutError) {
+      // The code and details serve's other lock timeouts carry, so a client
+      // retries this one the same way.
+      sendError(socket, requestId, "lock_timeout", error.message, {
+        retryable: true,
+        exceptionType: "LockTimeoutError",
+      });
+      return;
+    }
+    sendError(
+      socket,
+      requestId,
+      "access_token_lock_failed",
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+/**
+ * Brings the local copy of the datastore up to date before a token write, so
+ * the handler decides on the record another replica last pushed. Runs inside
+ * the handler's exclusive hold of the sync gate. A failed pull fails the
+ * request: writing over a stale record is what the lock exists to prevent.
+ */
+async function pullBeforeTokenWrite(ctx: ConnectionContext): Promise<void> {
+  if (!ctx.syncService) return;
+  const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+    ? ctx.datastoreConfig.namespace
+    : undefined;
+  const pulled = await ctx.syncService.pullChanged({ namespace });
+  if (pulled !== 0) ctx.repoContext.catalogStore.invalidate();
+}
+
 export async function handleAccessTokenRevoke(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -927,6 +1008,7 @@ export async function handleAccessTokenRevoke(
     { flush: () => pushChangedToRemote(ctx) },
     async () => {
       try {
+        await pullBeforeTokenWrite(ctx);
         const libCtx = handlerLibSwampContext(ctx);
         const deps = await createServerTokenRevokeDeps(
           libCtx,
@@ -997,6 +1079,7 @@ export async function handleAccessTokenRotate(
     { flush: () => pushChangedToRemote(ctx) },
     async () => {
       try {
+        await pullBeforeTokenWrite(ctx);
         const libCtx = handlerLibSwampContext(ctx);
         const deps = await createServerTokenRotateDeps(
           libCtx,
@@ -1101,6 +1184,7 @@ export async function handleAccessTokenMint(
     { flush: () => pushChangedToRemote(ctx) },
     async () => {
       try {
+        await pullBeforeTokenWrite(ctx);
         const libCtx = handlerLibSwampContext(ctx);
         const deps = await createServerTokenCreateDeps(
           libCtx,

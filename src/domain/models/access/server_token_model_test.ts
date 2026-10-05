@@ -28,8 +28,11 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   serverTokenModel,
   ServerTokenSchema,
+  serverTokenSecretFingerprint,
   serverTokenSecretKey,
+  ServerTokenSecretMismatchError,
   validateServerToken,
+  verifyServerTokenSecret,
 } from "./server_token_model.ts";
 import { createInMemoryWorkerContext } from "../worker/worker_test_helpers.ts";
 
@@ -590,4 +593,88 @@ Deno.test("serverTokenModel: lifecycle methods use 7d outputLifetime", () => {
   assertEquals(serverTokenModel.methods.rotate.outputLifetime, "7d");
   assertEquals(serverTokenModel.methods.revoke.outputLifetime, "7d");
   assertEquals(serverTokenModel.methods.expire.outputLifetime, "7d");
+});
+
+Deno.test("serverTokenModel: mint records the fingerprint of the secret it wrote", async () => {
+  const { store, plaintext } = await mintToken();
+  const token = ServerTokenSchema.parse(store.get("token-main"));
+  assertEquals(
+    token.secretFingerprint,
+    await serverTokenSecretFingerprint(plaintext),
+  );
+  assertEquals(token.secretFingerprint?.includes(plaintext), false);
+});
+
+Deno.test("serverTokenModel: rotate replaces the fingerprint with the new secret's", async () => {
+  const { context, store, vault } = await mintToken();
+  const before = store.get("token-main")!.secretFingerprint;
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const after = ServerTokenSchema.parse(store.get("token-main"));
+  assertNotEquals(after.secretFingerprint, before);
+  assertEquals(
+    after.secretFingerprint,
+    await serverTokenSecretFingerprint(
+      vault.get(`local/${serverTokenSecretKey("user-token-1")}`)!,
+    ),
+  );
+});
+
+Deno.test("serverTokenModel: revoke, expire and updateCollectives keep the fingerprint", async () => {
+  for (
+    const [method, args] of [
+      ["revoke", {}],
+      ["expire", {}],
+      ["updateCollectives", { collectives: ["a"], groups: [] }],
+    ] as const
+  ) {
+    const { context, store } = await mintToken();
+    const before = store.get("token-main")!.secretFingerprint;
+    await serverTokenModel.methods[method].execute(args, context);
+    assertEquals(store.get("token-main")!.secretFingerprint, before);
+  }
+});
+
+Deno.test("verifyServerTokenSecret: accepts the secret the record was minted with", async () => {
+  const { store, plaintext } = await mintToken();
+  await verifyServerTokenSecret(
+    ServerTokenSchema.parse(store.get("token-main")),
+    plaintext,
+  );
+});
+
+Deno.test("verifyServerTokenSecret: rejects another mint's secret", async () => {
+  const { store } = await mintToken();
+  const other = await mintToken();
+  await assertRejects(
+    () =>
+      verifyServerTokenSecret(
+        ServerTokenSchema.parse(store.get("token-main")),
+        other.plaintext,
+      ),
+    ServerTokenSecretMismatchError,
+    "come from different mints",
+  );
+});
+
+Deno.test("verifyServerTokenSecret: a record without a fingerprint passes", async () => {
+  const { store } = await mintToken();
+  const { secretFingerprint: _dropped, ...legacy } = ServerTokenSchema.parse(
+    store.get("token-main"),
+  );
+  await verifyServerTokenSecret(legacy, "any-secret");
+});
+
+Deno.test("serverTokenModel: redeem rejects a record paired with another mint's secret", async () => {
+  // The vault holds a second mint's secret while the record is the first's.
+  const { context, vault } = await mintToken();
+  const other = await mintToken();
+  vault.set(`local/${serverTokenSecretKey("user-token-1")}`, other.plaintext);
+  await assertRejects(
+    () =>
+      serverTokenModel.methods.redeem.execute(
+        { presentedToken: `user-token-1.${other.plaintext}` },
+        context,
+      ),
+    ServerTokenSecretMismatchError,
+  );
 });
