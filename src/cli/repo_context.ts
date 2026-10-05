@@ -1355,7 +1355,8 @@ export async function createModelLock(
  * Creates the distributed lock behind a workflow run's claim.
  *
  * A claim is held for one load, decision and save of the run record, so it
- * uses the per-model lock's short retry settings.
+ * uses the per-model lock's short retry settings. A resume's take-over also
+ * restores the run's sensitive values under it, which can read a vault.
  */
 export async function createWorkflowRunLock(
   config: DatastoreConfig,

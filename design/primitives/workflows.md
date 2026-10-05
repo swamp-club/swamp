@@ -1467,7 +1467,11 @@ first saved:
   resume takes over after cancel chose which process to stop: cancel checks
   the owner again under the claim, saves nothing over a live process it has
   not stopped, stops it, and settles again (`settleStoppingNewOwners`,
-  `src/cli/commands/workflow_cancel.ts`).
+  `src/cli/commands/workflow_cancel.ts`). It never stops a serve instance:
+  when the process that took the run over is `swamp serve` (an approval
+  through serve auto-resumed it), the local cancel is refused, saves nothing,
+  and points at `--server`. `cancel --all` lists such a run under
+  `notCancelled` and goes on to settle the rest.
 
 The local commands back the claim with a datastore lock per run
 (`createWorkflowRunClaims`, `src/cli/repo_context.ts`; the key is under
@@ -1475,9 +1479,11 @@ The local commands back the claim with a datastore lock per run
 processes that write the same datastore directory. With a custom datastore that
 has a local cache, the provider's lock orders writers on every machine, but
 each machine reads the run from its own cache and these commands do not pull
-under the claim, so two machines can still decide from different copies. Stopping a run's owner process happens before the claim is taken,
-and a resume releases the claim before any step runs: the claim is never held
-while work executes. `swamp serve` keeps other writers in its own process off a
+under the claim, so two machines can still decide from different copies.
+Stopping a run's owner process happens before the claim is taken, and a resume
+releases the claim before any step runs: the claim is never held while work
+executes. A resume whose preparation fails takes the claim again to put the
+run back, and leaves the record alone if a cancel settled it in the meantime. `swamp serve` keeps other writers in its own process off a
 run with its active-run registry reservation instead, and passes
 `unclaimedRuns` to approve, reject and resume; its supersede, which cancels
 locally-owned runs, takes the lock-backed claim. So a local approve or reject

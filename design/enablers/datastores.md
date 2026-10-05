@@ -1606,10 +1606,12 @@ callers strip the namespace from filesystem-relative paths with
 `stripNamespacePrefix()` before parsing.
 
 A workflow run's claim is a lock of its own:
-`{namespace}/workflow-run-claims/{runId}.lock`, built by `workflowRunLockKey()`
+`{namespace}/workflow-run-claims/{runId}/.lock`, built by `workflowRunLockKey()`
 in `lock.ts` and created by `createWorkflowRunLock` in `repo_context.ts`. It
 uses the per-model lock's retry settings, since it is held only for one load,
-decision and save of the run record. The key is outside `data/`, so
+decision and save of the run record (a resume's take-over also restores the
+run's sensitive values under it, which can read a vault). The file is named
+`.lock`, the one name sync never transfers. The key is outside `data/`, so
 `parseModelLockKey` rejects it and the structural commands' drain does not wait
 on it, and outside `workflow-runs/`, so the run repository never reads it. See
 "Run claims" in `design/primitives/workflows.md` for what takes it.

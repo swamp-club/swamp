@@ -6213,7 +6213,17 @@ export class WorkflowExecutionService {
       return await prepare();
     } catch (error) {
       try {
-        await this.saveRun(workflowId, WorkflowRun.fromData(snapshot));
+        // Under the claim, and only while the record is still the running
+        // one this resume saved: a cancel that settled the run while the
+        // resume prepared keeps its record.
+        await this.runClaims.withClaim(snapshot.id, async () => {
+          const stored = await this.runRepo.findById(
+            workflowId,
+            createWorkflowRunId(snapshot.id),
+          );
+          if (stored && stored.status !== "running") return;
+          await this.saveRun(workflowId, WorkflowRun.fromData(snapshot));
+        });
       } catch (restoreError) {
         getSwampLogger(["workflow", "resume"]).warn(
           "Could not restore run {runId} after a failed resume: {error}",

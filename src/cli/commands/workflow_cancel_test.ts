@@ -39,6 +39,7 @@ import {
   cancelLocalRun,
   isServeOwnedRun,
   OWNER_STOP_GRACE_MS,
+  RunNotCancelledError,
   SERVER_CANCEL_TIMEOUT_MS,
   serverCancelFailure,
   serverCancelRejection,
@@ -639,7 +640,7 @@ Deno.test("cancelLocalRun: gives up, saving nothing, when the run keeps being ta
             return true;
           },
         }),
-      UserError,
+      RunNotCancelledError,
       `is running under another process (pid ${Deno.pid + 5})`,
     );
 
@@ -685,6 +686,105 @@ Deno.test("cancelAllLocalRuns: stops a process that took a listed run over befor
 
     assertEquals(killed, [RESUMER_PID]);
     assertEquals(result.cancelled.map((entry) => entry.runId), [runId]);
+  });
+});
+
+Deno.test("cancelLocalRun: refuses, without a kill or a save, a run a serve instance took over", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    // Serve auto-resumed the run: the recorded pid is the server's own.
+    const SERVE_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData({
+        ...snapshotData(runId, SERVE_PID),
+        instanceId: "serve-1",
+      }),
+    );
+
+    const killed: number[] = [];
+    const error = await assertRejects(
+      () =>
+        cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
+          runRepo,
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
+          ...untracked,
+          liveness: { hostname: hostname(), isDead: () => false },
+          killProcess: (pid) => {
+            killed.push(pid);
+            return Promise.resolve(true);
+          },
+        }),
+      RunNotCancelledError,
+      "was taken over by a serve instance and was not cancelled",
+    );
+
+    assertEquals(
+      error.message.includes(
+        `swamp workflow cancel --run ${runId} --server <url>`,
+      ),
+      true,
+    );
+    assertEquals(killed, []);
+    const stored = await runRepo.findById(workflowId, snapshot.id);
+    assertEquals(stored?.status, "running");
+    assertEquals(stored?.instanceId, "serve-1");
+  });
+});
+
+Deno.test("cancelAllLocalRuns: reports a run serve took over as not cancelled and settles the rest", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const takenId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const taken = WorkflowRun.fromData(suspendedData(takenId));
+    const other = WorkflowRun.fromData(suspendedData(otherId));
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData({
+        ...snapshotData(takenId, Deno.pid + 2),
+        instanceId: "serve-1",
+      }),
+    );
+    await runRepo.save(workflowId, other);
+
+    const killed: number[] = [];
+    const result = await cancelAllLocalRuns(
+      [
+        { run: taken, workflow: WORKFLOW },
+        { run: other, workflow: WORKFLOW },
+      ],
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...untracked,
+        liveness: { hostname: hostname(), isDead: () => false },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    assertEquals(killed, []);
+    assertEquals(result.notCancelled.map((entry) => entry.runId), [takenId]);
+    assertEquals(result.notCancelled[0].status, "running");
+    assertEquals(result.cancelled.map((entry) => entry.runId), [otherId]);
+    assertEquals(
+      (await runRepo.findById(workflowId, taken.id))?.status,
+      "running",
+    );
+    assertEquals(
+      (await runRepo.findById(workflowId, other.id))?.status,
+      "cancelled",
+    );
   });
 });
 
@@ -876,6 +976,7 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
         runId: deletedId,
         workflowName: "test-workflow",
       }],
+      notCancelled: [],
     });
   });
 });

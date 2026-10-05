@@ -9890,6 +9890,50 @@ Deno.test("resume: restores a suspended run when evaluation fails before executi
   });
 });
 
+Deno.test("resume: a failed preparation does not restore over a run cancelled meanwhile", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow);
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    suspended.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, suspended);
+
+    const claimed: string[] = [];
+    service.runClaims = {
+      withClaim: async (runId, fn) => {
+        claimed.push(runId);
+        // The second claim is the restore's. A cancel settled the run while
+        // the resume prepared.
+        if (claimed.length === 2) {
+          await runRepo.save(
+            workflow.id,
+            WorkflowRun.fromData({
+              ...suspended.toData(),
+              status: "cancelled",
+            }),
+          );
+        }
+        return await fn();
+      },
+    };
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(claimed, [suspended.id, suspended.id]);
+    const stored = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(stored?.status, "cancelled");
+  });
+});
+
 Deno.test("resume: a failing restore still rethrows the original error", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = createArithmeticWorkflow(false);

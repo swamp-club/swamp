@@ -493,14 +493,14 @@ Deno.test("scanModelLocks: finds locks under namespace-scoped directory", async 
 Deno.test("workflowRunLockKey: without namespace", () => {
   assertEquals(
     workflowRunLockKey(undefined, "run-1"),
-    "workflow-run-claims/run-1.lock",
+    "workflow-run-claims/run-1/.lock",
   );
 });
 
 Deno.test("workflowRunLockKey: with namespace", () => {
   assertEquals(
     workflowRunLockKey("infra", "run-1"),
-    "infra/workflow-run-claims/run-1.lock",
+    "infra/workflow-run-claims/run-1/.lock",
   );
 });
 

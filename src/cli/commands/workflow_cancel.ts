@@ -275,6 +275,17 @@ async function closeStoppedOwnerRuns(
   }
 }
 
+/**
+ * A run this cancel left as it found it under the claim, because another
+ * process had taken it over.
+ */
+export class RunNotCancelledError extends UserError {
+  constructor(message: string, readonly status: string) {
+    super(message);
+    this.name = "RunNotCancelledError";
+  }
+}
+
 /** A live process that took the run over before cancel claimed it. */
 interface TakenOver {
   takenOverBy: number;
@@ -291,6 +302,8 @@ const MAX_TAKE_OVER_STOPS = 3;
  * Settles the run's record (see {@link settleCancelledRun}), first stopping
  * any process that took the run over since the caller stopped its owners.
  * `stopped` holds the pids already stopped and gains each one stopped here.
+ * Throws {@link RunNotCancelledError}, having saved nothing, for a run a
+ * serve instance took over or one that keeps being taken over.
  */
 async function settleStoppingNewOwners(
   run: WorkflowRun,
@@ -311,8 +324,9 @@ async function settleStoppingNewOwners(
     if (outcome === null || !("takenOverBy" in outcome)) return outcome;
     const pid = outcome.takenOverBy;
     if (stops >= MAX_TAKE_OVER_STOPS) {
-      throw new UserError(
+      throw new RunNotCancelledError(
         `Run ${run.id} is running under another process (pid ${pid}) and was not cancelled. Cancel it again.`,
+        "running",
       );
     }
     await stopOwner(pid, killProcess);
@@ -365,6 +379,15 @@ async function settleCancelledRun(
       current.status === "running" && owner !== undefined &&
       !stopped.has(owner) && !liveness.isDead(owner)
     ) {
+      // A serve instance resumed the run. Its pid is the server's own, which
+      // drives every other run it has: it is never stopped from here.
+      if (isServeOwnedRun(current)) {
+        throw new RunNotCancelledError(
+          `Run ${run.id} was taken over by a serve instance and was not cancelled. ` +
+            `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
+          current.status,
+        );
+      }
       return { takenOverBy: owner };
     }
     if (current.isCancellable) {
@@ -445,6 +468,13 @@ export interface CancelAllResult {
   }[];
   /** Runs whose record was deleted during the cancel. */
   deleted: { runId: string; workflowName: string }[];
+  /** Runs another process took over during the cancel, left as they were. */
+  notCancelled: {
+    runId: string;
+    workflowName: string;
+    status: string;
+    reason: string;
+  }[];
 }
 
 /**
@@ -471,18 +501,37 @@ export async function cancelAllLocalRuns(
     await closeStoppedOwnerRuns(pid, cancelled, reason, deps);
   }
 
-  const result: CancelAllResult = { cancelled: [], finished: [], deleted: [] };
+  const result: CancelAllResult = {
+    cancelled: [],
+    finished: [],
+    deleted: [],
+    notCancelled: [],
+  };
   for (const { run, workflow } of runs) {
     const workflowName = workflow.name;
     const previousStatus = run.status;
-    const finalRun = await settleStoppingNewOwners(
-      run,
-      workflow,
-      reason,
-      pids,
-      killProcess,
-      deps,
-    );
+    let finalRun: WorkflowRun | null;
+    try {
+      finalRun = await settleStoppingNewOwners(
+        run,
+        workflow,
+        reason,
+        pids,
+        killProcess,
+        deps,
+      );
+    } catch (error) {
+      // The other runs' owners are already stopped: their records still
+      // have to be settled.
+      if (!(error instanceof RunNotCancelledError)) throw error;
+      result.notCancelled.push({
+        runId: run.id,
+        workflowName,
+        status: error.status,
+        reason: error.message,
+      });
+      continue;
+    }
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {
@@ -709,17 +758,18 @@ export const workflowCancelCommand = withRemoteOptions(
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
       }
 
-      const { cancelled, finished, deleted } = await withRunTracker(
-        repoDir,
-        (runTracker) =>
-          cancelAllLocalRuns(localRuns, reason, {
-            runRepo,
-            findEvaluatedWorkflow,
-            runTracker,
-            runClaims,
-            outputRepo: repoContext.outputRepo,
-          }),
-      );
+      const { cancelled, finished, deleted, notCancelled } =
+        await withRunTracker(
+          repoDir,
+          (runTracker) =>
+            cancelAllLocalRuns(localRuns, reason, {
+              runRepo,
+              findEvaluatedWorkflow,
+              runTracker,
+              runClaims,
+              outputRepo: repoContext.outputRepo,
+            }),
+        );
 
       const serveSkipped = serveRuns.map(({ run, workflow }) => ({
         runId: run.id,
@@ -732,6 +782,7 @@ export const workflowCancelCommand = withRemoteOptions(
           cancelled,
           finished,
           deleted,
+          notCancelled,
           skipped: serveSkipped,
           count: cancelled.length,
           reason,
@@ -761,6 +812,13 @@ export const workflowCancelCommand = withRemoteOptions(
               .warn`  ${entry.workflowName} (${entry.runId})`;
           }
         }
+        if (notCancelled.length > 0) {
+          cliCtx.logger
+            .warn`${notCancelled.length} run(s) were taken over by another process and not cancelled`;
+          for (const entry of notCancelled) {
+            cliCtx.logger.warn`  ${entry.workflowName}: ${entry.reason}`;
+          }
+        }
         if (serveSkipped.length > 0) {
           cliCtx.logger
             .warn`Skipped ${serveSkipped.length} serve-owned run(s) — cancel these individually via --server --run <id>`;
@@ -771,7 +829,8 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         if (
           cancelled.length === 0 && finished.length === 0 &&
-          deleted.length === 0 && serveSkipped.length === 0
+          deleted.length === 0 && notCancelled.length === 0 &&
+          serveSkipped.length === 0
         ) {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
