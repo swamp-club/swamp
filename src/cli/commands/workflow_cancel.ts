@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { renderDetachedNestedRuns } from "./nested_run_hints.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   normalizeServerUrl,
@@ -553,10 +554,9 @@ export const workflowCancelCommand = withRemoteOptions(
         if (recordedReason !== undefined) {
           cliCtx.logger.info`Reason: ${recordedReason}`;
         }
-        for (const detached of remoteDetached) {
-          cliCtx.logger
-            .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
-        }
+        renderDetachedNestedRuns(cliCtx, remoteDetached, {
+          server: options.server as string | undefined,
+        });
       }
       return;
     }
@@ -781,10 +781,7 @@ export const workflowCancelCommand = withRemoteOptions(
       if (options.reason && status === "cancelled") {
         cliCtx.logger.info`Reason: ${reason}`;
       }
-      for (const detached of detachedNestedRuns) {
-        cliCtx.logger
-          .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
-      }
+      renderDetachedNestedRuns(cliCtx, detachedNestedRuns);
     }
   },
 );

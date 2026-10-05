@@ -27,6 +27,7 @@ import {
   type WorkflowApproveEvent,
 } from "../../libswamp/mod.ts";
 import {
+  type CommandContext,
   createContext,
   type GlobalOptions,
   resolveRepoDir,
@@ -36,12 +37,16 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import {
+  formatCommandTarget,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { parentResumeCommand } from "./nested_run_hints.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -52,6 +57,47 @@ type AnyOptions = any;
  */
 export function serveIsResuming(data: Record<string, unknown>): boolean {
   return data.autoResumed === true;
+}
+
+/**
+ * Renders an approval in log or JSON mode. The commands to run next go
+ * through writeOutput, not the logger: LogTape quotes interpolated values and
+ * the pretty sink wraps long lines, and either breaks a copy-pasted command
+ * (swamp-club#2977). `--quiet` hides them, as it hides the logger's info lines.
+ */
+export function renderApproveResult(
+  cliCtx: CommandContext,
+  data: WorkflowApproveData,
+  remote?: { server?: string; serveResuming: boolean },
+): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify(data));
+    return;
+  }
+  cliCtx.logger
+    .info`Approved step ${data.stepName} in workflow ${data.workflowName}`;
+  if (remote?.serveResuming) {
+    cliCtx.logger.info`Serve is resuming run ${data.runId} automatically`;
+  }
+  if (cliCtx.verbosity === "quiet") return;
+  const target = remote ? formatCommandTarget({ server: remote.server }) : "";
+  if (!remote?.serveResuming) {
+    writeOutput(
+      `After approval: swamp workflow resume ${
+        quoteShellWord(data.workflowName)
+      } --run ${data.runId}${target}`,
+    );
+  }
+  const parent = data.awaitingParent;
+  if (parent) {
+    writeOutput(
+      remote
+        ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${
+          parentResumeCommand(parent, remote)
+        }`
+        : `Once it finishes, resume the parent run: ${parent.resumeCommand}`,
+    );
+  }
 }
 
 export const workflowApproveCommand = withRemoteOptions(
@@ -112,23 +158,10 @@ export const workflowApproveCommand = withRemoteOptions(
         {
           resolving: () => {},
           completed: (e) => {
-            if (cliCtx.outputMode === "json") {
-              console.log(JSON.stringify(e.data));
-            } else {
-              cliCtx.logger
-                .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
-              if (serveIsResuming(response.data)) {
-                cliCtx.logger
-                  .info`Serve is resuming run ${e.data.runId} automatically`;
-              } else {
-                cliCtx.logger
-                  .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId} --server <url>`;
-              }
-              if (e.data.awaitingParent) {
-                cliCtx.logger
-                  .info`Once it finishes, resume the parent run unless serve resumes it automatically: ${e.data.awaitingParent.resumeCommand}`;
-              }
-            }
+            renderApproveResult(cliCtx, e.data, {
+              server: options.server as string | undefined,
+              serveResuming: serveIsResuming(response.data),
+            });
           },
           error: (e) => {
             throw userErrorFromSwampError(e.error);
@@ -159,18 +192,7 @@ export const workflowApproveCommand = withRemoteOptions(
       {
         resolving: () => {},
         completed: (e) => {
-          if (cliCtx.outputMode === "json") {
-            console.log(JSON.stringify(e.data));
-          } else {
-            cliCtx.logger
-              .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
-            cliCtx.logger
-              .info`After approval: swamp workflow resume ${e.data.workflowName} --run ${e.data.runId}`;
-            if (e.data.awaitingParent) {
-              cliCtx.logger
-                .info`Once it finishes, resume the parent run: ${e.data.awaitingParent.resumeCommand}`;
-            }
-          }
+          renderApproveResult(cliCtx, e.data);
         },
         error: (e) => {
           throw userErrorFromSwampError(e.error);
