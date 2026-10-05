@@ -60,6 +60,7 @@ import {
 } from "../src/cli/managed_config_sync.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { UserError } from "../src/domain/errors.ts";
+import { SyncTimeoutError } from "../src/domain/datastore/datastore_sync_service.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -69,7 +70,7 @@ import {
 import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
-import { saveData, saveModel } from "./serve_request_harness.ts";
+import { saveData, saveModel, saveWorkflow } from "./serve_request_harness.ts";
 import {
   baseline,
   cacheDir,
@@ -1137,5 +1138,108 @@ Deno.test("worker token revoke: a failed mid-command push throws the push error,
     assertEquals(syncOrder(repos, base), ["pull", "push", "release"]);
     assertEquals(getRegisteredLockKeys(), [], "locks released");
     assertEquals(await dirtyOnA(repos), []);
+  });
+});
+
+// --- Coordinator-only commands: the teardown push (swamp-club#3055) -----
+
+/** Captures every warning or error logged under any category while `fn` runs. */
+async function captureWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return captured.map((record) =>
+    `${record.category.join(".")} ${record.level}: ${renderRecord(record)}`
+  );
+}
+
+/** Seeds A with a model and a workflow, and lands them on the remote. */
+async function seedWorkflow(repos: RowRepos): Promise<void> {
+  const model = await saveModel(repos.serveRepo, "m1");
+  await saveWorkflow(repos.serveRepo, "wf1", model);
+  await settle(repos);
+}
+
+function workflowDelete(repos: RowRepos, name: string): string[] {
+  return ["workflow", "delete", name, "--force", "--repo-dir", repos.repoA];
+}
+
+function injectedTimeout(repos: RowRepos): SyncTimeoutError {
+  return new SyncTimeoutError(typeName(repos), "push", 1000);
+}
+
+Deno.test("workflow delete: a failed coordinator push warns once after the command succeeded, and releases the global lock", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    await seedWorkflow(repos);
+    const base = baseline(repos);
+    repos.remote.failNext("push", new Error("injected push failure"), {
+      instance: "A",
+    });
+    const warnings = await captureWarnings(async () => {
+      await runCli({ args: [...workflowDelete(repos, "wf1"), "--json"] });
+    });
+    assertEquals(warnings, [
+      `datastore.sync warning: ${
+        typeName(repos)
+      } push failed: injected push failure`,
+    ]);
+    assertEquals(syncOrder(repos, base), ["pull", "release"]);
+    assertEquals(getRegisteredLockKeys(), [], "global lock released");
+  });
+});
+
+Deno.test("workflow delete: a timed-out coordinator push after the command succeeded throws the timeout and releases the global lock", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    await seedWorkflow(repos);
+    const base = baseline(repos);
+    const timeout = injectedTimeout(repos);
+    repos.remote.failNext("push", timeout, { instance: "A" });
+    let error: unknown;
+    const warnings = await captureWarnings(async () => {
+      error = await assertRejects(() =>
+        runCli({ args: [...workflowDelete(repos, "wf1"), "--json"] })
+      );
+    });
+    assertEquals(error, timeout);
+    assertEquals(warnings, []);
+    assertEquals(syncOrder(repos, base), ["pull", "release"]);
+    assertEquals(getRegisteredLockKeys(), [], "global lock released");
+  });
+});
+
+Deno.test("workflow delete: a timed-out coordinator push after the command failed is silent, and the command's error wins", async () => {
+  await withRepos(SINGLE_PHASE, async (repos) => {
+    await seedWorkflow(repos);
+    // An unpushed write, so the push reaches the remote rather than taking
+    // the clean fast path that never fails.
+    await writeData(repos, await saveModel(repos.serveRepo, "m2"), "item");
+    const base = baseline(repos);
+    repos.remote.failNext("push", injectedTimeout(repos), { instance: "A" });
+    let error: unknown;
+    const warnings = await captureWarnings(async () => {
+      error = await runCliRejecting({
+        args: [...workflowDelete(repos, "missing"), "--json"],
+      });
+    });
+    assertInstanceOf(error, UserError);
+    assert(!(error instanceof SyncTimeoutError), "the command's own error");
+    assertEquals(error.message, "Workflow not found: missing");
+    assertEquals(warnings, []);
+    assertEquals(syncOrder(repos, base), ["pull", "release"]);
+    assertEquals(getRegisteredLockKeys(), [], "global lock released");
+    assert((await dirtyOnA(repos)).length > 0, "the write stays dirty");
   });
 });

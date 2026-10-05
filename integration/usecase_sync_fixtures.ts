@@ -54,6 +54,7 @@ import { dataCommand } from "../src/cli/commands/data.ts";
 import { datastoreCommand } from "../src/cli/commands/datastore.ts";
 import { extensionCommand } from "../src/cli/commands/extension.ts";
 import { modelCommand } from "../src/cli/commands/model_create.ts";
+import { runCommand } from "../src/cli/commands/run.ts";
 import { vaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
 import { workflowCommand } from "../src/cli/commands/workflow.ts";
@@ -399,6 +400,7 @@ function root(): CliRoot {
     .command("datastore", datastoreCommand)
     .command("extension", extensionCommand)
     .command("model", modelCommand)
+    .command("run", runCommand)
     .command("vault", vaultCommand)
     .command("worker", workerCommand)
     .command("workflow", workflowCommand);
@@ -445,8 +447,9 @@ export interface CliInvocation {
 
 /**
  * Parses the real command in-process, then flushes registered syncs as
- * `src/cli/mod.ts` does at teardown. Returns what the command logged to
- * stdout. Asserts the command left `Deno.exitCode` unchanged.
+ * `src/cli/mod.ts` does at teardown, or best-effort when the command threw,
+ * as its error path does. Returns what the command logged to stdout.
+ * Asserts the command left `Deno.exitCode` unchanged.
  */
 export async function runCli(invocation: CliInvocation): Promise<string[]> {
   const stdout: string[] = [];
@@ -458,10 +461,19 @@ export async function runCli(invocation: CliInvocation): Promise<string[]> {
   };
   try {
     const parse = () => root().parse(invocation.args);
-    if (invocation.stdin !== undefined) {
-      await withStdin(invocation.stdin, parse);
-    } else {
-      await parse();
+    try {
+      if (invocation.stdin !== undefined) {
+        await withStdin(invocation.stdin, parse);
+      } else {
+        await parse();
+      }
+    } catch (error) {
+      try {
+        await flushDatastoreSync();
+      } catch {
+        // Best effort, as mod.ts: the command's error takes precedence.
+      }
+      throw error;
     }
     await flushDatastoreSync();
     assertEquals(
@@ -615,7 +627,9 @@ export interface UseCaseRow<S = void> {
   /**
    * {@link syncOrder} for each composition switched to a root unit, recorded
    * from the composition before it adopted the root, so adopting it cannot
-   * move a push across a lock release or gate exit.
+   * move a push across a lock release or gate exit. A composition not yet
+   * in a root unit is checked against its pin too, so the pin is recorded
+   * from the code before the switch.
    */
   syncOrder?: Partial<Record<Composition, string[]>>;
   seed?: (repos: RowRepos, composition: Composition) => Promise<S>;
@@ -691,6 +705,15 @@ export async function runRow<S>(
         units,
         observation,
         syncOrder(repos, base),
+      );
+    } else if (row.syncOrder?.[composition] !== undefined) {
+      // Pinned ahead of the composition adopting a root unit, so the pin is
+      // checked against the code it was recorded from.
+      assertEquals(
+        syncOrder(repos, base),
+        row.syncOrder[composition],
+        `${row.name} (${composition}): pushes moved relative to lock ` +
+          "release or gate exit",
       );
     }
     await row.verify?.(repos, seed, composition);

@@ -133,7 +133,9 @@ const ROWS: AnyRow[] = [
     // Serve runs the handler in a root unit of work (swamp-club#3034),
     // pinned to push before the gate exit, as it did before.
     rootUnit: { serve: true },
-    syncOrder: { serve: ["push", "release"] },
+    // The CLI's syncOrder was recorded while it pushed only at the
+    // coordinator's teardown flush (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     // collectGarbage removes versions in parallel batches, so it marks them
     // in filesystem order.
     parallelMarks: true,
@@ -149,7 +151,9 @@ const ROWS: AnyRow[] = [
     // Serve runs the handler in a root unit of work (swamp-club#3034),
     // pinned to push before the gate exit, as it did before.
     rootUnit: { serve: true },
-    syncOrder: { serve: ["push", "release"] },
+    // The CLI's syncOrder was recorded while it pushed only at the
+    // coordinator's teardown flush (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     seed: async (repos) => {
       // Data whose model definition was never saved is orphaned.
       const orphan = Definition.create({ name: "gone", globalArguments: {} });
@@ -157,6 +161,15 @@ const ROWS: AnyRow[] = [
     },
     cli: (repos) => ({ args: ["data", "prune", "--force", ...json(repos)] }),
     serve: () => ({ type: "data.prune", payload: {} }),
+  }),
+  row({
+    name: "datastore compact",
+    // Takes the global lock and writes nothing to the datastore; pinned
+    // while it pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
+    cli: (repos) => ({ args: ["datastore", "compact", ...json(repos)] }),
+    serve: null,
   }),
 ];
 
@@ -335,6 +348,15 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": [],
       },
     },
+  },
+  "datastore compact": {
+    // The coordinator's pull on open and an empty single-phase push at the
+    // teardown flush: compaction touches only the local catalog.
+    cli: {
+      "ops": ["pull[0]", "push[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
   },
 };
 

@@ -28,6 +28,10 @@ import { parse, stringify } from "@std/yaml";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import {
   saveGatedWorkflow,
@@ -248,6 +252,29 @@ const seedModelAndWorkflow = async (repos: RowRepos) => {
   await saveWorkflow(repos.serveRepo, "wf1", model);
 };
 
+/**
+ * A model and a workflow whose step names the model with an expression, so
+ * `workflow evaluate` cannot resolve its model locks and takes the global
+ * lock instead.
+ */
+const seedModelAndDynamicWorkflow = async (repos: RowRepos) => {
+  await saveModel(repos.serveRepo, "m1");
+  await repos.a.repoContext.workflowRepo.save(Workflow.create({
+    name: "wf1",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "noop",
+            task: StepTask.modelMethod('${{ "m1" }}', "noop"),
+          }),
+        ],
+      }),
+    ],
+  }));
+};
+
 function modelDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model delete${managedConfig ? " (managedConfig)" : ""}`,
@@ -283,8 +310,10 @@ function workflowDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow delete${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { serve: true },
-    // Recorded before serve adopted a root unit (swamp-club#3035).
-    syncOrder: { serve: ["push", "release"] },
+    // Recorded before serve adopted a root unit (swamp-club#3035), and while
+    // the CLI pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     options: { managedConfig },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
@@ -347,6 +376,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model evaluate (all)",
+    // Recorded while the CLI pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
     },
@@ -375,11 +407,60 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow evaluate (all)",
+    // Recorded while the CLI pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
       args: ["workflow", "evaluate", "--all", ...json(repos)],
     }),
     serve: () => ({ type: "workflow.evaluate", payload: {} }),
+  }),
+  row({
+    name: "workflow evaluate (dynamic model references)",
+    // The CLI runs in a root unit with no push of its own and takes the
+    // global lock; recorded while it pushed only at the coordinator's
+    // teardown flush (swamp-club#3055).
+    rootUnit: { cli: true },
+    syncOrder: { cli: ["pull", "push", "release"] },
+    seed: seedModelAndDynamicWorkflow,
+    cli: (repos) => ({
+      args: ["workflow", "evaluate", "wf1", ...json(repos)],
+    }),
+    serve: null,
+  }),
+  row({
+    name: "workflow delete (use case fails)",
+    // Recorded while the CLI pushed only at the coordinator's flush, which
+    // mod.ts runs best-effort after a failed command (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
+    refuses: true,
+    cli: (repos) => ({
+      args: ["workflow", "delete", "missing", "--force", ...json(repos)],
+    }),
+    serve: null,
+  }),
+  row({
+    name: "model validate (with check options)",
+    // Check options open with requireInitializedRepo; nothing is written.
+    // Recorded while the CLI pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
+    seed: async (repos) => {
+      await saveModel(repos.serveRepo, "m1");
+    },
+    cli: (repos) => ({
+      args: ["model", "validate", "m1", "--label", "none", ...json(repos)],
+    }),
+    serve: null,
+  }),
+  row({
+    name: "run gc",
+    // Recorded while the CLI pushed only at the coordinator's teardown flush
+    // (swamp-club#3055).
+    syncOrder: { cli: ["pull", "push", "release"] },
+    cli: (repos) => ({ args: ["run", "gc", "--force", ...json(repos)] }),
+    serve: null,
   }),
   row({
     name: "model method run",
@@ -994,6 +1075,42 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
+  },
+  "workflow evaluate (dynamic model references)": {
+    // GAP: unmarked evaluated writes, as above. The global lock's
+    // coordinator pulls on open and pushes empty at the teardown flush; the
+    // command's own root has no push.
+    cli: {
+      "ops": ["pull[0]", "push[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
+  },
+  "workflow delete (use case fails)": {
+    // The lookup fails under the global lock; the coordinator's pull, then
+    // its best-effort push after the failure.
+    cli: {
+      "ops": ["pull[0]", "push[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+      "error": "Workflow not found: missing",
+    },
+    serve: null,
+  },
+  "model validate (with check options)": {
+    // Writes nothing: the coordinator's pull and empty teardown push.
+    cli: {
+      "ops": ["pull[0]", "push[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
+  },
+  "run gc": {
+    // Nothing past retention: the coordinator's pull and empty teardown push.
+    cli: {
+      "ops": ["pull[0]", "push[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
   },
   "workflow approve": {
     // GAP: the CLI marks the run file but never pushes it. It opens with
