@@ -28,10 +28,21 @@
 
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
+import { useUnitOfWorkFactoryForTesting } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import { handleMessage } from "../src/serve/connection.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import {
+  CALLER,
   type Frame,
   saveData,
   saveGatedWorkflow,
@@ -306,5 +317,153 @@ Deno.test("serve root units: concurrent requests get separate roots, each pushin
       true,
       "the second request's marks follow the first gate exit",
     );
+  });
+});
+
+/**
+ * A parent workflow (auto-resume on) whose first step runs `child`, a
+ * workflow suspended at its `gate` approval.
+ */
+async function saveParentAwaitingGatedChild(
+  repos: Parameters<Parameters<typeof withRowRepos>[1]>[0],
+): Promise<{ parent: Workflow; child: Workflow }> {
+  const child = Workflow.create({
+    name: "gated-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve the child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "waiting-parent",
+    autoResume: true,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-nested",
+            task: StepTask.workflow(child.name),
+          }),
+          Step.create({
+            name: "after-nested",
+            task: StepTask.model("m1", "noop"),
+            dependsOn: [{
+              step: "call-nested",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+        ],
+      }),
+    ],
+  });
+  await repos.a.repoContext.workflowRepo.save(child);
+  await repos.a.repoContext.workflowRepo.save(parent);
+  return { parent, child };
+}
+
+Deno.test("serve root units: a workflow.reject whose reply fails after the save still resumes the parent and pushes once", async () => {
+  await withRowRepos({}, async (repos) => {
+    const { parent, child } = await saveParentAwaitingGatedChild(repos);
+    await executeWorkflowWithLocks(
+      repos.a.repoDir,
+      repos.a.repoContext,
+      repos.a.datastoreConfig,
+      {
+        workflowIdOrName: parent.name,
+        inputs: {},
+        instanceId: crypto.randomUUID(),
+      },
+      new AbortController().signal,
+      () => {},
+      repos.a.syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    const runRepo = repos.a.repoContext.workflowRunRepo;
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(parentRun.status, "suspended");
+    assertEquals(childRun.status, "suspended");
+    await settle(repos);
+
+    const registry = new ActiveRunRegistry();
+    const ctx = serveCtx(repos, { activeRunRegistry: registry });
+    const pushes = () =>
+      repos.remote.ops().filter((op) => op.instance === "A" && op.op === "push")
+        .length;
+    // Each root's flush, with the pushes it made.
+    const rootFlushes: number[] = [];
+    const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+      const flush = options.flush;
+      return createLegacyUnitOfWork(markDirty, {
+        flush: options.role === "root" && flush !== undefined
+          ? async () => {
+            const before = pushes();
+            await flush();
+            rootFlushes.push(pushes() - before);
+          }
+          : flush,
+        parent: options.parent,
+        afterCommit: "forward",
+      });
+    });
+    try {
+      // The socket closes while the reject's reply is sent: that send throws,
+      // and the error reply after it is dropped, as the socket is closed.
+      const socket = {
+        readyState: WebSocket.OPEN,
+        send(data: string) {
+          if (JSON.parse(data).type === "workflow.reject") {
+            socket.readyState = WebSocket.CLOSED;
+            throw new Error("socket closed mid-send");
+          }
+        },
+        close() {},
+      };
+      const requestId = crypto.randomUUID();
+      const active = new Map<string, AbortController>();
+      handleMessage(
+        socket as unknown as WebSocket,
+        ctx,
+        active,
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "workflow.reject",
+            id: requestId,
+            payload: {
+              workflowIdOrName: child.name,
+              runId: childRun.id,
+              stepName: "gate",
+              reason: "not today",
+            },
+          }),
+        }),
+        CALLER,
+      );
+      await waitFor(() => !active.has(requestId), "the reject finished");
+
+      // The rejection was saved before the reply failed, so the parent still
+      // resumes, and fails its step as a rejected approval.
+      await waitFor(
+        async () =>
+          (await runRepo.findById(parent.id, parentRun.id))?.status ===
+            "failed" && registry.size === 0,
+        "the parent resumed after its child was rejected",
+      );
+      const rejectedChild = await runRepo.findById(child.id, childRun.id);
+      assertEquals(rejectedChild?.status, "failed");
+    } finally {
+      dispose();
+    }
+    // The reject's root pushed exactly once; the resume pushes on its own.
+    assertEquals(rootFlushes, [1]);
   });
 });
