@@ -34,6 +34,7 @@ import {
   parseModelLockKey,
   parseModelSpec,
   stripNamespacePrefix,
+  workflowRunLockKey,
 } from "./lock.ts";
 
 const sampleLockInfo: LockInfo = {
@@ -485,4 +486,25 @@ Deno.test("scanModelLocks: finds locks under namespace-scoped directory", async 
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+// ── workflowRunLockKey ────────────────────────────────────────────────
+
+Deno.test("workflowRunLockKey: without namespace", () => {
+  assertEquals(
+    workflowRunLockKey(undefined, "run-1"),
+    "workflow-run-claims/run-1.lock",
+  );
+});
+
+Deno.test("workflowRunLockKey: with namespace", () => {
+  assertEquals(
+    workflowRunLockKey("infra", "run-1"),
+    "infra/workflow-run-claims/run-1.lock",
+  );
+});
+
+Deno.test("workflowRunLockKey: is not read as a per-model lock", () => {
+  const rel = workflowRunLockKey(undefined, "run-1").split("/").join(SEPARATOR);
+  assertEquals(parseModelLockKey(rel), null);
 });

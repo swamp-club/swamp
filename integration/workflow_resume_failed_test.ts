@@ -90,6 +90,7 @@ import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts"
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
@@ -602,6 +603,7 @@ for (
           {
             findSuspendedRuns: (id) => runRepo.findAllByWorkflowId(id),
             findEvaluatedWorkflow: () => Promise.resolve(null),
+            runClaims: unclaimedRuns,
           },
           runRepo,
         );

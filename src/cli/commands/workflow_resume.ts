@@ -28,6 +28,7 @@ import {
 import {
   acquireModelLocks,
   createLockProgressWriter,
+  createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -455,6 +456,8 @@ export const workflowResumeCommand = withRemoteOptions(
       unlocked.vaultsDir,
       unlocked.datastoreResolver,
     );
+
+    service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
 
     const abort = new AbortController();
     const timeoutMs = options.timeout

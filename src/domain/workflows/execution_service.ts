@@ -40,6 +40,7 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "./workflow_run.ts";
+import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
   MAX_WORKFLOW_NESTING_DEPTH,
   type ParentRunRef,
@@ -2652,6 +2653,12 @@ export class WorkflowExecutionService {
   workflowGateService?:
     import("../models/workflow_gate_service.ts").WorkflowGateService;
 
+  /**
+   * Claims a run while a resume takes it over. Defaults to no claim, for a
+   * caller that already keeps other writers off the run.
+   */
+  runClaims: WorkflowRunClaims = unclaimedRuns;
+
   constructor(
     private readonly workflowRepo: WorkflowRepository,
     private readonly runRepo: WorkflowRunRepository,
@@ -3434,60 +3441,24 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Resumes a workflow run, keeping its run ID and completed step results.
-   *
-   * - A suspended run continues once every approval gate is decided, unless
-   *   the workflow changed shape since the run (see
-   *   {@link checkSuspendedRunResume}).
-   * - A failed run with `fromStep` re-enters at that step and its dependents.
-   * - A failed run without `fromStep` retries: every failed step's entry
-   *   template and its dependents are reset (see {@link planFailedRunResume}).
-   *
-   * Terminal steps outside the reset set are skipped and their outputs are
-   * restored into `steps.*`. Override `inputs` are coerced to their declared
-   * types and checked against the workflow's input schema, as `workflow run`
-   * does; a mismatch is a refusal (see {@link coerceResumeInputs}). A
-   * refusal changes nothing; a failure after the run is marked running but
-   * before execution starts restores the run.
+   * Loads the run a resume names, checks it may be resumed, records this
+   * process as its owner and saves it as running. The caller holds the run's
+   * claim for the whole call, so the checks are made on the run as stored and
+   * nothing saves between the load and the save. Returns the run, the
+   * record as it was stored, and the coerced resume inputs.
    */
-  async *resume(
+  private async takeOverRun(
+    workflow: Workflow,
     workflowIdOrName: string,
     runId: string,
+    sensitiveValues: RunSensitiveValues,
     options?: {
-      signal?: AbortSignal;
-      runtimeTags?: Record<string, string>;
-      reportFilterOptions?: ReportFilterOptions;
-      swampSha?: string;
-      /** Additional/override inputs supplied at resume time (CLI --input). */
       inputs?: Record<string, unknown>;
-      /** Minimum assert severity that fails the run */
-      assertFailOnSeverity?: AssertSeverity;
-      /** Re-enter the DAG at this step (template name from the workflow YAML). */
       fromStep?: string;
-      /**
-       * Accept only a suspended run. Auto-resume after an approval sets it so
-       * an approval can never start a retry of a failed run.
-       */
       suspendedOnly?: boolean;
-      /**
-       * The serve instance driving this resume. Omitted for a local resume,
-       * which clears any instance id the run carried.
-       */
       instanceId?: string;
-      /**
-       * How long after an abort the resume waits for its model methods to
-       * stop before recording its cancellation; defaults to
-       * {@link STEP_STOP_GRACE_MS}.
-       */
-      stepStopGraceMs?: number;
     },
-  ): AsyncGenerator<WorkflowExecutionEvent> {
-    const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
-      await this.workflowRepo.findById(createWorkflowId(workflowIdOrName));
-    if (!workflow) {
-      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-    }
-
+  ) {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
       createWorkflowRunId(runId),
@@ -3495,11 +3466,6 @@ export class WorkflowExecutionService {
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
-    // Created before anything is resolved, so every sensitive value this
-    // resume reads, from the stored run or afterwards, is recorded and
-    // redacted from its logs.
-    const secretRedactor = new SecretRedactor();
-    const sensitiveValues = new RunSensitiveValues(secretRedactor);
     // The stored run holds vault references where it held sensitive values;
     // only the entries swamp listed are restored, from stored state alone and
     // before any caller-supplied resume input is merged in.
@@ -3581,6 +3547,93 @@ export class WorkflowExecutionService {
     // The running status saved here also stops a second resume of this run
     // from starting while this one prepares.
     await this.saveRun(workflow.id, existingRun);
+    return { existingRun, snapshot, resumeInputs };
+  }
+
+  /**
+   * Resumes a workflow run, keeping its run ID and completed step results.
+   *
+   * - A suspended run continues once every approval gate is decided, unless
+   *   the workflow changed shape since the run (see
+   *   {@link checkSuspendedRunResume}).
+   * - A failed run with `fromStep` re-enters at that step and its dependents.
+   * - A failed run without `fromStep` retries: every failed step's entry
+   *   template and its dependents are reset (see {@link planFailedRunResume}).
+   *
+   * Terminal steps outside the reset set are skipped and their outputs are
+   * restored into `steps.*`. Override `inputs` are coerced to their declared
+   * types and checked against the workflow's input schema, as `workflow run`
+   * does; a mismatch is a refusal (see {@link coerceResumeInputs}). A
+   * refusal changes nothing; a failure after the run is marked running but
+   * before execution starts restores the run.
+   */
+  async *resume(
+    workflowIdOrName: string,
+    runId: string,
+    options?: {
+      signal?: AbortSignal;
+      runtimeTags?: Record<string, string>;
+      reportFilterOptions?: ReportFilterOptions;
+      swampSha?: string;
+      /** Additional/override inputs supplied at resume time (CLI --input). */
+      inputs?: Record<string, unknown>;
+      /** Minimum assert severity that fails the run */
+      assertFailOnSeverity?: AssertSeverity;
+      /** Re-enter the DAG at this step (template name from the workflow YAML). */
+      fromStep?: string;
+      /**
+       * Accept only a suspended run. Auto-resume after an approval sets it so
+       * an approval can never start a retry of a failed run.
+       */
+      suspendedOnly?: boolean;
+      /**
+       * The serve instance driving this resume. Omitted for a local resume,
+       * which clears any instance id the run carried.
+       */
+      instanceId?: string;
+      /**
+       * How long after an abort the resume waits for its model methods to
+       * stop before recording its cancellation; defaults to
+       * {@link STEP_STOP_GRACE_MS}.
+       */
+      stepStopGraceMs?: number;
+    },
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
+      await this.workflowRepo.findById(createWorkflowId(workflowIdOrName));
+    if (!workflow) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+
+    // Read once so a run that does not exist is refused before anything is
+    // claimed, and the claim is taken on the stored run's own id.
+    const located = await this.runRepo.findById(
+      workflow.id,
+      createWorkflowRunId(runId),
+    );
+    if (!located) {
+      throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    // Created before anything is resolved, so every sensitive value this
+    // resume reads, from the stored run or afterwards, is recorded and
+    // redacted from its logs.
+    const secretRedactor = new SecretRedactor();
+    const sensitiveValues = new RunSensitiveValues(secretRedactor);
+    // Taken over under the run's claim, which is released before anything
+    // executes: a cancel either lands first and is seen here, or finds the
+    // run running under this process (swamp-club#2919).
+    const { existingRun, snapshot, resumeInputs } = await this.runClaims
+      .withClaim(
+        located.id,
+        () =>
+          this.takeOverRun(
+            workflow,
+            workflowIdOrName,
+            runId,
+            sensitiveValues,
+            options,
+          ),
+      );
     // The tracker row follows at once: a serve boot that found the record
     // running beside a stale row would otherwise interrupt this resume.
     const handBackTrackerRow = this.handOverTrackerRow(

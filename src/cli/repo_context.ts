@@ -49,7 +49,10 @@ import {
   modelLockKey,
   parseModelLockKey,
   stripNamespacePrefix,
+  workflowRunLockKey,
 } from "../libswamp/mod.ts";
+import type { WorkflowRunClaims } from "../domain/workflows/run_claim.ts";
+import { isUuid } from "../domain/models/model_lookup.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { RENAMED_DATASTORE_TYPES } from "../domain/datastore/renamed_datastore_types.ts";
 import {
@@ -1346,6 +1349,49 @@ export async function createModelLock(
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
   });
+}
+
+/**
+ * Creates the distributed lock behind a workflow run's claim.
+ *
+ * A claim is held for one load, decision and save of the run record, so it
+ * uses the per-model lock's short retry settings.
+ */
+export async function createWorkflowRunLock(
+  config: DatastoreConfig,
+  runId: string,
+): Promise<DistributedLock> {
+  // The id becomes part of the lock's path. A run id is always a UUID.
+  if (!isUuid(runId)) {
+    throw new UserError(`Not a workflow run id: ${runId}`);
+  }
+  const lockKey = workflowRunLockKey(config.namespace, runId);
+  const maxWaitMs = resolveLockTimeoutMs();
+  if (isCustomDatastoreConfig(config)) {
+    const provider = await resolveCustomProvider(config);
+    return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
+  }
+  return new FileLock(config.path, {
+    lockKey,
+    maxWaitMs,
+    retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
+    maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
+  });
+}
+
+/**
+ * Claims on the repository's workflow runs, each backed by a datastore lock,
+ * so they exclude every swamp process that writes the same datastore.
+ */
+export function createWorkflowRunClaims(
+  config: DatastoreConfig,
+): WorkflowRunClaims {
+  return {
+    withClaim: async (runId, fn) => {
+      const lock = await createWorkflowRunLock(config, runId);
+      return await lock.withLock(fn);
+    },
+  };
 }
 
 /**

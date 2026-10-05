@@ -34,6 +34,8 @@ import {
   buildMarkDirtyHook,
   createLockProgressWriter,
   createModelLock,
+  createWorkflowRunClaims,
+  createWorkflowRunLock,
   datastoreGlobalLockOptions,
   ensureManagedConfigBase,
   flushSinglePhasePush,
@@ -686,6 +688,84 @@ Deno.test("createModelLock - creates lock with correct path for filesystem", asy
     // Verify we can inspect (no lock held)
     const info = await lock.inspect();
     assertEquals(info, null);
+  });
+});
+
+Deno.test("createWorkflowRunLock - uses the per-model lock's short retry settings", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lock = await createWorkflowRunLock(
+      datastoreConfig,
+      crypto.randomUUID(),
+    );
+
+    assertEquals(await lock.inspect(), null);
+    assertEquals(
+      (lock as FileLock).retryIntervalMs,
+      MODEL_LOCK_RETRY_INTERVAL_MS,
+    );
+    assertEquals((lock as FileLock).maxBackoffMs, MODEL_LOCK_MAX_BACKOFF_MS);
+  });
+});
+
+Deno.test("createWorkflowRunLock - refuses an id that is not a run id", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    // The id is part of the lock file's path.
+    await assertRejects(
+      () => createWorkflowRunLock(datastoreConfig, "../../outside"),
+      UserError,
+      "Not a workflow run id",
+    );
+  });
+});
+
+Deno.test("createWorkflowRunClaims - holds the run's lock for the callback and releases it after", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const runId = crypto.randomUUID();
+    const otherRunId = crypto.randomUUID();
+    const claims = createWorkflowRunClaims(datastoreConfig);
+    const observer = await createWorkflowRunLock(datastoreConfig, runId);
+    const otherObserver = await createWorkflowRunLock(
+      datastoreConfig,
+      otherRunId,
+    );
+
+    const result = await claims.withClaim(runId, async () => {
+      assertEquals((await observer.inspect())?.pid, Deno.pid);
+      // Another run's claim is free.
+      assertEquals(await otherObserver.inspect(), null);
+      return "done";
+    });
+
+    assertEquals(result, "done");
+    assertEquals(await observer.inspect(), null);
+  });
+});
+
+Deno.test("createWorkflowRunClaims - releases the lock when the callback throws", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const runId = crypto.randomUUID();
+    const claims = createWorkflowRunClaims(datastoreConfig);
+
+    await assertRejects(
+      () => claims.withClaim(runId, () => Promise.reject(new Error("boom"))),
+      Error,
+      "boom",
+    );
+
+    const observer = await createWorkflowRunLock(datastoreConfig, runId);
+    assertEquals(await observer.inspect(), null);
   });
 });
 

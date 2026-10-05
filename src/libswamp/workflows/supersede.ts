@@ -21,6 +21,7 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { inputsMatch } from "../../domain/workflows/input_matching.ts";
 import {
   type DetachedNestedRunData,
@@ -49,6 +50,24 @@ export interface SupersedeResult {
 export interface SupersedeDeps {
   findSuspendedRuns: (workflowId: WorkflowId) => Promise<WorkflowRun[]>;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
+  /**
+   * Claims each run while it is cancelled, so the cancel acts on the run as
+   * stored and no other writer saves over it (swamp-club#2919).
+   */
+  runClaims: WorkflowRunClaims;
+}
+
+/** Whether a new run of the workflow with `newInputs` supersedes `run`. */
+function isSuperseded(
+  run: WorkflowRun,
+  newInputs: Readonly<Record<string, unknown>>,
+): boolean {
+  if (run.status !== "suspended") return false;
+  if (run.instanceId !== undefined) return false;
+  // A nested workflow's run belongs to the parent step that started it,
+  // not to a direct run of the same workflow.
+  if (run.parentRun !== undefined) return false;
+  return inputsMatch(run.inputs, newInputs);
 }
 
 /**
@@ -59,27 +78,34 @@ export interface SupersedeDeps {
 export async function supersedeSuspendedRuns(
   workflow: Workflow,
   newInputs: Readonly<Record<string, unknown>>,
-  { findSuspendedRuns, findEvaluatedWorkflow }: SupersedeDeps,
+  { findSuspendedRuns, findEvaluatedWorkflow, runClaims }: SupersedeDeps,
   runRepo: WorkflowRunRepository,
 ): Promise<SupersedeResult> {
   const suspendedRuns = await findSuspendedRuns(workflow.id);
   const cancelledRunIds: string[] = [];
   const detachedNestedRuns: DetachedNestedRunData[] = [];
 
-  for (const run of suspendedRuns) {
-    if (run.status !== "suspended") continue;
-    if (run.instanceId !== undefined) continue;
-    // A nested workflow's run belongs to the parent step that started it,
-    // not to a direct run of the same workflow.
-    if (run.parentRun !== undefined) continue;
-    if (!inputsMatch(run.inputs, newInputs)) continue;
+  for (const listed of suspendedRuns) {
+    if (!isSuperseded(listed, newInputs)) continue;
 
-    cancelAndSettle(
-      run,
-      await resolveSettlementWorkflow(run, workflow, findEvaluatedWorkflow),
-      "Superseded by new run with matching inputs",
-    );
-    await runRepo.save(workflow.id, run);
+    // The listed copy only picks the candidate. The run is read again under
+    // its claim, where an approve, reject or cancel since the listing shows.
+    const run = await runClaims.withClaim(listed.id, async () => {
+      const current = await runRepo.findById(workflow.id, listed.id);
+      if (!current || !isSuperseded(current, newInputs)) return null;
+      cancelAndSettle(
+        current,
+        await resolveSettlementWorkflow(
+          current,
+          workflow,
+          findEvaluatedWorkflow,
+        ),
+        "Superseded by new run with matching inputs",
+      );
+      await runRepo.save(workflow.id, current);
+      return current;
+    });
+    if (!run) continue;
     cancelledRunIds.push(run.id);
     for (const detached of await detachedNestedRunsOf({ runRepo }, run)) {
       detachedNestedRuns.push(detached);

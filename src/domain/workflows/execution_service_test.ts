@@ -9306,6 +9306,86 @@ Deno.test("resume: refuses an ineligible failed run without saving or running an
   });
 });
 
+Deno.test("resume: takes the run over under its claim and holds none while steps run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    executor.failing.clear();
+    const totalCalls = () =>
+      [...executor.calls.values()].reduce((a, b) => a + b, 0);
+    const callsBefore = totalCalls();
+    const savesBefore = runRepo.saves;
+
+    const claimed: string[] = [];
+    let savesWhenReleased = -1;
+    let callsWhenReleased = -1;
+    let statusWhenReleased: string | undefined;
+    service.runClaims = {
+      withClaim: async (runId, fn) => {
+        claimed.push(runId);
+        const result = await fn();
+        savesWhenReleased = runRepo.saves;
+        callsWhenReleased = totalCalls();
+        statusWhenReleased = (await runRepo.findById(workflow.id, failed.id))
+          ?.status;
+        return result;
+      },
+    };
+
+    const retried = await drainResume(service, workflow.name, failed.id);
+
+    assertEquals(retried?.status, "succeeded");
+    assertEquals(claimed, [failed.id]);
+    // The take-over save lands inside the claim; no step ran under it.
+    assertEquals(savesWhenReleased, savesBefore + 1);
+    assertEquals(statusWhenReleased, "running");
+    assertEquals(callsWhenReleased, callsBefore);
+    assertEquals(totalCalls() > callsBefore, true);
+  });
+});
+
+Deno.test("resume: refuses a run cancelled before the claim was taken, without saving or running anything", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    executor.failing.clear();
+    const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+    let savesAfterCancel = -1;
+    service.runClaims = {
+      withClaim: async (_runId, fn) => {
+        // Another command's cancel was saved after resume first read the run.
+        await runRepo.save(
+          workflow.id,
+          WorkflowRun.fromData({ ...failed.toData(), status: "cancelled" }),
+        );
+        savesAfterCancel = runRepo.saves;
+        return await fn();
+      },
+    };
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id),
+      Error,
+      "is not suspended or failed (status: cancelled)",
+    );
+
+    assertEquals(runRepo.saves, savesAfterCancel);
+    assertEquals(
+      (await runRepo.findById(workflow.id, failed.id))?.status,
+      "cancelled",
+    );
+    assertEquals(
+      [...executor.calls.values()].reduce((a, b) => a + b, 0),
+      calls,
+    );
+  });
+});
+
 Deno.test("resume: suspendedOnly refuses a failed run", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = createRetryWorkflow();

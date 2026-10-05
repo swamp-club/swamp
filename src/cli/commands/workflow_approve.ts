@@ -32,7 +32,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  createWorkflowRunClaims,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -136,15 +139,17 @@ export const workflowApproveCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoContext, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createWorkflowApproveDeps(
       repoContext.workflowRepo,
       repoContext.workflowRunRepo,
+      createWorkflowRunClaims(datastoreConfig),
     );
 
     await consumeStream(

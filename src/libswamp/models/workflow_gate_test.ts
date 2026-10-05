@@ -29,6 +29,7 @@ import type {
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
 import { getLogger } from "@logtape/logtape";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 
 function createSuspendedWorkflowAndRun(): {
   workflow: Workflow;
@@ -88,7 +89,11 @@ Deno.test("createWorkflowGateService: approve returns richer result with correct
   const { workflow, run } = createSuspendedWorkflowAndRun();
   const { workflowRepo, runRepo } = createMockRepos(workflow, run);
 
-  const service = createWorkflowGateService(workflowRepo, runRepo);
+  const service = createWorkflowGateService(
+    workflowRepo,
+    runRepo,
+    unclaimedRuns,
+  );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "approval-step" },
     { definitionName: "webhook-handler", methodName: "handle" },
@@ -110,7 +115,11 @@ Deno.test("createWorkflowGateService: reject returns richer result with approved
   const { workflow, run } = createSuspendedWorkflowAndRun();
   const { workflowRepo, runRepo } = createMockRepos(workflow, run);
 
-  const service = createWorkflowGateService(workflowRepo, runRepo);
+  const service = createWorkflowGateService(
+    workflowRepo,
+    runRepo,
+    unclaimedRuns,
+  );
   const result = await service.reject(
     {
       workflowIdOrName: "test-gate-workflow",
@@ -136,7 +145,11 @@ Deno.test("createWorkflowGateService: approve auto-populates decidedBy from call
   const { workflow, run } = createSuspendedWorkflowAndRun();
   const { workflowRepo, runRepo } = createMockRepos(workflow, run);
 
-  const service = createWorkflowGateService(workflowRepo, runRepo);
+  const service = createWorkflowGateService(
+    workflowRepo,
+    runRepo,
+    unclaimedRuns,
+  );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "approval-step" },
     { definitionName: "linear-bridge", methodName: "on_comment" },
@@ -161,7 +174,11 @@ Deno.test("createWorkflowGateService: approve returns error for non-existent wor
     findAllByWorkflowId: () => Promise.resolve([]),
   } as unknown as WorkflowRunRepository;
 
-  const service = createWorkflowGateService(workflowRepo, runRepo);
+  const service = createWorkflowGateService(
+    workflowRepo,
+    runRepo,
+    unclaimedRuns,
+  );
   const result = await service.approve(
     { workflowIdOrName: "nonexistent", stepName: "any-step" },
     { definitionName: "test", methodName: "test" },
@@ -180,7 +197,11 @@ Deno.test("createWorkflowGateService: approve returns error for wrong step name"
   const { workflow, run } = createSuspendedWorkflowAndRun();
   const { workflowRepo, runRepo } = createMockRepos(workflow, run);
 
-  const service = createWorkflowGateService(workflowRepo, runRepo);
+  const service = createWorkflowGateService(
+    workflowRepo,
+    runRepo,
+    unclaimedRuns,
+  );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "wrong-step" },
     { definitionName: "test", methodName: "test" },

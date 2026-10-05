@@ -48,6 +48,19 @@ export function modelLockKey(
 }
 
 /**
+ * Constructs the lock key of a workflow run's claim, optionally scoped under
+ * a namespace. It sits outside `data/` and `workflow-runs/`, so neither the
+ * per-model lock scan nor the run repository's directory reads see it.
+ */
+export function workflowRunLockKey(
+  namespace: string | undefined,
+  runId: string,
+): string {
+  const base = `workflow-run-claims/${runId}.lock`;
+  return namespace ? `${namespace}/${base}` : base;
+}
+
+/**
  * Strips a leading `{namespace}{SEPARATOR}` from a filesystem-relative path
  * so that `parseModelLockKey` can parse it. Uses SEPARATOR because this
  * operates on paths produced by `relative()` from `@std/path`.

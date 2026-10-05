@@ -23,7 +23,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  createWorkflowRunClaims,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   normalizeServerUrl,
@@ -194,6 +198,11 @@ export interface CancelLocalRunDeps {
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /** The tracker rows of the stopped owner, closed once it is gone. */
   runTracker: RunTrackerRepository;
+  /**
+   * Claims the run while its record is settled, so the cancel acts on the
+   * run as stored and no other writer saves over it (swamp-club#2919).
+   */
+  runClaims: WorkflowRunClaims;
   /** The method-run records of the stopped owner's steps. */
   outputRepo: MethodRunOutputs;
   killProcess?: (
@@ -275,41 +284,46 @@ async function closeStoppedOwnerRuns(
  * else `workflow`, with the steps its stopped owner left running failed with
  * {@link OWNER_STOPPED_STEP_ERROR}. Returns the persisted run, or null when
  * the record no longer exists.
+ *
+ * The read, the settlement and the save hold the run's claim, so an approve
+ * or reject of the same run lands wholly before or wholly after them.
  */
 async function settleCancelledRun(
   run: WorkflowRun,
   workflow: Workflow,
   reason: string,
-  { runRepo, findEvaluatedWorkflow }: Pick<
+  { runRepo, findEvaluatedWorkflow, runClaims }: Pick<
     CancelLocalRunDeps,
-    "runRepo" | "findEvaluatedWorkflow"
+    "runRepo" | "findEvaluatedWorkflow" | "runClaims"
   >,
 ): Promise<WorkflowRun | null> {
   const workflowId = workflow.id;
-  const current = await runRepo.findById(workflowId, run.id);
-  if (!current) {
-    return null;
-  }
-  if (current.isCancellable) {
-    cancelAndSettle(
-      current,
-      await resolveSettlementWorkflow(
+  return await runClaims.withClaim(run.id, async () => {
+    const current = await runRepo.findById(workflowId, run.id);
+    if (!current) {
+      return null;
+    }
+    if (current.isCancellable) {
+      cancelAndSettle(
         current,
-        workflow,
-        findEvaluatedWorkflow,
-      ),
-      reason,
-      current.status === "running"
-        ? { inFlightStepError: OWNER_STOPPED_STEP_ERROR }
-        : undefined,
-    );
-  } else if (current.status === "cancelled") {
-    current.recordCancelReason(reason);
-  } else {
+        await resolveSettlementWorkflow(
+          current,
+          workflow,
+          findEvaluatedWorkflow,
+        ),
+        reason,
+        current.status === "running"
+          ? { inFlightStepError: OWNER_STOPPED_STEP_ERROR }
+          : undefined,
+      );
+    } else if (current.status === "cancelled") {
+      current.recordCancelReason(reason);
+    } else {
+      return current;
+    }
+    await runRepo.save(workflowId, current);
     return current;
-  }
-  await runRepo.save(workflowId, current);
-  return current;
+  });
 }
 
 /**
@@ -567,11 +581,12 @@ export const workflowCancelCommand = withRemoteOptions(
       );
     }
 
-    const { repoDir, repoContext, datastoreResolver } =
+    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
+    const runClaims = createWorkflowRunClaims(datastoreConfig);
 
     const workflowRepo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
@@ -620,6 +635,7 @@ export const workflowCancelCommand = withRemoteOptions(
             runRepo,
             findEvaluatedWorkflow,
             runTracker,
+            runClaims,
             outputRepo: repoContext.outputRepo,
           }),
       );
@@ -746,6 +762,7 @@ export const workflowCancelCommand = withRemoteOptions(
           runRepo,
           findEvaluatedWorkflow,
           runTracker,
+          runClaims,
           outputRepo: repoContext.outputRepo,
         }),
     );

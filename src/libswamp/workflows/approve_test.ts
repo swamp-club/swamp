@@ -31,6 +31,11 @@ import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
+import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
+import {
+  unclaimedRuns,
+  type WorkflowRunClaims,
+} from "../../domain/workflows/run_claim.ts";
 
 function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
   return Workflow.create({
@@ -72,6 +77,7 @@ function suspendAtGates(workflow: Workflow, gateNames: string[]): WorkflowRun {
 
 function makeDeps(workflow: Workflow, run: WorkflowRun): WorkflowApproveDeps {
   return {
+    runClaims: unclaimedRuns,
     workflowRepo: {
       findByName: (name: string) =>
         Promise.resolve(name === workflow.name ? workflow : null),
@@ -159,6 +165,7 @@ function makeCollidingDeps(): {
     impostorRun,
     savedFor,
     deps: {
+      runClaims: unclaimedRuns,
       workflowRepo: {
         findByName: (name: string) =>
           Promise.resolve(workflows.find((w) => w.name === name) ?? null),
@@ -265,6 +272,7 @@ function gateBesideNestedWait(childStatus: "suspended" | "succeeded"): {
     runId: child.id,
   });
   const deps: WorkflowApproveDeps = {
+    runClaims: unclaimedRuns,
     workflowRepo: {
       findByName: (name: string) =>
         Promise.resolve(name === workflow.name ? workflow : null),
@@ -308,16 +316,20 @@ Deno.test("workflowApprove: allGatesDecided waits for the nested run to finish, 
 });
 
 Deno.test("workflowApprove: an unreadable linked run after the decision is saved does not turn the approval into an error", async () => {
-  const { deps } = gateBesideNestedWait("suspended");
+  const { deps, run } = gateBesideNestedWait("suspended");
   const throwing: WorkflowApproveDeps = {
     ...deps,
     runRepo: {
       ...deps.runRepo,
-      findById: () => Promise.reject(new Error("corrupt run file")),
+      // The run itself is read again under its claim; only its linked run
+      // is unreadable.
+      findById: (_w: string, id: string) =>
+        id === run.id
+          ? Promise.resolve(run)
+          : Promise.reject(new Error("corrupt run file")),
       save: () => Promise.resolve(),
     } as unknown as WorkflowApproveDeps["runRepo"],
   };
-  // Resolution reads the run once through findAllByWorkflowId.
   const last = await approve(throwing, "gate");
   assertEquals(last?.kind, "completed");
   if (last?.kind === "completed") {
@@ -374,4 +386,148 @@ Deno.test("workflowApprove: a run failed by a rejected parallel gate names --fro
     `No suspended runs found for workflow "gated". The latest run is failed. ` +
       `Ask again with 'swamp workflow resume gated --run ${run.id} --from side-gate'.`,
   );
+});
+
+/**
+ * Deps over one stored run record, read as a fresh copy each time as a
+ * repository does, with claims that run `beforeClaimed` once the claim is
+ * taken and before the claimed work starts.
+ */
+function makeStoredRunDeps(
+  workflow: Workflow,
+  run: WorkflowRun,
+  beforeClaimed: (stored: { data: ReturnType<WorkflowRun["toData"]> }) => void =
+    () => {},
+) {
+  const stored = { data: run.toData() };
+  const saves: string[] = [];
+  const claimed: string[] = [];
+  let claimHeld = false;
+  const runClaims: WorkflowRunClaims = {
+    withClaim: async (runId, fn) => {
+      claimed.push(runId);
+      claimHeld = true;
+      beforeClaimed(stored);
+      try {
+        return await fn();
+      } finally {
+        claimHeld = false;
+      }
+    },
+  };
+  const read = () => Promise.resolve(WorkflowRun.fromData(stored.data));
+  const deps: WorkflowApproveDeps = {
+    runClaims,
+    workflowRepo: {
+      findByName: (name: string) =>
+        Promise.resolve(name === workflow.name ? workflow : null),
+      findById: () => Promise.resolve(null),
+    } as unknown as WorkflowApproveDeps["workflowRepo"],
+    runRepo: {
+      findById: read,
+      findAllByWorkflowId: async () => [await read()],
+      save: (_w: string, saved: WorkflowRun) => {
+        saves.push(claimHeld ? "claimed" : "unclaimed");
+        stored.data = saved.toData();
+        return Promise.resolve();
+      },
+    } as unknown as WorkflowApproveDeps["runRepo"],
+  };
+  return { deps, stored, saves, claimed };
+}
+
+Deno.test("workflowApprove: reads the run and saves the decision under the run's claim", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, stored, saves, claimed } = makeStoredRunDeps(workflow, run);
+
+  const last = await approve(deps, "gate");
+
+  assertEquals(last?.kind, "completed");
+  assertEquals(claimed, [run.id]);
+  assertEquals(saves, ["claimed"]);
+  assertEquals(
+    WorkflowRun.fromData(stored.data).getJob("main")!.getStep("gate")!.status,
+    "succeeded",
+  );
+});
+
+Deno.test("workflowApprove: refuses a run cancelled before the claim was taken, and saves nothing", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  // The cancel lands after approve first read the run suspended.
+  const { deps, stored, saves } = makeStoredRunDeps(
+    workflow,
+    run,
+    (record) => {
+      const cancelled = WorkflowRun.fromData(record.data);
+      cancelAndSettle(cancelled, workflow, "Cancelled by user");
+      record.data = cancelled.toData();
+    },
+  );
+
+  const last = await approve(deps, "gate");
+
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(
+      last.error.message.includes("is not suspended (status: cancelled)"),
+      true,
+    );
+  }
+  assertEquals(saves, []);
+  assertEquals(stored.data.status, "cancelled");
+});
+
+Deno.test("workflowReject: refuses a run cancelled before the claim was taken, and saves nothing", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, stored, saves, claimed } = makeStoredRunDeps(
+    workflow,
+    run,
+    (record) => {
+      const cancelled = WorkflowRun.fromData(record.data);
+      cancelAndSettle(cancelled, workflow, "Cancelled by user");
+      record.data = cancelled.toData();
+    },
+  );
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "approver",
+    }),
+  );
+  const last = events.at(-1);
+
+  assertEquals(claimed, [run.id]);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(
+      last.error.message.includes("is not suspended (status: cancelled)"),
+      true,
+    );
+  }
+  assertEquals(saves, []);
+  assertEquals(stored.data.status, "cancelled");
+});
+
+Deno.test("workflowReject: reads the run and saves the decision under the run's claim", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, stored, saves, claimed } = makeStoredRunDeps(workflow, run);
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "approver",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(claimed, [run.id]);
+  assertEquals(saves, ["claimed"]);
+  assertEquals(stored.data.status, "failed");
 });

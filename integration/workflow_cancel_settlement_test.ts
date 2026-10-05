@@ -47,6 +47,7 @@ import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repo
 import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
@@ -211,6 +212,7 @@ Deno.test("workflow cancel settles a suspended run's jobs and steps in its recor
     await cancelLocalRun(suspended, workflow, "Cancelled by user", {
       runRepo: fixture.repo.workflowRunRepo,
       findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+      runClaims: unclaimedRuns,
       ...untracked,
       killProcess: (pid) => {
         killed.push(pid);
@@ -255,6 +257,7 @@ Deno.test("superseding a suspended run settles its jobs and steps in its record"
           (await runRepo.findAllByWorkflowId(workflowId))
             .filter((run) => run.status === "suspended"),
         findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+        runClaims: unclaimedRuns,
       },
       runRepo,
     );
@@ -303,6 +306,7 @@ Deno.test("workflow cancel settles an evaluated job name through the run's snaps
     await cancelLocalRun(suspended, workflow, "Cancelled by user", {
       runRepo: fixture.repo.workflowRunRepo,
       findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+      runClaims: unclaimedRuns,
       ...untracked,
       killProcess: () => Promise.resolve(true),
     });

@@ -32,6 +32,7 @@ import {
 import {
   acquireModelLocks,
   createLockProgressWriter,
+  createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -489,6 +490,7 @@ export const workflowRunCommand = new Command()
           },
           findEvaluatedWorkflow: (runId) =>
             evaluatedWorkflowRepo.findByRunId(runId),
+          runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
         },
       };
 

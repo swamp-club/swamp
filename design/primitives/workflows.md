@@ -1446,6 +1446,38 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Run claims.** Approve, reject, cancel, supersede and the start of a resume
+each load a run's record, change it and save the whole record back. Two of them
+on one run at once would save over each other, and the first to save would have
+reported a result that no longer holds: a cancel could print `cancelled` and
+the run end up `suspended` again with its gate approved (swamp-club#2919). Each
+of them therefore holds the run's claim (`WorkflowRunClaims`,
+`src/domain/workflows/run_claim.ts`) from its load to its save, and reads the
+run again once it has the claim. The second command to arrive sees what the
+first saved:
+
+- Cancel or supersede after an approve cancels the approved run: the gate
+  stays `succeeded` and the steps behind it are settled as cancelled.
+- Approve or reject after a cancel or supersede is refused with
+  `Run <id> is not suspended (status: cancelled)`.
+- Cancel after a reject leaves the run `failed` and reports that status.
+- Resume after a cancel is refused before it changes anything. A cancel after
+  a resume has taken the run over finds it `running` under the resuming
+  process and stops that process, as for any running run.
+
+The local commands back the claim with a datastore lock per run
+(`createWorkflowRunClaims`, `src/cli/repo_context.ts`; the key is under
+"Concurrency Control" in `design/enablers/datastores.md`), so it holds across
+processes. Stopping a run's owner process happens before the claim is taken,
+and a resume releases the claim before any step runs: the claim is never held
+while work executes. `swamp serve` keeps other writers in its own process off a
+run with its active-run registry reservation instead, and passes
+`unclaimedRuns` to approve, reject and resume; its supersede, which cancels
+locally-owned runs, takes the lock-backed claim. So a local approve or reject
+of a run that a serve process on the same repository is deciding at the same
+moment is not serialized. `integration/workflow_run_claim_rules_test.ts` pins
+the files that take the claim and the files that opt out.
+
 **Settling a cancelled run.** Every cancel settles the work the run leaves
 unfinished before it marks the run `cancelled`, so a cancelled record never
 keeps a job `running` or a step `running` or `waiting_approval`. That holds for

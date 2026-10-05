@@ -1685,6 +1685,7 @@ export {
   parseModelLockKey,
   parseModelSpec,
   stripNamespacePrefix,
+  workflowRunLockKey,
 } from "./datastores/lock.ts";
 export {
   datastoreCompact,

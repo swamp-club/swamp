@@ -53,6 +53,7 @@ import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repo
 import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
@@ -218,6 +219,7 @@ Deno.test("workflow cancel: the record shows a cleanup step running while it run
         {
           runRepo: reader,
           findEvaluatedWorkflow: () => Promise.resolve(null),
+          runClaims: unclaimedRuns,
           ...untracked,
           killProcess: () => Promise.resolve(true),
         },

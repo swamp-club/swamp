@@ -59,6 +59,7 @@ import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
@@ -272,6 +273,7 @@ Deno.test("cancelLocalRun: keeps the record the owner cancelled and records the 
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: async (pid) => {
           killed.push(pid);
@@ -314,6 +316,7 @@ Deno.test("cancelLocalRun: leaves a record the owner finished as failed or succe
         {
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
           ...untracked,
           killProcess: async () => {
             await runRepo.save(workflowId, ownerFinal);
@@ -345,6 +348,7 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: async () => {
           await runRepo.save(
@@ -410,6 +414,7 @@ Deno.test("cancelLocalRun: settles a dead owner's run against the workflow's ste
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: async () => {
           await runRepo.save(
@@ -447,6 +452,7 @@ Deno.test("cancelLocalRun: gives the owner the cleanup grace before it is killed
     await cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
       runRepo,
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
       ...untracked,
       killProcess: (_pid, { maxWaitMs }) => {
         waits.push(maxWaitMs);
@@ -455,6 +461,46 @@ Deno.test("cancelLocalRun: gives the owner the cleanup grace before it is killed
     });
 
     assertEquals(waits, [OWNER_STOP_GRACE_MS]);
+  });
+});
+
+Deno.test("cancelLocalRun: stops the owner first, then settles the stored record under the run's claim", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const snapshot = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
+    await runRepo.save(workflowId, snapshot);
+
+    const order: string[] = [];
+    let statusWhenClaimed: string | undefined;
+    await cancelLocalRun(snapshot, WORKFLOW, "No longer needed", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: {
+        withClaim: async (runId, fn) => {
+          order.push(`claim:${runId}`);
+          statusWhenClaimed = (await runRepo.findById(workflowId, snapshot.id))
+            ?.status;
+          const result = await fn();
+          order.push("release");
+          return result;
+        },
+      },
+      ...untracked,
+      killProcess: () => {
+        order.push("kill");
+        return Promise.resolve(true);
+      },
+    });
+
+    // The owner's grace is not spent holding the claim, and nothing is
+    // saved before the claim is taken.
+    assertEquals(order, ["kill", `claim:${snapshot.id}`, "release"]);
+    assertEquals(statusWhenClaimed, "running");
+    assertEquals(
+      (await runRepo.findById(workflowId, snapshot.id))?.status,
+      "cancelled",
+    );
   });
 });
 
@@ -476,6 +522,7 @@ Deno.test("cancelLocalRun: cancels without a kill when no other process owns the
         {
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
           ...untracked,
           killProcess: () => {
             killCalls++;
@@ -506,6 +553,7 @@ Deno.test("cancelLocalRun: does not recreate a run record deleted during the kil
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: () => Promise.resolve(true),
       },
@@ -536,6 +584,7 @@ Deno.test("cancelAllLocalRuns: stops a process that owns several runs once", asy
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: (pid) => {
           killed.push(pid);
@@ -575,6 +624,7 @@ Deno.test("cancelAllLocalRuns: stops different owners together", async () => {
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: async (pid) => {
           started.push(pid);
@@ -614,6 +664,7 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         ...untracked,
         killProcess: async () => {
           await runRepo.save(
@@ -846,6 +897,7 @@ Deno.test("cancelLocalRun: cancels the method runs and closes the rows an owner 
       const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         runTracker: tracker,
         outputRepo,
         liveness: ownerGone,
@@ -877,6 +929,7 @@ Deno.test("cancelLocalRun: leaves the rows and method runs of an owner that is s
       await cancelLocalRun(run, WORKFLOW, "No longer needed", {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         runTracker: tracker,
         outputRepo,
         liveness: { hostname: hostname(), isDead: () => false },
@@ -902,6 +955,7 @@ Deno.test("cancelAllLocalRuns: closes what each killed owner left running", asyn
         {
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
           runTracker: tracker,
           outputRepo,
           liveness: ownerGone,
@@ -931,6 +985,7 @@ Deno.test("cancelLocalRun: keeps the row of another run the killed owner drove, 
       await cancelLocalRun(run, WORKFLOW, "No longer needed", {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         runTracker: tracker,
         outputRepo,
         liveness: ownerGone,
@@ -955,6 +1010,7 @@ Deno.test("cancelLocalRun: an unreadable method-run record still lets the cancel
     const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
       runRepo,
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
       runTracker: tracker,
       outputRepo: unreadableOutputs,
       liveness: ownerGone,
@@ -976,6 +1032,7 @@ Deno.test("cancelAllLocalRuns: an unreadable method-run record does not stop the
       {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
         runTracker: tracker,
         outputRepo: unreadableOutputs,
         liveness: ownerGone,

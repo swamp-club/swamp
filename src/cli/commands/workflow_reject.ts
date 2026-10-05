@@ -33,7 +33,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  createWorkflowRunClaims,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -122,10 +125,11 @@ export const workflowRejectCommand = withRemoteOptions(
       return;
     }
 
-    const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, repoContext, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     try {
@@ -133,6 +137,7 @@ export const workflowRejectCommand = withRemoteOptions(
       const deps = createWorkflowRejectDeps(
         repoContext.workflowRepo,
         repoContext.workflowRunRepo,
+        createWorkflowRunClaims(datastoreConfig),
         runTracker,
       );
 
