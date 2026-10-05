@@ -2866,7 +2866,8 @@ async function withRenamedModel(
           );
           if (createdAt === undefined) return;
           // save() stamps createdAt itself, so pin it in the metadata the
-          // catalog is rebuilt from.
+          // catalog is rebuilt from: Data.toData() writes it as a top-level
+          // createdAt key.
           const metadataPath = dataRepo.getMetadataPath(
             type,
             modelId,
