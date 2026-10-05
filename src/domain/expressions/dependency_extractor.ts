@@ -298,6 +298,26 @@ export function extractDataFunctionDependencies(expression: string): string[] {
 }
 
 /**
+ * Extracts the model names data.version/latest/listVersions/findBySpec calls
+ * pass as a literal without a namespace prefix — the calls that read the
+ * caller's own namespace. Names computed at runtime are not seen.
+ *
+ * @param expression - The CEL expression to analyze
+ * @returns The distinct unprefixed model names, in order of appearance
+ */
+export function extractOwnNamespaceDataModelNames(
+  expression: string,
+): string[] {
+  const cel = maskLiteralCalls(expression);
+  const names = new Set<string>();
+  for (const match of cel.matchAll(DATA_FUNCTION_PATTERN)) {
+    const parsed = parseNamespacedModelName(match[2]);
+    if (parsed.namespace === undefined) names.add(parsed.modelName);
+  }
+  return [...names];
+}
+
+/**
  * Checks if an expression has any data function calls.
  *
  * @param expression - The CEL expression to check

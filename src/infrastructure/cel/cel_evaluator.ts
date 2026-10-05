@@ -704,6 +704,17 @@ export class CelEvaluator {
   ): Promise<unknown> {
     const wrappedContext = this.wrapNamespaces(context);
     try {
+      // Resolve the definitions behind the model names the expression reads
+      // first, so the synchronous data.listVersions() can read by definition
+      // identity too (swamp-club#3029).
+      const data = context.data;
+      if (
+        typeof data === "object" && data !== null &&
+        "resolveModelNames" in data &&
+        typeof data.resolveModelNames === "function"
+      ) {
+        await data.resolveModelNames(expression);
+      }
       const transformedExpr = transformHyphenatedModelRefs(expression);
       this.warnDeprecatedPatterns(transformedExpr);
       const rawResult = await this.env.evaluate(
