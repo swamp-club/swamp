@@ -17,12 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
   isPulledExtensionManifest,
+  planWorkflowArchiveNames,
   resolveExtensionFiles,
 } from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
@@ -1522,4 +1528,315 @@ Deno.test("resolveExtensionFiles without extensionsDir fails for monorepo datast
     assertStringIncludes(err.message, "Datastore file not found");
     assertStringIncludes(err.message, "--extensions-dir");
   });
+});
+
+// --- Workflow archive names (swamp-club#2613) ---------------------------------
+//
+// Push writes each workflow to extension/workflows/<archiveName>. Several
+// manifest entries under one directory used to collapse to a single
+// <directory>.yaml, so the archive kept only the last file.
+
+function recordingWorkflowRepoContext(asked: string[]): RepositoryContext {
+  return {
+    workflowRepo: {
+      findByName: (name: string) => {
+        asked.push(name);
+        return Promise.resolve(null);
+      },
+    },
+    definitionRepo: { findByNameGlobal: () => Promise.resolve(null) },
+  } as unknown as RepositoryContext;
+}
+
+async function writeWorkflowFixture(
+  dir: string,
+  relPath: string,
+  name: string,
+): Promise<void> {
+  await Deno.mkdir(dirname(join(dir, relPath)), { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, relPath),
+    `name: ${name}\njobs: {}\n`,
+  );
+}
+
+async function writeWorkflowManifest(
+  dir: string,
+  workflows: string[],
+): Promise<string> {
+  await Deno.writeTextFile(
+    join(dir, "extensions", "models", "noop.ts"),
+    'export const model = { type: "@test/noop" };',
+  );
+  const manifestPath = join(dir, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: "@test/wf-names",
+      version: "2026.10.05.1",
+      paths: { base: "manifest" },
+      models: ["extensions/models/noop.ts"],
+      workflows,
+    }),
+  );
+  return manifestPath;
+}
+
+Deno.test("resolveExtensionFiles: several workflows under one directory keep their file names (swamp-club#2613)", async () => {
+  await withTempRepo(async (dir) => {
+    for (const n of ["alpha", "beta", "gamma"]) {
+      await writeWorkflowFixture(
+        dir,
+        join("workflows", `workflow-repro-${n}.yaml`),
+        `@test/repro-${n}`,
+      );
+    }
+    const manifestPath = await writeWorkflowManifest(dir, [
+      "workflows/workflow-repro-alpha.yaml",
+      "workflows/workflow-repro-beta.yaml",
+      "workflows/workflow-repro-gamma.yaml",
+    ]);
+    const asked: string[] = [];
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: recordingWorkflowRepoContext(asked),
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
+      "workflow-repro-alpha.yaml",
+      "workflow-repro-beta.yaml",
+      "workflow-repro-gamma.yaml",
+    ]);
+    assertEquals(
+      new Set(result.workflowFiles.map((wf) => wf.archiveName)).size,
+      3,
+    );
+    // Dependency resolution asks for each file, not for a workflow named
+    // after the shared directory.
+    assertEquals(asked, [
+      "workflow-repro-alpha",
+      "workflow-repro-beta",
+      "workflow-repro-gamma",
+    ]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: bare workflow entries keep their file names", async () => {
+  await withTempRepo(async (dir) => {
+    for (const n of ["alpha", "beta", "gamma"]) {
+      await writeWorkflowFixture(
+        dir,
+        `workflow-repro-${n}.yaml`,
+        `@test/repro-${n}`,
+      );
+    }
+    const manifestPath = await writeWorkflowManifest(dir, [
+      "workflow-repro-alpha.yaml",
+      "workflow-repro-beta.yaml",
+      "workflow-repro-gamma.yaml",
+    ]);
+    const asked: string[] = [];
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: recordingWorkflowRepoContext(asked),
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
+      "workflow-repro-alpha.yaml",
+      "workflow-repro-beta.yaml",
+      "workflow-repro-gamma.yaml",
+    ]);
+    assertEquals(asked, [
+      "workflow-repro-alpha",
+      "workflow-repro-beta",
+      "workflow-repro-gamma",
+    ]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a directory's only workflow is named after the directory", async () => {
+  // The one-workflow-per-folder layout (@swamp/kubernetes): every file is
+  // workflow.yaml, so the directory name is the only distinct part. These
+  // names must not change, or republished archives would be renamed.
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(
+      dir,
+      join("namespace-debug", "workflow.yaml"),
+      "@test/namespace-debug",
+    );
+    await writeWorkflowFixture(
+      dir,
+      join("cluster_health", "workflow.yaml"),
+      "@test/cluster-health",
+    );
+    const manifestPath = await writeWorkflowManifest(dir, [
+      "namespace-debug/workflow.yaml",
+      "cluster_health/workflow.yaml",
+    ]);
+    const asked: string[] = [];
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: recordingWorkflowRepoContext(asked),
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
+      "namespace-debug.yaml",
+      "cluster_health.yaml",
+    ]);
+    assertEquals(asked, ["namespace-debug", "cluster-health"]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: mixed layouts name each workflow by its own rule", async () => {
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(dir, join("sub", "a.yaml"), "@test/a");
+    await writeWorkflowFixture(dir, join("sub", "b.yaml"), "@test/b");
+    await writeWorkflowFixture(
+      dir,
+      join("other", "workflow.yaml"),
+      "@test/other",
+    );
+    await writeWorkflowFixture(dir, "root.yaml", "@test/root");
+    const manifestPath = await writeWorkflowManifest(dir, [
+      "sub/a.yaml",
+      "sub/b.yaml",
+      "other/workflow.yaml",
+      "root.yaml",
+    ]);
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
+      "a.yaml",
+      "b.yaml",
+      "other.yaml",
+      "root.yaml",
+    ]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: rejects two workflows that would share an archive name", async () => {
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(dir, "deploy.yaml", "@test/deploy-root");
+    await writeWorkflowFixture(
+      dir,
+      join("deploy", "workflow.yaml"),
+      "@test/deploy-dir",
+    );
+    const manifestPath = await writeWorkflowManifest(dir, [
+      "deploy.yaml",
+      "deploy/workflow.yaml",
+    ]);
+
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubWorkflowRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "deploy.yaml");
+    assertStringIncludes(err.message, "deploy/workflow.yaml");
+    assertStringIncludes(err.message, "overwrite");
+  });
+});
+
+Deno.test("resolveExtensionFiles: rejects a dependency-resolved workflow that would share an archive name", async () => {
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(dir, "deploy.yaml", "@test/deploy");
+    // A second deploy.yaml that a workflow step references; it is not in
+    // the manifest, so the dependency resolver pulls it in.
+    await writeWorkflowFixture(
+      dir,
+      join("elsewhere", "deploy.yaml"),
+      "@test/deploy-dep",
+    );
+    const depPath = join(dir, "elsewhere", "deploy.yaml");
+    const manifestPath = await writeWorkflowManifest(dir, ["deploy.yaml"]);
+    const repoContext = {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(
+            name === "deploy" ? { id: "dep-wf", jobs: [] } : null,
+          ),
+        getPath: () => depPath,
+      },
+      definitionRepo: { findByNameGlobal: () => Promise.resolve(null) },
+    } as unknown as RepositoryContext;
+
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "referenced by a workflow step");
+    assertStringIncludes(err.message, "deploy.yaml");
+  });
+});
+
+Deno.test("planWorkflowArchiveNames: clashes are detected case-insensitively", () => {
+  const err = assertThrows(
+    () =>
+      planWorkflowArchiveNames([
+        { ref: "sub/Deploy.yaml", realPath: "/repo/sub/Deploy.yaml" },
+        { ref: "sub/deploy.yaml", realPath: "/repo/sub/deploy.yaml" },
+      ]),
+    UserError,
+  );
+  assertStringIncludes(err.message, "sub/Deploy.yaml");
+  assertStringIncludes(err.message, "sub/deploy.yaml");
+});
+
+Deno.test("planWorkflowArchiveNames: directory grouping ignores ./ prefixes", () => {
+  const planned = planWorkflowArchiveNames([
+    { ref: "./workflows/a.yaml", realPath: "/repo/workflows/a.yaml" },
+    { ref: "workflows/b.yaml", realPath: "/repo/workflows/b.yaml" },
+  ]);
+  assertEquals(planned.map((p) => p.archiveName), ["a.yaml", "b.yaml"]);
+  assertEquals(planned.map((p) => p.lookupName), ["a", "b"]);
+});
+
+Deno.test("planWorkflowArchiveNames: a .yml entry is looked up without its extension", () => {
+  const [planned] = planWorkflowArchiveNames([
+    { ref: "deploy_stack.yml", realPath: "/repo/deploy_stack.yml" },
+  ]);
+  assertEquals(planned.archiveName, "deploy_stack.yml");
+  assertEquals(planned.lookupName, "deploy-stack");
+});
+
+Deno.test("planWorkflowArchiveNames: a file listed twice is a duplicate entry, not a clash", () => {
+  const err = assertThrows(
+    () =>
+      planWorkflowArchiveNames([
+        { ref: "deploy.yaml", realPath: "/repo/deploy.yaml" },
+        { ref: "./deploy.yaml", realPath: "/repo/deploy.yaml" },
+      ]),
+    UserError,
+  );
+  assertStringIncludes(err.message, "listed twice");
+  assertStringIncludes(err.message, "./deploy.yaml");
+  assertStringIncludes(err.message, "deploy.yaml");
 });

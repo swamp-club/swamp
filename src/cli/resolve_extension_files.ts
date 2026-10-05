@@ -107,6 +107,101 @@ function normalizeAdditionalFileEntry(entry: string): string {
   return segments.join("/").toLowerCase();
 }
 
+/** A manifest `workflows` entry together with the file it resolved to. */
+export interface WorkflowManifestEntry {
+  /** The entry as written in the manifest. */
+  ref: string;
+  /** The resolved, symlink-free path of the workflow file. */
+  realPath: string;
+}
+
+/** The archive and lookup names decided for one manifest workflow entry. */
+export interface PlannedWorkflowFile {
+  ref: string;
+  sourcePath: string;
+  /** File name under `extension/workflows/` in the archive. */
+  archiveName: string;
+  /** Name the dependency resolver looks the workflow up by. */
+  lookupName: string;
+}
+
+/**
+ * Decide the archive file name and dependency-lookup name of every manifest
+ * workflow entry.
+ *
+ * An entry whose manifest directory holds exactly one listed workflow is
+ * named after that directory — the one-workflow-per-folder layout
+ * (`namespace-debug/workflow.yaml` → `namespace-debug.yaml`), where file
+ * basenames would all collide. A directory listed more than once keeps each
+ * file's basename, as a bare entry always does. Two entries that still map to
+ * the same archive name (compared NFC-normalized and case-insensitively, like
+ * additionalFiles) are rejected: push writes every workflow to
+ * `extension/workflows/<archiveName>`, and a clash would silently drop all
+ * but the last file (swamp-club#2613). A file listed twice is rejected as a
+ * duplicate entry rather than reported as a clash with itself.
+ */
+export function planWorkflowArchiveNames(
+  entries: readonly WorkflowManifestEntry[],
+): PlannedWorkflowFile[] {
+  const dirKeyOf = (ref: string) => normalizeAdditionalFileEntry(dirname(ref));
+  const entriesPerDir = new Map<string, number>();
+  for (const entry of entries) {
+    const key = dirKeyOf(entry.ref);
+    entriesPerDir.set(key, (entriesPerDir.get(key) ?? 0) + 1);
+  }
+
+  const taken = new Map<string, string>();
+  const seenFiles = new Map<string, string>();
+  const planned: PlannedWorkflowFile[] = [];
+  for (const entry of entries) {
+    const listedAs = seenFiles.get(entry.realPath);
+    if (listedAs !== undefined) {
+      throw markErrorPaths(
+        new UserError(
+          `Workflow entry ${entry.ref} is listed twice in the manifest ` +
+            `(also as ${listedAs}). Remove one of the entries.`,
+        ),
+        [entry.ref, listedAs, entry.realPath],
+      );
+    }
+    seenFiles.set(entry.realPath, entry.ref);
+
+    const refDir = dirname(entry.ref);
+    const dirKey = dirKeyOf(entry.ref);
+    const ownsDirectory = dirKey !== "" && entriesPerDir.get(dirKey) === 1;
+    // The raw directory keeps the names of already-published archives
+    // stable (a lone `./ns/workflow.yaml` has always become `.-ns.yaml`).
+    const archiveName = ownsDirectory
+      ? `${refDir.replace(/\//g, "-")}.yaml`
+      : basename(entry.realPath);
+    const lookupName = ownsDirectory
+      ? refDir.replace(/_/g, "-")
+      : basename(entry.ref, extname(entry.ref)).replace(/_/g, "-");
+
+    const archiveKey = normalizeAdditionalFileEntry(archiveName);
+    const existing = taken.get(archiveKey);
+    if (existing !== undefined) {
+      throw markErrorPaths(
+        new UserError(
+          `Workflow entries ${existing} and ${entry.ref} would both be ` +
+            `packaged as ${archiveName}, so one would overwrite the other. ` +
+            `Rename one of the files, or move it into its own directory ` +
+            `so it is named after that directory.`,
+        ),
+        [existing, entry.ref, archiveName],
+      );
+    }
+    taken.set(archiveKey, entry.ref);
+    planned.push({
+      ref: entry.ref,
+      sourcePath: entry.realPath,
+      archiveName,
+      lookupName,
+    });
+  }
+  return planned;
+}
+
 export function isPulledExtensionManifest(
   repoDir: string,
   manifestPath: string,
@@ -311,7 +406,7 @@ export async function resolveExtensionFiles(
     addWfCandidate(resolve(repoDir, resolveWorkflowsDir(marker)));
 
     // Validate workflow files exist and resolve symlinks
-    const wfNames: string[] = [];
+    const wfEntries: WorkflowManifestEntry[] = [];
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
 
@@ -332,17 +427,25 @@ export async function resolveExtensionFiles(
           [wfRef, ...wfCandidateDirs],
         );
       }
-      // Derive a unique archive name from the manifest reference directory
-      // e.g. "namespace-debug/workflow.yaml" → "namespace-debug.yaml"
-      const refDir = dirname(wfRef);
-      const archiveName = refDir !== "."
-        ? `${refDir.replace(/\//g, "-")}.yaml`
-        : basename(realPath);
-      workflowFiles.push({ sourcePath: realPath, archiveName });
-      wfNames.push(
-        refDir !== "."
-          ? refDir.replace(/_/g, "-")
-          : basename(wfRef, ".yaml").replace(/_/g, "-"),
+      wfEntries.push({ ref: wfRef, realPath });
+    }
+
+    // Push writes every workflow to extension/workflows/<archiveName>, so
+    // archive names must be pairwise distinct or files are silently lost
+    // (swamp-club#2613). planWorkflowArchiveNames rejects clashes between
+    // manifest entries; takenArchiveNames extends the check to the
+    // dependency-resolved workflows merged below.
+    const wfNames: string[] = [];
+    const takenArchiveNames = new Map<string, string>();
+    for (const planned of planWorkflowArchiveNames(wfEntries)) {
+      workflowFiles.push({
+        sourcePath: planned.sourcePath,
+        archiveName: planned.archiveName,
+      });
+      wfNames.push(planned.lookupName);
+      takenArchiveNames.set(
+        normalizeAdditionalFileEntry(planned.archiveName),
+        planned.ref,
       );
     }
 
@@ -381,10 +484,22 @@ export async function resolveExtensionFiles(
         continue; // Skip if the file doesn't exist
       }
       if (!wfSet.has(realWf)) {
-        workflowFiles.push({
-          sourcePath: realWf,
-          archiveName: basename(realWf),
-        });
+        const archiveName = basename(realWf);
+        const archiveKey = normalizeAdditionalFileEntry(archiveName);
+        const takenBy = takenArchiveNames.get(archiveKey);
+        if (takenBy !== undefined) {
+          throw markErrorPaths(
+            new UserError(
+              `Workflow ${realWf}, referenced by a workflow step, would be ` +
+                `packaged as ${archiveName}, the same archive name as ` +
+                `${takenBy}. Rename one of the files so each workflow in the ` +
+                `package has a distinct file name.`,
+            ),
+            [realWf, archiveName, takenBy],
+          );
+        }
+        takenArchiveNames.set(archiveKey, realWf);
+        workflowFiles.push({ sourcePath: realWf, archiveName });
         wfSet.add(realWf);
       }
     }
