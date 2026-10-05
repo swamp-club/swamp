@@ -620,86 +620,75 @@ export class DataQueryService {
     const models = await this.resolveModels(predicate, options);
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
-    if (options?.include) {
-      // Apply the limit to accepted records, so hidden records never shorten
-      // a page: match in growing batches until the limit is met or the
-      // matches run out, never the whole catalog when a limit is set.
-      const include = options.include;
-      const limit = options.limit ?? Infinity;
-      let batch = Number.isFinite(limit) ? limit * 4 : undefined;
-      // Shared across batches, so a row is downloaded at most once.
-      const tried = new Set<string>();
-      while (true) {
-        const matched = await this.matchWithHydration(
-          predicate,
-          {
-            ...options,
-            limit: batch,
-          },
-          latestRuns,
-          tried,
-          models,
-        );
-        // Walk violations and matches in the order they were evaluated, and
-        // stop where the accepted page fills, so a violation is raised only
-        // where a query without include would have reached it. A violation
-        // the caller may not read is dropped like any other hidden record,
-        // so the error never names, or reveals, an item outside the caller's
-        // reach.
-        const accepted: DataRecord[] = [];
-        let nextViolation = 0;
-        for (
-          let i = 0;
-          i <= matched.records.length && accepted.length < limit;
-          i++
-        ) {
-          for (
-            ;
-            nextViolation < matched.violations.length &&
-            matched.violations[nextViolation].matchesBefore <= i;
-            nextViolation++
-          ) {
-            const { record } = matched.violations[nextViolation];
-            if (await include(record)) {
-              throw new BinaryContentPredicateError(record);
-            }
-          }
-          const record = matched.records[i];
-          if (record && await include(record)) accepted.push(record);
-        }
-        // Stale rows dropped during hydration can shorten a batch, so only
-        // stopping short of the batch limit means the matches ran out.
-        if (
-          accepted.length >= limit || batch === undefined || !matched.hitLimit
-        ) {
-          results = this.project(
-            accepted,
-            matched.selectParsed,
-            await this.projectedContents(accepted, matched.selectReadsContent),
-          );
-          break;
-        }
-        batch *= 4;
-      }
-    } else {
+    // Apply the limit to returned records, so neither hidden records nor
+    // stale catalog rows dropped during hydration shorten a page: match in
+    // growing batches until the limit is met or the matches run out, never
+    // the whole catalog when a limit is set. Without include, the first
+    // batch is the limit itself, so a query with no stale rows takes one
+    // pass, as it always has (swamp-club#2985).
+    const include = options?.include;
+    const limit = options?.limit ?? Infinity;
+    let batch = Number.isFinite(limit)
+      ? (include ? limit * 4 : limit)
+      : undefined;
+    // Shared across batches, so a row is downloaded at most once.
+    const tried = new Set<string>();
+    while (true) {
       const matched = await this.matchWithHydration(
         predicate,
-        options,
+        {
+          ...options,
+          limit: batch,
+        },
         latestRuns,
-        undefined,
+        tried,
         models,
       );
-      if (matched.violations.length > 0) {
-        throw new BinaryContentPredicateError(matched.violations[0].record);
+      // Walk violations and matches in the order they were evaluated, and
+      // stop where the accepted page fills, so a violation is raised only
+      // where an unfiltered query with no stale rows would have reached it.
+      // A violation the caller may not read is dropped like any other hidden
+      // record, so the error never names, or reveals, an item outside the
+      // caller's reach.
+      const accepted: DataRecord[] = [];
+      let nextViolation = 0;
+      for (
+        let i = 0;
+        i <= matched.records.length && accepted.length < limit;
+        i++
+      ) {
+        for (
+          ;
+          nextViolation < matched.violations.length &&
+          matched.violations[nextViolation].matchesBefore <= i;
+          nextViolation++
+        ) {
+          const { record } = matched.violations[nextViolation];
+          if (!include || await include(record)) {
+            throw new BinaryContentPredicateError(record);
+          }
+        }
+        const record = matched.records[i];
+        if (record && (!include || await include(record))) {
+          accepted.push(record);
+        }
       }
-      results = this.project(
-        matched.records,
-        matched.selectParsed,
-        await this.projectedContents(
-          matched.records,
-          matched.selectReadsContent,
-        ),
-      );
+      // Stale rows dropped during hydration can shorten a batch, so only
+      // stopping short of the batch limit means the matches ran out. A wider
+      // batch re-matches from the start; `tried` keeps it from downloading a
+      // body twice, and the widening only happens when stale rows or include
+      // shortened the page.
+      if (
+        accepted.length >= limit || batch === undefined || !matched.hitLimit
+      ) {
+        results = this.project(
+          accepted,
+          matched.selectParsed,
+          await this.projectedContents(accepted, matched.selectReadsContent),
+        );
+        break;
+      }
+      batch *= 4;
     }
 
     // Hydrate foreign namespace records whose content isn't available locally.

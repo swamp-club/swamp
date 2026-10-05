@@ -2031,6 +2031,118 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
   catalog.close();
 });
 
+/**
+ * One catalog row per entry, in order, each under its own data name. Only
+ * live entries get a backing file, so the rest are stale.
+ */
+function setupStaleRowsTest(entries: { name: string; live: boolean }[]): {
+  service: DataQueryService;
+  dataRepo: TracingDataRepository;
+  cleanup: () => void;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-stale-limit-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new TracingDataRepository(dir, undefined, catalog);
+  for (const entry of entries) {
+    catalog.upsert(makeRow({ data_name: entry.name, id: crypto.randomUUID() }));
+    if (!entry.live) continue;
+    const path = dataRepo.getContentPath(
+      ModelType.create("test-model"),
+      "model-001",
+      entry.name,
+      1,
+    );
+    ensureDirSync(dirname(path));
+    Deno.writeTextFileSync(path, JSON.stringify({ name: entry.name }));
+  }
+  return {
+    service: new DataQueryService(catalog, dataRepo, { filterStaleRows: true }),
+    dataRepo,
+    cleanup: () => {
+      catalog.close();
+      Deno.removeSync(dir, { recursive: true });
+    },
+  };
+}
+
+async function queryNames(
+  service: DataQueryService,
+  limit: number,
+): Promise<string[]> {
+  const records = await service.query('modelName == "ingest"', {
+    limit,
+  }) as DataRecord[];
+  return records.map((r) => r.name);
+}
+
+Deno.test("DataQueryService.query: a stale row does not shorten a limited page (swamp-club#2985)", async () => {
+  const { service, cleanup } = setupStaleRowsTest([
+    { name: "stale", live: false },
+    { name: "a", live: true },
+    { name: "b", live: true },
+  ]);
+  try {
+    assertEquals(await queryNames(service, 2), ["a", "b"]);
+    assertEquals(await queryNames(service, 1), ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a limited query over only stale rows returns nothing", async () => {
+  const { service, cleanup } = setupStaleRowsTest([
+    { name: "stale-1", live: false },
+    { name: "stale-2", live: false },
+    { name: "stale-3", live: false },
+  ]);
+  try {
+    assertEquals(await queryNames(service, 2), []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: more stale rows than one widened batch still fill the page", async () => {
+  // A first batch of 1 and a widened batch of 4 both end in stale rows.
+  const { service, cleanup } = setupStaleRowsTest([
+    ...Array.from({ length: 10 }, (_, i) => ({
+      name: `stale-${i}`,
+      live: false,
+    })),
+    { name: "a", live: true },
+    { name: "b", live: true },
+  ]);
+  try {
+    assertEquals(await queryNames(service, 1), ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a limited query without stale rows reads only the page's bodies", async () => {
+  const { service, dataRepo, cleanup } = setupStaleRowsTest(
+    ["a", "b", "c", "d", "e"].map((name) => ({ name, live: true })),
+  );
+  try {
+    assertEquals(await queryNames(service, 2), ["a", "b"]);
+    assertEquals([...dataRepo.reads.entries()], [["a", 1], ["b", 1]]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a limit of 0 returns nothing without include", async () => {
+  // Without include this returned one record: the match loop checked the
+  // limit only after pushing a match. The include path returned nothing.
+  const { service, cleanup } = setupStaleRowsTest([{ name: "a", live: true }]);
+  try {
+    assertEquals(await queryNames(service, 0), []);
+  } finally {
+    cleanup();
+  }
+});
+
 // --- computeLatestFlags tests ---
 
 /** Returns `version:is_latest:is_step_latest` for each row, in input order. */
