@@ -1710,6 +1710,10 @@ order:
   cleanup has finished. Each cleanup level is bounded by its 30-second
   cleanup signal, but a method that ignores its signal delays the record, as
   it would for a job alone in its level.
+- A job whose level is reached after the cancellation fired, without cleanup
+  mode, never starts, whether or not it shares its level (swamp-club#2898):
+  none of its steps is invoked with the cancelled signal, and it is settled as
+  a never-started job when the run records its cancellation.
 - A never-started job settles its steps in dependency order, each as above.
   It stays `pending` while any step is undecided, even when another step was
   cancelled, since nothing in it ran; otherwise it fails when any step failed
@@ -1725,7 +1729,8 @@ order:
   one in a later level runs with the cleanup signal when its level is reached.
   One the cancellation kept from starting (the abort fired before its level,
   or while it was queued behind `concurrency`) is settled when its level
-  ends, so it never stays `running` in the cancelled record (swamp-club#2597).
+  ends, so it never stays `running` in the cancelled record (swamp-club#2597),
+  alone in its level or not (swamp-club#2898).
   Its pending steps are settled as a never-started job's, then the job ends
   `failed` when a step failed and that failure was not allowed, `unknown`
   while a guarded step is undecided, otherwise `succeeded`. A `failed` or
@@ -1758,9 +1763,10 @@ order:
 Known limitation: cleanup mode starts only after something in the interrupted
 level failed or was left undecided. When every step of that level finishes
 successfully despite the cancellation (a method that ignores the signal), a
-later level is reached with the cancellation already fired and never enters
-cleanup mode: a level holding one step runs it with the aborted signal, and a
-level holding several starts nothing and leaves them `pending`.
+later step level of that job is reached with the cancellation already fired
+and never enters cleanup mode: a level holding one step runs it with the
+aborted signal, and a level holding several starts nothing and leaves them
+`pending`. A later job level starts nothing, as above.
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

@@ -14313,8 +14313,7 @@ Deno.test("resume cleanup: a queued job whose name is written with an input expr
 
 Deno.test("resume cleanup: a resume aborted before it starts settles the approved gate's job it never started, then runs cleanup", async () => {
   await withTempDir(async (tempDir) => {
-    // side shares main's level, so the aborted merge starts neither: a lone
-    // stream would still run with the aborted signal.
+    // side shares main's level, and the aborted merge starts neither.
     const workflow = resumeCleanupWorkflow("resume-cleanup-preaborted-wf", {
       extra: [Job.create({ name: "side", steps: [modelStep("s")] })],
     });
@@ -14349,12 +14348,13 @@ Deno.test("resume cleanup: a resume aborted before it starts settles the approve
 });
 
 /**
- * main: gate → post, suspended at the gate; side shares main's level, so a
- * resume aborted before it starts starts neither; `extra` jobs follow.
+ * main: gate → post, suspended at the gate; side shares main's level unless
+ * `alone` is set, and a resume aborted before it starts starts neither;
+ * `extra` jobs follow.
  */
 function inheritedJobWorkflow(
   name: string,
-  opts: { post?: Step; extra?: Job[] } = {},
+  opts: { post?: Step; extra?: Job[]; alone?: boolean } = {},
 ): Workflow {
   return Workflow.create({
     name,
@@ -14367,7 +14367,9 @@ function inheritedJobWorkflow(
             modelStep("post", onStep("gate", TriggerCondition.succeeded())),
         ],
       }),
-      Job.create({ name: "side", steps: [modelStep("s")] }),
+      ...(opts.alone
+        ? []
+        : [Job.create({ name: "side", steps: [modelStep("s")] })]),
       ...(opts.extra ?? []),
     ],
   });
@@ -14682,6 +14684,250 @@ Deno.test("resume cleanup: the approved work of a job a resume never started run
     assertEquals(executor.count("main/post"), 1);
     assertEquals(run.getJob("teardown")!.status, "succeeded");
     assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
+/** Aborts once `abortAfter` has run, which still succeeds. */
+class AbortAfterSuccessExecutor extends CountingStepExecutor {
+  private readonly controller = new AbortController();
+
+  constructor(private readonly abortAfter: string) {
+    super();
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const result = await super.execute(step, ctx);
+    if (ctx.stepName === this.abortAfter) this.controller.abort();
+    return result;
+  }
+}
+
+Deno.test("resume cleanup: a resume aborted before it starts does not start the suspended job alone in its level (swamp-club#2898)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = inheritedJobWorkflow("resume-cleanup-alone-wf", {
+      alone: true,
+      extra: [
+        jobOn("teardown", "main", TriggerCondition.always()),
+        jobOn("next", "main", TriggerCondition.succeeded()),
+      ],
+    });
+    const executor = new SignalHonoringExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      AbortSignal.abort(),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "failed");
+    assertCancelledBeforeStart(run, "main", ["post"]);
+    assertEquals(executor.count("main/post"), 0);
+    assertEquals(run.getJob("teardown")!.status, "succeeded");
+    assertEquals(executor.count("teardown/t"), 1);
+    assertEquals(run.getJob("next")!.status, "skipped");
+    assertEquals(executor.count("next/t"), 0);
+  });
+});
+
+Deno.test("resume cleanup: a job alone in its level a resume never started with an undecided guarded step ends unknown", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = inheritedJobWorkflow("resume-cleanup-alone-undecided-wf", {
+      alone: true,
+      post: modelStep("post", {
+        ...onStep("gate", TriggerCondition.succeeded()),
+        guard: "${{ false }}",
+      }),
+      extra: [jobOn("teardown", "main", TriggerCondition.always())],
+    });
+    const executor = new SignalHonoringExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      AbortSignal.abort(),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("main")!.status, "unknown");
+    assertUndecided(run, "main", ["post"]);
+    assertEquals(executor.count("main/post"), 0);
+    assertEquals(run.getJob("teardown")!.status, "succeeded");
+    assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
+Deno.test("resume cleanup: the approved work of a job alone in its level a resume never started runs once a later resume reopens it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = inheritedJobWorkflow("resume-cleanup-alone-reopen-wf", {
+      alone: true,
+      extra: [
+        jobOn("teardown", "main", TriggerCondition.always(), [
+          Step.create({
+            name: "tgate",
+            task: StepTask.manualApproval("tear?"),
+          }),
+          modelStep("t", onStep("tgate", TriggerCondition.succeeded())),
+        ]),
+      ],
+    });
+    const executor = new SignalHonoringExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await suspendAndApprove(service, runRepo, workflow);
+
+    // Cleanup reaches teardown's own gate, so the run suspends again.
+    const cleanup = await resumeUntilAborted(
+      service,
+      workflow,
+      suspended.id,
+      AbortSignal.abort(),
+    );
+    assertEquals(cleanup.status, "suspended");
+    assertCancelledBeforeStart(cleanup, "main", ["post"]);
+    assertEquals(executor.count("main/post"), 0);
+    const tgate = cleanup.getJob("teardown")!.getStep("tgate")!;
+    tgate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "user:test",
+      decidedAt: new Date().toISOString(),
+    });
+    tgate.succeed();
+    await runRepo.save(workflow.id, cleanup);
+
+    const run = await resumeUntilAborted(
+      service,
+      workflow,
+      cleanup.id,
+      new AbortController().signal,
+    );
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("main")!.getStep("post")!.status, "succeeded");
+    assertEquals(executor.count("main/post"), 1);
+    assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
+Deno.test("run cleanup: a run aborted before it starts starts no job, with one job per level as with several (swamp-club#2898)", async () => {
+  await withTempDir(async (tempDir) => {
+    for (const sharing of [false, true]) {
+      const workflow = Workflow.create({
+        name: `run-cleanup-preaborted-${sharing ? "shared" : "alone"}-wf`,
+        jobs: [
+          Job.create({ name: "main", steps: [modelStep("a")] }),
+          ...(sharing
+            ? [Job.create({ name: "side", steps: [modelStep("s")] })]
+            : []),
+          jobOn("teardown", "main", TriggerCondition.always()),
+        ],
+      });
+      const executor = new SignalHonoringExecutor();
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        executor,
+      );
+
+      const { run } = await finishedRun(
+        service.run(workflow.name, { signal: AbortSignal.abort() }),
+      );
+
+      assertEquals(run.status, "cancelled");
+      assertEquals(executor.calls.size, 0);
+      assertEquals(run.getJob("main")!.status, "failed");
+      assertCancelledBeforeStart(run, "main", ["a"]);
+      assertEquals(run.getJob("teardown")!.status, "failed");
+      assertCancelledBeforeStart(run, "teardown", ["t"]);
+    }
+  });
+});
+
+Deno.test("run cleanup: a job alone in its level is not started when the abort fired while the level before it succeeded", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "run-cleanup-between-levels-wf",
+      jobs: [
+        Job.create({ name: "first", steps: [modelStep("a")] }),
+        jobOn("second", "first", TriggerCondition.succeeded(), [
+          modelStep("b"),
+        ]),
+      ],
+    });
+    const executor = new AbortAfterSuccessExecutor("a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await finishedRun(
+      service.run(workflow.name, { signal: executor.signal }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("first")!.status, "succeeded");
+    assertEquals(executor.count("first/a"), 1);
+    assertEquals(run.getJob("second")!.status, "failed");
+    assertCancelledBeforeStart(run, "second", ["b"]);
+    assertEquals(executor.count("second/b"), 0);
+  });
+});
+
+Deno.test("run cleanup: a cleanup job alone in its level still runs after the abort failed the job before it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "run-cleanup-alone-cleanup-wf",
+      jobs: [
+        Job.create({ name: "work", steps: [modelStep("w")] }),
+        jobOn("cleanup", "work", TriggerCondition.always(), [modelStep("c")]),
+      ],
+    });
+    const executor = new SignalHonoringExecutor();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await finishedRun(
+      service.run(workflow.name, { signal: executor.arm("w") }),
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("work")!.status, "failed");
+    assertEquals(run.getJob("cleanup")!.status, "succeeded");
+    assertEquals(executor.count("cleanup/c"), 1);
   });
 });
 
