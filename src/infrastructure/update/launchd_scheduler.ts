@@ -339,7 +339,7 @@ export class LaunchdScheduler implements AutoupdateScheduler {
    * mid-way through writing its log entry), when its state cannot be read
    * (`unknown`, which includes a launchd domain that does not exist, as over
    * SSH with nobody logged in to the desktop), and when it is healthy and
-   * not pinned to a binary. A job that is not loaded at all is loaded.
+   * not pinned to a binary, or not loaded at all.
    */
   async refresh(): Promise<SchedulerRefreshResult> {
     const path = plistPathForMode(this.mode);
@@ -361,39 +361,38 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     const target = `${domain}/${LABEL}`;
     const printed = await launchctl(["print", target]);
     if (printed.code !== 0) {
-      // No job — or no domain at all, as over SSH with nobody logged in to
-      // the desktop. Loading into a missing domain cannot work, so that
-      // reads as unknown rather than as a failed refresh.
+      // No domain at all, as over SSH with nobody logged in to the desktop,
+      // reads as unknown. A domain without the job means it is not loaded —
+      // for example turned off in Login Items — so launchd holds no stale
+      // requirement for it and there is nothing to repair.
       if ((await launchctl(["print", domain])).code !== 0) return "unknown";
-    } else {
-      const runtime = parseLaunchctlPrint(printed.stdout);
-      if (!runtime) return "unknown";
-      if (runtime.running) return "skipped";
-      const healthy = !runtime.pinnedToBinary && !runtime.needsRepair &&
-        (runtime.lastExitCode === null || runtime.lastExitCode === 0);
-      if (healthy) return "not_needed";
+      return "not_needed";
     }
+    const runtime = parseLaunchctlPrint(printed.stdout);
+    if (!runtime) return "unknown";
+    if (runtime.running) return "skipped";
+    const healthy = !runtime.pinnedToBinary && !runtime.needsRepair &&
+      (runtime.lastExitCode === null || runtime.lastExitCode === 0);
+    if (healthy) return "not_needed";
 
     await atomicWriteTextFile(
       path,
       buildPlist(job.binaryPath, cadenceFromInterval(job.interval), this.mode),
     );
 
-    if (printed.code === 0) {
-      await launchctl(["bootout", target]);
-      let unloaded = false;
-      for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
-        if ((await launchctl(["print", target])).code !== 0) {
-          unloaded = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
+    await launchctl(["bootout", target]);
+    let unloaded = false;
+    for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
+      if ((await launchctl(["print", target])).code !== 0) {
+        unloaded = true;
+        break;
       }
-      if (!unloaded) {
-        throw new Error(
-          `launchctl bootout did not unload ${target}; the job was left as it was`,
-        );
-      }
+      await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
+    }
+    if (!unloaded) {
+      throw new Error(
+        `launchctl bootout did not unload ${target}; the job was left as it was`,
+      );
     }
 
     const result = await launchctl(["bootstrap", domain, path]);

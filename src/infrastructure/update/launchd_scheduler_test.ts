@@ -263,21 +263,19 @@ Deno.test("LaunchdScheduler.refresh: leaves a running job alone", async () => {
   });
 });
 
-Deno.test("LaunchdScheduler.refresh: loads a job launchd does not have", async () => {
-  await withAgentPlist(
-    buildPlist("/usr/local/bin/swamp", "daily"),
-    async () => {
-      const { result, calls } = await withMockedCommand((cmd, args) => {
-        if (cmd === "id") return { stdout: "501\n", code: 0 };
-        if (args[0] === "print") return printJobMissing(args);
-        if (args[0] === "bootout") return { stdout: "", code: 3 };
-        return { stdout: "", code: 0 };
-      }, () => new LaunchdScheduler("agent").refresh());
+Deno.test("LaunchdScheduler.refresh: leaves a job launchd has not loaded alone (e.g. off in Login Items)", async () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily");
+  await withAgentPlist(plist, async (plistPath) => {
+    const { result, calls } = await withMockedCommand((cmd, args) => {
+      if (cmd === "id") return { stdout: "501\n", code: 0 };
+      if (args[0] === "print") return printJobMissing(args);
+      return { stdout: "", code: 0 };
+    }, () => new LaunchdScheduler("agent").refresh());
 
-      assertEquals(result, "refreshed");
-      assertEquals(launchctlCalls(calls), ["print", "print", "bootstrap"]);
-    },
-  );
+    assertEquals(result, "not_needed");
+    assertEquals(launchctlCalls(calls), ["print", "print"]);
+    assertEquals(await Deno.readTextFile(plistPath), plist);
+  });
 });
 
 Deno.test("LaunchdScheduler.refresh: a missing launchd domain (SSH, no desktop login) is unknown", async () => {
@@ -387,9 +385,13 @@ Deno.test("LaunchdScheduler.refresh: reports launchd's reason when bootstrap fai
   await withAgentPlist(
     buildPlist("/usr/local/bin/swamp", "daily"),
     async () => {
+      let booted = true;
       await withMockedCommand((cmd, args) => {
         if (cmd === "id") return { stdout: "501\n", code: 0 };
-        if (args[0] === "print") return printJobMissing(args);
+        if (args[0] === "print") {
+          return booted ? { stdout: STUCK_PRINT, code: 0 } : NOT_FOUND;
+        }
+        if (args[0] === "bootout") booted = false;
         if (args[0] === "bootstrap") {
           return {
             stdout: "",
