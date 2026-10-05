@@ -1446,6 +1446,26 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Finding the run.** A local cancel looks the run up in the run store, not
+through the workflow's definition (`resolveLocalCancelTarget`,
+`src/cli/commands/workflow_cancel.ts`), so a run outlives its workflow file: a
+run whose definition was deleted is still cancelled, and settled as described
+below.
+
+- `--run <id>` finds the run by its id alone, and needs no workflow argument.
+  A workflow given with it must be the run's own: its workflow id, the name the
+  run recorded, or its definition's current name. Otherwise the run is not
+  found.
+- A workflow alone picks its latest active run. A name or id that resolves no
+  definition falls back to the active runs of deleted workflows that carry it,
+  matched on the workflow id or the name the run recorded. A name a newer
+  workflow reuses therefore means the newer one; the deleted workflow's runs
+  stay reachable by run id.
+- `--all` reads every run in the run store, so it includes the runs of deleted
+  workflows, reported under the name they recorded and listed after the runs
+  of workflows that still have a definition. An unreadable run file
+  fails `--all` with its read error before anything is cancelled.
+
 **Run claims.** Approve, reject, cancel, supersede and the start of a resume
 each load a run's record, change it and save the whole record back. Two of them
 on one run at once would save over each other, and the first to save would have

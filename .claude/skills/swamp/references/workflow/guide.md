@@ -48,6 +48,7 @@ skill.
 | Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
 | List approvals     | `swamp workflow approvals`                                               |
 | Cancel a run       | `swamp workflow cancel <workflow> [--run <id>]`                          |
+| Cancel by run id   | `swamp workflow cancel --run <id>`                                       |
 | Cancel serve run   | `swamp workflow cancel --run <id> --server <url>`                        |
 | Active runs        | `swamp run history --active`                                             |
 | Recent runs        | `swamp run history`                                                      |

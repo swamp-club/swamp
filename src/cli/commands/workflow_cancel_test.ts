@@ -37,8 +37,11 @@ import {
   buildCancelUrl,
   cancelAllLocalRuns,
   cancelLocalRun,
+  type CancelTargetDeps,
+  findAllActiveRuns,
   isServeOwnedRun,
   OWNER_STOP_GRACE_MS,
+  resolveLocalCancelTarget,
   RunNotCancelledError,
   SERVER_CANCEL_TIMEOUT_MS,
   serverCancelFailure,
@@ -1444,5 +1447,491 @@ Deno.test("cancelAllLocalRuns: an unreadable method-run record does not stop the
 
     assertEquals(result.cancelled.map((c) => c.runId), [run.id]);
     assertEquals(tracker.findById(step.id)?.status, "interrupted");
+  });
+});
+
+// swamp-club#2920: a run whose workflow file was deleted.
+
+/** A run suspended at its gate, as `workflow run` saved it. */
+function gatedRunData(
+  overrides: Partial<WorkflowRunInput> = {},
+): WorkflowRunInput {
+  return {
+    id: crypto.randomUUID(),
+    workflowId: WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "suspended",
+    startedAt: "2026-07-20T20:00:00.000Z",
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt: "2026-07-20T20:00:00.000Z",
+      steps: [
+        {
+          stepName: "gate",
+          status: "waiting_approval",
+          startedAt: "2026-07-20T20:00:00.000Z",
+        },
+        { stepName: "deploy", status: "pending" },
+      ],
+    }],
+    tags: {},
+    ...overrides,
+  };
+}
+
+/** The gated workflow: `deploy` runs once `gate` is approved. */
+function gatedWorkflow(id: string = WORKFLOW_ID, name = "test-workflow") {
+  return Workflow.create({
+    id,
+    name,
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        Step.create({
+          name: "deploy",
+          task: StepTask.model("m", "run"),
+          dependsOn: [{
+            step: "gate",
+            condition: TriggerCondition.succeeded(),
+          }],
+        }),
+      ],
+    })],
+  });
+}
+
+/** A workflow repository holding only `workflows`. */
+function definitions(
+  ...workflows: Workflow[]
+): CancelTargetDeps["workflowRepo"] {
+  return {
+    findByName: (name) =>
+      Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+    findById: (id) =>
+      Promise.resolve(workflows.find((w) => w.id === id) ?? null),
+    findAll: () => Promise.resolve(workflows),
+  };
+}
+
+Deno.test("cancelLocalRun: settles a run whose definition is gone from its records alone", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const run = WorkflowRun.fromData(gatedRunData());
+    await runRepo.save(workflowId, run);
+
+    const result = await cancelLocalRun(run, undefined, "No longer needed", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+      ...untracked,
+    });
+
+    const stored = await runRepo.findById(workflowId, run.id);
+    for (const settled of [result, stored]) {
+      assertEquals(settled?.status, "cancelled");
+      assertEquals(settled?.tags.cancel_reason, "No longer needed");
+      assertEquals(settled?.jobs[0].status, "failed");
+      assertEquals(stepSummary(settled!), ["gate:failed", "deploy:failed"]);
+      assertEquals(settled?.jobs[0].steps[0].error, "cancelled");
+    }
+  });
+});
+
+Deno.test("cancelLocalRun: settles a run whose definition is gone against its evaluated snapshot", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const snapshotId = crypto.randomUUID();
+    const run = WorkflowRun.fromData(gatedRunData({
+      runPlan: { fingerprint: "f", evaluatedWorkflowId: snapshotId },
+    }));
+    await runRepo.save(workflowId, run);
+
+    const lookedUp: string[] = [];
+    const result = await cancelLocalRun(run, undefined, "No longer needed", {
+      runRepo,
+      findEvaluatedWorkflow: (id) => {
+        lookedUp.push(id);
+        return Promise.resolve(gatedWorkflow());
+      },
+      runClaims: unclaimedRuns,
+      ...untracked,
+    });
+
+    assertEquals(lookedUp, [snapshotId]);
+    assertEquals(result?.status, "cancelled");
+    // The snapshot's dependsOn decides: deploy needed the gate to succeed.
+    assertEquals(stepSummary(result!), ["gate:failed", "deploy:skipped"]);
+    assertEquals(result?.jobs[0].steps[1].skipReason, { kind: "dependency" });
+  });
+});
+
+Deno.test("cancelAllLocalRuns: reports a run whose definition is gone under its recorded name", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const run = WorkflowRun.fromData(gatedRunData({ workflowName: "gone" }));
+    await runRepo.save(workflowId, run);
+
+    const result = await cancelAllLocalRuns(
+      [{ run, workflow: undefined }],
+      "Cancelled by user",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...untracked,
+      },
+    );
+
+    assertEquals(result.cancelled, [{
+      runId: run.id,
+      workflowName: "gone",
+      previousStatus: "suspended",
+    }]);
+    assertEquals(
+      (await runRepo.findById(workflowId, run.id))?.status,
+      "cancelled",
+    );
+  });
+});
+
+Deno.test("cancelAllLocalRuns: a claim that times out reports a run whose definition is gone as not cancelled", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = WorkflowRun.fromData(gatedRunData({ workflowName: "gone" }));
+    await runRepo.save(createWorkflowId(WORKFLOW_ID), run);
+    const timedOut: WorkflowRunClaims = {
+      withClaim: () => Promise.reject(new LockTimeoutError("claim", null, 1)),
+    };
+
+    const result = await cancelAllLocalRuns(
+      [{ run, workflow: undefined }],
+      "Cancelled by user",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: timedOut,
+        ...untracked,
+      },
+    );
+
+    assertEquals(result.claimTimedOut, true);
+    assertEquals(
+      result.notCancelled.map((n) => [n.runId, n.workflowName, n.status]),
+      [[run.id, "gone", "suspended"]],
+    );
+  });
+});
+
+const OTHER_WORKFLOW_ID = "b0000000-0000-4000-8000-000000000002";
+
+/** Saves a suspended run under `workflowId` and returns it. */
+async function saveGatedRun(
+  runRepo: YamlWorkflowRunRepository,
+  overrides: Partial<WorkflowRunInput> = {},
+): Promise<WorkflowRun> {
+  const run = WorkflowRun.fromData(gatedRunData(overrides));
+  await runRepo.save(createWorkflowId(run.workflowId), run);
+  return run;
+}
+
+Deno.test("resolveLocalCancelTarget: finds a run whose definition is gone by its run id alone", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+
+    const target = await resolveLocalCancelTarget(
+      { workflowRepo: definitions(), runRepo },
+      { runId: run.id },
+    );
+
+    assertEquals(target.run.id, run.id);
+    assertEquals(target.workflow, undefined);
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a run id with the deleted workflow's recorded name or id finds the run", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+
+    for (const workflowIdOrName of ["test-workflow", WORKFLOW_ID]) {
+      const target = await resolveLocalCancelTarget(
+        { workflowRepo: definitions(), runRepo },
+        { workflowIdOrName, runId: run.id },
+      );
+      assertEquals(target.run.id, run.id);
+      assertEquals(target.workflow, undefined);
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a run id returns the run's definition when it exists", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+    // Renamed since the run recorded "test-workflow".
+    const renamed = gatedWorkflow(WORKFLOW_ID, "renamed");
+    const deps = { workflowRepo: definitions(renamed), runRepo };
+
+    for (
+      const workflowIdOrName of [undefined, "renamed", "test-workflow"]
+    ) {
+      const target = await resolveLocalCancelTarget(deps, {
+        workflowIdOrName,
+        runId: run.id,
+      });
+      assertEquals(target.run.id, run.id);
+      assertEquals(target.workflow, renamed);
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a run of another workflow than the one named is not found", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const run = await saveGatedRun(runRepo);
+    const other = gatedWorkflow(OTHER_WORKFLOW_ID, "other");
+    const deps = { workflowRepo: definitions(other), runRepo };
+
+    await assertRejects(
+      () =>
+        resolveLocalCancelTarget(deps, {
+          workflowIdOrName: "other",
+          runId: run.id,
+        }),
+      UserError,
+      `Workflow run not found: ${run.id}`,
+    );
+    await assertRejects(
+      () =>
+        resolveLocalCancelTarget(deps, {
+          workflowIdOrName: "nope",
+          runId: run.id,
+        }),
+      UserError,
+      "Workflow not found: nope",
+    );
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: an unknown run id is not found, whatever its form", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    await saveGatedRun(runRepo);
+    const deps = { workflowRepo: definitions(gatedWorkflow()), runRepo };
+
+    for (const runId of [crypto.randomUUID(), "not-a-uuid", "../escape"]) {
+      await assertRejects(
+        () => resolveLocalCancelTarget(deps, { runId }),
+        UserError,
+        `Workflow run not found: ${runId}`,
+      );
+      await assertRejects(
+        () =>
+          resolveLocalCancelTarget(deps, {
+            workflowIdOrName: "test-workflow",
+            runId,
+          }),
+        UserError,
+        `Workflow run not found: ${runId}`,
+      );
+      await assertRejects(
+        () =>
+          resolveLocalCancelTarget(deps, { workflowIdOrName: "nope", runId }),
+        UserError,
+        "Workflow not found: nope",
+      );
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a workflow alone picks its latest active run", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    await saveGatedRun(runRepo, { startedAt: "2026-07-20T20:00:00.000Z" });
+    const latest = await saveGatedRun(runRepo, {
+      startedAt: "2026-07-20T21:00:00.000Z",
+    });
+    await saveGatedRun(runRepo, {
+      startedAt: "2026-07-20T22:00:00.000Z",
+      status: "cancelled",
+      completedAt: "2026-07-20T22:00:01.000Z",
+    });
+    const workflow = gatedWorkflow();
+
+    const target = await resolveLocalCancelTarget(
+      { workflowRepo: definitions(workflow), runRepo },
+      { workflowIdOrName: "test-workflow" },
+    );
+
+    assertEquals(target.run.id, latest.id);
+    assertEquals(target.workflow, workflow);
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a workflow with a definition and no active run says so", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+
+    await assertRejects(
+      () =>
+        resolveLocalCancelTarget(
+          { workflowRepo: definitions(gatedWorkflow()), runRepo },
+          { workflowIdOrName: "test-workflow" },
+        ),
+      UserError,
+      'No active runs found for workflow "test-workflow"',
+    );
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a deleted workflow's name or id picks its latest active run", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    await saveGatedRun(runRepo, { startedAt: "2026-07-20T20:00:00.000Z" });
+    const latest = await saveGatedRun(runRepo, {
+      startedAt: "2026-07-20T21:00:00.000Z",
+    });
+    // Another deleted workflow's run, and a live workflow's.
+    await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "other",
+      startedAt: "2026-07-20T23:00:00.000Z",
+    });
+    const deps = { workflowRepo: definitions(), runRepo };
+
+    for (const workflowIdOrName of ["test-workflow", WORKFLOW_ID]) {
+      const target = await resolveLocalCancelTarget(deps, {
+        workflowIdOrName,
+      });
+      assertEquals(target.run.id, latest.id);
+      assertEquals(target.workflow, undefined);
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a name no definition or active run carries is not found", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    // The deleted workflow's only run already finished.
+    await saveGatedRun(runRepo, {
+      status: "cancelled",
+      completedAt: "2026-07-20T22:00:01.000Z",
+    });
+    // A renamed workflow still has its definition: its old name is not a
+    // deleted workflow's.
+    await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "old-name",
+    });
+    const deps = {
+      workflowRepo: definitions(gatedWorkflow(OTHER_WORKFLOW_ID, "new-name")),
+      runRepo,
+    };
+
+    for (const workflowIdOrName of ["test-workflow", "old-name", "nope"]) {
+      await assertRejects(
+        () => resolveLocalCancelTarget(deps, { workflowIdOrName }),
+        UserError,
+        `Workflow not found: ${workflowIdOrName}`,
+      );
+    }
+  });
+});
+
+Deno.test("resolveLocalCancelTarget: a name reused by a newer workflow means the newer one", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const orphaned = await saveGatedRun(runRepo);
+    const reused = gatedWorkflow(OTHER_WORKFLOW_ID, "test-workflow");
+    const deps = { workflowRepo: definitions(reused), runRepo };
+
+    await assertRejects(
+      () =>
+        resolveLocalCancelTarget(deps, { workflowIdOrName: "test-workflow" }),
+      UserError,
+      'No active runs found for workflow "test-workflow"',
+    );
+    // The deleted workflow's run stays reachable by its run id.
+    const target = await resolveLocalCancelTarget(deps, {
+      runId: orphaned.id,
+    });
+    assertEquals(target.run.id, orphaned.id);
+    assertEquals(target.workflow, undefined);
+  });
+});
+
+Deno.test("findAllActiveRuns: includes the active runs of deleted workflows", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const defined = await saveGatedRun(runRepo);
+    const orphaned = await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "gone",
+    });
+    await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "gone",
+      status: "cancelled",
+      completedAt: "2026-07-20T22:00:01.000Z",
+    });
+    const workflow = gatedWorkflow();
+
+    const active = await findAllActiveRuns({
+      workflowRepo: definitions(workflow),
+      runRepo,
+    });
+
+    assertEquals(
+      new Map(active.map(({ run, workflow }) => [run.id, workflow])),
+      new Map([[defined.id, workflow], [orphaned.id, undefined]]),
+    );
+  });
+});
+
+Deno.test("findAllActiveRuns: groups runs by workflow in definition order, deleted workflows last", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const THIRD_WORKFLOW_ID = "c0000000-0000-4000-8000-000000000003";
+    // Start times interleave the three workflows.
+    const firstOld = await saveGatedRun(runRepo, {
+      startedAt: "2026-07-20T20:00:00.000Z",
+    });
+    const orphaned = await saveGatedRun(runRepo, {
+      workflowId: THIRD_WORKFLOW_ID,
+      workflowName: "gone",
+      startedAt: "2026-07-20T23:00:00.000Z",
+    });
+    const second = await saveGatedRun(runRepo, {
+      workflowId: OTHER_WORKFLOW_ID,
+      workflowName: "other",
+      startedAt: "2026-07-20T21:00:00.000Z",
+    });
+    const firstNew = await saveGatedRun(runRepo, {
+      startedAt: "2026-07-20T22:00:00.000Z",
+    });
+
+    const active = await findAllActiveRuns({
+      workflowRepo: definitions(
+        gatedWorkflow(),
+        gatedWorkflow(OTHER_WORKFLOW_ID, "other"),
+      ),
+      runRepo,
+    });
+
+    assertEquals(
+      active.map(({ run, workflow }) => [run.id, workflow?.name]),
+      [
+        [firstNew.id, "test-workflow"],
+        [firstOld.id, "test-workflow"],
+        [second.id, "other"],
+        [orphaned.id, undefined],
+      ],
+    );
   });
 });

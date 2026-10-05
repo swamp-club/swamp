@@ -37,6 +37,8 @@ import {
 import {
   createWorkflowId,
   createWorkflowRunId,
+  type WorkflowId,
+  type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import {
   OWNER_STOPPED_STEP_ERROR,
@@ -214,6 +216,25 @@ export interface CancelLocalRunDeps {
   liveness?: OwnerLiveness;
 }
 
+/**
+ * The id of the workflow whose runs hold `run`. A run whose definition is
+ * gone has only the id it recorded.
+ */
+function workflowIdOf(
+  run: WorkflowRun,
+  workflow: Workflow | undefined,
+): WorkflowId {
+  return workflow?.id ?? createWorkflowId(run.workflowId);
+}
+
+/** The workflow's current name, or the one `run` recorded when it is gone. */
+function workflowNameOf(
+  run: WorkflowRun,
+  workflow: Workflow | undefined,
+): string {
+  return workflow?.name ?? run.workflowName;
+}
+
 /** The pid of the process to stop for `run`, if another process owns it. */
 function ownerPidToStop(run: WorkflowRun): number | undefined {
   return run.pid && run.pid !== Deno.pid ? run.pid : undefined;
@@ -308,7 +329,7 @@ const MAX_TAKE_OVER_STOPS = 3;
  */
 async function settleStoppingNewOwners(
   run: WorkflowRun,
-  workflow: Workflow,
+  workflow: Workflow | undefined,
   reason: string,
   stopped: Set<number>,
   killProcess: NonNullable<CancelLocalRunDeps["killProcess"]>,
@@ -342,7 +363,8 @@ async function settleStoppingNewOwners(
  * overwrite it. A run the owner already finished keeps its record (a
  * cancelled one gets this reason); a run still active is cancelled, its
  * unfinished jobs and steps settled against the run's evaluated snapshot, or
- * else `workflow`, with the steps its stopped owner left running failed with
+ * else `workflow`, or from its records alone when the definition is gone
+ * too, with the steps its stopped owner left running failed with
  * {@link OWNER_STOPPED_STEP_ERROR}. Returns the persisted run, or null when
  * the record no longer exists.
  *
@@ -356,7 +378,7 @@ async function settleStoppingNewOwners(
  */
 async function settleCancelledRun(
   run: WorkflowRun,
-  workflow: Workflow,
+  workflow: Workflow | undefined,
   reason: string,
   stopped: ReadonlySet<number>,
   {
@@ -369,7 +391,7 @@ async function settleCancelledRun(
     "runRepo" | "findEvaluatedWorkflow" | "runClaims" | "liveness"
   >,
 ): Promise<WorkflowRun | TakenOver | null> {
-  const workflowId = workflow.id;
+  const workflowId = workflowIdOf(run, workflow);
   return await runClaims.withClaim(run.id, async () => {
     const current = await runRepo.findById(workflowId, run.id);
     if (!current) {
@@ -419,12 +441,13 @@ async function settleCancelledRun(
  * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, closes
  * what it left open (see {@link closeStoppedOwnerRuns}), then settles the
  * record (see {@link settleCancelledRun}), stopping a process that took the
- * run over in between. Returns the persisted run, or null when the record no
- * longer exists.
+ * run over in between. `workflow` is undefined for a run whose definition
+ * was deleted. Returns the persisted run, or null when the record no longer
+ * exists.
  */
 export async function cancelLocalRun(
   run: WorkflowRun,
-  workflow: Workflow,
+  workflow: Workflow | undefined,
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
@@ -456,6 +479,12 @@ async function withRunTracker<T>(
   } finally {
     runTracker.close();
   }
+}
+
+/** A run to cancel, with its workflow's definition when one still exists. */
+export interface LocalCancelTarget {
+  run: WorkflowRun;
+  workflow: Workflow | undefined;
 }
 
 export interface CancelAllResult {
@@ -501,7 +530,7 @@ function isLockTimeout(error: unknown): boolean {
  * in input order.
  */
 export async function cancelAllLocalRuns(
-  runs: { run: WorkflowRun; workflow: Workflow }[],
+  runs: LocalCancelTarget[],
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<CancelAllResult> {
@@ -524,7 +553,7 @@ export async function cancelAllLocalRuns(
     claimTimedOut: false,
   };
   for (const { run, workflow } of runs) {
-    const workflowName = workflow.name;
+    const workflowName = workflowNameOf(run, workflow);
     const previousStatus = run.status;
     let finalRun: WorkflowRun | null;
     try {
@@ -552,7 +581,10 @@ export async function cancelAllLocalRuns(
       // The claim could not be taken, so nothing was settled here. The
       // record is reported as it stands: a stopped owner may have saved its
       // own outcome.
-      finalRun = await deps.runRepo.findById(workflow.id, run.id);
+      finalRun = await deps.runRepo.findById(
+        workflowIdOf(run, workflow),
+        run.id,
+      );
       if (finalRun && !TERMINAL_STATUSES.has(finalRun.status)) {
         result.claimTimedOut = true;
         result.notCancelled.push({
@@ -580,22 +612,161 @@ export async function cancelAllLocalRuns(
   return result;
 }
 
-async function findAllActiveRuns(
-  workflowRepo: WorkflowRepository,
-  runRepo: WorkflowRunRepository,
-): Promise<{ run: WorkflowRun; workflow: Workflow }[]> {
-  const workflows = await workflowRepo.findAll();
-  const results: { run: WorkflowRun; workflow: Workflow }[] = [];
+/**
+ * The repository surface cancel finds its runs through: a run by its id
+ * alone, and every run of every workflow, whether or not the workflow's
+ * definition still exists. Structural so the {@link WorkflowRunRepository}
+ * port does not grow `findGlobalById`.
+ */
+export interface CancelTargetDeps {
+  workflowRepo: Pick<WorkflowRepository, "findByName" | "findById" | "findAll">;
+  runRepo:
+    & Pick<WorkflowRunRepository, "findAllByWorkflowId" | "findAllGlobal">
+    & {
+      findGlobalById(
+        runId: WorkflowRunId,
+      ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | null>;
+    };
+}
 
-  for (const workflow of workflows) {
-    const runs = await runRepo.findAllByWorkflowId(workflow.id);
-    for (const run of runs) {
-      if (!TERMINAL_STATUSES.has(run.status)) {
-        results.push({ run, workflow });
-      }
+/**
+ * Every run that has not finished, across all workflows. Runs are read from
+ * the run store rather than per definition, so a run whose workflow file was
+ * deleted is included, without a workflow. Runs are grouped by workflow, in
+ * definition order with each workflow's newest run first; the runs of deleted
+ * workflows follow.
+ */
+export async function findAllActiveRuns(
+  { workflowRepo, runRepo }: CancelTargetDeps,
+): Promise<LocalCancelTarget[]> {
+  const activeByWorkflow = new Map<string, WorkflowRun[]>();
+  for (const { run, workflowId } of await runRepo.findAllGlobal()) {
+    if (TERMINAL_STATUSES.has(run.status)) continue;
+    const runs = activeByWorkflow.get(workflowId);
+    if (runs) runs.push(run);
+    else activeByWorkflow.set(workflowId, [run]);
+  }
+  const results: LocalCancelTarget[] = [];
+  for (const workflow of await workflowRepo.findAll()) {
+    for (const run of activeByWorkflow.get(workflow.id) ?? []) {
+      results.push({ run, workflow });
     }
+    activeByWorkflow.delete(workflow.id);
+  }
+  for (const runs of activeByWorkflow.values()) {
+    for (const run of runs) results.push({ run, workflow: undefined });
   }
   return results;
+}
+
+/** The run started last; a run that never started loses to one that did. */
+function latestRun(runs: WorkflowRun[]): WorkflowRun {
+  return runs.reduce((latest, current) => {
+    if (!latest.startedAt) return current;
+    if (!current.startedAt) return latest;
+    return current.startedAt > latest.startedAt ? current : latest;
+  });
+}
+
+async function findWorkflow(
+  workflowRepo: CancelTargetDeps["workflowRepo"],
+  workflowIdOrName: string,
+): Promise<Workflow | null> {
+  return await workflowRepo.findByName(workflowIdOrName) ??
+    await workflowRepo.findById(createWorkflowId(workflowIdOrName));
+}
+
+/**
+ * The active runs of workflows that no longer have a definition, whose
+ * workflow id or recorded workflow name is `workflowIdOrName`.
+ */
+async function findActiveRunsWithoutDefinition(
+  { workflowRepo, runRepo }: CancelTargetDeps,
+  workflowIdOrName: string,
+): Promise<WorkflowRun[]> {
+  const hasDefinition = new Map<WorkflowId, boolean>();
+  const runs: WorkflowRun[] = [];
+  for (const { run, workflowId } of await runRepo.findAllGlobal()) {
+    if (TERMINAL_STATUSES.has(run.status)) continue;
+    if (
+      workflowId !== workflowIdOrName && run.workflowName !== workflowIdOrName
+    ) {
+      continue;
+    }
+    let defined = hasDefinition.get(workflowId);
+    if (defined === undefined) {
+      defined = (await workflowRepo.findById(workflowId)) !== null;
+      hasDefinition.set(workflowId, defined);
+    }
+    if (!defined) runs.push(run);
+  }
+  return runs;
+}
+
+/**
+ * Finds the run a local cancel names. The run is looked up in the run store,
+ * so one whose workflow file was deleted is still found; its `workflow` is
+ * then undefined.
+ *
+ * With a run id, the run is found by that id alone. A workflow given with it
+ * must be the run's own: its workflow id, the name the run recorded, or its
+ * definition's current name.
+ *
+ * Without a run id, the workflow's latest active run is picked. A name or id
+ * that resolves no definition falls back to the active runs of deleted
+ * workflows that carry it, so a name reused by a newer workflow always means
+ * the newer one.
+ */
+export async function resolveLocalCancelTarget(
+  deps: CancelTargetDeps,
+  input: { workflowIdOrName?: string; runId?: string },
+): Promise<LocalCancelTarget> {
+  const { workflowRepo, runRepo } = deps;
+  const { workflowIdOrName, runId } = input;
+
+  if (runId !== undefined) {
+    const found = await runRepo.findGlobalById(createWorkflowRunId(runId));
+    const workflow = found
+      ? await workflowRepo.findById(found.workflowId) ?? undefined
+      : undefined;
+    const isOwnWorkflow = found !== null && (
+      workflowIdOrName === undefined ||
+      workflowIdOrName === found.workflowId ||
+      workflowIdOrName === found.run.workflowName ||
+      workflowIdOrName === workflow?.name
+    );
+    if (!found || !isOwnWorkflow) {
+      if (
+        workflowIdOrName !== undefined &&
+        !(await findWorkflow(workflowRepo, workflowIdOrName))
+      ) {
+        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+      }
+      throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    return { run: found.run, workflow };
+  }
+
+  if (workflowIdOrName === undefined) {
+    throw new UserError("Provide a workflow name or ID, or a run ID");
+  }
+  const workflow = await findWorkflow(workflowRepo, workflowIdOrName);
+  if (!workflow) {
+    const runs = await findActiveRunsWithoutDefinition(deps, workflowIdOrName);
+    if (runs.length === 0) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+    return { run: latestRun(runs), workflow: undefined };
+  }
+  const activeRuns = (await runRepo.findAllByWorkflowId(workflow.id)).filter(
+    (r) => !TERMINAL_STATUSES.has(r.status),
+  );
+  if (activeRuns.length === 0) {
+    throw new UserError(
+      `No active runs found for workflow "${workflow.name}"`,
+    );
+  }
+  return { run: latestRun(activeRuns), workflow };
 }
 
 export const workflowCancelCommand = withRemoteOptions(
@@ -609,6 +780,10 @@ export const workflowCancelCommand = withRemoteOptions(
     .example(
       "Cancel a specific run",
       "swamp workflow cancel my-workflow --run <run-id>",
+    )
+    .example(
+      "Cancel a run by its ID alone",
+      "swamp workflow cancel --run <run-id>",
     )
     .example(
       "Cancel all running runs",
@@ -736,9 +911,9 @@ export const workflowCancelCommand = withRemoteOptions(
       return;
     }
 
-    if (!options.all && !workflowIdOrName) {
+    if (!options.all && !workflowIdOrName && !options.run) {
       throw new UserError(
-        "Provide a workflow name or ID, or use --all to cancel all running runs",
+        "Provide a workflow name or ID, a run with --run <run-id>, or use --all to cancel all running runs",
       );
     }
 
@@ -762,7 +937,7 @@ export const workflowCancelCommand = withRemoteOptions(
     const reason = options.reason ?? "Cancelled by user";
 
     if (options.all) {
-      const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
+      const activeRuns = await findAllActiveRuns({ workflowRepo, runRepo });
       if (activeRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
           console.log(
@@ -805,7 +980,7 @@ export const workflowCancelCommand = withRemoteOptions(
 
       const serveSkipped = serveRuns.map(({ run, workflow }) => ({
         runId: run.id,
-        workflowName: workflow.name,
+        workflowName: workflowNameOf(run, workflow),
         status: run.status,
       }));
 
@@ -876,43 +1051,12 @@ export const workflowCancelCommand = withRemoteOptions(
       return;
     }
 
-    // Single workflow cancel path
-    const workflow = await workflowRepo.findByName(workflowIdOrName!) ??
-      await workflowRepo.findById(
-        createWorkflowId(workflowIdOrName!),
-      );
-    if (!workflow) {
-      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-    }
-
-    let run: WorkflowRun;
-    if (options.run) {
-      const found = await runRepo.findById(
-        workflow.id,
-        createWorkflowRunId(options.run),
-      );
-      if (!found) {
-        throw new UserError(`Workflow run not found: ${options.run}`);
-      }
-      run = found;
-    } else {
-      const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
-      const activeRuns = allRuns.filter(
-        (r) => !TERMINAL_STATUSES.has(r.status),
-      );
-
-      if (activeRuns.length === 0) {
-        throw new UserError(
-          `No active runs found for workflow "${workflow.name}"`,
-        );
-      }
-
-      run = activeRuns.reduce((latest, current) => {
-        if (!latest.startedAt) return current;
-        if (!current.startedAt) return latest;
-        return current.startedAt > latest.startedAt ? current : latest;
-      });
-    }
+    // Single run cancel path
+    const { run, workflow } = await resolveLocalCancelTarget(
+      { workflowRepo, runRepo },
+      { workflowIdOrName, runId: options.run as string | undefined },
+    );
+    const workflowName = workflowNameOf(run, workflow);
 
     if (TERMINAL_STATUSES.has(run.status)) {
       throw new UserError(
@@ -957,7 +1101,7 @@ export const workflowCancelCommand = withRemoteOptions(
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
         runId: run.id,
-        workflowName: workflow.name,
+        workflowName,
         previousStatus,
         status,
         ...(status === "cancelled" ? { reason } : {}),
@@ -966,10 +1110,10 @@ export const workflowCancelCommand = withRemoteOptions(
     } else {
       if (status === "cancelled") {
         cliCtx.logger
-          .info`Cancelled run ${run.id} of workflow ${workflow.name}`;
+          .info`Cancelled run ${run.id} of workflow ${workflowName}`;
       } else {
         cliCtx.logger
-          .warn`Run ${run.id} of workflow ${workflow.name} finished as ${status} before the cancel took effect`;
+          .warn`Run ${run.id} of workflow ${workflowName} finished as ${status} before the cancel took effect`;
       }
       cliCtx.logger
         .info`Status: ${previousStatus} -> ${status}`;

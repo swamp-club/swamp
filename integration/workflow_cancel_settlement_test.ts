@@ -40,7 +40,11 @@ import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/
 import { SWAMP_SUBDIRS } from "../src/infrastructure/persistence/paths.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
-import { cancelLocalRun } from "../src/cli/commands/workflow_cancel.ts";
+import {
+  cancelLocalRun,
+  findAllActiveRuns,
+  resolveLocalCancelTarget,
+} from "../src/cli/commands/workflow_cancel.ts";
 import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
@@ -239,6 +243,68 @@ Deno.test("workflow cancel settles a suspended run's jobs and steps in its recor
     }
     // This process owns the run, so nothing was killed; nothing ran.
     assertEquals(killed, []);
+    assertEquals(fixture.executions, []);
+  });
+});
+
+// swamp-club#2920: the run outlives its workflow file. Cancel finds it in the
+// run store and settles it against the snapshot the run saved.
+Deno.test("workflow cancel finds and settles a suspended run whose workflow file was deleted", async () => {
+  await withFixture(async (fixture) => {
+    const workflow = issueWorkflow();
+    const suspended = await suspend(fixture, workflow);
+    const { workflowRepo, workflowRunRepo: runRepo } = fixture.repo;
+    await Deno.remove(workflowRepo.getPath(workflow.id));
+    assertEquals(await workflowRepo.findByName(workflow.name), null);
+    const lookup = { workflowRepo, runRepo };
+
+    for (
+      const input of [
+        { workflowIdOrName: workflow.name },
+        { workflowIdOrName: workflow.id },
+        { workflowIdOrName: workflow.name, runId: suspended.id },
+        { runId: suspended.id },
+      ]
+    ) {
+      const found = await resolveLocalCancelTarget(lookup, input);
+      assertEquals(found.run.id, suspended.id, JSON.stringify(input));
+      assertEquals(found.workflow, undefined);
+    }
+    const active = await findAllActiveRuns(lookup);
+    assertEquals(
+      active.map(({ run, workflow }) => [run.id, workflow]),
+      [[suspended.id, undefined]],
+    );
+
+    const target = active[0];
+    const cancelled = await cancelLocalRun(
+      target.run,
+      target.workflow,
+      "Cancelled by user",
+      {
+        runRepo,
+        findEvaluatedWorkflow: fixture.findEvaluatedWorkflow,
+        runClaims: unclaimedRuns,
+        ...untracked,
+      },
+    );
+
+    const stored = await reload(fixture, workflow, suspended);
+    assertEquals(cancelled?.status, "cancelled");
+    assertEquals(stored.status, "cancelled");
+    assertEquals(stored.tags["cancel_reason"], "Cancelled by user");
+    // The snapshot's dependsOn still decides which steps are skipped.
+    assertEquals(statuses(stored), {
+      "a-side": "failed",
+      "a-side/gate2": "failed",
+      "a-side/s": "skipped",
+      "main": "failed",
+      "main/gate": "failed",
+      "main/post": "skipped",
+      "teardown": "failed",
+      "teardown/t": "failed",
+    });
+    assertEquals(await findAllActiveRuns(lookup), []);
     assertEquals(fixture.executions, []);
   });
 });
