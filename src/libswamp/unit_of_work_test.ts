@@ -27,7 +27,15 @@ import type {
   StagedChange,
   UnitOfWork,
 } from "../domain/datastore/unit_of_work.ts";
-import { currentUnitOfWork } from "../infrastructure/persistence/unit_of_work_scope.ts";
+import { legacyUnitOfWorkParent } from "../infrastructure/persistence/legacy_unit_of_work.ts";
+import {
+  repoUnitOfWorkFactory,
+  runInRootUnitOfWork,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  currentUnitOfWork,
+  signalChange,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 import { createLibSwampContext, type LibSwampContext } from "./context.ts";
 import { result } from "./stream.ts";
 import { withUnitOfWork } from "./unit_of_work.ts";
@@ -38,23 +46,33 @@ type Event =
   | { kind: "suspended" }
   | { kind: "error"; message: string };
 
-/** A unit of work that counts commits, plus a context that opens them. */
+type CountingUnit = UnitOfWork & { commits: number; abandons: number };
+
+/**
+ * A unit of work that counts commits and abandons, plus a context that opens
+ * them.
+ */
 function countingContext(): {
   ctx: LibSwampContext;
-  units: Array<UnitOfWork & { commits: number }>;
+  units: CountingUnit[];
 } {
-  const units: Array<UnitOfWork & { commits: number }> = [];
+  const units: CountingUnit[] = [];
   const ctx = createLibSwampContext({
     openUnitOfWork: () => {
       const staged: StagedChange[] = [];
       const uow = {
         commits: 0,
+        abandons: 0,
         stage(change: StagedChange) {
           staged.push(change);
           return Promise.resolve();
         },
         commit() {
           uow.commits++;
+          return Promise.resolve();
+        },
+        abandon() {
+          uow.abandons++;
           return Promise.resolve();
         },
         staged: () => [...staged],
@@ -119,13 +137,14 @@ Deno.test("withUnitOfWork: re-yields events unchanged and commits once after com
   assertEquals(units[0].commits, 1);
 });
 
-Deno.test("withUnitOfWork: does not commit after an error event", async () => {
+Deno.test("withUnitOfWork: abandons instead of committing after an error event", async () => {
   const { ctx, units } = countingContext();
   async function* body(): AsyncGenerator<Event> {
     yield { kind: "error", message: "boom" };
   }
   await drain(withUnitOfWork(ctx, body));
   assertEquals(units[0].commits, 0);
+  assertEquals(units[0].abandons, 1);
 });
 
 Deno.test("withUnitOfWork: does not commit when the generator throws", async () => {
@@ -136,6 +155,7 @@ Deno.test("withUnitOfWork: does not commit when the generator throws", async () 
   }
   await assertRejects(() => drain(withUnitOfWork(ctx, body)), Error, "boom");
   assertEquals(units[0].commits, 0);
+  assertEquals(units[0].abandons, 1);
 });
 
 Deno.test("withUnitOfWork: does not commit when the consumer stops early, and runs the generator's finally inside the unit", async () => {
@@ -152,17 +172,82 @@ Deno.test("withUnitOfWork: does not commit when the consumer stops early, and ru
   const done = await result(withUnitOfWork(ctx, body));
 
   assertEquals(done.kind, "completed");
+  // result() stops at completed with return(): the unit is abandoned, once.
   assertEquals(units[0].commits, 0);
+  assertEquals(units[0].abandons, 1);
   assertStrictEquals(finallySaw, units[0]);
 });
 
-Deno.test("withUnitOfWork: does not commit a stream that ends on another terminal", async () => {
+async function* endsOn(kind: string): AsyncGenerator<{ kind: string }> {
+  yield { kind };
+}
+
+Deno.test("withUnitOfWork: abandons a stream that ends on suspended or cancelled", async () => {
+  for (const kind of ["suspended", "cancelled"] as const) {
+    const { ctx, units } = countingContext();
+    await drain(withUnitOfWork(ctx, () => endsOn(kind)));
+    assertEquals(units[0].commits, 0, kind);
+    assertEquals(units[0].abandons, 1, kind);
+  }
+});
+
+Deno.test("withUnitOfWork: abandons when the consumer stops before completed", async () => {
   const { ctx, units } = countingContext();
   async function* body(): AsyncGenerator<Event> {
-    yield { kind: "suspended" };
+    yield { kind: "step", seen: undefined };
+    yield { kind: "completed" };
   }
-  await drain(withUnitOfWork(ctx, body));
+  for await (const _event of withUnitOfWork(ctx, body)) break;
   assertEquals(units[0].commits, 0);
+  assertEquals(units[0].abandons, 1);
+});
+
+Deno.test("withUnitOfWork: a failing abandon never masks the error that ended the stream", async () => {
+  const { ctx, units } = countingContext();
+  // deno-lint-ignore require-yield
+  async function* body(): AsyncGenerator<Event> {
+    units[0].abandon = () => Promise.reject(new Error("abandon failed"));
+    throw new Error("boom");
+  }
+  await assertRejects(() => drain(withUnitOfWork(ctx, body)), Error, "boom");
+});
+
+Deno.test("withUnitOfWork: inside a root unit, a wrapped use case stages into a child that rolls up", async () => {
+  const calls: (string | undefined)[] = [];
+  const hook = (relPath?: string) => {
+    calls.push(relPath);
+    return Promise.resolve();
+  };
+  const ctx = createLibSwampContext({
+    openUnitOfWork: repoUnitOfWorkFactory({ markDirty: hook }),
+  });
+  let child: UnitOfWork | undefined;
+  let flushes = 0;
+  const rootUnit = await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: () => {
+        flushes++;
+        return Promise.resolve();
+      },
+    },
+    async (root) => {
+      async function* body(): AsyncGenerator<Event> {
+        child = currentUnitOfWork();
+        await signalChange(hook, { kind: "write", path: "/cache/data/a" });
+        yield { kind: "completed" };
+      }
+      await result(withUnitOfWork(ctx, body));
+      assertEquals(flushes, 0);
+      return root;
+    },
+  );
+  assertNotStrictEquals(child, rootUnit);
+  assertStrictEquals(legacyUnitOfWorkParent(child!), rootUnit);
+  assertEquals(child!.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+  assertEquals(rootUnit.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+  assertEquals(calls, ["/cache/data/a"]);
+  assertEquals(flushes, 1);
 });
 
 Deno.test("withUnitOfWork: a nested use case stages into its own unit while it runs", async () => {
@@ -191,6 +276,7 @@ Deno.test("withUnitOfWork: a nested use case stages into its own unit while it r
   assertStrictEquals(seen[2], outer);
   assertEquals(outer.commits, 1);
   assertEquals(inner.commits, 1);
+  assertEquals([outer.abandons, inner.abandons], [0, 0]);
 });
 
 Deno.test("withUnitOfWork: concurrent use cases never share a unit", async () => {
@@ -240,4 +326,25 @@ Deno.test("withUnitOfWork: child contexts from withTimeout and withSignal open u
     (fromSignal[0] as { seen: UnitOfWork | undefined }).seen,
     units[1],
   );
+});
+
+Deno.test("withUnitOfWork: when the consumer stops early and the generator's finally throws, that error propagates and the unit is abandoned", async () => {
+  const { ctx, units } = countingContext();
+  async function* body(): AsyncGenerator<Event> {
+    try {
+      yield { kind: "step", seen: undefined };
+    } finally {
+      // deno-lint-ignore no-unsafe-finally
+      throw new Error("cleanup failed");
+    }
+  }
+  await assertRejects(
+    async () => {
+      for await (const _event of withUnitOfWork(ctx, body)) break;
+    },
+    Error,
+    "cleanup failed",
+  );
+  assertEquals(units[0].commits, 0);
+  assertEquals(units[0].abandons, 1);
 });

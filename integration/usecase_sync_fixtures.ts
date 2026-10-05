@@ -74,11 +74,15 @@ import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpe
 import type { UnitOfWork } from "../src/domain/datastore/unit_of_work.ts";
 import {
   createLegacyUnitOfWork,
+  legacyUnitOfWorkParent,
   legacyUnitOfWorkTarget,
 } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
-import { useUnitOfWorkFactoryForTesting } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  type BoundUnitOfWorkOptions,
+  useUnitOfWorkFactoryForTesting,
+} from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import { ReadWriteLock } from "../src/infrastructure/stream/read_write_lock.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
-import { createSyncGate } from "../src/serve/sync_gate.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   createServeCtx,
@@ -119,6 +123,12 @@ export interface RowRepos {
   a: UnlockedRepo;
   /** {@link a} in the shape the serve harness takes. */
   serveRepo: ServeRepo;
+  /**
+   * The remote op-log length at each release of one of A's datastore locks
+   * and at each exit from serve's sync gate, in order: where a push sits
+   * relative to the lock or gate it ran under.
+   */
+  releases: number[];
 }
 
 /** The marker line `withRowRepos` appends for `managedConfig`. */
@@ -170,9 +180,10 @@ export async function withRowRepos(
     "a previous row left a datastore sync registered",
   );
   const remote = createInMemoryRemote(options.remote);
+  const releases: number[] = [];
   const typeA = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "A" }),
-  });
+  }, { onLockRelease: () => releases.push(remote.ops().length) });
   const typeB = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "B" }),
   });
@@ -216,6 +227,7 @@ export async function withRowRepos(
           .datastoreResolver as ConnectionContext["datastoreResolver"],
         modelType,
       },
+      releases,
     });
   } finally {
     await flushDatastoreSync();
@@ -248,6 +260,8 @@ export async function settle(repos: RowRepos): Promise<void> {
 export interface Baseline {
   opCount: number;
   files: ReadonlyMap<string, Uint8Array>;
+  /** How many lock releases and gate exits had been recorded. */
+  releaseCount: number;
 }
 
 /** Snapshots the op log length and remote content. */
@@ -255,7 +269,34 @@ export function baseline(repos: RowRepos): Baseline {
   return {
     opCount: repos.remote.ops().length,
     files: new Map(repos.remote.files()),
+    releaseCount: repos.releases.length,
   };
+}
+
+/**
+ * A's push, prepare, commit and pull ops since `base`, in order, with
+ * `release` wherever one or more lock releases or gate exits came between
+ * them. Pins how many pushes a composition makes and where they sit relative
+ * to the lock (CLI) or sync gate (serve) they run under.
+ */
+export function syncOrder(repos: RowRepos, base: Baseline): string[] {
+  const ops = repos.remote.ops();
+  const releases = repos.releases.slice(base.releaseCount);
+  const order: string[] = [];
+  const release = () => {
+    if (order.at(-1) !== "release") order.push("release");
+  };
+  let next = 0;
+  for (let i = base.opCount; i <= ops.length; i++) {
+    while (next < releases.length && releases[next] <= i) {
+      release();
+      next++;
+    }
+    if (i === ops.length) break;
+    const op = ops[i];
+    if (op.instance === "A" && op.op !== "markDirty") order.push(op.op);
+  }
+  return order;
 }
 
 /** What a use case did to the datastore, normalised for pinning. */
@@ -444,7 +485,7 @@ export function serveCtx(
   const managed = repos.a.marker?.datastore?.managedConfig === true;
   return createServeCtx(repos.serveRepo, undefined, {
     syncService: repos.a.syncService,
-    syncGate: createSyncGate(),
+    syncGate: new ObservedSyncGate(repos),
     activeRunRegistry: options.activeRunRegistry ?? new ActiveRunRegistry(),
     vaultsDir: repos.a.vaultsDir,
     ...(managed
@@ -456,6 +497,29 @@ export function serveCtx(
       }
       : {}),
   });
+}
+
+/**
+ * Serve's real sync gate (`createSyncGate` builds a plain
+ * {@link ReadWriteLock}), recording each exit in {@link RowRepos.releases}.
+ */
+export class ObservedSyncGate extends ReadWriteLock {
+  readonly #repos: RowRepos;
+
+  constructor(repos: RowRepos) {
+    super();
+    this.#repos = repos;
+  }
+
+  override release(): void {
+    super.release();
+    this.#repos.releases.push(this.#repos.remote.ops().length);
+  }
+
+  override releaseShared(): void {
+    super.releaseShared();
+    this.#repos.releases.push(this.#repos.remote.ops().length);
+  }
 }
 
 /** Sends one request through `handleMessage`; asserts it did not fail. */
@@ -504,6 +568,18 @@ export interface UseCaseRow<S = void> {
    * with what the use cases' units staged. Each entry names its pinned site.
    */
   outsideUseCase?: Partial<Record<Composition, string[]>>;
+  /**
+   * The composition runs in one root unit of work (`runInRootUnitOfWork`,
+   * swamp-club#3032). The harness then also checks that the root staged every
+   * mark the row made, and that {@link syncOrder} matches the row's pin.
+   */
+  rootUnit?: Partial<Record<Composition, true>>;
+  /**
+   * {@link syncOrder} for each composition switched to a root unit, recorded
+   * from the composition before it adopted the root, so adopting it cannot
+   * move a push across a lock release or gate exit.
+   */
+  syncOrder?: Partial<Record<Composition, string[]>>;
   seed?: (repos: RowRepos, composition: Composition) => Promise<S>;
   cli: ((repos: RowRepos, seed: S) => CliInvocation) | null;
   serve: ((repos: RowRepos, seed: S) => ServeInvocation) | null;
@@ -542,9 +618,10 @@ export async function runRow<S>(
     if (!row.noSettle) await settle(repos);
     // Seeds run before the capture on purpose: they are setup, not the use
     // case under test, and run with production units.
-    let units: UnitOfWork[] = [];
+    let units: CapturedUnit[] = [];
+    let base: Baseline;
     if (composition === "cli") {
-      const base = baseline(repos);
+      base = baseline(repos);
       let error: string | undefined;
       units = await captureUnits(async () => {
         try {
@@ -561,35 +638,54 @@ export async function runRow<S>(
       }
     } else {
       const ctx = serveCtx(repos, row.serveCtx?.(seed));
-      const base = baseline(repos);
+      base = baseline(repos);
       units = await captureUnits(async () => {
         await runServe(ctx, row.serve!(repos, seed));
       });
       observation = observe(repos, base);
     }
     assertUnitsStagedTheirMarks(row, composition, repos, units, observation);
+    if (row.rootUnit?.[composition]) {
+      assertRootUnit(
+        row,
+        composition,
+        repos,
+        units,
+        observation,
+        syncOrder(repos, base),
+      );
+    }
     await row.verify?.(repos, seed, composition);
   });
   if (row.parallelMarks) sortPathMarkRuns(observation!.ops);
   return observation!;
 }
 
+/** A unit of work opened during a row, with the role production gave it. */
+export interface CapturedUnit {
+  unit: UnitOfWork;
+  role: BoundUnitOfWorkOptions["role"];
+}
+
 /**
  * Runs `fn` with every repository-bound unit of work built in reject mode,
- * so a change staged after its use case committed fails the row, and
- * returns the units the use cases opened, in opening order. The factory
- * receives the exact hook production binds, so a unit bound to the wrong
- * hook collects nothing and fails the comparison below.
+ * so a change staged after its unit ended fails the row, and returns the
+ * units opened, in opening order. The factory receives the exact hook, flush
+ * and parent production chose, so a unit bound to the wrong hook collects
+ * nothing and fails the comparison below, and children still roll up.
  */
-async function captureUnits(fn: () => Promise<void>): Promise<UnitOfWork[]> {
-  const units: UnitOfWork[] = [];
-  const dispose = useUnitOfWorkFactoryForTesting((markDirty) => {
-    const uow = createLegacyUnitOfWork(markDirty, {
-      flush: undefined,
+export async function captureUnits(
+  fn: () => Promise<void>,
+): Promise<CapturedUnit[]> {
+  const units: CapturedUnit[] = [];
+  const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+    const unit = createLegacyUnitOfWork(markDirty, {
+      flush: options.flush,
+      parent: options.parent,
       afterCommit: "reject",
     });
-    units.push(uow);
-    return uow;
+    units.push({ unit, role: options.role });
+    return unit;
   });
   try {
     await fn();
@@ -615,6 +711,41 @@ function markFor(
     : `markDirty ${normalisePath(repos, rel)}`;
 }
 
+/** The op strings a unit's staged changes cause, in staging order. */
+function marksOf(repos: RowRepos, unit: UnitOfWork): string[] {
+  return unit.staged().map((change) => markFor(repos, change)).filter(
+    (mark): mark is string => mark !== undefined,
+  );
+}
+
+/**
+ * The bound use-case units no other use-case unit contains. A nested use
+ * case's unit is a child that rolls its changes up into its parent
+ * (swamp-club#3032), so counting it as well would count its marks twice.
+ */
+function outermostUseCaseUnits(
+  units: readonly CapturedUnit[],
+): UnitOfWork[] {
+  const useCases = new Set(
+    units.filter((captured) => captured.role === "use-case").map((captured) =>
+      captured.unit
+    ),
+  );
+  const nested = (unit: UnitOfWork): boolean => {
+    for (
+      let parent = legacyUnitOfWorkParent(unit);
+      parent !== undefined;
+      parent = legacyUnitOfWorkParent(parent)
+    ) {
+      if (useCases.has(parent)) return true;
+    }
+    return false;
+  };
+  return [...useCases].filter((unit) =>
+    legacyUnitOfWorkTarget(unit) !== undefined && !nested(unit)
+  );
+}
+
 /**
  * Hook identity (swamp-club#3025): every mark the row made inside a use
  * case was staged by a unit of work the use case opened, and each unit's
@@ -625,7 +756,7 @@ function assertUnitsStagedTheirMarks(
   row: Pick<AnyRow, "name" | "outsideUseCase" | "parallelMarks">,
   composition: Composition,
   repos: RowRepos,
-  units: readonly UnitOfWork[],
+  units: readonly CapturedUnit[],
   observation: Observation,
 ): void {
   const inUseCase = observation.ops.filter((op) => op.startsWith("markDirty"));
@@ -639,13 +770,9 @@ function assertUnitsStagedTheirMarks(
     );
     inUseCase.splice(at, 1);
   }
-  const perUnit = units
-    .filter((uow) => legacyUnitOfWorkTarget(uow) !== undefined)
-    .map((uow) =>
-      uow.staged().map((change) => markFor(repos, change)).filter(
-        (mark): mark is string => mark !== undefined,
-      )
-    );
+  const perUnit = outermostUseCaseUnits(units).map((unit) =>
+    marksOf(repos, unit)
+  );
   assertEquals(
     perUnit.flat().sort(),
     [...inUseCase].sort(),
@@ -665,6 +792,55 @@ function assertUnitsStagedTheirMarks(
       from = at + 1;
     }
   }
+}
+
+/**
+ * Root unit (swamp-club#3032): the composition opened exactly one root unit;
+ * it staged every mark the row made, use case or not, in the order they
+ * reached the remote; and the row's pushes sit where its pinned
+ * {@link syncOrder} says relative to lock releases and gate exits.
+ */
+export function assertRootUnit(
+  row: Pick<AnyRow, "name" | "parallelMarks" | "syncOrder">,
+  composition: Composition,
+  repos: RowRepos,
+  units: readonly CapturedUnit[],
+  observation: Observation,
+  order: readonly string[],
+): void {
+  const label = `${row.name} (${composition})`;
+  const roots = units.filter((captured) =>
+    captured.role === "root" &&
+    legacyUnitOfWorkParent(captured.unit) === undefined
+  );
+  assertEquals(roots.length, 1, `${label}: expected exactly one root unit`);
+  const staged = marksOf(repos, roots[0].unit);
+  const observed = observation.ops.filter((op) => op.startsWith("markDirty"));
+  if (row.parallelMarks) {
+    assertEquals(
+      [...staged].sort(),
+      [...observed].sort(),
+      `${label}: the root unit did not stage every mark the row made`,
+    );
+  } else {
+    assertEquals(
+      staged,
+      observed,
+      `${label}: the root unit did not stage every mark the row made, in order`,
+    );
+  }
+  const pinned = row.syncOrder?.[composition];
+  assertEquals(
+    pinned !== undefined,
+    true,
+    `${label}: a root-unit row must pin syncOrder, recorded before the ` +
+      "composition adopted the root",
+  );
+  assertEquals(
+    [...order],
+    pinned,
+    `${label}: pushes moved relative to lock release or gate exit`,
+  );
 }
 
 /** Sorts each run of consecutive path marks in place. */

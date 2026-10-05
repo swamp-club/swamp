@@ -101,6 +101,7 @@ Deno.test("signalChange: a unit of work not built by the legacy adapter is never
       return Promise.resolve();
     },
     commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
     staged: () => staged,
   };
   await runInUnitOfWork(foreign, () => signalChange(hook, WRITE));

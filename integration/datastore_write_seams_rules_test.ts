@@ -694,11 +694,16 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
 ];
 
 // Production code that opens an ambient unit of work. Datastore rework
-// Phase 2 (swamp-club#3025): only withUnitOfWork, which runs each write use
-// case inside the unit its context opens (its import, and its three calls:
+// Phase 2 (swamp-club#3025): withUnitOfWork, which runs each write use case
+// inside the unit its context opens (its import, and its three calls:
 // creating the inner stream, each next(), and a forwarded return()). Use
 // cases never open a scope themselves; they go through withUnitOfWork.
+// swamp-club#3032: runInRootUnitOfWork, the one root unit per CLI command or
+// serve request that the use cases' units nest inside, and that pushes once
+// when it ends (its import, and its one call).
 const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
+  "src/infrastructure/persistence/repo_unit_of_work.ts: <module>",
+  "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
   "src/libswamp/unit_of_work.ts: <module>",
   "src/libswamp/unit_of_work.ts: withUnitOfWork (x3)",
 ];
@@ -814,8 +819,9 @@ Deno.test("datastore write seams: production code opening a unit-of-work scope i
     unitOfWorkScopes(files),
     PINNED_UNIT_OF_WORK_SCOPES,
     "Production runInUnitOfWork references (calls and imports)",
-    "Only withUnitOfWork opens a unit-of-work scope. A use case that needs\n" +
-      "one wraps its body in withUnitOfWork instead of calling\n" +
+    "Only withUnitOfWork and runInRootUnitOfWork open a unit-of-work scope.\n" +
+      "A use case that needs one wraps its body in withUnitOfWork, and a\n" +
+      "command or request runs in runInRootUnitOfWork, instead of calling\n" +
       "runInUnitOfWork itself.",
   );
 });

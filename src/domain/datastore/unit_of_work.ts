@@ -32,7 +32,10 @@
  *   staged change into exactly the `markDirty` call the repository makes
  *   today, so behaviour does not change.
  * - **Phase 2.** Use cases open a unit of work per operation and commit it.
- *   CLI commands and serve handlers stop marking and pushing themselves.
+ *   Each CLI command or serve request runs in one root unit that pushes once
+ *   when it ends; the use cases' units nest inside it as children that roll
+ *   their changes up and never push. CLI commands and serve handlers stop
+ *   marking and pushing themselves.
  * - **Phase 3.** A second adapter commits the staged changes to the datastore
  *   commit log.
  *
@@ -65,8 +68,10 @@ export type StagedChange =
  *
  * A unit of work lives for one operation. It is never kept for the life of
  * a process, so the list of staged changes is bounded by that operation.
- * Once committed it is spent: staging or committing again is a programming
- * error, and a caller whose commit failed opens a new unit of work.
+ * It ends once, through {@link UnitOfWork.commit} or
+ * {@link UnitOfWork.abandon}. Once ended it is spent: staging or ending it
+ * again is a programming error, and a caller whose commit failed opens a new
+ * unit of work.
  */
 export interface UnitOfWork {
   /**
@@ -88,6 +93,14 @@ export interface UnitOfWork {
    * a write that follows a resolved `stage`.
    */
   commit(): Promise<void>;
+  /**
+   * Ends the unit without completing the operation: the staged changes are
+   * not committed. Like {@link UnitOfWork.commit}, it waits for any `stage`
+   * still in flight and spends the unit as soon as it is called, whether or
+   * not it succeeds. What an adapter does downstream with changes it has
+   * already forwarded is the adapter's to document.
+   */
+  abandon(): Promise<void>;
   /**
    * The changes staged so far, in staging order. A snapshot: later stage
    * calls, and changes the caller makes to its own objects, do not alter it.

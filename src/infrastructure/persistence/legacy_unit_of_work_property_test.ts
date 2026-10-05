@@ -98,3 +98,41 @@ Deno.test("createLegacyUnitOfWork: a hook rejection stops staging at exactly tha
     ),
   );
 });
+
+Deno.test("createLegacyUnitOfWork: across nested children, hook calls equal direct calls and the root records them all in order", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      // Each change is staged at a depth: 0 is the root, n its nth descendant.
+      fc.array(fc.tuple(arbChange, fc.integer({ min: 0, max: 3 })), {
+        maxLength: 30,
+      }),
+      async (steps) => {
+        const viaAdapter: (string | undefined)[] = [];
+        const hook = (relPath?: string) => {
+          viaAdapter.push(relPath);
+          return Promise.resolve();
+        };
+        const chain = [createLegacyUnitOfWork(hook, { flush: undefined })];
+        for (let depth = 1; depth <= 3; depth++) {
+          chain.push(
+            createLegacyUnitOfWork(hook, {
+              flush: undefined,
+              parent: chain[depth - 1],
+            }),
+          );
+        }
+        for (const [change, depth] of steps) await chain[depth].stage(change);
+
+        const changes = steps.map(([change]) => change);
+        assertEquals(viaAdapter, changes.map(directMark));
+        assertEquals(chain[0].staged(), changes);
+        for (let depth = 1; depth <= 3; depth++) {
+          assertEquals(
+            chain[depth].staged(),
+            steps.filter(([, at]) => at >= depth).map(([change]) => change),
+          );
+        }
+      },
+    ),
+  );
+});

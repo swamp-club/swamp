@@ -31,8 +31,12 @@
  * @module
  */
 
+import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { runInUnitOfWork } from "../infrastructure/persistence/unit_of_work_scope.ts";
 import type { LibSwampContext } from "./context.ts";
+
+const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
 /**
  * Drives `inner` inside a unit of work opened from `ctx.openUnitOfWork()`.
@@ -46,14 +50,25 @@ import type { LibSwampContext } from "./context.ts";
  * - **Commit.** Once, after `inner` yields `completed` (and no `error`) and
  *   then finishes. Writes a use case makes after yielding `completed` are
  *   inside the unit when the consumer drains the stream.
- * - **Abandon.** No commit when `inner` yields `error`, throws, ends on any
- *   other terminal, or the consumer stops early (`return()`, as `result()`
- *   does at `completed`). The abandoned unit's changes were already sent to
- *   the hook, exactly as before units of work. Open decision for the step
- *   that moves the push into `commit`: `workflowRun` also ends on
- *   `suspended` and `cancelled`, which abandon the unit today, so a
- *   suspended run's state would not be pushed by `commit`.
- * - **Nesting.** A use case run inside another opens its own unit; the
+ * - **Abandon.** Once, on every other ending: `inner` yields `error`,
+ *   throws, ends on another terminal (`workflowRun` ends on `suspended` or
+ *   `cancelled`), or the consumer stops early with `return()`. `result()`
+ *   stops at `completed` that way, so most use cases end their unit through
+ *   abandon even when they succeeded. If abandon fails while an error is
+ *   already propagating, it is logged at warn and the original error wins.
+ *   Otherwise (a stream that ended without error, including a consumer's
+ *   `return()` after `completed`) an abandon that rejects reaches the
+ *   consumer, as a failing commit does. Use-case units have no flush today,
+ *   so theirs cannot fail; a Phase 3 unit whose discard can throw must expect
+ *   that error at `result()`.
+ * - **Terminal policy.** For legacy units which ending is chosen does not
+ *   change what is pushed: a use case's unit is a child of the command's or
+ *   request's root (or has no flush), and the root decides the push. A
+ *   Phase 3 unit that discards on abandon must decide what to commit on
+ *   `suspended` and `cancelled` (the open item from swamp-club#3025's
+ *   review), and must treat `completed` followed by `return()` as success.
+ * - **Nesting.** A use case run inside another opens its own unit, which is
+ *   a child of the outer one when both are bound to the same hook; the
  *   innermost unit is ambient while it runs.
  */
 export async function* withUnitOfWork<E extends { kind: string }>(
@@ -61,13 +76,21 @@ export async function* withUnitOfWork<E extends { kind: string }>(
   inner: () => AsyncIterable<E>,
 ): AsyncGenerator<E> {
   const uow = ctx.openUnitOfWork();
-  const iterator = await runInUnitOfWork(
-    uow,
-    () => Promise.resolve(inner()[Symbol.asyncIterator]()),
-  );
+  let iterator: AsyncIterator<E>;
+  try {
+    iterator = await runInUnitOfWork(
+      uow,
+      () => Promise.resolve(inner()[Symbol.asyncIterator]()),
+    );
+  } catch (error) {
+    await abandonQuietly(uow);
+    throw error;
+  }
   let done = false;
   let completed = false;
   let failed = false;
+  let succeeded = false;
+  let thrown = false;
   try {
     while (true) {
       let result: IteratorResult<E>;
@@ -86,12 +109,36 @@ export async function* withUnitOfWork<E extends { kind: string }>(
       if (result.value.kind === "error") failed = true;
       yield result.value;
     }
+    succeeded = completed && !failed;
+  } catch (error) {
+    thrown = true;
+    throw error;
   } finally {
-    if (!done) {
-      await runInUnitOfWork(uow, async () => {
-        await iterator.return?.();
-      });
+    // Runs on every ending, including the consumer's return(), after which
+    // no code past this block runs. A return() that throws propagates on its
+    // own, so abandon must not mask it.
+    let returned = false;
+    try {
+      if (!done) {
+        await runInUnitOfWork(uow, async () => {
+          await iterator.return?.();
+        });
+      }
+      returned = true;
+    } finally {
+      if (succeeded) await uow.commit();
+      else if (thrown || !returned) await abandonQuietly(uow);
+      else await uow.abandon();
     }
   }
-  if (completed && !failed) await uow.commit();
+}
+
+/** Abandons `uow` while another error propagates, never masking it. */
+async function abandonQuietly(uow: UnitOfWork): Promise<void> {
+  try {
+    await uow.abandon();
+  } catch (abandonError) {
+    logger
+      .warn`Finishing datastore changes after a failed operation also failed: ${abandonError}`;
+  }
 }

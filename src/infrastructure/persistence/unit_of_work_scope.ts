@@ -23,11 +23,12 @@
  * A use case runs its operation inside {@link runInUnitOfWork}, and the
  * repositories it calls stage their changes into that unit of work instead of
  * calling their mark hook. Outside a scope, repositories call their hook
- * directly, as they always have. Only `withUnitOfWork`
- * (`src/libswamp/unit_of_work.ts`) opens a scope, around each write use case
- * (pinned by `integration/datastore_write_seams_rules_test.ts`). The units it
- * opens forward each change to the same hook, so the routing below changes
- * nothing a user can see.
+ * directly, as they always have. Two production functions open a scope
+ * (pinned by `integration/datastore_write_seams_rules_test.ts`):
+ * `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) around each write use
+ * case, and `runInRootUnitOfWork` (`repo_unit_of_work.ts`) around a whole
+ * command or request. The units they open forward each change to the same
+ * hook, so the routing below changes nothing a user can see.
  *
  * **One repository context per unit.** Two repository contexts can share a
  * process (side-by-side repos, namespace migration). A repository stages into
@@ -38,13 +39,13 @@
  * **Scope follows the async call chain.** The scope is an `AsyncLocalStorage`
  * store: concurrent operations (serve handlers, `Promise.all`) each see their
  * own unit of work. A promise started inside a scope keeps that scope even
- * when it is awaited after the scope returns. If its unit has been committed
- * by then, the late `stage` follows the unit's `afterCommit` policy: units
- * built for tests reject it with "unit of work already committed", and
- * production units (`repo_unit_of_work.ts`) send it straight to the hook. An
- * abandoned unit, never committed, keeps recording such writes for as long as
- * the escaped work runs. Commit a unit only after every write started in its
- * scope has settled.
+ * when it is awaited after the scope returns. If its unit has ended
+ * (committed or abandoned) by then, the late `stage` goes to the unit's
+ * nearest open ancestor, when it is a child; otherwise it follows the unit's
+ * `afterCommit` policy: units built for tests reject it with "unit of work
+ * already committed" (or "abandoned"), and production units
+ * (`repo_unit_of_work.ts`) send it straight to the hook. End a unit only
+ * after every write started in its scope has settled.
  *
  * @module
  */
