@@ -2612,3 +2612,65 @@ Deno.test("YamlDefinitionRepository.save: a uuid-named auto-definition keeps its
     assertEquals(await listYamlFiles(fx.primaryDir), []);
   });
 });
+
+Deno.test("YamlDefinitionRepository.save: an empty file at the target path does not stop the merge from the uuid-named file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const namePath = join(typeDir, "beside-empty.yaml");
+    const original = commentedDefinitionYaml(id, "beside-empty");
+    await Deno.writeTextFile(uuidPath, original);
+    await Deno.writeTextFile(namePath, "");
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.10.05.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(namePath),
+      original.replace(
+        "typeVersion: 2026.01.01.1",
+        "typeVersion: 2026.10.05.1",
+      ),
+    );
+    assertEquals(await fileExists(uuidPath), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: an unreadable uuid-named file fails the save instead of being replaced", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const uuidPath = join(typeDir, `${id}.yaml`);
+    const original = commentedDefinitionYaml(id, "unreadable");
+    await Deno.writeTextFile(uuidPath, original);
+    const definition = definitionFromYaml(original, {
+      typeVersion: "2026.10.05.1",
+    });
+
+    const originalReadTextFile = Deno.readTextFile;
+    Deno.readTextFile = (path, options) => {
+      if (String(path) === uuidPath) {
+        throw Object.assign(new Error("Permission denied (os error 13)"), {
+          code: "EACCES",
+        });
+      }
+      return originalReadTextFile(path, options);
+    };
+    try {
+      const error = await assertRejects(() => repo.save(testType, definition));
+      assertStringIncludes(String(error), "Permission denied");
+    } finally {
+      Deno.readTextFile = originalReadTextFile;
+    }
+
+    assertEquals(await Deno.readTextFile(uuidPath), original);
+    assertEquals(await fileExists(join(typeDir, "unreadable.yaml")), false);
+  });
+});

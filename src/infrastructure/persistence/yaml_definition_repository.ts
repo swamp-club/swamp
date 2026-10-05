@@ -1095,26 +1095,28 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const raw = await Deno.readTextFile(targetPath);
       const parsed = parseYaml(raw) as Record<string, unknown> | null;
       if (parsed) return { path: targetPath, raw, parsed };
-      // Corrupt/empty file — remove it so the fresh write overwrites it with
-      // valid content.
+      // Corrupt/empty file — remove it so the write replaces it with valid
+      // content. The definition may still have a file to merge from below.
       try {
         await Deno.remove(targetPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       }
-      return null;
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
 
-    for (const path of [previousPath, legacyPath]) {
+    for (const path of new Set([previousPath, legacyPath])) {
       if (!path || path === targetPath) continue;
       try {
         const raw = await Deno.readTextFile(path);
         const parsed = parseYaml(raw) as Record<string, unknown> | null;
         if (parsed?.id === id) return { path, raw, parsed };
-      } catch {
-        // Missing, unreadable or unparseable — not something to merge onto.
+      } catch (error) {
+        // An I/O error must propagate: reading the file as absent would write
+        // a fresh one and then remove this one, dropping its comments unseen.
+        if (isIoError(error)) throw error;
+        // Missing or unparseable — not something to merge onto.
       }
     }
     return null;
