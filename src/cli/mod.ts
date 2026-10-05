@@ -184,6 +184,7 @@ import { DefaultDatastorePathResolver } from "../infrastructure/persistence/defa
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
 import { isDevBuild } from "../domain/update/update_service.ts";
+import { withNoticeFields } from "../domain/update/update_preferences.ts";
 import {
   createAutoupdateRefreshDeps,
   refreshAutoupdateSchedulerIfOwed,
@@ -2819,7 +2820,11 @@ async function runInvocation(
               }
 
               if (prefsChanged && configDirOwned) {
-                await prefsRepo.write(updatedPrefs);
+                // Merge onto a fresh read so a concurrent scheduler refresh's
+                // fields are not rolled back (swamp-club#3007).
+                await prefsRepo.write(
+                  withNoticeFields(await prefsRepo.read(), updatedPrefs),
+                );
               }
             }
 

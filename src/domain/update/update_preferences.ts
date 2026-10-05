@@ -45,6 +45,24 @@ export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = {
   cadence: "daily",
 };
 
+/**
+ * Copies the fields the CLI's post-command notices own (shown-notice and
+ * warning timestamps) from `notices` onto `latest`, a fresh read of the
+ * preferences. Writing the result instead of a whole earlier snapshot keeps
+ * a concurrent scheduler refresh's fields from being rolled back.
+ */
+export function withNoticeFields(
+  latest: UpdatePreferences,
+  notices: UpdatePreferences,
+): UpdatePreferences {
+  return {
+    ...latest,
+    notifiedVersion: notices.notifiedVersion,
+    lastPermissionWarning: notices.lastPermissionWarning,
+    lastStaleWarning: notices.lastStaleWarning,
+  };
+}
+
 export function isValidCadence(value: string): value is UpdateCadence {
   return VALID_CADENCES.includes(value as UpdateCadence);
 }

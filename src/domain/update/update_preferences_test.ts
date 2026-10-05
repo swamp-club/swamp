@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   DEFAULT_UPDATE_PREFERENCES,
   isValidCadence,
+  withNoticeFields,
 } from "./update_preferences.ts";
 
 Deno.test("isValidCadence: accepts daily", () => {
@@ -43,4 +44,32 @@ Deno.test("isValidCadence: rejects invalid values", () => {
 Deno.test("DEFAULT_UPDATE_PREFERENCES: has safe defaults", () => {
   assertEquals(DEFAULT_UPDATE_PREFERENCES.enabled, false);
   assertEquals(DEFAULT_UPDATE_PREFERENCES.cadence, "daily");
+});
+
+Deno.test("withNoticeFields: keeps scheduler fields from the fresh read", () => {
+  const latest = {
+    enabled: true,
+    cadence: "daily" as const,
+    schedulerRefreshedVersion: "v2",
+    schedulerLeftUnloaded: true,
+    lastSchedulerRefreshAttempt: "2026-10-05T00:00:00.000Z",
+    notifiedVersion: "v1",
+  };
+  const notices = {
+    enabled: true,
+    cadence: "daily" as const,
+    notifiedVersion: "v2",
+    lastStaleWarning: "2026-10-05T12:00:00.000Z",
+  };
+
+  assertEquals(withNoticeFields(latest, notices), {
+    enabled: true,
+    cadence: "daily",
+    schedulerRefreshedVersion: "v2",
+    schedulerLeftUnloaded: true,
+    lastSchedulerRefreshAttempt: "2026-10-05T00:00:00.000Z",
+    notifiedVersion: "v2",
+    lastPermissionWarning: undefined,
+    lastStaleWarning: "2026-10-05T12:00:00.000Z",
+  });
 });

@@ -429,6 +429,7 @@ async function runSetupAuto(
     cadence,
     schedulerRefreshedVersion: VERSION,
     lastSchedulerRefreshAttempt: undefined,
+    schedulerLeftUnloaded: undefined,
   });
 
   if (ctx.outputMode === "json") {
@@ -473,7 +474,12 @@ async function runDisableAuto(
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.remove();
 
-  await prefsRepo.write({ ...prefs, enabled: false });
+  await prefsRepo.write({
+    ...prefs,
+    enabled: false,
+    lastSchedulerRefreshAttempt: undefined,
+    schedulerLeftUnloaded: undefined,
+  });
 
   if (ctx.outputMode === "json") {
     console.log(
