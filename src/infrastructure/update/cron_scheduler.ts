@@ -20,6 +20,7 @@
 import { dirname, join } from "@std/path";
 import type {
   AutoupdateScheduler,
+  SchedulerRefreshResult,
   ScheduleStatus,
 } from "../../domain/update/autoupdate_scheduler.ts";
 import type { LaunchdMode } from "./launchd_scheduler.ts";
@@ -202,6 +203,11 @@ export class CronScheduler implements AutoupdateScheduler {
       .filter((line) => !line.includes(CRON_MARKER))
       .join("\n");
     await writeCrontab(filtered, this.mode);
+  }
+
+  /** cron starts the binary at its path as-is; nothing to re-register. */
+  refresh(): Promise<SchedulerRefreshResult> {
+    return Promise.resolve("not_installed");
   }
 
   async status(): Promise<ScheduleStatus> {

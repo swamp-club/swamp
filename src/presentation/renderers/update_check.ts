@@ -28,10 +28,13 @@ import { UserError } from "../../domain/errors.ts";
 
 export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
   readonly updated: boolean;
+  /** The version installed by this run, when it updated. */
+  readonly newVersion: string | null;
 }
 
 class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   updated = false;
+  newVersion: string | null = null;
 
   handlers(): EventHandlers<UpdateCheckEvent> {
     const logger = getSwampLogger(["update"]);
@@ -51,6 +54,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
             break;
           case "updated":
             this.updated = true;
+            this.newVersion = data.newVersion;
             writeOutput("swamp updated successfully!");
             writeOutput(
               `${data.previousVersion} \u2192 ${data.newVersion}`,
@@ -75,6 +79,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
 
 class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
   updated = false;
+  newVersion: string | null = null;
 
   handlers(): EventHandlers<UpdateCheckEvent> {
     return {
@@ -82,6 +87,7 @@ class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
       completed: (e) => {
         if (e.data.status === "updated") {
           this.updated = true;
+          this.newVersion = e.data.newVersion;
         }
         console.log(JSON.stringify(e.data, null, 2));
       },

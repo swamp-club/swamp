@@ -64,6 +64,11 @@ import { BuiltInToolSkillDirsRepository } from "../../infrastructure/persistence
 import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { resolve, SEPARATOR } from "@std/path";
 import { homeDirectory } from "../../infrastructure/persistence/paths.ts";
+import {
+  createAutoupdateRefreshDeps,
+  refreshAutoupdateSchedulerIfOwed,
+} from "../autoupdate_refresh.ts";
+import { schedulerRepairCommand } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -416,7 +421,16 @@ async function runSetupAuto(
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.install(binaryPath, cadence);
 
-  await prefsRepo.write({ ...prefs, enabled: true, cadence });
+  // install() registers the job afresh, so it needs no refresh for this
+  // version (see refreshAutoupdateSchedulerIfOwed).
+  await prefsRepo.write({
+    ...prefs,
+    enabled: true,
+    cadence,
+    schedulerRefreshedVersion: VERSION,
+    lastSchedulerRefreshAttempt: undefined,
+    schedulerLeftUnloaded: undefined,
+  });
 
   if (ctx.outputMode === "json") {
     console.log(
@@ -460,7 +474,12 @@ async function runDisableAuto(
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.remove();
 
-  await prefsRepo.write({ ...prefs, enabled: false });
+  await prefsRepo.write({
+    ...prefs,
+    enabled: false,
+    lastSchedulerRefreshAttempt: undefined,
+    schedulerLeftUnloaded: undefined,
+  });
 
   if (ctx.outputMode === "json") {
     console.log(
@@ -605,6 +624,22 @@ export const updateCommand = new Command()
             .warn`Failed to sync global skills: ${
             err instanceof Error ? err.message : String(err)
           }`;
+        }
+
+        // launchd can refuse to start the replaced binary until its
+        // autoupdate job is registered again (swamp-club#3007).
+        if (renderer.newVersion) {
+          spinner?.update("Re-registering the autoupdate scheduler...");
+          const refresh = await refreshAutoupdateSchedulerIfOwed(
+            createAutoupdateRefreshDeps(),
+            renderer.newVersion,
+          );
+          if (refresh.outcome === "failed") {
+            ctx.logger
+              .warn`Could not re-register the autoupdate scheduler: ${refresh.error}. Run ${
+              schedulerRepairCommand(refresh.job)
+            } to fix it.`;
+          }
         }
       }
 
