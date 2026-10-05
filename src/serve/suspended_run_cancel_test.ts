@@ -17,10 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { join } from "@std/path";
+import { hostname } from "node:os";
+import { ActiveRun as TrackedRun } from "../domain/models/active_run.ts";
+import { RunTrackerStore } from "../infrastructure/persistence/run_tracker_store.ts";
 import {
   awaitAbortedRun,
   cancelSuspendedRunAndPush,
+  ownerGoneDecider,
   SUSPENDED_RUN_BUSY_MESSAGE,
 } from "./suspended_run_cancel.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
@@ -418,4 +428,319 @@ Deno.test("awaitAbortedRun: returns false when the run completes but is still re
 
   assertEquals(await awaitAbortedRun(registry, runId), false);
   registry.deregister(runId);
+});
+
+/** A pid no process has: the largest a 32-bit pid_t holds. */
+const DEAD_PID = 2147483647;
+
+/** A run left `running` under `pid` by serve instance `instanceId`. */
+function runningRun(
+  workflow: Workflow,
+  pid: number,
+  instanceId: string,
+): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start(pid, instanceId);
+  run.getJob("main")!.start();
+  run.getJob("main")!.getStep("gate")!.start();
+  return run;
+}
+
+/** The tracker row serve instance `instanceId` registered for `run`. */
+function trackerRow(
+  run: WorkflowRun,
+  pid: number,
+  instanceId: string,
+): TrackedRun {
+  const now = new Date().toISOString();
+  return TrackedRun.fromData({
+    id: run.id,
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: run.workflowName,
+    pid,
+    hostname: hostname(),
+    instanceId,
+    startedAt: now,
+    heartbeatAt: now,
+    status: "running",
+  });
+}
+
+async function withTracker(
+  fn: (tracker: RunTrackerStore) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-serve-cancel-test-" });
+  const tracker = new RunTrackerStore(join(dir, "run_tracker.db"));
+  try {
+    await fn(tracker);
+  } finally {
+    tracker.close();
+    await Deno.remove(dir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
+  }
+}
+
+/**
+ * A control plane holding a heartbeat for each of `alive`, and for
+ * `new-instance`, the instance the deciders under test run as: heartbeats
+ * are being written. See {@link controlPlaneWithoutHeartbeats}.
+ */
+function controlPlaneWith(
+  alive: string[],
+): ConnectionContext["controlPlaneStore"] {
+  return controlPlaneWithoutHeartbeats([...alive, "new-instance"]);
+}
+
+/** A control plane holding a heartbeat only for each of `alive`. */
+function controlPlaneWithoutHeartbeats(
+  alive: string[] = [],
+): ConnectionContext["controlPlaneStore"] {
+  return {
+    get: (key: string) =>
+      Promise.resolve(
+        alive.some((id) => key === `heartbeats/${id}`)
+          ? new Uint8Array([1])
+          : null,
+      ),
+  } as unknown as ConnectionContext["controlPlaneStore"];
+}
+
+Deno.test("ownerGoneDecider: a dead pid in the tracker row of a previous serve instance shows the owner gone (swamp-club#2518)", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "old-instance");
+    tracker.register(trackerRow(run, DEAD_PID, "old-instance"));
+    const pids: number[] = [];
+
+    const gone = await ownerGoneDecider(
+      {
+        activeRunRegistry: new ActiveRunRegistry(),
+        runTracker: tracker,
+        instanceId: "new-instance",
+      },
+      (pid) => pids.push(pid),
+    )(run);
+
+    assertEquals(gone, { gone: true });
+    assertEquals(pids, [DEAD_PID]);
+  });
+});
+
+Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, whatever the control plane says", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
+    tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+
+    const gone = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWith([]),
+    })(run);
+
+    assertEquals(gone.gone, false);
+    if (!gone.gone) assertStringIncludes(gone.why, "is still alive");
+  });
+});
+
+Deno.test("ownerGoneDecider: a run this instance drives is never gone", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "old-instance");
+    tracker.register(trackerRow(run, DEAD_PID, "old-instance"));
+    const registry = new ActiveRunRegistry();
+    registry.register(fakeActiveRun(run.id, new Promise<void>(() => {})));
+
+    const gone = await ownerGoneDecider({
+      activeRunRegistry: registry,
+      runTracker: tracker,
+      instanceId: "new-instance",
+    })(run);
+
+    assertEquals(gone.gone, false);
+    if (!gone.gone) assertStringIncludes(gone.why, "this serve instance");
+  });
+});
+
+Deno.test("ownerGoneDecider: without a tracker row, another instance's run is gone only when the control plane has no heartbeat for it", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "peer");
+    const decide = (
+      extra: Partial<Pick<ConnectionContext, "controlPlaneStore">>,
+      instanceId = "new-instance",
+    ) =>
+      ownerGoneDecider({
+        activeRunRegistry: new ActiveRunRegistry(),
+        runTracker: tracker,
+        instanceId,
+        ...extra,
+      })(run);
+    const why = async (verdict: ReturnType<typeof decide>) => {
+      const v = await verdict;
+      return v.gone ? "gone" : v.why;
+    };
+
+    assertStringIncludes(await why(decide({})), "no instance heartbeats");
+    assertStringIncludes(
+      await why(decide({ controlPlaneStore: controlPlaneWith(["peer"]) })),
+      "still reports a heartbeat",
+    );
+    assertEquals(
+      await decide({ controlPlaneStore: controlPlaneWith([]) }),
+      { gone: true },
+    );
+    // Its own run with no row: nothing shows the owner gone.
+    assertStringIncludes(
+      await why(
+        decide({ controlPlaneStore: controlPlaneWith([]) }, "peer"),
+      ),
+      "no run tracker record",
+    );
+  });
+});
+
+Deno.test("cancelSuspendedRunAndPush: cancels a running run whose serve process is gone, by run id alone", async () => {
+  await withTracker(async (tracker) => {
+    const wf = makeWorkflow("deploy");
+    const run = runningRun(wf, DEAD_PID, "old-instance");
+    tracker.register(trackerRow(run, DEAD_PID, "old-instance"));
+    const h = harness([wf], [run]);
+    Object.assign(h.ctx, { runTracker: tracker, instanceId: "new-instance" });
+    Object.assign(h.ctx.repoContext, {
+      outputRepo: { findByIds: () => Promise.resolve(new Map()) },
+    });
+
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: run.id, reason: "stuck" },
+      allow,
+    );
+
+    assertEquals(result.status, "cancelled");
+    assertEquals(h.saved.map((r) => r.status), ["cancelled"]);
+    assertEquals(tracker.findById(run.id)?.status, "cancelled");
+    assertEquals(h.pushes, 1);
+    assertEquals(h.registry.reserve(run.id) !== null, true);
+  });
+});
+
+Deno.test("cancelSuspendedRunAndPush: refuses a running run whose owner is alive with a conflict saying so", async () => {
+  await withTracker(async (tracker) => {
+    const wf = makeWorkflow("deploy");
+    const run = runningRun(wf, Deno.pid, "old-instance");
+    tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+    const h = harness([wf], [run]);
+    Object.assign(h.ctx, { runTracker: tracker, instanceId: "new-instance" });
+
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: run.id, reason: "r" },
+      allow,
+    );
+
+    assertEquals(result.status, "not_suspended");
+    if (result.status === "not_suspended") {
+      assertStringIncludes(
+        result.message,
+        "was not cancelled: the process running it on the serve host is still alive",
+      );
+    }
+    assertEquals(h.saved, []);
+    assertEquals(tracker.findById(run.id)?.status, "running");
+  });
+});
+
+Deno.test("cancelSuspendedRunAndPush: a refused caller gets not found for a running run with a dead owner", async () => {
+  await withTracker(async (tracker) => {
+    const wf = makeWorkflow("deploy");
+    const run = runningRun(wf, DEAD_PID, "old-instance");
+    tracker.register(trackerRow(run, DEAD_PID, "old-instance"));
+    const h = harness([wf], [run]);
+    Object.assign(h.ctx, { runTracker: tracker, instanceId: "new-instance" });
+
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: run.id, reason: "r" },
+      () => false,
+    );
+
+    assertEquals(result, {
+      status: "not_found",
+      message: `No cancellable run with id ${run.id}`,
+    });
+    assertEquals(h.saved, []);
+    assertEquals(h.pushes, 0);
+  });
+});
+
+Deno.test("ownerGoneDecider: a tracker row written under another hostname is not judged by pid, so the control plane decides", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "peer");
+    // This process's pid is alive here, but the row is another host's.
+    tracker.register(TrackedRun.fromData({
+      ...trackerRow(run, Deno.pid, "peer").toData(),
+      hostname: `other-${crypto.randomUUID()}`,
+    }));
+    const decide = (
+      controlPlaneStore?: ConnectionContext["controlPlaneStore"],
+    ) =>
+      ownerGoneDecider({
+        activeRunRegistry: new ActiveRunRegistry(),
+        runTracker: tracker,
+        instanceId: "new-instance",
+        controlPlaneStore,
+      })(run);
+
+    assertEquals((await decide()).gone, false);
+    assertEquals((await decide(controlPlaneWith(["peer"]))).gone, false);
+    assertEquals(await decide(controlPlaneWith([])), { gone: true });
+  });
+});
+
+Deno.test("ownerGoneDecider: a control plane that records no heartbeats, as without a remote one, never shows another instance gone", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "peer");
+
+    const verdict = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWithoutHeartbeats(),
+    })(run);
+
+    assertEquals(verdict.gone, false);
+    if (!verdict.gone) {
+      assertStringIncludes(verdict.why, "no instance heartbeats");
+    }
+  });
+});
+
+Deno.test("cancelSuspendedRunAndPush: without recorded heartbeats, a running run under another host's tracker row is refused, not cancelled", async () => {
+  await withTracker(async (tracker) => {
+    const wf = makeWorkflow("deploy");
+    const run = runningRun(wf, DEAD_PID, "peer");
+    tracker.register(TrackedRun.fromData({
+      ...trackerRow(run, DEAD_PID, "peer").toData(),
+      hostname: `other-${crypto.randomUUID()}`,
+    }));
+    const h = harness([wf], [run]);
+    Object.assign(h.ctx, {
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWithoutHeartbeats(),
+    });
+
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: run.id, reason: "r" },
+      allow,
+    );
+
+    assertEquals(result.status, "not_suspended");
+    assertEquals(h.saved, []);
+    assertEquals(run.status, "running");
+  });
 });

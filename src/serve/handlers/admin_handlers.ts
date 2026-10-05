@@ -1833,9 +1833,11 @@ export async function handleRunDoctor(
   let orphanedReaped = 0;
   if (ctx.controlPlaneStore && ctx.instanceId) {
     try {
-      const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // From the records, not the index as it stands: a stale entry would
+      // hide the very run being looked for (swamp-club#2518).
+      await ctx.repoContext.workflowRunRepo.rebuildIndexes?.();
       const yamlRuns = await ctx.repoContext.workflowRunRepo
-        .findGlobalByStatus("running", reapCutoff);
+        .findGlobalByStatus("running");
 
       const heartbeatCache = new Map<string, boolean>();
       for (const { run, workflowId } of yamlRuns) {

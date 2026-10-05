@@ -246,6 +246,9 @@ export async function diagnoseLocalRuns(
 
   let orphanedWorkflowRuns = 0;
   let orphanedReaped = 0;
+  // From the records, not the index as it stands: a stale entry would hide
+  // the very run being looked for (swamp-club#2518).
+  await runRepo.rebuildIndexes?.();
   const records = new Map(
     (await runRepo.findGlobalByStatus(
       "running",

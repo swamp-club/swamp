@@ -1658,9 +1658,43 @@ workflow. A local cancel refuses such a run, and supersede skips it. Any serve
 instance can cancel it, not only the one that started it, because each serve
 start records a fresh `instanceId`. The endpoint's admin check still applies,
 and the change runs under the sync gate and is pushed like any handler
-mutation. The fallback searches only suspended runs, so a run that is already
-cancelled or finished gets `404`. A suspended run that another operation holds
-gets `409`.
+mutation. A run that is already cancelled or finished gets `404`. A suspended
+run that another operation holds gets `409`.
+
+**Running runs whose owner is gone.** A serve process killed mid-step leaves
+its run recorded `running` with no process driving it, and a local cancel
+refuses a serve-owned run. The same fallback cancels it when the owner is shown
+gone (`ownerGoneDecider` in `src/serve/suspended_run_cancel.ts`,
+swamp-club#2518):
+
+- A run this instance drives is in a registry and never reaches the fallback.
+- A run with a run-tracker row from this host is judged on that row alone, by
+  host and pid (`runHasDeadOwner` with `localOwnerLiveness`). Serve's own
+  instance id is not used: the row a previous serve process left carries that process's
+  instance id, so it would never count as local and the run would stay
+  uncancellable until its heartbeat aged out.
+- A run of another instance with no row from this host (none, or one written
+  under another hostname, as after a container restart) is gone when the
+  control plane holds no heartbeat for that instance while holding one for
+  this instance. Its own heartbeat is how serve knows heartbeats are being
+  recorded: without a control-plane-capable datastore it writes none, and a
+  missing heartbeat then says nothing about an instance on another host.
+
+The run is then cancelled like an offline cancel of a run whose owner died:
+its in-flight steps fail with "the process running this step stopped before
+the step finished", its tracker row is completed `cancelled`, and the method
+runs the dead process left `running` are settled, best effort. When the owner
+cannot be shown gone, a caller allowed to cancel the run gets `409` and
+nothing is written, since a live owner would save over the cancel. The reply
+says what still holds the run and what to do, without naming a pid, host or
+instance id:
+
+- The process on the serve host is still alive: stop it, then cancel again.
+- The serve instance that runs it still reports a heartbeat: cancel through
+  that instance, or again here once its heartbeat has expired.
+- Nothing can judge it: there is no tracker row from this host and no
+  instance heartbeats to consult. No supported command clears such a run; `run doctor` applies
+  the same owner checks, so it does not either.
 
 A run aborted through `ActiveRunRegistry` is checked again once it leaves the
 registry. A resume can save the run suspended at its next gate just before the
@@ -1690,9 +1724,10 @@ and its `denied` audit are `authorizeCancelRequest` in
 
 Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) cancels a run in `ActiveRunRegistry` (one
-started or resumed over WebSocket, or auto-resumed) or a persisted suspended
-run. Scheduled and webhook runs are held in `RunCancelRegistry` and the
-scheduled runs instead, so they are cancelled over HTTP. It is not gated at
+started or resumed over WebSocket, or auto-resumed) or a persisted run:
+suspended, or left `running` by an owner that is gone. Scheduled and webhook
+runs are held in `RunCancelRegistry` and the scheduled runs instead, so they
+are cancelled over HTTP. It is not gated at
 dispatch: it waits for an aborted run, which needs the sync gate for its final
 push, so it takes the gate only for the persisted cancel and its push
 (`cancelSuspendedRunAndPush`). It finds the persisted run and authorizes the

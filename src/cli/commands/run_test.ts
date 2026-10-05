@@ -436,3 +436,33 @@ Deno.test(
     assertEquals(saved, [run.id]);
   }),
 );
+
+Deno.test(
+  "diagnoseLocalRuns: rebuilds the run index before looking for running records (swamp-club#2518)",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    const { runRepo } = runRepoOf([run]);
+    const calls: string[] = [];
+    const scan = runRepo.findGlobalByStatus.bind(runRepo);
+    runRepo.findGlobalByStatus = (status, since) => {
+      calls.push("scan");
+      return scan(status, since);
+    };
+    runRepo.rebuildIndexes = () => {
+      calls.push("rebuild");
+      return Promise.resolve();
+    };
+
+    await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      false,
+    );
+
+    assertEquals(calls, ["rebuild", "scan"]);
+  }),
+);

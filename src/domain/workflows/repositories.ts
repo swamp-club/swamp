@@ -116,6 +116,13 @@ export interface WorkflowRunRepository {
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
   /**
+   * Rebuilds whatever status index {@link findGlobalByStatus} filters by from
+   * the run records, for a caller that must not miss a run the index has
+   * wrong. Absent on implementations that keep no index.
+   */
+  rebuildIndexes?(): Promise<void>;
+
+  /**
    * Saves a workflow run.
    */
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;

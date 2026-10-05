@@ -852,7 +852,9 @@ Editing the workflow while a run is suspended can make its resume refuse (a step
 added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
 started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
-also clears a serve-started run whose approval gate has timed out. See
+also clears a serve-started run whose approval gate has timed out, and a run
+left `running` by a serve process that has died. If it answers that the run was
+not cancelled, the reply says what still holds it. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the

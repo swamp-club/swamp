@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
   countYamlRunFiles,
@@ -27,6 +27,7 @@ import {
   isIndexStale,
   readRunIndex,
   RUNS_INDEX_FILENAME,
+  withIndexQueue,
   type WorkflowRunIndex,
   writeRunIndex,
 } from "./workflow_run_index.ts";
@@ -214,4 +215,41 @@ Deno.test("readRunIndex: reads current schema version", async () => {
     assertEquals(result?.entries, SAMPLE_INDEX);
     assertEquals(result?.version, INDEX_SCHEMA_VERSION);
   });
+});
+
+Deno.test("withIndexQueue: runs queued functions for one directory one at a time, in order", async () => {
+  const dir = `/queue-test-${crypto.randomUUID()}`;
+  const events: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const first = withIndexQueue(dir, async () => {
+    events.push("first:start");
+    await held;
+    events.push("first:end");
+  });
+  const second = withIndexQueue(dir, () => {
+    events.push("second");
+    return Promise.resolve("done");
+  });
+  release();
+
+  assertEquals(await second, "done");
+  await first;
+  assertEquals(events, ["first:start", "first:end", "second"]);
+});
+
+Deno.test("withIndexQueue: a failed function rejects its caller and does not hold up the next", async () => {
+  const dir = `/queue-test-${crypto.randomUUID()}`;
+
+  const failed = withIndexQueue(
+    dir,
+    () => Promise.reject(new Error("index write failed")),
+  );
+  const next = withIndexQueue(dir, () => Promise.resolve("ran"));
+
+  await assertRejects(() => failed, Error, "index write failed");
+  assertEquals(await next, "ran");
 });

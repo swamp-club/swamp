@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -31,7 +31,10 @@ import {
   type WorkflowCancelSuspendedInput,
 } from "./cancel_suspended.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
-import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  OWNER_STOPPED_STEP_ERROR,
+  WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
@@ -504,4 +507,101 @@ Deno.test("locateSuspendedRunToCancel: a run of a deleted workflow is matched an
     null,
   );
   assertEquals(renamed.authorized, []);
+});
+
+/** A run left `running` with its gate step in flight, as a dead owner leaves it. */
+function runningServeRun(workflow: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start(Deno.pid, crypto.randomUUID());
+  run.getJob("main")!.start();
+  run.getJob("main")!.getStep("gate")!.start();
+  return run;
+}
+
+Deno.test("workflowCancelSuspended: cancels a running run whose owner is gone and settles its in-flight step (swamp-club#2518)", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = runningServeRun(wf);
+  const h = harness([wf], [run]);
+  const asked: string[] = [];
+  h.deps.ownerGone = (r) => {
+    asked.push(r.id);
+    return { gone: true };
+  };
+
+  const event = await cancel(h.deps, { runId: run.id, reason: "stuck" });
+
+  assertEquals(event?.kind, "completed");
+  if (event?.kind === "completed") {
+    assertEquals(event.data.previousStatus, "running");
+    assertEquals(event.data.status, "cancelled");
+  }
+  assertEquals(asked, [run.id]);
+  assertEquals(h.saved.map((r) => r.status), ["cancelled"]);
+  assertEquals(
+    run.getJob("main")!.getStep("gate")!.error,
+    OWNER_STOPPED_STEP_ERROR,
+  );
+  assertEquals(h.tracked, [
+    { runId: run.id, status: "cancelled", reason: "stuck" },
+  ]);
+});
+
+Deno.test("workflowCancelSuspended: refuses a running run whose owner is not shown gone, saying what still holds it", async () => {
+  const wf = makeWorkflow("deploy");
+  const held = { gone: false, why: "its process is still alive" } as const;
+  for (
+    const [ownerGone, why] of [
+      [() => held, "its process is still alive"],
+      [undefined, "nothing here can tell whether the process"],
+    ] as const
+  ) {
+    const run = runningServeRun(wf);
+    const h = harness([wf], [run]);
+    h.deps.ownerGone = ownerGone;
+
+    const event = await cancel(h.deps, { runId: run.id, reason: "r" });
+
+    assertEquals(event?.kind, "error");
+    if (event?.kind === "error") {
+      assertEquals(event.error.code, CANCEL_SUSPENDED_NOT_SUSPENDED);
+      assertStringIncludes(
+        event.error.message,
+        `Run ${run.id} is recorded as running and was not cancelled: ${why}`,
+      );
+    }
+    assertEquals(run.status, "running");
+    assertEquals(h.saved, []);
+    assertEquals(h.tracked, []);
+  }
+});
+
+Deno.test("workflowCancelSuspended: a refused caller gets not found for a running run, and its owner is never judged", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = runningServeRun(wf);
+  const h = harness([wf], [run], () => false);
+  let judged = false;
+  h.deps.ownerGone = () => {
+    judged = true;
+    return { gone: true };
+  };
+
+  const event = await cancel(h.deps, { runId: run.id, reason: "r" });
+
+  assertEquals(event?.kind, "error");
+  if (event?.kind === "error") {
+    assertEquals(event.error.code, CANCEL_SUSPENDED_NOT_FOUND);
+    assertEquals(event.error.message, `No cancellable run with id ${run.id}`);
+  }
+  assertEquals(judged, false);
+  assertEquals(h.saved, []);
+});
+
+Deno.test("locateSuspendedRunToCancel: finds a running run without a workflow", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = runningServeRun(wf);
+  const h = harness([wf], [run]);
+
+  const located = await locateSuspendedRunToCancel(h.deps, { runId: run.id });
+
+  assertEquals(located?.workflowId, wf.id);
 });

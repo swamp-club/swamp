@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  OWNER_STOPPED_STEP_ERROR,
+  type WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
   cancelAndSettle,
@@ -52,7 +55,8 @@ import {
 export interface WorkflowCancelSuspendedData {
   runId: string;
   workflowName: string;
-  previousStatus: "suspended";
+  /** `running` for a run whose owner was gone (swamp-club#2518). */
+  previousStatus: "suspended" | "running";
   status: "cancelled";
   /**
    * Nested runs the cancelled run's nested steps still waited on, left
@@ -127,7 +131,30 @@ export interface WorkflowCancelSuspendedDeps {
    * changed; a false result is reported as not found.
    */
   authorize: (workflow: CancelTargetWorkflow) => Promise<boolean> | boolean;
+  /**
+   * Decides whether a run recorded `running` has lost its owner: no process
+   * drives it and the one that did is shown to be gone. Only then is a
+   * running run cancelled here; without this, or when the owner is not shown
+   * gone, it is refused, since a live owner would save over the cancel.
+   */
+  ownerGone?: (run: WorkflowRun) => Promise<RunOwnerVerdict> | RunOwnerVerdict;
 }
+
+/**
+ * Whether the owner of a run recorded `running` is shown gone. When it is
+ * not, `why` completes "was not cancelled: ..." for the caller allowed to
+ * cancel the run: what still holds the run, and what to do about it.
+ */
+export type RunOwnerVerdict =
+  | { gone: true }
+  | { gone: false; why: string };
+
+/** The verdict when nothing is able to judge a running run's owner. */
+const OWNER_NOT_JUDGED: RunOwnerVerdict = {
+  gone: false,
+  why:
+    "nothing here can tell whether the process running it has stopped. Cancel it where it was started",
+};
 
 export function createWorkflowCancelSuspendedDeps(
   workflowRepo: WorkflowRepository,
@@ -135,6 +162,7 @@ export function createWorkflowCancelSuspendedDeps(
   authorize: WorkflowCancelSuspendedDeps["authorize"],
   findEvaluatedWorkflow: EvaluatedWorkflowLookup,
   runTracker?: RunTrackerRepository,
+  ownerGone?: WorkflowCancelSuspendedDeps["ownerGone"],
 ): WorkflowCancelSuspendedDeps {
   return {
     workflowRepo,
@@ -142,13 +170,18 @@ export function createWorkflowCancelSuspendedDeps(
     authorize,
     findEvaluatedWorkflow,
     runTracker,
+    ownerGone,
   };
 }
 
 /** Code of the error reported for a missing, unauthorized or mismatched run. */
 export const CANCEL_SUSPENDED_NOT_FOUND = "not_found";
 
-/** Code of the error reported for an authorized run that is not suspended. */
+/**
+ * Code of the error reported for an authorized run that cannot be cancelled
+ * here: one that is not suspended, including a run recorded `running` whose
+ * owner is not shown gone.
+ */
 export const CANCEL_SUSPENDED_NOT_SUSPENDED = "not_suspended";
 
 function cancelNotFound(runId: string): SwampError {
@@ -191,6 +224,11 @@ export async function locateSuspendedRunToCancel(
  * of another workflow than `workflowIdOrName`, and an unauthorized caller all
  * get the same not-found error, so an id reveals nothing.
  *
+ * A run recorded `running` is cancelled too, but only when `deps.ownerGone`
+ * shows the process that ran it is gone, for example a serve instance killed
+ * mid-step (swamp-club#2518). Its in-flight steps are settled as an offline
+ * cancel settles them. Otherwise it is refused, saying what still holds it.
+ *
  * Does no locking: the caller must hold whatever claim keeps other writers
  * off the run for the whole call, so the load here is a fresh read.
  */
@@ -213,7 +251,25 @@ export async function* workflowCancelSuspended(
         }
         const { run, workflowId, target, workflow } = found;
 
-        if (run.status !== "suspended") {
+        const previousStatus = run.status;
+        const owner = previousStatus !== "running"
+          ? undefined
+          : deps.ownerGone
+          ? await deps.ownerGone(run)
+          : OWNER_NOT_JUDGED;
+        if (owner && !owner.gone) {
+          yield {
+            kind: "error",
+            error: {
+              ...validationFailed(
+                `Run ${run.id} is recorded as running and was not cancelled: ${owner.why}`,
+              ),
+              code: CANCEL_SUSPENDED_NOT_SUSPENDED,
+            },
+          };
+          return;
+        }
+        if (previousStatus !== "suspended" && previousStatus !== "running") {
           yield {
             kind: "error",
             error: {
@@ -234,6 +290,11 @@ export async function* workflowCancelSuspended(
             deps.findEvaluatedWorkflow,
           ),
           input.reason,
+          // The steps the dead owner had in flight, as an offline cancel
+          // settles them.
+          previousStatus === "running"
+            ? { inFlightStepError: OWNER_STOPPED_STEP_ERROR }
+            : undefined,
         );
         await deps.runRepo.save(workflowId, run);
         if (deps.runTracker) {
@@ -248,7 +309,7 @@ export async function* workflowCancelSuspended(
           data: {
             runId: run.id,
             workflowName: target.name,
-            previousStatus: "suspended",
+            previousStatus,
             status: "cancelled",
             ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
           },
@@ -318,10 +379,12 @@ async function findRun(
   }
   const found = await deps.runRepo.findGlobalById(runId);
   if (!found) return null;
-  // Without a workflow to check against, only a suspended run is reported:
-  // any other status stays not found, as it always has on this path.
+  // Without a workflow to check against, only a run this could cancel is
+  // reported, suspended or left running: any other status stays not found,
+  // as it always has on this path.
   if (
-    input.workflowIdOrName === undefined && found.run.status !== "suspended"
+    input.workflowIdOrName === undefined &&
+    found.run.status !== "suspended" && found.run.status !== "running"
   ) {
     return null;
   }
