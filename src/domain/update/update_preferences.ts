@@ -34,6 +34,8 @@ export interface UpdatePreferences {
   schedulerRefreshedVersion?: string;
   /** When re-registering the launchd autoupdate job last failed. */
   lastSchedulerRefreshAttempt?: string;
+  /** A failed re-registration took the job out of launchd without loading it. */
+  schedulerLeftUnloaded?: boolean;
   /** When the "autoupdate has stopped checking" warning was last shown. */
   lastStaleWarning?: string;
 }

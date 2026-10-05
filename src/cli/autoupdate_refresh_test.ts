@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { SchedulerRefreshResult } from "../domain/update/autoupdate_scheduler.ts";
+import {
+  SchedulerRefreshError,
+  type SchedulerRefreshResult,
+} from "../domain/update/autoupdate_scheduler.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
 import { join } from "@std/path";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -91,6 +94,7 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: refreshes and records the version",
     notifiedVersion: "x",
     schedulerRefreshedVersion: VERSION,
     lastSchedulerRefreshAttempt: undefined,
+    schedulerLeftUnloaded: undefined,
   }]);
 });
 
@@ -109,23 +113,58 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: records the attempt when refresh fa
     enabled: true,
     cadence: "daily",
     lastSchedulerRefreshAttempt: NOW.toISOString(),
+    schedulerLeftUnloaded: undefined,
   }]);
 });
 
-Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only after a failed attempt", async () => {
+Deno.test("refreshAutoupdateSchedulerIfOwed: loads an unloaded job only when a refresh left it unloaded", async () => {
   const fresh = fakeDeps();
   await refreshAutoupdateSchedulerIfOwed(fresh, VERSION);
   assertEquals(fresh.refreshOptions, [{ loadIfNotLoaded: false }]);
 
-  const afterFailure = fakeDeps({
+  // An attempt that never booted the job out (unknown, or a failure before
+  // bootout) must not force-load a job the user may have turned off.
+  const afterUnknown = fakeDeps({
     prefs: {
       enabled: true,
       cadence: "daily",
       lastSchedulerRefreshAttempt: "2026-10-01T00:00:00.000Z",
     },
   });
-  await refreshAutoupdateSchedulerIfOwed(afterFailure, VERSION);
-  assertEquals(afterFailure.refreshOptions, [{ loadIfNotLoaded: true }]);
+  await refreshAutoupdateSchedulerIfOwed(afterUnknown, VERSION);
+  assertEquals(afterUnknown.refreshOptions, [{ loadIfNotLoaded: false }]);
+
+  const leftUnloaded = fakeDeps({
+    prefs: {
+      enabled: true,
+      cadence: "daily",
+      lastSchedulerRefreshAttempt: "2026-10-01T00:00:00.000Z",
+      schedulerLeftUnloaded: true,
+    },
+  });
+  await refreshAutoupdateSchedulerIfOwed(leftUnloaded, VERSION);
+  assertEquals(leftUnloaded.refreshOptions, [{ loadIfNotLoaded: true }]);
+  assertEquals(leftUnloaded.written[0].schedulerLeftUnloaded, undefined);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: remembers a refresh that left the job unloaded", async () => {
+  const deps = fakeDeps({
+    refresh: () =>
+      Promise.reject(new SchedulerRefreshError("bootstrap failed", true)),
+  });
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result.outcome, "failed");
+  assertEquals(deps.written[0].schedulerLeftUnloaded, true);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: a failure before bootout does not mark the job unloaded", async () => {
+  const deps = fakeDeps({
+    refresh: () => Promise.reject(new Error("cannot read the plist")),
+  });
+  await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(deps.written[0].schedulerLeftUnloaded, undefined);
 });
 
 Deno.test("refreshAutoupdateSchedulerIfOwed: writes nothing while the job is running", async () => {

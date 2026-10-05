@@ -21,6 +21,7 @@ import { dirname, join } from "@std/path";
 import {
   type AutoupdateScheduler,
   SCHEDULER_EX_CONFIG,
+  SchedulerRefreshError,
   type SchedulerRefreshOptions,
   type SchedulerRefreshResult,
   type SchedulerRuntime,
@@ -372,7 +373,7 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       // loading it again, so that case loads it.
       if ((await launchctl(["print", domain])).code !== 0) return "unknown";
       if (!options.loadIfNotLoaded) return "not_needed";
-      return await this.bootstrap(domain, path);
+      return await this.bootstrap(domain, path, true);
     }
     const runtime = parseLaunchctlPrint(printed.stdout);
     if (!runtime) return "unknown";
@@ -401,13 +402,14 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       );
     }
 
-    return await this.bootstrap(domain, path);
+    return await this.bootstrap(domain, path, true);
   }
 
   /** Loads the job, trying a second time before reporting launchd's reason. */
   private async bootstrap(
     domain: string,
     path: string,
+    leftUnloadedOnFailure: boolean,
   ): Promise<SchedulerRefreshResult> {
     let result = await launchctl(["bootstrap", domain, path]);
     if (result.code !== 0) {
@@ -415,9 +417,10 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     }
     if (result.code !== 0) {
       const reason = result.stderr.trim();
-      throw new Error(
+      throw new SchedulerRefreshError(
         `launchctl bootstrap failed with exit code ${result.code}` +
           (reason ? `: ${reason}` : ""),
+        leftUnloadedOnFailure,
       );
     }
     return "refreshed";

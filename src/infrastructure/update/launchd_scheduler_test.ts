@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import fc from "fast-check";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
+import { SchedulerRefreshError } from "../../domain/update/autoupdate_scheduler.ts";
 import {
   buildPlist,
   escapeXml,
@@ -450,9 +451,10 @@ Deno.test("LaunchdScheduler.refresh: reports launchd's reason when bootstrap fai
       }, async () => {
         const error = await assertRejects(
           () => new LaunchdScheduler("agent").refresh(),
-          Error,
+          SchedulerRefreshError,
         );
         assert(error.message.includes("Input/output error"));
+        assertEquals(error.leftUnloaded, true);
       }).then(({ calls }) =>
         assertEquals(
           launchctlCalls(calls).filter((c) => c === "bootstrap").length,

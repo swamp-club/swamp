@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  SchedulerRefreshOptions,
-  SchedulerRefreshResult,
+import {
+  SchedulerRefreshError,
+  type SchedulerRefreshOptions,
+  type SchedulerRefreshResult,
 } from "../domain/update/autoupdate_scheduler.ts";
 import { shouldRefreshScheduler } from "../domain/update/autoupdate_staleness.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
@@ -102,14 +103,19 @@ export async function refreshAutoupdateSchedulerIfOwed(
 
         let result: SchedulerRefreshResult;
         try {
-          // A failed attempt may have left the job unloaded; load it then.
+          // Load a job that is not loaded only when our own failed refresh
+          // left it that way, never one the user turned off.
           result = await deps.refreshScheduler(job, {
-            loadIfNotLoaded: prefs.lastSchedulerRefreshAttempt !== undefined,
+            loadIfNotLoaded: prefs.schedulerLeftUnloaded === true,
           });
         } catch (error) {
+          const leftUnloaded = error instanceof SchedulerRefreshError
+            ? error.leftUnloaded
+            : prefs.schedulerLeftUnloaded === true;
           await deps.writePreferences({
             ...prefs,
             lastSchedulerRefreshAttempt: deps.now().toISOString(),
+            schedulerLeftUnloaded: leftUnloaded || undefined,
           });
           return {
             outcome: "failed",
@@ -134,6 +140,7 @@ export async function refreshAutoupdateSchedulerIfOwed(
           ...prefs,
           schedulerRefreshedVersion: installedVersion,
           lastSchedulerRefreshAttempt: undefined,
+          schedulerLeftUnloaded: undefined,
         });
         return { outcome: result === "refreshed" ? "refreshed" : "not_owed" };
       },

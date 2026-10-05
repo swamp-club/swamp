@@ -70,6 +70,9 @@ export class UpdatePreferencesFileRepository
           typeof data.lastSchedulerRefreshAttempt === "string"
             ? data.lastSchedulerRefreshAttempt
             : undefined,
+        schedulerLeftUnloaded: data.schedulerLeftUnloaded === true
+          ? true
+          : undefined,
         lastStaleWarning: typeof data.lastStaleWarning === "string"
           ? data.lastStaleWarning
           : undefined,

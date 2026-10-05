@@ -138,6 +138,7 @@ Deno.test("UpdatePreferencesFileRepository: round-trips scheduler refresh and st
       schedulerRefreshedVersion: "20261005.120000.0-sha.abc",
       lastSchedulerRefreshAttempt: "2026-10-05T12:00:00.000Z",
       lastStaleWarning: "2026-10-04T12:00:00.000Z",
+      schedulerLeftUnloaded: true,
     });
 
     const result = await repo.read();
@@ -150,6 +151,7 @@ Deno.test("UpdatePreferencesFileRepository: round-trips scheduler refresh and st
       "2026-10-05T12:00:00.000Z",
     );
     assertEquals(result.lastStaleWarning, "2026-10-04T12:00:00.000Z");
+    assertEquals(result.schedulerLeftUnloaded, true);
   });
 });
 

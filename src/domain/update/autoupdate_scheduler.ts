@@ -64,6 +64,21 @@ export type SchedulerRefreshResult =
   | "unknown"
   | "not_installed";
 
+/**
+ * A refresh failed. `leftUnloaded` is true when the job was taken out of the
+ * scheduler and could not be loaded again, so the next attempt should load
+ * it even though it is not loaded.
+ */
+export class SchedulerRefreshError extends Error {
+  readonly leftUnloaded: boolean;
+
+  constructor(message: string, leftUnloaded: boolean) {
+    super(message);
+    this.name = "SchedulerRefreshError";
+    this.leftUnloaded = leftUnloaded;
+  }
+}
+
 export interface SchedulerRefreshOptions {
   loadIfNotLoaded?: boolean;
 }
@@ -74,8 +89,9 @@ export interface AutoupdateScheduler {
   status(): Promise<ScheduleStatus>;
   /**
    * Re-register the job so the OS will start the binary now at its path.
-   * `loadIfNotLoaded` also loads a job the OS does not have — set it when an
-   * earlier refresh failed, since that may have unloaded the job.
+   * `loadIfNotLoaded` also loads a job the OS does not have — set it only
+   * when an earlier refresh left the job unloaded (SchedulerRefreshError
+   * with `leftUnloaded`).
    */
   refresh(options?: SchedulerRefreshOptions): Promise<SchedulerRefreshResult>;
 }
