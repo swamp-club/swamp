@@ -269,8 +269,7 @@ with another mint's secret (swamp-club#2482):
   definition yet. A writer takes it before any per-model lock. In serve it is
   taken at the dispatch site, around the sync gate (`withServerTokenWriteLock`,
   `src/serve/handlers/access_handlers.ts`), so a replica never waits on it while
-  holding the gate, and only for a caller the handler will authorize. A lock
-  that cannot be taken is the client error `access_token_locked`. The secret
+  holding the gate, and only for a caller the handler will authorize. A caller may name the token by definition id; the lock is taken on the name it resolves to (`serverTokenLockName`). A lock that times out is the client error `lock_timeout`, retryable like serve's other lock timeouts, with a message naming the token; one that cannot be taken at all is `access_token_lock_failed`. The secret
   migration re-reads each record under the lock and skips one that changed
   since it was listed, so it cannot restore a rotated token's old secret.
 - **The secret fingerprint.** The record stores `secretFingerprint`, the

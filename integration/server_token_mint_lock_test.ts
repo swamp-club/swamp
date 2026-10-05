@@ -188,13 +188,15 @@ Deno.test("server token name lock: a mint waits for the writer holding the name,
     // process mints. Alice's mint is that other writer: it runs to completion
     // before the lock is released. Unserialised, bob would have won.
     await holder.acquire();
-    let bob: Promise<{ type: string }>;
+    const bob = mintOverServe(ctx, name, "user:bob");
     let alice: { type: string };
     try {
-      bob = mintOverServe(ctx, name, "user:bob");
       alice = await mintUnlocked(ctx, name, "user:alice");
     } finally {
       await holder.release();
+      // Settled on every path, so a failure above never leaves bob's mint
+      // waiting on the lock after the repo is removed.
+      await bob.catch(() => {});
     }
 
     assertEquals(alice.type, "access.token.mint");

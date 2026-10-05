@@ -87,7 +87,10 @@ import {
 import { modelRegistry } from "../../domain/models/model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
-import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
+import {
+  serverTokenLockName,
+  withServerTokenLock,
+} from "../../infrastructure/persistence/server_token_lock.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -924,7 +927,7 @@ export async function withServerTokenWriteLock(
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
-  tokenName: string,
+  tokenIdOrName: string,
   fn: () => Promise<void>,
 ): Promise<void> {
   const admin = wouldAuthorize(socket, principal, "admin", {
@@ -933,17 +936,38 @@ export async function withServerTokenWriteLock(
     fields: {},
   }, ctx);
   if (!admin) return await fn();
+
+  // Until the handler starts, nothing has replied to the client, so a
+  // failure to resolve or take the lock is answered here. Once it has
+  // started it replies to its own failures.
+  let started = false;
   try {
-    await withServerTokenLock(ctx.datastoreConfig, tokenName, fn);
+    // Rotate and revoke accept a definition id; lock the name it resolves to
+    // so they exclude the same token's writers by name.
+    const tokenName = await serverTokenLockName(
+      ctx.repoContext.definitionRepo,
+      tokenIdOrName,
+    );
+    await withServerTokenLock(ctx.datastoreConfig, tokenName, () => {
+      started = true;
+      return fn();
+    });
   } catch (error) {
-    // The handlers reply to their own failures, so the only error that
-    // reaches here is the lock's.
-    if (!(error instanceof LockTimeoutError)) throw error;
+    if (started) throw error;
+    if (error instanceof LockTimeoutError) {
+      // The code and details serve's other lock timeouts carry, so a client
+      // retries this one the same way.
+      sendError(socket, requestId, "lock_timeout", error.message, {
+        retryable: true,
+        exceptionType: "LockTimeoutError",
+      });
+      return;
+    }
     sendError(
       socket,
       requestId,
-      "access_token_locked",
-      `Server token '${tokenName}' is being changed by another operation — try again`,
+      "access_token_lock_failed",
+      sanitizeErrorForClient(error),
     );
   }
 }

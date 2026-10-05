@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertGreater } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertRejects,
+} from "@std/assert";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { createServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
@@ -747,7 +753,11 @@ Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their 
 
 // ── the token name lock around mint, rotate and revoke ──────────────────
 
-function lockCtx(dir: string, allow: boolean): ConnectionContext {
+function lockCtx(
+  dir: string,
+  allow: boolean,
+  definitions: Record<string, string> = {},
+): ConnectionContext {
   const { service } = createMockDecisionService();
   const ctx = createCtx(
     allow ? service : { ...service, decide: () => null },
@@ -755,7 +765,24 @@ function lockCtx(dir: string, allow: boolean): ConnectionContext {
   return {
     ...ctx,
     datastoreConfig: { type: "filesystem", path: dir },
-  } as ConnectionContext;
+    repoContext: { definitionRepo: definitionsNamed(definitions) },
+  } as unknown as ConnectionContext;
+}
+
+/** A definition repo holding server-token definitions by id. */
+function definitionsNamed(byId: Record<string, string>) {
+  const entry = (id: string) => ({
+    definition: { id, name: byId[id] },
+    type: SERVER_TOKEN_MODEL_TYPE,
+  });
+  return {
+    findByNameGlobal: (name: string) => {
+      const id = Object.keys(byId).find((key) => byId[key] === name);
+      return Promise.resolve(id ? entry(id) : null);
+    },
+    findByIdCached: (id: string) =>
+      Promise.resolve(id in byId ? entry(id) : undefined),
+  };
 }
 
 Deno.test("withServerTokenWriteLock: an admin's operation runs holding the token's name lock", async () => {
@@ -841,7 +868,96 @@ Deno.test("withServerTokenWriteLock: a lock held elsewhere is reported to the cl
     assertEquals(ran, false);
     const reply = JSON.parse(socket.sent[0]);
     assertEquals(reply.type, "error");
-    assertEquals(reply.error.code, "access_token_locked");
-    assert(reply.error.message.includes(name));
+    // The code and details of serve's other lock timeouts, so a client
+    // retries this one the same way; the message names the token.
+    assertEquals(reply.error.code, "lock_timeout");
+    assertEquals(reply.error.details, {
+      retryable: true,
+      exceptionType: "LockTimeoutError",
+    });
+    assert(reply.error.message.includes(`Server token '${name}'`));
+  });
+});
+
+Deno.test("withServerTokenWriteLock: a lock that cannot be created is reported to the client, and the operation does not run", async () => {
+  await withTempDir(async (dir) => {
+    // A file where the datastore directory should be: the lock file cannot
+    // be created under it.
+    const notADir = join(dir, "datastore");
+    await Deno.writeTextFile(notADir, "");
+    const ctx = lockCtx(notADir, true);
+    const socket = createMockSocket();
+    let ran = false;
+
+    await withServerTokenWriteLock(
+      socket,
+      ctx,
+      "req-1",
+      { kind: "user", id: "admin" },
+      "tok",
+      () => {
+        ran = true;
+        return Promise.resolve();
+      },
+    );
+
+    assertEquals(ran, false);
+    assertEquals(socket.sent.length, 1);
+    assertEquals(
+      JSON.parse(socket.sent[0]).error.code,
+      "access_token_lock_failed",
+    );
+  });
+});
+
+Deno.test("withServerTokenWriteLock: an error from the operation itself is not answered twice", async () => {
+  await withTempDir(async (dir) => {
+    const ctx = lockCtx(dir, true);
+    const socket = createMockSocket();
+
+    await assertRejects(
+      () =>
+        withServerTokenWriteLock(
+          socket,
+          ctx,
+          "req-1",
+          { kind: "user", id: "admin" },
+          "tok",
+          () => Promise.reject(new Error("handler bug")),
+        ),
+      Error,
+      "handler bug",
+    );
+
+    assertEquals(socket.sent, []);
+    const observer = await createServerTokenLock(ctx.datastoreConfig, "tok");
+    assertEquals(await observer.inspect(), null);
+  });
+});
+
+Deno.test("withServerTokenWriteLock: a token named by definition id takes the lock of its name", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    const name = `tok-${crypto.randomUUID()}`;
+    const ctx = lockCtx(dir, true, { [id]: name });
+    const byName = await createServerTokenLock(ctx.datastoreConfig, name);
+    const byId = await createServerTokenLock(ctx.datastoreConfig, id);
+    let nameHeld = false;
+    let idHeld = true;
+
+    await withServerTokenWriteLock(
+      createMockSocket(),
+      ctx,
+      "req-1",
+      { kind: "user", id: "admin" },
+      id,
+      async () => {
+        nameHeld = (await byName.inspect()) !== null;
+        idHeld = (await byId.inspect()) !== null;
+      },
+    );
+
+    assertEquals(nameHeld, true);
+    assertEquals(idHeld, false);
   });
 });

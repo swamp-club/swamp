@@ -29,7 +29,10 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
+import {
+  serverTokenLockName,
+  withServerTokenLock,
+} from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -205,8 +208,10 @@ export const accessTokenRotateCommand = withRemoteOptions(
   );
 
   // Name lock first, then the model lock: every writer of a token takes
-  // them in that order (swamp-club#2482).
-  await withServerTokenLock(datastoreConfig, name, async () => {
+  // them in that order (swamp-club#2482). The argument may be a definition
+  // id, so lock the token name it resolves to.
+  const lockName = await serverTokenLockName(repoContext.definitionRepo, name);
+  await withServerTokenLock(datastoreConfig, lockName, async () => {
     const preResult = await findDefinitionByIdOrName(
       repoContext.definitionRepo,
       name,

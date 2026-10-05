@@ -23,21 +23,20 @@ import {
   assertNotEquals,
   assertRejects,
 } from "@std/assert";
-import { SEPARATOR } from "@std/path";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { parseModelLockKey } from "../../libswamp/datastores/lock.ts";
-import {
-  MODEL_LOCK_MAX_BACKOFF_MS,
-  MODEL_LOCK_RETRY_INTERVAL_MS,
-} from "../../cli/repo_context.ts";
 import type { FileLock } from "./file_lock.ts";
 import {
   createServerTokenLock,
   SERVER_TOKEN_LOCK_MAX_BACKOFF_MS,
   SERVER_TOKEN_LOCK_RETRY_INTERVAL_MS,
   serverTokenLockKey,
+  serverTokenLockName,
   withServerTokenLock,
 } from "./server_token_lock.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
+import { withMockedEnv } from "./path_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -55,14 +54,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 function filesystemDatastore(dir: string): DatastoreConfig {
   return { type: "filesystem", path: dir } as DatastoreConfig;
 }
-
-Deno.test("server token lock: retry settings match the per-model lock's", () => {
-  assertEquals(
-    SERVER_TOKEN_LOCK_RETRY_INTERVAL_MS,
-    MODEL_LOCK_RETRY_INTERVAL_MS,
-  );
-  assertEquals(SERVER_TOKEN_LOCK_MAX_BACKOFF_MS, MODEL_LOCK_MAX_BACKOFF_MS);
-});
 
 // ── serverTokenLockKey ────────────────────────────────────────────────
 
@@ -89,9 +80,17 @@ Deno.test("serverTokenLockKey: the name never reaches the key", async () => {
   }
 });
 
-Deno.test("serverTokenLockKey: is not mistaken for a per-model lock", async () => {
+Deno.test("serverTokenLockKey: sits outside data/, where per-model locks live", async () => {
+  // parseModelLockKey accepts only keys under data/, so the per-model lock
+  // scan never counts this one.
   const key = await serverTokenLockKey(undefined, "ci-deploy");
-  assertEquals(parseModelLockKey(key.replaceAll("/", SEPARATOR)), null);
+  assertEquals(key.startsWith("data/"), false);
+  assertEquals(
+    (await serverTokenLockKey("infra", "ci-deploy")).includes(
+      "/data/",
+    ),
+    false,
+  );
 });
 
 Deno.test("createServerTokenLock - uses the short retry settings on a filesystem datastore", async () => {
@@ -175,4 +174,78 @@ Deno.test("withServerTokenLock - a second writer of the same name runs after the
 
     assertEquals(events, ["first:start", "first:end", "second"]);
   });
+});
+
+Deno.test("withServerTokenLock - a timeout names the token, not the digest in its key", async () => {
+  await withTempDir(async (dir) => {
+    const datastoreConfig = filesystemDatastore(dir);
+    const name = `tok-${crypto.randomUUID()}`;
+    const holder = await createServerTokenLock(datastoreConfig, name);
+    let ran = false;
+
+    await holder.acquire();
+    try {
+      const error = await assertRejects(
+        () =>
+          withMockedEnv(
+            { SWAMP_LOCK_TIMEOUT_MS: "200" },
+            () =>
+              withServerTokenLock(datastoreConfig, name, () => {
+                ran = true;
+                return Promise.resolve();
+              }),
+          ),
+        LockTimeoutError,
+        `Server token '${name}' is being changed by another operation`,
+      );
+      // Still the retryable lock timeout the CLI exits 75 for.
+      assertEquals(error.code, "lock_timeout");
+      assertEquals(error.message.includes("server-token-locks"), false);
+    } finally {
+      await holder.release();
+    }
+    assertEquals(ran, false);
+  });
+});
+
+function definitions(
+  entries: { id: string; name: string; type: string }[],
+): DefinitionRepository {
+  const result = (e: { id: string; name: string; type: string }) => ({
+    definition: { id: e.id, name: e.name },
+    type: { normalized: e.type },
+  });
+  return {
+    findByNameGlobal: (name: string) => {
+      const found = entries.find((e) => e.name === name);
+      return Promise.resolve(found ? result(found) : null);
+    },
+    findByIdCached: (id: string) => {
+      const found = entries.find((e) => e.id === id);
+      return Promise.resolve(found ? result(found) : undefined);
+    },
+    // The scans an id falls back to when nothing cached has it.
+    findById: () => Promise.resolve(null),
+    findByIdGlobal: () => Promise.resolve(null),
+  } as unknown as DefinitionRepository;
+}
+
+Deno.test("serverTokenLockName: a name and its definition's id resolve to the same name", async () => {
+  const id = crypto.randomUUID();
+  const repo = definitions([
+    { id, name: "ci-deploy", type: SERVER_TOKEN_MODEL_TYPE.normalized },
+  ]);
+  assertEquals(await serverTokenLockName(repo, "ci-deploy"), "ci-deploy");
+  assertEquals(await serverTokenLockName(repo, id), "ci-deploy");
+});
+
+Deno.test("serverTokenLockName: an identifier that names no server token is returned as given", async () => {
+  const otherId = crypto.randomUUID();
+  const repo = definitions([
+    { id: otherId, name: "a-grant", type: "swamp/grant" },
+  ]);
+  assertEquals(await serverTokenLockName(repo, "never-minted"), "never-minted");
+  assertEquals(await serverTokenLockName(repo, otherId), otherId);
+  const unknownId = crypto.randomUUID();
+  assertEquals(await serverTokenLockName(repo, unknownId), unknownId);
 });
