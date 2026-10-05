@@ -129,7 +129,9 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    changed and written back whole and two saves would otherwise write back
    each other's old entries. An entry that disagrees with a record loaded by
    run id is corrected on that read, which covers a record another process or
-   a datastore pull replaced. `swamp run doctor`, local and through serve,
+   a datastore pull replaced. The correction re-reads the record inside the
+   queue and writes from that, never from the reader's copy, so a save that
+   landed in between is not overwritten. `swamp run doctor`, local and through serve,
    rebuilds the indexes from the records before it looks
    (`rebuildIndexes`).
 

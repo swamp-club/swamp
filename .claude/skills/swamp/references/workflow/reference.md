@@ -855,7 +855,7 @@ started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
 also clears a serve-started run whose approval gate has timed out, and a run
 left `running` by a serve process that has died. If it answers that the run is
 recorded as running and was not cancelled, the owner could not be shown gone:
-run `swamp run doctor --fix`. See
+run `swamp run doctor --fix` on the serve host, or with `--server <url>`. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the

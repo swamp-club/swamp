@@ -1811,3 +1811,56 @@ Deno.test("rebuildIndexes: keeps the entry of a run saved while it rebuilds", as
     assertEquals(Object.keys(index?.entries ?? {}).length, 4);
   });
 });
+
+Deno.test("findGlobalById: a read racing a save never leaves the index behind the record (swamp-club#2518)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    for (let round = 0; round < 20; round++) {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+
+      run.interruptOrphaned("test");
+      await Promise.all([
+        repo.findGlobalById(run.id),
+        repo.save(workflow.id, run),
+        repo.findGlobalById(run.id),
+      ]);
+
+      const index = await readRunIndex(indexDir);
+      assertEquals(index?.entries[run.id]?.status, "interrupted");
+    }
+  });
+});
+
+Deno.test("rebuildIndexes: a workflow with an unreadable record does not stop the others", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const broken = createTestWorkflow();
+    const brokenDir = join(dir, ".swamp", "workflow-runs", broken.id);
+    await ensureDir(brokenDir);
+    await Deno.writeTextFile(
+      join(brokenDir, `workflow-run-${crypto.randomUUID()}.yaml`),
+      "status: [unclosed",
+    );
+    const otherId = createWorkflowId(crypto.randomUUID());
+    const run = WorkflowRun.create(createTestWorkflow());
+    run.start();
+    await repo.save(otherId, run);
+    const runningRecord = await Deno.readTextFile(
+      repo.getPath(otherId, run.id),
+    );
+    run.interruptOrphaned("test");
+    await repo.save(otherId, run);
+    await replaceRecord(repo, otherId, run, runningRecord);
+
+    await repo.rebuildIndexes();
+
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", otherId),
+    );
+    assertEquals(index?.entries[run.id]?.status, "running");
+  });
+});

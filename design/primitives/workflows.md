@@ -1609,20 +1609,23 @@ gone (`ownerGoneDecider` in `src/serve/suspended_run_cancel.ts`,
 swamp-club#2518):
 
 - A run this instance drives is in a registry and never reaches the fallback.
-- A run with a run-tracker row is judged on that row alone, by host and pid
-  (`runHasDeadOwner` with `localOwnerLiveness`). Serve's own instance id is
-  not used: the row a previous serve process left carries that process's
+- A run with a run-tracker row from this host is judged on that row alone, by
+  host and pid (`runHasDeadOwner` with `localOwnerLiveness`). Serve's own
+  instance id is not used: the row a previous serve process left carries that process's
   instance id, so it would never count as local and the run would stay
   uncancellable until its heartbeat aged out.
-- A run of another instance with no row here is gone when the control plane
-  holds no heartbeat for that instance, as the boot reaper judges it.
+- A run of another instance with no row from this host (none, or one written
+  under another hostname, as after a container restart) is gone when the
+  control plane holds no heartbeat for that instance, as the boot reaper
+  judges it.
 
 The run is then cancelled like an offline cancel of a run whose owner died:
 its in-flight steps fail with "the process running this step stopped before
 the step finished", its tracker row is completed `cancelled`, and the method
 runs the dead process left `running` are settled, best effort. When the owner
 cannot be shown gone, a caller allowed to cancel the run gets `409` saying the
-run is recorded as running and naming `swamp run doctor --fix`; nothing is
+run is recorded as running and naming `swamp run doctor --fix` (run on the
+serve host, or with `--server`); nothing is
 written, since a live owner would save over the cancel. A run with no tracker
 row and no control plane to ask is in that case.
 
@@ -1655,8 +1658,9 @@ and its `denied` audit are `authorizeCancelRequest` in
 Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) cancels a run in `ActiveRunRegistry` (one
 started or resumed over WebSocket, or auto-resumed) or a persisted run:
-suspended, or left `running` by an owner that is gone. Scheduled and webhook runs are held in `RunCancelRegistry` and the
-scheduled runs instead, so they are cancelled over HTTP. It is not gated at
+suspended, or left `running` by an owner that is gone. Scheduled and webhook
+runs are held in `RunCancelRegistry` and the scheduled runs instead, so they
+are cancelled over HTTP. It is not gated at
 dispatch: it waits for an aborted run, which needs the sync gate for its final
 push, so it takes the gate only for the persisted cancel and its push
 (`cancelSuspendedRunAndPush`). It finds the persisted run and authorizes the

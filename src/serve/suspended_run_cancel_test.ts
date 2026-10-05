@@ -653,3 +653,27 @@ Deno.test("cancelSuspendedRunAndPush: a refused caller gets not found for a runn
     assertEquals(h.pushes, 0);
   });
 });
+
+Deno.test("ownerGoneDecider: a tracker row written under another hostname is not judged by pid, so the control plane decides", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "peer");
+    // This process's pid is alive here, but the row is another host's.
+    tracker.register(TrackedRun.fromData({
+      ...trackerRow(run, Deno.pid, "peer").toData(),
+      hostname: `other-${crypto.randomUUID()}`,
+    }));
+    const decide = (
+      controlPlaneStore?: ConnectionContext["controlPlaneStore"],
+    ) =>
+      ownerGoneDecider({
+        activeRunRegistry: new ActiveRunRegistry(),
+        runTracker: tracker,
+        instanceId: "new-instance",
+        controlPlaneStore,
+      })(run);
+
+    assertEquals(await decide(), false);
+    assertEquals(await decide(controlPlaneWith(["peer"])), false);
+    assertEquals(await decide(controlPlaneWith([])), true);
+  });
+});

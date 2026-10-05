@@ -86,12 +86,15 @@ function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
  * Decides whether a run recorded `running` has lost its owner, for
  * {@link cancelSuspendedRunAndPush}. Never for a run this instance drives.
  *
- * A run with a tracker row is judged on that row alone, by host and pid: the
+ * A run with a tracker row from this host is judged on that row alone, by
+ * host and pid: the
  * row a previous serve process left carries that process's instance id, so
  * this instance's own id would never count it local, and it would stay
  * uncancellable until its heartbeat aged out. A run of another instance with
- * no row here is gone when the control plane holds no heartbeat for that
- * instance, as the boot reaper judges it. Anything else is not shown gone.
+ * no row from this host (none at all, or one written under another hostname,
+ * as after a container restart) is gone when the control plane holds no
+ * heartbeat for that instance, as the boot reaper judges it. Anything else is
+ * not shown gone.
  *
  * `onDeadPid` receives the dead owner's pid when the tracker row decided.
  */
@@ -104,9 +107,12 @@ export function ownerGoneDecider(
 ): (run: WorkflowRun) => Promise<boolean> {
   return async (run) => {
     if (ctx.activeRunRegistry?.get(run.id)) return false;
+    const liveness = localOwnerLiveness();
     const tracked = ctx.runTracker?.findById(run.id);
-    if (ctx.runTracker && tracked) {
-      if (!runHasDeadOwner(run, ctx.runTracker, localOwnerLiveness())) {
+    // A row another host wrote says nothing here: its pid is not ours to
+    // check. The run is then judged like one with no row.
+    if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
+      if (!runHasDeadOwner(run, ctx.runTracker, liveness)) {
         return false;
       }
       onDeadPid?.(tracked.pid);
@@ -127,7 +133,8 @@ export function ownerGoneDecider(
 
 /**
  * Cancels a persisted run that no process in this serve instance is driving,
- * suspended or left `running` by an owner that is gone, and pushes the result. Callers do not take the sync gate: this
+ * suspended or left `running` by an owner that is gone, and pushes the result.
+ * Callers do not take the sync gate: this
  * takes it itself, only once the caller is known to be allowed.
  *
  * The run is first located and `authorize` asked about its own workflow while

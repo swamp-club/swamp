@@ -29,6 +29,7 @@ import {
   INDEX_SCHEMA_VERSION,
   isIndexStale,
   listDirEntries,
+  type ReadIndexResult,
   readRunIndex,
   withIndexQueue,
   type WorkflowRunIndex,
@@ -945,7 +946,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * Rebuilds every workflow's run index from its run records. The index is
    * otherwise trusted while it lists as many runs as there are records, so an
    * entry left behind by a record another process or a datastore pull
-   * replaced stays wrong until that run is read; this corrects them all.
+   * replaced stays wrong until that run is read; this corrects them all. A
+   * workflow whose records cannot all be read keeps the index it had.
    */
   async rebuildIndexes(): Promise<void> {
     let workflowIds: WorkflowId[];
@@ -959,10 +961,17 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       throw error;
     }
     for (const workflowId of workflowIds) {
-      await this.rebuildIndex(
-        this.getRunsDir(workflowId),
-        this.getLocalIndexDir(workflowId),
-      );
+      // One workflow with a record that cannot be read must not stop the
+      // rest from being rebuilt: the caller is usually `run doctor`.
+      try {
+        await this.rebuildIndex(
+          this.getRunsDir(workflowId),
+          this.getLocalIndexDir(workflowId),
+        );
+      } catch (error) {
+        logger
+          .warn`Could not rebuild the run index of workflow ${workflowId}: ${error}`;
+      }
     }
   }
 
@@ -1061,26 +1070,45 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * disagree on status or on awaiting a resume: the record was replaced
    * without a save here, by another process or a datastore pull. Best effort;
    * a run the index does not list is left to the count check and rebuild.
+   *
+   * `run` only decides whether to look closer. The entry is written from the
+   * record as read again inside the index queue, never from `run`: a save
+   * that landed after the caller's read has already written its own entry,
+   * and the caller's older copy must not replace it.
    */
   private async repairIndexEntry(
     workflowId: WorkflowId,
     run: WorkflowRun,
   ): Promise<void> {
+    const indexDir = this.getLocalIndexDir(workflowId);
     try {
-      const result = await readRunIndex(this.getLocalIndexDir(workflowId));
-      const entry = result?.entries[run.id];
-      if (
-        !entry || result?.version !== INDEX_SCHEMA_VERSION ||
-        (entry.status === run.status &&
-          (entry.awaitingResume ?? false) === run.isAwaitingResume())
-      ) {
-        return;
-      }
-      await this.updateIndexEntry(workflowId, run);
+      const seen = await readRunIndex(indexDir);
+      if (!seen || !indexEntryDiffers(seen, run)) return;
+      await withIndexQueue(indexDir, async () => {
+        // save() writes the record before it queues its entry, so this read
+        // is at least as new as every entry already written.
+        const current = await this.findById(workflowId, run.id);
+        const result = await readRunIndex(indexDir);
+        if (!current || !result || !indexEntryDiffers(result, current)) return;
+        const summary = parseWorkflowRunSummary(current.toPersistedData());
+        result.entries[current.id] = summaryToIndexEntry(summary);
+        await writeRunIndex(indexDir, result.entries);
+      });
     } catch (error) {
       logger.warn`Failed to repair run index entry for ${run.id}: ${error}`;
     }
   }
+}
+
+/**
+ * Whether a current-schema index lists `run` under another status, or
+ * disagrees on whether it awaits a resume. False for a run it does not list.
+ */
+function indexEntryDiffers(index: ReadIndexResult, run: WorkflowRun): boolean {
+  const entry = index.entries[run.id];
+  if (!entry || index.version !== INDEX_SCHEMA_VERSION) return false;
+  return entry.status !== run.status ||
+    (entry.awaitingResume ?? false) !== run.isAwaitingResume();
 }
 
 function summaryToIndexEntry(

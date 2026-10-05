@@ -161,7 +161,11 @@ export function createWorkflowCancelSuspendedDeps(
 /** Code of the error reported for a missing, unauthorized or mismatched run. */
 export const CANCEL_SUSPENDED_NOT_FOUND = "not_found";
 
-/** Code of the error reported for an authorized run that is not suspended. */
+/**
+ * Code of the error reported for an authorized run that cannot be cancelled
+ * here: one that is not suspended, including a run recorded `running` whose
+ * owner is not shown gone.
+ */
 export const CANCEL_SUSPENDED_NOT_SUSPENDED = "not_suspended";
 
 function cancelNotFound(runId: string): SwampError {
@@ -240,8 +244,8 @@ export async function* workflowCancelSuspended(
             kind: "error",
             error: {
               ...validationFailed(
-                `Run ${run.id} is recorded as running, and the process running it cannot be shown to have stopped, so it was not cancelled. ` +
-                  `If that process is gone, settle the run with: swamp run doctor --fix`,
+                `Run ${run.id} is recorded as running, and swamp could not confirm that the process running it has stopped, so it was not cancelled. ` +
+                  `If that process is gone, settle the run with: swamp run doctor --fix (on the serve host, or with --server <url>)`,
               ),
               code: CANCEL_SUSPENDED_NOT_SUSPENDED,
             },
