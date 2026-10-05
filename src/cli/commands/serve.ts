@@ -3812,13 +3812,13 @@ export const serveCommand = new Command()
     // Reconcile YAML-persisted workflow run state with tracker verdicts.
     // The tracker is the liveness authority; the YAML entity is the run record.
     // Legacy runs (pre-tracker) fall back to PID liveness checking.
-    const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const recentRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
+    // Whatever their age: a run can wait at a gate for longer than any
+    // window and be left running by a resume (swamp-club#2518).
+    const runningRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
       "running",
-      reapCutoff,
     );
     const reapResult = await reapOrphanedWorkflowRuns(
-      recentRuns,
+      runningRuns,
       async (wid, r) => {
         await repoContext.workflowRunRepo.save(wid, r);
         runTracker.markSettled(r.id, "server_crash");

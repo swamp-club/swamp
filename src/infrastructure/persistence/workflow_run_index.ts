@@ -145,3 +145,29 @@ export function isIndexStale(
   return result.version !== INDEX_SCHEMA_VERSION ||
     Object.keys(result.entries).length !== yamlFileCount;
 }
+
+/** Index updates in flight, one chain per index file. */
+const indexQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `fn` after every index operation already queued for the same index
+ * directory in this process, so one read-modify-write of the index file
+ * never interleaves with another. A failed `fn` does not hold up the ones
+ * queued behind it. `fn` must not queue on the same directory itself.
+ */
+export async function withIndexQueue<T>(
+  workflowRunsDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = getIndexPath(workflowRunsDir);
+  // A queued tail never rejects, so `fn` runs whatever happened before it.
+  const run = (indexQueues.get(key) ?? Promise.resolve()).then(fn);
+  const tail = run.then(() => {}, () => {});
+  indexQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    // Drop the chain once nothing is queued behind it.
+    if (indexQueues.get(key) === tail) indexQueues.delete(key);
+  }
+}

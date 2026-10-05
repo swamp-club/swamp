@@ -537,10 +537,10 @@ export async function reconcileRemoteInterruptedRuns(
 
   if (deps.workflowRunRepo) {
     try {
-      const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // Whatever their age: a run resumed long after it started is as
+      // orphaned as a recent one (swamp-club#2518).
       const yamlRuns = await deps.workflowRunRepo.findGlobalByStatus(
         "running",
-        reapCutoff,
       );
       for (const { run, workflowId } of yamlRuns) {
         if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;

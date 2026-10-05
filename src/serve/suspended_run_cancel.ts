@@ -36,6 +36,15 @@ import { withSyncGate } from "./sync_gate.ts";
 import type { DetachedNestedRunData } from "../libswamp/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
+import { localOwnerLiveness } from "../infrastructure/persistence/run_tracker_store.ts";
+import {
+  runHasDeadOwner,
+  settleDeadOwnerMethodRuns,
+} from "../domain/workflows/orphaned_run_reaper.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["serve", "workflow-cancel"]);
 
 export interface SuspendedRunCancelRequest {
   runId: string;
@@ -74,8 +83,51 @@ function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
 }
 
 /**
- * Cancels a persisted suspended run that no process in this serve instance is
- * driving, and pushes the result. Callers do not take the sync gate: this
+ * Decides whether a run recorded `running` has lost its owner, for
+ * {@link cancelSuspendedRunAndPush}. Never for a run this instance drives.
+ *
+ * A run with a tracker row is judged on that row alone, by host and pid: the
+ * row a previous serve process left carries that process's instance id, so
+ * this instance's own id would never count it local, and it would stay
+ * uncancellable until its heartbeat aged out. A run of another instance with
+ * no row here is gone when the control plane holds no heartbeat for that
+ * instance, as the boot reaper judges it. Anything else is not shown gone.
+ *
+ * `onDeadPid` receives the dead owner's pid when the tracker row decided.
+ */
+export function ownerGoneDecider(
+  ctx: Pick<
+    ConnectionContext,
+    "activeRunRegistry" | "runTracker" | "controlPlaneStore" | "instanceId"
+  >,
+  onDeadPid?: (pid: number) => void,
+): (run: WorkflowRun) => Promise<boolean> {
+  return async (run) => {
+    if (ctx.activeRunRegistry?.get(run.id)) return false;
+    const tracked = ctx.runTracker?.findById(run.id);
+    if (ctx.runTracker && tracked) {
+      if (!runHasDeadOwner(run, ctx.runTracker, localOwnerLiveness())) {
+        return false;
+      }
+      onDeadPid?.(tracked.pid);
+      return true;
+    }
+    if (
+      ctx.controlPlaneStore && ctx.instanceId && run.instanceId &&
+      run.instanceId !== ctx.instanceId
+    ) {
+      const heartbeat = await ctx.controlPlaneStore.get(
+        `heartbeats/${run.instanceId}`,
+      );
+      return heartbeat === null;
+    }
+    return false;
+  };
+}
+
+/**
+ * Cancels a persisted run that no process in this serve instance is driving,
+ * suspended or left `running` by an owner that is gone, and pushes the result. Callers do not take the sync gate: this
  * takes it itself, only once the caller is known to be allowed.
  *
  * The run is first located and `authorize` asked about its own workflow while
@@ -96,6 +148,7 @@ export async function cancelSuspendedRunAndPush(
   // Without a registry nothing can serialize the cancel against a resume.
   if (!registry) return notFound;
 
+  let deadOwnerPid: number | undefined;
   const deps = createWorkflowCancelSuspendedDeps(
     ctx.repoContext.workflowRepo,
     ctx.repoContext.workflowRunRepo,
@@ -108,6 +161,9 @@ export async function cancelSuspendedRunAndPush(
         ctx.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
       ).findByRunId(runId),
     ctx.runTracker,
+    ownerGoneDecider(ctx, (pid) => {
+      deadOwnerPid = pid;
+    }),
   );
   const located = await locateSuspendedRunToCancel(deps, {
     runId: request.runId,
@@ -127,6 +183,7 @@ export async function cancelSuspendedRunAndPush(
         deps,
         request,
         located.workflowId,
+        () => deadOwnerPid,
       ),
   );
 }
@@ -142,6 +199,7 @@ async function cancelLocatedRunAndPush(
   deps: WorkflowCancelSuspendedDeps,
   request: SuspendedRunCancelRequest,
   workflowId: string,
+  deadOwnerPid: () => number | undefined,
 ): Promise<SuspendedRunCancelResult> {
   try {
     const release = registry.reserve(request.runId);
@@ -177,7 +235,10 @@ async function cancelLocatedRunAndPush(
           failure = event.error;
         }
       }
-      if (result) return result;
+      if (result) {
+        await settleMethodRunsOf(ctx, deadOwnerPid());
+        return result;
+      }
       if (failure?.code === CANCEL_SUSPENDED_NOT_SUSPENDED) {
         return { status: "not_suspended", message: failure.message };
       }
@@ -187,6 +248,31 @@ async function cancelLocatedRunAndPush(
     }
   } finally {
     await pushChangedToRemote(ctx);
+  }
+}
+
+/**
+ * Settles the method runs the dead owner of a just-cancelled run left
+ * `running`, so its steps' method runs do not outlive the cancel. Best
+ * effort: one left unsettled is kept for `run doctor --fix`.
+ */
+async function settleMethodRunsOf(
+  ctx: ConnectionContext,
+  pid: number | undefined,
+): Promise<void> {
+  if (pid === undefined || !ctx.runTracker) return;
+  try {
+    await settleDeadOwnerMethodRuns(
+      ctx.repoContext.outputRepo,
+      ctx.runTracker,
+      localOwnerLiveness(),
+      pid,
+    );
+  } catch (error) {
+    logger.warn(
+      "Could not settle the method runs of dead process {pid}: {error}",
+      { pid, error: error instanceof Error ? error.message : String(error) },
+    );
   }
 }
 

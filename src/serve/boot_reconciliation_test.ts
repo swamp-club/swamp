@@ -1234,9 +1234,11 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
 
   const yamlSaved: Array<{ workflowId: string; runId: string }> = [];
   const yamlInterrupted: string[] = [];
+  const scanWindows: Array<Date | undefined> = [];
   const mockWorkflowRunRepo = {
-    findGlobalByStatus: (_status: string | string[], _since?: Date) =>
-      Promise.resolve([{
+    findGlobalByStatus: (_status: string | string[], since?: Date) => {
+      scanWindows.push(since);
+      return Promise.resolve([{
         run: {
           id: "yaml-run-1",
           instanceId: "dead-inst",
@@ -1246,7 +1248,8 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
           },
         },
         workflowId: "wf-1",
-      }]),
+      }]);
+    },
     save: (workflowId: string, run: { id: string }) => {
       yamlSaved.push({ workflowId, runId: run.id });
       return Promise.resolve();
@@ -1262,6 +1265,8 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
   assertEquals(yamlInterrupted, ["remote_instance_dead"]);
   assertEquals(yamlSaved.length, 1);
   assertEquals(yamlSaved[0].workflowId, "wf-1");
+  // A run of any age: resumed long after it started, it is still orphaned.
+  assertEquals(scanWindows, [undefined]);
 });
 
 Deno.test("reconcileRemoteInterruptedRuns: skips YAML runs from non-stale instances", async () => {

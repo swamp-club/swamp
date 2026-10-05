@@ -116,7 +116,26 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    row, only after the record is saved. `run doctor` scans recent records
    (7 days) and finds older ones through their workflow row, by workflow
    name, so no run is stranded by age; with `--fix` it also marks settled an
-   `interrupted` row whose record is no longer `running`.
+   `interrupted` row whose record is no longer `running`. The serve boot
+   reaper, the continuous reconciler and the `run.doctor` handler look at
+   every record still `running`, whatever its age: a run can wait at an
+   approval gate for longer than any window and be orphaned by a later resume
+   (swamp-club#2518).
+
+   These finders read run statuses from the per-workflow run index
+   (`.runs-index.json`, `src/infrastructure/persistence/workflow_run_index.ts`),
+   so a wrong entry hides a run from them. Index updates of one workflow are
+   queued within a process (`withIndexQueue`), because the index is read,
+   changed and written back whole and two saves would otherwise write back
+   each other's old entries. An entry that disagrees with a record loaded by
+   run id is corrected on that read, which covers a record another process or
+   a datastore pull replaced. `swamp run doctor`, local and through serve,
+   rebuilds the indexes from the records before it looks
+   (`rebuildIndexes`).
+
+   A server cancel also clears a `running` record whose owner is gone, as
+   `cancelled` rather than `interrupted`; see "Running runs whose owner is
+   gone" in [workflows](../primitives/workflows.md).
 
    A workflow step saves its method-run output `running` under its pid before
    it finishes, so a dead owner strands that record too. It is settled
