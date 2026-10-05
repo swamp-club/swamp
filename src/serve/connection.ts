@@ -136,6 +136,7 @@ import {
   handleAccessTokenMint,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
+  withServerTokenWriteLock,
 } from "./handlers/access_handlers.ts";
 import {
   handleReportDescribe,
@@ -3374,43 +3375,67 @@ export function handleMessage(
       break;
     case "access.token.revoke":
       task = audited(
-        withSyncGate(ctx.syncGate, () =>
-          handleAccessTokenRevoke(
-            socket,
-            ctx,
-            request.id,
-            request.payload,
-            controller,
-            principal,
-          )),
+        withServerTokenWriteLock(
+          socket,
+          ctx,
+          request.id,
+          principal,
+          request.payload.name,
+          () =>
+            withSyncGate(ctx.syncGate, () =>
+              handleAccessTokenRevoke(
+                socket,
+                ctx,
+                request.id,
+                request.payload,
+                controller,
+                principal,
+              )),
+        ),
         auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.rotate":
       task = audited(
-        withSyncGate(ctx.syncGate, () =>
-          handleAccessTokenRotate(
-            socket,
-            ctx,
-            request.id,
-            request.payload,
-            controller,
-            principal,
-          )),
+        withServerTokenWriteLock(
+          socket,
+          ctx,
+          request.id,
+          principal,
+          request.payload.name,
+          () =>
+            withSyncGate(ctx.syncGate, () =>
+              handleAccessTokenRotate(
+                socket,
+                ctx,
+                request.id,
+                request.payload,
+                controller,
+                principal,
+              )),
+        ),
         auditOpts("access", "access", "*"),
       );
       break;
     case "access.token.mint":
       task = audited(
-        withSyncGate(ctx.syncGate, () =>
-          handleAccessTokenMint(
-            socket,
-            ctx,
-            request.id,
-            request.payload,
-            controller,
-            principal,
-          )),
+        withServerTokenWriteLock(
+          socket,
+          ctx,
+          request.id,
+          principal,
+          request.payload.name,
+          () =>
+            withSyncGate(ctx.syncGate, () =>
+              handleAccessTokenMint(
+                socket,
+                ctx,
+                request.id,
+                request.payload,
+                controller,
+                principal,
+              )),
+        ),
         auditOpts("access", "access", request.payload.name),
       );
       break;

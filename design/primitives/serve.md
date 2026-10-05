@@ -257,6 +257,37 @@ through `initializeControlPlaneVault`
 (`src/domain/vaults/control_plane_vault_init.ts`). Like serve, they stop with
 the initialization error if it fails; they never fall back to a user vault.
 
+A token's record and its secret sit in two stores with no shared transaction:
+the secret is written straight to the control-plane store, the record to the
+local cache and pushed later. Two things keep one mint's record from being used
+with another mint's secret (swamp-club#2482):
+
+- **The name lock.** Mint, rotate, revoke and the secret migration each hold a
+  datastore lock keyed by token name (`createServerTokenLock`,
+  `src/infrastructure/persistence/server_token_lock.ts`) across their pull,
+  their writes and their push. It is keyed by name, not model id, so it covers a first mint, which has no
+  definition yet. A writer takes it before any per-model lock. In serve it is
+  taken at the dispatch site, around the sync gate (`withServerTokenWriteLock`,
+  `src/serve/handlers/access_handlers.ts`), so a replica never waits on it while
+  holding the gate, and only for a caller the handler will authorize. A caller may name the token by definition id; the lock is taken on the name it resolves to (`serverTokenLockName`). A lock that times out is the client error `lock_timeout`, retryable like serve's other lock timeouts, with a message naming the token; one that cannot be taken at all is `access_token_lock_failed`. The secret
+  migration re-reads each record under the lock and skips one that changed
+  since it was listed, so it cannot restore a rotated token's old secret.
+- **The secret fingerprint.** The record stores `secretFingerprint`, the
+  SHA-256 of the secret it was minted with. Authentication, `redeem` and
+  `access token reveal` check the vault secret against it
+  (`verifyServerTokenSecret`). A mismatch fails closed, with the rejection
+  reason `mispaired-secret` in the log, and `rotate` repairs it by writing a
+  new pair. Records minted before the field existed carry no fingerprint and
+  skip the check until they are rotated or re-minted; no migration adds one,
+  since hashing the current secret would bless a pairing that may already be
+  wrong.
+
+Two writers do not take the name lock. The OAuth login mint names each token
+`oauth-<random>`, so it only shares a name with another mint by chance; it
+records the fingerprint, so a collision fails closed. The token GC deletes
+under the sync gate alone, as described below. A binary from before the lock
+takes neither precaution, and drops the fingerprint from a record it rewrites.
+
 Serve garbage-collects server tokens in every auth mode
 (`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
 `src/serve/server_token_gc_deps.ts`). The first sweep runs just after boot,

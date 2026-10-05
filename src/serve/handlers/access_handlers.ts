@@ -53,6 +53,8 @@ import {
 } from "../../domain/access/grant_file_reconciler.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { stageWritesThenPush } from "../stage_writes_then_push.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -84,6 +86,11 @@ import {
 } from "./resource_resolution.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  serverTokenLockName,
+  withServerTokenLock,
+} from "../../infrastructure/persistence/server_token_lock.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -98,6 +105,7 @@ import {
   terminateTokenSessions,
   TOKEN_REVOKED_REASON,
   TOKEN_ROTATED_REASON,
+  wouldAuthorize,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
@@ -801,11 +809,12 @@ export async function handleAccessReload(
       try {
         // Per path, not bare: a bare markDirty() sets bulkInvalidated and
         // turns every reload's push into a walk of the whole cache
-        // (swamp-club#2415). A reload that changed nothing marks nothing.
-        for (const path of writtenPaths) {
-          await ctx.repoContext.markDirty?.(path);
-        }
-        await ctx.syncService.pushChanged({ namespace });
+        // (swamp-club#2415). A reload that changed nothing marks nothing,
+        // and still pushes.
+        const syncService = ctx.syncService;
+        await stageWritesThenPush(ctx.repoContext, writtenPaths, {
+          flush: () => syncService.pushChanged({ namespace }),
+        });
       } catch (error) {
         logger
           .warn`Remote access data push failed, proceeding with local reload: ${
@@ -903,6 +912,81 @@ export async function handleAccessTokenList(
   }
 }
 
+/**
+ * Runs a token mint, rotate or revoke holding the token's name lock, so the
+ * handler's pull, writes and push are one critical section across every
+ * process that writes the datastore (swamp-club#2482).
+ *
+ * Called at the dispatch site, around the sync gate: a replica must never
+ * wait on a distributed lock while it holds the gate. A caller the handler
+ * is about to refuse takes no lock, so only an admin can make serve create
+ * or wait on one.
+ */
+export async function withServerTokenWriteLock(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  tokenIdOrName: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const admin = wouldAuthorize(socket, principal, "admin", {
+    kind: "access",
+    name: "*",
+    fields: {},
+  }, ctx);
+  if (!admin) return await fn();
+
+  // Until the handler starts, nothing has replied to the client, so a
+  // failure to resolve or take the lock is answered here. Once it has
+  // started it replies to its own failures.
+  let started = false;
+  try {
+    // Rotate and revoke accept a definition id; lock the name it resolves to
+    // so they exclude the same token's writers by name.
+    const tokenName = await serverTokenLockName(
+      ctx.repoContext.definitionRepo,
+      tokenIdOrName,
+    );
+    await withServerTokenLock(ctx.datastoreConfig, tokenName, () => {
+      started = true;
+      return fn();
+    });
+  } catch (error) {
+    if (started) throw error;
+    if (error instanceof LockTimeoutError) {
+      // The code and details serve's other lock timeouts carry, so a client
+      // retries this one the same way.
+      sendError(socket, requestId, "lock_timeout", error.message, {
+        retryable: true,
+        exceptionType: "LockTimeoutError",
+      });
+      return;
+    }
+    sendError(
+      socket,
+      requestId,
+      "access_token_lock_failed",
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+/**
+ * Brings the local copy of the datastore up to date before a token write, so
+ * the handler decides on the record another replica last pushed. Runs inside
+ * the handler's exclusive hold of the sync gate. A failed pull fails the
+ * request: writing over a stale record is what the lock exists to prevent.
+ */
+async function pullBeforeTokenWrite(ctx: ConnectionContext): Promise<void> {
+  if (!ctx.syncService) return;
+  const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
+    ? ctx.datastoreConfig.namespace
+    : undefined;
+  const pulled = await ctx.syncService.pullChanged({ namespace });
+  if (pulled !== 0) ctx.repoContext.catalogStore.invalidate();
+}
+
 export async function handleAccessTokenRevoke(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -919,54 +1003,59 @@ export async function handleAccessTokenRevoke(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenRevokeDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        await pullBeforeTokenWrite(ctx);
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenRevokeDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenRevoke(libCtx, deps, { name: payload.name }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenRevoke(libCtx, deps, { name: payload.name }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      send(socket, {
-        type: "access.token.revoke",
-        id: requestId,
-        payload: { data: result ?? {} },
-      });
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        } else {
+          send(socket, {
+            type: "access.token.revoke",
+            id: requestId,
+            payload: { data: result ?? {} },
+          });
+        }
 
-    // The revoke is persisted even if the request was cancelled, so every
-    // session opened with any mint of the name ends. Runs after the reply so a
-    // caller revoking their own token still gets it.
-    terminateTokenSessions(payload.name, {
-      code: 4003,
-      reason: TOKEN_REVOKED_REASON,
-      cause: "revoked",
-      initiatedBy: initiatorOf(principal, ctx),
-      requestId,
-      audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_revoke_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        // The revoke is persisted even if the request was cancelled, so every
+        // session opened with any mint of the name ends. Runs after the reply
+        // so a caller revoking their own token still gets it.
+        terminateTokenSessions(payload.name, {
+          code: 4003,
+          reason: TOKEN_REVOKED_REASON,
+          cause: "revoked",
+          initiatedBy: initiatorOf(principal, ctx),
+          requestId,
+          audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_revoke_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleAccessTokenRotate(
@@ -985,48 +1074,53 @@ export async function handleAccessTokenRotate(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenRotateDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        await pullBeforeTokenWrite(ctx);
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenRotateDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenRotate(libCtx, deps, {
-        name: payload.name,
-        durationMs: payload.durationMs,
-      }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenRotate(libCtx, deps, {
+            name: payload.name,
+            durationMs: payload.durationMs,
+          }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-    } else {
-      send(socket, {
-        type: "access.token.rotate",
-        id: requestId,
-        payload: { data: result ?? {} },
-      });
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+        } else {
+          send(socket, {
+            type: "access.token.rotate",
+            id: requestId,
+            payload: { data: result ?? {} },
+          });
+        }
 
-    // The rotation is persisted even if the request was cancelled.
-    await terminateRotatedSessions(payload.name, ctx, requestId, principal);
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_rotate_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        // The rotation is persisted even if the request was cancelled.
+        await terminateRotatedSessions(payload.name, ctx, requestId, principal);
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_rotate_failed", message);
+      }
+    },
+  );
 }
 
 function initiatorOf(
@@ -1085,53 +1179,58 @@ export async function handleAccessTokenMint(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createServerTokenCreateDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        await pullBeforeTokenWrite(ctx);
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createServerTokenCreateDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      serverTokenCreate(libCtx, deps, {
-        name: payload.name,
-        principalId: payload.principalId,
-        principalEmail: payload.principalEmail,
-        durationMs: payload.durationMs,
-        // serve always registers the control-plane vault at boot, so name it
-        // explicitly (as the local CLI path does). Leaving it unset makes
-        // resolveVaultName count _token-secrets alongside any user vault and
-        // fail with "Multiple vaults are configured".
-        vaultName: TOKEN_SECRETS_VAULT_NAME,
-      }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          serverTokenCreate(libCtx, deps, {
+            name: payload.name,
+            principalId: payload.principalId,
+            principalEmail: payload.principalEmail,
+            durationMs: payload.durationMs,
+            // serve always registers the control-plane vault at boot, so name
+            // it explicitly (as the local CLI path does). Leaving it unset
+            // makes resolveVaultName count _token-secrets alongside any user
+            // vault and fail with "Multiple vaults are configured".
+            vaultName: TOKEN_SECRETS_VAULT_NAME,
+          }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "access.token.mint",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "access_token_mint_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "access.token.mint",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "access_token_mint_failed", message);
+      }
+    },
+  );
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   extractDependencies,
   extractFileContentsDependencies,
   extractModelRefs,
+  extractOwnNamespaceDataModelNames,
   extractResourceDependencies,
   hasDataFunctionDependency,
   hasExecutionDependency,
@@ -660,4 +661,18 @@ Deno.test("dependency extractors: a non-literal argument to literal() is still a
   assertEquals(extractModelRefs(cel), ["a"]);
   assertEquals(hasStepOutputDependency(cel), true);
   assertEquals(requiresModelNamespace({ v: `\${{ ${cel} }}` }), true);
+});
+
+Deno.test("extractOwnNamespaceDataModelNames: returns literal unprefixed model names once each", () => {
+  const expr = 'data.listVersions("web", "result") + ' +
+    "[data.version('db', 'x', 1), data.latest(\"web\", \"y\"), " +
+    'data.findBySpec("cache", "z")]';
+  assertEquals(extractOwnNamespaceDataModelNames(expr), ["web", "db", "cache"]);
+});
+
+Deno.test("extractOwnNamespaceDataModelNames: skips namespaced, wildcard, dynamic and literal() names", () => {
+  const expr = 'data.latest("team:web", "a") + data.latest("*:db", "b") + ' +
+    'data.listVersions(inputs.model, "c") + data.query(\'modelName == "q"\') + ' +
+    'literal(\'{{data.latest("lit", "d")}}\')';
+  assertEquals(extractOwnNamespaceDataModelNames(expr), []);
 });

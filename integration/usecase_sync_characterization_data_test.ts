@@ -70,6 +70,14 @@ async function saveVersions(
 const ROWS: AnyRow[] = [
   row({
     name: "data delete",
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: {
+      cli: ["pull", "prepare", "commit", "release"],
+      serve: ["push", "release"],
+    },
     seed: async (repos) => {
       const model = await saveModel(repos.serveRepo, "m1");
       await saveData(repos.serveRepo, model, "state");
@@ -84,6 +92,14 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data rename",
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: {
+      cli: ["pull", "prepare", "commit", "release"],
+      serve: ["push", "release"],
+    },
     seed: async (repos) => {
       const model = await saveModel(repos.serveRepo, "m1");
       await saveData(repos.serveRepo, model, "state");
@@ -97,7 +113,27 @@ const ROWS: AnyRow[] = [
     }),
   }),
   row({
+    name: "data delete (use case fails)",
+    rootUnit: { cli: true },
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
+    refuses: true,
+    seed: async (repos) => {
+      await saveModel(repos.serveRepo, "m1");
+    },
+    cli: (repos) => ({
+      args: ["data", "delete", "m1", "missing", "--force", ...json(repos)],
+    }),
+    // The failure path of the CLI's root unit (swamp-club#3033); serve's
+    // belongs to swamp-club#3034.
+    serve: null,
+  }),
+  row({
     name: "data gc",
+    // Serve runs the handler in a root unit of work (swamp-club#3034),
+    // pinned to push before the gate exit, as it did before.
+    rootUnit: { serve: true },
+    syncOrder: { serve: ["push", "release"] },
     // collectGarbage removes versions in parallel batches, so it marks them
     // in filesystem order.
     parallelMarks: true,
@@ -110,6 +146,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data prune",
+    // Serve runs the handler in a root unit of work (swamp-club#3034),
+    // pinned to push before the gate exit, as it did before.
+    rootUnit: { serve: true },
+    syncOrder: { serve: ["push", "release"] },
     seed: async (repos) => {
       // Data whose model definition was never saved is orphaned.
       const orphan = Definition.create({ name: "gone", globalArguments: {} });
@@ -127,6 +167,16 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "data delete (use case fails)": {
+    // The use case fails under the model lock, and the lock still pushes once
+    // (with nothing changed) before it releases, as on success.
+    cli: {
+      "ops": ["pull[0]", "prepare[0]", "commit[0]"],
+      "remote": { "added": [], "removed": [], "changed": [] },
+      "error": 'No data named "missing" exists for model m1',
+    },
+    serve: null,
+  },
   "data delete": {
     // The model-lock acquisition pulls and its flush pushes two-phase
     // (prepare/commit); serve neither pulls nor goes two-phase, pushing once

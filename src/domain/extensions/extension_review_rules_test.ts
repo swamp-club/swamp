@@ -26,6 +26,7 @@ import {
   DEFAULT_REVIEW_RULES,
   evaluateReviewReport,
   evaluateReviewRules,
+  type ExtensionContentKind,
   type ExtensionReviewReport,
   isBlockingSeverity,
   parseReviewReport,
@@ -747,4 +748,194 @@ Deno.test("checkReviewRules: validates report when a report request is supplied"
   // Missing report → non-blocking warning (prompt), not a hard error.
   assertEquals(result.passed, true);
   assert(result.warnings.some((w) => w.ruleId === "adversarial-review-report"));
+});
+
+// ── credentials-sensitive-field: whole-identifier matching (swamp-club#3019) ──
+
+function sensitiveFindings(
+  content: string,
+  kind: ExtensionContentKind = "model",
+) {
+  return evaluateReviewRules([source({ kind, content })]).warnings.filter((
+    w,
+  ) => w.ruleId === "credentials-sensitive-field");
+}
+
+Deno.test("credentials-sensitive-field: corpus identifiers that name a reference to a secret do not warn", () => {
+  const vectors: Array<[string, string]> = [
+    ["secretName (kubernetes ingress.ts)", "  secretName: z.string(),"],
+    [
+      "TokenReference required (amplifyuibuilder form.ts)",
+      "      TokenReference: z.string(),",
+    ],
+    [
+      "TokenReference optional (amplifyuibuilder form.ts)",
+      "      TokenReference: z.string().optional(),",
+    ],
+    [
+      "credential_id (digitalocean action_gateway_connection.ts)",
+      "      credential_id: z.string().optional(),",
+    ],
+    [
+      "credentialRef (digitalocean action_gateway_mcp_server.ts)",
+      "  credentialRef: z.string().optional(),",
+    ],
+    [
+      "oauth_token_url (digitalocean action_gateway_mcp_server.ts)",
+      "  oauth_token_url: z.string().optional(),",
+    ],
+    [
+      "s3AccessKeyId (tailscale log_stream.ts)",
+      "  s3AccessKeyId: z.string().optional(),",
+    ],
+    [
+      "nextToken with multi-line describe (bedrock knowledge_base.ts)",
+      `        nextToken: z.string().describe(
+          "Pagination token from a previous retrieve call",
+        ).optional(),`,
+    ],
+    ["pageToken", "  pageToken: z.string().optional(),"],
+    ["nextPageToken", "  nextPageToken: z.string().optional(),"],
+    ["ClientToken (AWS idempotency token)", "  ClientToken: z.string(),"],
+    ["syncToken", "  syncToken: z.string().optional(),"],
+    ["secretVersion (GCP resource name)", "  secretVersion: z.string(),"],
+    ["passwordSecretVersion", "  passwordSecretVersion: z.string(),"],
+    ["tokenEndpoint", "  tokenEndpoint: z.string(),"],
+    ["gcpSecretManagerSecretUri", "  gcpSecretManagerSecretUri: z.string(),"],
+    ["acsTokenLink", "  acsTokenLink: z.string(),"],
+    ["accessKeyId", "  accessKeyId: z.string().optional(),"],
+    ["APIKeyId (consecutive capitals)", "  APIKeyId: z.string(),"],
+    ["HANASecretName (consecutive capitals)", "  HANASecretName: z.string(),"],
+    ["SecretArn", "  SecretArn: z.string(),"],
+    ["secretType", "  secretType: z.string(),"],
+    ["credential_kind", "  credential_kind: z.string().optional(),"],
+    [
+      "credentialRefSource (digitalocean action_gateway_mcp_server.ts)",
+      "  credentialRefSource: z.string().optional(),",
+    ],
+    ["tokenCount", "  tokenCount: z.string(),"],
+    ["tokenTtl", "  tokenTtl: z.string(),"],
+    ["passwordExpirationTimeout", "  passwordExpirationTimeout: z.string(),"],
+    ["accessTokenExpireTime", "  accessTokenExpireTime: z.string(),"],
+    [
+      "describe text mentioning a token (digitalocean)",
+      '  name: z.string().describe("The secret name, or the token to use"),',
+    ],
+  ];
+  for (const [name, content] of vectors) {
+    assertEquals(
+      sensitiveFindings(content).length,
+      0,
+      `${name} should not warn`,
+    );
+  }
+});
+
+Deno.test("credentials-sensitive-field: identifiers that name a secret value still warn", () => {
+  const vectors: Array<[string, string]> = [
+    ["apiKey", "  apiKey: z.string(),"],
+    [
+      "api_key (digitalocean app_platform.ts)",
+      "  api_key: z.string().optional(),",
+    ],
+    ["quoted dashed key", '  "api-key": z.string(),'],
+    [
+      "password (digitalocean app_platform.ts)",
+      "  password: z.string().optional(),",
+    ],
+    ["token (digitalocean app_platform.ts)", "  token: z.string().optional(),"],
+    ["secret", "  secret: z.string(),"],
+    ["secrets (plural)", "  secrets: z.string(),"],
+    ["credentials (plural)", "  credentials: z.string(),"],
+    ["clientSecret", "  clientSecret: z.string(),"],
+    ["ClientSecret (capitalised)", "  ClientSecret: z.string(),"],
+    [
+      "oauth2ClientSecret (digit boundary)",
+      "  oauth2ClientSecret: z.string(),",
+    ],
+    ["privateKey", "  privateKey: z.string(),"],
+    ["private_key", "  private_key: z.string().optional(),"],
+    ["secretAccessKey", "  secretAccessKey: z.string(),"],
+    [
+      "registry_credentials (digitalocean app_platform.ts)",
+      "  registry_credentials: z.string().optional(),",
+    ],
+    ["credentialsJson", "  credentialsJson: z.string(),"],
+    ["MasterUserPassword", "  MasterUserPassword: z.string(),"],
+    ["accessToken", "  accessToken: z.string(),"],
+    [
+      "secretAccessKeySecret (stem-terminal)",
+      "  secretAccessKeySecret: z.string(),",
+    ],
+    ["clientsecret (joined lowercase)", "  clientsecret: z.string(),"],
+    ["dbpassword (joined lowercase)", "  dbpassword: z.string(),"],
+    ["authtoken (joined lowercase)", "  authtoken: z.string().optional(),"],
+    ["quoted key with a dot", '  "auth.token": z.string(),'],
+    ["quoted key with a space", '  "api token": z.string(),'],
+    ["leading underscore", "  _token: z.string(),"],
+    ["leading dollar", "  $token: z.string(),"],
+    ["const declaration", "const apiKey = z.string();"],
+    ["exported const declaration", "export const apiKey = z.string();"],
+    ["class field", "  private apiKey = z.string();"],
+    ["static readonly class field", "  static readonly token = z.string();"],
+    ["typed declaration", "const apiKey: z.ZodString = z.string();"],
+    [
+      "describe text does not mark sensitive",
+      '  apiKey: z.string().describe("sensitive"),',
+    ],
+    [
+      "sensitive: false does not mark sensitive",
+      "  apiKey: z.string().meta({ sensitive: false }),",
+    ],
+  ];
+  for (const [name, content] of vectors) {
+    assertEquals(sensitiveFindings(content).length, 1, `${name} should warn`);
+  }
+});
+
+Deno.test("credentials-sensitive-field: a line with a reference key and a secret key warns once, for the secret key", () => {
+  const findings = sensitiveFindings(
+    "  secretName: z.string(), apiKey: z.string(),",
+  );
+  assertEquals(findings.length, 1);
+  assert(findings[0].message.includes("apiKey"));
+  // The same reference key beside another reference key is silent, so the
+  // finding above comes from apiKey, not secretName.
+  assertEquals(
+    sensitiveFindings("  secretName: z.string(), tokenCount: z.string(),")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: every .meta({ sensitive: true }) form suppresses", () => {
+  const vectors: Array<[string, string]> = [
+    ["spaced", "  apiKey: z.string().meta({ sensitive: true }),"],
+    ["compact", "  apiKey: z.string().meta({sensitive:true}),"],
+    [
+      "sensitive after another key",
+      '  apiKey: z.string().meta({ description: "x", sensitive: true }),',
+    ],
+    [
+      "sensitive before another key on a continuation line",
+      `  apiKey: z.string()
+    .meta({ sensitive: true, description: "x" }),`,
+    ],
+    [
+      "nested object before the key",
+      "  apiKey: z.string().meta({ examples: { a: 1 }, sensitive: true }),",
+    ],
+    ["quoted key", '  apiKey: z.string().meta({ "sensitive": true }),'],
+    [
+      "registry form",
+      "  apiKey: z.string().register(z.globalRegistry, { sensitive: true }),",
+    ],
+  ];
+  for (const [name, content] of vectors) {
+    assertEquals(
+      sensitiveFindings(content).length,
+      0,
+      `${name} should not warn`,
+    );
+  }
 });

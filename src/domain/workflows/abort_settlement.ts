@@ -36,9 +36,10 @@ import {
 
 /**
  * Settles the work a run's abort or cancellation left unfinished, the same
- * way whether the abort fired during a live walk (ExecutionService) or a
+ * way whether the abort fired during a live walk (ExecutionService), a
  * cancel reached a stored run that no process drives (workflow cancel,
- * supersede, serve's suspended-run cancel, the stranded-run backstops).
+ * supersede, serve's suspended-run cancel, the stranded-run backstops), or a
+ * rejected approval gate failed a suspended run (workflow reject).
  */
 
 const sortService = new TopologicalSortService();
@@ -229,8 +230,28 @@ export function cancelAndSettle(
 }
 
 /**
- * Settles every job and step a cancellation left unfinished, as the live
- * abort does for the work it interrupts:
+ * Settles the run's unfinished work, then completes it: failed, since the
+ * rejected approval gate that ends it has failed. No-op unless the run
+ * {@link WorkflowRun.isCancellable}. A reject goes through here, so a run it
+ * fails never keeps a job `running` or a step `waiting_approval`
+ * (swamp-club#2905).
+ *
+ * The caller fails the rejected gate and leaves its job open: the settlement
+ * ends that job from its failed gate and settles the gate's dependents. A
+ * job already failed is not settled, so its pending steps would stay.
+ */
+export function completeAndSettle(
+  run: WorkflowRun,
+  workflow: Workflow | undefined,
+): void {
+  if (!run.isCancellable) return;
+  settleCancelledRun(run, workflow);
+  run.complete();
+}
+
+/**
+ * Settles every job and step a cancellation, or a rejected approval gate,
+ * left unfinished, as the live abort does for the work it interrupts:
  *
  * - a step waiting on a nested workflow's run is detached from it first
  *   ({@link WorkflowRun.detachNestedWaits}), so the child stays suspended on

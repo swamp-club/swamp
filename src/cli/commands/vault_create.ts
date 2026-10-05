@@ -33,7 +33,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -152,7 +152,7 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       return;
     }
 
-    const { repoDir, syncService, datastoreConfig } =
+    const { repoDir, repoContext, syncService, datastoreConfig } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
@@ -225,21 +225,27 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     }
 
     const renderer = createVaultCreateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      vaultCreate(ctx, deps, {
-        vaultType,
-        name: vaultName,
-        config,
-        repoDir,
-        auditReads: options.auditReads,
-        // A local user owns this host, so the vault may name its own key
-        // source; over --server the server chooses it (swamp-club#2690).
-        trustKeySource: true,
-      }),
-      renderer.handlers(),
+    await runManagedConfigMutation(
+      repoContext,
+      syncService,
+      datastoreConfig,
+      marker,
+      "vault create",
+      () =>
+        consumeStream(
+          vaultCreate(ctx, deps, {
+            vaultType,
+            name: vaultName,
+            config,
+            repoDir,
+            auditReads: options.auditReads,
+            // A local user owns this host, so the vault may name its own key
+            // source; over --server the server chooses it (swamp-club#2690).
+            trustKeySource: true,
+          }),
+          renderer.handlers(),
+        ),
     );
-
-    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
     cliCtx.logger.debug("Vault create command completed");
   },

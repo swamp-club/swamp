@@ -37,7 +37,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -163,7 +163,7 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     return;
   }
 
-  const { repoDir, syncService, datastoreConfig, vaultsDir } =
+  const { repoDir, repoContext, syncService, datastoreConfig, vaultsDir } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -399,18 +399,24 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
 
   // Phase 3: Execute migration
   const renderer = createVaultMigrateRenderer(cliCtx.outputMode);
-  await consumeStream(
-    vaultMigrate(ctx, deps, {
-      vaultName,
-      targetType: toType,
-      targetConfig,
-      repoDir,
-      trustKeySource: true,
-    }),
-    renderer.handlers(),
+  await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    datastoreConfig,
+    marker,
+    "vault migrate",
+    () =>
+      consumeStream(
+        vaultMigrate(ctx, deps, {
+          vaultName,
+          targetType: toType,
+          targetConfig,
+          repoDir,
+          trustKeySource: true,
+        }),
+        renderer.handlers(),
+      ),
   );
-
-  await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
   cliCtx.logger.debug("Vault migrate command completed");
 });

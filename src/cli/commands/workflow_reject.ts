@@ -50,7 +50,11 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowRejectResponse } from "../../serve/protocol.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -132,13 +136,19 @@ export const workflowRejectCommand = withRemoteOptions(
       return;
     }
 
-    const { repoDir, repoContext, datastoreConfig } =
+    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    // The evaluated snapshots live where ExecutionService wrote them: the
+    // datastore-resolved path, not the repo-dir default.
+    const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+      repoDir,
+      datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+    );
     try {
       const ctx = libSwampContextForRepo(repoContext, {
         logger: cliCtx.logger,
@@ -147,6 +157,7 @@ export const workflowRejectCommand = withRemoteOptions(
         repoContext.workflowRepo,
         repoContext.workflowRunRepo,
         createWorkflowRunClaims(datastoreConfig),
+        (runId) => evaluatedWorkflowRepo.findByRunId(runId),
         runTracker,
       );
 

@@ -402,6 +402,66 @@ Deno.test("LogSummariseRenderer: compact mode shows last error for failed workfl
   }
 });
 
+Deno.test("LogSummariseRenderer: compact mode shows the error of the step the run reports as failed", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createSummariseRenderer("log", "normal");
+    await consumeStream(
+      toStream([
+        {
+          kind: "completed",
+          data: {
+            status: "summary",
+            sinceLabel: "24 hours",
+            summary: makeSummary({
+              workflows: [
+                {
+                  workflowName: "deploy-all",
+                  total: 1,
+                  succeeded: 0,
+                  failed: 1,
+                  runs: [
+                    {
+                      id: "wf-run-1",
+                      startedAt: "2026-01-01T11:00:00Z",
+                      status: "failed",
+                      firstFailedStep: "gate",
+                      steps: [
+                        {
+                          jobName: "a-side",
+                          stepName: "gate2",
+                          status: "failed",
+                          error: "cancelled",
+                        },
+                        {
+                          jobName: "main",
+                          stepName: "gate",
+                          status: "failed",
+                          error: "not today",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertEquals(combined.includes('last error: "not today"'), true);
+    assertEquals(combined.includes('last error: "cancelled"'), false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("LogSummariseRenderer: compact mode no error line when all methods succeed", async () => {
   const logs: string[] = [];
   const originalLog = console.log;

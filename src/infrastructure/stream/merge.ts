@@ -28,7 +28,9 @@ export interface MergeOptions {
    * instead of closing the merged stream at once. A stream that has not
    * started yet still never starts, and an error a stream throws after the
    * abort is swallowed without cutting its siblings short. A single stream
-   * already behaves this way.
+   * already runs to its end, but it is passed through whatever the signal, so
+   * it starts even when the signal has already aborted: a caller that must
+   * not start it then guards the stream itself.
    */
   finishStartedOnAbort?: boolean;
 }

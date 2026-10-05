@@ -20,6 +20,7 @@
 import { join } from "@std/path";
 import type {
   AutoupdateScheduler,
+  SchedulerRefreshResult,
   ScheduleStatus,
 } from "../../domain/update/autoupdate_scheduler.ts";
 import type { LaunchdMode } from "./launchd_scheduler.ts";
@@ -171,6 +172,11 @@ export class SystemdScheduler implements AutoupdateScheduler {
 
     await Deno.remove(timerPath(this.mode)).catch(() => {});
     await Deno.remove(servicePath(this.mode)).catch(() => {});
+  }
+
+  /** systemd starts the binary at its path as-is; nothing to re-register. */
+  refresh(): Promise<SchedulerRefreshResult> {
+    return Promise.resolve("not_installed");
   }
 
   async status(): Promise<ScheduleStatus> {

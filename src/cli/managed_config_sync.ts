@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, join, relative } from "@std/path";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import {
   isCustomDatastoreConfig,
@@ -30,11 +29,12 @@ import {
   getRegisteredLockKeys,
   GLOBAL_LOCK_KEY,
   registerDatastoreSyncNamed,
-  runBoundedSync,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { RootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
@@ -50,6 +50,7 @@ import {
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
+import { runCommandInRootUnit } from "./command_root_unit.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
@@ -92,9 +93,10 @@ function toUnpublishedError(error: unknown): ManagedConfigUnpublishedError {
 
 /**
  * Push config-tier changes to the remote datastore when managedConfig is
- * active. Used by CLI commands that already hold a syncService and
- * datastoreConfig from requireInitializedRepoUnlocked. A failed push throws
- * {@link ManagedConfigUnpublishedError}; the local write is kept.
+ * active: a bare mark, then a push. A failed mark or push throws
+ * {@link ManagedConfigUnpublishedError}; the local write is kept. Commands
+ * publish through {@link runManagedConfigMutation}, which makes the same mark
+ * and push through a root unit of work (swamp-club#3033).
  */
 export async function pushManagedConfigChanges(
   syncService: DatastoreSyncService | undefined,
@@ -116,138 +118,93 @@ export async function pushManagedConfigChanges(
 }
 
 /**
- * Push config-tier changes for commands that use requireRepoMarker (no
- * pre-resolved syncService). Resolves the datastore on demand after the
- * mutation. Safe to call when managedConfig is true because the datastore
- * extension must already be installed (config migrate requires a working
- * datastore). A failure to resolve the datastore (e.g. the datastore
- * extension was just updated) leaves the change unpublished like a failed
- * push, so it throws {@link ManagedConfigUnpublishedError} too.
+ * The mark half of {@link pushManagedConfigChanges} for a command that runs
+ * in a root unit of work (swamp-club#3033): stages the same bare mark
+ * through the root, which forwards it as the identical `markDirty()` call.
+ * A failed mark throws {@link ManagedConfigUnpublishedError}.
  */
-export async function pushManagedConfigChangesDeferred(
-  repoDir: string,
-  marker: RepoMarkerData | null,
+export async function stageManagedConfigChanges(
+  root: RootUnitOfWork,
+  reason: string,
 ): Promise<void> {
-  if (marker?.datastore?.managedConfig !== true) return;
-
   try {
-    const { syncService, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
-        repoDir,
-        outputMode: "log",
-      });
-    await pushManagedConfigChanges(syncService, datastoreConfig, marker);
+    await root.stage({ kind: "bulk", reason });
   } catch (error) {
     throw toUnpublishedError(error);
   }
 }
 
 /**
- * Push exactly the given config-tier files to the remote datastore when
- * managedConfig is active. Extension writes use this instead of
- * {@link pushManagedConfigChanges}: each path is marked on its own
- * (datastore sync rule 1), so the push uploads those files rather than
- * walking the whole cache, which never detects deletions (rule 3). An
- * extension that keeps its dirty set in memory still full-walks on a fresh
- * process (rule 4); the files are uploaded either way.
- *
- * Paths outside the namespace's cache tree are dropped, never forwarded: the
- * mark hook would map an in-repo `.swamp/config` path to an un-namespaced key.
- * The push is bounded by the datastore's sync timeout. A failed or timed-out
- * push throws {@link ManagedConfigUnpublishedError}.
+ * The push half of {@link pushManagedConfigChanges}: the root's push. A
+ * failed push throws {@link ManagedConfigUnpublishedError}; the local write
+ * is kept.
  */
-export async function pushManagedConfigPaths(
+export async function publishManagedConfigChanges(
+  syncService: DatastoreSyncService,
+  datastoreConfig: DatastoreConfig,
+): Promise<void> {
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
+  try {
+    await syncService.pushChanged({ namespace });
+  } catch (error) {
+    throw toUnpublishedError(error);
+  }
+}
+
+/**
+ * Runs a config-tier mutation in a root unit of work and publishes it as
+ * {@link pushManagedConfigChanges} does: when managedConfig is active and
+ * `mutate` completed, {@link stageManagedConfigChanges} stages the bare mark
+ * and the root's push is {@link publishManagedConfigChanges}. When `mutate`
+ * fails nothing is marked or pushed, as before.
+ */
+export async function runManagedConfigMutation<T>(
+  repoContext: Pick<RepositoryContext, "markDirty">,
   syncService: DatastoreSyncService | undefined,
   datastoreConfig: DatastoreConfig,
   marker: RepoMarkerData | null,
-  repoDir: string,
-  absPaths: readonly string[],
-): Promise<void> {
-  if (!syncService) return;
-  if (marker?.datastore?.managedConfig !== true) return;
-  if (!isCustomDatastoreConfig(datastoreConfig)) return;
-  const cachePath = datastoreConfig.cachePath;
-  if (!cachePath) return;
-
-  const namespace = datastoreConfig.namespace;
-  const tierRoot = namespace ? join(cachePath, namespace) : cachePath;
-  const inTier = (absPath: string) => {
-    const rel = relative(tierRoot, absPath);
-    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-  };
-  const paths = absPaths.filter(inTier);
-  if (paths.length === 0) return;
-
-  const markDirty = buildMarkDirtyHook(syncService, cachePath, repoDir);
-  try {
-    for (const path of paths) {
-      await markDirty(path);
-    }
-    await runBoundedSync(
-      "managed config",
-      "push",
-      resolveSyncTimeoutMs(datastoreConfig),
-      (signal) => syncService.pushChanged({ namespace, signal }),
-    );
-  } catch (error) {
-    throw toUnpublishedError(error);
-  }
+  reason: string,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const publishes = syncService !== undefined &&
+    marker?.datastore?.managedConfig === true;
+  return await runCommandInRootUnit(
+    repoContext,
+    {
+      push: publishes
+        ? () => publishManagedConfigChanges(syncService, datastoreConfig)
+        : undefined,
+      pushWhen: "completed",
+    },
+    async (root) => {
+      const value = await mutate();
+      if (publishes) await stageManagedConfigChanges(root, reason);
+      return value;
+    },
+  );
 }
 
 /**
- * {@link pushManagedConfigPaths} for commands that use requireRepoMarker (no
- * pre-resolved syncService): resolves the datastore after the mutation, as
- * {@link pushManagedConfigChangesDeferred} does, and throws
- * {@link ManagedConfigUnpublishedError} when either step fails.
- */
-export async function pushManagedConfigPathsDeferred(
-  repoDir: string,
-  marker: RepoMarkerData | null,
-  absPaths: readonly string[],
-): Promise<void> {
-  if (marker?.datastore?.managedConfig !== true) return;
-  if (absPaths.length === 0) return;
-
-  try {
-    const { syncService, datastoreConfig, repoDir: resolvedRepoDir } =
-      await requireInitializedRepoUnlocked({
-        repoDir,
-        outputMode: "log",
-      });
-    await pushManagedConfigPaths(
-      syncService,
-      datastoreConfig,
-      marker,
-      resolvedRepoDir,
-      absPaths,
-    );
-  } catch (error) {
-    throw toUnpublishedError(error);
-  }
-}
-
-/**
- * Flushes per-model locks after a command that may have changed the config
- * tier; the flush is what pushes the change. When the mutation completed
- * under managedConfig, a failed flush throws
+ * Decides what a failed push or lock release means after a command that may
+ * have changed the config tier, run as cleanup of the command's root unit of
+ * work (swamp-club#3033). After a completed mutation under managedConfig the
+ * push is what publishes the change, so it throws
  * {@link ManagedConfigUnpublishedError}. Otherwise (the mutation never ran,
- * or an earlier error is already propagating) the failure only goes to
+ * or an earlier error is already propagating) the error goes to
  * `onCleanupError`, so it cannot replace that error.
  */
-export async function flushAfterManagedConfigMutation(
-  flush: () => Promise<void>,
+export function reportManagedConfigCleanupError(
+  error: unknown,
   mutated: boolean,
   marker: RepoMarkerData | null,
   onCleanupError: (error: unknown) => void,
-): Promise<void> {
-  try {
-    await flush();
-  } catch (error) {
-    if (mutated && marker?.datastore?.managedConfig === true) {
-      throw toUnpublishedError(error);
-    }
-    onCleanupError(error);
+): void {
+  if (mutated && marker?.datastore?.managedConfig === true) {
+    throw toUnpublishedError(error);
   }
+  onCleanupError(error);
 }
 
 /**

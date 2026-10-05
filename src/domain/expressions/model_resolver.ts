@@ -31,6 +31,10 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
+import {
+  mergeModelData,
+  modelIdentityPredicate,
+} from "../data/data_access_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
 import { localContentPath } from "../data/data_record_mapper.ts";
 import {
@@ -44,6 +48,7 @@ import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
 import { freeRoots } from "./cel_grammar.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import { extractOwnNamespaceDataModelNames } from "./dependency_extractor.ts";
 import {
   type VaultRefreshOptions,
   VaultService,
@@ -170,12 +175,19 @@ function checkWildcardAmbiguity(
  * to use the same data name.
  *
  * Among duplicates, the most recently created record is kept.
+ *
+ * @param modelName - Treat every record as this model's, whatever its tag
+ *   says: records read by definition identity may carry an earlier name.
  */
-function deduplicateByName(records: DataRecord[]): DataRecord[] {
+function deduplicateByName(
+  records: DataRecord[],
+  modelName?: string,
+): DataRecord[] {
   const byKey = new Map<string, DataRecord>();
   for (const record of records) {
-    const key = record.modelName
-      ? `${record.modelName}\0${record.name}\0${record.stepName}`
+    const name = modelName ?? record.modelName;
+    const key = name
+      ? `${name}\0${record.name}\0${record.stepName}`
       : record.id;
     const existing = byKey.get(key);
     if (!existing || record.createdAt > existing.createdAt) {
@@ -306,6 +318,14 @@ export interface DataNamespace {
    * from disk so there is no cache to invalidate.
    */
   invalidateLatest?(modelName: string, dataName: string): void;
+
+  /**
+   * Resolves the definitions behind the own-namespace model names an
+   * expression passes to the data accessors, so the synchronous
+   * `listVersions()` can read by definition identity too. Awaited by async
+   * evaluation before the expression runs.
+   */
+  resolveModelNames?(expression: string): Promise<void>;
 }
 
 /**
@@ -545,6 +565,17 @@ export class ModelResolver {
   private readonly dataQueryService?: DataQueryService;
   private readonly vaultRefreshOptions?: VaultRefreshOptions;
   private vaultServiceInitialized = false;
+  /**
+   * Light-context definition lookups by model name, misses included, shared
+   * by every light context this resolver builds — one per command or run —
+   * so a name is looked up once rather than once per step. A stale entry only
+   * falls back to (or adds to) the name-tag read.
+   */
+  private readonly identityLookups = new Map<string, ModelCoordinates[]>();
+  private readonly pendingIdentityLookups = new Map<
+    string,
+    Promise<ModelCoordinates[]>
+  >();
 
   constructor(
     private readonly definitionRepo: YamlDefinitionRepository,
@@ -846,6 +877,7 @@ export class ModelResolver {
       ownNamespace,
       new Map(),
       sensitiveValues,
+      true,
     );
     context.workers = this.buildWorkersNamespace();
     attachSensitiveValues(context, sensitiveValues);
@@ -922,11 +954,89 @@ export class ModelResolver {
     };
   }
 
+  /**
+   * The coordinates to read a model's data by, from the primary definition
+   * of that name — the definitions the full context's coordinates map is
+   * built from, so both contexts read the same model.
+   */
+  private async lookUpModelCoordinates(
+    modelName: string,
+  ): Promise<ModelCoordinates[]> {
+    try {
+      const found = await this.definitionRepo.findByNameGlobal(modelName);
+      if (
+        !found || isControlPlaneModelType(found.type.normalized) ||
+        await this.definitionRepo.isAutoDefinition(
+          found.definition,
+          found.type,
+        )
+      ) {
+        return [];
+      }
+      return [{ modelType: found.type, modelId: found.definition.id }];
+    } catch (error) {
+      // The read by name tag still runs, as it did before identity reads.
+      getLogger(["swamp", "expressions"])
+        .warn`Could not look up the definition of ${modelName}; reading its data by name tag only: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      return [];
+    }
+  }
+
+  /**
+   * @param lookUpIdentities - Look up the definition behind a name absent
+   *   from `coordsMap`. The full context passes every definition's
+   *   coordinates, so a name missing from it has no definition; the light
+   *   context passes none.
+   */
   private buildDataNamespace(
     ownNamespace: Namespace,
     coordsMap: ModelCoordinatesMap,
     sensitiveValues: RunSensitiveValues,
+    lookUpIdentities = false,
   ): DataNamespace {
+    // The modelName tag records the name at write time, so an own-namespace
+    // read also selects the definition's data by type and id, and data
+    // written before the instance was renamed is still found
+    // (swamp-club#3029).
+    const lookedUp = this.identityLookups;
+    const lookUps = this.pendingIdentityLookups;
+    const knownIdentities = (
+      modelName: string,
+    ): ModelCoordinates[] | undefined =>
+      coordsMap.get(modelName) ?? lookedUp.get(modelName) ??
+        (lookUpIdentities ? undefined : []);
+    const resolveIdentities = (
+      modelName: string,
+    ): Promise<ModelCoordinates[]> => {
+      const known = knownIdentities(modelName);
+      if (known) return Promise.resolve(known);
+      let pending = lookUps.get(modelName);
+      if (!pending) {
+        pending = this.lookUpModelCoordinates(modelName).then((coords) => {
+          lookedUp.set(modelName, coords);
+          return coords;
+        });
+        lookUps.set(modelName, pending);
+      }
+      return pending;
+    };
+    const identityPredicates = (
+      coords: ModelCoordinates[],
+      filter: string,
+    ): string[] =>
+      coords
+        .filter(({ modelType }) =>
+          !isControlPlaneModelType(modelType.normalized)
+        )
+        .map(({ modelType, modelId }) =>
+          modelIdentityPredicate({
+            modelType: modelType.normalized,
+            modelId,
+          }) + filter + ` && ns == "${escapeCelString(ownNamespace)}"`
+        );
+
     return {
       version: async (
         rawModelName: string,
@@ -947,6 +1057,30 @@ export class ModelResolver {
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawModelName);
         }
+        if (
+          results.length === 0 &&
+          parseNamespacedModelName(rawModelName).namespace === undefined
+        ) {
+          const coords = await resolveIdentities(ns.modelName);
+          for (
+            const predicate of identityPredicates(
+              coords,
+              ` && name == "${escapeCelString(dataName)}"` +
+                ` && version == ${version}`,
+            )
+          ) {
+            const [found] = await this.dataQueryService.query(predicate, {
+              limit: 1,
+              loadAttributes: true,
+              excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
+              includeContentPath: true,
+            }) as DataRecord[];
+            if (found) {
+              results.push(found);
+              break;
+            }
+          }
+        }
         if (results.length === 0) return null;
         await this.materializePath(results[0]);
         return results[0];
@@ -959,7 +1093,10 @@ export class ModelResolver {
         const ns = routeNamespace(rawModelName, ownNamespace);
 
         if (!ns.isWildcard) {
-          const coords = coordsMap.get(ns.modelName);
+          const coords =
+            parseNamespacedModelName(rawModelName).namespace === undefined
+              ? await resolveIdentities(ns.modelName)
+              : coordsMap.get(ns.modelName);
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
               if (isControlPlaneModelType(modelType.normalized)) continue;
@@ -1073,6 +1210,32 @@ export class ModelResolver {
           checkWildcardAmbiguity(records, rawModelName);
           return records.map((r) => r.version).sort((a, b) => a - b);
         }
+        const coords =
+          parseNamespacedModelName(rawModelName).namespace === undefined
+            ? knownIdentities(ns.modelName)
+            : undefined;
+        if (coords && coords.length > 0) {
+          // Full records, not `select: "version"`: mergeModelData needs each
+          // record's identity to drop the ones both reads return. Versions
+          // under an earlier id that shares the name are still listed
+          // alongside, as the name-tag read alone lists them.
+          const queryService = this.dataQueryService;
+          const predicates = [
+            predicate,
+            ...identityPredicates(
+              coords,
+              ` && name == "${escapeCelString(dataName)}" && version >= 0`,
+            ),
+          ];
+          const records = mergeModelData(
+            ...predicates.map((p) =>
+              queryService.querySync(p, {
+                excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
+              }) as DataRecord[]
+            ),
+          );
+          return records.map((r) => r.version).sort((a, b) => a - b);
+        }
         const results = this.dataQueryService.querySync(predicate, {
           select: "version",
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
@@ -1105,14 +1268,41 @@ export class ModelResolver {
         const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
           `&& specName == "${escapeCelString(specName)}"` +
           ns.namespacePredicate;
-        const results = await this.dataQueryService.query(predicate, {
+        const options = {
           loadAttributes: true,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
           latestPerStep: true,
-        }) as DataRecord[];
+        };
+        let results = await this.dataQueryService.query(
+          predicate,
+          options,
+        ) as DataRecord[];
         if (ns.isWildcard) {
           checkWildcardAmbiguity(results, rawSpecModelName);
+        }
+        if (
+          parseNamespacedModelName(rawSpecModelName).namespace === undefined
+        ) {
+          const coords = await resolveIdentities(ns.modelName);
+          const identityReads = identityPredicates(
+            coords,
+            ` && specName == "${escapeCelString(specName)}"`,
+          );
+          for (const identityPredicate of identityReads) {
+            results = mergeModelData(
+              results,
+              await this.dataQueryService.query(
+                identityPredicate,
+                options,
+              ) as DataRecord[],
+            );
+          }
+          if (identityReads.length > 0) {
+            // Every record now belongs to this name, by tag or by identity,
+            // whatever name its tag recorded.
+            return dropMissingPaths(deduplicateByName(results, ns.modelName));
+          }
         }
         return dropMissingPaths(deduplicateByName(results));
       },
@@ -1152,6 +1342,11 @@ export class ModelResolver {
       },
       invalidateLatest: (_modelName: string, _dataName: string): void => {
         // No-op — latest() always reads from disk; no cache to invalidate.
+      },
+      resolveModelNames: async (expression: string): Promise<void> => {
+        for (const name of extractOwnNamespaceDataModelNames(expression)) {
+          await resolveIdentities(name);
+        }
       },
     };
   }

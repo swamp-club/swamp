@@ -32,7 +32,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { pushManagedConfigChanges } from "../managed_config_sync.ts";
+import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -80,7 +80,7 @@ export const workflowCreateCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, syncService, datastoreConfig } =
+  const { repoDir, repoContext, syncService, datastoreConfig } =
     await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -92,12 +92,18 @@ export const workflowCreateCommand = withRemoteOptions(
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createWorkflowCreateDeps(repoDir);
   const renderer = createWorkflowCreateRenderer(cliCtx.outputMode);
-  await consumeStream(
-    workflowCreate(ctx, deps, { name }),
-    renderer.handlers(),
+  await runManagedConfigMutation(
+    repoContext,
+    syncService,
+    datastoreConfig,
+    marker,
+    "workflow create",
+    () =>
+      consumeStream(
+        workflowCreate(ctx, deps, { name }),
+        renderer.handlers(),
+      ),
   );
-
-  await pushManagedConfigChanges(syncService, datastoreConfig, marker);
 
   cliCtx.logger.debug("Workflow create command completed");
 });

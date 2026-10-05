@@ -27,10 +27,12 @@ import {
 import {
   acquireModelLocks,
   libSwampContextForRepo,
+  type ModelLockResult,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -132,7 +134,7 @@ async function runGroupMethod(
     repoContext.definitionRepo,
     instanceName,
   );
-  let flushModelLocks: (() => Promise<void>) | null = null;
+  let modelLocks: ModelLockResult | undefined;
   if (preResult) {
     const lockResult = await acquireModelLocks(
       datastoreConfig,
@@ -147,77 +149,100 @@ async function runGroupMethod(
       repoContext.catalogStore,
     );
     if (lockResult.synced) repoContext.catalogStore.invalidate();
-    flushModelLocks = lockResult.flush;
+    modelLocks = lockResult;
   }
 
-  try {
-    const renderer = createModelMethodRunRenderer(ctx.outputMode, {
-      modelName: instanceName,
-      methodName,
-      quiet: ctx.verbosity === "quiet",
-    });
-
-    const typeArg = isDirectExecution
-      ? `@${GROUP_MODEL_TYPE.normalized}`
-      : undefined;
-    const definitionName = isDirectExecution ? instanceName : undefined;
-
-    await consumeStream(
-      modelMethodRun(libSwampContextForRepo(repoContext), deps, {
-        modelIdOrName: isDirectExecution
-          ? `@${GROUP_MODEL_TYPE.normalized}`
-          : instanceName,
-        methodName,
-        inputs,
-        lastEvaluated: false,
-        typeArg,
-        definitionName,
-        skipAllReports: true,
-        swampSha: GIT_SHA || undefined,
-      }),
-      renderer.handlers(),
-    );
-
-    if (renderer.runFailed()) {
-      Deno.exitCode = 1;
-    }
-  } catch (error) {
-    if (error instanceof UserError) throw error;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new UserError(`Group operation failed: ${message}`);
-  } finally {
-    if (flushModelLocks) {
-      try {
-        await flushModelLocks();
-      } catch (releaseError) {
+  // Without a model lock the command marks the whole cache and pushes it;
+  // a failed mark is reported like a failed push, and skips the push.
+  let markFailed = false;
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
+  await runCommandInRootUnit(
+    repoContext,
+    {
+      push: modelLocks?.push ??
+        (syncService
+          ? async () => {
+            if (!markFailed) await syncService.pushChanged({ namespace });
+          }
+          : undefined),
+      release: modelLocks?.release,
+      onCleanupError: (cleanupError) => {
         ctx.logger.warn(
-          "Failed to release locks during cleanup: {error}",
+          modelLocks
+            ? "Failed to release locks during cleanup: {error}"
+            : "Failed to push changes to remote datastore: {error}",
           {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
+            error: cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
           },
         );
-      }
-    } else if (syncService) {
-      const namespace = isCustomDatastoreConfig(datastoreConfig)
-        ? datastoreConfig.namespace
-        : undefined;
+      },
+    },
+    async (root) => {
       try {
-        await syncService.markDirty();
-        await syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        ctx.logger.warn(
-          "Failed to push changes to remote datastore: {error}",
-          {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          },
-        );
+        try {
+          const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+            modelName: instanceName,
+            methodName,
+            quiet: ctx.verbosity === "quiet",
+          });
+
+          const typeArg = isDirectExecution
+            ? `@${GROUP_MODEL_TYPE.normalized}`
+            : undefined;
+          const definitionName = isDirectExecution ? instanceName : undefined;
+
+          await consumeStream(
+            modelMethodRun(libSwampContextForRepo(repoContext), deps, {
+              modelIdOrName: isDirectExecution
+                ? `@${GROUP_MODEL_TYPE.normalized}`
+                : instanceName,
+              methodName,
+              inputs,
+              lastEvaluated: false,
+              typeArg,
+              definitionName,
+              skipAllReports: true,
+              swampSha: GIT_SHA || undefined,
+            }),
+            renderer.handlers(),
+          );
+
+          if (renderer.runFailed()) {
+            Deno.exitCode = 1;
+          }
+        } catch (error) {
+          if (error instanceof UserError) throw error;
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          throw new UserError(`Group operation failed: ${message}`);
+        }
+      } finally {
+        if (!modelLocks && syncService) {
+          try {
+            await root.stage({
+              kind: "bulk",
+              reason: `access group ${methodName}`,
+            });
+          } catch (pushError) {
+            markFailed = true;
+            ctx.logger.warn(
+              "Failed to push changes to remote datastore: {error}",
+              {
+                error: pushError instanceof Error
+                  ? pushError.message
+                  : String(pushError),
+              },
+            );
+          }
+        }
       }
-    }
-  }
+    },
+  );
 }
 
 const accessGroupCreateCommand = new Command()

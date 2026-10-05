@@ -32,6 +32,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
@@ -528,80 +529,99 @@ export const workflowResumeCommand = withRemoteOptions(
     const disarmTimeout = timeoutMs !== undefined
       ? abortOnTimeout(abort, timeoutMs)
       : undefined;
+    const syncService = unlocked.syncService;
+    const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
+      ? unlocked.datastoreConfig.namespace
+      : undefined;
+    let finished: boolean;
     try {
-      try {
-        await consumeStream(resumeGenerator(), handlers);
-      } catch (error) {
-        // An error before `started` is a real failure to resume, not the
-        // abort unwinding, so it is reported.
-        if (!abort.signal.aborted || !started) {
-          // A UserError is already user-facing: resume()'s refusals name the
-          // next command to run, and any code it carries must reach the JSON
-          // output and exit code intact. Wrapping it would lose both, so it
-          // passes through unchanged.
-          if (error instanceof UserError) {
-            throw error;
-          }
-          // Anything else is unexpected. Keep the original error, stack
-          // included, at debug level, then report it as one classified line —
-          // the code serve sends for a failed resume.
-          cliCtx.logger.debug`Workflow resume failed: ${error}`;
-          const message = error instanceof Error
-            ? error.message
-            : String(error);
-          throw new UserError(
-            `Workflow resume failed: ${message}`,
-            "workflow_resume_failed",
-          );
-        }
-      }
-      if (abort.signal.aborted) {
-        // resume() saves the cancelled status itself. This covers an unwind
-        // that ended before it could, and runs before the push below.
-        if (started) {
-          try {
-            const cancelled = await cancelStrandedRun(
-              runRepo,
-              runTracker,
-              workflow,
-              run.id,
-              "aborted",
-              (runId) => evaluatedWorkflowRepo.findByRunId(runId),
-            );
-            if (cancelled) {
-              cliCtx.logger
-                .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
+      finished = await runCommandInRootUnit(
+        repoContext,
+        {
+          push: syncService
+            ? async () => {
+              await syncService.pushChanged({ namespace });
             }
-          } catch (cancelErr) {
-            const cancelCommand =
-              `swamp workflow cancel ${workflowName} --run ${run.id}`;
-            cliCtx.logger.warn`Could not mark run ${run.id} as cancelled: ${
-              cancelErr instanceof Error ? cancelErr.message : String(cancelErr)
-            }. Cancel it with ${cancelCommand}`;
+            : undefined,
+          onCleanupError: (pushErr) => {
+            cliCtx.logger
+              .warn`Post-resume push failed; terminal status may be delayed: ${
+              pushErr instanceof Error ? pushErr.message : String(pushErr)
+            }`;
+          },
+        },
+        async () => {
+          try {
+            try {
+              await consumeStream(resumeGenerator(), handlers);
+            } catch (error) {
+              // An error before `started` is a real failure to resume, not the
+              // abort unwinding, so it is reported.
+              if (!abort.signal.aborted || !started) {
+                // A UserError is already user-facing: resume()'s refusals name the
+                // next command to run, and any code it carries must reach the JSON
+                // output and exit code intact. Wrapping it would lose both, so it
+                // passes through unchanged.
+                if (error instanceof UserError) {
+                  throw error;
+                }
+                // Anything else is unexpected. Keep the original error, stack
+                // included, at debug level, then report it as one classified line —
+                // the code serve sends for a failed resume.
+                cliCtx.logger.debug`Workflow resume failed: ${error}`;
+                const message = error instanceof Error
+                  ? error.message
+                  : String(error);
+                throw new UserError(
+                  `Workflow resume failed: ${message}`,
+                  "workflow_resume_failed",
+                );
+              }
+            }
+            if (abort.signal.aborted) {
+              // resume() saves the cancelled status itself. This covers an unwind
+              // that ended before it could, and runs before the push below.
+              if (started) {
+                try {
+                  const cancelled = await cancelStrandedRun(
+                    runRepo,
+                    runTracker,
+                    workflow,
+                    run.id,
+                    "aborted",
+                    (runId) => evaluatedWorkflowRepo.findByRunId(runId),
+                  );
+                  if (cancelled) {
+                    cliCtx.logger
+                      .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
+                  }
+                } catch (cancelErr) {
+                  const cancelCommand =
+                    `swamp workflow cancel ${workflowName} --run ${run.id}`;
+                  cliCtx.logger
+                    .warn`Could not mark run ${run.id} as cancelled: ${
+                    cancelErr instanceof Error
+                      ? cancelErr.message
+                      : String(cancelErr)
+                  }. Cancel it with ${cancelCommand}`;
+                }
+              }
+              Deno.exitCode = 1;
+              return false;
+            }
+            return true;
+          } finally {
+            // Disarm the timeout before the root pushes, so it cannot fire mid-push.
+            disarmTimeout?.();
           }
-        }
-        Deno.exitCode = 1;
-        return;
-      }
+        },
+      );
     } finally {
-      disarmTimeout?.();
-      if (unlocked.syncService) {
-        const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
-          ? unlocked.datastoreConfig.namespace
-          : undefined;
-        try {
-          await unlocked.syncService.pushChanged({ namespace });
-        } catch (pushErr) {
-          cliCtx.logger
-            .warn`Post-resume push failed; terminal status may be delayed: ${
-            pushErr instanceof Error ? pushErr.message : String(pushErr)
-          }`;
-        }
-      }
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();
     }
+    if (!finished) return;
 
     // A nested run that finished leaves its parent waiting: name the next
     // command (swamp-club#2736). Best effort: the resume is already saved.

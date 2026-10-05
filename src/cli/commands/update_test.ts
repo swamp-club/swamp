@@ -200,3 +200,16 @@ Deno.test("createUpdateCheckRenderer: updated is false when already up to date (
   await consumeStream(fakeUpdateStream("up_to_date"), renderer.handlers());
   assertEquals(renderer.updated, false);
 });
+
+Deno.test("createUpdateCheckRenderer: newVersion is the installed version after an update", async () => {
+  for (const mode of ["log", "json"] as const) {
+    const updated = createUpdateCheckRenderer(mode);
+    assertEquals(updated.newVersion, null);
+    await consumeStream(fakeUpdateStream("updated"), updated.handlers());
+    assertEquals(updated.newVersion, "2.0.0");
+
+    const upToDate = createUpdateCheckRenderer(mode);
+    await consumeStream(fakeUpdateStream("up_to_date"), upToDate.handlers());
+    assertEquals(upToDate.newVersion, null);
+  }
+});

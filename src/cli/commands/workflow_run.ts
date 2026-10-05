@@ -37,6 +37,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -338,316 +339,341 @@ export const workflowRunCommand = new Command()
     const exitSuppress = suppressSyncExitOnSignal();
     let shutdownHandle: { dispose(): void } | undefined;
     let currentRunId: string | undefined;
+    const syncService = unlocked.syncService;
+    const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
+      ? unlocked.datastoreConfig.namespace
+      : undefined;
     try {
-      const runRepo = repoContext.workflowRunRepo;
-
-      // Load all extension registries needed for workflow execution in parallel
-      await Promise.all([
-        modelRegistry.ensureLoaded(),
-        vaultTypeRegistry.ensureLoaded(),
-        reportRegistry.ensureLoaded(),
-      ]);
-
-      // Wire the telemetry sink only when the active service is
-      // available — telemetry is disabled outside a swamp repo or under
-      // --no-telemetry, in which case the bridge inside libswamp
-      // becomes a no-op.
-      const telemetryService = getActiveTelemetryService();
-      const telemetrySink: WorkflowTelemetrySink | undefined = telemetryService
-        ? {
-          parentInvocationId: telemetryService.invocationId,
-          recordChildInvocation: telemetryService.recordChildInvocation.bind(
-            telemetryService,
-          ),
-        }
-        : undefined;
-
-      const deps: WorkflowRunDeps = {
-        workflowRepo: repoContext.workflowRepo,
-        runRepo,
-        repoDir,
-        lookupWorkflow: async (repo, idOrName) => {
-          return await repo.findByName(idOrName) ??
-            await repo.findById(createWorkflowId(idOrName));
+      await runCommandInRootUnit(
+        repoContext,
+        {
+          push: syncService
+            ? async () => {
+              await syncService.pushChanged({ namespace });
+            }
+            : undefined,
+          onCleanupError: (pushErr) => {
+            ctx.logger
+              .warn`Post-run push failed; terminal status may be delayed: ${
+              pushErr instanceof Error ? pushErr.message : String(pushErr)
+            }`;
+          },
         },
-        createExecutionService: (
-          wfRepo,
-          rnRepo,
-          dir,
-          catalogStore,
-          ephRepo,
-          ephCatalog,
-        ) => {
-          const directResolver: DirectTypeResolver = async (
-            typeArg,
-            defName,
-            methodName,
-            inputs,
-            globalArgs,
-            authoredExpressions,
-            sensitiveValues,
-          ) => {
-            const typeStr = typeArg;
-            let resolvedType = ModelType.create(typeStr);
-            let modelDef = await resolveModelType(
-              resolvedType,
-              getAutoResolver(),
-            );
+        async () => {
+          try {
+            const runRepo = repoContext.workflowRunRepo;
 
-            // Fallback: @ is the CLI syntax marker but repo-local extensions
-            // register types without @. Try stripping it.
-            if (!modelDef && typeStr.startsWith("@")) {
-              const strippedType = ModelType.create(typeStr.slice(1));
-              const strippedDef = await resolveModelType(
-                strippedType,
-                getAutoResolver(),
-              );
-              if (strippedDef) {
-                resolvedType = strippedType;
-                modelDef = strippedDef;
-              }
-            }
+            // Load all extension registries needed for workflow execution in parallel
+            await Promise.all([
+              modelRegistry.ensureLoaded(),
+              vaultTypeRegistry.ensureLoaded(),
+              reportRegistry.ensureLoaded(),
+            ]);
 
-            if (!modelDef) {
-              throw new Error(
-                `Unknown model type: ${resolvedType.normalized}`,
-              );
-            }
-            resolvedType = modelDef.type;
-            const autoDefRepo = new YamlDefinitionRepository(
-              dir,
-              undefined,
-              repoContext.autoDefinitionsDir,
-              false,
-              repoContext.markDirty,
-            );
-            const result = await resolveOrCreateDefinition(
-              {
-                lookupDefinition: (name) =>
-                  findDefinitionByIdOrName(repoContext.definitionRepo, name),
-                getModelDef: (type) =>
-                  resolveModelType(type, getAutoResolver()),
-                saveDefinition: (type, def) => autoDefRepo.save(type, def),
-                getDefinitionPath: (type, id) =>
-                  autoDefRepo.getPath(type, id as DefinitionId),
+            // Wire the telemetry sink only when the active service is
+            // available — telemetry is disabled outside a swamp repo or under
+            // --no-telemetry, in which case the bridge inside libswamp
+            // becomes a no-op.
+            const telemetryService = getActiveTelemetryService();
+            const telemetrySink: WorkflowTelemetrySink | undefined =
+              telemetryService
+                ? {
+                  parentInvocationId: telemetryService.invocationId,
+                  recordChildInvocation: telemetryService.recordChildInvocation
+                    .bind(
+                      telemetryService,
+                    ),
+                }
+                : undefined;
+
+            const deps: WorkflowRunDeps = {
+              workflowRepo: repoContext.workflowRepo,
+              runRepo,
+              repoDir,
+              lookupWorkflow: async (repo, idOrName) => {
+                return await repo.findByName(idOrName) ??
+                  await repo.findById(createWorkflowId(idOrName));
               },
-              typeStr,
-              defName,
-              methodName,
-              inputs,
-              resolvedType,
-              modelDef,
-              globalArgs,
-              repoContext.autoDefinitionsDir,
-              authoredExpressions,
-              sensitiveValues,
-            );
-            if (!result.ok) throw new Error(result.error.message);
-            return {
-              definition: result.definition,
-              modelType: result.modelType,
-              created: result.created,
-              routedMethodInputs: result.routedInputs.methodArguments,
-              authoredExpressions: result.authoredExpressions,
-            };
-          };
+              createExecutionService: (
+                wfRepo,
+                rnRepo,
+                dir,
+                catalogStore,
+                ephRepo,
+                ephCatalog,
+              ) => {
+                const directResolver: DirectTypeResolver = async (
+                  typeArg,
+                  defName,
+                  methodName,
+                  inputs,
+                  globalArgs,
+                  authoredExpressions,
+                  sensitiveValues,
+                ) => {
+                  const typeStr = typeArg;
+                  let resolvedType = ModelType.create(typeStr);
+                  let modelDef = await resolveModelType(
+                    resolvedType,
+                    getAutoResolver(),
+                  );
 
-          const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
-          return new WorkflowExecutionService(
-            wfRepo,
-            rnRepo,
-            dir,
-            undefined,
-            unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
-            catalogStore,
-            directResolver,
-            repoContext.markDirty,
-            repoContext.unifiedDataRepo.namespace,
-            stepLockHook,
-            tracker,
-            ephRepo,
-            ephCatalog,
-            resolvePulledExtensionsRoot(dir),
-            repoContext.hydrateFile,
-            unlocked.vaultsDir,
-            unlocked.datastoreResolver,
-          );
-        },
-        catalogStore: repoContext.catalogStore,
-        dataRepo: repoContext.unifiedDataRepo,
-        definitionRepo: repoContext.definitionRepo,
-        telemetrySink,
-        supersede: {
-          findSuspendedRuns: async (workflowId) => {
-            const suspended = await runRepo
-              .findSummariesByStatus(workflowId, "suspended");
-            const runs = await Promise.all(
-              suspended.map((s) =>
-                runRepo.findById(workflowId, s.id as WorkflowRunId)
-              ),
-            );
-            return runs.filter((r): r is WorkflowRun => r !== null);
-          },
-          findEvaluatedWorkflow: (runId) =>
-            evaluatedWorkflowRepo.findByRunId(runId),
-          runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
-        },
-      };
+                  // Fallback: @ is the CLI syntax marker but repo-local extensions
+                  // register types without @. Try stripping it.
+                  if (!modelDef && typeStr.startsWith("@")) {
+                    const strippedType = ModelType.create(typeStr.slice(1));
+                    const strippedDef = await resolveModelType(
+                      strippedType,
+                      getAutoResolver(),
+                    );
+                    if (strippedDef) {
+                      resolvedType = strippedType;
+                      modelDef = strippedDef;
+                    }
+                  }
 
-      const timeoutMs = options.timeout
-        ? parseTimerDuration(options.timeout as string)
-        : undefined;
-      shutdownHandle = registerShutdownHandler({
-        handler: () => abort.abort(),
-        forceExitOnRepeat: true,
-      });
-      const baseLibCtx = libSwampContextForRepo(repoContext, {
-        signal: abort.signal,
-      });
-      const libCtx = timeoutMs !== undefined
-        ? baseLibCtx.withTimeout(timeoutMs)
-        : baseLibCtx;
+                  if (!modelDef) {
+                    throw new Error(
+                      `Unknown model type: ${resolvedType.normalized}`,
+                    );
+                  }
+                  resolvedType = modelDef.type;
+                  const autoDefRepo = new YamlDefinitionRepository(
+                    dir,
+                    undefined,
+                    repoContext.autoDefinitionsDir,
+                    false,
+                    repoContext.markDirty,
+                  );
+                  const result = await resolveOrCreateDefinition(
+                    {
+                      lookupDefinition: (name) =>
+                        findDefinitionByIdOrName(
+                          repoContext.definitionRepo,
+                          name,
+                        ),
+                      getModelDef: (type) =>
+                        resolveModelType(type, getAutoResolver()),
+                      saveDefinition: (type, def) =>
+                        autoDefRepo.save(type, def),
+                      getDefinitionPath: (type, id) =>
+                        autoDefRepo.getPath(type, id as DefinitionId),
+                    },
+                    typeStr,
+                    defName,
+                    methodName,
+                    inputs,
+                    resolvedType,
+                    modelDef,
+                    globalArgs,
+                    repoContext.autoDefinitionsDir,
+                    authoredExpressions,
+                    sensitiveValues,
+                  );
+                  if (!result.ok) throw new Error(result.error.message);
+                  return {
+                    definition: result.definition,
+                    modelType: result.modelType,
+                    created: result.created,
+                    routedMethodInputs: result.routedInputs.methodArguments,
+                    authoredExpressions: result.authoredExpressions,
+                  };
+                };
 
-      // Build the list of input sets to iterate over
-      const inputSets: Record<string, unknown>[] = stdinItems
-        ? stdinItems.map((item) =>
-          Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
-        )
-        : [cliInputs];
-
-      const initiatedBy = await resolveCliInitiatedBy();
-
-      if (options.junit && inputSets.length > 1) {
-        throw new UserError(
-          "--junit cannot be combined with multiple input sets (--stdin with NDJSON). " +
-            "Each input set would produce a separate XML document, resulting in malformed output.",
-        );
-      }
-
-      for (let i = 0; i < inputSets.length; i++) {
-        if (inputSets.length > 1) {
-          ctx.logger
-            .info`Running workflow ${workflowIdOrName} [${
-            i + 1
-          }/${inputSets.length}]`;
-        }
-
-        const renderer = options.junit
-          ? new JUnitWorkflowRunRenderer({
-            failOnSeverity,
-            outFile: options.out as string | undefined,
-          })
-          : createWorkflowRunRenderer(ctx.outputMode, {
-            workflowName: workflowIdOrName,
-            quiet: ctx.verbosity === "quiet",
-            verbose: ctx.verbosity === "verbose",
-            failOnSeverity,
-            commandTarget: formatCommandTarget({
-              repoDir: options.repoDir as string | undefined,
-            }),
-          });
-        const eventStream = workflowRun(libCtx, deps, {
-          workflowIdOrName,
-          lastEvaluated,
-          inputs: inputSets[i],
-          runtimeTags,
-          verbose: ctx.verbosity === "verbose",
-          skipAllReports: options.skipReports as boolean | undefined,
-          skipReportNames: options.skipReport as string[] | undefined,
-          skipReportLabels: options.skipReportLabel as string[] | undefined,
-          reportNames: options.report as string[] | undefined,
-          reportLabels: options.reportLabel as string[] | undefined,
-          swampSha: GIT_SHA || undefined,
-          skipAllChecks: options.skipChecks as boolean | undefined,
-          skipCheckNames: options.skipCheck as string[] | undefined,
-          skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-          traceparent: resolveTraceparent(
-            options.traceparent as string | undefined,
-          ),
-          tracestate: resolveTracestate(
-            options.tracestate as string | undefined,
-          ),
-          assertFailOnSeverity: failOnSeverity,
-          initiatedBy,
-          triggerSource: "manual",
-          noSupersede: options.supersede === false,
-        });
-
-        const baseHandlers = renderer.handlers();
-        const wrappedHandlers = {
-          ...baseHandlers,
-          started: (e: WorkflowRunEvent & { kind: "started" }) => {
-            // A nested workflow's started event carries the child's run id;
-            // the fallback cancel below is for the run this command started.
-            if (e.parentRunId === undefined) currentRunId = e.runId;
-            baseHandlers.started(e);
-          },
-        };
-        await consumeStream(eventStream, wrappedHandlers);
-
-        if (abort.signal.aborted) {
-          Deno.exitCode = 1;
-          return;
-        }
-
-        if (renderer.workflowFailed()) {
-          Deno.exitCode = 1;
-          return;
-        }
-      }
-    } catch (error) {
-      if (abort.signal.aborted) {
-        // Ctrl+C or timeout — the generator may not have saved the
-        // cancelled status. Cancel only the specific run we started.
-        try {
-          if (currentRunId) {
-            const workflows = await repoContext.workflowRepo.findAll();
-            const wf = workflows.find((w) => w.name === workflowIdOrName) ??
-              workflows.find((w) => w.id === workflowIdOrName);
-            if (wf) {
-              const run = await repoContext.workflowRunRepo.findById(
-                wf.id,
-                createWorkflowRunId(currentRunId),
-              );
-              if (run && run.status === "running") {
-                cancelAndSettle(
-                  run,
-                  await resolveSettlementWorkflow(
-                    run,
-                    wf,
-                    (runId) => evaluatedWorkflowRepo.findByRunId(runId),
-                  ),
-                  "aborted",
+                const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
+                return new WorkflowExecutionService(
+                  wfRepo,
+                  rnRepo,
+                  dir,
+                  undefined,
+                  unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+                  catalogStore,
+                  directResolver,
+                  repoContext.markDirty,
+                  repoContext.unifiedDataRepo.namespace,
+                  stepLockHook,
+                  tracker,
+                  ephRepo,
+                  ephCatalog,
+                  resolvePulledExtensionsRoot(dir),
+                  repoContext.hydrateFile,
+                  unlocked.vaultsDir,
+                  unlocked.datastoreResolver,
                 );
-                await repoContext.workflowRunRepo.save(wf.id, run);
+              },
+              catalogStore: repoContext.catalogStore,
+              dataRepo: repoContext.unifiedDataRepo,
+              definitionRepo: repoContext.definitionRepo,
+              telemetrySink,
+              supersede: {
+                findSuspendedRuns: async (workflowId) => {
+                  const suspended = await runRepo
+                    .findSummariesByStatus(workflowId, "suspended");
+                  const runs = await Promise.all(
+                    suspended.map((s) =>
+                      runRepo.findById(workflowId, s.id as WorkflowRunId)
+                    ),
+                  );
+                  return runs.filter((r): r is WorkflowRun => r !== null);
+                },
+                findEvaluatedWorkflow: (runId) =>
+                  evaluatedWorkflowRepo.findByRunId(runId),
+                runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
+              },
+            };
+
+            const timeoutMs = options.timeout
+              ? parseTimerDuration(options.timeout as string)
+              : undefined;
+            shutdownHandle = registerShutdownHandler({
+              handler: () => abort.abort(),
+              forceExitOnRepeat: true,
+            });
+            const baseLibCtx = libSwampContextForRepo(repoContext, {
+              signal: abort.signal,
+            });
+            const libCtx = timeoutMs !== undefined
+              ? baseLibCtx.withTimeout(timeoutMs)
+              : baseLibCtx;
+
+            // Build the list of input sets to iterate over
+            const inputSets: Record<string, unknown>[] = stdinItems
+              ? stdinItems.map((item) =>
+                Object.keys(cliInputs).length > 0
+                  ? deepMerge(item, cliInputs)
+                  : item
+              )
+              : [cliInputs];
+
+            const initiatedBy = await resolveCliInitiatedBy();
+
+            if (options.junit && inputSets.length > 1) {
+              throw new UserError(
+                "--junit cannot be combined with multiple input sets (--stdin with NDJSON). " +
+                  "Each input set would produce a separate XML document, resulting in malformed output.",
+              );
+            }
+
+            for (let i = 0; i < inputSets.length; i++) {
+              if (inputSets.length > 1) {
+                ctx.logger
+                  .info`Running workflow ${workflowIdOrName} [${
+                  i + 1
+                }/${inputSets.length}]`;
+              }
+
+              const renderer = options.junit
+                ? new JUnitWorkflowRunRenderer({
+                  failOnSeverity,
+                  outFile: options.out as string | undefined,
+                })
+                : createWorkflowRunRenderer(ctx.outputMode, {
+                  workflowName: workflowIdOrName,
+                  quiet: ctx.verbosity === "quiet",
+                  verbose: ctx.verbosity === "verbose",
+                  failOnSeverity,
+                  commandTarget: formatCommandTarget({
+                    repoDir: options.repoDir as string | undefined,
+                  }),
+                });
+              const eventStream = workflowRun(libCtx, deps, {
+                workflowIdOrName,
+                lastEvaluated,
+                inputs: inputSets[i],
+                runtimeTags,
+                verbose: ctx.verbosity === "verbose",
+                skipAllReports: options.skipReports as boolean | undefined,
+                skipReportNames: options.skipReport as string[] | undefined,
+                skipReportLabels: options.skipReportLabel as
+                  | string[]
+                  | undefined,
+                reportNames: options.report as string[] | undefined,
+                reportLabels: options.reportLabel as string[] | undefined,
+                swampSha: GIT_SHA || undefined,
+                skipAllChecks: options.skipChecks as boolean | undefined,
+                skipCheckNames: options.skipCheck as string[] | undefined,
+                skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+                traceparent: resolveTraceparent(
+                  options.traceparent as string | undefined,
+                ),
+                tracestate: resolveTracestate(
+                  options.tracestate as string | undefined,
+                ),
+                assertFailOnSeverity: failOnSeverity,
+                initiatedBy,
+                triggerSource: "manual",
+                noSupersede: options.supersede === false,
+              });
+
+              const baseHandlers = renderer.handlers();
+              const wrappedHandlers = {
+                ...baseHandlers,
+                started: (e: WorkflowRunEvent & { kind: "started" }) => {
+                  // A nested workflow's started event carries the child's run id;
+                  // the fallback cancel below is for the run this command started.
+                  if (e.parentRunId === undefined) currentRunId = e.runId;
+                  baseHandlers.started(e);
+                },
+              };
+              await consumeStream(eventStream, wrappedHandlers);
+
+              if (abort.signal.aborted) {
+                Deno.exitCode = 1;
+                return;
+              }
+
+              if (renderer.workflowFailed()) {
+                Deno.exitCode = 1;
+                return;
               }
             }
+          } catch (error) {
+            if (abort.signal.aborted) {
+              // Ctrl+C or timeout — the generator may not have saved the
+              // cancelled status. Cancel only the specific run we started.
+              try {
+                if (currentRunId) {
+                  const workflows = await repoContext.workflowRepo.findAll();
+                  const wf = workflows.find((w) =>
+                    w.name === workflowIdOrName
+                  ) ??
+                    workflows.find((w) => w.id === workflowIdOrName);
+                  if (wf) {
+                    const run = await repoContext.workflowRunRepo.findById(
+                      wf.id,
+                      createWorkflowRunId(currentRunId),
+                    );
+                    if (run && run.status === "running") {
+                      cancelAndSettle(
+                        run,
+                        await resolveSettlementWorkflow(
+                          run,
+                          wf,
+                          (runId) => evaluatedWorkflowRepo.findByRunId(runId),
+                        ),
+                        "aborted",
+                      );
+                      await repoContext.workflowRunRepo.save(wf.id, run);
+                    }
+                  }
+                }
+              } catch {
+                // Best-effort — if we can't save, the daemon reaper will catch it
+              }
+              Deno.exitCode = 1;
+              return;
+            }
+            if (error instanceof UserError) {
+              throw error;
+            }
+            const message = error instanceof Error
+              ? error.message
+              : String(error);
+            throw new UserError(`Workflow execution failed: ${message}`);
           }
-        } catch {
-          // Best-effort — if we can't save, the daemon reaper will catch it
-        }
-        Deno.exitCode = 1;
-        return;
-      }
-      if (error instanceof UserError) {
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(`Workflow execution failed: ${message}`);
+        },
+      );
     } finally {
-      if (unlocked.syncService) {
-        const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
-          ? unlocked.datastoreConfig.namespace
-          : undefined;
-        try {
-          await unlocked.syncService.pushChanged({ namespace });
-        } catch (pushErr) {
-          ctx.logger
-            .warn`Post-run push failed; terminal status may be delayed: ${
-            pushErr instanceof Error ? pushErr.message : String(pushErr)
-          }`;
-        }
-      }
       shutdownHandle?.dispose();
       exitSuppress.dispose();
     }

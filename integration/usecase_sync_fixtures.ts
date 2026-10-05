@@ -113,7 +113,10 @@ export interface RowRepos {
   remote: InMemoryRemote;
   repoA: string;
   repoB: string;
-  /** A per-run model type with one no-op read method, `noop`. */
+  /**
+   * A per-run model type with a no-op read method, `noop`, and a no-op
+   * update, `touch`, which a run takes model locks for.
+   */
   modelType: ModelType;
   /**
    * A's repository context, with the markDirty hook wired to A's sync
@@ -197,6 +200,12 @@ export async function withRowRepos(
       noop: {
         description: "does nothing",
         kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      touch: {
+        description: "an update that writes nothing",
+        kind: "update",
         arguments: z.object({}),
         execute: () => Promise.resolve({}),
       },

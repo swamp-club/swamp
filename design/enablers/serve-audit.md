@@ -1,6 +1,6 @@
 ---
 audience: everyone
-last-verified: 2026-09-08 @ HEAD
+last-verified: 2026-10-05 @ HEAD
 ---
 
 # Serve Audit
@@ -29,7 +29,8 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
 3. **AuditEmitter** appends events synchronously to a **RingBuffer** (capacity
    10,000). On drain, **AuditChainState** adds integrity fields (sequence,
    SHA-256 digest, version) before sinks see them. Sink errors are logged and
-   absorbed; audit never disrupts requests unless fail-secure mode is on.
+   absorbed; audit never disrupts requests unless fail-secure mode is on. See
+   [Delivery to sinks](#delivery-to-sinks).
 4. **AuditPolicy** matches ordered rules to pick each event's detail level:
    none, metadata, request or requestResponse. Management-tier events
    (audit.query, audit.verify) default to metadata.
@@ -40,6 +41,36 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    configured **AuditStore** target. Each target can set its own retention; old
    date partitions are deleted automatically.
 7. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
+
+## Delivery to sinks
+
+A sink declares itself `durable` (WalSink, StoreSink) or not (WebSocket,
+webhook, syslog). The emitter keeps the durable path independent of every
+other sink:
+
+- **Chained once.** Each event gets its HMAC, sequence and digest, and is
+  checked against the alert rules, exactly once. The chained form is kept by
+  buffer sequence until every sink has it, so a sink that is retried receives
+  the same sequence and digest the store recorded.
+- **Durable first.** A drain writes the durable sinks in order and waits for
+  them. Non-durable sinks deliver on their own and never hold a drain. A failed
+  durable write is retried on the next event, on flush, and after a fixed 1s;
+  it is never backed off. If durable writes fail for so long that events leave
+  the buffer, `swamp audit verify` reports the gap as a broken chain.
+- **One sink's lag is its own.** Each sink has its own cursor. A sink more than
+  the buffer's capacity behind is moved up to the oldest event still held; the
+  events it missed are counted and logged against that sink only.
+- **One write at a time.** A non-durable sink has at most one `write` in
+  flight. A write that outlives the 30s timeout counts as a failure, but the
+  sink is not written to again until that call settles. While it is
+  outstanding the emitter warns once a minute and keeps counting what the sink
+  misses; when it settles, delivery resumes, and a late success counts as
+  delivered.
+- **Backoff.** A failed non-durable write is retried after 1s, doubling per
+  failure up to 60s, and reset on success or when hot-reload replaces the
+  sink. `flush` and `close` respect it, so events still pending for a sink
+  that is backing off at shutdown are not delivered to that sink; they do not
+  appear in its drop count.
 
 ## Configuration
 

@@ -137,11 +137,113 @@ function stripLineComment(line: string): string {
 }
 
 /**
- * Substrings that, in a field name, strongly suggest a secret value. Matched
- * without word boundaries so camelCase fields like `apiToken` are caught.
+ * Word stems that name a secret value, tested against a normalized identifier
+ * (see {@link normalizeIdentifier}). A stem counts anywhere in the identifier,
+ * so joined lowercase names such as `clientsecret` and `dbpassword` are caught
+ * exactly as the substring rule caught them; what makes the match
+ * whole-identifier is that only key and declaration identifiers are tested,
+ * and that {@link REFERENCE_SUFFIX} and {@link REFERENCE_WORD} then exclude
+ * references to secrets.
  */
-const SENSITIVE_FIELD_PATTERN =
-  /password|passwd|secret|token|api[_-]?key|access[_-]?key|credential|private[_-]?key/i;
+const SECRET_STEM =
+  /password|passwd|secret|token|api_?key|access_?key|credential|private_?key/;
+
+/**
+ * Trailing segments that turn a secret stem into a reference to a secret
+ * rather than the secret itself. Each entry comes from an identifier in the
+ * swamp-extensions corpus that the rule flagged before swamp-club#3019:
+ * `secretName`, `credential_id`, `TokenReference`, `credentialRef`,
+ * `SecretArn`, `gcpSecretManagerSecretUri`, `oauth_token_url`,
+ * `tokenEndpoint`, `acsTokenLink`, `secretVersion`, `secretType`,
+ * `credential_kind`, `tokenCount`, `tokenTtl`, `passwordExpirationTimeout`,
+ * `accessTokenExpireTime`, `credentialRefSource`. None of them names a string
+ * that holds a secret. The list is applied to the normalized identifier, so
+ * camelCase and snake_case spellings share one entry.
+ */
+const REFERENCE_SUFFIX =
+  /(?:^|_)(?:name|id|reference|ref|arn|uri|url|endpoint|link|version|type|kind|count|ttl|timeout|expire_time|source)$/;
+
+/**
+ * Whole identifiers that contain a secret stem but name a pagination or
+ * idempotency token, never a credential. Corpus examples: `nextToken`,
+ * `pageToken`, `nextPageToken`, `ClientToken`, `syncToken`.
+ */
+const REFERENCE_WORD =
+  /^(?:next_token|page_token|next_page_token|client_token|sync_token)$/;
+
+/**
+ * Identifiers in key position: bare, or quoted with any characters (so
+ * `"auth.token"` and `"api token"` are inspected), optionally followed by
+ * `?`, and preceded by the start of the line, `{`, `,` or `(` so that inline
+ * object literals and lines with several keys are all inspected. The
+ * per-line scan has one known limit: text shaped like `, token:` inside a
+ * string literal on the same line also matches, as it did before whole-
+ * identifier matching.
+ */
+const KEY_IDENTIFIER =
+  /(?:^|[{,(])\s*(?:([A-Za-z_$][\w$]*)|"([^"]+)"|'([^']+)')\s*(?:\?\s*)?:/g;
+
+/**
+ * A declaration or assignment at the start of the line: `const apiKey =`,
+ * `export let token =`, and class fields such as `private apiKey =` or
+ * `static readonly token =`. The `(?!=)` keeps `==` comparisons out.
+ */
+const DECLARED_IDENTIFIER =
+  /^\s*(?:(?:export|declare|public|private|protected|static|readonly|const|let|var)\s+)*([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=(?!=)/;
+
+/**
+ * The metadata entry that marks a field sensitive: `sensitive: true` (the key
+ * may be quoted), as swamp reads it back from `z.globalRegistry`. Any way of
+ * writing that entry on the field's line or its continuation lines counts —
+ * `.meta({ sensitive: true })`, a meta object with other keys before it, or
+ * `.register(z.globalRegistry, { sensitive: true })`. The word `sensitive` in
+ * a `describe()` string does not count, and neither does `sensitive: false`.
+ * Metadata passed as a variable (`.meta(SENSITIVE)`) or on a later line of a
+ * multi-line object is not recognised; write the entry out on the chain.
+ */
+const MARKED_SENSITIVE = /(?:^|[^\w$])["']?sensitive["']?\s*:\s*true\b/;
+
+/**
+ * Normalizes an identifier to lowercase snake_case so stems and suffixes can
+ * be matched as whole segments: `s3AccessKeyId` → `s3_access_key_id`,
+ * `APIKeyId` → `api_key_id`, `HANASecretName` → `hana_secret_name`,
+ * `"api-key"` → `api_key`, `"auth.token"` → `auth_token`, `$token` → `token`.
+ */
+function normalizeIdentifier(identifier: string): string {
+  return identifier
+    .replace(/^[_$]+/, "")
+    .replace(/[-$.\s]+/g, "_")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+}
+
+/**
+ * True when `identifier` names a secret value: it carries a secret stem and
+ * is neither a reference to a secret nor a known pagination or idempotency
+ * token.
+ */
+function namesSecretValue(identifier: string): boolean {
+  const normalized = normalizeIdentifier(identifier);
+  if (!SECRET_STEM.test(normalized)) return false;
+  if (REFERENCE_SUFFIX.test(normalized)) return false;
+  if (REFERENCE_WORD.test(normalized)) return false;
+  return true;
+}
+
+/**
+ * Returns the identifiers declared on a comment-stripped line: every key in
+ * key position plus a `const`/`let`/`var` declaration.
+ */
+function declaredIdentifiers(line: string): string[] {
+  const identifiers: string[] = [];
+  for (const match of line.matchAll(KEY_IDENTIFIER)) {
+    identifiers.push(match[1] ?? match[2] ?? match[3]);
+  }
+  const declared = DECLARED_IDENTIFIER.exec(line);
+  if (declared) identifiers.push(declared[1]);
+  return identifiers;
+}
 
 /**
  * Zod types whose parsed value cannot hold a secret — numbers, dates,
@@ -214,20 +316,18 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
       const lines = source.content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = stripLineComment(lines[i]);
-        if (
-          !SENSITIVE_FIELD_PATTERN.test(line) ||
-          !/z\s*\./.test(line)
-        ) continue;
+        if (!/z\s*\./.test(line)) continue;
+        if (!declaredIdentifiers(line).some(namesSecretValue)) continue;
 
         if (NON_SECRET_ZOD_TYPE.test(line)) continue;
 
-        if (/sensitive/i.test(line)) continue;
+        if (MARKED_SENSITIVE.test(line)) continue;
 
         let foundSensitive = false;
         for (let j = i + 1; j < lines.length; j++) {
           const cont = stripLineComment(lines[j]);
           if (!/^\s+\./.test(cont)) break;
-          if (/sensitive/i.test(cont)) {
+          if (MARKED_SENSITIVE.test(cont)) {
             foundSensitive = true;
             break;
           }

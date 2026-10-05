@@ -48,6 +48,7 @@ import {
   MAX_STREAM_SESSIONS_PER_PRINCIPAL,
   MAX_STREAM_SESSIONS_PER_TOKEN,
   paginate,
+  pushChangedToRemote,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
@@ -1579,4 +1580,45 @@ Deno.test("decideSubjectAccess: refuses a subject with no token or no principal,
     ),
     true,
   );
+});
+
+/** A context whose sync service records each push and may fail it. */
+function pushCtx(
+  fail?: Error,
+): { ctx: ConnectionContext; pushes: { namespace?: string }[] } {
+  const pushes: { namespace?: string }[] = [];
+  const ctx = {
+    ...makeCtx([], "none"),
+    syncService: {
+      pushChanged: (options: { namespace?: string }) => {
+        pushes.push(options);
+        return fail ? Promise.reject(fail) : Promise.resolve();
+      },
+    },
+  } as unknown as ConnectionContext;
+  return { ctx, pushes };
+}
+
+Deno.test("pushChangedToRemote: pushes once, with no namespace for a filesystem datastore", async () => {
+  const { ctx, pushes } = pushCtx();
+  await pushChangedToRemote(ctx);
+  assertEquals(pushes, [{ namespace: undefined }]);
+});
+
+Deno.test("pushChangedToRemote: does nothing without a sync service", async () => {
+  await pushChangedToRemote(makeCtx([], "none"));
+});
+
+Deno.test("pushChangedToRemote: reports a failed push through onError and does not throw", async () => {
+  const { ctx, pushes } = pushCtx(new Error("remote unavailable"));
+  const reported: string[] = [];
+  await pushChangedToRemote(ctx, { onError: (error) => reported.push(error) });
+  assertEquals(pushes.length, 1);
+  assertEquals(reported, ["remote unavailable"]);
+});
+
+Deno.test("pushChangedToRemote: a failed push without onError is logged, not thrown", async () => {
+  const { ctx, pushes } = pushCtx(new Error("remote unavailable"));
+  await pushChangedToRemote(ctx);
+  assertEquals(pushes.length, 1);
 });

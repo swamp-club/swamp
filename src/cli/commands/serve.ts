@@ -3668,9 +3668,8 @@ export const serveCommand = new Command()
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
-      const { migrateTokenSecrets } = await import(
-        "../../serve/token_secret_migration.ts"
-      );
+      const { createTokenMigrationLockDeps, migrateTokenSecrets } =
+        await import("../../serve/token_secret_migration.ts");
       const { createResourceWriter } = await import(
         "../../domain/models/data_writer.ts"
       );
@@ -3713,6 +3712,14 @@ export const serveCommand = new Command()
             updated as Record<string, unknown>,
           );
         },
+        // The pollers are already running, so each token's pull, write and
+        // push runs under the sync gate as well as its name lock.
+        ...createTokenMigrationLockDeps({
+          datastoreConfig,
+          repoContext,
+          syncService,
+          syncGate,
+        }),
       });
 
       // Migrate OAuth bootstrap secrets from the user's vault to

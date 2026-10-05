@@ -190,7 +190,10 @@ removes every version.
   tag records the name at write time, so for an own-namespace name it also
   reads the resolved definition's data by type and id, and data written before
   the instance was renamed is still returned (swamp-club#3011). A model reading
-  its own name uses its own identity, with no definition lookup. Without a
+  its own name uses its own identity, with no definition lookup. The CEL
+  accessors `data.latest()`, `data.version()`, `data.listVersions()` and
+  `data.findBySpec()` read by identity the same way (swamp-club#3029; see
+  [expressions.md](../enablers/expressions.md)). Without a
   catalog, it walks the filesystem, and if the definition's UUID changed it
   finds data written under the old UUID: first by `modelName` tag, then, only
   when the type has a single definition, by that definition. This "orphan

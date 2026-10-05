@@ -32,7 +32,7 @@ Deno.test("RingBuffer: empty buffer returns no items", () => {
   const buf = new RingBuffer<number>(5);
   assertEquals(buf.length, 0);
   assertEquals(buf.highSeq, 0);
-  assertEquals(buf.readFrom(0), { items: [], throughSeq: 0 });
+  assertEquals(buf.readFrom(0), { items: [], startSeq: 1, throughSeq: 0 });
 });
 
 Deno.test("RingBuffer: push returns incrementing sequence", () => {
@@ -67,7 +67,7 @@ Deno.test("RingBuffer: readFrom at highSeq returns empty", () => {
   const buf = new RingBuffer<string>(5);
   buf.push("a");
   buf.push("b");
-  assertEquals(buf.readFrom(2), { items: [], throughSeq: 2 });
+  assertEquals(buf.readFrom(2), { items: [], startSeq: 3, throughSeq: 2 });
 });
 
 Deno.test("RingBuffer: wraps around when capacity exceeded", () => {
@@ -95,6 +95,24 @@ Deno.test("RingBuffer: readFrom with seq older than oldest clamps", () => {
   const result = buf.readFrom(0);
   assertEquals(result.items, [2, 3]);
   assertEquals(result.throughSeq, 3);
+});
+
+Deno.test("RingBuffer: readFrom reports the sequence of the first item", () => {
+  const buf = new RingBuffer<string>(3);
+  buf.push("a"); // seq 1
+  buf.push("b"); // seq 2
+
+  assertEquals(buf.readFrom(0).startSeq, 1);
+  assertEquals(buf.readFrom(1).startSeq, 2);
+
+  buf.push("c"); // seq 3
+  buf.push("d"); // seq 4, overwrites "a"
+  buf.push("e"); // seq 5, overwrites "b"
+
+  const wrapped = buf.readFrom(0);
+  assertEquals(wrapped.items, ["c", "d", "e"]);
+  assertEquals(wrapped.startSeq, 3);
+  assertEquals(wrapped.throughSeq, 5);
 });
 
 Deno.test("RingBuffer: per-cursor independent reads", () => {
@@ -126,9 +144,17 @@ Deno.test("RingBuffer: per-cursor independent reads", () => {
 Deno.test("RingBuffer: capacity of 1", () => {
   const buf = new RingBuffer<string>(1);
   buf.push("a");
-  assertEquals(buf.readFrom(0), { items: ["a"], throughSeq: 1 });
+  assertEquals(buf.readFrom(0), { items: ["a"], startSeq: 1, throughSeq: 1 });
 
   buf.push("b");
-  assertEquals(buf.readFrom(0), { items: ["b"], throughSeq: 2 });
-  assertEquals(buf.readFrom(1), { items: ["b"], throughSeq: 2 });
+  assertEquals(buf.readFrom(0), {
+    items: ["b"],
+    startSeq: 2,
+    throughSeq: 2,
+  });
+  assertEquals(buf.readFrom(1), {
+    items: ["b"],
+    startSeq: 2,
+    throughSeq: 2,
+  });
 });

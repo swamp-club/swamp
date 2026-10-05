@@ -3905,3 +3905,207 @@ Deno.test("buildMarkDirtyHook: sends nothing for a sibling whose name extends th
 
   assertEquals(marks, []);
 });
+
+/**
+ * Registers a sync-capable datastore type that records lock and sync
+ * events, optionally pushing two-phase and failing the push.
+ */
+function registerRecordingLockType(
+  events: string[],
+  options: { twoPhase: boolean; failPush: boolean },
+): string {
+  const typeName = `test-lock-split-${crypto.randomUUID().slice(0, 8)}`;
+  const failPush = () => {
+    events.push("push-failed");
+    return Promise.reject(new Error("push failed"));
+  };
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test lock push/release split",
+    description: "Records lock and sync events",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => {
+          events.push("lock-acquire");
+          return Promise.resolve();
+        },
+        release: () => {
+          events.push("lock-release");
+          return Promise.resolve();
+        },
+        withLock: async <T>(fn: () => Promise<T>) => {
+          events.push("lock-acquire");
+          try {
+            return await fn();
+          } finally {
+            events.push("lock-release");
+          }
+        },
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => {
+          if (options.failPush) return failPush();
+          events.push("pushChanged");
+          return Promise.resolve(1);
+        },
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ twoPhaseSync: options.twoPhase }),
+        preparePush: () => {
+          if (options.failPush) return failPush();
+          events.push("preparePush");
+          return Promise.resolve({} as unknown as PushManifest);
+        },
+        commitPush: () => {
+          events.push("commitPush");
+          return Promise.resolve(1);
+        },
+      }),
+    }),
+  });
+  return typeName;
+}
+
+for (const twoPhase of [false, true]) {
+  for (const failPush of [false, true]) {
+    const label = `${twoPhase ? "two-phase" : "single-phase"}${
+      failPush ? ", failing push" : ""
+    }`;
+    Deno.test(`acquireModelLocks: push then release matches flush (${label})`, async () => {
+      const events: string[] = [];
+      const typeName = registerRecordingLockType(events, {
+        twoPhase,
+        failPush,
+      });
+      try {
+        await withTempDir(async (dir) => {
+          await initializeRepo(dir);
+          await configureExtensionDatastore(dir, typeName);
+          const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+          const models = [{ modelType: "test-type", modelId: "m1" }];
+
+          // Each run records only what happens after the locks are held.
+          const run = async (
+            end: (
+              lock: Awaited<ReturnType<typeof acquireModelLocks>>,
+            ) => Promise<void>,
+          ) => {
+            const lock = await acquireModelLocks(datastoreConfig, models, dir);
+            events.length = 0;
+            let error: string | undefined;
+            try {
+              await end(lock);
+            } catch (caught) {
+              error = caught instanceof Error ? caught.message : String(caught);
+            }
+            return { events: [...events], error };
+          };
+
+          const viaFlush = await run((lock) => lock.flush());
+          const viaSplit = await run(async (lock) => {
+            try {
+              await lock.push();
+            } finally {
+              await lock.release();
+            }
+          });
+
+          assertEquals(viaSplit, viaFlush);
+          assertEquals(viaFlush.error !== undefined, failPush);
+          if (failPush) assertStringIncludes(viaFlush.error!, "push failed");
+          assertEquals(
+            viaSplit.events.at(-1),
+            "lock-release",
+            "the per-model lock is released last, even when the push fails",
+          );
+          assertEquals(
+            viaSplit.events.includes(twoPhase ? "preparePush" : "pushChanged"),
+            !failPush,
+          );
+        });
+      } finally {
+        datastoreTypeRegistry.invalidateType(typeName);
+      }
+    });
+  }
+}
+
+Deno.test("acquireModelLocks: push leaves the locks held until release", async () => {
+  const events: string[] = [];
+  const typeName = registerRecordingLockType(events, {
+    twoPhase: false,
+    failPush: false,
+  });
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lock = await acquireModelLocks(datastoreConfig, [
+        { modelType: "test-type", modelId: "m1" },
+      ], dir);
+
+      await lock.push();
+      const releasesAfterPush = events.filter((e) => e === "lock-release")
+        .length;
+      await lock.release();
+      const releasesAfterRelease = events.filter((e) => e === "lock-release")
+        .length;
+
+      assertEquals(
+        releasesAfterRelease - releasesAfterPush,
+        1,
+        "release frees the one per-model lock push left held",
+      );
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+});
+
+// CLI commands stage their bare marks through a root unit over
+// repoContext.markDirty and push with syncService (swamp-club#3033), so a
+// sync service without a mark hook would push a change that was never marked.
+Deno.test("requireInitializedRepoUnlocked: returns a mark hook exactly when it returns a sync service", async () => {
+  const events: string[] = [];
+  const typeName = registerRecordingLockType(events, {
+    twoPhase: false,
+    failPush: false,
+  });
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      const filesystem = await requireInitializedRepoUnlocked({
+        repoDir: dir,
+        outputMode: "json",
+      });
+      assertEquals(filesystem.syncService, undefined);
+      assertEquals(filesystem.repoContext.markDirty, undefined);
+
+      await configureExtensionDatastore(dir, typeName);
+      const custom = await requireInitializedRepoUnlocked({
+        repoDir: dir,
+        outputMode: "json",
+      });
+      assertExists(custom.syncService);
+      assertExists(custom.repoContext.markDirty);
+      await flushDatastoreSync();
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+});

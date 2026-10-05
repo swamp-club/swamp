@@ -28,6 +28,11 @@ import {
   type SuspendedRunInfo,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
+import {
+  completeAndSettle,
+  type EvaluatedWorkflowLookup,
+  resolveSettlementWorkflow,
+} from "../../domain/workflows/abort_settlement.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -94,6 +99,11 @@ export interface WorkflowRejectDeps {
    * no other writer saves over it (swamp-club#2919).
    */
   runClaims: WorkflowRunClaims;
+  /**
+   * Reads the run's own evaluated workflow snapshot, which its unfinished
+   * jobs and steps are settled against (swamp-club#2905).
+   */
+  findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
 }
 
@@ -101,9 +111,16 @@ export function createWorkflowRejectDeps(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
   runClaims: WorkflowRunClaims,
+  findEvaluatedWorkflow: EvaluatedWorkflowLookup,
   runTracker?: RunTrackerRepository,
 ): WorkflowRejectDeps {
-  return { workflowRepo, runRepo, runClaims, runTracker };
+  return {
+    workflowRepo,
+    runRepo,
+    runClaims,
+    findEvaluatedWorkflow,
+    runTracker,
+  };
 }
 
 /** A decision saved under the run's claim, or the refusal to make it. */
@@ -117,8 +134,10 @@ type RejectOutcome =
   };
 
 /**
- * Records the rejection on the run as read now. The caller holds the run's
- * claim, so nothing saves between this read and this save.
+ * Records the rejection on the run as read now, and settles the work the
+ * rejection leaves unfinished, so the failed run keeps no other gate waiting
+ * and no job running. The caller holds the run's claim, so nothing saves
+ * between this read and this save.
  */
 async function rejectClaimedRun(
   deps: WorkflowRejectDeps,
@@ -147,21 +166,17 @@ async function rejectClaimedRun(
   let step:
     | import("../../domain/workflows/workflow_run.ts").StepRun
     | undefined;
-  let matchedJob:
-    | import("../../domain/workflows/workflow_run.ts").JobRun
-    | undefined;
   let jobName: string | undefined;
   for (const job of run.jobs) {
     const s = job.getStep(input.stepName);
     // A nested workflow step waiting on its child run is not a gate.
     if (s && s.status === "waiting_approval" && !s.isNestedWait) {
       step = s;
-      matchedJob = job;
       jobName = job.jobName;
       break;
     }
   }
-  if (!step || !matchedJob) {
+  if (!step) {
     return {
       error: nestedWaitGateError(run, input.stepName) ??
         validationFailed(
@@ -187,6 +202,13 @@ async function rejectClaimedRun(
     };
   }
 
+  // Read before anything changes on the run.
+  const settlementWorkflow = await resolveSettlementWorkflow(
+    run,
+    workflow,
+    deps.findEvaluatedWorkflow,
+  );
+
   const decidedBy = input.decidedBy ?? Deno.env.get("USER") ??
     Deno.env.get("USERNAME") ?? "unknown";
   step.recordApprovalDecision({
@@ -196,8 +218,9 @@ async function rejectClaimedRun(
     decidedAt: new Date().toISOString(),
   });
   step.fail(input.reason ?? "Approval rejected");
-  matchedJob.fail();
-  run.complete();
+  // The gate's job is left open: settling ends it from its failed gate,
+  // along with every other job and step the rejection leaves unfinished.
+  completeAndSettle(run, settlementWorkflow);
   await deps.runRepo.save(createWorkflowId(workflowId), run);
   if (deps.runTracker) {
     deps.runTracker.complete(run.id, "failed");

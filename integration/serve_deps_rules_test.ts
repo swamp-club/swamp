@@ -151,8 +151,14 @@ function gatedIdentifiers(source: string): Set<string> {
   return names;
 }
 
-/** A raw push: one that commits to the datastore directly. */
-const RAW_PUSH = /pushChangedToRemote\(ctx\)|syncService[?.]*\.pushChanged\(/g;
+/**
+ * A raw push: one that commits to the datastore directly. A
+ * `pushChangedToRemote` call counts with or without options, so a run
+ * path's push through it must still sit in a shared-gate span
+ * (swamp-club#3035).
+ */
+const RAW_PUSH =
+  /pushChangedToRemote\(ctx[,)]|syncService[?.]*\.pushChanged\(/g;
 
 interface ServeFunction {
   name: string;

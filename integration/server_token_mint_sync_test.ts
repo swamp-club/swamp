@@ -44,6 +44,11 @@ import {
   handleDeviceAuth,
 } from "../src/serve/device_auth_handler.ts";
 import { traceHttpRequests } from "../src/serve/http_request_span.ts";
+import { readServerTokenRecord } from "../src/serve/token_auth.ts";
+import {
+  serverTokenSecretFingerprint,
+  verifyServerTokenSecret,
+} from "../src/domain/models/access/server_token_model.ts";
 import { createSyncGate } from "../src/serve/sync_gate.ts";
 import { getTracer, withSpan } from "../src/infrastructure/tracing/mod.ts";
 import {
@@ -397,6 +402,44 @@ Deno.test("serve login: POST /auth/device/token traces as one tree with the data
         );
         assertEquals(traceIds.size, 1, "the whole login must be one trace");
       });
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("createDeviceAuthDeps: mintServerToken records the fingerprint of the secret it issued (swamp-club#2482)", async () => {
+  await withTempDir(async (dir) => {
+    await writeTokenSecretsVault(dir);
+
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+    });
+    try {
+      const deps = createDeviceAuthDeps(
+        AUTH_CONFIG,
+        "test-client-secret",
+        dir,
+        repoContext,
+      );
+
+      const token = await deps.mintServerToken(
+        "user:user-1",
+        "user@example.com",
+        ["team-a"],
+        [],
+        dir,
+        repoContext,
+      );
+      const [tokenName, secret] = token.split(".");
+
+      const record = await readServerTokenRecord(repoContext, tokenName);
+      assertEquals(
+        record.secretFingerprint,
+        await serverTokenSecretFingerprint(secret),
+      );
+      await verifyServerTokenSecret(record, secret);
     } finally {
       repoContext.catalogStore.close();
     }

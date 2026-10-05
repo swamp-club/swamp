@@ -118,7 +118,6 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
@@ -130,6 +129,7 @@ import {
   isAdminOnlyModelType,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
+  pushChangedToRemote,
   rejectEditWithoutContent,
   resourceDecider,
   sanitizeErrorForClient,
@@ -151,6 +151,7 @@ import {
   targetArgument,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -320,7 +321,8 @@ export async function handleModelMethodRun(
 ): Promise<void> {
   const registry = ctx.activeRunRegistry;
   if (!registry) {
-    let flushLocks: (() => Promise<void>) | null = null;
+    // Assigned in the root below, which control flow analysis cannot see.
+    let flushLocks = null as (() => Promise<void>) | null;
     let modelLocks: ModelLockResult | undefined;
     let mutating = true;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
@@ -338,112 +340,122 @@ export async function handleModelMethodRun(
       ) return;
       const preResult = target.definition;
 
-      if (preResult) {
-        mutating = await isMethodMutating(
-          preResult.type.normalized,
-          payload.methodName,
-        );
-        if (mutating) {
-          const lockResult = await acquireModelLocks(
-            ctx.datastoreConfig,
-            [{
-              modelType: preResult.type.normalized,
-              modelId: preResult.definition.id,
-            }],
-            ctx.repoDir,
-            ctx.syncService,
-            ctx.repoContext.catalogStore,
-            undefined,
-            { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
-          );
-          if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-          flushLocks = lockResult.flush;
-          modelLocks = lockResult;
-        }
-      }
-
-      const isDirectExecution = payload.typeArg !== undefined;
-      const deps = await createModelMethodRunDeps(
-        ctx.repoDir,
+      // The root pushes once the run completed, unless a model lock's
+      // flush owns the push; that flush stays outside the root
+      // (swamp-club#3035).
+      let ran = false;
+      await runInRootUnitOfWork(
         ctx.repoContext,
         {
-          directExecution: isDirectExecution,
-          runTracker: ctx.runTracker,
-          defaultVault: ctx.defaultVault,
+          flush: () =>
+            ran && !flushLocks && mutating
+              ? withSharedSyncGate(
+                ctx.syncGate,
+                () =>
+                  pushChangedToRemote(ctx, {
+                    onError: (error) =>
+                      logger.warn(
+                        "Failed to push changes to remote datastore: {error}",
+                        { error },
+                      ),
+                  }),
+              )
+              : Promise.resolve(),
+        },
+        async () => {
+          if (preResult) {
+            mutating = await isMethodMutating(
+              preResult.type.normalized,
+              payload.methodName,
+            );
+            if (mutating) {
+              const lockResult = await acquireModelLocks(
+                ctx.datastoreConfig,
+                [{
+                  modelType: preResult.type.normalized,
+                  modelId: preResult.definition.id,
+                }],
+                ctx.repoDir,
+                ctx.syncService,
+                ctx.repoContext.catalogStore,
+                undefined,
+                { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+              );
+              if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+              flushLocks = lockResult.flush;
+              modelLocks = lockResult;
+            }
+          }
+
+          const isDirectExecution = payload.typeArg !== undefined;
+          const deps = await createModelMethodRunDeps(
+            ctx.repoDir,
+            ctx.repoContext,
+            {
+              directExecution: isDirectExecution,
+              runTracker: ctx.runTracker,
+              defaultVault: ctx.defaultVault,
+            },
+          );
+          const libCtx = handlerLibSwampContext(ctx, {
+            signal: controller.signal,
+          });
+
+          if (ctx.cancelRegistry) {
+            ctx.cancelRegistry.register("method-run", requestId, controller);
+          }
+
+          const runMethod = async () => {
+            for await (
+              const event of modelMethodRun(libCtx, deps, {
+                modelIdOrName: target.modelIdOrName,
+                byId: target.byId,
+                expectedName: target.expectedName,
+                methodName: payload.methodName,
+                inputs: payload.inputs ?? {},
+                lastEvaluated: payload.lastEvaluated ?? false,
+                runtimeTags: payload.runtimeTags,
+                typeArg: payload.typeArg,
+                definitionName: payload.definitionName,
+                skipAllReports: payload.skipAllReports || isDirectExecution,
+                skipReportNames: payload.skipReportNames,
+                skipReportLabels: payload.skipReportLabels,
+                reportNames: payload.reportNames,
+                reportLabels: payload.reportLabels,
+                skipAllChecks: payload.skipAllChecks,
+                skipCheckNames: payload.skipCheckNames,
+                skipCheckLabels: payload.skipCheckLabels,
+                traceparent: payload.traceparent,
+                tracestate: payload.tracestate,
+                initiatedBy,
+                instanceId: ctx.instanceId,
+              })
+            ) {
+              if (socket.readyState !== WebSocket.OPEN) break;
+              const serialized = serializeEvent(
+                event as { kind: string; [key: string]: unknown },
+              );
+              send(socket, { type: "event", id: requestId, event: serialized });
+            }
+            send(socket, { type: "done", id: requestId });
+          };
+
+          if (payload.traceparent) {
+            const headers: Record<string, string> = {
+              traceparent: payload.traceparent,
+            };
+            if (payload.tracestate) headers.tracestate = payload.tracestate;
+            const traceCtx = extractTraceContext(headers);
+            await runUnderModelLocks(
+              modelLocks,
+              () => runWithParentTrace(traceCtx, runMethod),
+            );
+          } else {
+            await runUnderModelLocks(modelLocks, runMethod);
+          }
+          ran = true;
         },
       );
-      const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
-
-      if (ctx.cancelRegistry) {
-        ctx.cancelRegistry.register("method-run", requestId, controller);
-      }
-
-      const runMethod = async () => {
-        for await (
-          const event of modelMethodRun(libCtx, deps, {
-            modelIdOrName: target.modelIdOrName,
-            byId: target.byId,
-            expectedName: target.expectedName,
-            methodName: payload.methodName,
-            inputs: payload.inputs ?? {},
-            lastEvaluated: payload.lastEvaluated ?? false,
-            runtimeTags: payload.runtimeTags,
-            typeArg: payload.typeArg,
-            definitionName: payload.definitionName,
-            skipAllReports: payload.skipAllReports || isDirectExecution,
-            skipReportNames: payload.skipReportNames,
-            skipReportLabels: payload.skipReportLabels,
-            reportNames: payload.reportNames,
-            reportLabels: payload.reportLabels,
-            skipAllChecks: payload.skipAllChecks,
-            skipCheckNames: payload.skipCheckNames,
-            skipCheckLabels: payload.skipCheckLabels,
-            traceparent: payload.traceparent,
-            tracestate: payload.tracestate,
-            initiatedBy,
-            instanceId: ctx.instanceId,
-          })
-        ) {
-          if (socket.readyState !== WebSocket.OPEN) break;
-          const serialized = serializeEvent(
-            event as { kind: string; [key: string]: unknown },
-          );
-          send(socket, { type: "event", id: requestId, event: serialized });
-        }
-        send(socket, { type: "done", id: requestId });
-      };
-
-      if (payload.traceparent) {
-        const headers: Record<string, string> = {
-          traceparent: payload.traceparent,
-        };
-        if (payload.tracestate) headers.tracestate = payload.tracestate;
-        const traceCtx = extractTraceContext(headers);
-        await runUnderModelLocks(
-          modelLocks,
-          () => runWithParentTrace(traceCtx, runMethod),
-        );
-      } else {
-        await runUnderModelLocks(modelLocks, runMethod);
-      }
-      if (ctx.syncService && !flushLocks && mutating) {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
-        const syncService = ctx.syncService;
-        try {
-          await withSharedSyncGate(
-            ctx.syncGate,
-            () => syncService.pushChanged({ namespace }),
-          );
-        } catch (pushError) {
-          logger.warn("Failed to push changes to remote datastore: {error}", {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          });
-        }
-      }
       await telemetry?.finish(null);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -560,106 +572,114 @@ export async function handleModelMethodRun(
     : true;
 
   (async () => {
-    let flushLocks: (() => Promise<void>) | null = null;
+    // Assigned in the root below, which control flow analysis cannot see.
+    let flushLocks = null as (() => Promise<void>) | null;
     let modelLocks: ModelLockResult | undefined;
     try {
-      if (preResult && detachedMutating) {
-        const lockResult = await acquireModelLocks(
-          ctx.datastoreConfig,
-          [{
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          }],
-          ctx.repoDir,
-          ctx.syncService,
-          ctx.repoContext.catalogStore,
-          undefined,
-          { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
-        );
-        if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-        flushLocks = lockResult.flush;
-        modelLocks = lockResult;
-      }
-
-      const isDirectExecution = payload.typeArg !== undefined;
-      const deps = await createModelMethodRunDeps(
-        ctx.repoDir,
+      // The root pushes once the run completed, unless a model lock's
+      // flush owns the push; that flush stays outside the root
+      // (swamp-club#3035).
+      let ran = false;
+      await runInRootUnitOfWork(
         ctx.repoContext,
         {
-          directExecution: isDirectExecution,
-          runTracker: ctx.runTracker,
-          defaultVault: ctx.defaultVault,
+          flush: () =>
+            ran && !flushLocks && detachedMutating
+              ? withSharedSyncGate(
+                ctx.syncGate,
+                () =>
+                  pushChangedToRemote(ctx, {
+                    onError: (error) =>
+                      logger.warn(
+                        "Failed to push changes to remote datastore: {error}",
+                        { error },
+                      ),
+                  }),
+              )
+              : Promise.resolve(),
+        },
+        async () => {
+          if (preResult && detachedMutating) {
+            const lockResult = await acquireModelLocks(
+              ctx.datastoreConfig,
+              [{
+                modelType: preResult.type.normalized,
+                modelId: preResult.definition.id,
+              }],
+              ctx.repoDir,
+              ctx.syncService,
+              ctx.repoContext.catalogStore,
+              undefined,
+              { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+            );
+            if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+            flushLocks = lockResult.flush;
+            modelLocks = lockResult;
+          }
+
+          const isDirectExecution = payload.typeArg !== undefined;
+          const deps = await createModelMethodRunDeps(
+            ctx.repoDir,
+            ctx.repoContext,
+            {
+              directExecution: isDirectExecution,
+              runTracker: ctx.runTracker,
+              defaultVault: ctx.defaultVault,
+            },
+          );
+          const libCtx = handlerLibSwampContext(ctx, {
+            signal: runController.signal,
+          });
+
+          const doRun = async () => {
+            for await (
+              const event of modelMethodRun(libCtx, deps, {
+                modelIdOrName: target.modelIdOrName,
+                byId: target.byId,
+                expectedName: target.expectedName,
+                methodName: payload.methodName,
+                inputs: payload.inputs ?? {},
+                lastEvaluated: payload.lastEvaluated ?? false,
+                runtimeTags: payload.runtimeTags,
+                typeArg: payload.typeArg,
+                definitionName: payload.definitionName,
+                skipAllReports: payload.skipAllReports || isDirectExecution,
+                skipReportNames: payload.skipReportNames,
+                skipReportLabels: payload.skipReportLabels,
+                reportNames: payload.reportNames,
+                reportLabels: payload.reportLabels,
+                skipAllChecks: payload.skipAllChecks,
+                skipCheckNames: payload.skipCheckNames,
+                skipCheckLabels: payload.skipCheckLabels,
+                traceparent: payload.traceparent,
+                tracestate: payload.tracestate,
+                initiatedBy,
+                instanceId: ctx.instanceId,
+              })
+            ) {
+              const serialized = serializeEvent(
+                event as { kind: string; [key: string]: unknown },
+              );
+              buffer.push(serialized);
+            }
+          };
+
+          if (payload.traceparent) {
+            const headers: Record<string, string> = {
+              traceparent: payload.traceparent,
+            };
+            if (payload.tracestate) headers.tracestate = payload.tracestate;
+            const traceCtx = extractTraceContext(headers);
+            await runUnderModelLocks(
+              modelLocks,
+              () => runWithParentTrace(traceCtx, doRun),
+            );
+          } else {
+            await runUnderModelLocks(modelLocks, doRun);
+          }
+          ran = true;
         },
       );
-      const libCtx = handlerLibSwampContext(ctx, {
-        signal: runController.signal,
-      });
-
-      const doRun = async () => {
-        for await (
-          const event of modelMethodRun(libCtx, deps, {
-            modelIdOrName: target.modelIdOrName,
-            byId: target.byId,
-            expectedName: target.expectedName,
-            methodName: payload.methodName,
-            inputs: payload.inputs ?? {},
-            lastEvaluated: payload.lastEvaluated ?? false,
-            runtimeTags: payload.runtimeTags,
-            typeArg: payload.typeArg,
-            definitionName: payload.definitionName,
-            skipAllReports: payload.skipAllReports || isDirectExecution,
-            skipReportNames: payload.skipReportNames,
-            skipReportLabels: payload.skipReportLabels,
-            reportNames: payload.reportNames,
-            reportLabels: payload.reportLabels,
-            skipAllChecks: payload.skipAllChecks,
-            skipCheckNames: payload.skipCheckNames,
-            skipCheckLabels: payload.skipCheckLabels,
-            traceparent: payload.traceparent,
-            tracestate: payload.tracestate,
-            initiatedBy,
-            instanceId: ctx.instanceId,
-          })
-        ) {
-          const serialized = serializeEvent(
-            event as { kind: string; [key: string]: unknown },
-          );
-          buffer.push(serialized);
-        }
-      };
-
-      if (payload.traceparent) {
-        const headers: Record<string, string> = {
-          traceparent: payload.traceparent,
-        };
-        if (payload.tracestate) headers.tracestate = payload.tracestate;
-        const traceCtx = extractTraceContext(headers);
-        await runUnderModelLocks(
-          modelLocks,
-          () => runWithParentTrace(traceCtx, doRun),
-        );
-      } else {
-        await runUnderModelLocks(modelLocks, doRun);
-      }
-
-      if (ctx.syncService && !flushLocks && detachedMutating) {
-        const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-          ? ctx.datastoreConfig.namespace
-          : undefined;
-        const syncService = ctx.syncService;
-        try {
-          await withSharedSyncGate(
-            ctx.syncGate,
-            () => syncService.pushChanged({ namespace }),
-          );
-        } catch (pushError) {
-          logger.warn("Failed to push changes to remote datastore: {error}", {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
-          });
-        }
-      }
       buffer.finish({ kind: "done" });
       await detachedTelemetry?.finish(null);
     } catch (error) {
@@ -996,71 +1016,76 @@ export async function handleModelCreate(
     ) return;
   }
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createModelCreateDeps(
-      ctx.repoDir,
-      ctx.managedDefinitionsDir,
-      ctx.repoContext.definitionRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      modelCreate(libCtx, deps, {
-        typeArg: payload.typeArg,
-        name: payload.name ?? "",
-        globalArguments: payload.globalArguments,
-      }),
-      {
-        creating: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    if (!result) {
-      sendError(
-        socket,
-        requestId,
-        "model_create_failed",
-        "Model creation failed",
-      );
-      return;
-    }
-
-    send(socket, {
-      type: "model.create",
-      id: requestId,
-      payload: { data: result },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push changes to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createModelCreateDeps(
+          ctx.repoDir,
+          ctx.managedDefinitionsDir,
+          ctx.repoContext.definitionRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          modelCreate(libCtx, deps, {
+            typeArg: payload.typeArg,
+            name: payload.name ?? "",
+            globalArguments: payload.globalArguments,
+          }),
+          {
+            creating: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        if (!result) {
+          sendError(
+            socket,
+            requestId,
+            "model_create_failed",
+            "Model creation failed",
+          );
+          return;
+        }
+
+        send(socket, {
+          type: "model.create",
+          id: requestId,
+          payload: { data: result },
         });
+        replied = true;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "model_create_failed", message);
       }
-    }
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_create_failed", message);
-  }
+    },
+  );
 }
 
 export async function handleModelDelete(
@@ -1090,107 +1115,113 @@ export async function handleModelDelete(
   ) return;
   const model = targetArgument(target, payload.modelIdOrName);
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createModelDeleteDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.markDirty,
-      ctx.repoContext.definitionRepo,
-    );
-
-    const preview = await modelDeletePreview(
-      libCtx,
-      deps,
-      {
-        modelIdOrName: model.idOrName,
-        byId: model.byId,
-        expectedName: model.expectedName,
-        force: payload.force ?? false,
-      },
-    );
-
-    const hasData = preview.dataArtifactCount > 0 ||
-      preview.outputCount > 0;
-    if (!payload.force && hasData) {
-      sendError(
-        socket,
-        requestId,
-        "has_data",
-        `Model has associated data (${preview.dataArtifactCount} artifacts, ${preview.outputCount} outputs). Use force to delete.`,
-      );
-      return;
-    }
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      modelDelete(libCtx, deps, {
-        modelIdOrName: model.idOrName,
-        byId: model.byId,
-        expectedName: model.expectedName,
-        force: payload.force ?? false,
-      }),
-      {
-        deleting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    if (!result) {
-      sendError(
-        socket,
-        requestId,
-        "model_delete_failed",
-        "Model deletion failed",
-      );
-      return;
-    }
-
-    send(socket, {
-      type: "model.delete",
-      id: requestId,
-      payload: { data: result },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push changes to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn("Failed to push changes to remote datastore: {error}", {
-          error: pushError instanceof Error
-            ? pushError.message
-            : String(pushError),
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createModelDeleteDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.unifiedDataRepo,
+          ctx.repoContext.markDirty,
+          ctx.repoContext.definitionRepo,
+        );
+
+        const preview = await modelDeletePreview(
+          libCtx,
+          deps,
+          {
+            modelIdOrName: model.idOrName,
+            byId: model.byId,
+            expectedName: model.expectedName,
+            force: payload.force ?? false,
+          },
+        );
+
+        const hasData = preview.dataArtifactCount > 0 ||
+          preview.outputCount > 0;
+        if (!payload.force && hasData) {
+          sendError(
+            socket,
+            requestId,
+            "has_data",
+            `Model has associated data (${preview.dataArtifactCount} artifacts, ${preview.outputCount} outputs). Use force to delete.`,
+          );
+          return;
+        }
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          modelDelete(libCtx, deps, {
+            modelIdOrName: model.idOrName,
+            byId: model.byId,
+            expectedName: model.expectedName,
+            force: payload.force ?? false,
+          }),
+          {
+            deleting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        if (!result) {
+          sendError(
+            socket,
+            requestId,
+            "model_delete_failed",
+            "Model deletion failed",
+          );
+          return;
+        }
+
+        send(socket, {
+          type: "model.delete",
+          id: requestId,
+          payload: { data: result },
         });
+        replied = true;
+      } catch (error) {
+        // modelDeletePreview throws a SwampError (e.g. notFound) rather than an
+        // Error; wrap it so the client gets its message and allow-listed
+        // reason.
+        const clientError = isSwampError(error)
+          ? new LibSwampStreamError(error)
+          : error;
+        sendError(
+          socket,
+          requestId,
+          "model_delete_failed",
+          sanitizeErrorForClient(clientError),
+          clientErrorDetails(clientError),
+        );
       }
-    }
-  } catch (error) {
-    // modelDeletePreview throws a SwampError (e.g. notFound) rather than an
-    // Error; wrap it so the client gets its message and allow-listed reason.
-    const clientError = isSwampError(error)
-      ? new LibSwampStreamError(error)
-      : error;
-    sendError(
-      socket,
-      requestId,
-      "model_delete_failed",
-      sanitizeErrorForClient(clientError),
-      clientErrorDetails(clientError),
-    );
-  }
+    },
+  );
 }
 
 export async function handleModelOutputGet(
@@ -2042,80 +2073,82 @@ export async function handleModelEdit(
     return;
   }
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createModelEditDeps(
-      ctx.repoDir,
-      ctx.repoContext.definitionRepo,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      modelEdit(libCtx, deps, {
-        modelIdOrName: resolved.definition.id,
-        byId: true,
-        expectedName: resolved.definition.name,
-        stdinContent: payload.content,
-        // Every save is authorized against the edited model too, so a rename
-        // or retag needs write on the result. It runs on every save rather
-        // than only on a detected change, so a concurrent retag between the
-        // lookup above and the save cannot skip it.
-        authorizeUpdate: (_before, after) =>
-          authorizeOrReject(
-            socket,
-            requestId,
-            principal,
-            "write",
-            modelEditResource(after),
-            ctx,
-          ).allowed,
-      }),
-      {
-        resolving: () => {},
-        launching: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "model.edit",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-
-    if (ctx.syncService) {
-      const namespace = isCustomDatastoreConfig(ctx.datastoreConfig)
-        ? ctx.datastoreConfig.namespace
-        : undefined;
+  // The root pushes only once the success reply was sent (swamp-club#3035).
+  let replied = false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    {
+      flush: () =>
+        replied
+          ? pushChangedToRemote(ctx, {
+            onError: (error) =>
+              logger.warn(
+                "Failed to push model edit to remote datastore: {error}",
+                { error },
+              ),
+          })
+          : Promise.resolve(),
+    },
+    async () => {
       try {
-        await ctx.syncService.pushChanged({ namespace });
-      } catch (pushError) {
-        logger.warn(
-          "Failed to push model edit to remote datastore: {error}",
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createModelEditDeps(
+          ctx.repoDir,
+          ctx.repoContext.definitionRepo,
+        );
+
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          modelEdit(libCtx, deps, {
+            modelIdOrName: resolved.definition.id,
+            byId: true,
+            expectedName: resolved.definition.name,
+            stdinContent: payload.content,
+            // Every save is authorized against the edited model too, so a
+            // rename or retag needs write on the result. It runs on every save
+            // rather than only on a detected change, so a concurrent retag
+            // between the lookup above and the save cannot skip it.
+            authorizeUpdate: (_before, after) =>
+              authorizeOrReject(
+                socket,
+                requestId,
+                principal,
+                "write",
+                modelEditResource(after),
+                ctx,
+              ).allowed,
+          }),
           {
-            error: pushError instanceof Error
-              ? pushError.message
-              : String(pushError),
+            resolving: () => {},
+            launching: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
           },
         );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "model.edit",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+        replied = true;
+      } catch (error) {
+        // A denied rename or retag was already reported by authorizeOrReject.
+        if (wasRequestErrored(socket, requestId)) return;
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "model_edit_failed", message);
       }
-    }
-  } catch (error) {
-    // A denied rename or retag was already reported by authorizeOrReject.
-    if (wasRequestErrored(socket, requestId)) return;
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_edit_failed", message);
-  }
+    },
+  );
 }
 
 /**

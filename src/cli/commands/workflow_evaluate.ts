@@ -26,6 +26,7 @@ import {
 import {
   acquireModelLocks,
   libSwampContextForRepo,
+  type ModelLockResult,
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -43,6 +44,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { mergeInputArgs, parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
   requestServerResponse,
@@ -181,7 +183,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
       workflowRepo,
     );
 
-    let flushModelLocks: (() => Promise<void>) | null = null;
+    let modelLocks: ModelLockResult | undefined;
     let repoDir: string;
     let datastoreResolver = unlocked.datastoreResolver;
 
@@ -214,7 +216,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
         if (lockResult.synced) {
           unlocked.repoContext.catalogStore.invalidate();
         }
-        flushModelLocks = lockResult.flush;
+        modelLocks = lockResult;
       }
 
       repoDir = unlocked.repoDir;
@@ -244,13 +246,21 @@ export const workflowEvaluateCommand = withRemoteOptions(
     );
     const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
-    try {
-      await consumeStream(
-        workflowEvaluate(ctx, deps, { workflowIdOrName, inputs }),
-        renderer.handlers(),
-      );
-    } finally {
-      if (flushModelLocks) await flushModelLocks();
-    }
+    await runCommandInRootUnit(
+      unlocked.repoContext,
+      {
+        push: modelLocks?.push,
+        release: modelLocks?.release,
+        onCleanupError: (error) => {
+          throw error;
+        },
+      },
+      async () => {
+        await consumeStream(
+          workflowEvaluate(ctx, deps, { workflowIdOrName, inputs }),
+          renderer.handlers(),
+        );
+      },
+    );
   },
 );

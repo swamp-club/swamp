@@ -79,6 +79,10 @@ function gatedWorkflow(name: string): Workflow {
   });
 }
 
+type WebhookRepoContext = ConstructorParameters<
+  typeof WebhookService
+>[0]["repoContext"];
+
 /**
  * Boots a real repo on a temp filesystem, optionally saving a workflow, and
  * drives one signed request through WebhookService. Returns every lifecycle
@@ -88,9 +92,12 @@ async function runWebhook(
   flag: string | ((workflow: Workflow | undefined) => string),
   route: string,
   workflow: Workflow | undefined,
-  settled: (events: readonly WebhookEvent[]) => boolean,
+  settled: (
+    events: readonly WebhookEvent[],
+    repoContext: WebhookRepoContext,
+  ) => boolean | Promise<boolean>,
   extraDeps: (
-    repoContext: ConstructorParameters<typeof WebhookService>[0]["repoContext"],
+    repoContext: WebhookRepoContext,
   ) => Partial<ConstructorParameters<typeof WebhookService>[0]> = () => ({}),
 ): Promise<WebhookEvent[]> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-outcome-" });
@@ -161,7 +168,7 @@ async function runWebhook(
       assertEquals((await response.json()).status, "queued");
 
       await waitFor(
-        () => settled(events),
+        () => settled(events, repoContext),
         "webhook run to settle",
         { timeoutMs: 60_000 },
       );
@@ -218,19 +225,17 @@ Deno.test({
     // A gated run has not finished, so neither terminal event would be true.
     // Reporting it as failed would record a spurious failure against the
     // health endpoint for a run that is merely waiting on an approver.
+    // Settled once the run record is suspended: a service stopped before the
+    // run reaches its gate cancels it instead, which is a terminal event. The
+    // queue drains in order, so no terminal event follows the suspension.
     const events = await runWebhook(
       "/hooks/gated:gated-wf:shhh",
       "/hooks/gated",
       gatedWorkflow("gated-wf"),
-      (evts) => evts.some((e) => e.kind === "webhook_queued"),
-    );
-
-    // The queue drains in order, so once the run has been dequeued and
-    // suspended no terminal event will follow.
-    await waitFor(
-      () => events.some((e) => e.kind === "webhook_queued"),
-      "webhook run to be queued",
-      { timeoutMs: 60_000 },
+      async (_evts, repoContext) =>
+        (await repoContext.workflowRunRepo.findAllGlobal()).some(({ run }) =>
+          run.status === "suspended"
+        ),
     );
 
     assertEquals(

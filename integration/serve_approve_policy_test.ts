@@ -132,8 +132,13 @@ async function suspendAtGate(
 ): Promise<Harness> {
   const workflow = gatedWorkflow(`approve-policy-${crypto.randomUUID()}`);
   await new YamlWorkflowRepository(repoDir).save(workflow);
-  const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
-    await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+  const {
+    repoDir: resolved,
+    repoContext,
+    datastoreConfig,
+    datastoreResolver,
+    syncService,
+  } = await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
 
   const grantsFile = join(resolved, "grants.yaml");
   const parsed = parseGrantFile(
@@ -195,6 +200,8 @@ async function suspendAtGate(
     repoDir: resolved,
     repoContext,
     datastoreConfig,
+    // A reject settles the run against its evaluated snapshot.
+    datastoreResolver,
     authConfig,
     policySnapshotLoader: loader,
     activeRunRegistry: new ActiveRunRegistry(),

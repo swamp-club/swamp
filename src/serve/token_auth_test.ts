@@ -28,7 +28,10 @@ import {
   splitServerToken,
 } from "./token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import {
+  type ServerToken,
+  serverTokenSecretFingerprint,
+} from "../domain/models/access/server_token_model.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 
 // ── splitServerToken ────────────────────────────────────────────────────
@@ -520,4 +523,64 @@ Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", a
     assertEquals(result.error, "Token exceeds maximum length");
     assertEquals(result.reason, "invalid-format");
   }
+});
+
+Deno.test("classifyRedeemError: classifies a record paired with another mint's secret", () => {
+  assertEquals(
+    classifyRedeemError(
+      "Server token 'x' is inconsistent: its record and its secret come from different mints — rotate it",
+    ),
+    "mispaired-secret",
+  );
+});
+
+Deno.test("authenticateServerToken: accepts a record whose fingerprint matches its secret", async () => {
+  const secretFingerprint = await serverTokenSecretFingerprint("secret-value");
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () => Promise.resolve(activeToken({ secretFingerprint })),
+    }),
+  );
+  assertEquals(result.ok, true);
+});
+
+Deno.test("authenticateServerToken: rejects a credential that matches the vault but not the record's mint", async () => {
+  // The vault holds mint B's secret; the record, and its principal, are A's.
+  const events: AuditEvent[] = [];
+  const result = await authenticateWithDeps(
+    "test-token.secret-of-mint-b",
+    makeAuthDeps({
+      readToken: async () =>
+        activeToken({
+          principalId: "user:minter-a",
+          secretFingerprint: await serverTokenSecretFingerprint(
+            "secret-of-mint-a",
+          ),
+        }),
+      readSecret: () => Promise.resolve("secret-of-mint-b"),
+    }),
+    events,
+  );
+
+  assertEquals(result, {
+    ok: false,
+    error: "Authentication failed",
+    reason: "mispaired-secret",
+  });
+  assertEquals(events.length, 0);
+});
+
+Deno.test("authenticateServerToken: a wrong secret is a secret mismatch even when the record has a fingerprint", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.wrong-secret",
+    makeAuthDeps({
+      readToken: async () =>
+        activeToken({
+          secretFingerprint: await serverTokenSecretFingerprint("secret-value"),
+        }),
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.reason, "secret-mismatch");
 });

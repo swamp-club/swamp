@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   checkInstallHealth,
+  hasInstallProblem,
   type InstallHealthDeps,
 } from "./install_health.ts";
 
@@ -37,6 +38,7 @@ function createFakeDeps(
       Promise.resolve({ enabled: false, cadence: "daily" as const }),
     getSchedulerStatus: () => Promise.resolve({ installed: false }),
     getLastLogEntry: () => Promise.resolve(null),
+    now: () => new Date("2026-10-05T12:00:00.000Z"),
     ...overrides,
   };
 }
@@ -121,4 +123,121 @@ Deno.test("checkInstallHealth: includes version and path", async () => {
 
   assertEquals(report.binaryPath, "/home/user/.local/bin/swamp");
   assertEquals(report.currentVersion, "20260518.123456.0-sha.def789");
+});
+
+const ENABLED = () =>
+  Promise.resolve({ enabled: true, cadence: "daily" as const });
+
+function lastCheckAt(timestamp: string) {
+  return () =>
+    Promise.resolve({
+      timestamp,
+      versionBefore: "20260904.171927.0-sha.aaa",
+      versionAfter: null,
+      outcome: "up_to_date" as const,
+    });
+}
+
+Deno.test("checkInstallHealth: a month-old last check is stale and a problem", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getPreferences: ENABLED,
+    getSchedulerStatus: () => Promise.resolve({ installed: true }),
+    getLastLogEntry: lastCheckAt("2026-09-04T17:53:58.961Z"),
+  }));
+
+  assertEquals(report.autoupdate.lastCheckStale, true);
+  assertEquals(report.autoupdate.lastCheckAgeDays, 30);
+  assertEquals(hasInstallProblem(report), true);
+});
+
+Deno.test("checkInstallHealth: a recent last check is healthy", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getPreferences: ENABLED,
+    getSchedulerStatus: () =>
+      Promise.resolve({
+        installed: true,
+        runtime: {
+          running: false,
+          lastExitCode: 0,
+          needsRepair: false,
+          pinnedToBinary: true,
+        },
+      }),
+    getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
+  }));
+
+  assertEquals(report.autoupdate.lastCheckStale, false);
+  assertEquals(report.autoupdate.schedulerLastExitCode, 0);
+  assertEquals(report.autoupdate.schedulerNeedsRepair, false);
+  assertEquals(hasInstallProblem(report), false);
+});
+
+Deno.test("checkInstallHealth: a job launchd refuses to start is a problem", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getPreferences: ENABLED,
+    getSchedulerStatus: () =>
+      Promise.resolve({
+        installed: true,
+        runtime: {
+          running: false,
+          lastExitCode: 78,
+          needsRepair: true,
+          pinnedToBinary: true,
+        },
+      }),
+    getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
+  }));
+
+  assertEquals(report.autoupdate.schedulerLastExitCode, 78);
+  assertEquals(report.autoupdate.schedulerNeedsRepair, true);
+  assertEquals(hasInstallProblem(report), true);
+});
+
+Deno.test("checkInstallHealth: a non-zero last exit is a problem", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getPreferences: ENABLED,
+    getSchedulerStatus: () =>
+      Promise.resolve({
+        installed: true,
+        runtime: {
+          running: false,
+          lastExitCode: 1,
+          needsRepair: false,
+          pinnedToBinary: false,
+        },
+      }),
+    getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
+  }));
+
+  assertEquals(hasInstallProblem(report), true);
+});
+
+Deno.test("checkInstallHealth: no runtime omits the exit code", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getPreferences: ENABLED,
+    getSchedulerStatus: () => Promise.resolve({ installed: true }),
+  }));
+
+  assertEquals("schedulerLastExitCode" in report.autoupdate, false);
+  assertEquals(report.autoupdate.schedulerNeedsRepair, false);
+  assertEquals(report.autoupdate.lastCheckStale, false);
+  assertEquals(hasInstallProblem(report), false);
+});
+
+Deno.test("hasInstallProblem: stale or failing scheduler ignored when autoupdate is off", async () => {
+  const report = await checkInstallHealth(createFakeDeps({
+    getSchedulerStatus: () =>
+      Promise.resolve({
+        installed: true,
+        runtime: {
+          running: false,
+          lastExitCode: 78,
+          needsRepair: true,
+          pinnedToBinary: true,
+        },
+      }),
+    getLastLogEntry: lastCheckAt("2026-09-04T17:53:58.961Z"),
+  }));
+
+  assertEquals(hasInstallProblem(report), false);
 });

@@ -225,7 +225,18 @@ snapshot, only an approval made in the same view (its `autoResumed: true`)
 hides Resume.
 
 `swamp workflow reject <workflow> <step> --run <id>` marks the step and the run
-as failed. No resume is needed.
+as failed. No resume is needed. Before the run is marked failed, the work the
+rejection leaves unfinished is settled as a cancel settles it (see
+[Cancellation](#cancellation)): every other waiting gate fails with error
+`cancelled`, pending steps are skipped or fail as `cancelled`, and their jobs
+end, so the failed record holds no job `running` and no step
+`waiting_approval` (swamp-club#2905). As on a cancel, a step with a `guard`
+whose `dependsOn` is met stays `pending`, and its job stays `pending` or ends
+`unknown`: its guard never decided.
+The run still reports the rejected gate
+as its failed step. `swamp workflow resume <workflow> --run <id> --from <gate>`
+reopens that settled work along with the rejected gate: each gate asks again,
+with its approval `timeout` counted from the new wait.
 
 **Gates inside a nested workflow (swamp-club#2736).** A workflow step runs its
 child workflow as a run of its own. When the child suspends at a gate, the
@@ -295,8 +306,8 @@ A parent this instance still drives is awaited first. Each skip is audited as
 `workflow.auto_resume_skipped`; no auto-resume starts once shutdown began.
 
 When a parent ends while a step still waits on a child (a reject of its own
-gate, a cancel, a supersede), only the parent changes: `WorkflowRun.cancel()`
-and `complete()` mark each such step failed with `detachedNestedRun`, and the
+gate, a cancel, a supersede), only the parent changes: `cancelAndSettle`
+and `completeAndSettle` mark each such step failed with `detachedNestedRun`, and the
 child is left as it was. The step's error names the child but not its state,
 which may have changed since the parent last read it. The command reports each
 detached child that has not finished with the command that cancels it (the
@@ -1446,6 +1457,43 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Finding the run.** A local cancel looks the run up in the run store, not
+through the workflow's definition (`resolveLocalCancelTarget`,
+`src/cli/commands/workflow_cancel.ts`), so a run outlives its workflow file: a
+run whose definition was deleted is still cancelled, and settled as described
+below.
+
+- `--run <id>` finds the run by its id alone, and needs no workflow argument.
+  A workflow given with it must be the run's own: its workflow id, the name the
+  run recorded, or its definition's current name. Otherwise the run is not
+  found.
+- A workflow alone picks its latest active run. A name or id that resolves no
+  definition falls back to the active runs of deleted workflows that carry it,
+  matched on the workflow id or the name the run recorded. A name a newer
+  workflow reuses therefore means the newer one; the deleted workflow's runs
+  stay reachable by run id.
+- `--all` cancels the active runs of every workflow, then those of deleted
+  workflows, reported under the name they recorded and listed last. An
+  unreadable run file fails `--all` with its read error before anything is
+  cancelled.
+
+The runs of deleted workflows are found without reading the rest of the run
+store. Only run directories that no loaded definition owns are looked at, each
+through its run index, and a run is loaded only when the index says it is
+active and, for a lookup by name, that it carries that name or id. So a
+mistyped name costs a listing of the run directories, not a parse of every
+run. On a lookup by name, a run directory that cannot be read is skipped with a
+warning, so a damaged record elsewhere does not turn `Workflow not found` into
+a read error.
+
+A workflow whose file exists but fails to load is not a deleted workflow. The
+repository skips such a file, so its runs look like a deleted workflow's;
+`listBrokenWorkflows` tells them apart, by the file's id or name or, for a file
+too broken to give either, by its file name. `--all` leaves those runs as they
+are and lists them under `notCancelled` with the file and its error; a cancel
+by the workflow's name is refused the same way. `--run <id>` still cancels the
+run, since it names it.
+
 **Run claims.** Approve, reject, cancel, supersede and the start of a resume
 each load a run's record, change it and save the whole record back. Two of them
 on one run at once would save over each other, and the first to save would have
@@ -1526,7 +1574,18 @@ or step that definition does not name, and every job when there is no
 definition or its jobs or steps form a cycle, is settled from its records
 alone, with every unfinished step failed as `cancelled`. Because settled steps
 are failed, the run's history reports a failed step and failure reason
-`cancelled`, as it does for a run aborted live.
+`cancelled`, as it does for a run aborted live. A step that failed on its own
+is reported ahead of any step the settlement failed
+(`WorkflowRun.failureInfo`), so a run keeps naming its real failure.
+
+**Settling a rejected run.** `workflow reject` goes through
+`completeAndSettle` in the same module: it fails the rejected gate, settles
+every job and step still open by the rules above, including the gate's own job
+and dependents, then completes the run as `failed`. Its settled steps are
+marked `settledByAbort`, and since a failed run can be resumed, a resume runs
+them. Outside the live walk in `execution_service.ts`, `completeAndSettle` is
+the only production caller of a run's `complete()`; the same fitness test pins
+that.
 
 `swamp workflow cancel --all` cancels all active runs across all workflows.
 With `--server`, `--run <id>` is required and `--all` is rejected. `--reason`
@@ -1803,6 +1862,10 @@ order:
   cleanup has finished. Each cleanup level is bounded by its 30-second
   cleanup signal, but a method that ignores its signal delays the record, as
   it would for a job alone in its level.
+- A job whose level is reached after the cancellation fired, without cleanup
+  mode, never starts, whether or not it shares its level (swamp-club#2898):
+  none of its steps is invoked with the cancelled signal, and it is settled as
+  a never-started job when the run records its cancellation.
 - A never-started job settles its steps in dependency order, each as above.
   It stays `pending` while any step is undecided, even when another step was
   cancelled, since nothing in it ran; otherwise it fails when any step failed
@@ -1818,7 +1881,8 @@ order:
   one in a later level runs with the cleanup signal when its level is reached.
   One the cancellation kept from starting (the abort fired before its level,
   or while it was queued behind `concurrency`) is settled when its level
-  ends, so it never stays `running` in the cancelled record (swamp-club#2597).
+  ends, so it never stays `running` in the cancelled record (swamp-club#2597),
+  alone in its level or not (swamp-club#2898).
   Its pending steps are settled as a never-started job's, then the job ends
   `failed` when a step failed and that failure was not allowed, `unknown`
   while a guarded step is undecided, otherwise `succeeded`. A `failed` or
@@ -1851,9 +1915,10 @@ order:
 Known limitation: cleanup mode starts only after something in the interrupted
 level failed or was left undecided. When every step of that level finishes
 successfully despite the cancellation (a method that ignores the signal), a
-later level is reached with the cancellation already fired and never enters
-cleanup mode: a level holding one step runs it with the aborted signal, and a
-level holding several starts nothing and leaves them `pending`.
+later step level of that job is reached with the cancellation already fired
+and never enters cleanup mode: a level holding one step runs it with the
+aborted signal, and a level holding several starts nothing and leaves them
+`pending`. A later job level starts nothing, as above.
 
 The same applies after a normal step failure without cancellation. Steps with
 `always` or `completed` conditions in later topological levels run instead of

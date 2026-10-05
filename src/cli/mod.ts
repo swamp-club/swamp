@@ -184,6 +184,16 @@ import { DefaultDatastorePathResolver } from "../infrastructure/persistence/defa
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
 import { isDevBuild } from "../domain/update/update_service.ts";
+import { withNoticeFields } from "../domain/update/update_preferences.ts";
+import {
+  createAutoupdateRefreshDeps,
+  refreshAutoupdateSchedulerIfOwed,
+} from "./autoupdate_refresh.ts";
+import {
+  lastCheckAgeDays,
+  shouldWarnStaleAutoupdate,
+} from "../domain/update/autoupdate_staleness.ts";
+import { schedulerRepairCommand } from "../presentation/renderers/doctor_install.ts";
 import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
@@ -2694,6 +2704,30 @@ async function runInvocation(
         }
       }
 
+      // Re-register the macOS autoupdate job once per installed version:
+      // launchd can refuse to start a binary that replaced itself until the
+      // job is registered again (swamp-club#3007). Writes no output, so it
+      // runs in every output mode. Never from `update`: under --background
+      // the process is the job itself.
+      let schedulerRefreshed = false;
+      if (!isDevBuild(VERSION) && commandInfo.command !== "update") {
+        const refresh = await refreshAutoupdateSchedulerIfOwed(
+          createAutoupdateRefreshDeps(),
+          VERSION,
+        );
+        schedulerRefreshed = refresh.outcome === "refreshed";
+        // A failed attempt is retried after 24h, so this shows at most daily.
+        if (
+          refresh.outcome === "failed" &&
+          getOutputModeFromArgs(args) === "log"
+        ) {
+          console.error(
+            `\n⚠ Could not re-register the autoupdate scheduler: ${refresh.error}` +
+              `\n  Run \`${schedulerRepairCommand(refresh.job)}\` to fix it.`,
+          );
+        }
+      }
+
       // Proactive update notification (after telemetry, before exit)
       if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
         const outputMode = getOutputModeFromArgs(args);
@@ -2760,8 +2794,37 @@ async function runInvocation(
                 }
               }
 
+              // Warn when autoupdate has silently stopped checking — the
+              // update banner below is suppressed while autoupdate is on, so
+              // a dead scheduler is otherwise invisible (swamp-club#3007).
+              // Throttled to once per 24h; skipped right after a refresh,
+              // which starts a fresh check.
+              const now = new Date();
+              if (
+                lastEntry && shouldWarnStaleAutoupdate({
+                  lastEntry,
+                  cadence: prefs.cadence,
+                  lastStaleWarning: updatedPrefs.lastStaleWarning,
+                  schedulerJustRefreshed: schedulerRefreshed,
+                  now,
+                })
+              ) {
+                console.error(
+                  `\n⚠ Background autoupdate has not checked for updates in ${
+                    lastCheckAgeDays(lastEntry, now)
+                  } days (since ${lastEntry.timestamp}).` +
+                    `\n  Run \`swamp doctor install\` to see why.`,
+                );
+                updatedPrefs.lastStaleWarning = now.toISOString();
+                prefsChanged = true;
+              }
+
               if (prefsChanged && configDirOwned) {
-                await prefsRepo.write(updatedPrefs);
+                // Merge onto a fresh read so a concurrent scheduler refresh's
+                // fields are not rolled back (swamp-club#3007).
+                await prefsRepo.write(
+                  withNoticeFields(await prefsRepo.read(), updatedPrefs),
+                );
               }
             }
 
