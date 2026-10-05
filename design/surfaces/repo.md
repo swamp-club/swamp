@@ -60,16 +60,25 @@ If the binary is upgraded without `swamp repo upgrade`, the repo keeps old skill
 directories that the new version has merged. `SUPERSEDED_SKILLS` in
 `superseded_skills.ts` lists their names.
 
-On every repo-scoped command, the CLI checks each enrolled tool's skill
-directory for superseded subdirectories and, if any exist, emits a warning
-through the deferred-warning system:
+On every repo-scoped command, the CLI checks the repo-local skill directories
+from `supersededSkillDirs()` for superseded subdirectories and, if any exist,
+emits a warning through the deferred-warning system. That list has one directory
+per enrolled built-in tool, de-duplicated, and falls back to the primary tool's
+directory (`.claude/skills`) when no tools are enrolled:
 
 ```
 WRN 2 old swamp-managed skill(s) can be safely deleted: swamp-data-query, swamp-extension-model. These have been replaced by the bundled swamp skill. Run 'swamp repo upgrade' to remove them.
 ```
 
 The check never blocks startup. `swamp repo upgrade` removes the directories
-with `removeSupersededSkills()`.
+from the global skill directories, from custom tools' skill directories, and,
+through `removeSupersededLocalSkills()`, from the same repo-local list the
+warning checks. Both go through `resolveSupersededSkillDirs()`, which resolves
+each directory's real path. A directory that resolves outside the repository,
+such as a committed `.claude` symlink, is neither reported by the warning nor
+cleaned by upgrade (upgrade logs that it skipped it). Upgrade deletes through
+the resolved path. A skill directory whose path cannot be resolved, or an entry
+that fails to delete, is logged without stopping the rest of the cleanup.
 
 ## Repository Layout
 

@@ -41,7 +41,10 @@ import {
   resolveSkillsDir,
   resolveUniqueGlobalSkillsDirs,
 } from "./skill_dirs.ts";
-import { removeSupersededSkills } from "./superseded_skills.ts";
+import {
+  removeSupersededLocalSkills,
+  removeSupersededSkills,
+} from "./superseded_skills.ts";
 import { assertStorableServerAddress } from "./server_address.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
@@ -630,6 +633,9 @@ export class RepoService {
 
     // Install skills globally (deduplicated across tools)
     let skillsUpdated = await this.installGlobalSkills(tools);
+
+    // Remove superseded skills from the repo-local skills dirs
+    await removeSupersededLocalSkills(repoPath.value, tools);
 
     // Resolve tools to configs and run per-repo scaffolding (instructions,
     // settings, hooks — but NOT skills, which are now global)

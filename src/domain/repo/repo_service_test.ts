@@ -27,6 +27,8 @@ import {
   RepoService,
 } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
+import { SKILL_DIRS } from "./skill_dirs.ts";
+import { SUPERSEDED_SKILLS, supersededSkillDirs } from "./superseded_skills.ts";
 import { UserError } from "../errors.ts";
 import {
   type AiTool,
@@ -3026,6 +3028,82 @@ Deno.test("detectSupersededSkills: detects superseded skill directories", async 
 Deno.test("detectSupersededSkills: returns empty for nonexistent directory", async () => {
   const result = await detectSupersededSkills("/tmp/nonexistent-dir-326");
   assertEquals(result, []);
+});
+
+async function seedSupersededSkills(dir: string): Promise<void> {
+  for (const name of SUPERSEDED_SKILLS) {
+    await ensureDir(join(dir, name));
+    await Deno.writeTextFile(join(dir, name, "SKILL.md"), "old");
+  }
+}
+
+Deno.test("RepoService.upgrade removes superseded skills from the repo-local claude skills dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    const skillsDir = join(tempDir, ".claude", "skills");
+    await seedSupersededSkills(skillsDir);
+    await ensureDir(join(skillsDir, "my-skill"));
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await detectSupersededSkills(skillsDir), []);
+    const stat = await Deno.stat(join(skillsDir, "my-skill"));
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+// The startup warning checks supersededSkillDirs(); upgrade must clear every
+// dir it checks, for every built-in tool, or the warning can never clear.
+for (const tool of Object.keys(SKILL_DIRS)) {
+  Deno.test(`RepoService.upgrade clears the superseded skills the startup warning reports (${tool})`, async () => {
+    await withTempDir(async (tempDir) => {
+      const repoPath = RepoPath.create(tempDir);
+      await testService("0.1.0", tempDir).init(repoPath, { tools: [tool] });
+      await seedSupersededSkills(join(tempDir, SKILL_DIRS[tool]));
+
+      await testService("0.2.0", tempDir).upgrade(repoPath);
+
+      for (const dir of supersededSkillDirs(tempDir, [tool])) {
+        assertEquals(await detectSupersededSkills(dir), []);
+      }
+    });
+  });
+}
+
+Deno.test("RepoService.upgrade with no tools clears the claude dir the warning reports and leaves pulled extension skills", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: [] });
+    await seedSupersededSkills(join(tempDir, ".claude", "skills"));
+    const pulledSkills = join(tempDir, ".swamp", "pulled-extensions", "skills");
+    await seedSupersededSkills(pulledSkills);
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    for (const dir of supersededSkillDirs(tempDir, [])) {
+      assertEquals(await detectSupersededSkills(dir), []);
+    }
+    assertEquals(
+      (await detectSupersededSkills(pulledSkills)).length,
+      SUPERSEDED_SKILLS.length,
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade cleans a skills dir shared by several tools", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, {
+      tools: ["codex", "copilot"],
+    });
+    const sharedDir = join(tempDir, ".agents", "skills");
+    await seedSupersededSkills(sharedDir);
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await detectSupersededSkills(sharedDir), []);
+  });
 });
 
 // ============================================================================
