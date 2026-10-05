@@ -186,7 +186,11 @@ removes every version.
   vault references resolved) and `context.queryData(predicate, select?)`
   (`model.ts`). `DataAccessService` backs them
   (`src/domain/data/data_access_service.ts`). With a catalog, it scopes the
-  predicate to the caller's namespace unless the name has one. Without a
+  predicate to the caller's namespace unless the name has one. The `modelName`
+  tag records the name at write time, so for an own-namespace name it also
+  reads the resolved definition's data by type and id, and data written before
+  the instance was renamed is still returned (swamp-club#3011). A model reading
+  its own name uses its own identity, with no definition lookup. Without a
   catalog, it walks the filesystem, and if the definition's UUID changed it
   finds data written under the old UUID: first by `modelName` tag, then, only
   when the type has a single definition, by that definition. This "orphan

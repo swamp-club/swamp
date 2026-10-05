@@ -551,3 +551,351 @@ Deno.test("DataAccessService.readModelData: filters orphan data by workflowRunId
   // With workflowRunId removed from readModelData signature, all orphan data is returned
   assertEquals(records.length, 2);
 });
+
+// --- Model instance renames on the catalog path (swamp-club#3011) ---
+
+const RENAME_OLD_NAME = "old-name";
+const RENAME_NEW_NAME = "new-name";
+
+async function withCatalogDataRepo(
+  fn: (
+    dataRepo: FileSystemUnifiedDataRepository,
+    dataQueryService: DataQueryService,
+  ) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-read-model-data-" });
+  const catalog = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    await fn(dataRepo, new DataQueryService(catalog, dataRepo));
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function saveTagged(
+  dataRepo: UnifiedDataRepository,
+  modelId: string,
+  name: string,
+  specName: string,
+  modelName: string,
+  modelType: ModelType = TEST_MODEL_TYPE,
+): Promise<void> {
+  const data = await createTestData(name, {
+    type: "resource",
+    specName,
+    modelName,
+  });
+  await dataRepo.save(
+    modelType,
+    modelId,
+    data,
+    new TextEncoder().encode(JSON.stringify({ name })),
+  );
+}
+
+function countingDefinitionRepo(
+  definitions: Array<{ definition: Definition; type: ModelType }>,
+): { repo: DefinitionRepository; lookups: () => number } {
+  let lookups = 0;
+  const inner = createMockDefinitionRepo(definitions);
+  return {
+    repo: {
+      ...inner,
+      findByNameGlobal: (name: string) => {
+        lookups++;
+        return inner.findByNameGlobal(name);
+      },
+    } as DefinitionRepository,
+    lookups: () => lookups,
+  };
+}
+
+function renamedDefinitionRepo(): DefinitionRepository {
+  return createMockDefinitionRepo([
+    {
+      definition: createTestDefinition(TEST_MODEL_ID, RENAME_NEW_NAME),
+      type: TEST_MODEL_TYPE,
+    },
+  ]);
+}
+
+Deno.test("DataAccessService.readModelData: returns data written before the model instance was renamed (swamp-club#3011)", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-two",
+      "foo",
+      RENAME_NEW_NAME,
+    );
+    const service = new DataAccessService(
+      renamedDefinitionRepo(),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME, "foo");
+    assertEquals(records.map((r) => r.name).sort(), ["foo-one", "foo-two"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: returns each item once when the name tag and identity both match", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_NEW_NAME,
+    );
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "bar-one",
+      "bar",
+      RENAME_NEW_NAME,
+    );
+    const service = new DataAccessService(
+      renamedDefinitionRepo(),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME);
+    assertEquals(records.map((r) => r.name).sort(), ["bar-one", "foo-one"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: identity read still filters by specName", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "bar-one",
+      "bar",
+      RENAME_OLD_NAME,
+    );
+    const service = new DataAccessService(
+      renamedDefinitionRepo(),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME, "foo");
+    assertEquals(records.map((r) => r.name), ["foo-one"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: keeps orphan data under an earlier id found by the name tag", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    const oldId = "550e8400-e29b-41d4-a716-446655440099";
+    await saveTagged(dataRepo, oldId, "foo-orphan", "foo", RENAME_NEW_NAME);
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-two",
+      "foo",
+      RENAME_NEW_NAME,
+    );
+    const service = new DataAccessService(
+      renamedDefinitionRepo(),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME, "foo");
+    assertEquals(records.map((r) => r.name).sort(), ["foo-orphan", "foo-two"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: a name with no definition still returns its name-tagged data", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      "deleted-model",
+    );
+    const service = new DataAccessService(
+      createMockDefinitionRepo([]),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData("deleted-model", "foo");
+    assertEquals(records.map((r) => r.name), ["foo-one"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: excludes another model's data of the same type", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    const otherId = "550e8400-e29b-41d4-a716-446655440077";
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-mine",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    await saveTagged(dataRepo, otherId, "foo-other", "foo", "other-model");
+    const service = new DataAccessService(
+      createMockDefinitionRepo([
+        {
+          definition: createTestDefinition(TEST_MODEL_ID, RENAME_NEW_NAME),
+          type: TEST_MODEL_TYPE,
+        },
+        {
+          definition: createTestDefinition(otherId, "other-model"),
+          type: TEST_MODEL_TYPE,
+        },
+      ]),
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME, "foo");
+    assertEquals(records.map((r) => r.name), ["foo-mine"]);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: reading the caller's own name uses its identity without a definition lookup", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-two",
+      "foo",
+      RENAME_NEW_NAME,
+    );
+    const { repo, lookups } = countingDefinitionRepo([]);
+    const service = new DataAccessService(
+      repo,
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(RENAME_NEW_NAME, "foo", {
+      modelType: TEST_MODEL_TYPE,
+      modelId: TEST_MODEL_ID,
+      modelName: RENAME_NEW_NAME,
+    });
+    assertEquals(records.map((r) => r.name).sort(), ["foo-one", "foo-two"]);
+    assertEquals(lookups(), 0);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: a namespace-qualified name reads by name tag only", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-two",
+      "foo",
+      RENAME_NEW_NAME,
+    );
+    const { repo, lookups } = countingDefinitionRepo([
+      {
+        definition: createTestDefinition(TEST_MODEL_ID, RENAME_NEW_NAME),
+        type: TEST_MODEL_TYPE,
+      },
+    ]);
+    const service = new DataAccessService(
+      repo,
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    const records = await service.readModelData(`*:${RENAME_NEW_NAME}`, "foo");
+    assertEquals(records.map((r) => r.name), ["foo-two"]);
+    assertEquals(lookups(), 0);
+  });
+});
+
+Deno.test("DataAccessService.readModelData: looks a name up once per service, including a miss", async () => {
+  await withCatalogDataRepo(async (dataRepo, dataQueryService) => {
+    await saveTagged(
+      dataRepo,
+      TEST_MODEL_ID,
+      "foo-one",
+      "foo",
+      RENAME_OLD_NAME,
+    );
+    const { repo, lookups } = countingDefinitionRepo([
+      {
+        definition: createTestDefinition(TEST_MODEL_ID, RENAME_NEW_NAME),
+        type: TEST_MODEL_TYPE,
+      },
+    ]);
+    const service = new DataAccessService(
+      repo,
+      dataRepo,
+      undefined,
+      undefined,
+      dataQueryService,
+    );
+
+    for (let i = 0; i < 3; i++) {
+      const found = await service.readModelData(RENAME_NEW_NAME, "foo");
+      assertEquals(found.map((r) => r.name), ["foo-one"]);
+      assertEquals(await service.readModelData("no-such-model", "foo"), []);
+    }
+    assertEquals(lookups(), 2);
+  });
+});

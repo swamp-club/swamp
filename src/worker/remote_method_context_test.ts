@@ -36,6 +36,7 @@ import {
 } from "../domain/remote/protocol.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DataPlaneClient } from "./data_plane_client.ts";
+import { modelIdentityPredicate } from "../domain/data/data_access_service.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/remote-ctx-test");
 
@@ -104,7 +105,26 @@ function harness(
   });
   orchestrator.register(RemoteMethod.queryData, (params) => {
     calls.push({ method: "queryData", params });
+    const { predicate } = params as { predicate: string };
+    if (predicate.startsWith("modelType == ")) {
+      return Promise.resolve([{ name: "by-identity", version: 1 }]);
+    }
     return Promise.resolve([{ modelName: "thing" }]);
+  });
+  orchestrator.register(RemoteMethod.resolveModel, (params) => {
+    calls.push({ method: "resolveModel", params });
+    const { modelIdOrName } = params as { modelIdOrName: string };
+    const definitions: Record<string, { id: string; name: string }> = {
+      "other": { id: "o-1", name: "other" },
+      // An id resolves to the definition it names, whose name differs.
+      "o-2": { id: "o-2", name: "renamed" },
+    };
+    const definition = definitions[modelIdOrName];
+    return Promise.resolve(
+      definition
+        ? { found: true, modelType: "swamp/other", definition }
+        : { found: false },
+    );
   });
   orchestrator.register(RemoteMethod.listVersions, (params) => {
     calls.push({ method: "listVersions", params });
@@ -466,5 +486,67 @@ Deno.test("remote context: logger.warn fires onEvent with stderr output event", 
     assertEquals(events[0].stream, "stderr");
     assertEquals(events[0].line, "something went wrong");
     return Promise.resolve();
+  });
+});
+
+function queryPredicates(calls: StubCall[]): string[] {
+  return calls
+    .filter((c) => c.method === "queryData")
+    .map((c) => (c.params as { predicate: string }).predicate);
+}
+
+Deno.test("remote context: readModelData of its own name adds an identity read without resolving (swamp-club#3011)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    const records = await h.context.readModelData!("def", "foo");
+    assertEquals(records as unknown[], [{ modelName: "thing" }, {
+      name: "by-identity",
+      version: 1,
+    }]);
+    assertEquals(queryPredicates(h.calls), [
+      'modelName == "def" && specName == "foo"',
+      modelIdentityPredicate(
+        { modelType: MODEL_TYPE.normalized, modelId: "m-1" },
+        "foo",
+      ),
+    ]);
+    assertEquals(h.calls.some((c) => c.method === "resolveModel"), false);
+  });
+});
+
+Deno.test("remote context: readModelData of another model resolves it and reads by identity", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.readModelData!("other");
+    assertEquals(queryPredicates(h.calls), [
+      'modelName == "other"',
+      modelIdentityPredicate({ modelType: "swamp/other", modelId: "o-1" }),
+    ]);
+  });
+});
+
+Deno.test("remote context: readModelData reads by name only when the name is unresolved, an id, or namespaced", async () => {
+  await withScratch(async (dir) => {
+    for (const name of ["missing", "o-2", "*:def", "ns:other"]) {
+      const h = harness(dir);
+      await h.context.readModelData!(name);
+      assertEquals(queryPredicates(h.calls), [
+        `modelName == ${JSON.stringify(name)}`,
+      ], name);
+    }
+  });
+});
+
+Deno.test("remote context: readModelData resolves a name once per dispatch, including a miss", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    for (let i = 0; i < 3; i++) {
+      await h.context.readModelData!("other");
+      await h.context.readModelData!("missing");
+    }
+    assertEquals(
+      h.calls.filter((c) => c.method === "resolveModel").length,
+      2,
+    );
   });
 });

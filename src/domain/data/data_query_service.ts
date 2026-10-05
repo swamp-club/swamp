@@ -1168,6 +1168,19 @@ export class DataQueryService {
       whereParams.push(specNameLiteral);
     }
 
+    // modelType and modelId map straight to these columns
+    // (data_record_mapper.ts), so a literal equality pushes down exactly.
+    const modelTypeLiteral = extractStringEquality(userAst, "modelType");
+    if (modelTypeLiteral !== null) {
+      whereClauses.push("type_normalized = ?");
+      whereParams.push(modelTypeLiteral);
+    }
+    const modelIdLiteral = extractStringEquality(userAst, "modelId");
+    if (modelIdLiteral !== null) {
+      whereClauses.push("model_id = ?");
+      whereParams.push(modelIdLiteral);
+    }
+
     const modelCall = extractModelCall(userAst);
     const modelTarget = modelCall === null ? undefined : models.get(modelCall);
     if (modelTarget) {

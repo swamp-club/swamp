@@ -50,6 +50,46 @@ export interface ResolvedModel {
 }
 
 /**
+ * The predicate that selects a model's data by its definition identity (type
+ * and id). Unlike the `modelName` tag, which records the name at write time,
+ * the identity survives a rename of the model instance (swamp-club#3011).
+ */
+export function modelIdentityPredicate(
+  identity: { modelType: string; modelId: string },
+  specName?: string,
+): string {
+  let predicate = `modelType == ${JSON.stringify(identity.modelType)}` +
+    ` && modelId == ${JSON.stringify(identity.modelId)}`;
+  if (specName) {
+    predicate += ` && specName == ${JSON.stringify(specName)}`;
+  }
+  return predicate;
+}
+
+/**
+ * Concatenates record lists, keeping the first occurrence of each data item
+ * version, so a record matched by both the name-tag and identity reads is
+ * returned once.
+ */
+export function mergeModelData(...lists: DataRecord[][]): DataRecord[] {
+  const seen = new Set<string>();
+  const merged: DataRecord[] = [];
+  for (const record of lists.flat()) {
+    const key = [
+      record.namespace,
+      record.modelType,
+      record.modelId,
+      record.name,
+      record.version,
+    ].join("\0");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(record);
+  }
+  return merged;
+}
+
+/**
  * Domain service for cross-model data access.
  *
  * Encapsulates the pattern of resolving a model by name and reading its data
@@ -62,6 +102,13 @@ export interface ResolvedModel {
  * access patterns.
  */
 export class DataAccessService {
+  /**
+   * Definitions the catalog read resolved by name, including misses. A
+   * lookup without a cached path walks every definition file, so a name
+   * read repeatedly in one method execution is looked up once.
+   */
+  private readonly identities = new Map<string, ResolvedModel | null>();
+
   constructor(
     private readonly definitionRepo: DefinitionRepository,
     private readonly dataRepo: UnifiedDataRepository,
@@ -86,6 +133,16 @@ export class DataAccessService {
     return null;
   }
 
+  /** {@link resolveModel}, remembered for the life of this service. */
+  private async resolveIdentity(
+    modelName: string,
+  ): Promise<ResolvedModel | null> {
+    if (!this.identities.has(modelName)) {
+      this.identities.set(modelName, await this.resolveModel(modelName));
+    }
+    return this.identities.get(modelName) ?? null;
+  }
+
   /**
    * Reads data from another model by name.
    *
@@ -99,6 +156,8 @@ export class DataAccessService {
    *
    * @param modelName - The name of the model to read data from
    * @param specName - Optional spec name filter (matches the "specName" tag)
+   * @param caller - The calling model's identity. Reading its own name uses
+   *   this identity instead of looking the definition up.
    * @param workflowRunId - Optional workflow run ID to scope results. When
    *   provided, only data whose ownerDefinition.workflowRunId matches is
    *   returned. When absent, all data is returned (global read).
@@ -107,6 +166,7 @@ export class DataAccessService {
   async readModelData(
     modelName: string,
     specName?: string,
+    caller?: ResolvedModel,
   ): Promise<DataRecord[]> {
     const parsed = parseNamespacedModelName(modelName);
 
@@ -123,7 +183,32 @@ export class DataAccessService {
       } else if (parsed.namespace !== "*") {
         predicate += ` && ns == "${escape(parsed.namespace)}"`;
       }
-      return await this.dataQueryService.query(predicate) as DataRecord[];
+      const byName = await this.dataQueryService.query(
+        predicate,
+      ) as DataRecord[];
+      if (parsed.namespace !== undefined) {
+        return byName;
+      }
+
+      // The name tag records the name at write time, so data written before
+      // the instance was renamed is also read by the definition's identity
+      // (swamp-club#3011).
+      const identity = caller?.modelName === parsed.modelName
+        ? caller
+        : await this.resolveIdentity(parsed.modelName);
+      if (!identity) {
+        return byName;
+      }
+      const byIdentity = await this.dataQueryService.query(
+        modelIdentityPredicate(
+          {
+            modelType: identity.modelType.normalized,
+            modelId: identity.modelId,
+          },
+          specName,
+        ) + ` && ns == ${JSON.stringify(this.dataRepo.namespace)}`,
+      ) as DataRecord[];
+      return mergeModelData(byName, byIdentity);
     }
 
     if (parsed.namespace !== undefined && parsed.namespace !== "*") {
