@@ -84,6 +84,96 @@ Deno.test("LogVaultReadSecretRenderer: writes exact bytes without trailing newli
   }
 });
 
+/**
+ * Replaces Deno.stdout.writeSync with `mock` for the duration of `body` and
+ * returns every chunk the mock was handed, copied at call time.
+ */
+function withMockedStdoutWriteSync(
+  mock: (data: Uint8Array, call: number) => number,
+  body: () => void,
+): Uint8Array[] {
+  const chunks: Uint8Array[] = [];
+  const originalWriteSync = Deno.stdout.writeSync.bind(Deno.stdout);
+  Deno.stdout.writeSync = (data: Uint8Array): number => {
+    const written = mock(data, chunks.length);
+    chunks.push(new Uint8Array(data.subarray(0, written)));
+    return written;
+  };
+  try {
+    body();
+  } finally {
+    Deno.stdout.writeSync = originalWriteSync;
+  }
+  return chunks;
+}
+
+function concat(chunks: Uint8Array[]): string {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(joined);
+}
+
+function completedWith(value: string): void {
+  const renderer = createVaultReadSecretRenderer("log", () => false);
+  renderer.handlers().completed({
+    kind: "completed",
+    data: { ...makeData(), value },
+  });
+}
+
+Deno.test("LogVaultReadSecretRenderer: piped output keeps a 1024+ char last line after a short write at the last newline", () => {
+  // Deno's line-buffered stdout writer emits complete lines and returns a
+  // short count when the trailing partial line is 1024+ bytes
+  // (swamp-club#3006). Model that cut: the first call writes through the
+  // last newline only; later calls take everything.
+  const lastLine = "k: " + "x".repeat(1021);
+  const value = `a: b\n${lastLine}`;
+  const encoded = new TextEncoder().encode(value);
+
+  const chunks = withMockedStdoutWriteSync(
+    (data, call) =>
+      call === 0 ? data.lastIndexOf("\n".charCodeAt(0)) + 1 : data.length,
+    () => completedWith(value),
+  );
+
+  assertEquals(chunks.length, 2);
+  assertEquals(new TextDecoder().decode(chunks[0]), "a: b\n");
+  assertEquals(new TextDecoder().decode(chunks[1]), lastLine);
+  assertEquals(concat(chunks), value);
+  assertEquals(concat(chunks).length, encoded.length);
+});
+
+Deno.test("LogVaultReadSecretRenderer: piped output is complete and in order however stdout cuts the writes", () => {
+  const value = "super_secret_value\nsecond line";
+
+  const chunks = withMockedStdoutWriteSync(
+    (data, call) => Math.min(data.length, (call % 3) + 1),
+    () => completedWith(value),
+  );
+
+  assertEquals(concat(chunks), value);
+  assertEquals(chunks.every((c) => c.length > 0), true);
+});
+
+Deno.test("LogVaultReadSecretRenderer: a zero-byte write to piped stdout throws UserError instead of looping", () => {
+  const value = "super_secret_value";
+
+  assertThrows(
+    () =>
+      withMockedStdoutWriteSync(
+        (_data, call) => (call === 0 ? 5 : 0),
+        () => completedWith(value),
+      ),
+    UserError,
+    "13 of 18 bytes of the secret unwritten",
+  );
+});
+
 Deno.test("LogVaultReadSecretRenderer: error event throws UserError", () => {
   const renderer = createVaultReadSecretRenderer("log");
   const handlers = renderer.handlers();
