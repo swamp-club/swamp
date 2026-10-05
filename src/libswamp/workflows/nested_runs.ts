@@ -84,10 +84,9 @@ export async function detachedNestedRunsOf(
       runId: detached.child.runId,
       jobName: detached.jobName,
       stepName: detached.stepName,
-      cancelCommand:
-        `swamp workflow cancel ${detached.child.workflowName} --run ${detached.child.runId}${
-          serverSuffix(child)
-        }`,
+      cancelCommand: `swamp workflow cancel ${
+        quoteShellWord(detached.child.workflowName)
+      } --run ${detached.child.runId}${serverSuffix(child)}`,
     });
   }
   return result;

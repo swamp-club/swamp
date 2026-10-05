@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { Logger } from "@logtape/logtape";
 import {
   consumeStream,
   createLibSwampContext,
@@ -29,11 +28,16 @@ import {
   type WorkflowRejectEvent,
 } from "../../libswamp/mod.ts";
 import {
+  type CommandContext,
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  renderAwaitingParent,
+  renderDetachedNestedRuns,
+} from "./nested_run_hints.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -111,7 +115,7 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
-              logNestedRunFollowUps(cliCtx.logger, e.data);
+              logNestedRunFollowUps(cliCtx, e.data);
             }
           },
           error: (e) => {
@@ -152,7 +156,7 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
-              logNestedRunFollowUps(cliCtx.logger, e.data);
+              logNestedRunFollowUps(cliCtx, e.data);
             }
           },
           error: (e) => {
@@ -171,15 +175,9 @@ export const workflowRejectCommand = withRemoteOptions(
  * the rejected run stopped waiting on, and a parent waiting on this run.
  */
 function logNestedRunFollowUps(
-  logger: Logger,
+  cliCtx: CommandContext,
   data: WorkflowRejectData,
 ): void {
-  for (const detached of data.detachedNestedRuns ?? []) {
-    logger
-      .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
-  }
-  if (data.awaitingParent) {
-    logger
-      .info`Parent run ${data.awaitingParent.runId} waits on this run. Resume it with ${data.awaitingParent.resumeCommand}`;
-  }
+  renderDetachedNestedRuns(cliCtx, data.detachedNestedRuns ?? []);
+  if (data.awaitingParent) renderAwaitingParent(cliCtx, data.awaitingParent);
 }
