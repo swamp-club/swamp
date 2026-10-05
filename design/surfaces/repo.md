@@ -71,11 +71,14 @@ WRN 2 old swamp-managed skill(s) can be safely deleted: swamp-data-query, swamp-
 ```
 
 The check never blocks startup. `swamp repo upgrade` removes the directories
-with `removeSupersededSkills()`: from the global skill directories, from custom
-tools' skill directories, and, through `removeSupersededLocalSkills()`, from the
-same repo-local list the warning checks. A repo-local skill directory that
-resolves outside the repository, such as a committed `.claude` symlink, is
-skipped with a warning.
+from the global skill directories, from custom tools' skill directories, and,
+through `removeSupersededLocalSkills()`, from the same repo-local list the
+warning checks. Both go through `resolveSupersededSkillDirs()`, which resolves
+each directory's real path. A directory that resolves outside the repository,
+such as a committed `.claude` symlink, is neither reported by the warning nor
+cleaned by upgrade (upgrade logs that it skipped it). Upgrade deletes through
+the resolved path, and a failure on one entry is logged without stopping the
+rest.
 
 ## Repository Layout
 

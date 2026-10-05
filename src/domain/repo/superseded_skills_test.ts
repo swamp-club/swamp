@@ -25,6 +25,7 @@ import {
   detectSupersededSkills,
   removeSupersededLocalSkills,
   removeSupersededSkills,
+  resolveSupersededSkillDirs,
   SUPERSEDED_SKILLS,
   supersededSkillDirs,
 } from "./superseded_skills.ts";
@@ -192,4 +193,56 @@ Deno.test("removeSupersededLocalSkills: removes a symlinked superseded entry wit
     assertEquals(await exists(join(skillsDir, "swamp-data")), false);
     assertEquals(await exists(join(target, "keep.txt")), true);
   });
+});
+
+Deno.test("resolveSupersededSkillDirs: splits dirs by containment and leaves out missing ones", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    const outside = join(tempDir, "outside");
+    await Deno.mkdir(outside);
+    await Deno.mkdir(join(repoDir, ".agents", "skills"), { recursive: true });
+    await Deno.mkdir(join(repoDir, ".claude"), { recursive: true });
+    await Deno.symlink(outside, join(repoDir, ".claude", "skills"), {
+      type: "dir",
+    });
+
+    const { contained, outside: escaped } = await resolveSupersededSkillDirs(
+      repoDir,
+      ["claude", "codex", "kiro"],
+    );
+
+    assertEquals(contained.length, 1);
+    assertPathEquals(
+      contained[0],
+      join(await Deno.realPath(repoDir), ".agents", "skills"),
+    );
+    assertEquals(escaped.length, 1);
+    assertPathEquals(escaped[0], join(repoDir, ".claude", "skills"));
+  });
+});
+
+Deno.test({
+  name:
+    "removeSupersededLocalSkills: a failing entry does not stop the rest of the dir",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const skillsDir = join(tempDir, ".claude", "skills");
+      await seedSuperseded(skillsDir);
+      // A read-only subdirectory makes the recursive delete of this entry fail.
+      const locked = join(skillsDir, SUPERSEDED_SKILLS[0], "locked");
+      await Deno.mkdir(locked);
+      await Deno.writeTextFile(join(locked, "file"), "x");
+      await Deno.chmod(locked, 0o500);
+      try {
+        await removeSupersededLocalSkills(tempDir, ["claude"]);
+
+        assertEquals(await detectSupersededSkills(skillsDir), [
+          SUPERSEDED_SKILLS[0],
+        ]);
+      } finally {
+        await Deno.chmod(locked, 0o700);
+      }
+    });
+  },
 });

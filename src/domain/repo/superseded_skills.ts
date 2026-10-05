@@ -42,17 +42,23 @@ export const SUPERSEDED_SKILLS: readonly string[] = [
   "swamp-issue",
 ];
 
+async function removeSupersededSkill(
+  skillsDir: string,
+  name: string,
+): Promise<void> {
+  try {
+    await Deno.remove(join(skillsDir, name), { recursive: true });
+    logger.info`Removed superseded skill ${name}`;
+  } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+  }
+}
+
 export async function removeSupersededSkills(
   skillsDir: string,
 ): Promise<void> {
   for (const name of SUPERSEDED_SKILLS) {
-    const dir = join(skillsDir, name);
-    try {
-      await Deno.remove(dir, { recursive: true });
-      logger.info`Removed superseded skill ${name}`;
-    } catch (e) {
-      if (!(e instanceof Deno.errors.NotFound)) throw e;
-    }
+    await removeSupersededSkill(skillsDir, name);
   }
 }
 
@@ -90,30 +96,62 @@ export function supersededSkillDirs(
 }
 
 /**
- * Removes superseded skills from the repo-local skills dirs returned by
- * {@link supersededSkillDirs}. A dir that resolves outside the repo (e.g. a
- * committed `.claude` symlink) is skipped, and a failure in one dir is logged
- * rather than thrown.
+ * Resolves the dirs from {@link supersededSkillDirs} to their real paths and
+ * splits them by whether they stay inside the repo. Missing dirs are left out.
+ * Only `contained` dirs are checked by the startup warning or cleaned by
+ * `repo upgrade`, so a symlink such as a committed `.claude` pointing outside
+ * the repo is never reported or touched.
+ */
+export async function resolveSupersededSkillDirs(
+  repoDir: string,
+  tools: readonly string[],
+): Promise<{ contained: string[]; outside: string[] }> {
+  const root = await Deno.realPath(repoDir);
+  const contained: string[] = [];
+  const outside: string[] = [];
+  for (const dir of supersededSkillDirs(repoDir, tools)) {
+    let real: string;
+    try {
+      real = await Deno.realPath(dir);
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) continue;
+      throw e;
+    }
+    if (real.startsWith(root + SEPARATOR)) {
+      contained.push(real);
+    } else {
+      outside.push(dir);
+    }
+  }
+  return { contained, outside };
+}
+
+/**
+ * Removes superseded skills from the repo-local skills dirs that resolve
+ * inside the repo. Deletes go through the resolved path, and a failure on one
+ * entry is logged without stopping the rest.
  */
 export async function removeSupersededLocalSkills(
   repoDir: string,
   tools: readonly string[],
 ): Promise<void> {
-  const root = await Deno.realPath(repoDir);
-  for (const dir of supersededSkillDirs(repoDir, tools)) {
-    try {
-      const real = await Deno.realPath(dir);
-      if (!real.startsWith(root + SEPARATOR)) {
-        logger
-          .warn`Skipping superseded skill cleanup in ${dir}: it resolves outside the repository`;
-        continue;
+  const { contained, outside } = await resolveSupersededSkillDirs(
+    repoDir,
+    tools,
+  );
+  for (const dir of outside) {
+    logger
+      .warn`Skipping superseded skill cleanup in ${dir}: it resolves outside the repository`;
+  }
+  for (const dir of contained) {
+    for (const name of SUPERSEDED_SKILLS) {
+      try {
+        await removeSupersededSkill(dir, name);
+      } catch (err) {
+        logger.warn`Could not remove superseded skill ${name} from ${dir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
       }
-      await removeSupersededSkills(dir);
-    } catch (err) {
-      if (err instanceof Deno.errors.NotFound) continue;
-      logger.warn`Skipping superseded skill cleanup in ${dir}: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
     }
   }
 }
