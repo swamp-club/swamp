@@ -91,10 +91,15 @@ function deliveryKeys(sinks: readonly AuditSink[]): {
 } {
   const keys = new Map<AuditSink, string>();
   const seen = new Map<string, number>();
+  const used = new Set<string>();
   for (const sink of sinks) {
-    const count = (seen.get(sink.name) ?? 0) + 1;
+    let count = (seen.get(sink.name) ?? 0) + 1;
+    let key = count === 1 ? sink.name : `${sink.name}#${count}`;
+    // A sink may itself be named like a generated key (`x#2`); skip past it.
+    while (used.has(key)) key = `${sink.name}#${++count}`;
     seen.set(sink.name, count);
-    keys.set(sink, count === 1 ? sink.name : `${sink.name}#${count}`);
+    used.add(key);
+    keys.set(sink, key);
   }
   const shared = new Map([...seen].filter(([, count]) => count > 1));
   return { keys, shared };

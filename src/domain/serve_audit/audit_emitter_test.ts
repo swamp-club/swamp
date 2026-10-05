@@ -1097,3 +1097,26 @@ Deno.test("AuditEmitter: a durable write that first stalls during close is repor
     await initializeLogging({ _reset: true });
   }
 });
+
+Deno.test("AuditEmitter: a sink named like a generated key keeps its own delivery state", async () => {
+  const durableSink = createMockSink("durable");
+  const first = createFlakySink("x", false);
+  const literal = createFlakySink("x#2", false);
+  const second = createFlakySink("x", false);
+  literal.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, first, literal, second],
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("one"));
+  await emitter.flush();
+  assertEquals(second.received.length, 1);
+
+  literal.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return literal.received.length === 1;
+  }, "the literally named sink to catch up");
+  await emitter.close();
+});

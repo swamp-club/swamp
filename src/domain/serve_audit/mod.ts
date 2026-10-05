@@ -65,7 +65,7 @@ export {
   type AuditVerifyResult,
 } from "./audit_query_service.ts";
 
-export type { AuditSink } from "./audit_sink.ts";
+export { type AuditSink, UnconfirmedEventsError } from "./audit_sink.ts";
 
 export {
   applyHmac,

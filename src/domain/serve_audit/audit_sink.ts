@@ -26,3 +26,18 @@ export interface AuditSink {
   flush(): Promise<void>;
   close(): Promise<void>;
 }
+
+/**
+ * Thrown by a sink's flush when events it was given did not reach any store.
+ * `sequences` names them by chain sequence, or is null when the sink cannot
+ * tell which; a caller holding the events elsewhere keeps those.
+ */
+export class UnconfirmedEventsError extends Error {
+  readonly sequences: ReadonlySet<number> | null;
+
+  constructor(message: string, sequences: ReadonlySet<number> | null) {
+    super(message);
+    this.name = "UnconfirmedEventsError";
+    this.sequences = sequences;
+  }
+}

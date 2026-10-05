@@ -23,7 +23,12 @@ import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
-import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
+import {
+  type AuditSink,
+  UnconfirmedEventsError,
+} from "../../domain/serve_audit/audit_sink.ts";
+import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
+import { StoreSink } from "./store_sink.ts";
 import { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { WalSink } from "./wal_sink.ts";
 
@@ -499,6 +504,92 @@ Deno.test(
     downstream.failWrites = false;
     await sink.flush();
     assertEquals(wal.segmentCount, 0);
+    await sink.close();
+  }),
+);
+
+function chained(action: string, sequence: number): AuditEvent {
+  return { ...makeEvent(action), sequence } as AuditEvent;
+}
+
+Deno.test(
+  "WalSink: only the segments whose events the store reports unconfirmed are delivered again",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    let report: ReadonlySet<number> | null | undefined = new Set([2]);
+    downstream.flush = () => {
+      if (report === undefined) return Promise.resolve();
+      const sequences = report;
+      report = undefined;
+      return Promise.reject(new UnconfirmedEventsError("unstored", sequences));
+    };
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([chained("stored", 1)]);
+    await sink.write([chained("unstored", 2)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    const kept = await wal.readSegment(wal.listSegments()[0]);
+    assertEquals(kept.map((e) => e.action), ["unstored"]);
+
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["stored", "unstored", "unstored"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink with a StoreSink: a store outage mid-window stores every sequence exactly once",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    let down = false;
+    const stored: AuditEvent[] = [];
+    const store: AuditStore = {
+      put(_key: string, data: Uint8Array): Promise<void> {
+        if (down) return Promise.reject(new Error("store down"));
+        for (const line of new TextDecoder().decode(data).split("\n")) {
+          if (line.trim()) stored.push(JSON.parse(line) as AuditEvent);
+        }
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    };
+    const storeSink = new StoreSink({
+      stores: [store],
+      batchSize: 1,
+      flushIntervalMs: 60_000,
+    });
+    const sink = new WalSink({
+      wal,
+      downstream: storeSink,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([chained("before-outage", 1)]);
+    await sink.flush();
+    await sink.write([chained("stored-in-window", 2)]);
+    await waitFor(() => stored.length === 2, "the batch-size put");
+    down = true;
+    await sink.write([chained("during-outage", 3)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+
+    down = false;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      stored.map((e) => (e as unknown as { sequence: number }).sequence),
+      [1, 2, 3],
+    );
     await sink.close();
   }),
 );

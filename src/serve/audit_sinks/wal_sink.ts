@@ -20,7 +20,10 @@
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
-import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
+import {
+  type AuditSink,
+  UnconfirmedEventsError,
+} from "../../domain/serve_audit/audit_sink.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 
 const logger = getSwampLogger(["serve", "audit", "wal-sink"]);
@@ -49,20 +52,25 @@ export class WalSink implements AuditSink {
   readonly durable = true;
   readonly #wal: AuditWal;
   readonly #downstream: AuditSink;
-  readonly #delivered = new Set<string>();
-  // Segments to send again: their delivery failed, or the store did not
-  // confirm them at a checkpoint.
-  #redeliver: string[] = [];
   readonly #deliveryWaitMs: number;
-  // Deliveries to the downstream sink run one at a time, in WAL order, on
-  // this chain. It never rejects; flush and close wait on it.
-  #deliveries: Promise<void> = Promise.resolve();
-  #queued = 0;
-  // Deliveries and checkpoints finished so far, and the chain and count a
-  // wait last gave up at: waiting again on a chain that has not moved since
-  // only delays shutdown.
+  // Segments handed downstream since the last checkpoint, with the
+  // sequences they hold, so a checkpoint can tell which ones the store
+  // confirmed.
+  readonly #delivered = new Map<string, readonly number[] | null>();
+  // Segments to send again: their delivery failed, or the store reported
+  // their events unconfirmed at a checkpoint.
+  #redeliver: string[] = [];
+  // Work for the delivery loop, in WAL order: segment names to deliver and
+  // checkpoints. One loop drains it, so downstream sees one call at a time.
+  #queue: (string | typeof CHECKPOINT)[] = [];
+  // Set and cleared in the same turn the loop starts and exits, so work
+  // queued as it finishes always starts a new loop.
+  #looping = false;
+  #draining: Promise<void> = Promise.resolve();
+  // Items the loop has finished, and where a wait last gave up: waiting again
+  // on a loop that has not moved since only delays shutdown.
   #completed = 0;
-  #gaveUpAt: { chain: Promise<void>; completed: number } | null = null;
+  #gaveUpAt: number | null = null;
   #checkpointQueued = false;
   #checkpointTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -98,23 +106,48 @@ export class WalSink implements AuditSink {
     if (events.length === 0) return;
 
     const segmentName = await this.#wal.append(events);
-
-    this.#queued++;
-    this.#deliveries = this.#deliveries.then(() => this.#deliver(segmentName));
+    this.#enqueue(segmentName);
   }
 
-  /** Delivers one segment downstream; never rejects. */
-  async #deliver(segmentName: string): Promise<void> {
+  #enqueue(item: string | typeof CHECKPOINT): void {
+    this.#queue.push(item);
+    // While downstream hangs the queue only grows; names the WAL size limit
+    // has already dropped are pruned, so it stays bounded by the WAL.
+    if (this.#queue.length > 2 * this.#wal.segmentCount + 16) {
+      const held = new Set(this.#wal.listSegments());
+      this.#queue = this.#queue.filter((entry) =>
+        entry === CHECKPOINT || held.has(entry)
+      );
+    }
+    if (!this.#looping) {
+      this.#looping = true;
+      this.#draining = this.#drain();
+    }
+  }
+
+  /** Runs queued work one item at a time until the queue is empty. */
+  async #drain(): Promise<void> {
     try {
-      await this.#deliverSegment(segmentName);
+      while (this.#queue.length > 0) {
+        const item = this.#queue.shift()!;
+        try {
+          if (item === CHECKPOINT) {
+            this.#checkpointQueued = false;
+            await this.#removeConfirmedSegments();
+          } else {
+            await this.#deliverSegment(item);
+          }
+        } finally {
+          this.#completed++;
+        }
+      }
     } finally {
-      this.#queued--;
-      this.#completed++;
+      this.#looping = false;
     }
   }
 
   /**
-   * Sends one segment downstream, reading it back from disk so a long queue
+   * Sends one segment downstream, reading it back from disk so the queue
    * holds segment names, not events. A segment the size limit has dropped is
    * skipped; one that fails is delivered again at the next checkpoint.
    */
@@ -129,7 +162,7 @@ export class WalSink implements AuditSink {
       }
       if (events.length === 0) return;
       await this.#downstream.write(events);
-      this.#delivered.add(segmentName);
+      this.#delivered.set(segmentName, sequencesOf(events));
     } catch (error: unknown) {
       this.#redeliver.push(segmentName);
       logger.warn(
@@ -142,29 +175,26 @@ export class WalSink implements AuditSink {
     }
   }
 
-  /** Waits for queued deliveries, up to the delivery wait. */
+  /** Waits for queued work, up to the delivery wait. */
   async #awaitDeliveries(): Promise<void> {
-    const deliveries = this.#deliveries;
-    if (
-      this.#gaveUpAt?.chain === deliveries &&
-      this.#gaveUpAt.completed === this.#completed
-    ) {
-      return;
-    }
+    if (!this.#looping) return;
+    const draining = this.#draining;
+    if (this.#gaveUpAt === this.#completed) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const done = await Promise.race([
-        deliveries.then(() => true),
+        draining.then(() => true),
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), this.#deliveryWaitMs);
         }),
       ]);
       if (!done) {
-        this.#gaveUpAt = { chain: deliveries, completed: this.#completed };
+        this.#gaveUpAt = this.#completed;
         logger.warn(
           "Downstream sink still has {count} WAL segment(s) to deliver after {seconds}s; they stay in the WAL and are replayed on the next start",
           {
-            count: this.#queued,
+            count: this.#queue.filter((entry) => entry !== CHECKPOINT).length +
+              1,
             seconds: Math.round(this.#deliveryWaitMs / 1000),
           },
         );
@@ -186,52 +216,48 @@ export class WalSink implements AuditSink {
   #queueCheckpoint(): void {
     if (this.#checkpointQueued) return;
     this.#checkpointQueued = true;
-    this.#deliveries = this.#deliveries.then(() => this.#checkpoint());
+    this.#enqueue(CHECKPOINT);
   }
 
   /**
-   * Flushes the downstream sink, then deletes the segments delivered before
-   * the flush began: only then are their events in the store. Runs on the
-   * delivery chain, so never alongside a delivery; never rejects.
+   * Delivers segments waiting to be sent again, flushes the downstream sink,
+   * then deletes the delivered segments the store confirmed. A segment whose
+   * events the flush reports unconfirmed is kept and delivered again at the
+   * next checkpoint; the rest are in the store and are deleted.
    */
-  async #checkpoint(): Promise<void> {
-    this.#checkpointQueued = false;
-    try {
-      await this.#removeConfirmedSegments();
-    } finally {
-      this.#completed++;
-    }
-  }
-
   async #removeConfirmedSegments(): Promise<void> {
     for (const segmentName of this.#redeliver.splice(0)) {
       await this.#deliverSegment(segmentName);
     }
     const delivered = [...this.#delivered];
     if (delivered.length === 0) return;
+    for (const [segmentName] of delivered) this.#delivered.delete(segmentName);
+
+    let unconfirmed: (segmentSequences: readonly number[] | null) => boolean =
+      () => false;
     try {
       await this.#downstream.flush();
     } catch (error: unknown) {
-      // The store did not confirm these. They stay in the WAL and are no
-      // longer tracked as delivered, so this checkpoint cannot delete them;
-      // the next one delivers them again.
-      for (const segmentName of delivered) {
-        this.#delivered.delete(segmentName);
-        this.#redeliver.push(segmentName);
-      }
+      const sequences = error instanceof UnconfirmedEventsError
+        ? error.sequences
+        : null;
+      // Without the sequences, every segment is treated as unconfirmed.
+      unconfirmed = (segmentSequences) =>
+        sequences === null || segmentSequences === null ||
+        segmentSequences.some((seq) => sequences.has(seq));
       logger.warn(
-        "Downstream flush failed, {count} WAL segment(s) will be delivered again at the next checkpoint: {error}",
-        {
-          count: delivered.length,
-          error: error instanceof Error ? error.message : String(error),
-        },
+        "Downstream flush failed; WAL segments it did not confirm will be delivered again at the next checkpoint: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
       );
-      return;
     }
-    for (const segmentName of delivered) {
+
+    for (const [segmentName, segmentSequences] of delivered) {
+      if (unconfirmed(segmentSequences)) {
+        this.#redeliver.push(segmentName);
+        continue;
+      }
       try {
         await this.#wal.deleteSegment(segmentName);
-        this.#delivered.delete(segmentName);
       } catch (error: unknown) {
         logger.warn(
           "Failed to delete delivered WAL segment {segment}: {error}",
@@ -273,7 +299,6 @@ export class WalSink implements AuditSink {
 
     return replayedCount;
   }
-
   async close(): Promise<void> {
     if (this.#checkpointTimer !== null) {
       clearInterval(this.#checkpointTimer);
@@ -282,4 +307,17 @@ export class WalSink implements AuditSink {
     await this.flush();
     await this.#downstream.close();
   }
+}
+
+const CHECKPOINT = Symbol("checkpoint");
+
+/** The chain sequences in a segment, or null when any event lacks one. */
+function sequencesOf(events: readonly AuditEvent[]): readonly number[] | null {
+  const sequences: number[] = [];
+  for (const event of events) {
+    const sequence = (event as { sequence?: unknown }).sequence;
+    if (typeof sequence !== "number") return null;
+    sequences.push(sequence);
+  }
+  return sequences;
 }

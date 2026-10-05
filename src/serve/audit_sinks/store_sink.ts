@@ -20,7 +20,10 @@
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
-import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
+import {
+  type AuditSink,
+  UnconfirmedEventsError,
+} from "../../domain/serve_audit/audit_sink.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 
 const logger = getSwampLogger(["serve", "audit", "store-sink"]);
@@ -72,8 +75,10 @@ export class StoreSink implements AuditSink {
   #batch: AuditEvent[] = [];
   // Batch writes still running, so flush can wait for them.
   readonly #writing = new Set<Promise<void>>();
-  // Set when a batch reaches no store; flush reports it and clears it.
-  #failedSinceFlush = false;
+  // Sequences of events in batches that reached no store, reported and
+  // cleared by flush; unknownUnstored when such an event had no sequence.
+  #unstored = new Set<number>();
+  #unknownUnstored = false;
   // Puts that failed for some stores of a batch others stored.
   #retries: PendingPut[] = [];
   #retryBytes = 0;
@@ -149,9 +154,14 @@ export class StoreSink implements AuditSink {
     }
     await Promise.all([...this.#writing]);
     await this.#retryFailedPuts();
-    if (this.#failedSinceFlush) {
-      this.#failedSinceFlush = false;
-      throw new Error("An audit batch reached no store since the last flush");
+    if (this.#unstored.size > 0 || this.#unknownUnstored) {
+      const sequences = this.#unknownUnstored ? null : this.#unstored;
+      this.#unstored = new Set();
+      this.#unknownUnstored = false;
+      throw new UnconfirmedEventsError(
+        "An audit batch reached no store since the last flush",
+        sequences,
+      );
     }
   }
 
@@ -260,7 +270,11 @@ export class StoreSink implements AuditSink {
       }
       if (stored === 0) {
         // No store has it: the caller still holds it (the WAL) and is told.
-        this.#failedSinceFlush = true;
+        for (const event of partitionEvents) {
+          const sequence = (event as { sequence?: unknown }).sequence;
+          if (typeof sequence === "number") this.#unstored.add(sequence);
+          else this.#unknownUnstored = true;
+        }
       } else {
         for (const store of failed) this.#queueRetry({ store, key, data });
       }
