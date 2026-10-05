@@ -23,7 +23,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  createWorkflowRunClaims,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { renderDetachedNestedRuns } from "./nested_run_hints.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -195,6 +199,11 @@ export interface CancelLocalRunDeps {
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /** The tracker rows of the stopped owner, closed once it is gone. */
   runTracker: RunTrackerRepository;
+  /**
+   * Claims the run while its record is settled, so the cancel acts on the
+   * run as stored and no other writer saves over it (swamp-club#2919).
+   */
+  runClaims: WorkflowRunClaims;
   /** The method-run records of the stopped owner's steps. */
   outputRepo: MethodRunOutputs;
   killProcess?: (
@@ -268,6 +277,66 @@ async function closeStoppedOwnerRuns(
 }
 
 /**
+ * A run this cancel left as it found it under the claim, because another
+ * process had taken it over.
+ */
+export class RunNotCancelledError extends UserError {
+  constructor(message: string, readonly status: string) {
+    super(message);
+    this.name = "RunNotCancelledError";
+  }
+}
+
+/** A live process that took the run over before cancel claimed it. */
+interface TakenOver {
+  takenOverBy: number;
+}
+
+/**
+ * How many times one cancel stops a process that took the run over before
+ * giving up. Each needs a new `workflow resume` to win the run's claim in the
+ * moment between a stop and the settle that follows it.
+ */
+const MAX_TAKE_OVER_STOPS = 3;
+
+/**
+ * Settles the run's record (see {@link settleCancelledRun}), first stopping
+ * any process that took the run over since the caller stopped its owners.
+ * `stopped` holds the pids already stopped and gains each one stopped here.
+ * Throws {@link RunNotCancelledError}, having saved nothing, for a run a
+ * serve instance took over or one that keeps being taken over.
+ */
+async function settleStoppingNewOwners(
+  run: WorkflowRun,
+  workflow: Workflow,
+  reason: string,
+  stopped: Set<number>,
+  killProcess: NonNullable<CancelLocalRunDeps["killProcess"]>,
+  deps: Omit<CancelLocalRunDeps, "killProcess">,
+): Promise<WorkflowRun | null> {
+  for (let stops = 0;; stops++) {
+    const outcome = await settleCancelledRun(
+      run,
+      workflow,
+      reason,
+      stopped,
+      deps,
+    );
+    if (outcome === null || !("takenOverBy" in outcome)) return outcome;
+    const pid = outcome.takenOverBy;
+    if (stops >= MAX_TAKE_OVER_STOPS) {
+      throw new RunNotCancelledError(
+        `Run ${run.id} is running under another process (pid ${pid}) and was not cancelled. Cancel it again.`,
+        "running",
+      );
+    }
+    await stopOwner(pid, killProcess);
+    await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
+    stopped.add(pid);
+  }
+}
+
+/**
  * Re-reads a run whose owner was stopped: the owner saves its own final
  * record while handling SIGTERM, and saving the pre-kill snapshot would
  * overwrite it. A run the owner already finished keeps its record (a
@@ -276,49 +345,82 @@ async function closeStoppedOwnerRuns(
  * else `workflow`, with the steps its stopped owner left running failed with
  * {@link OWNER_STOPPED_STEP_ERROR}. Returns the persisted run, or null when
  * the record no longer exists.
+ *
+ * The read, the settlement and the save hold the run's claim, so an approve
+ * or reject of the same run lands wholly before or wholly after them.
+ *
+ * A resume can take the run over after the caller chose which owners to stop
+ * and before the claim is taken here. The record then reads `running` under a
+ * live process that is not in `stopped`. Nothing is saved over it: its pid is
+ * returned as {@link TakenOver} for the caller to stop first.
  */
 async function settleCancelledRun(
   run: WorkflowRun,
   workflow: Workflow,
   reason: string,
-  { runRepo, findEvaluatedWorkflow }: Pick<
+  stopped: ReadonlySet<number>,
+  {
+    runRepo,
+    findEvaluatedWorkflow,
+    runClaims,
+    liveness = localOwnerLiveness(),
+  }: Pick<
     CancelLocalRunDeps,
-    "runRepo" | "findEvaluatedWorkflow"
+    "runRepo" | "findEvaluatedWorkflow" | "runClaims" | "liveness"
   >,
-): Promise<WorkflowRun | null> {
+): Promise<WorkflowRun | TakenOver | null> {
   const workflowId = workflow.id;
-  const current = await runRepo.findById(workflowId, run.id);
-  if (!current) {
-    return null;
-  }
-  if (current.isCancellable) {
-    cancelAndSettle(
-      current,
-      await resolveSettlementWorkflow(
+  return await runClaims.withClaim(run.id, async () => {
+    const current = await runRepo.findById(workflowId, run.id);
+    if (!current) {
+      return null;
+    }
+    const owner = ownerPidToStop(current);
+    if (
+      current.status === "running" && owner !== undefined &&
+      !stopped.has(owner) && !liveness.isDead(owner)
+    ) {
+      // A serve instance resumed the run. Its pid is the server's own, which
+      // drives every other run it has: it is never stopped from here.
+      if (isServeOwnedRun(current)) {
+        throw new RunNotCancelledError(
+          `Run ${run.id} was taken over by a serve instance and was not cancelled. ` +
+            `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
+          current.status,
+        );
+      }
+      return { takenOverBy: owner };
+    }
+    if (current.isCancellable) {
+      cancelAndSettle(
         current,
-        workflow,
-        findEvaluatedWorkflow,
-      ),
-      reason,
-      current.status === "running"
-        ? { inFlightStepError: OWNER_STOPPED_STEP_ERROR }
-        : undefined,
-    );
-  } else if (current.status === "cancelled") {
-    current.recordCancelReason(reason);
-  } else {
+        await resolveSettlementWorkflow(
+          current,
+          workflow,
+          findEvaluatedWorkflow,
+        ),
+        reason,
+        current.status === "running"
+          ? { inFlightStepError: OWNER_STOPPED_STEP_ERROR }
+          : undefined,
+      );
+    } else if (current.status === "cancelled") {
+      current.recordCancelReason(reason);
+    } else {
+      return current;
+    }
+    await runRepo.save(workflowId, current);
     return current;
-  }
-  await runRepo.save(workflowId, current);
-  return current;
+  });
 }
 
 /**
  * Cancels a locally-owned run. Stops the owning process first, giving it
  * {@link OWNER_STOP_GRACE_MS} to run cleanup and save its own outcome, closes
  * what it left open (see {@link closeStoppedOwnerRuns}), then settles the
- * record (see {@link settleCancelledRun}). Returns the persisted run, or null
- * when the record no longer exists.
+ * record (see {@link settleCancelledRun}), stopping a process that took the
+ * run over in between. Returns the persisted run, or null when the record no
+ * longer exists.
  */
 export async function cancelLocalRun(
   run: WorkflowRun,
@@ -326,12 +428,21 @@ export async function cancelLocalRun(
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
+  const stopped = new Set<number>();
   const pid = ownerPidToStop(run);
   if (pid !== undefined) {
     await stopOwner(pid, killProcess);
     await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
+    stopped.add(pid);
   }
-  return await settleCancelledRun(run, workflow, reason, deps);
+  return await settleStoppingNewOwners(
+    run,
+    workflow,
+    reason,
+    stopped,
+    killProcess,
+    deps,
+  );
 }
 
 /** Runs `fn` with the repository's run tracker open. */
@@ -358,6 +469,27 @@ export interface CancelAllResult {
   }[];
   /** Runs whose record was deleted during the cancel. */
   deleted: { runId: string; workflowName: string }[];
+  /**
+   * Runs left as they were: another process took them over during the
+   * cancel, or their claim could not be taken in time.
+   */
+  notCancelled: {
+    runId: string;
+    workflowName: string;
+    status: string;
+    reason: string;
+  }[];
+  /** A run in `notCancelled` is there because its claim timed out. */
+  claimTimedOut: boolean;
+}
+
+/** The exit code of a lock timeout (EX_TEMPFAIL): retry with backoff. */
+const LOCK_TIMEOUT_EXIT_CODE = 75;
+
+/** Whether `error` is a lock timeout, core's or a datastore extension's. */
+function isLockTimeout(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" && code.toLowerCase() === "lock_timeout";
 }
 
 /**
@@ -384,11 +516,54 @@ export async function cancelAllLocalRuns(
     await closeStoppedOwnerRuns(pid, cancelled, reason, deps);
   }
 
-  const result: CancelAllResult = { cancelled: [], finished: [], deleted: [] };
+  const result: CancelAllResult = {
+    cancelled: [],
+    finished: [],
+    deleted: [],
+    notCancelled: [],
+    claimTimedOut: false,
+  };
   for (const { run, workflow } of runs) {
     const workflowName = workflow.name;
     const previousStatus = run.status;
-    const finalRun = await settleCancelledRun(run, workflow, reason, deps);
+    let finalRun: WorkflowRun | null;
+    try {
+      finalRun = await settleStoppingNewOwners(
+        run,
+        workflow,
+        reason,
+        pids,
+        killProcess,
+        deps,
+      );
+    } catch (error) {
+      // The other runs' owners are already stopped: their records still
+      // have to be settled.
+      if (error instanceof RunNotCancelledError) {
+        result.notCancelled.push({
+          runId: run.id,
+          workflowName,
+          status: error.status,
+          reason: error.message,
+        });
+        continue;
+      }
+      if (!isLockTimeout(error)) throw error;
+      // The claim could not be taken, so nothing was settled here. The
+      // record is reported as it stands: a stopped owner may have saved its
+      // own outcome.
+      finalRun = await deps.runRepo.findById(workflow.id, run.id);
+      if (finalRun && !TERMINAL_STATUSES.has(finalRun.status)) {
+        result.claimTimedOut = true;
+        result.notCancelled.push({
+          runId: run.id,
+          workflowName,
+          status: finalRun.status,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+    }
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
     } else if (finalRun.status === "cancelled") {
@@ -567,11 +742,12 @@ export const workflowCancelCommand = withRemoteOptions(
       );
     }
 
-    const { repoDir, repoContext, datastoreResolver } =
+    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
+    const runClaims = createWorkflowRunClaims(datastoreConfig);
 
     const workflowRepo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
@@ -594,6 +770,7 @@ export const workflowCancelCommand = withRemoteOptions(
               cancelled: [],
               finished: [],
               deleted: [],
+              notCancelled: [],
               skipped: [],
             }),
           );
@@ -613,16 +790,18 @@ export const workflowCancelCommand = withRemoteOptions(
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
       }
 
-      const { cancelled, finished, deleted } = await withRunTracker(
-        repoDir,
-        (runTracker) =>
-          cancelAllLocalRuns(localRuns, reason, {
-            runRepo,
-            findEvaluatedWorkflow,
-            runTracker,
-            outputRepo: repoContext.outputRepo,
-          }),
-      );
+      const { cancelled, finished, deleted, notCancelled, claimTimedOut } =
+        await withRunTracker(
+          repoDir,
+          (runTracker) =>
+            cancelAllLocalRuns(localRuns, reason, {
+              runRepo,
+              findEvaluatedWorkflow,
+              runTracker,
+              runClaims,
+              outputRepo: repoContext.outputRepo,
+            }),
+        );
 
       const serveSkipped = serveRuns.map(({ run, workflow }) => ({
         runId: run.id,
@@ -635,6 +814,7 @@ export const workflowCancelCommand = withRemoteOptions(
           cancelled,
           finished,
           deleted,
+          notCancelled,
           skipped: serveSkipped,
           count: cancelled.length,
           reason,
@@ -664,6 +844,14 @@ export const workflowCancelCommand = withRemoteOptions(
               .warn`  ${entry.workflowName} (${entry.runId})`;
           }
         }
+        if (notCancelled.length > 0) {
+          cliCtx.logger
+            .warn`${notCancelled.length} run(s) were not cancelled`;
+          for (const entry of notCancelled) {
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status} - ${entry.reason}`;
+          }
+        }
         if (serveSkipped.length > 0) {
           cliCtx.logger
             .warn`Skipped ${serveSkipped.length} serve-owned run(s) — cancel these individually via --server --run <id>`;
@@ -674,10 +862,16 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         if (
           cancelled.length === 0 && finished.length === 0 &&
-          deleted.length === 0 && serveSkipped.length === 0
+          deleted.length === 0 && notCancelled.length === 0 &&
+          serveSkipped.length === 0
         ) {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
+      }
+      // Every run was reported; a claim that timed out is still a temporary
+      // failure to retry, as it is for a single cancel.
+      if (claimTimedOut) {
+        Deno.exitCode = LOCK_TIMEOUT_EXIT_CODE;
       }
       return;
     }
@@ -746,6 +940,7 @@ export const workflowCancelCommand = withRemoteOptions(
           runRepo,
           findEvaluatedWorkflow,
           runTracker,
+          runClaims,
           outputRepo: repoContext.outputRepo,
         }),
     );

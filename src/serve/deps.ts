@@ -86,7 +86,10 @@ import {
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
-import { acquireModelLocks } from "../cli/repo_context.ts";
+import {
+  acquireModelLocks,
+  createWorkflowRunClaims,
+} from "../cli/repo_context.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -238,6 +241,9 @@ export async function createWorkflowRunDeps(
           new DefaultDatastorePathResolver(repoDir, datastoreConfig)
             .resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
         ).findByRunId(runId),
+      // Superseded runs are locally owned, so a local approve, reject or
+      // cancel can be deciding one at the same moment.
+      runClaims: createWorkflowRunClaims(datastoreConfig),
     },
   };
 }

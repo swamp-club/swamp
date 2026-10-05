@@ -27,6 +27,7 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { createLibSwampContext } from "../context.ts";
 import { workflowApprove } from "../workflows/approve.ts";
 import { workflowReject } from "../workflows/reject.ts";
@@ -37,6 +38,7 @@ import type { Logger } from "@logtape/logtape";
 export function createWorkflowGateService(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
+  runClaims: WorkflowRunClaims,
 ): WorkflowGateService {
   return {
     async approve(
@@ -51,7 +53,7 @@ export function createWorkflowGateService(
 
       try {
         const completed = await result(
-          workflowApprove(ctx, { workflowRepo, runRepo }, {
+          workflowApprove(ctx, { workflowRepo, runRepo, runClaims }, {
             workflowIdOrName: options.workflowIdOrName,
             stepName: options.stepName,
             runId: options.runId,
@@ -93,7 +95,7 @@ export function createWorkflowGateService(
 
       try {
         const completed = await result(
-          workflowReject(ctx, { workflowRepo, runRepo }, {
+          workflowReject(ctx, { workflowRepo, runRepo, runClaims }, {
             workflowIdOrName: options.workflowIdOrName,
             stepName: options.stepName,
             runId: options.runId,

@@ -77,6 +77,7 @@ import { nestedWaitView } from "../src/libswamp/workflows/history_get.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
@@ -256,7 +257,7 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
     const approved = await completed<WorkflowApproveData>(
       workflowApprove(
         createLibSwampContext(),
-        createWorkflowApproveDeps(h.workflowRepo, h.runRepo),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
         { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
       ),
     );
@@ -309,7 +310,7 @@ Deno.test("nested approval: a child an older binary saved without its back-link 
     await completed<WorkflowApproveData>(
       workflowApprove(
         createLibSwampContext(),
-        createWorkflowApproveDeps(h.workflowRepo, h.runRepo),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
         { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
       ),
     );
@@ -349,7 +350,7 @@ Deno.test("nested approval: rejecting the child fails the parent's step as a rej
     const rejected = await completed<WorkflowRejectData>(
       workflowReject(
         createLibSwampContext(),
-        createWorkflowRejectDeps(h.workflowRepo, h.runRepo),
+        createWorkflowRejectDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
         {
           workflowIdOrName: child.name,
           stepName: "gate",
@@ -432,6 +433,7 @@ Deno.test("nested approval: a direct run of the child workflow never supersedes 
       {
         findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
         findEvaluatedWorkflow: () => Promise.resolve(null),
+        runClaims: unclaimedRuns,
       },
       h.runRepo,
     );
@@ -452,7 +454,7 @@ Deno.test("nested approval: run cleanup keeps a finished child its parent waits 
     await completed(
       workflowApprove(
         createLibSwampContext(),
-        createWorkflowApproveDeps(h.workflowRepo, h.runRepo),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
         { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
       ),
     );
@@ -514,7 +516,7 @@ Deno.test("nested approval: two levels of nesting suspend every ancestor and res
     await completed(
       workflowApprove(
         createLibSwampContext(),
-        createWorkflowApproveDeps(h.workflowRepo, h.runRepo),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
         { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
       ),
     );

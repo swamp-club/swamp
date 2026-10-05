@@ -29,6 +29,7 @@ import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 
 function makeWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -91,6 +92,7 @@ function makeCollidingDeps(): {
     impostorRun,
     savedFor,
     deps: {
+      runClaims: unclaimedRuns,
       workflowRepo: {
         findByName: (name: string) =>
           Promise.resolve(workflows.find((w) => w.name === name) ?? null),
@@ -205,6 +207,7 @@ function suspendAtParallelGates(): { workflow: Workflow; run: WorkflowRun } {
 Deno.test("workflowReject: a run failed by a rejected parallel gate names --from that gate", async () => {
   const { workflow, run } = suspendAtParallelGates();
   const deps: WorkflowRejectDeps = {
+    runClaims: unclaimedRuns,
     workflowRepo: {
       findByName: (name: string) =>
         Promise.resolve(name === workflow.name ? workflow : null),

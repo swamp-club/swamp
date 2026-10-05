@@ -101,6 +101,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
 import {
   type Principal,
@@ -1266,6 +1267,8 @@ export async function handleWorkflowApprove(
     const deps = createWorkflowApproveDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.workflowRunRepo,
+      // The reservation above is this process's claim on the run.
+      unclaimedRuns,
     );
 
     await consumeStream(
@@ -1398,6 +1401,8 @@ export async function handleWorkflowReject(
     const deps = createWorkflowRejectDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.workflowRunRepo,
+      // The reservation above is this process's claim on the run.
+      unclaimedRuns,
       ctx.runTracker,
     );
 

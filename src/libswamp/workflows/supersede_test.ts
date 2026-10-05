@@ -26,6 +26,7 @@ import { StepTask } from "../../domain/workflows/step_task.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 
 function createWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -60,8 +61,14 @@ function createSuspendedRun(
 /** Runs here have no evaluated snapshot: they settle against `wf`. */
 const noSnapshot = () => Promise.resolve(null);
 
-function stubRunRepo(saved: WorkflowRun[]): WorkflowRunRepository {
+/** A repository holding `stored`, which records the runs saved to it. */
+function stubRunRepo(
+  saved: WorkflowRun[],
+  stored: WorkflowRun[] = [],
+): WorkflowRunRepository {
   return {
+    findById: (_wfId: WorkflowId, runId: string) =>
+      Promise.resolve(stored.find((run) => run.id === runId) ?? null),
     save: (_wfId: WorkflowId, run: WorkflowRun) => {
       saved.push(run);
       return Promise.resolve();
@@ -80,8 +87,9 @@ Deno.test("supersedeSuspendedRuns: cancels matching-input suspended run", async 
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   assertEquals(result.cancelledRunIds, [run.id]);
@@ -104,8 +112,9 @@ Deno.test("supersedeSuspendedRuns: settles the superseded run's unfinished work"
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   const job = saved[0].getJob("j")!;
@@ -126,8 +135,9 @@ Deno.test("supersedeSuspendedRuns: preserves different-input suspended run", asy
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   assertEquals(result.cancelledRunIds, []);
@@ -146,8 +156,9 @@ Deno.test("supersedeSuspendedRuns: cancels only matching runs", async () => {
     {
       findSuspendedRuns: () => Promise.resolve([matching, different]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [matching, different]),
   );
 
   assertEquals(result.cancelledRunIds, [matching.id]);
@@ -165,8 +176,9 @@ Deno.test("supersedeSuspendedRuns: skips serve-owned runs", async () => {
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   assertEquals(result.cancelledRunIds, []);
@@ -184,8 +196,9 @@ Deno.test("supersedeSuspendedRuns: empty inputs match empty inputs", async () =>
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   assertEquals(result.cancelledRunIds, [run.id]);
@@ -202,8 +215,9 @@ Deno.test("supersedeSuspendedRuns: no suspended runs returns empty", async () =>
     {
       findSuspendedRuns: () => Promise.resolve([]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, []),
   );
 
   assertEquals(result.cancelledRunIds, []);
@@ -224,10 +238,83 @@ Deno.test("supersedeSuspendedRuns: skips non-suspended runs in the list", async 
     {
       findSuspendedRuns: () => Promise.resolve([run]),
       findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
     },
-    stubRunRepo(saved),
+    stubRunRepo(saved, [run]),
   );
 
   assertEquals(result.cancelledRunIds, []);
   assertEquals(saved.length, 0);
+});
+
+Deno.test("supersedeSuspendedRuns: cancels the run as stored, under its claim", async () => {
+  const wf = createWorkflow("deploy");
+  const listed = createSuspendedRun(wf, { env: "prod" });
+  // The stored record is a separate copy, as a repository read returns.
+  const current = WorkflowRun.fromData(listed.toData());
+  const saved: WorkflowRun[] = [];
+  const claimed: string[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: () => Promise.resolve([listed]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: {
+        withClaim: (runId, fn) => {
+          claimed.push(runId);
+          return fn();
+        },
+      },
+    },
+    stubRunRepo(saved, [current]),
+  );
+
+  assertEquals(result.cancelledRunIds, [listed.id]);
+  assertEquals(claimed, [listed.id]);
+  assertEquals(saved, [current]);
+  assertEquals(listed.status, "suspended");
+});
+
+Deno.test("supersedeSuspendedRuns: leaves a run that stopped being suspended since the listing", async () => {
+  const wf = createWorkflow("deploy");
+  const listed = createSuspendedRun(wf, { env: "prod" });
+  const current = WorkflowRun.fromData(listed.toData());
+  current.complete();
+  const saved: WorkflowRun[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: () => Promise.resolve([listed]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo(saved, [current]),
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(saved, []);
+});
+
+Deno.test("supersedeSuspendedRuns: leaves a run deleted since the listing", async () => {
+  const wf = createWorkflow("deploy");
+  const listed = createSuspendedRun(wf, { env: "prod" });
+  const saved: WorkflowRun[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "prod" },
+    {
+      findSuspendedRuns: () => Promise.resolve([listed]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo(saved, []),
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(saved, []);
 });

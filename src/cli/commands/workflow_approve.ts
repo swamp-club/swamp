@@ -33,6 +33,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  createWorkflowRunClaims,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -171,15 +172,17 @@ export const workflowApproveCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoContext, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createWorkflowApproveDeps(
       repoContext.workflowRepo,
       repoContext.workflowRunRepo,
+      createWorkflowRunClaims(datastoreConfig),
     );
 
     await consumeStream(
