@@ -1216,9 +1216,9 @@ export class ModelResolver {
             : undefined;
         if (coords && coords.length > 0) {
           // Full records, not `select: "version"`: mergeModelData needs each
-          // record's identity to drop the ones both reads return. Each
-          // version is listed once even when data under an earlier id shares
-          // the name.
+          // record's identity to drop the ones both reads return. Versions
+          // under an earlier id that shares the name are still listed
+          // alongside, as the name-tag read alone lists them.
           const queryService = this.dataQueryService;
           const predicates = [
             predicate,
@@ -1234,9 +1234,7 @@ export class ModelResolver {
               }) as DataRecord[]
             ),
           );
-          return [...new Set(records.map((r) => r.version))].sort((a, b) =>
-            a - b
-          );
+          return records.map((r) => r.version).sort((a, b) => a - b);
         }
         const results = this.dataQueryService.querySync(predicate, {
           select: "version",

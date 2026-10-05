@@ -2955,8 +2955,28 @@ for (const kind of ["full", "light"] as const) {
     });
   });
 
-  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors list each version once when data under an earlier id shares the name`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors treat data under an earlier id of the same name as the name tag does`, async () => {
     await withRenamedModel(async ({ write, context }) => {
+      // The definition was deleted and recreated under the same name: both
+      // ids carry the new-name tag. Unchanged by identity reads.
+      const earlierId = crypto.randomUUID();
+      await write("result", "result", "new-name", earlierId);
+      await write("result", "result", "new-name", earlierId);
+      await write("result", "result", "new-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+      await ctx.data.resolveModelNames?.(
+        'data.listVersions("new-name", "result")',
+      );
+
+      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 1, 2]);
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.map((r) => r.version), [1]);
+    });
+  });
+
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors treat a renamed model's data like data under an earlier id of its new name`, async () => {
+    await withRenamedModel(async ({ modelId, write, context }) => {
       // An earlier definition of new-name wrote result v1 and v2; the current
       // one wrote result v1 as tmp-name before it was renamed.
       const earlierId = crypto.randomUUID();
@@ -2969,9 +2989,9 @@ for (const kind of ["full", "light"] as const) {
         'data.listVersions("new-name", "result")',
       );
 
-      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 2]);
+      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 1, 2]);
       const bySpec = await ctx.data.findBySpec("new-name", "result");
-      assertEquals(bySpec.length, 1);
+      assertEquals(bySpec.map((r) => r.modelId), [modelId]);
     });
   });
 
