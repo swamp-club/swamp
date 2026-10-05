@@ -92,6 +92,13 @@ const NOT_FOUND = {
   code: 113,
 };
 
+/** `launchctl print`: the domain exists, the job does not. */
+function printJobMissing(args: string[]) {
+  return args[1].endsWith("club.swamp.autoupdate")
+    ? NOT_FOUND
+    : { stdout: "gui/501 = {\n}\n", code: 0 };
+}
+
 Deno.test("parseLaunchctlPrint: the reporter's stuck agent needs repair", () => {
   assertEquals(parseLaunchctlPrint(STUCK_PRINT), {
     running: false,
@@ -241,15 +248,37 @@ Deno.test("LaunchdScheduler.refresh: loads a job launchd does not have", async (
     async () => {
       const { result, calls } = await withMockedCommand((cmd, args) => {
         if (cmd === "id") return { stdout: "501\n", code: 0 };
-        if (args[0] === "print") return NOT_FOUND;
+        if (args[0] === "print") return printJobMissing(args);
         if (args[0] === "bootout") return { stdout: "", code: 3 };
         return { stdout: "", code: 0 };
       }, () => new LaunchdScheduler("agent").refresh());
 
       assertEquals(result, "refreshed");
-      assertEquals(launchctlCalls(calls), ["print", "bootstrap"]);
+      assertEquals(launchctlCalls(calls), ["print", "print", "bootstrap"]);
     },
   );
+});
+
+Deno.test("LaunchdScheduler.refresh: a missing launchd domain (SSH, no desktop login) is unknown", async () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily");
+  await withAgentPlist(plist, async (plistPath) => {
+    const { result, calls } = await withMockedCommand((cmd) => {
+      if (cmd === "id") return { stdout: "501\n", code: 0 };
+      return {
+        stdout: "",
+        stderr: "Bad request.\nCould not find domain for user gui: 501",
+        code: 113,
+      };
+    }, () => new LaunchdScheduler("agent").refresh());
+
+    assertEquals(result, "unknown");
+    assertEquals(launchctlCalls(calls), ["print", "print"]);
+    assertEquals(calls.filter((c) => c.args[0] === "print")[1].args, [
+      "print",
+      "gui/501",
+    ]);
+    assertEquals(await Deno.readTextFile(plistPath), plist);
+  });
 });
 
 Deno.test("LaunchdScheduler.refresh: leaves a healthy unpinned job as it is", async () => {
@@ -327,7 +356,7 @@ Deno.test("LaunchdScheduler.refresh: reports launchd's reason when bootstrap fai
     async () => {
       await withMockedCommand((cmd, args) => {
         if (cmd === "id") return { stdout: "501\n", code: 0 };
-        if (args[0] === "print") return NOT_FOUND;
+        if (args[0] === "print") return printJobMissing(args);
         if (args[0] === "bootstrap") {
           return {
             stdout: "",

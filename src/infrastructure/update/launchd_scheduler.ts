@@ -331,8 +331,9 @@ export class LaunchdScheduler implements AutoupdateScheduler {
    *
    * Leaves the job alone when it is running (a scheduled update may be
    * mid-way through writing its log entry), when its state cannot be read
-   * (`unknown`), and when it is healthy and not pinned to a binary. A job that is not
-   * loaded at all is loaded.
+   * (`unknown`, which includes a launchd domain that does not exist, as over
+   * SSH with nobody logged in to the desktop), and when it is healthy and
+   * not pinned to a binary. A job that is not loaded at all is loaded.
    */
   async refresh(): Promise<SchedulerRefreshResult> {
     const path = plistPathForMode(this.mode);
@@ -353,7 +354,12 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     const domain = await this.launchctlDomain();
     const target = `${domain}/${LABEL}`;
     const printed = await launchctl(["print", target]);
-    if (printed.code === 0) {
+    if (printed.code !== 0) {
+      // No job — or no domain at all, as over SSH with nobody logged in to
+      // the desktop. Loading into a missing domain cannot work, so that
+      // reads as unknown rather than as a failed refresh.
+      if ((await launchctl(["print", domain])).code !== 0) return "unknown";
+    } else {
       const runtime = parseLaunchctlPrint(printed.stdout);
       if (!runtime) return "unknown";
       if (runtime.running) return "skipped";
