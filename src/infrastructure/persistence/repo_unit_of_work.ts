@@ -164,10 +164,10 @@ export interface RootUnitOfWorkOptions {
  *   the flush error goes to `onFlushError` (or a warn log). When `fn`
  *   resolved and the flush throws, the flush error is thrown.
  * - Called while an open unit for the same hook is ambient (or an ended one
- *   with an open ancestor), it opens a child of that open unit without a
- *   flush instead of a second root, so a nested call never pushes twice; the
- *   outer root pushes. With no open unit for the hook it is a root and
- *   flushes.
+ *   with an open ancestor), it opens a child of that open unit, which never
+ *   pushes; the outer root pushes. Such a nested call must pass
+ *   `flush: undefined`: one given a push throws, rather than drop that push
+ *   silently. With no open unit for the hook it is a root and flushes.
  */
 export async function runInRootUnitOfWork<T>(
   repoContext: Pick<RepositoryContext, "markDirty">,
@@ -176,8 +176,14 @@ export async function runInRootUnitOfWork<T>(
 ): Promise<T> {
   const markDirty = repoContext.markDirty;
   const parent = ambientFor(markDirty);
+  if (parent !== undefined && options.flush !== undefined) {
+    throw new Error(
+      "a root unit of work was opened inside another for the same hook with " +
+        "its own push; give that push to the outer root, or run it outside",
+    );
+  }
   const root = openUnit(markDirty, {
-    flush: parent === undefined ? options.flush : undefined,
+    flush: options.flush,
     parent,
     role: "root",
   });

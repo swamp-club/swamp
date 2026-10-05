@@ -1151,8 +1151,9 @@ operation inside a unit of work:
   the push failed, its error is thrown. A unit opened while a unit for the same
   hook is ambient is a child: it forwards each change to the hook at once,
   records it in itself and every open ancestor, and its `commit` and `abandon`
-  never flush. Nested use cases roll up the same way, and a nested
-  `runInRootUnitOfWork` opens a child, so nothing pushes twice. Composition
+  never flush. Nested use cases roll up the same way. A nested
+  `runInRootUnitOfWork` opens a child when it is given no push, and throws
+  when it is given one, so a push is never dropped silently. Composition
   code stages its hand marks through the root: `root.stage({ kind: "bulk" })`
   replaces a bare mark, and `root.stage({ kind: "write" | "remove", path })` a
   per-path mark, each forwarded as the identical hook call. No CLI command or
