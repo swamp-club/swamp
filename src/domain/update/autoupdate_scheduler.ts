@@ -37,15 +37,30 @@ export interface SchedulerRuntime {
   lastExitCode: number | null;
   /** The OS refuses to start the job until it is registered again. */
   needsRepair: boolean;
+  /**
+   * The OS has pinned the job to the code signature of the binary it last
+   * started, so a replaced binary will be refused until the job is
+   * registered again.
+   */
+  pinnedToBinary: boolean;
 }
+
+/** Exit code a scheduler reports when it refused to start the job. */
+export const SCHEDULER_EX_CONFIG = 78;
 
 /**
  * Result of re-registering the scheduled job after the binary changed:
- * `refreshed` — re-registered; `skipped` — the job is running right now, so
- * it was left alone; `not_installed` — no job to refresh, or the scheduler
- * needs no re-registration.
+ * `refreshed` — re-registered; `not_needed` — the job is healthy and not
+ * pinned to a binary, so it was left as it is; `skipped` — the job is
+ * running, or its state could not be read, so it was left alone for now;
+ * `not_installed` — no job to refresh, or the scheduler needs no
+ * re-registration.
  */
-export type SchedulerRefreshResult = "refreshed" | "skipped" | "not_installed";
+export type SchedulerRefreshResult =
+  | "refreshed"
+  | "not_needed"
+  | "skipped"
+  | "not_installed";
 
 export interface AutoupdateScheduler {
   install(binaryPath: string, cadence: UpdateCadence): Promise<void>;

@@ -23,6 +23,7 @@ import {
   type InstallHealthReport,
   type SchedulerTypeLabel,
 } from "../../domain/update/install_health.ts";
+import { SCHEDULER_EX_CONFIG } from "../../domain/update/autoupdate_scheduler.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -43,22 +44,17 @@ function schedulerTypeDisplayLabel(type: SchedulerTypeLabel): string {
   }
 }
 
-const EX_CONFIG = 78;
-
 function isPrivilegedScheduler(type: SchedulerTypeLabel | undefined): boolean {
   return type === "daemon" || type === "systemd-system" || type === "cron-root";
 }
 
-function schedulerRepairCommand(type: SchedulerTypeLabel | undefined): string {
+/** The command that re-registers the autoupdate scheduler by hand. */
+export function schedulerRepairCommand(
+  type: SchedulerTypeLabel | undefined,
+): string {
   return isPrivilegedScheduler(type)
     ? "sudo swamp update --setup-auto"
     : "swamp update --setup-auto";
-}
-
-function lastCheckAgeDays(timestamp: string): number | null {
-  const checkedAt = new Date(timestamp).getTime();
-  if (Number.isNaN(checkedAt)) return null;
-  return Math.floor((Date.now() - checkedAt) / (24 * 60 * 60 * 1000));
 }
 
 export type InstallHealthStatus = "healthy" | "unhealthy";
@@ -112,7 +108,7 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
       );
       const exitCode = report.autoupdate.schedulerLastExitCode;
       if (exitCode !== undefined && exitCode !== null && exitCode !== 0) {
-        const label = exitCode === EX_CONFIG
+        const label = exitCode === SCHEDULER_EX_CONFIG
           ? `${exitCode} (EX_CONFIG: the scheduler refused to start swamp)`
           : `${exitCode}`;
         writeOutput(`  Last exit:      ${red(label)}`);
@@ -127,7 +123,7 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
         ? dim("up to date")
         : red("error");
       const ageDays = report.autoupdate.lastCheckStale
-        ? lastCheckAgeDays(last.timestamp)
+        ? report.autoupdate.lastCheckAgeDays
         : null;
       const staleLabel = ageDays !== null
         ? ` ${red(`— no check for ${ageDays} days`)}`
@@ -167,20 +163,31 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
       }
 
       const autoupdate = report.autoupdate;
+      const exitCode = autoupdate.schedulerLastExitCode;
+      // An unwritable binary also fails the run; it has its own hint above.
+      const lastRunFailed = exitCode !== undefined && exitCode !== null &&
+        exitCode !== 0 && report.writable !== "fail";
       if (
         autoupdate.enabled && autoupdate.schedulerInstalled &&
-        (autoupdate.schedulerNeedsRepair || autoupdate.lastCheckStale)
+        (autoupdate.schedulerNeedsRepair || lastRunFailed ||
+          autoupdate.lastCheckStale)
       ) {
-        writeOutput(
-          yellow(
-            autoupdate.schedulerNeedsRepair
-              ? "  ⚠ The scheduler is refusing to start the autoupdate job."
-              : "  ⚠ Autoupdate has stopped checking for updates.",
-          ),
-        );
         if (autoupdate.schedulerNeedsRepair) {
           writeOutput(
-            "    It still expects the swamp binary that was there before the last update.",
+            yellow("  ⚠ macOS is refusing to start the autoupdate job."),
+          );
+          writeOutput(
+            "    It still expects the code signature of the swamp binary that was there before the last update.",
+          );
+        } else if (lastRunFailed) {
+          writeOutput(
+            yellow(
+              `  ⚠ The autoupdate job's last run failed (exit ${exitCode}).`,
+            ),
+          );
+        } else {
+          writeOutput(
+            yellow("  ⚠ Autoupdate has stopped checking for updates."),
           );
         }
         writeOutput(

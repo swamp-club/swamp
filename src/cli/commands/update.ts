@@ -67,8 +67,8 @@ import { homeDirectory } from "../../infrastructure/persistence/paths.ts";
 import {
   createAutoupdateRefreshDeps,
   refreshAutoupdateSchedulerIfOwed,
-  schedulerRepairCommand,
 } from "../autoupdate_refresh.ts";
+import { schedulerRepairCommand } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

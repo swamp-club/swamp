@@ -20,7 +20,9 @@
 import type { SchedulerRefreshResult } from "../domain/update/autoupdate_scheduler.ts";
 import { shouldRefreshScheduler } from "../domain/update/autoupdate_staleness.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
+import { join } from "@std/path";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
+import { getSwampConfigDir } from "../infrastructure/persistence/paths.ts";
 import {
   detectInstalledLaunchdMode,
   LaunchdScheduler,
@@ -38,6 +40,11 @@ export interface AutoupdateRefreshDeps {
   isRoot(): boolean;
   configDirOwned(): boolean;
   refreshScheduler(job: LaunchdJob): Promise<SchedulerRefreshResult>;
+  /**
+   * Runs `fn` while holding the refresh lock, or returns null without
+   * running it when another swamp process holds it.
+   */
+  withRefreshLock<T>(fn: () => Promise<T>): Promise<T | null>;
   now(): Date;
 }
 
@@ -49,7 +56,10 @@ export type AutoupdateRefreshOutcome =
 
 /**
  * Re-registers the macOS autoupdate job for `installedVersion` when one is
- * owed (see shouldRefreshScheduler). Records the version on success and the
+ * owed (see shouldRefreshScheduler). Only one swamp process refreshes at a
+ * time, and it re-reads the preferences under the lock, so two commands
+ * finishing together never boot out the job the other just started.
+ * Records the version when the job was refreshed or needed nothing, and the
  * attempt time on failure, so a refresh that keeps failing is retried daily
  * rather than on every command. A running job is left alone and retried by
  * the next command. Never throws.
@@ -60,7 +70,7 @@ export async function refreshAutoupdateSchedulerIfOwed(
 ): Promise<AutoupdateRefreshOutcome> {
   if (deps.os !== "darwin") return { outcome: "not_owed" };
 
-  try {
+  const isOwed = async () => {
     const prefs = await deps.readPreferences();
     const job = await deps.detectInstalledLaunchdJob();
     const owed = shouldRefreshScheduler({
@@ -72,43 +82,78 @@ export async function refreshAutoupdateSchedulerIfOwed(
       configDirOwned: deps.configDirOwned(),
       now: deps.now(),
     });
-    if (!owed || job === null) return { outcome: "not_owed" };
+    return owed && job !== null ? { prefs, job } : null;
+  };
 
-    let result: SchedulerRefreshResult;
-    try {
-      result = await deps.refreshScheduler(job);
-    } catch (error) {
-      await deps.writePreferences({
-        ...prefs,
-        lastSchedulerRefreshAttempt: deps.now().toISOString(),
-      });
-      return {
-        outcome: "failed",
-        job,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+  try {
+    if (!(await isOwed())) return { outcome: "not_owed" };
 
-    if (result === "skipped") return { outcome: "skipped" };
-    if (result === "not_installed") return { outcome: "not_owed" };
+    const outcome = await deps.withRefreshLock(
+      async (): Promise<AutoupdateRefreshOutcome> => {
+        const owed = await isOwed();
+        if (!owed) return { outcome: "not_owed" };
+        const { prefs, job } = owed;
 
-    await deps.writePreferences({
-      ...prefs,
-      schedulerRefreshedVersion: installedVersion,
-      lastSchedulerRefreshAttempt: undefined,
-    });
-    return { outcome: "refreshed" };
+        let result: SchedulerRefreshResult;
+        try {
+          result = await deps.refreshScheduler(job);
+        } catch (error) {
+          await deps.writePreferences({
+            ...prefs,
+            lastSchedulerRefreshAttempt: deps.now().toISOString(),
+          });
+          return {
+            outcome: "failed",
+            job,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+
+        if (result === "skipped") return { outcome: "skipped" };
+        if (result === "not_installed") return { outcome: "not_owed" };
+
+        await deps.writePreferences({
+          ...prefs,
+          schedulerRefreshedVersion: installedVersion,
+          lastSchedulerRefreshAttempt: undefined,
+        });
+        return { outcome: result === "refreshed" ? "refreshed" : "not_owed" };
+      },
+    );
+    return outcome ?? { outcome: "skipped" };
   } catch {
     // Reading or writing preferences failed; the next command tries again.
     return { outcome: "not_owed" };
   }
 }
 
-/** The command that re-registers the job by hand, for repair hints. */
-export function schedulerRepairCommand(job: LaunchdJob): string {
-  return job === "daemon"
-    ? "sudo swamp update --setup-auto"
-    : "swamp update --setup-auto";
+const REFRESH_LOCK_FILE = "autoupdate-refresh.lock";
+/** A lock older than this was left by a process that died mid-refresh. */
+const STALE_REFRESH_LOCK_MS = 2 * 60 * 1000;
+
+async function withLockFile<T>(
+  path: string,
+  fn: () => Promise<T>,
+  retryStale = true,
+): Promise<T | null> {
+  try {
+    const file = await Deno.open(path, { createNew: true, write: true });
+    file.close();
+  } catch (error) {
+    if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+    const stat = await Deno.stat(path).catch(() => null);
+    const age = stat?.mtime ? Date.now() - stat.mtime.getTime() : 0;
+    if (retryStale && age > STALE_REFRESH_LOCK_MS) {
+      await Deno.remove(path).catch(() => {});
+      return await withLockFile(path, fn, false);
+    }
+    return null;
+  }
+  try {
+    return await fn();
+  } finally {
+    await Deno.remove(path).catch(() => {});
+  }
 }
 
 export function createAutoupdateRefreshDeps(): AutoupdateRefreshDeps {
@@ -121,6 +166,11 @@ export function createAutoupdateRefreshDeps(): AutoupdateRefreshDeps {
     isRoot: () => isRunningAsRoot(),
     configDirOwned: () => processOwnsConfigDir(),
     refreshScheduler: (job) => new LaunchdScheduler(job).refresh(),
+    withRefreshLock: async (fn) => {
+      const dir = getSwampConfigDir();
+      await Deno.mkdir(dir, { recursive: true });
+      return await withLockFile(join(dir, REFRESH_LOCK_FILE), fn);
+    },
     now: () => new Date(),
   };
 }

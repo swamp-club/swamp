@@ -64,6 +64,15 @@ const HEALTHY_PRINT = `gui/501/club.swamp.autoupdate = {
 }
 `;
 
+const UNPINNED_PRINT = `gui/501/club.swamp.autoupdate = {
+	active count = 0
+	state = not running
+	runs = 1
+	last exit code = 0
+	properties = runatload | inferred program
+}
+`;
+
 const RUNNING_PRINT = `gui/501/club.swamp.autoupdate = {
 	active count = 1
 	state = running
@@ -88,6 +97,7 @@ Deno.test("parseLaunchctlPrint: the reporter's stuck agent needs repair", () => 
     running: false,
     lastExitCode: 78,
     needsRepair: true,
+    pinnedToBinary: true,
   });
 });
 
@@ -96,7 +106,12 @@ Deno.test("parseLaunchctlPrint: a healthy agent with a pinned requirement", () =
     running: false,
     lastExitCode: 0,
     needsRepair: false,
+    pinnedToBinary: true,
   });
+});
+
+Deno.test("parseLaunchctlPrint: a job loaded from the command line is not pinned", () => {
+  assertEquals(parseLaunchctlPrint(UNPINNED_PRINT)?.pinnedToBinary, false);
 });
 
 Deno.test("parseLaunchctlPrint: a running job that has never exited", () => {
@@ -104,6 +119,7 @@ Deno.test("parseLaunchctlPrint: a running job that has never exited", () => {
     running: true,
     lastExitCode: null,
     needsRepair: false,
+    pinnedToBinary: false,
   });
 });
 
@@ -231,34 +247,76 @@ Deno.test("LaunchdScheduler.refresh: loads a job launchd does not have", async (
       }, () => new LaunchdScheduler("agent").refresh());
 
       assertEquals(result, "refreshed");
-      assertEquals(launchctlCalls(calls), [
-        "print",
-        "bootout",
-        "print",
-        "bootstrap",
-      ]);
+      assertEquals(launchctlCalls(calls), ["print", "bootstrap"]);
     },
   );
 });
 
-Deno.test("LaunchdScheduler.refresh: a job another process loaded first counts as refreshed", async () => {
+Deno.test("LaunchdScheduler.refresh: leaves a healthy unpinned job as it is", async () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily");
+  await withAgentPlist(plist, async (plistPath) => {
+    const { result, calls } = await withMockedCommand((cmd) => {
+      if (cmd === "id") return { stdout: "501\n", code: 0 };
+      return { stdout: UNPINNED_PRINT, code: 0 };
+    }, () => new LaunchdScheduler("agent").refresh());
+
+    assertEquals(result, "not_needed");
+    assertEquals(launchctlCalls(calls), ["print"]);
+    assertEquals(await Deno.readTextFile(plistPath), plist);
+  });
+});
+
+Deno.test("LaunchdScheduler.refresh: refreshes a pinned job even when its last run passed", async () => {
   await withAgentPlist(
     buildPlist("/usr/local/bin/swamp", "daily"),
     async () => {
-      let bootstrapped = false;
+      let booted = true;
       const { result } = await withMockedCommand((cmd, args) => {
         if (cmd === "id") return { stdout: "501\n", code: 0 };
         if (args[0] === "print") {
-          return bootstrapped ? { stdout: HEALTHY_PRINT, code: 0 } : NOT_FOUND;
+          return booted ? { stdout: HEALTHY_PRINT, code: 0 } : NOT_FOUND;
         }
-        if (args[0] === "bootstrap") {
-          bootstrapped = true;
-          return { stdout: "", stderr: "Bootstrap failed: 5", code: 5 };
-        }
+        if (args[0] === "bootout") booted = false;
         return { stdout: "", code: 0 };
       }, () => new LaunchdScheduler("agent").refresh());
 
       assertEquals(result, "refreshed");
+    },
+  );
+});
+
+Deno.test("LaunchdScheduler.refresh: leaves the job alone when its state cannot be read", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async () => {
+      const { result, calls } = await withMockedCommand((cmd) => {
+        if (cmd === "id") return { stdout: "501\n", code: 0 };
+        return { stdout: "a format launchd has not used before", code: 0 };
+      }, () => new LaunchdScheduler("agent").refresh());
+
+      assertEquals(result, "skipped");
+      assertEquals(launchctlCalls(calls), ["print"]);
+    },
+  );
+});
+
+Deno.test("LaunchdScheduler.refresh: fails without bootstrapping when bootout does not unload", async () => {
+  await withAgentPlist(
+    buildPlist("/usr/local/bin/swamp", "daily"),
+    async () => {
+      const { calls } = await withMockedCommand((cmd) => {
+        if (cmd === "id") return { stdout: "501\n", code: 0 };
+        return { stdout: STUCK_PRINT, code: 0 };
+      }, async () => {
+        await assertRejects(
+          () =>
+            new LaunchdScheduler("agent", { bootoutPollIntervalMs: 0 })
+              .refresh(),
+          Error,
+          "did not unload",
+        );
+      });
+      assertEquals(launchctlCalls(calls).includes("bootstrap"), false);
     },
   );
 });
@@ -312,7 +370,12 @@ Deno.test("LaunchdScheduler.status: reports launchd's runtime state", async () =
       assertEquals(result, {
         installed: true,
         cadence: "daily",
-        runtime: { running: false, lastExitCode: 78, needsRepair: true },
+        runtime: {
+          running: false,
+          lastExitCode: 78,
+          needsRepair: true,
+          pinnedToBinary: true,
+        },
       });
     },
   );

@@ -33,6 +33,7 @@ function createHealthyReport(): InstallHealthReport {
       cadence: "daily",
       schedulerInstalled: true,
       lastCheckStale: false,
+      lastCheckAgeDays: 0,
       schedulerNeedsRepair: false,
       lastEntry: {
         timestamp: "2026-05-18T09:00:00.000Z",
@@ -56,6 +57,7 @@ function createUnhealthyReport(): InstallHealthReport {
       cadence: "daily",
       schedulerInstalled: true,
       lastCheckStale: false,
+      lastCheckAgeDays: 0,
       schedulerNeedsRepair: false,
       lastEntry: {
         timestamp: "2026-05-17T09:22:50.722Z",
@@ -134,13 +136,39 @@ Deno.test("createDoctorInstallRenderer: log mode flags a stale last check", () =
   const report = createHealthyReport();
   report.autoupdate.schedulerType = "daemon";
   report.autoupdate.lastCheckStale = true;
+  report.autoupdate.lastCheckAgeDays = 31;
 
   const output = captureConsoleLog(() => renderer.render(report));
 
   assertEquals(renderer.overallStatus, "unhealthy");
-  assertStringIncludes(output, "no check for");
+  assertStringIncludes(output, "no check for 31 days");
   assertStringIncludes(output, "stopped checking for updates");
   assertStringIncludes(output, "`sudo swamp update --setup-auto`");
+});
+
+Deno.test("createDoctorInstallRenderer: log mode gives a repair hint for any failing exit code", () => {
+  const renderer = createDoctorInstallRenderer("log");
+  const report = createHealthyReport();
+  report.autoupdate.schedulerType = "agent";
+  report.autoupdate.schedulerLastExitCode = 1;
+
+  const output = captureConsoleLog(() => renderer.render(report));
+
+  assertEquals(renderer.overallStatus, "unhealthy");
+  assertStringIncludes(output, "Last exit:");
+  assertStringIncludes(output, "last run failed (exit 1)");
+  assertStringIncludes(output, "`swamp update --setup-auto`");
+});
+
+Deno.test("createDoctorInstallRenderer: an unwritable binary gets its own hint, not re-register", () => {
+  const renderer = createDoctorInstallRenderer("log");
+  const report = createUnhealthyReport();
+  report.autoupdate.schedulerLastExitCode = 1;
+
+  const output = captureConsoleLog(() => renderer.render(report));
+
+  assertStringIncludes(output, "binary is not writable");
+  assertEquals(output.includes("Re-register"), false);
 });
 
 Deno.test("createDoctorInstallRenderer: json mode includes the scheduler health fields", () => {

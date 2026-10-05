@@ -19,7 +19,7 @@
 
 import type { AutoupdateLogEntry } from "./autoupdate_log.ts";
 import type { ScheduleStatus } from "./autoupdate_scheduler.ts";
-import { isLastCheckStale } from "./autoupdate_staleness.ts";
+import { isLastCheckStale, lastCheckAgeDays } from "./autoupdate_staleness.ts";
 import type { UpdateCadence } from "./update_preferences.ts";
 
 export type InstallCheckStatus = "pass" | "fail" | "skip";
@@ -55,6 +55,8 @@ export interface AutoupdateHealth {
   lastEntry: AutoupdateLogEntry | null;
   /** The last check is older than the cadence allows (see isLastCheckStale). */
   lastCheckStale: boolean;
+  /** Whole days since the last check, or null when there is none. */
+  lastCheckAgeDays: number | null;
   /**
    * Exit code of the scheduler's last run, or null when it has never exited.
    * Omitted when the scheduler cannot report it.
@@ -119,6 +121,7 @@ export async function checkInstallHealth(
     ? await deps.getSchedulerType()
     : null;
   const lastEntry = await deps.getLastLogEntry();
+  const now = deps.now();
 
   let username: string | null = deps.getCurrentUsername();
   if (stat.uid !== null && stat.uid !== currentUid) {
@@ -141,7 +144,8 @@ export async function checkInstallHealth(
       schedulerInstalled: schedulerStatus.installed,
       schedulerType: schedulerType ?? undefined,
       lastEntry,
-      lastCheckStale: isLastCheckStale(lastEntry, prefs.cadence, deps.now()),
+      lastCheckStale: isLastCheckStale(lastEntry, prefs.cadence, now),
+      lastCheckAgeDays: lastCheckAgeDays(lastEntry, now),
       ...(schedulerStatus.runtime
         ? { schedulerLastExitCode: schedulerStatus.runtime.lastExitCode }
         : {}),

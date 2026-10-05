@@ -22,10 +22,13 @@ import type { AutoupdateLogEntry } from "./autoupdate_log.ts";
 import {
   cadenceIntervalSeconds,
   isLastCheckStale,
+  lastCheckAgeDays,
   SCHEDULER_REFRESH_RETRY_MS,
   type SchedulerRefreshInputs,
   shouldRefreshScheduler,
+  shouldWarnStaleAutoupdate,
   STALE_CHECK_FLOOR_MS,
+  STALE_WARNING_INTERVAL_MS,
 } from "./autoupdate_staleness.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -191,6 +194,80 @@ Deno.test("shouldRefreshScheduler: ignores an unparseable attempt timestamp", ()
     shouldRefreshScheduler(refreshInputs({
       prefs: { enabled: true, lastSchedulerRefreshAttempt: "garbage" },
     })),
+    true,
+  );
+});
+
+Deno.test("lastCheckAgeDays: whole days since the entry", () => {
+  assertEquals(lastCheckAgeDays(null, NOW), null);
+  assertEquals(lastCheckAgeDays(entryAgo(HOUR_MS), NOW), 0);
+  assertEquals(lastCheckAgeDays(entryAgo(31 * 24 * HOUR_MS), NOW), 31);
+  assertEquals(
+    lastCheckAgeDays({ ...entryAgo(0), timestamp: "garbage" }, NOW),
+    null,
+  );
+});
+
+const MONTH_OLD = entryAgo(30 * 24 * HOUR_MS);
+
+Deno.test("shouldWarnStaleAutoupdate: warns for a stale check never warned about", () => {
+  assertEquals(
+    shouldWarnStaleAutoupdate({
+      lastEntry: MONTH_OLD,
+      cadence: "daily",
+      schedulerJustRefreshed: false,
+      now: NOW,
+    }),
+    true,
+  );
+});
+
+Deno.test("shouldWarnStaleAutoupdate: silent for a recent check", () => {
+  assertEquals(
+    shouldWarnStaleAutoupdate({
+      lastEntry: entryAgo(HOUR_MS),
+      cadence: "daily",
+      schedulerJustRefreshed: false,
+      now: NOW,
+    }),
+    false,
+  );
+});
+
+Deno.test("shouldWarnStaleAutoupdate: silent right after a refresh", () => {
+  assertEquals(
+    shouldWarnStaleAutoupdate({
+      lastEntry: MONTH_OLD,
+      cadence: "daily",
+      schedulerJustRefreshed: true,
+      now: NOW,
+    }),
+    false,
+  );
+});
+
+Deno.test("shouldWarnStaleAutoupdate: at most once a day", () => {
+  const warnedAgo = (ms: number) =>
+    shouldWarnStaleAutoupdate({
+      lastEntry: MONTH_OLD,
+      cadence: "daily",
+      lastStaleWarning: new Date(NOW.getTime() - ms).toISOString(),
+      schedulerJustRefreshed: false,
+      now: NOW,
+    });
+  assertEquals(warnedAgo(HOUR_MS), false);
+  assertEquals(warnedAgo(STALE_WARNING_INTERVAL_MS), true);
+});
+
+Deno.test("shouldWarnStaleAutoupdate: an unparseable warning timestamp warns", () => {
+  assertEquals(
+    shouldWarnStaleAutoupdate({
+      lastEntry: MONTH_OLD,
+      cadence: "daily",
+      lastStaleWarning: "garbage",
+      schedulerJustRefreshed: false,
+      now: NOW,
+    }),
     true,
   );
 });

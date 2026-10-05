@@ -63,6 +63,42 @@ export function isLastCheckStale(
   return now.getTime() - checkedAt > threshold;
 }
 
+/** Whole days since the entry was written, or null without a usable entry. */
+export function lastCheckAgeDays(
+  lastEntry: AutoupdateLogEntry | null,
+  now: Date,
+): number | null {
+  if (!lastEntry) return null;
+  const checkedAt = new Date(lastEntry.timestamp).getTime();
+  if (Number.isNaN(checkedAt)) return null;
+  return Math.floor((now.getTime() - checkedAt) / (24 * 60 * 60 * 1000));
+}
+
+/** The "autoupdate has stopped checking" warning is shown at most this often. */
+export const STALE_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether to warn that autoupdate has stopped checking: the last check is
+ * stale, the warning was not shown in the last day, and the scheduler was
+ * not just re-registered by this invocation (which starts a fresh check).
+ */
+export function shouldWarnStaleAutoupdate(input: {
+  lastEntry: AutoupdateLogEntry | null;
+  cadence: UpdateCadence;
+  lastStaleWarning?: string;
+  schedulerJustRefreshed: boolean;
+  now: Date;
+}): boolean {
+  if (input.schedulerJustRefreshed) return false;
+  if (!isLastCheckStale(input.lastEntry, input.cadence, input.now)) {
+    return false;
+  }
+  if (!input.lastStaleWarning) return true;
+  const warnedAt = new Date(input.lastStaleWarning).getTime();
+  if (Number.isNaN(warnedAt)) return true;
+  return input.now.getTime() - warnedAt >= STALE_WARNING_INTERVAL_MS;
+}
+
 export interface SchedulerRefreshInputs {
   os: string;
   prefs: Pick<

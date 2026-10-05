@@ -188,7 +188,11 @@ import {
   createAutoupdateRefreshDeps,
   refreshAutoupdateSchedulerIfOwed,
 } from "./autoupdate_refresh.ts";
-import { isLastCheckStale } from "../domain/update/autoupdate_staleness.ts";
+import {
+  lastCheckAgeDays,
+  shouldWarnStaleAutoupdate,
+} from "../domain/update/autoupdate_staleness.ts";
+import { schedulerRepairCommand } from "../presentation/renderers/doctor_install.ts";
 import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
@@ -2711,6 +2715,16 @@ async function runInvocation(
           VERSION,
         );
         schedulerRefreshed = refresh.outcome === "refreshed";
+        // A failed attempt is retried after 24h, so this shows at most daily.
+        if (
+          refresh.outcome === "failed" &&
+          getOutputModeFromArgs(args) === "log"
+        ) {
+          console.error(
+            `\n⚠ Could not re-register the autoupdate scheduler: ${refresh.error}` +
+              `\n  Run \`${schedulerRepairCommand(refresh.job)}\` to fix it.`,
+          );
+        }
       }
 
       // Proactive update notification (after telemetry, before exit)
@@ -2784,20 +2798,24 @@ async function runInvocation(
               // a dead scheduler is otherwise invisible (swamp-club#3007).
               // Throttled to once per 24h; skipped right after a refresh,
               // which starts a fresh check.
+              const now = new Date();
               if (
-                lastEntry && !schedulerRefreshed &&
-                isLastCheckStale(lastEntry, prefs.cadence, new Date())
+                lastEntry && shouldWarnStaleAutoupdate({
+                  lastEntry,
+                  cadence: prefs.cadence,
+                  lastStaleWarning: updatedPrefs.lastStaleWarning,
+                  schedulerJustRefreshed: schedulerRefreshed,
+                  now,
+                })
               ) {
-                const lastWarned = updatedPrefs.lastStaleWarning;
-                const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-                if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
-                  console.error(
-                    `\n⚠ Background autoupdate has not checked for updates since ${lastEntry.timestamp}.` +
-                      `\n  Run \`swamp doctor install\` to see why.`,
-                  );
-                  updatedPrefs.lastStaleWarning = new Date().toISOString();
-                  prefsChanged = true;
-                }
+                console.error(
+                  `\n⚠ Background autoupdate has not checked for updates in ${
+                    lastCheckAgeDays(lastEntry, now)
+                  } days (since ${lastEntry.timestamp}).` +
+                    `\n  Run \`swamp doctor install\` to see why.`,
+                );
+                updatedPrefs.lastStaleWarning = now.toISOString();
+                prefsChanged = true;
               }
 
               if (prefsChanged && configDirOwned) {

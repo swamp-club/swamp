@@ -18,11 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
-import type {
-  AutoupdateScheduler,
-  SchedulerRefreshResult,
-  SchedulerRuntime,
-  ScheduleStatus,
+import {
+  type AutoupdateScheduler,
+  SCHEDULER_EX_CONFIG,
+  type SchedulerRefreshResult,
+  type SchedulerRuntime,
+  type ScheduleStatus,
 } from "../../domain/update/autoupdate_scheduler.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 import { markErrorPaths } from "../../domain/errors.ts";
@@ -114,18 +115,17 @@ export function parsePlistJob(
   };
 }
 
-/** launchd's exit code for a job it refused to start (`EX_CONFIG`). */
-export const LAUNCHD_EX_CONFIG = 78;
-
 /**
  * Parses the job-level fields of `launchctl print <domain>/<label>`. The
  * format is undocumented, so anything unrecognised reads as null (unknown)
  * rather than as a problem. Only lines indented by a single tab belong to
  * the job itself; nested blocks repeat keys like `state`.
  *
- * `needs LWCR update` in the properties means launchd holds a code
- * requirement for an executable that no longer matches it — the state an
- * ad-hoc signed binary is left in after it replaces itself.
+ * `has LWCR` in the properties means launchd holds a lightweight code
+ * requirement for the job's executable — for an ad-hoc signed binary, its
+ * exact cdhash, so a replaced binary will be refused. `needs LWCR update`
+ * means it already has been: the state an ad-hoc signed binary is left in
+ * after it replaces itself.
  */
 export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
   const state = text.match(/^\tstate = (.+)$/m);
@@ -143,7 +143,8 @@ export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
     running: state[1].trim() === "running",
     lastExitCode,
     needsRepair: properties.includes("needs LWCR update") ||
-      lastExitCode === LAUNCHD_EX_CONFIG,
+      lastExitCode === SCHEDULER_EX_CONFIG,
+    pinnedToBinary: properties.includes("has LWCR"),
   };
 }
 
@@ -238,9 +239,15 @@ async function launchctl(
 
 export class LaunchdScheduler implements AutoupdateScheduler {
   readonly mode: LaunchdMode;
+  private readonly bootoutPollIntervalMs: number;
 
-  constructor(mode: LaunchdMode = "agent") {
+  constructor(
+    mode: LaunchdMode = "agent",
+    options: { bootoutPollIntervalMs?: number } = {},
+  ) {
     this.mode = mode;
+    this.bootoutPollIntervalMs = options.bootoutPollIntervalMs ??
+      BOOTOUT_POLL_INTERVAL_MS;
   }
 
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
@@ -322,8 +329,10 @@ export class LaunchdScheduler implements AutoupdateScheduler {
    * (exit 78, `EX_CONFIG`) until the job is registered again. The plist is
    * rewritten first so Background Task Management sees a changed item.
    *
-   * Never boots out a running job: a scheduled update may be mid-way through
-   * writing its log entry.
+   * Leaves the job alone when it is running (a scheduled update may be
+   * mid-way through writing its log entry), when its state cannot be read,
+   * and when it is healthy and not pinned to a binary. A job that is not
+   * loaded at all is loaded.
    */
   async refresh(): Promise<SchedulerRefreshResult> {
     const path = plistPathForMode(this.mode);
@@ -341,28 +350,41 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       );
     }
 
-    const runtime = await this.runtime();
-    if (runtime?.running) return "skipped";
+    const domain = await this.launchctlDomain();
+    const target = `${domain}/${LABEL}`;
+    const printed = await launchctl(["print", target]);
+    if (printed.code === 0) {
+      const runtime = parseLaunchctlPrint(printed.stdout);
+      if (!runtime || runtime.running) return "skipped";
+      const healthy = !runtime.pinnedToBinary && !runtime.needsRepair &&
+        (runtime.lastExitCode === null || runtime.lastExitCode === 0);
+      if (healthy) return "not_needed";
+    }
 
     await atomicWriteTextFile(
       path,
       buildPlist(job.binaryPath, cadenceFromInterval(job.interval), this.mode),
     );
 
-    const domain = await this.launchctlDomain();
-    // Fails when the job is not loaded, which is fine: bootstrap loads it.
-    await launchctl(["bootout", `${domain}/${LABEL}`]);
-    for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
-      if ((await launchctl(["print", `${domain}/${LABEL}`])).code !== 0) break;
-      await new Promise((r) => setTimeout(r, BOOTOUT_POLL_INTERVAL_MS));
+    if (printed.code === 0) {
+      await launchctl(["bootout", target]);
+      let unloaded = false;
+      for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
+        if ((await launchctl(["print", target])).code !== 0) {
+          unloaded = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
+      }
+      if (!unloaded) {
+        throw new Error(
+          `launchctl bootout did not unload ${target}; the job was left as it was`,
+        );
+      }
     }
 
     const result = await launchctl(["bootstrap", domain, path]);
     if (result.code !== 0) {
-      // Another swamp process may have registered it first.
-      if ((await launchctl(["print", `${domain}/${LABEL}`])).code === 0) {
-        return "refreshed";
-      }
       const reason = result.stderr.trim();
       throw new Error(
         `launchctl bootstrap failed with exit code ${result.code}` +

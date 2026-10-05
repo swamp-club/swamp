@@ -146,6 +146,7 @@ Deno.test("checkInstallHealth: a month-old last check is stale and a problem", a
   }));
 
   assertEquals(report.autoupdate.lastCheckStale, true);
+  assertEquals(report.autoupdate.lastCheckAgeDays, 30);
   assertEquals(hasInstallProblem(report), true);
 });
 
@@ -155,7 +156,12 @@ Deno.test("checkInstallHealth: a recent last check is healthy", async () => {
     getSchedulerStatus: () =>
       Promise.resolve({
         installed: true,
-        runtime: { running: false, lastExitCode: 0, needsRepair: false },
+        runtime: {
+          running: false,
+          lastExitCode: 0,
+          needsRepair: false,
+          pinnedToBinary: true,
+        },
       }),
     getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
   }));
@@ -172,7 +178,12 @@ Deno.test("checkInstallHealth: a job launchd refuses to start is a problem", asy
     getSchedulerStatus: () =>
       Promise.resolve({
         installed: true,
-        runtime: { running: false, lastExitCode: 78, needsRepair: true },
+        runtime: {
+          running: false,
+          lastExitCode: 78,
+          needsRepair: true,
+          pinnedToBinary: true,
+        },
       }),
     getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
   }));
@@ -188,7 +199,12 @@ Deno.test("checkInstallHealth: a non-zero last exit is a problem", async () => {
     getSchedulerStatus: () =>
       Promise.resolve({
         installed: true,
-        runtime: { running: false, lastExitCode: 1, needsRepair: false },
+        runtime: {
+          running: false,
+          lastExitCode: 1,
+          needsRepair: false,
+          pinnedToBinary: false,
+        },
       }),
     getLastLogEntry: lastCheckAt("2026-10-05T00:00:00.000Z"),
   }));
@@ -213,7 +229,12 @@ Deno.test("hasInstallProblem: stale or failing scheduler ignored when autoupdate
     getSchedulerStatus: () =>
       Promise.resolve({
         installed: true,
-        runtime: { running: false, lastExitCode: 78, needsRepair: true },
+        runtime: {
+          running: false,
+          lastExitCode: 78,
+          needsRepair: true,
+          pinnedToBinary: true,
+        },
       }),
     getLastLogEntry: lastCheckAt("2026-09-04T17:53:58.961Z"),
   }));

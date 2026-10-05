@@ -20,10 +20,12 @@
 import { assertEquals } from "@std/assert";
 import type { SchedulerRefreshResult } from "../domain/update/autoupdate_scheduler.ts";
 import type { UpdatePreferences } from "../domain/update/update_preferences.ts";
+import { join } from "@std/path";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import {
   type AutoupdateRefreshDeps,
+  createAutoupdateRefreshDeps,
   refreshAutoupdateSchedulerIfOwed,
-  schedulerRepairCommand,
 } from "./autoupdate_refresh.ts";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
@@ -35,6 +37,7 @@ function fakeDeps(
     os?: string;
     job?: "agent" | "daemon" | null;
     refresh?: () => Promise<SchedulerRefreshResult>;
+    lockHeld?: boolean;
   } = {},
 ): AutoupdateRefreshDeps & {
   written: UpdatePreferences[];
@@ -60,6 +63,7 @@ function fakeDeps(
       refreshes.push(job);
       return options.refresh?.() ?? Promise.resolve("refreshed");
     },
+    withRefreshLock: (fn) => options.lockHeld ? Promise.resolve(null) : fn(),
     now: () => NOW,
   };
 }
@@ -144,10 +148,90 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: never throws when preferences fail"
   });
 });
 
-Deno.test("schedulerRepairCommand: sudo only for a LaunchDaemon", () => {
-  assertEquals(schedulerRepairCommand("agent"), "swamp update --setup-auto");
-  assertEquals(
-    schedulerRepairCommand("daemon"),
-    "sudo swamp update --setup-auto",
-  );
+Deno.test("refreshAutoupdateSchedulerIfOwed: records the version when no refresh was needed", async () => {
+  const deps = fakeDeps({ refresh: () => Promise.resolve("not_needed") });
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result, { outcome: "not_owed" });
+  assertEquals(deps.written[0]?.schedulerRefreshedVersion, VERSION);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: leaves the job to the process holding the lock", async () => {
+  const deps = fakeDeps({ lockHeld: true });
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result, { outcome: "skipped" });
+  assertEquals(deps.refreshes, []);
+  assertEquals(deps.written, []);
+});
+
+Deno.test("refreshAutoupdateSchedulerIfOwed: re-checks under the lock and skips a job another process refreshed", async () => {
+  const deps = fakeDeps();
+  let reads = 0;
+  deps.readPreferences = () =>
+    Promise.resolve(
+      reads++ === 0 ? { enabled: true, cadence: "daily" } : {
+        enabled: true,
+        cadence: "daily",
+        schedulerRefreshedVersion: VERSION,
+      },
+    );
+  const result = await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
+
+  assertEquals(result, { outcome: "not_owed" });
+  assertEquals(deps.refreshes, []);
+});
+
+async function withConfigDir(fn: (dir: string) => Promise<void>) {
+  const dir = await Deno.makeTempDir();
+  try {
+    await withMockedEnv({ SWAMP_CONFIG_DIR: dir }, () => fn(dir));
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("createAutoupdateRefreshDeps: the refresh lock admits one holder at a time", async () => {
+  await withConfigDir(async (dir) => {
+    const deps = createAutoupdateRefreshDeps();
+    const inner = await deps.withRefreshLock(() =>
+      deps.withRefreshLock(() => Promise.resolve("inner"))
+    );
+    assertEquals(inner, null);
+    // Released afterwards.
+    assertEquals(
+      await deps.withRefreshLock(() => Promise.resolve("again")),
+      "again",
+    );
+    assertEquals(
+      [...Deno.readDirSync(dir)].map((e) => e.name),
+      [],
+    );
+  });
+});
+
+Deno.test("createAutoupdateRefreshDeps: a lock left by a dead process is taken over", async () => {
+  await withConfigDir(async (dir) => {
+    const lock = join(dir, "autoupdate-refresh.lock");
+    await Deno.writeTextFile(lock, "");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await Deno.utime(lock, old, old);
+
+    const deps = createAutoupdateRefreshDeps();
+    assertEquals(
+      await deps.withRefreshLock(() => Promise.resolve("taken")),
+      "taken",
+    );
+  });
+});
+
+Deno.test("createAutoupdateRefreshDeps: a fresh lock held elsewhere is respected", async () => {
+  await withConfigDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "autoupdate-refresh.lock"), "");
+    const deps = createAutoupdateRefreshDeps();
+    assertEquals(
+      await deps.withRefreshLock(() => Promise.resolve("ran")),
+      null,
+    );
+  });
 });
