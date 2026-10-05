@@ -115,6 +115,7 @@ function createProductionDeps(): InstallHealthDeps {
       const entries = await logRepo.readAll();
       return entries.length > 0 ? entries[entries.length - 1] : null;
     },
+    now: () => new Date(),
   };
 }
 

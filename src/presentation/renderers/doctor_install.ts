@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
-import type {
-  InstallHealthReport,
-  SchedulerTypeLabel,
+import {
+  hasInstallProblem,
+  type InstallHealthReport,
+  type SchedulerTypeLabel,
 } from "../../domain/update/install_health.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -40,6 +41,24 @@ function schedulerTypeDisplayLabel(type: SchedulerTypeLabel): string {
     case "cron-user":
       return "cron (user)";
   }
+}
+
+const EX_CONFIG = 78;
+
+function isPrivilegedScheduler(type: SchedulerTypeLabel | undefined): boolean {
+  return type === "daemon" || type === "systemd-system" || type === "cron-root";
+}
+
+function schedulerRepairCommand(type: SchedulerTypeLabel | undefined): string {
+  return isPrivilegedScheduler(type)
+    ? "sudo swamp update --setup-auto"
+    : "swamp update --setup-auto";
+}
+
+function lastCheckAgeDays(timestamp: string): number | null {
+  const checkedAt = new Date(timestamp).getTime();
+  if (Number.isNaN(checkedAt)) return null;
+  return Math.floor((Date.now() - checkedAt) / (24 * 60 * 60 * 1000));
 }
 
 export type InstallHealthStatus = "healthy" | "unhealthy";
@@ -91,6 +110,13 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
             : red("not installed")
         }`,
       );
+      const exitCode = report.autoupdate.schedulerLastExitCode;
+      if (exitCode !== undefined && exitCode !== null && exitCode !== 0) {
+        const label = exitCode === EX_CONFIG
+          ? `${exitCode} (EX_CONFIG: the scheduler refused to start swamp)`
+          : `${exitCode}`;
+        writeOutput(`  Last exit:      ${red(label)}`);
+      }
     }
 
     const last = report.autoupdate.lastEntry;
@@ -100,7 +126,15 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
         : last.outcome === "up_to_date"
         ? dim("up to date")
         : red("error");
-      writeOutput(`  Last check:     ${last.timestamp} (${outcomeLabel})`);
+      const ageDays = report.autoupdate.lastCheckStale
+        ? lastCheckAgeDays(last.timestamp)
+        : null;
+      const staleLabel = ageDays !== null
+        ? ` ${red(`— no check for ${ageDays} days`)}`
+        : "";
+      writeOutput(
+        `  Last check:     ${last.timestamp} (${outcomeLabel})${staleLabel}`,
+      );
       if (last.outcome === "updated" && last.versionAfter) {
         writeOutput(
           `  Last update:    ${last.versionBefore} → ${last.versionAfter}`,
@@ -113,11 +147,7 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
       writeOutput(`  Last check:     ${dim("no history yet")}`);
     }
 
-    const hasProblem = report.writable === "fail" ||
-      (report.autoupdate.enabled && !report.autoupdate.schedulerInstalled) ||
-      last?.outcome === "error";
-
-    if (hasProblem) {
+    if (hasInstallProblem(report)) {
       this.overallStatus = "unhealthy";
       writeOutput("");
 
@@ -135,6 +165,30 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
         );
         writeOutput(`    ${bold("`swamp update --setup-auto disable`")}`);
       }
+
+      const autoupdate = report.autoupdate;
+      if (
+        autoupdate.enabled && autoupdate.schedulerInstalled &&
+        (autoupdate.schedulerNeedsRepair || autoupdate.lastCheckStale)
+      ) {
+        writeOutput(
+          yellow(
+            autoupdate.schedulerNeedsRepair
+              ? "  ⚠ The scheduler is refusing to start the autoupdate job."
+              : "  ⚠ Autoupdate has stopped checking for updates.",
+          ),
+        );
+        if (autoupdate.schedulerNeedsRepair) {
+          writeOutput(
+            "    It still expects the swamp binary that was there before the last update.",
+          );
+        }
+        writeOutput(
+          `    Re-register it with: ${
+            bold(`\`${schedulerRepairCommand(autoupdate.schedulerType)}\``)
+          }`,
+        );
+      }
     }
 
     writeOutput("");
@@ -149,12 +203,7 @@ class JsonDoctorInstallRenderer implements DoctorInstallRenderer {
   overallStatus: InstallHealthStatus = "healthy";
 
   render(report: InstallHealthReport): void {
-    const hasProblem = report.writable === "fail" ||
-      (report.autoupdate.enabled &&
-        !report.autoupdate.schedulerInstalled) ||
-      report.autoupdate.lastEntry?.outcome === "error";
-
-    this.overallStatus = hasProblem ? "unhealthy" : "healthy";
+    this.overallStatus = hasInstallProblem(report) ? "unhealthy" : "healthy";
 
     console.log(JSON.stringify(
       {

@@ -30,6 +30,12 @@ export interface UpdatePreferences {
   cadence: UpdateCadence;
   notifiedVersion?: string;
   lastPermissionWarning?: string;
+  /** Binary version the launchd autoupdate job was last re-registered for. */
+  schedulerRefreshedVersion?: string;
+  /** When re-registering the launchd autoupdate job last failed. */
+  lastSchedulerRefreshAttempt?: string;
+  /** When the "autoupdate has stopped checking" warning was last shown. */
+  lastStaleWarning?: string;
 }
 
 export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = {

@@ -127,6 +127,46 @@ Deno.test("UpdatePreferencesFileRepository: write preserves notifiedVersion when
   });
 });
 
+Deno.test("UpdatePreferencesFileRepository: round-trips scheduler refresh and stale warning fields", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "update.yaml");
+    const repo = new UpdatePreferencesFileRepository(filePath);
+
+    await repo.write({
+      enabled: true,
+      cadence: "daily",
+      schedulerRefreshedVersion: "20261005.120000.0-sha.abc",
+      lastSchedulerRefreshAttempt: "2026-10-05T12:00:00.000Z",
+      lastStaleWarning: "2026-10-04T12:00:00.000Z",
+    });
+
+    const result = await repo.read();
+    assertEquals(
+      result.schedulerRefreshedVersion,
+      "20261005.120000.0-sha.abc",
+    );
+    assertEquals(
+      result.lastSchedulerRefreshAttempt,
+      "2026-10-05T12:00:00.000Z",
+    );
+    assertEquals(result.lastStaleWarning, "2026-10-04T12:00:00.000Z");
+  });
+});
+
+Deno.test("UpdatePreferencesFileRepository: ignores non-string scheduler refresh fields", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "update.yaml");
+    await Deno.writeTextFile(
+      filePath,
+      "enabled: true\nschedulerRefreshedVersion: 42\nlastStaleWarning: [1]\n",
+    );
+
+    const result = await new UpdatePreferencesFileRepository(filePath).read();
+    assertEquals(result.schedulerRefreshedVersion, undefined);
+    assertEquals(result.lastStaleWarning, undefined);
+  });
+});
+
 Deno.test("UpdatePreferencesFileRepository: creates parent directories", async () => {
   await withTempDir(async (dir) => {
     const filePath = join(dir, "nested", "dirs", "update.yaml");

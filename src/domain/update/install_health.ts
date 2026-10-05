@@ -19,6 +19,7 @@
 
 import type { AutoupdateLogEntry } from "./autoupdate_log.ts";
 import type { ScheduleStatus } from "./autoupdate_scheduler.ts";
+import { isLastCheckStale } from "./autoupdate_staleness.ts";
 import type { UpdateCadence } from "./update_preferences.ts";
 
 export type InstallCheckStatus = "pass" | "fail" | "skip";
@@ -52,6 +53,15 @@ export interface AutoupdateHealth {
   schedulerInstalled: boolean;
   schedulerType?: SchedulerTypeLabel;
   lastEntry: AutoupdateLogEntry | null;
+  /** The last check is older than the cadence allows (see isLastCheckStale). */
+  lastCheckStale: boolean;
+  /**
+   * Exit code of the scheduler's last run, or null when it has never exited.
+   * Omitted when the scheduler cannot report it.
+   */
+  schedulerLastExitCode?: number | null;
+  /** The OS refuses to start the scheduled job until it is registered again. */
+  schedulerNeedsRepair: boolean;
 }
 
 export interface InstallHealthDeps {
@@ -65,6 +75,7 @@ export interface InstallHealthDeps {
   getSchedulerStatus(): Promise<ScheduleStatus>;
   getSchedulerType?(): Promise<SchedulerTypeLabel | null>;
   getLastLogEntry(): Promise<AutoupdateLogEntry | null>;
+  now(): Date;
 }
 
 export async function checkInstallHealth(
@@ -130,6 +141,29 @@ export async function checkInstallHealth(
       schedulerInstalled: schedulerStatus.installed,
       schedulerType: schedulerType ?? undefined,
       lastEntry,
+      lastCheckStale: isLastCheckStale(lastEntry, prefs.cadence, deps.now()),
+      ...(schedulerStatus.runtime
+        ? { schedulerLastExitCode: schedulerStatus.runtime.lastExitCode }
+        : {}),
+      schedulerNeedsRepair: schedulerStatus.runtime?.needsRepair ?? false,
     },
   };
+}
+
+/**
+ * Whether any installation check failed. With autoupdate enabled, a missing
+ * scheduler, a stale last check, a failing last run, or a job the OS will
+ * not start all count: each means updates have silently stopped.
+ */
+export function hasInstallProblem(report: InstallHealthReport): boolean {
+  const autoupdate = report.autoupdate;
+  if (report.writable === "fail") return true;
+  if (autoupdate.lastEntry?.outcome === "error") return true;
+  if (!autoupdate.enabled) return false;
+  if (!autoupdate.schedulerInstalled) return true;
+  if (autoupdate.lastCheckStale || autoupdate.schedulerNeedsRepair) {
+    return true;
+  }
+  const exitCode = autoupdate.schedulerLastExitCode;
+  return exitCode !== undefined && exitCode !== null && exitCode !== 0;
 }

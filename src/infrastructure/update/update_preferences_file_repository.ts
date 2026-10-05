@@ -62,6 +62,17 @@ export class UpdatePreferencesFileRepository
         lastPermissionWarning: typeof data.lastPermissionWarning === "string"
           ? data.lastPermissionWarning
           : undefined,
+        schedulerRefreshedVersion:
+          typeof data.schedulerRefreshedVersion === "string"
+            ? data.schedulerRefreshedVersion
+            : undefined,
+        lastSchedulerRefreshAttempt:
+          typeof data.lastSchedulerRefreshAttempt === "string"
+            ? data.lastSchedulerRefreshAttempt
+            : undefined,
+        lastStaleWarning: typeof data.lastStaleWarning === "string"
+          ? data.lastStaleWarning
+          : undefined,
       };
     } catch {
       return { ...DEFAULT_UPDATE_PREFERENCES };

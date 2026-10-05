@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createDoctorInstallRenderer } from "./doctor_install.ts";
 import type { InstallHealthReport } from "../../domain/update/install_health.ts";
 
@@ -32,6 +32,8 @@ function createHealthyReport(): InstallHealthReport {
       enabled: true,
       cadence: "daily",
       schedulerInstalled: true,
+      lastCheckStale: false,
+      schedulerNeedsRepair: false,
       lastEntry: {
         timestamp: "2026-05-18T09:00:00.000Z",
         versionBefore: "20260517.000000.0-sha.old",
@@ -53,6 +55,8 @@ function createUnhealthyReport(): InstallHealthReport {
       enabled: true,
       cadence: "daily",
       schedulerInstalled: true,
+      lastCheckStale: false,
+      schedulerNeedsRepair: false,
       lastEntry: {
         timestamp: "2026-05-17T09:22:50.722Z",
         versionBefore: "20260509.235714.0-sha.7ace6b02",
@@ -107,6 +111,63 @@ Deno.test("createDoctorInstallRenderer: log mode shows fail for unhealthy instal
   renderer.render(report);
 
   assertEquals(renderer.overallStatus, "unhealthy");
+});
+
+Deno.test("createDoctorInstallRenderer: log mode flags a scheduler refusing to start", () => {
+  const renderer = createDoctorInstallRenderer("log");
+  const report = createHealthyReport();
+  report.autoupdate.schedulerType = "agent";
+  report.autoupdate.schedulerLastExitCode = 78;
+  report.autoupdate.schedulerNeedsRepair = true;
+
+  const output = captureConsoleLog(() => renderer.render(report));
+
+  assertEquals(renderer.overallStatus, "unhealthy");
+  assertStringIncludes(output, "78 (EX_CONFIG");
+  assertStringIncludes(output, "refusing to start the autoupdate job");
+  assertStringIncludes(output, "`swamp update --setup-auto`");
+  assertStringIncludes(output, "UNHEALTHY");
+});
+
+Deno.test("createDoctorInstallRenderer: log mode flags a stale last check", () => {
+  const renderer = createDoctorInstallRenderer("log");
+  const report = createHealthyReport();
+  report.autoupdate.schedulerType = "daemon";
+  report.autoupdate.lastCheckStale = true;
+
+  const output = captureConsoleLog(() => renderer.render(report));
+
+  assertEquals(renderer.overallStatus, "unhealthy");
+  assertStringIncludes(output, "no check for");
+  assertStringIncludes(output, "stopped checking for updates");
+  assertStringIncludes(output, "`sudo swamp update --setup-auto`");
+});
+
+Deno.test("createDoctorInstallRenderer: json mode includes the scheduler health fields", () => {
+  const renderer = createDoctorInstallRenderer("json");
+  const report = createHealthyReport();
+  report.autoupdate.schedulerLastExitCode = 78;
+  report.autoupdate.schedulerNeedsRepair = true;
+  report.autoupdate.lastCheckStale = true;
+
+  const parsed = JSON.parse(captureConsoleLog(() => renderer.render(report)));
+
+  assertEquals(parsed.overallStatus, "unhealthy");
+  assertEquals(parsed.autoupdate.schedulerLastExitCode, 78);
+  assertEquals(parsed.autoupdate.schedulerNeedsRepair, true);
+  assertEquals(parsed.autoupdate.lastCheckStale, true);
+});
+
+Deno.test("createDoctorInstallRenderer: log mode healthy output has no scheduler warnings", () => {
+  const renderer = createDoctorInstallRenderer("log");
+  const report = createHealthyReport();
+  report.autoupdate.schedulerLastExitCode = 0;
+
+  const output = captureConsoleLog(() => renderer.render(report));
+
+  assertEquals(renderer.overallStatus, "healthy");
+  assertEquals(output.includes("Last exit"), false);
+  assertEquals(output.includes("Re-register"), false);
 });
 
 function captureConsoleLog(fn: () => void): string {

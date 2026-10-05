@@ -23,12 +23,36 @@ export interface ScheduleStatus {
   installed: boolean;
   cadence?: UpdateCadence;
   nextRun?: string;
+  /**
+   * Runtime facts from the OS scheduler. Omitted when the scheduler cannot
+   * report them (systemd, cron) or the query failed.
+   */
+  runtime?: SchedulerRuntime;
 }
+
+export interface SchedulerRuntime {
+  /** Whether the job is currently running. */
+  running: boolean;
+  /** Exit code of the last run, or null when it has never exited. */
+  lastExitCode: number | null;
+  /** The OS refuses to start the job until it is registered again. */
+  needsRepair: boolean;
+}
+
+/**
+ * Result of re-registering the scheduled job after the binary changed:
+ * `refreshed` — re-registered; `skipped` — the job is running right now, so
+ * it was left alone; `not_installed` — no job to refresh, or the scheduler
+ * needs no re-registration.
+ */
+export type SchedulerRefreshResult = "refreshed" | "skipped" | "not_installed";
 
 export interface AutoupdateScheduler {
   install(binaryPath: string, cadence: UpdateCadence): Promise<void>;
   remove(): Promise<void>;
   status(): Promise<ScheduleStatus>;
+  /** Re-register the job so the OS will start the binary now at its path. */
+  refresh(): Promise<SchedulerRefreshResult>;
 }
 
 // TODO(windows): Implement Windows Task Scheduler support when swamp update

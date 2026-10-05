@@ -20,9 +20,12 @@
 import { dirname, join } from "@std/path";
 import type {
   AutoupdateScheduler,
+  SchedulerRefreshResult,
+  SchedulerRuntime,
   ScheduleStatus,
 } from "../../domain/update/autoupdate_scheduler.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { homeDirectory } from "../persistence/paths.ts";
 
@@ -74,6 +77,79 @@ export function escapeXml(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 }
+
+const XML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+
+/** Reverses {@link escapeXml}; a single pass so `&amp;lt;` stays `&lt;`. */
+export function unescapeXml(s: string): string {
+  return s.replace(
+    /&(amp|lt|gt|quot|apos);/g,
+    (_, name: string) => XML_ENTITIES[name],
+  );
+}
+
+/**
+ * Reads the binary path and interval back out of a plist written by
+ * {@link buildPlist}. Returns null when the plist does not have that shape.
+ */
+export function parsePlistJob(
+  content: string,
+): { binaryPath: string; interval: number } | null {
+  const program = content.match(
+    /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/,
+  );
+  const interval = content.match(
+    /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/,
+  );
+  if (!program || !interval) return null;
+  return {
+    binaryPath: unescapeXml(program[1]),
+    interval: parseInt(interval[1], 10),
+  };
+}
+
+/** launchd's exit code for a job it refused to start (`EX_CONFIG`). */
+export const LAUNCHD_EX_CONFIG = 78;
+
+/**
+ * Parses the job-level fields of `launchctl print <domain>/<label>`. The
+ * format is undocumented, so anything unrecognised reads as null (unknown)
+ * rather than as a problem. Only lines indented by a single tab belong to
+ * the job itself; nested blocks repeat keys like `state`.
+ *
+ * `needs LWCR update` in the properties means launchd holds a code
+ * requirement for an executable that no longer matches it — the state an
+ * ad-hoc signed binary is left in after it replaces itself.
+ */
+export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
+  const state = text.match(/^\tstate = (.+)$/m);
+  if (!state) return null;
+
+  let lastExitCode: number | null = null;
+  const exit = text.match(/^\tlast exit code = (-?\d+)/m);
+  if (exit) lastExitCode = parseInt(exit[1], 10);
+
+  const properties = (text.match(/^\tproperties = (.+)$/m)?.[1] ?? "")
+    .split("|")
+    .map((p) => p.trim());
+
+  return {
+    running: state[1].trim() === "running",
+    lastExitCode,
+    needsRepair: properties.includes("needs LWCR update") ||
+      lastExitCode === LAUNCHD_EX_CONFIG,
+  };
+}
+
+/** How long refresh() waits for launchd to finish booting the job out. */
+const BOOTOUT_POLL_ATTEMPTS = 20;
+const BOOTOUT_POLL_INTERVAL_MS = 250;
 
 export function autoupdateLogDir(mode: LaunchdMode = "agent"): string {
   if (mode === "daemon") {
@@ -144,6 +220,22 @@ async function getUid(): Promise<string> {
   return new TextDecoder().decode(result.stdout).trim();
 }
 
+async function launchctl(
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const result = await new Deno.Command("launchctl", {
+    args,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decoder = new TextDecoder();
+  return {
+    code: result.code,
+    stdout: decoder.decode(result.stdout),
+    stderr: decoder.decode(result.stderr),
+  };
+}
+
 export class LaunchdScheduler implements AutoupdateScheduler {
   readonly mode: LaunchdMode;
 
@@ -204,18 +296,90 @@ export class LaunchdScheduler implements AutoupdateScheduler {
 
   async status(): Promise<ScheduleStatus> {
     const path = plistPathForMode(this.mode);
+    let content: string;
     try {
-      const content = await Deno.readTextFile(path);
-      const intervalMatch = content.match(
-        /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/,
-      );
-      const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 86400;
-      return {
-        installed: true,
-        cadence: cadenceFromInterval(interval),
-      };
+      content = await Deno.readTextFile(path);
     } catch {
       return { installed: false };
+    }
+    const intervalMatch = content.match(
+      /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/,
+    );
+    const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 86400;
+    const runtime = await this.runtime();
+    return {
+      installed: true,
+      cadence: cadenceFromInterval(interval),
+      ...(runtime ? { runtime } : {}),
+    };
+  }
+
+  /**
+   * Registers the job with launchd again (bootout, then bootstrap), keeping
+   * the binary path and interval it already has. launchd can pin a job to
+   * the code signature of the binary it last started; swamp's binaries are
+   * ad-hoc signed, so after an update launchd refuses to start the new one
+   * (exit 78, `EX_CONFIG`) until the job is registered again. The plist is
+   * rewritten first so Background Task Management sees a changed item.
+   *
+   * Never boots out a running job: a scheduled update may be mid-way through
+   * writing its log entry.
+   */
+  async refresh(): Promise<SchedulerRefreshResult> {
+    const path = plistPathForMode(this.mode);
+    let content: string;
+    try {
+      content = await Deno.readTextFile(path);
+    } catch {
+      return "not_installed";
+    }
+    const job = parsePlistJob(content);
+    if (!job) {
+      throw markErrorPaths(
+        new Error(`Cannot read the autoupdate job from ${path}`),
+        [path],
+      );
+    }
+
+    const runtime = await this.runtime();
+    if (runtime?.running) return "skipped";
+
+    await atomicWriteTextFile(
+      path,
+      buildPlist(job.binaryPath, cadenceFromInterval(job.interval), this.mode),
+    );
+
+    const domain = await this.launchctlDomain();
+    // Fails when the job is not loaded, which is fine: bootstrap loads it.
+    await launchctl(["bootout", `${domain}/${LABEL}`]);
+    for (let i = 0; i < BOOTOUT_POLL_ATTEMPTS; i++) {
+      if ((await launchctl(["print", `${domain}/${LABEL}`])).code !== 0) break;
+      await new Promise((r) => setTimeout(r, BOOTOUT_POLL_INTERVAL_MS));
+    }
+
+    const result = await launchctl(["bootstrap", domain, path]);
+    if (result.code !== 0) {
+      // Another swamp process may have registered it first.
+      if ((await launchctl(["print", `${domain}/${LABEL}`])).code === 0) {
+        return "refreshed";
+      }
+      const reason = result.stderr.trim();
+      throw new Error(
+        `launchctl bootstrap failed with exit code ${result.code}` +
+          (reason ? `: ${reason}` : ""),
+      );
+    }
+    return "refreshed";
+  }
+
+  private async runtime(): Promise<SchedulerRuntime | null> {
+    try {
+      const domain = await this.launchctlDomain();
+      const result = await launchctl(["print", `${domain}/${LABEL}`]);
+      if (result.code !== 0) return null;
+      return parseLaunchctlPrint(result.stdout);
+    } catch {
+      return null;
     }
   }
 

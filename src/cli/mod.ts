@@ -184,6 +184,11 @@ import { DefaultDatastorePathResolver } from "../infrastructure/persistence/defa
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { resolveDatastoreExpressions } from "./datastore_expression_resolver.ts";
 import { isDevBuild } from "../domain/update/update_service.ts";
+import {
+  createAutoupdateRefreshDeps,
+  refreshAutoupdateSchedulerIfOwed,
+} from "./autoupdate_refresh.ts";
+import { isLastCheckStale } from "../domain/update/autoupdate_staleness.ts";
 import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
@@ -2694,6 +2699,20 @@ async function runInvocation(
         }
       }
 
+      // Re-register the macOS autoupdate job once per installed version:
+      // launchd can refuse to start a binary that replaced itself until the
+      // job is registered again (swamp-club#3007). Writes no output, so it
+      // runs in every output mode. Never from `update`: under --background
+      // the process is the job itself.
+      let schedulerRefreshed = false;
+      if (!isDevBuild(VERSION) && commandInfo.command !== "update") {
+        const refresh = await refreshAutoupdateSchedulerIfOwed(
+          createAutoupdateRefreshDeps(),
+          VERSION,
+        );
+        schedulerRefreshed = refresh.outcome === "refreshed";
+      }
+
       // Proactive update notification (after telemetry, before exit)
       if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
         const outputMode = getOutputModeFromArgs(args);
@@ -2756,6 +2775,27 @@ async function runInvocation(
                       `\n  Disable with: swamp update --setup-auto disable`,
                   );
                   updatedPrefs.lastPermissionWarning = new Date().toISOString();
+                  prefsChanged = true;
+                }
+              }
+
+              // Warn when autoupdate has silently stopped checking — the
+              // update banner below is suppressed while autoupdate is on, so
+              // a dead scheduler is otherwise invisible (swamp-club#3007).
+              // Throttled to once per 24h; skipped right after a refresh,
+              // which starts a fresh check.
+              if (
+                lastEntry && !schedulerRefreshed &&
+                isLastCheckStale(lastEntry, prefs.cadence, new Date())
+              ) {
+                const lastWarned = updatedPrefs.lastStaleWarning;
+                const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+                if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
+                  console.error(
+                    `\n⚠ Background autoupdate has not checked for updates since ${lastEntry.timestamp}.` +
+                      `\n  Run \`swamp doctor install\` to see why.`,
+                  );
+                  updatedPrefs.lastStaleWarning = new Date().toISOString();
                   prefsChanged = true;
                 }
               }
