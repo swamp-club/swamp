@@ -1616,8 +1616,10 @@ swamp-club#2518):
   uncancellable until its heartbeat aged out.
 - A run of another instance with no row from this host (none, or one written
   under another hostname, as after a container restart) is gone when the
-  control plane holds no heartbeat for that instance, as the boot reaper
-  judges it.
+  control plane holds no heartbeat for that instance while holding one for
+  this instance. Its own heartbeat is how serve knows heartbeats are being
+  recorded: without a control-plane-capable datastore it writes none, and a
+  missing heartbeat then says nothing about an instance on another host.
 
 The run is then cancelled like an offline cancel of a run whose owner died:
 its in-flight steps fail with "the process running this step stopped before
@@ -1631,8 +1633,8 @@ instance id:
 - The process on the serve host is still alive: stop it, then cancel again.
 - The serve instance that runs it still reports a heartbeat: cancel through
   that instance, or again here once its heartbeat has expired.
-- Nothing can judge it: there is no tracker row from this host and no control
-  plane to ask. No supported command clears such a run; `run doctor` applies
+- Nothing can judge it: there is no tracker row from this host and no
+  instance heartbeats to consult. No supported command clears such a run; `run doctor` applies
   the same owner checks, so it does not either.
 
 A run aborted through `ActiveRunRegistry` is checked again once it leaves the

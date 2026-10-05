@@ -94,7 +94,8 @@ function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
  * uncancellable until its heartbeat aged out. A run of another instance with
  * no row from this host (none at all, or one written under another hostname,
  * as after a container restart) is gone when the control plane holds no
- * heartbeat for that instance, as the boot reaper judges it. Anything else is
+ * heartbeat for that instance while holding one for this instance, as the
+ * boot reaper judges it where there is a remote control plane. Anything else is
  * not shown gone.
  *
  * `onDeadPid` receives the dead owner's pid when the tracker row decided.
@@ -130,10 +131,17 @@ export function ownerGoneDecider(
       ctx.controlPlaneStore && ctx.instanceId && run.instanceId &&
       run.instanceId !== ctx.instanceId
     ) {
-      const heartbeat = await ctx.controlPlaneStore.get(
-        `heartbeats/${run.instanceId}`,
-      );
-      return heartbeat === null
+      // A missing heartbeat means something only where heartbeats are
+      // written. Without a control-plane-capable datastore serve keeps a
+      // local store and writes none, so every instance would look gone,
+      // including a live one on another host. This instance's own heartbeat
+      // is the evidence that they are being recorded.
+      const [own, theirs] = await Promise.all([
+        ctx.controlPlaneStore.get(`heartbeats/${ctx.instanceId}`),
+        ctx.controlPlaneStore.get(`heartbeats/${run.instanceId}`),
+      ]);
+      if (own === null) return { gone: false, why: OWNER_UNKNOWN };
+      return theirs === null
         ? { gone: true }
         : { gone: false, why: OWNER_INSTANCE_ALIVE };
     }
@@ -153,7 +161,7 @@ const OWNER_INSTANCE_ALIVE =
 const OWNER_ROW_UNCLEAR =
   "the run tracker on the serve host does not show the process that ran it as its unfinished owner, so swamp cannot tell that nothing is running it";
 const OWNER_UNKNOWN =
-  "the serve host has no run tracker record of the process running it, and no control plane to ask whether the serve instance that started it is alive, so swamp cannot tell that nothing is running it";
+  "the serve host has no run tracker record of the process running it, and no instance heartbeats to tell whether the serve instance that started it is alive, so swamp cannot tell that nothing is running it";
 
 /**
  * Cancels a persisted run that no process in this serve instance is driving,

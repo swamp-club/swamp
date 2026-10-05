@@ -485,10 +485,21 @@ async function withTracker(
   }
 }
 
-/** A control plane holding a heartbeat for each of `alive`. */
-function controlPlaneWith(alive: string[]): ConnectionContext[
-  "controlPlaneStore"
-] {
+/**
+ * A control plane holding a heartbeat for each of `alive`, and for
+ * `new-instance`, the instance the deciders under test run as: heartbeats
+ * are being written. See {@link controlPlaneWithoutHeartbeats}.
+ */
+function controlPlaneWith(
+  alive: string[],
+): ConnectionContext["controlPlaneStore"] {
+  return controlPlaneWithoutHeartbeats([...alive, "new-instance"]);
+}
+
+/** A control plane holding a heartbeat only for each of `alive`. */
+function controlPlaneWithoutHeartbeats(
+  alive: string[] = [],
+): ConnectionContext["controlPlaneStore"] {
   return {
     get: (key: string) =>
       Promise.resolve(
@@ -572,7 +583,7 @@ Deno.test("ownerGoneDecider: without a tracker row, another instance's run is go
       return v.gone ? "gone" : v.why;
     };
 
-    assertStringIncludes(await why(decide({})), "no control plane to ask");
+    assertStringIncludes(await why(decide({})), "no instance heartbeats");
     assertStringIncludes(
       await why(decide({ controlPlaneStore: controlPlaneWith(["peer"]) })),
       "still reports a heartbeat",
@@ -686,5 +697,50 @@ Deno.test("ownerGoneDecider: a tracker row written under another hostname is not
     assertEquals((await decide()).gone, false);
     assertEquals((await decide(controlPlaneWith(["peer"]))).gone, false);
     assertEquals(await decide(controlPlaneWith([])), { gone: true });
+  });
+});
+
+Deno.test("ownerGoneDecider: a control plane that records no heartbeats, as without a remote one, never shows another instance gone", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "peer");
+
+    const verdict = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWithoutHeartbeats(),
+    })(run);
+
+    assertEquals(verdict.gone, false);
+    if (!verdict.gone) {
+      assertStringIncludes(verdict.why, "no instance heartbeats");
+    }
+  });
+});
+
+Deno.test("cancelSuspendedRunAndPush: without recorded heartbeats, a running run under another host's tracker row is refused, not cancelled", async () => {
+  await withTracker(async (tracker) => {
+    const wf = makeWorkflow("deploy");
+    const run = runningRun(wf, DEAD_PID, "peer");
+    tracker.register(TrackedRun.fromData({
+      ...trackerRow(run, DEAD_PID, "peer").toData(),
+      hostname: `other-${crypto.randomUUID()}`,
+    }));
+    const h = harness([wf], [run]);
+    Object.assign(h.ctx, {
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWithoutHeartbeats(),
+    });
+
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: run.id, reason: "r" },
+      allow,
+    );
+
+    assertEquals(result.status, "not_suspended");
+    assertEquals(h.saved, []);
+    assertEquals(run.status, "running");
   });
 });

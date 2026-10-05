@@ -969,8 +969,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           this.getLocalIndexDir(workflowId),
         );
       } catch (error) {
+        // The message only: a parser's stack trace says nothing to the
+        // operator this reaches through `run doctor`.
+        const reason = error instanceof Error ? error.message : String(error);
         logger
-          .warn`Could not rebuild the run index of workflow ${workflowId}: ${error}`;
+          .warn`Could not rebuild the run index of workflow ${workflowId}, which has a run record that cannot be read: ${reason}`;
       }
     }
   }
