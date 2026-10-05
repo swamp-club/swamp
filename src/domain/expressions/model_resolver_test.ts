@@ -2796,7 +2796,10 @@ interface RenameFixture {
     modelName: string,
     modelId?: string,
   ) => Promise<void>;
-  /** Builds a context of `kind` over a freshly populated catalog. */
+  /**
+   * Builds a context of `kind` over a freshly populated catalog, from one
+   * resolver shared by every call.
+   */
   context: (kind: ContextKind) => Promise<ExpressionContext>;
 }
 
@@ -2829,6 +2832,11 @@ async function withRenamedModel(
       });
       await defRepo.save(type, model);
       const dqs = new DataQueryService(catalog, dataRepo);
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
       await fn({
         repoDir,
         defRepo,
@@ -2853,11 +2861,6 @@ async function withRenamedModel(
         context: async (kind) => {
           catalog.invalidate();
           await dqs.query('name == ""');
-          const resolver = new ModelResolver(defRepo, {
-            repoDir,
-            dataRepo,
-            dataQueryService: dqs,
-          });
           return kind === "full"
             ? await resolver.buildContext(new RunSensitiveValues())
             : resolver.buildLightContext(new RunSensitiveValues());
@@ -2870,7 +2873,7 @@ async function withRenamedModel(
 }
 
 for (const kind of ["full", "light"] as const) {
-  Deno.test(`data accessors (${kind} context): return data written before the model instance was renamed (swamp-club#3029)`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors return data written before the model instance was renamed (swamp-club#3029)`, async () => {
     await withRenamedModel(async ({ write, context }) => {
       await write("result", "result", "old-name");
       await write("result", "result", "old-name");
@@ -2891,7 +2894,7 @@ for (const kind of ["full", "light"] as const) {
     });
   });
 
-  Deno.test(`data accessors (${kind} context): return each version once when written under both names`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors return each version once when written under both names`, async () => {
     await withRenamedModel(async ({ write, context }) => {
       await write("result", "result", "old-name");
       await write("result", "result", "old-name");
@@ -2917,7 +2920,7 @@ for (const kind of ["full", "light"] as const) {
     });
   });
 
-  Deno.test(`data accessors (${kind} context): keep orphan data under an earlier id and exclude other models`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors keep orphan data under an earlier id and exclude other models`, async () => {
     await withRenamedModel(async ({ defRepo, type, write, context }) => {
       const orphanId = crypto.randomUUID();
       await write("orphan", "result", "new-name", orphanId);
@@ -2937,7 +2940,7 @@ for (const kind of ["full", "light"] as const) {
     });
   });
 
-  Deno.test(`data accessors (${kind} context): a name with no definition reads by name tag only`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors a name with no definition reads by name tag only`, async () => {
     await withRenamedModel(async ({ write, context }) => {
       await write("result", "result", "old-name");
       const ctx = await context(kind);
@@ -2952,7 +2955,27 @@ for (const kind of ["full", "light"] as const) {
     });
   });
 
-  Deno.test(`data accessors (${kind} context): namespaced and wildcard names read by name tag only`, async () => {
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors list each version once when data under an earlier id shares the name`, async () => {
+    await withRenamedModel(async ({ write, context }) => {
+      // An earlier definition of new-name wrote result v1 and v2; the current
+      // one wrote result v1 as tmp-name before it was renamed.
+      const earlierId = crypto.randomUUID();
+      await write("result", "result", "new-name", earlierId);
+      await write("result", "result", "new-name", earlierId);
+      await write("result", "result", "tmp-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+      await ctx.data.resolveModelNames?.(
+        'data.listVersions("new-name", "result")',
+      );
+
+      assertEquals(ctx.data.listVersions("new-name", "result"), [1, 2]);
+      const bySpec = await ctx.data.findBySpec("new-name", "result");
+      assertEquals(bySpec.length, 1);
+    });
+  });
+
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors namespaced and wildcard names read by name tag only`, async () => {
     await withRenamedModel(async ({ dataRepo, write, context }) => {
       await write("result", "result", "old-name");
       await write("result", "result", "new-name");
@@ -2971,7 +2994,7 @@ for (const kind of ["full", "light"] as const) {
   });
 }
 
-Deno.test("data accessors (full context): make no definition lookup", async () => {
+Deno.test("ModelResolver.buildContext: data accessors make no definition lookup", async () => {
   await withRenamedModel(async ({ defRepo, write, context }) => {
     await write("result", "result", "old-name");
     const ctx = await context("full");
@@ -2989,7 +3012,7 @@ Deno.test("data accessors (full context): make no definition lookup", async () =
   });
 });
 
-Deno.test("data accessors (light context): look each name up once, misses included", async () => {
+Deno.test("ModelResolver.buildLightContext: data accessors look each name up once per resolver, misses included", async () => {
   await withRenamedModel(async ({ defRepo, write, context }) => {
     await write("result", "result", "old-name");
     const ctx = await context("light");
@@ -3007,10 +3030,17 @@ Deno.test("data accessors (light context): look each name up once, misses includ
       'data.listVersions("new-name", "result") + data.listVersions("ghost", "x")',
     );
     assertEquals(defRepo.nameLookups, 2);
+
+    // Another light context from the same resolver, as the next step of a run.
+    const next = await context("light");
+    assertExists(next.data);
+    await next.data.findBySpec("ghost", "result");
+    await next.data.latest("new-name", "result");
+    assertEquals(defRepo.nameLookups, 2);
   });
 });
 
-Deno.test("data.listVersions (light context): reads by name tag only until the name is resolved", async () => {
+Deno.test("ModelResolver.buildLightContext: data.listVersions reads by name tag only until the name is resolved", async () => {
   await withRenamedModel(async ({ write, context }) => {
     await write("result", "result", "old-name");
     const ctx = await context("light");
@@ -3022,7 +3052,7 @@ Deno.test("data.listVersions (light context): reads by name tag only until the n
   });
 });
 
-Deno.test("data.listVersions (light context): async evaluation resolves the name first (swamp-club#3029)", async () => {
+Deno.test("ModelResolver.buildLightContext: data.listVersions async evaluation resolves the name first (swamp-club#3029)", async () => {
   await withRenamedModel(async ({ write, context }) => {
     await write("result", "result", "old-name");
     await write("result", "result", "old-name");
@@ -3036,7 +3066,7 @@ Deno.test("data.listVersions (light context): async evaluation resolves the name
   });
 });
 
-Deno.test("data accessors (light context): a name backed only by an auto-definition reads by name tag only", async () => {
+Deno.test("ModelResolver.buildLightContext: data accessors a name backed only by an auto-definition reads by name tag only", async () => {
   await withRenamedModel(async ({ repoDir, defRepo, type, write, context }) => {
     const autoRepo = new YamlDefinitionRepository(
       repoDir,
@@ -3061,7 +3091,7 @@ Deno.test("data accessors (light context): a name backed only by an auto-definit
   });
 });
 
-Deno.test("data accessors (light context): control-plane definitions are not read by identity", async () => {
+Deno.test("ModelResolver.buildLightContext: data accessors control-plane definitions are not read by identity", async () => {
   await withRenamedModel(async ({ defRepo, write, context }) => {
     const grantType = ModelType.create("@swamp/grant");
     const grant = Definition.create({ name: "grant-new", globalArguments: {} });
@@ -3072,5 +3102,62 @@ Deno.test("data accessors (light context): control-plane definitions are not rea
 
     assertEquals(await ctx.data.findBySpec("grant-new", "grant"), []);
     assertEquals(await ctx.data.latest("grant-new", "grant-main"), null);
+  });
+});
+
+/** Fails every name lookup, as an unreadable definitions directory would. */
+class FailingDefinitionRepository extends CountingDefinitionRepository {
+  override findByNameGlobal(
+    _name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    this.nameLookups++;
+    return Promise.reject(new Error("permission denied"));
+  }
+}
+
+Deno.test("ModelResolver.buildLightContext: a failed definition lookup reads by name tag only", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const type = ModelType.create("test/model");
+      await dataRepo.save(
+        type,
+        crypto.randomUUID(),
+        Data.create({
+          name: "result",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", modelName: "tagged", specName: "result" },
+          ownerDefinition: owner,
+        }),
+        new TextEncoder().encode(JSON.stringify({ ok: true })),
+      );
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await dqs.query('name == ""');
+      const defRepo = new FailingDefinitionRepository(repoDir);
+      const ctx = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      }).buildLightContext(new RunSensitiveValues());
+
+      const result = await new CelEvaluator().evaluateAsync(
+        'data.listVersions("tagged", "result").size() == 1 && ' +
+          'data.findBySpec("tagged", "result").size() == 1 && ' +
+          'data.latest("tagged", "result") != null',
+        ctx as unknown as Record<string, unknown>,
+      );
+      assertEquals(result, true);
+      assertEquals(defRepo.nameLookups, 1);
+    } finally {
+      catalog.close();
+    }
   });
 });
