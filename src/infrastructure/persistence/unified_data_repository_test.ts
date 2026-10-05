@@ -33,66 +33,70 @@ import type { RenameForward } from "../../domain/data/repositories.ts";
 
 const testType = ModelType.create("test/model");
 
-Deno.test("getPath rejects dataName with path traversal", () => {
-  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/test-repo",
-    undefined,
-    catalogStore,
-  );
+/** Runs `fn` with a fresh repo dir and a catalog in it, removing both after. */
+async function withTempRepo(
+  fn: (repo: FileSystemUnifiedDataRepository) => void | Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
   try {
-    repo.getPath(testType, "valid-model", "../escape", 1);
-    throw new Error("Expected path traversal error");
-  } catch (e) {
-    assertStringIncludes(
-      (e as Error).message,
-      "Path traversal detected",
-    );
+    await fn(new FileSystemUnifiedDataRepository(dir, undefined, catalogStore));
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
+}
+
+Deno.test("getPath rejects dataName with path traversal", async () => {
+  await withTempRepo((repo) => {
+    try {
+      repo.getPath(testType, "valid-model", "../escape", 1);
+      throw new Error("Expected path traversal error");
+    } catch (e) {
+      assertStringIncludes(
+        (e as Error).message,
+        "Path traversal detected",
+      );
+    }
+  });
 });
 
-Deno.test("getPath rejects modelId with path traversal", () => {
-  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/test-repo",
-    undefined,
-    catalogStore,
-  );
-  try {
-    repo.getPath(testType, "../escape", "valid-data", 1);
-    throw new Error("Expected path traversal error");
-  } catch (e) {
-    assertStringIncludes(
-      (e as Error).message,
-      "Path traversal detected",
-    );
-  }
+Deno.test("getPath rejects modelId with path traversal", async () => {
+  await withTempRepo((repo) => {
+    try {
+      repo.getPath(testType, "../escape", "valid-data", 1);
+      throw new Error("Expected path traversal error");
+    } catch (e) {
+      assertStringIncludes(
+        (e as Error).message,
+        "Path traversal detected",
+      );
+    }
+  });
 });
 
-Deno.test("getPath accepts valid modelId and dataName", () => {
-  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/test-repo",
-    undefined,
-    catalogStore,
-  );
-  const path = repo.getPath(testType, "my-model-id", "my-data-name", 1);
-  assertStringIncludes(path, "my-model-id");
-  assertStringIncludes(path, "my-data-name");
+Deno.test("getPath accepts valid modelId and dataName", async () => {
+  await withTempRepo((repo) => {
+    const path = repo.getPath(testType, "my-model-id", "my-data-name", 1);
+    assertStringIncludes(path, "my-model-id");
+    assertStringIncludes(path, "my-data-name");
+  });
 });
 
 Deno.test("listVersions rejects dataName with path traversal", async () => {
-  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/test-repo",
-    undefined,
-    catalogStore,
-  );
-  await assertRejects(
-    () => repo.listVersions(testType, "valid-model", "../escape"),
-    Error,
-    "Path traversal detected",
-  );
+  await withTempRepo(async (repo) => {
+    await assertRejects(
+      () => repo.listVersions(testType, "valid-model", "../escape"),
+      Error,
+      "Path traversal detected",
+    );
+  });
 });
 
 Deno.test("findAllForModel: warns and returns empty for model name instead of UUID", async () => {
@@ -384,21 +388,15 @@ Deno.test("getLatestVersionSync reads latest symlink", async () => {
   }
 });
 
-Deno.test("getLatestVersionSync returns null for missing data", () => {
-  const catalogStore = new CatalogStore(
-    join("/tmp/nonexistent-repo", "_catalog.db"),
-  );
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/nonexistent-repo",
-    undefined,
-    catalogStore,
-  );
-  const result = repo.getLatestVersionSync(
-    testType,
-    "missing-model",
-    "missing-data",
-  );
-  assertEquals(result, null);
+Deno.test("getLatestVersionSync returns null for missing data", async () => {
+  await withTempRepo((repo) => {
+    const result = repo.getLatestVersionSync(
+      testType,
+      "missing-model",
+      "missing-data",
+    );
+    assertEquals(result, null);
+  });
 });
 
 Deno.test("namespace defaults to SOLO_NAMESPACE and stamps catalog rows", async () => {
@@ -499,21 +497,15 @@ Deno.test("findByNameSync reads metadata", async () => {
   }
 });
 
-Deno.test("findByNameSync returns null for missing data", () => {
-  const catalogStore = new CatalogStore(
-    join("/tmp/nonexistent-repo", "_catalog.db"),
-  );
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/nonexistent-repo",
-    undefined,
-    catalogStore,
-  );
-  const result = repo.findByNameSync(
-    testType,
-    "missing-model",
-    "missing-data",
-  );
-  assertEquals(result, null);
+Deno.test("findByNameSync returns null for missing data", async () => {
+  await withTempRepo((repo) => {
+    const result = repo.findByNameSync(
+      testType,
+      "missing-model",
+      "missing-data",
+    );
+    assertEquals(result, null);
+  });
 });
 
 Deno.test("listVersionsSync returns sorted version numbers", async () => {
@@ -549,21 +541,15 @@ Deno.test("listVersionsSync returns sorted version numbers", async () => {
   }
 });
 
-Deno.test("listVersionsSync returns empty for missing data", () => {
-  const catalogStore = new CatalogStore(
-    join("/tmp/nonexistent-repo", "_catalog.db"),
-  );
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/nonexistent-repo",
-    undefined,
-    catalogStore,
-  );
-  const versions = repo.listVersionsSync(
-    testType,
-    "missing-model",
-    "missing-data",
-  );
-  assertEquals(versions, []);
+Deno.test("listVersionsSync returns empty for missing data", async () => {
+  await withTempRepo((repo) => {
+    const versions = repo.listVersionsSync(
+      testType,
+      "missing-model",
+      "missing-data",
+    );
+    assertEquals(versions, []);
+  });
 });
 
 Deno.test("getContentSync reads content bytes", async () => {
@@ -594,21 +580,15 @@ Deno.test("getContentSync reads content bytes", async () => {
   }
 });
 
-Deno.test("getContentSync returns null for missing content", () => {
-  const catalogStore = new CatalogStore(
-    join("/tmp/nonexistent-repo", "_catalog.db"),
-  );
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/nonexistent-repo",
-    undefined,
-    catalogStore,
-  );
-  const result = repo.getContentSync(
-    testType,
-    "missing-model",
-    "missing-data",
-  );
-  assertEquals(result, null);
+Deno.test("getContentSync returns null for missing content", async () => {
+  await withTempRepo((repo) => {
+    const result = repo.getContentSync(
+      testType,
+      "missing-model",
+      "missing-data",
+    );
+    assertEquals(result, null);
+  });
 });
 
 Deno.test("findAllForModelSync returns all data items", async () => {
@@ -652,17 +632,11 @@ Deno.test("findAllForModelSync returns all data items", async () => {
   }
 });
 
-Deno.test("findAllForModelSync returns empty for missing model", () => {
-  const catalogStore = new CatalogStore(
-    join("/tmp/nonexistent-repo", "_catalog.db"),
-  );
-  const repo = new FileSystemUnifiedDataRepository(
-    "/tmp/nonexistent-repo",
-    undefined,
-    catalogStore,
-  );
-  const results = repo.findAllForModelSync(testType, "missing-model");
-  assertEquals(results, []);
+Deno.test("findAllForModelSync returns empty for missing model", async () => {
+  await withTempRepo((repo) => {
+    const results = repo.findAllForModelSync(testType, "missing-model");
+    assertEquals(results, []);
+  });
 });
 
 Deno.test("findAllForType: returns data scoped to one model type", async () => {

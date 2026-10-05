@@ -603,9 +603,11 @@ CREATE TABLE catalog_meta (
 );
 ```
 
-`catalog_meta` holds a `schema_version` key. When the version changes, the
-`catalog` and `catalog_renames` tables are dropped and rebuilt by self-healing backfill on the next
-query.
+`catalog_meta` holds a `schema_version` key. When the version changes, or the
+catalog table is missing or lacks a column the current schema defines
+(processes on different versions racing on one file can record the new version
+over an old or dropped table), the `catalog` and `catalog_renames` tables are
+dropped and rebuilt by self-healing backfill on the next query.
 
 Content is not stored in the catalog. It stays on disk in the existing
 versioned file layout.
