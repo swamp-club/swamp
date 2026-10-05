@@ -504,6 +504,49 @@ Deno.test("AuditEmitter: a replaced sink's late success does not move its replac
   await emitter.close();
 });
 
+Deno.test("AuditEmitter: close during a durable stall writes the later events once, without the stalled batch", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  await emitter.close();
+  assertEquals(durableSink.writes, 2);
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
+});
+
+Deno.test("AuditEmitter: close delivers what a stalled durable sink missed once its write settles", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  // The stalled write settles while close flushes the sinks.
+  let flushes = 0;
+  durableSink.flush = () => {
+    if (flushes++ === 0) durableSink.release();
+    return Promise.resolve();
+  };
+  const closing = emitter.close();
+  await waitFor(() => durableSink.writes === 2, "the missed event at close");
+  durableSink.release();
+  await closing;
+
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
+});
+
 Deno.test("AuditEmitter: close does not retry a failed durable write while sinks flush", async () => {
   const durableSink = createFlakySink("durable", true);
   durableSink.failing = true;

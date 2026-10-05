@@ -76,22 +76,25 @@ export function parseSinkFilter(
 const FILTER_KEYS: readonly string[] = ["categories", "tier", "outcomes"];
 const FILTER_TIERS: readonly string[] = ["management", "data", "all"];
 
-function listProblems(
+function addListProblems(
+  problems: string[],
   value: unknown,
   field: string,
   allowed: readonly string[],
-): string[] {
-  if (value === undefined) return [];
+): void {
+  if (value === undefined) return;
   if (!Array.isArray(value)) {
-    return [`${field} must be a list, got ${JSON.stringify(value)}`];
+    problems.push(`${field} must be a list, got ${JSON.stringify(value)}`);
+    return;
   }
-  return value
-    .filter((entry) => typeof entry !== "string" || !allowed.includes(entry))
-    .map((entry) =>
+  for (const entry of value) {
+    if (typeof entry === "string" && allowed.includes(entry)) continue;
+    problems.push(
       `${field} has unknown value ${JSON.stringify(entry)} (expected one of ${
         allowed.join(", ")
-      })`
+      })`,
     );
+  }
 }
 
 /**
@@ -114,8 +117,11 @@ export function validateSinkFilter(raw: Record<string, unknown>): string[] {
       );
     }
   }
-  problems.push(
-    ...listProblems(block.categories, "filter.categories", AUDIT_CATEGORIES),
+  addListProblems(
+    problems,
+    block.categories,
+    "filter.categories",
+    AUDIT_CATEGORIES,
   );
   if (
     block.tier !== undefined &&
@@ -127,8 +133,6 @@ export function validateSinkFilter(raw: Record<string, unknown>): string[] {
       } (expected one of ${FILTER_TIERS.join(", ")})`,
     );
   }
-  problems.push(
-    ...listProblems(block.outcomes, "filter.outcomes", AUDIT_OUTCOMES),
-  );
+  addListProblems(problems, block.outcomes, "filter.outcomes", AUDIT_OUTCOMES);
   return problems;
 }

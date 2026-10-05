@@ -75,6 +75,8 @@ interface SinkDelivery {
   /** When the outstanding write timed out, until it settles. */
   stuckSince: number | null;
   stuckLoggedAt: number;
+  /** The last sequence in the outstanding write. */
+  inFlightThroughSeq: number;
 }
 
 /**
@@ -94,7 +96,7 @@ function deliveryKeys(sinks: readonly AuditSink[]): Map<AuditSink, string> {
   for (const [name, count] of seen) {
     if (count < 2) continue;
     logger.warn(
-      "{count} audit sinks share the name {sink}; the later ones are reported as {later} onwards",
+      "{count} audit sinks share the name {sink}; the later ones are reported as {later} onwards, and delivery state follows their order, so removing or reordering them on hot-reload moves it",
       { count, sink: name, later: `${name}#2` },
     );
   }
@@ -282,6 +284,7 @@ export class AuditEmitter {
       }
     }, () => {
       this.#drainPromise = null;
+      if (this.#drainAgain) this.#drainSerialized();
     });
   }
 
@@ -474,8 +477,10 @@ export class AuditEmitter {
       const write = (async () => {
         await sink.write(events);
       })();
+      let outcome: boolean | null = null;
       const settled: Promise<void> = write.then(() => true, () => false).then(
         (succeeded) => {
+          outcome = succeeded;
           if (delivery.inFlight !== settled) return;
           delivery.inFlight = null;
           if (delivery.stuckSince !== null) {
@@ -489,11 +494,19 @@ export class AuditEmitter {
         },
       );
       delivery.inFlight = settled;
+      delivery.inFlightThroughSeq = throughSeq;
       try {
         await this.#withSinkTimeout(sink, write);
         delivery.inFlight = null;
         this.#advanceCursor(sink, throughSeq);
       } catch (error: unknown) {
+        if (error instanceof SinkTimeoutError && outcome === true) {
+          // The write succeeded just as the timeout fired: it is delivered,
+          // and retrying it would store the batch twice.
+          delivery.inFlight = null;
+          this.#advanceCursor(sink, throughSeq);
+          continue;
+        }
         const message = error instanceof Error ? error.message : String(error);
         if (
           error instanceof SinkTimeoutError && delivery.inFlight === settled
@@ -554,6 +567,7 @@ export class AuditEmitter {
         timer: null,
         stuckSince: null,
         stuckLoggedAt: 0,
+        inFlightThroughSeq: 0,
       };
       this.#deliveries.set(sink, delivery);
     }
@@ -797,6 +811,71 @@ export class AuditEmitter {
     }
   }
 
+  /**
+   * At shutdown, a durable sink whose write is stalled is given up to the sink
+   * timeout to settle; if it does, one more drain delivers what it missed. If
+   * it does not, the events after the stalled batch are written on their own,
+   * so they still reach the WAL without the stalled batch being sent twice.
+   */
+  async #finishStalledDurableWrites(stalled: AuditSink[]): Promise<void> {
+    let settledLate = false;
+    for (const sink of stalled) {
+      const delivery = this.#deliveries.get(sink);
+      if (!delivery) continue;
+      if (
+        delivery.stuckSince === null || !delivery.inFlight ||
+        await this.#settlesWithin(delivery.inFlight, this.#sinkTimeoutMs)
+      ) {
+        settledLate = true;
+        continue;
+      }
+      const events: ChainedAuditEvent[] = [];
+      for (
+        let seq = delivery.inFlightThroughSeq + 1;
+        seq <= this.#chainedThroughSeq;
+        seq++
+      ) {
+        const event = this.#chained.get(seq);
+        if (event) events.push(event);
+      }
+      const key = this.#keyOf(sink) ?? sink.name;
+      if (events.length > 0) {
+        try {
+          await this.#withSinkTimeout(sink, sink.write(events));
+        } catch (error: unknown) {
+          logger.warn(
+            "Audit sink {sink} could not write {count} event(s) at shutdown: {error}",
+            {
+              sink: key,
+              count: events.length,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
+      logger.warn(
+        "Audit sink {sink} still had a durable write outstanding at shutdown; events through sequence {seq} are not confirmed stored",
+        { sink: key, seq: delivery.inFlightThroughSeq },
+      );
+    }
+    if (settledLate) await this.flush();
+  }
+
+  /** Whether a promise that never rejects settles within the given time. */
+  async #settlesWithin(promise: Promise<void>, ms: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async close(): Promise<void> {
     // Stop the retry timers before the last flush: one firing while the
     // sinks flush would start a drain that writes to sinks being closed.
@@ -809,7 +888,11 @@ export class AuditEmitter {
       if (delivery.timer !== null) clearTimeout(delivery.timer);
       delivery.timer = null;
     }
+    const stalled = this.#sinks.filter((sink) =>
+      sink.durable && (this.#deliveries.get(sink)?.stuckSince ?? null) !== null
+    );
     await this.flush();
+    await this.#finishStalledDurableWrites(stalled);
     for (const sink of this.#sinks) {
       try {
         await sink.close();

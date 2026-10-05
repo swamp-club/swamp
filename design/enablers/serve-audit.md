@@ -64,7 +64,8 @@ other sink:
   name (two webhooks on one host), the later ones are told apart as `name#2`,
   `name#3` by their order in the config, and a warning names the collision.
   Hot-reload hands each cursor to the sink in the same position, so swapping
-  two same-named sinks in `serve.yaml` swaps their delivery state.
+  two same-named sinks in `serve.yaml` swaps their delivery state, and
+  removing one moves the state of those after it up a place.
 - **One write at a time.** Every sink, durable or not, has at most one `write`
   in flight. A write that outlives the 30s timeout is not sent again until that
   call settles, so the same events are never written twice. While it is
@@ -77,8 +78,11 @@ other sink:
   WAL, and are held only in memory. With `fail-open: false`, serve rejects
   requests with `audit_unavailable` until the write settles, as it does when
   the WAL is full. A remote store slower than the 30s timeout therefore
-  rejects requests for as long as each put takes. With `fail-open: true`
-  nothing is rejected.
+  rejects requests for as long as each put takes, and one that never returns
+  rejects them until restart. With `fail-open: true` nothing is rejected. At
+  shutdown a stalled write gets up to the sink timeout to settle; if it does
+  not, the events after it are written on their own so they reach the WAL,
+  and a warning names the sequence the stalled write ends at.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink
