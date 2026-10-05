@@ -1112,9 +1112,46 @@ datastore-tier repository classes the hook field appears only as the first
 argument of `signalChange`, and under `src/infrastructure/persistence/` only
 `legacy_unit_of_work.ts` and `unit_of_work_scope.ts` call a mark hook. The
 first rule scans only the classes in `DATASTORE_TIER_REPOSITORIES`, so a new
-hooked repository must be added to that list. Writes still mark through
-`signalChange`'s hook fallback, because nothing opens a scope. Phase 2 removes
-that fallback once every write path runs inside a scope.
+hooked repository must be added to that list. At the end of Phase 1 writes
+still marked through `signalChange`'s hook fallback, because nothing opened a
+scope. Phase 2 removes that fallback once every write path runs inside a scope.
+
+**Phase 2: use cases own the unit of work (swamp-club#3025).** Every libswamp
+use case that writes through a datastore-tier repository runs its whole
+operation inside a unit of work:
+
+- `LibSwampContext.openUnitOfWork()` opens one per operation. Children from
+  `withTimeout` and `withSignal` keep the factory. A context built without one
+  opens an unbound unit, which no repository stages into.
+- `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) is the only production code
+  that opens a scope. It runs each step of the use case's stream inside the
+  unit and commits once after a `completed` stream finishes. A stream that
+  yields `error`, throws, ends on another terminal or is stopped early is
+  abandoned, its marks already sent. `workflowRun` ends `suspended` or
+  `cancelled` too, so those runs abandon their unit. The step that moves the
+  push into `commit` must decide how a suspended run's state is pushed. Work
+  that outlives an abandoned unit's stream (a detached nested run) keeps
+  appending its changes to that unit while it runs; the marks still reach the
+  hook, so only memory is held, for the life of that work. That step should
+  release abandoned units too.
+- The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
+  (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
+  `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`
+  (`src/infrastructure/persistence/repo_unit_of_work.ts`). A unit over any other
+  function would collect nothing.
+- Commit pushes nothing yet: every production unit has no flush, so marks
+  reach the sync service as before and the four flush paths keep pushing.
+  Production units forward a change staged after commit to the hook
+  (`afterCommit: "forward"`), so a write that escapes its use case never fails
+  a command. Tests build units with `"reject"` through
+  `useUnitOfWorkFactoryForTesting`, and the use-case sync characterization
+  checks that each use case's units staged exactly the marks it made.
+- `PINNED_TRANSACTIONAL_USE_CASES` lists the wrapped use cases.
+
+Deliberately unbound: commands whose deps build their own unhooked repositories
+(`model create`, `workflow create`, `vault create`, `vault migrate` on the CLI),
+read-only contexts, and commands with no repository context. Their writes have
+no hook to bind to, so nothing changes for them.
 
 What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
 each site):

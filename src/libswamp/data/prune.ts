@@ -38,6 +38,7 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -200,33 +201,34 @@ export async function dataPrunePreview(
 
 /** Reclaims orphaned data whose owning model definition no longer exists. */
 export async function* dataPrune(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: DataPruneDeps,
   input: DataPruneInput,
 ): AsyncIterable<DataPruneEvent> {
-  yield* withGeneratorSpan(
-    "swamp.data.prune",
-    { "prune.dry_run": input.dryRun },
-    (async function* () {
-      yield { kind: "collecting" } as const;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.data.prune",
+      { "prune.dry_run": input.dryRun },
+      (async function* () {
+        yield { kind: "collecting" } as const;
 
-      const result = await deps.deleteOrphanedData({ dryRun: input.dryRun });
+        const result = await deps.deleteOrphanedData({ dryRun: input.dryRun });
 
-      const compact = !input.dryRun ? deps.compactCatalog?.() : undefined;
+        const compact = !input.dryRun ? deps.compactCatalog?.() : undefined;
 
-      yield {
-        kind: "completed" as const,
-        data: {
-          modelsReclaimed: result.modelsReclaimed,
-          dataEntriesReclaimed: result.dataEntriesReclaimed,
-          versionsDeleted: result.versionsDeleted,
-          bytesReclaimed: result.bytesReclaimed,
-          dryRun: result.dryRun,
-          reclaimedModels: result.reclaimedModels,
-          walPagesTotal: compact?.walPagesTotal ?? 0,
-          walPagesCheckpointed: compact?.walPagesCheckpointed ?? 0,
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed" as const,
+          data: {
+            modelsReclaimed: result.modelsReclaimed,
+            dataEntriesReclaimed: result.dataEntriesReclaimed,
+            versionsDeleted: result.versionsDeleted,
+            bytesReclaimed: result.bytesReclaimed,
+            dryRun: result.dryRun,
+            reclaimedModels: result.reclaimedModels,
+            walPagesTotal: compact?.walPagesTotal ?? 0,
+            walPagesCheckpointed: compact?.walPagesCheckpointed ?? 0,
+          },
+        };
+      })(),
+    ));
 }

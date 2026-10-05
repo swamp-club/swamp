@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { Logger } from "@logtape/logtape";
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowRejectDeps,
   userErrorFromSwampError,
   workflowReject,
@@ -29,14 +27,21 @@ import {
   type WorkflowRejectEvent,
 } from "../../libswamp/mod.ts";
 import {
+  type CommandContext,
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import {
   createWorkflowRunClaims,
+  libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import {
+  renderAwaitingParent,
+  renderDetachedNestedRuns,
+  type ThroughServe,
+} from "./nested_run_hints.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -114,7 +119,9 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
-              logNestedRunFollowUps(cliCtx.logger, e.data);
+              logNestedRunFollowUps(cliCtx, e.data, {
+                server: options.server as string | undefined,
+              });
             }
           },
           error: (e) => {
@@ -133,7 +140,9 @@ export const workflowRejectCommand = withRemoteOptions(
 
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     try {
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
       const deps = createWorkflowRejectDeps(
         repoContext.workflowRepo,
         repoContext.workflowRunRepo,
@@ -157,7 +166,7 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
-              logNestedRunFollowUps(cliCtx.logger, e.data);
+              logNestedRunFollowUps(cliCtx, e.data);
             }
           },
           error: (e) => {
@@ -176,15 +185,12 @@ export const workflowRejectCommand = withRemoteOptions(
  * the rejected run stopped waiting on, and a parent waiting on this run.
  */
 function logNestedRunFollowUps(
-  logger: Logger,
+  cliCtx: CommandContext,
   data: WorkflowRejectData,
+  remote?: ThroughServe,
 ): void {
-  for (const detached of data.detachedNestedRuns ?? []) {
-    logger
-      .warn`Nested run ${detached.runId} of workflow ${detached.workflowName} was left unfinished. Cancel it with ${detached.cancelCommand}`;
-  }
+  renderDetachedNestedRuns(cliCtx, data.detachedNestedRuns ?? [], remote);
   if (data.awaitingParent) {
-    logger
-      .info`Parent run ${data.awaitingParent.runId} waits on this run. Resume it with ${data.awaitingParent.resumeCommand}`;
+    renderAwaitingParent(cliCtx, data.awaitingParent, remote);
   }
 }

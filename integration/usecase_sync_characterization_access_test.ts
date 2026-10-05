@@ -145,6 +145,9 @@ async function managedConfigMarked(repos: RowRepos): Promise<boolean> {
 const ROWS: AnyRow[] = [
   row({
     name: "access grant create",
+    // CLI bulk mark before the push, outside any use case:
+    // access_grant.ts accessGrantCreateCommand in PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: [
         "access",
@@ -176,6 +179,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access group create",
+    // CLI bulk mark before the push, outside any use case:
+    // access_group.ts runGroupMethod in PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: ["access", "group", "create", "ops", ...json(repos)],
     }),
@@ -185,6 +191,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token mint",
+    // CLI bulk mark before the push, outside any use case:
+    // access_token_mint.ts accessTokenMintCommand in PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
       args: [
@@ -229,6 +238,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token create",
+    // CLI bulk mark before the push, outside any use case:
+    // worker_token_create.ts workerTokenCreateCommand in
+    // PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
       args: [
@@ -248,6 +261,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token revoke",
+    // CLI bulk mark before the push, outside any use case:
+    // worker_token_revoke.ts workerTokenRevokeCommand in
+    // PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: async (repos) => {
       await runCli({
         args: [
@@ -268,6 +285,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker prune",
+    // CLI bulk mark before the push, outside any use case:
+    // worker_prune.ts workerPruneCommand in PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: staleWorker,
     cli: (repos) => ({
       args: [
@@ -286,6 +306,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "datastore config migrate",
+    // CLI bulk mark before the push, outside any use case:
+    // datastore_config_migrate.ts datastoreConfigMigrateCommand in
+    // PINNED_MARK_CALL_SITES.
+    outsideUseCase: { cli: ["markDirty(bulk)"] },
     options: {
       remote: { capabilities: { twoPhaseSync: true, configRefresh: true } },
     },

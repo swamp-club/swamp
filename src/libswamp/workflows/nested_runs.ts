@@ -27,6 +27,7 @@ import {
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 
 /**
@@ -83,10 +84,9 @@ export async function detachedNestedRunsOf(
       runId: detached.child.runId,
       jobName: detached.jobName,
       stepName: detached.stepName,
-      cancelCommand:
-        `swamp workflow cancel ${detached.child.workflowName} --run ${detached.child.runId}${
-          serverSuffix(child)
-        }`,
+      cancelCommand: `swamp workflow cancel ${
+        quoteShellWord(detached.child.workflowName)
+      } --run ${detached.child.runId}${serverSuffix(child)}`,
     });
   }
   return result;
@@ -113,10 +113,9 @@ export async function awaitingParentOf(
     workflowId: link.ref.workflowId,
     workflowName: link.ref.workflowName,
     runId: link.ref.runId,
-    resumeCommand:
-      `swamp workflow resume ${link.ref.workflowName} --run ${link.ref.runId}${
-        serverSuffix(parent)
-      }`,
+    resumeCommand: `swamp workflow resume ${
+      quoteShellWord(link.ref.workflowName)
+    } --run ${link.ref.runId}${serverSuffix(parent)}`,
   };
 }
 

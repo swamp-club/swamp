@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
   assertEquals,
   assertRejects,
@@ -223,6 +224,103 @@ Deno.test("createLegacyUnitOfWork: staging or committing after commit rejects", 
   );
   assertEquals(calls, []);
   assertEquals(unit.staged(), []);
+});
+
+Deno.test("createLegacyUnitOfWork: afterCommit reject is the default and rejects a late stage", async () => {
+  const { hook, calls } = recordingHook();
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    afterCommit: "reject",
+  });
+  await unit.commit();
+
+  await assertRejects(
+    () => unit.stage({ kind: "write", path: "/cache/data/a" }),
+    Error,
+    "unit of work already committed",
+  );
+  assertEquals(calls, []);
+});
+
+Deno.test("createLegacyUnitOfWork: afterCommit forward marks a late change once through the hook and logs it", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "unit-of-work"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const { hook, calls } = recordingHook();
+    const unit = createLegacyUnitOfWork(hook, {
+      flush: undefined,
+      afterCommit: "forward",
+    });
+    await unit.stage({ kind: "write", path: "/cache/data/a" });
+    await unit.commit();
+
+    await unit.stage({ kind: "write", path: "/cache/data/late" });
+    await unit.stage({ kind: "remove", path: "/cache/data/gone" });
+    await unit.stage({ kind: "bulk", reason: "rename tombstone" });
+
+    assertEquals(calls, [
+      "/cache/data/a",
+      "/cache/data/late",
+      "/cache/data/gone",
+      undefined,
+    ]);
+    assertEquals(unit.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+    assertEquals(records.length, 3);
+    assertEquals(records.every((r) => r.level === "debug"), true);
+    assertEquals(
+      records.map((r) => r.message.filter((_, i) => i % 2 === 1)),
+      [
+        ["write", "/cache/data/late"],
+        ["remove", "/cache/data/gone"],
+        ["bulk", "rename tombstone"],
+      ],
+    );
+  } finally {
+    await reset();
+  }
+});
+
+Deno.test("createLegacyUnitOfWork: afterCommit forward never rejects without a hook, and still refuses a second commit", async () => {
+  const unit = createLegacyUnitOfWork(undefined, {
+    flush: undefined,
+    afterCommit: "forward",
+  });
+  await unit.commit();
+
+  await unit.stage({ kind: "write", path: "/cache/data/late" });
+  assertEquals(unit.staged(), []);
+  await assertRejects(
+    () => unit.commit(),
+    Error,
+    "unit of work already committed",
+  );
+});
+
+Deno.test("createLegacyUnitOfWork: afterCommit forward rejects a late stage with the hook's own error", async () => {
+  const { hook, failNext } = recordingHook();
+  const unit = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    afterCommit: "forward",
+  });
+  await unit.commit();
+  const error = new Error("remote down");
+  failNext(error);
+
+  const rejected = await assertRejects(() =>
+    unit.stage({ kind: "write", path: "/cache/data/late" })
+  );
+  assertStrictEquals(rejected, error);
 });
 
 Deno.test("createLegacyUnitOfWork: a failed flush rejects commit and spends the unit", async () => {

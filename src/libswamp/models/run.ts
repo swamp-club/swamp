@@ -22,6 +22,7 @@ import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { createModelUpdated } from "../../domain/events/types.ts";
@@ -312,738 +313,928 @@ export async function* modelMethodRun(
   deps: ModelMethodRunDeps,
   input: ModelMethodRunInput,
 ): AsyncGenerator<ModelMethodRunEvent> {
-  yield* withGeneratorTraceContext(
-    input.traceparent,
-    input.tracestate,
-    withGeneratorSpan(
-      "swamp.model.method.run",
-      {
-        "model.id_or_name": input.modelIdOrName,
-        "method.name": input.methodName,
-      },
-      (async function* () {
-        const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
-        if (deps.catalogStore) {
-          const wrapped = wrapWithEphemeral(
-            deps.dataRepo,
-            deps.catalogStore,
-            ephemeral,
-          );
-          deps = { ...deps, ...wrapped };
-        }
-
-        // --- Validate inputs phase ---
-        yield { kind: "validating_inputs" };
-
-        // --- Resolve model ---
-        yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
-
-        let definition: Definition;
-        let modelType: ModelType;
-        let modelDef: ModelDefinition;
-
-        if (input.typeArg && input.definitionName) {
-          // Direct type execution path: auto-create-then-run
-          const typeArg = input.typeArg;
-          let resolvedType = ModelType.create(typeArg);
-
-          let resolvedModelDef = await Promise.resolve(
-            deps.getModelDef(resolvedType),
-          );
-
-          // Fallback: the @ prefix is the CLI syntax marker for direct execution
-          // but repo-local extensions register types without @. Try stripping it.
-          if (!resolvedModelDef && typeArg.startsWith("@")) {
-            const strippedType = ModelType.create(typeArg.slice(1));
-            const strippedDef = await Promise.resolve(
-              deps.getModelDef(strippedType),
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorTraceContext(
+      input.traceparent,
+      input.tracestate,
+      withGeneratorSpan(
+        "swamp.model.method.run",
+        {
+          "model.id_or_name": input.modelIdOrName,
+          "method.name": input.methodName,
+        },
+        (async function* () {
+          const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
+          if (deps.catalogStore) {
+            const wrapped = wrapWithEphemeral(
+              deps.dataRepo,
+              deps.catalogStore,
+              ephemeral,
             );
-            if (strippedDef) {
-              resolvedType = strippedType;
-              resolvedModelDef = strippedDef;
+            deps = { ...deps, ...wrapped };
+          }
+
+          // --- Validate inputs phase ---
+          yield { kind: "validating_inputs" };
+
+          // --- Resolve model ---
+          yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
+
+          let definition: Definition;
+          let modelType: ModelType;
+          let modelDef: ModelDefinition;
+
+          if (input.typeArg && input.definitionName) {
+            // Direct type execution path: auto-create-then-run
+            const typeArg = input.typeArg;
+            let resolvedType = ModelType.create(typeArg);
+
+            let resolvedModelDef = await Promise.resolve(
+              deps.getModelDef(resolvedType),
+            );
+
+            // Fallback: the @ prefix is the CLI syntax marker for direct execution
+            // but repo-local extensions register types without @. Try stripping it.
+            if (!resolvedModelDef && typeArg.startsWith("@")) {
+              const strippedType = ModelType.create(typeArg.slice(1));
+              const strippedDef = await Promise.resolve(
+                deps.getModelDef(strippedType),
+              );
+              if (strippedDef) {
+                resolvedType = strippedType;
+                resolvedModelDef = strippedDef;
+              }
             }
-          }
 
-          // Use the model definition's canonical type so data is stored
-          // under the registered type path, not the caller's @-prefixed
-          // syntax marker (e.g. swamp/grant, not @swamp/grant).
-          if (resolvedModelDef) {
-            resolvedType = resolvedModelDef.type;
-          }
+            // Use the model definition's canonical type so data is stored
+            // under the registered type path, not the caller's @-prefixed
+            // syntax marker (e.g. swamp/grant, not @swamp/grant).
+            if (resolvedModelDef) {
+              resolvedType = resolvedModelDef.type;
+            }
 
-          if (!resolvedModelDef) {
-            yield {
-              kind: "error",
-              error: unknownModelType(resolvedType.normalized),
-            };
-            return;
-          }
-
-          if (!deps.createAndSaveDefinition || !deps.getDefinitionPath) {
-            yield {
-              kind: "error",
-              error: {
-                code: "missing_deps",
-                message:
-                  "Direct type execution is not supported in this context",
-              },
-            };
-            return;
-          }
-
-          const result = await resolveOrCreateDefinition(
-            {
-              lookupDefinition: deps.lookupDefinition,
-              getModelDef: deps.getModelDef,
-              saveDefinition: deps.createAndSaveDefinition,
-              getDefinitionPath: deps.getDefinitionPath,
-            },
-            typeArg,
-            input.definitionName,
-            input.methodName,
-            input.inputs,
-            resolvedType,
-            resolvedModelDef,
-            undefined,
-            deps.autoDefinitionsDir,
-            // Inputs are typed by the operator running the command.
-            "unrestricted",
-          );
-
-          if (!result.ok) {
-            yield { kind: "error", error: result.error };
-            return;
-          }
-
-          if (result.created) {
-            yield {
-              kind: "auto_created",
-              modelType: resolvedType.normalized,
-              definitionName: result.definition.name,
-              definitionPath: result.definitionPath,
-            };
-          }
-
-          if (result.globalArgsUpdated) {
-            yield {
-              kind: "global_args_updated",
-              definitionName: result.definition.name,
-            };
-          }
-
-          definition = result.definition;
-          modelType = result.modelType;
-          modelDef = result.modelDef;
-
-          // Use routed method arguments as the inputs for downstream processing.
-          // Global args are already stored in the auto-created definition.
-          input = {
-            ...input,
-            inputs: { ...result.routedInputs.methodArguments },
-          };
-        } else {
-          // Standard path: look up existing definition
-          const lookupDefinition = selectLookup(
-            "model method run",
-            input.byId,
-            deps.lookupDefinition,
-            deps.lookupDefinitionById,
-            input.expectedName,
-          );
-          const lookupResult = await lookupDefinition(input.modelIdOrName);
-          if (!lookupResult) {
-            yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
-            return;
-          }
-          definition = lookupResult.definition;
-          modelType = lookupResult.type;
-
-          const resolvedModelDef = await Promise.resolve(
-            deps.getModelDef(modelType),
-          );
-          if (!resolvedModelDef) {
-            yield {
-              kind: "error",
-              error: unknownModelType(modelType.normalized),
-            };
-            return;
-          }
-          modelDef = resolvedModelDef;
-        }
-
-        // Validate method exists
-        const method = modelDef.methods[input.methodName];
-        if (!method) {
-          const availableMethods = Object.keys(modelDef.methods).join(", ");
-          yield {
-            kind: "error",
-            error: unknownMethod(
-              input.methodName,
-              modelType.normalized,
-              availableMethods,
-            ),
-          };
-          return;
-        }
-
-        // Coerce and validate inputs against model's input schema
-        const inputs = { ...input.inputs };
-        if (definition.inputs) {
-          const coercedInputs = coerceInputTypes(inputs, definition.inputs);
-          Object.assign(inputs, coercedInputs);
-
-          const validationService = new InputValidationService();
-          const inputsWithDefaults = validationService.applyDefaults(
-            inputs,
-            definition.inputs,
-          );
-
-          // Build effective schema: only require inputs referenced by the method's arguments
-          const referencedInputs = extractInputReferences(
-            definition.getMethodArguments(input.methodName),
-          );
-          const originalRequired = definition.inputs.required ?? [];
-          const effectiveRequired = originalRequired.filter((name) =>
-            referencedInputs.has(name)
-          );
-          const effectiveSchema: InputsSchema = {
-            ...definition.inputs,
-            required: effectiveRequired,
-          };
-
-          const validationResult = validationService.validate(
-            inputsWithDefaults,
-            effectiveSchema,
-          );
-          if (!validationResult.valid) {
-            yield {
-              kind: "error",
-              error: inputValidationFailed(validationResult.errors),
-            };
-            return;
-          }
-          Object.assign(inputs, inputsWithDefaults);
-        }
-
-        let runLogger = getRunLogger(definition.name, input.methodName);
-        runLogger.debug("Found model {name} ({type})", {
-          name: definition.name,
-          type: modelType.normalized,
-        });
-
-        yield {
-          kind: "model_resolved",
-          modelName: definition.name,
-          modelType: modelType.normalized,
-          modelId: definition.id,
-          methodName: input.methodName,
-        };
-
-        // --- Check for env var usage and warn ---
-        const envVarUsages = detectEnvVarUsageInDefinition(definition);
-        if (envVarUsages.length > 0) {
-          yield {
-            kind: "env_var_warning",
-            modelName: definition.name,
-            envVars: envVarUsages,
-            message:
-              "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
-          };
-        }
-
-        // --- Set up logging ---
-        const setupSpan = getTracer().startSpan("swamp.model.method.setup");
-        const runLog = await deps.createRunLog(
-          modelType,
-          input.methodName,
-          definition.id,
-        );
-        const { logFilePath, redactor } = runLog;
-        // Every sensitive value this run resolves for an expression is
-        // recorded here and forwarded to the run's redactor.
-        const sensitiveValues = new RunSensitiveValues(redactor);
-        if (runLog.runId) {
-          runLogger = getRunLogger(
-            definition.name,
-            input.methodName,
-            runLog.runId,
-          );
-        }
-
-        try {
-          // --- Evaluate expressions ---
-          const exprSpan = getTracer().startSpan(
-            "swamp.model.method.evaluate_expressions",
-          );
-          yield {
-            kind: "evaluating_expressions",
-            lastEvaluated: input.lastEvaluated,
-          };
-
-          const evaluationService = deps.createEvaluationService();
-          let evaluatedDefinition = definition;
-          // The copy that executes: the same splices as evaluatedDefinition,
-          // with sensitive data values in its arguments replaced by
-          // sentinels from this step's bag. evaluatedDefinition keeps real
-          // values for caching, reports and self.globalArguments.
-          let executedDefinition = definition;
-          const stepSecretBag = new VaultSecretBag();
-
-          // Provenance for the runtime pass, collected from the SOURCE
-          // definition — never from the evaluated one, which already has data
-          // content spliced into it. Cached provenance is unioned below for
-          // --last-evaluated. Inputs are typed by the operator
-          // running the command (or an authenticated serve caller), so
-          // expressions in them — schema-declared or method overrides — are
-          // author-written too.
-          const authoredExpressions = collectAuthoredExpressions(
-            inputs,
-            collectAuthoredExpressions(definition.toData()),
-          );
-
-          let deferredExpressions: readonly DeferredExpression[] = [];
-          let failedExpressions: FailedExpressions = new Map();
-          let pendingSave: Definition | undefined;
-          let pendingReferences: readonly WrittenReference[] = [];
-          if (input.lastEvaluated) {
-            const lastEval = await deps.loadEvaluatedDefinition(
-              modelType,
-              definition.name,
-            );
-            if (!lastEval) {
-              exprSpan.end();
-              setupSpan.end();
+            if (!resolvedModelDef) {
               yield {
                 kind: "error",
-                error: noEvaluatedDefinition(definition.name),
+                error: unknownModelType(resolvedType.normalized),
               };
               return;
             }
-            if (mayHoldPlaintextSensitiveValues(lastEval)) {
-              exprSpan.end();
-              setupSpan.end();
+
+            if (!deps.createAndSaveDefinition || !deps.getDefinitionPath) {
               yield {
                 kind: "error",
-                error: evaluatedCacheMayHoldSecrets(definition.name),
+                error: {
+                  code: "missing_deps",
+                  message:
+                    "Direct type execution is not supported in this context",
+                },
               };
               return;
             }
-            // Sensitive values are cached as vault references; restore them,
-            // real values into evaluatedDefinition and sentinels into the
-            // executed copy, exactly as a fresh evaluation would.
-            const vaultService = (lastEval.writtenReferences ?? []).length > 0
-              ? await deps.createVaultService()
-              : undefined;
-            const restored = await rehydrateEvaluatedDefinition(
+
+            const result = await resolveOrCreateDefinition(
               {
-                definition: lastEval.definition,
-                deferredExpressions: lastEval.deferredExpressions ?? [],
-                writtenReferences: lastEval.writtenReferences ?? [],
+                lookupDefinition: deps.lookupDefinition,
+                getModelDef: deps.getModelDef,
+                saveDefinition: deps.createAndSaveDefinition,
+                getDefinitionPath: deps.getDefinitionPath,
               },
-              (vaultName, key) =>
-                vaultService!.get(vaultName, key, "evaluated-cache:replay"),
-              sensitiveValues,
-              stepSecretBag,
+              typeArg,
+              input.definitionName,
+              input.methodName,
+              input.inputs,
+              resolvedType,
+              resolvedModelDef,
+              undefined,
+              deps.autoDefinitionsDir,
+              // Inputs are typed by the operator running the command.
+              "unrestricted",
             );
-            evaluatedDefinition = restored.definition;
-            executedDefinition = restored.executedDefinition;
-            deferredExpressions = restored.deferredExpressions;
-            for (const expression of lastEval.authoredExpressions) {
-              authoredExpressions.add(expression);
+
+            if (!result.ok) {
+              yield { kind: "error", error: result.error };
+              return;
             }
+
+            if (result.created) {
+              yield {
+                kind: "auto_created",
+                modelType: resolvedType.normalized,
+                definitionName: result.definition.name,
+                definitionPath: result.definitionPath,
+              };
+            }
+
+            if (result.globalArgsUpdated) {
+              yield {
+                kind: "global_args_updated",
+                definitionName: result.definition.name,
+              };
+            }
+
+            definition = result.definition;
+            modelType = result.modelType;
+            modelDef = result.modelDef;
+
+            // Use routed method arguments as the inputs for downstream processing.
+            // Global args are already stored in the auto-created definition.
+            input = {
+              ...input,
+              inputs: { ...result.routedInputs.methodArguments },
+            };
           } else {
-            if (evaluationService.hasDefinitionExpressions(definition)) {
-              const evalResult = await evaluationService.evaluateDefinition(
-                definition,
-                modelType,
-                sensitiveValues,
-                inputs,
-                undefined,
-                stepSecretBag,
-              );
-              evaluatedDefinition = evalResult.definition;
-              executedDefinition = evalResult.sanitizedDefinition ??
-                evalResult.definition;
-              failedExpressions = evalResult.failedExpressions ??
-                failedExpressions;
-            }
-            // Saved once the argument check below passes, so a run that
-            // fails it never replaces the last good evaluation that
-            // --last-evaluated reuses. Snapshotted now because the --input
-            // overrides below mutate the definition and are not persisted.
-            // Built from the executed copy, so sensitive values are written
-            // as the vault references they came from, never in plaintext.
-            const persisted = persistEvaluatedDefinition(
-              executedDefinition,
-              [],
-              definition,
-              sensitiveValues,
-              stepSecretBag,
+            // Standard path: look up existing definition
+            const lookupDefinition = selectLookup(
+              "model method run",
+              input.byId,
+              deps.lookupDefinition,
+              deps.lookupDefinitionById,
+              input.expectedName,
             );
-            pendingSave = persisted.definition;
-            pendingReferences = persisted.writtenReferences;
+            const lookupResult = await lookupDefinition(input.modelIdOrName);
+            if (!lookupResult) {
+              yield {
+                kind: "error",
+                error: modelNotFound(input.modelIdOrName),
+              };
+              return;
+            }
+            definition = lookupResult.definition;
+            modelType = lookupResult.type;
+
+            const resolvedModelDef = await Promise.resolve(
+              deps.getModelDef(modelType),
+            );
+            if (!resolvedModelDef) {
+              yield {
+                kind: "error",
+                error: unknownModelType(modelType.normalized),
+              };
+              return;
+            }
+            modelDef = resolvedModelDef;
           }
 
-          // Merge override inputs into method arguments.
-          // Override inputs are --input flags whose keys are not model inputs
-          // schema keys (i.e. not used for CEL expression evaluation). They map
-          // directly to method argument schema keys, so reject unknown ones here
-          // before Zod's default strip mode silently discards them.
-          const definitionInputKeys = definition.inputs
-            ? Object.keys(
-              (definition.inputs as { properties?: Record<string, unknown> })
-                .properties || {},
-            )
-            : [];
-          const overrideInputs = Object.fromEntries(
-            Object.entries(inputs).filter(([key]) =>
-              !definitionInputKeys.includes(key)
-            ),
+          // Validate method exists
+          const method = modelDef.methods[input.methodName];
+          if (!method) {
+            const availableMethods = Object.keys(modelDef.methods).join(", ");
+            yield {
+              kind: "error",
+              error: unknownMethod(
+                input.methodName,
+                modelType.normalized,
+                availableMethods,
+              ),
+            };
+            return;
+          }
+
+          // Coerce and validate inputs against model's input schema
+          const inputs = { ...input.inputs };
+          if (definition.inputs) {
+            const coercedInputs = coerceInputTypes(inputs, definition.inputs);
+            Object.assign(inputs, coercedInputs);
+
+            const validationService = new InputValidationService();
+            const inputsWithDefaults = validationService.applyDefaults(
+              inputs,
+              definition.inputs,
+            );
+
+            // Build effective schema: only require inputs referenced by the method's arguments
+            const referencedInputs = extractInputReferences(
+              definition.getMethodArguments(input.methodName),
+            );
+            const originalRequired = definition.inputs.required ?? [];
+            const effectiveRequired = originalRequired.filter((name) =>
+              referencedInputs.has(name)
+            );
+            const effectiveSchema: InputsSchema = {
+              ...definition.inputs,
+              required: effectiveRequired,
+            };
+
+            const validationResult = validationService.validate(
+              inputsWithDefaults,
+              effectiveSchema,
+            );
+            if (!validationResult.valid) {
+              yield {
+                kind: "error",
+                error: inputValidationFailed(validationResult.errors),
+              };
+              return;
+            }
+            Object.assign(inputs, inputsWithDefaults);
+          }
+
+          let runLogger = getRunLogger(definition.name, input.methodName);
+          runLogger.debug("Found model {name} ({type})", {
+            name: definition.name,
+            type: modelType.normalized,
+          });
+
+          yield {
+            kind: "model_resolved",
+            modelName: definition.name,
+            modelType: modelType.normalized,
+            modelId: definition.id,
+            methodName: input.methodName,
+          };
+
+          // --- Check for env var usage and warn ---
+          const envVarUsages = detectEnvVarUsageInDefinition(definition);
+          if (envVarUsages.length > 0) {
+            yield {
+              kind: "env_var_warning",
+              modelName: definition.name,
+              envVars: envVarUsages,
+              message:
+                "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+            };
+          }
+
+          // --- Set up logging ---
+          const setupSpan = getTracer().startSpan("swamp.model.method.setup");
+          const runLog = await deps.createRunLog(
+            modelType,
+            input.methodName,
+            definition.id,
           );
-          if (Object.keys(overrideInputs).length > 0) {
-            const shape = getObjectShape(method.arguments);
-            if (shape) {
-              const unknownKeys = Object.keys(overrideInputs).filter(
-                (k) => !Object.hasOwn(shape, k),
+          const { logFilePath, redactor } = runLog;
+          // Every sensitive value this run resolves for an expression is
+          // recorded here and forwarded to the run's redactor.
+          const sensitiveValues = new RunSensitiveValues(redactor);
+          if (runLog.runId) {
+            runLogger = getRunLogger(
+              definition.name,
+              input.methodName,
+              runLog.runId,
+            );
+          }
+
+          try {
+            // --- Evaluate expressions ---
+            const exprSpan = getTracer().startSpan(
+              "swamp.model.method.evaluate_expressions",
+            );
+            yield {
+              kind: "evaluating_expressions",
+              lastEvaluated: input.lastEvaluated,
+            };
+
+            const evaluationService = deps.createEvaluationService();
+            let evaluatedDefinition = definition;
+            // The copy that executes: the same splices as evaluatedDefinition,
+            // with sensitive data values in its arguments replaced by
+            // sentinels from this step's bag. evaluatedDefinition keeps real
+            // values for caching, reports and self.globalArguments.
+            let executedDefinition = definition;
+            const stepSecretBag = new VaultSecretBag();
+
+            // Provenance for the runtime pass, collected from the SOURCE
+            // definition — never from the evaluated one, which already has data
+            // content spliced into it. Cached provenance is unioned below for
+            // --last-evaluated. Inputs are typed by the operator
+            // running the command (or an authenticated serve caller), so
+            // expressions in them — schema-declared or method overrides — are
+            // author-written too.
+            const authoredExpressions = collectAuthoredExpressions(
+              inputs,
+              collectAuthoredExpressions(definition.toData()),
+            );
+
+            let deferredExpressions: readonly DeferredExpression[] = [];
+            let failedExpressions: FailedExpressions = new Map();
+            let pendingSave: Definition | undefined;
+            let pendingReferences: readonly WrittenReference[] = [];
+            if (input.lastEvaluated) {
+              const lastEval = await deps.loadEvaluatedDefinition(
+                modelType,
+                definition.name,
               );
-              if (unknownKeys.length > 0) {
-                const validInputs = Object.keys(shape).join(", ");
+              if (!lastEval) {
                 exprSpan.end();
                 setupSpan.end();
                 yield {
                   kind: "error",
-                  error: validationFailed(
-                    `Unknown method input(s): ${unknownKeys.join(", ")}. ` +
-                      `Valid inputs are: ${validInputs || "none"}`,
-                  ),
+                  error: noEvaluatedDefinition(definition.name),
                 };
                 return;
               }
-            }
-            for (const [key, value] of Object.entries(overrideInputs)) {
-              evaluatedDefinition.setMethodArgument(
-                input.methodName,
-                key,
-                value,
+              if (mayHoldPlaintextSensitiveValues(lastEval)) {
+                exprSpan.end();
+                setupSpan.end();
+                yield {
+                  kind: "error",
+                  error: evaluatedCacheMayHoldSecrets(definition.name),
+                };
+                return;
+              }
+              // Sensitive values are cached as vault references; restore them,
+              // real values into evaluatedDefinition and sentinels into the
+              // executed copy, exactly as a fresh evaluation would.
+              const vaultService = (lastEval.writtenReferences ?? []).length > 0
+                ? await deps.createVaultService()
+                : undefined;
+              const restored = await rehydrateEvaluatedDefinition(
+                {
+                  definition: lastEval.definition,
+                  deferredExpressions: lastEval.deferredExpressions ?? [],
+                  writtenReferences: lastEval.writtenReferences ?? [],
+                },
+                (vaultName, key) =>
+                  vaultService!.get(vaultName, key, "evaluated-cache:replay"),
+                sensitiveValues,
+                stepSecretBag,
               );
-              if (executedDefinition !== evaluatedDefinition) {
-                executedDefinition.setMethodArgument(
+              evaluatedDefinition = restored.definition;
+              executedDefinition = restored.executedDefinition;
+              deferredExpressions = restored.deferredExpressions;
+              for (const expression of lastEval.authoredExpressions) {
+                authoredExpressions.add(expression);
+              }
+            } else {
+              if (evaluationService.hasDefinitionExpressions(definition)) {
+                const evalResult = await evaluationService.evaluateDefinition(
+                  definition,
+                  modelType,
+                  sensitiveValues,
+                  inputs,
+                  undefined,
+                  stepSecretBag,
+                );
+                evaluatedDefinition = evalResult.definition;
+                executedDefinition = evalResult.sanitizedDefinition ??
+                  evalResult.definition;
+                failedExpressions = evalResult.failedExpressions ??
+                  failedExpressions;
+              }
+              // Saved once the argument check below passes, so a run that
+              // fails it never replaces the last good evaluation that
+              // --last-evaluated reuses. Snapshotted now because the --input
+              // overrides below mutate the definition and are not persisted.
+              // Built from the executed copy, so sensitive values are written
+              // as the vault references they came from, never in plaintext.
+              const persisted = persistEvaluatedDefinition(
+                executedDefinition,
+                [],
+                definition,
+                sensitiveValues,
+                stepSecretBag,
+              );
+              pendingSave = persisted.definition;
+              pendingReferences = persisted.writtenReferences;
+            }
+
+            // Merge override inputs into method arguments.
+            // Override inputs are --input flags whose keys are not model inputs
+            // schema keys (i.e. not used for CEL expression evaluation). They map
+            // directly to method argument schema keys, so reject unknown ones here
+            // before Zod's default strip mode silently discards them.
+            const definitionInputKeys = definition.inputs
+              ? Object.keys(
+                (definition.inputs as { properties?: Record<string, unknown> })
+                  .properties || {},
+              )
+              : [];
+            const overrideInputs = Object.fromEntries(
+              Object.entries(inputs).filter(([key]) =>
+                !definitionInputKeys.includes(key)
+              ),
+            );
+            if (Object.keys(overrideInputs).length > 0) {
+              const shape = getObjectShape(method.arguments);
+              if (shape) {
+                const unknownKeys = Object.keys(overrideInputs).filter(
+                  (k) => !Object.hasOwn(shape, k),
+                );
+                if (unknownKeys.length > 0) {
+                  const validInputs = Object.keys(shape).join(", ");
+                  exprSpan.end();
+                  setupSpan.end();
+                  yield {
+                    kind: "error",
+                    error: validationFailed(
+                      `Unknown method input(s): ${unknownKeys.join(", ")}. ` +
+                        `Valid inputs are: ${validInputs || "none"}`,
+                    ),
+                  };
+                  return;
+                }
+              }
+              for (const [key, value] of Object.entries(overrideInputs)) {
+                evaluatedDefinition.setMethodArgument(
                   input.methodName,
                   key,
                   value,
                 );
+                if (executedDefinition !== evaluatedDefinition) {
+                  executedDefinition.setMethodArgument(
+                    input.methodName,
+                    key,
+                    value,
+                  );
+                }
               }
             }
-          }
 
-          // A failed expression this method is about to receive would
-          // otherwise be handed over as its raw ${{ ... }} text. Checked after
-          // the overrides above, so an --input that replaces it wins.
-          try {
-            assertMethodArgumentsEvaluated(
-              input.methodName,
-              evaluatedDefinition.getMethodArguments(input.methodName),
-              failedExpressions,
-            );
-          } catch (error) {
-            if (!(error instanceof UnresolvedExpressionError)) throw error;
-            exprSpan.end();
-            setupSpan.end();
-            yield {
-              kind: "error",
-              error: validationFailed(error.message, {
-                path: error.path,
-                expression: error.expression,
-              }),
-            };
-            return;
-          }
-          if (pendingSave) {
-            await deps.saveEvaluatedDefinition(
-              modelType,
-              pendingSave,
-              authoredExpressions,
-              pendingReferences,
-            );
-          }
-
-          exprSpan.end();
-
-          // Capture pre-vault args for report context (so vault secrets stay as expressions)
-          // Reports and the completed event show arguments to the user and are
-          // persisted with report output, so sensitive values are masked there.
-          const reportGlobalArgs = sensitiveValues.masked(
-            evaluatedDefinition.globalArguments,
-          ) as Record<string, unknown>;
-          const reportMethodArgs = sensitiveValues.masked(
-            evaluatedDefinition.getMethodArguments(input.methodName),
-          ) as Record<string, unknown>;
-
-          // Resolve runtime expressions (vault and env).
-          // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-          // The expression context is passed so that dynamic vault.get() arguments
-          // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
-          const runtimeSpan = getTracer().startSpan(
-            "swamp.model.method.resolve_runtime",
-          );
-          // Built from the evaluated definition so the full context (a walk
-          // of every definition) is loaded only when a deferred expression
-          // still reads model.* or file.*.
-          const runtimeContext = await evaluationService.buildRuntimeContext(
-            executedDefinition,
-            sensitiveValues,
-            inputs,
-            deferredExpressions,
-          );
-          const runtimeResult = await evaluationService
-            .resolveRuntimeExpressionsInDefinition(
-              executedDefinition,
-              redactor,
-              runtimeContext,
-              authoredExpressions,
-              {
-                secretBag: stepSecretBag,
-                rawGlobalArguments: evaluatedDefinition.globalArguments,
-              },
-            );
-          evaluatedDefinition = runtimeResult.definition;
-          // Definition tags reach data artifacts and the catalog as they
-          // are, so a sensitive value in one becomes its placeholder.
-          for (const [key, value] of Object.entries(evaluatedDefinition.tags)) {
-            const placeholder = sensitiveValues.withPlaceholders(value);
-            if (placeholder !== value) {
-              evaluatedDefinition.setTag(key, placeholder);
-            }
-          }
-          const secretBag = runtimeResult.secretBag;
-
-          // Register sensitive argument values with the redactor so they are
-          // scrubbed from per-run log files. Must use post-vault-resolution values.
-          const globalArgSchema = modelDef.globalArguments;
-          if (globalArgSchema) {
-            for (
-              const secret of extractSensitiveFieldValues(
-                globalArgSchema,
-                evaluatedDefinition.globalArguments,
-              )
-            ) {
-              redactor.addSecret(secret);
-            }
-          }
-          const methodArgSchema = modelDef.methods[input.methodName]?.arguments;
-          if (methodArgSchema) {
-            for (
-              const secret of extractSensitiveFieldValues(
-                methodArgSchema,
+            // A failed expression this method is about to receive would
+            // otherwise be handed over as its raw ${{ ... }} text. Checked after
+            // the overrides above, so an --input that replaces it wins.
+            try {
+              assertMethodArgumentsEvaluated(
+                input.methodName,
                 evaluatedDefinition.getMethodArguments(input.methodName),
-              )
-            ) {
-              redactor.addSecret(secret);
+                failedExpressions,
+              );
+            } catch (error) {
+              if (!(error instanceof UnresolvedExpressionError)) throw error;
+              exprSpan.end();
+              setupSpan.end();
+              yield {
+                kind: "error",
+                error: validationFailed(error.message, {
+                  path: error.path,
+                  expression: error.expression,
+                }),
+              };
+              return;
             }
-          }
+            if (pendingSave) {
+              await deps.saveEvaluatedDefinition(
+                modelType,
+                pendingSave,
+                authoredExpressions,
+                pendingReferences,
+              );
+            }
 
-          runtimeSpan.end();
+            exprSpan.end();
 
-          // --- Execute ---
-          runLogger.debug("Executing method {method}", {
-            method: input.methodName,
-          });
+            // Capture pre-vault args for report context (so vault secrets stay as expressions)
+            // Reports and the completed event show arguments to the user and are
+            // persisted with report output, so sensitive values are masked there.
+            const reportGlobalArgs = sensitiveValues.masked(
+              evaluatedDefinition.globalArguments,
+            ) as Record<string, unknown>;
+            const reportMethodArgs = sensitiveValues.masked(
+              evaluatedDefinition.getMethodArguments(input.methodName),
+            ) as Record<string, unknown>;
 
-          yield {
-            kind: "executing",
-            modelName: definition.name,
-            methodName: input.methodName,
-          };
+            // Resolve runtime expressions (vault and env).
+            // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+            // The expression context is passed so that dynamic vault.get() arguments
+            // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
+            const runtimeSpan = getTracer().startSpan(
+              "swamp.model.method.resolve_runtime",
+            );
+            // Built from the evaluated definition so the full context (a walk
+            // of every definition) is loaded only when a deferred expression
+            // still reads model.* or file.*.
+            const runtimeContext = await evaluationService.buildRuntimeContext(
+              executedDefinition,
+              sensitiveValues,
+              inputs,
+              deferredExpressions,
+            );
+            const runtimeResult = await evaluationService
+              .resolveRuntimeExpressionsInDefinition(
+                executedDefinition,
+                redactor,
+                runtimeContext,
+                authoredExpressions,
+                {
+                  secretBag: stepSecretBag,
+                  rawGlobalArguments: evaluatedDefinition.globalArguments,
+                },
+              );
+            evaluatedDefinition = runtimeResult.definition;
+            // Definition tags reach data artifacts and the catalog as they
+            // are, so a sensitive value in one becomes its placeholder.
+            for (
+              const [key, value] of Object.entries(evaluatedDefinition.tags)
+            ) {
+              const placeholder = sensitiveValues.withPlaceholders(value);
+              if (placeholder !== value) {
+                evaluatedDefinition.setTag(key, placeholder);
+              }
+            }
+            const secretBag = runtimeResult.secretBag;
 
-          // Create ModelOutput for tracking
-          const preExecSpan = getTracer().startSpan(
-            "swamp.model.method.pre_execute",
-          );
-          const definitionHash = await definition.computeHash();
-          const output = ModelOutput.create({
-            definitionId: definition.id,
-            methodName: input.methodName,
-            provenance: {
-              definitionHash,
-              modelVersion: modelDef.version,
-              triggeredBy: "manual",
-              initiatedBy: input.initiatedBy,
-              bundleFingerprint: modelDef.sourceFingerprint,
-            },
-          });
-          output.markRunning(Deno.pid);
-          output.setLogFile(logFilePath);
+            // Register sensitive argument values with the redactor so they are
+            // scrubbed from per-run log files. Must use post-vault-resolution values.
+            const globalArgSchema = modelDef.globalArguments;
+            if (globalArgSchema) {
+              for (
+                const secret of extractSensitiveFieldValues(
+                  globalArgSchema,
+                  evaluatedDefinition.globalArguments,
+                )
+              ) {
+                redactor.addSecret(secret);
+              }
+            }
+            const methodArgSchema = modelDef.methods[input.methodName]
+              ?.arguments;
+            if (methodArgSchema) {
+              for (
+                const secret of extractSensitiveFieldValues(
+                  methodArgSchema,
+                  evaluatedDefinition.getMethodArguments(input.methodName),
+                )
+              ) {
+                redactor.addSecret(secret);
+              }
+            }
 
-          // Register with the run tracker (if available).
-          // Output YAML is only written in terminal state (write-once).
-          let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
-          if (deps.runTracker) {
-            const activeRun = ActiveRun.createModelMethodRun({
-              id: output.id,
-              modelType: modelType.normalized,
-              methodName: input.methodName,
-              pid: Deno.pid,
-              hostname: hostname(),
-              initiatedBy: input.initiatedBy,
-              instanceId: input.instanceId,
+            runtimeSpan.end();
+
+            // --- Execute ---
+            runLogger.debug("Executing method {method}", {
+              method: input.methodName,
             });
-            deps.runTracker.register(activeRun);
-          }
 
-          const vaultService = await deps.createVaultService();
-          const executionService = deps.createExecutionService();
-
-          if (
-            "modelInvocationService" in executionService &&
-            !executionService.modelInvocationService
-          ) {
-            const { ModelInvocationService } = await import(
-              "../../domain/models/model_invocation_service.ts"
-            );
-            const commonDeps: CommonMethodContextDeps = {
-              dataRepository: deps.dataRepo,
-              definitionRepository: deps.definitionRepo,
-              vaultService,
-              redactor,
-              dataQueryService: deps.dataQueryService,
-              createCelEnvironment: createExtensionCelEnvironment,
+            yield {
+              kind: "executing",
+              modelName: definition.name,
+              methodName: input.methodName,
             };
-            (executionService as { modelInvocationService?: unknown })
-              .modelInvocationService = new ModelInvocationService({
-                executionService,
-                commonDeps,
-                repoDir: deps.repoDir,
-                pulledExtensionsRoot: resolvePulledExtensionsRoot(
-                  deps.repoDir,
-                ),
-              });
-          }
 
-          // Gate service intentionally not wired here — approving/rejecting
-          // workflow gates from model code bypasses authorization. Use the
-          // CLI (swamp workflow approve/reject) or WebSocket API instead.
-
-          // Start heartbeat inside the try so it's always cleaned up on error.
-          if (deps.runTracker) {
-            heartbeatInterval = setInterval(() => {
-              try {
-                deps.runTracker!.heartbeat(output.id);
-              } catch {
-                // Heartbeat failure is non-fatal
-              }
-            }, 30_000);
-          }
-
-          preExecSpan.end();
-          setupSpan.end();
-
-          let execResult: MethodResult;
-          try {
-            execResult = yield* withEventBridge<
-              ModelMethodRunEvent,
-              MethodResult
-            >(
-              (push) =>
-                executionService.executeWorkflow(
-                  evaluatedDefinition,
-                  modelDef,
-                  input.methodName,
-                  buildMethodContext(
-                    {
-                      dataRepository: deps.dataRepo,
-                      definitionRepository: deps.definitionRepo,
-                      vaultService,
-                      redactor,
-                      dataQueryService: deps.dataQueryService,
-                      createCelEnvironment: createExtensionCelEnvironment,
-                    },
-                    {
-                      signal: ctx.signal,
-                      repoDir: deps.repoDir,
-                      modelType,
-                      modelId: evaluatedDefinition.id,
-                      globalArgs: evaluatedDefinition.globalArguments,
-                      definition: {
-                        id: evaluatedDefinition.id,
-                        name: evaluatedDefinition.name,
-                        version: evaluatedDefinition.version,
-                        tags: evaluatedDefinition.tags,
-                      },
-                      methodName: input.methodName,
-                      logger: runLogger,
-                      runtimeTags: input.runtimeTags,
-                      tagOverrides: input.initiatedBy
-                        ? { initiatedBy: input.initiatedBy }
-                        : undefined,
-                      dataOutputOverrides: evaluatedDefinition.resources
-                        ? Object.entries(
-                          evaluatedDefinition.resources,
-                        ).map(([specName, override]) => ({
-                          specName,
-                          lifetime: override.lifetime,
-                          garbageCollection: override.garbageCollection,
-                          vaultName: override.vaultName,
-                        }))
-                        : undefined,
-                      vaultSecrets: secretBag,
-                      skipCheckNames: input.skipCheckNames,
-                      skipCheckLabels: input.skipCheckLabels,
-                      skipAllChecks: input.skipAllChecks,
-                      extensionFilesRoot: modelDef.extensionFilesRoot,
-                      onEvent: (event: MethodExecutionEvent) => {
-                        if (event.type === "output") {
-                          push({
-                            kind: "method_output",
-                            modelName: definition.name,
-                            methodName: input.methodName,
-                            stream: event.stream,
-                            line: event.line,
-                          });
-                        } else {
-                          push({
-                            kind: "method_event",
-                            modelName: definition.name,
-                            methodName: input.methodName,
-                            event,
-                          });
-                        }
-                      },
-                    },
-                  ),
-                ),
+            // Create ModelOutput for tracking
+            const preExecSpan = getTracer().startSpan(
+              "swamp.model.method.pre_execute",
             );
-          } catch (error) {
-            const errorMessage = error instanceof Error
-              ? error.message
-              : String(error);
-            const errorStack = error instanceof Error ? error.stack : undefined;
+            const definitionHash = await definition.computeHash();
+            const output = ModelOutput.create({
+              definitionId: definition.id,
+              methodName: input.methodName,
+              provenance: {
+                definitionHash,
+                modelVersion: modelDef.version,
+                triggeredBy: "manual",
+                initiatedBy: input.initiatedBy,
+                bundleFingerprint: modelDef.sourceFingerprint,
+              },
+            });
+            output.markRunning(Deno.pid);
+            output.setLogFile(logFilePath);
 
-            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            // Register with the run tracker (if available).
+            // Output YAML is only written in terminal state (write-once).
+            let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+            if (deps.runTracker) {
+              const activeRun = ActiveRun.createModelMethodRun({
+                id: output.id,
+                modelType: modelType.normalized,
+                methodName: input.methodName,
+                pid: Deno.pid,
+                hostname: hostname(),
+                initiatedBy: input.initiatedBy,
+                instanceId: input.instanceId,
+              });
+              deps.runTracker.register(activeRun);
+            }
+
+            const vaultService = await deps.createVaultService();
+            const executionService = deps.createExecutionService();
 
             if (
-              ctx.signal.aborted ||
-              (error instanceof DOMException && error.name === "AbortError")
+              "modelInvocationService" in executionService &&
+              !executionService.modelInvocationService
             ) {
-              output.markCancelled("aborted");
-              await deps.outputRepo.save(modelType, input.methodName, output);
-              if (deps.runTracker) {
-                deps.runTracker.complete(output.id, "cancelled");
+              const { ModelInvocationService } = await import(
+                "../../domain/models/model_invocation_service.ts"
+              );
+              const commonDeps: CommonMethodContextDeps = {
+                dataRepository: deps.dataRepo,
+                definitionRepository: deps.definitionRepo,
+                vaultService,
+                redactor,
+                dataQueryService: deps.dataQueryService,
+                createCelEnvironment: createExtensionCelEnvironment,
+              };
+              (executionService as { modelInvocationService?: unknown })
+                .modelInvocationService = new ModelInvocationService({
+                  executionService,
+                  commonDeps,
+                  repoDir: deps.repoDir,
+                  pulledExtensionsRoot: resolvePulledExtensionsRoot(
+                    deps.repoDir,
+                  ),
+                });
+            }
+
+            // Gate service intentionally not wired here — approving/rejecting
+            // workflow gates from model code bypasses authorization. Use the
+            // CLI (swamp workflow approve/reject) or WebSocket API instead.
+
+            // Start heartbeat inside the try so it's always cleaned up on error.
+            if (deps.runTracker) {
+              heartbeatInterval = setInterval(() => {
+                try {
+                  deps.runTracker!.heartbeat(output.id);
+                } catch {
+                  // Heartbeat failure is non-fatal
+                }
+              }, 30_000);
+            }
+
+            preExecSpan.end();
+            setupSpan.end();
+
+            let execResult: MethodResult;
+            try {
+              execResult = yield* withEventBridge<
+                ModelMethodRunEvent,
+                MethodResult
+              >(
+                (push) =>
+                  executionService.executeWorkflow(
+                    evaluatedDefinition,
+                    modelDef,
+                    input.methodName,
+                    buildMethodContext(
+                      {
+                        dataRepository: deps.dataRepo,
+                        definitionRepository: deps.definitionRepo,
+                        vaultService,
+                        redactor,
+                        dataQueryService: deps.dataQueryService,
+                        createCelEnvironment: createExtensionCelEnvironment,
+                      },
+                      {
+                        signal: ctx.signal,
+                        repoDir: deps.repoDir,
+                        modelType,
+                        modelId: evaluatedDefinition.id,
+                        globalArgs: evaluatedDefinition.globalArguments,
+                        definition: {
+                          id: evaluatedDefinition.id,
+                          name: evaluatedDefinition.name,
+                          version: evaluatedDefinition.version,
+                          tags: evaluatedDefinition.tags,
+                        },
+                        methodName: input.methodName,
+                        logger: runLogger,
+                        runtimeTags: input.runtimeTags,
+                        tagOverrides: input.initiatedBy
+                          ? { initiatedBy: input.initiatedBy }
+                          : undefined,
+                        dataOutputOverrides: evaluatedDefinition.resources
+                          ? Object.entries(
+                            evaluatedDefinition.resources,
+                          ).map(([specName, override]) => ({
+                            specName,
+                            lifetime: override.lifetime,
+                            garbageCollection: override.garbageCollection,
+                            vaultName: override.vaultName,
+                          }))
+                          : undefined,
+                        vaultSecrets: secretBag,
+                        skipCheckNames: input.skipCheckNames,
+                        skipCheckLabels: input.skipCheckLabels,
+                        skipAllChecks: input.skipAllChecks,
+                        extensionFilesRoot: modelDef.extensionFilesRoot,
+                        onEvent: (event: MethodExecutionEvent) => {
+                          if (event.type === "output") {
+                            push({
+                              kind: "method_output",
+                              modelName: definition.name,
+                              methodName: input.methodName,
+                              stream: event.stream,
+                              line: event.line,
+                            });
+                          } else {
+                            push({
+                              kind: "method_event",
+                              modelName: definition.name,
+                              methodName: input.methodName,
+                              event,
+                            });
+                          }
+                        },
+                      },
+                    ),
+                  ),
+              );
+            } catch (error) {
+              const errorMessage = error instanceof Error
+                ? error.message
+                : String(error);
+              const errorStack = error instanceof Error
+                ? error.stack
+                : undefined;
+
+              if (heartbeatInterval) clearInterval(heartbeatInterval);
+
+              if (
+                ctx.signal.aborted ||
+                (error instanceof DOMException && error.name === "AbortError")
+              ) {
+                output.markCancelled("aborted");
+                await deps.outputRepo.save(modelType, input.methodName, output);
+                if (deps.runTracker) {
+                  deps.runTracker.complete(output.id, "cancelled");
+                }
+              } else {
+                output.markFailed({ message: errorMessage, stack: errorStack });
+                await deps.outputRepo.save(modelType, input.methodName, output);
+                if (deps.runTracker) {
+                  deps.runTracker.complete(output.id, "failed");
+                }
               }
-            } else {
-              output.markFailed({ message: errorMessage, stack: errorStack });
-              await deps.outputRepo.save(modelType, input.methodName, output);
-              if (deps.runTracker) {
-                deps.runTracker.complete(output.id, "failed");
+
+              // Run method-summary report for failed executions so JSON consumers
+              // see structured error output (not just the raw error event).
+              if (
+                output.status === "failed" && !input.skipAllReports &&
+                reportRegistry.getAll().length > 0
+              ) {
+                const failedMethodContext = buildMethodReportContext(
+                  {
+                    repoDir: deps.repoDir,
+                    logger: runLogger,
+                    dataRepository: deps.dataRepo,
+                    definitionRepository: deps.definitionRepo,
+                    swampSha: input.swampSha,
+                  },
+                  {
+                    modelType,
+                    modelId: evaluatedDefinition.id,
+                    definition: {
+                      id: evaluatedDefinition.id,
+                      name: evaluatedDefinition.name,
+                      version: evaluatedDefinition.version,
+                      tags: evaluatedDefinition.tags,
+                    },
+                    globalArgs: reportGlobalArgs,
+                    methodArgs: reportMethodArgs,
+                    methodName: input.methodName,
+                    executionStatus: "failed",
+                    errorMessage,
+                    dataHandles: recoveredDataHandles(error),
+                    outputSpecs: buildOutputSpecs(modelDef),
+                    extensionFilesRoot: modelDef.extensionFilesRoot,
+                  },
+                );
+
+                const failedSummary = await executeReports(
+                  reportRegistry,
+                  failedMethodContext,
+                  modelType,
+                  evaluatedDefinition.id,
+                  definition.reportSelection,
+                  {
+                    skipAllReports: input.skipAllReports,
+                    skipReportNames: input.skipReportNames,
+                    skipReportLabels: input.skipReportLabels,
+                    reportNames: input.reportNames,
+                    reportLabels: input.reportLabels,
+                  },
+                  {
+                    onReportStarted: () => {},
+                    onReportCompleted: () => {},
+                    onReportFailed: () => {},
+                  },
+                  input.methodName,
+                  [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+                );
+
+                for (const result of failedSummary.results) {
+                  yield {
+                    kind: "report_started" as const,
+                    reportName: result.name,
+                    scope: result.scope,
+                  };
+                  if (result.success) {
+                    yield {
+                      kind: "report_completed" as const,
+                      reportName: result.name,
+                      scope: result.scope,
+                      markdown: result.markdown!,
+                      json: result.json!,
+                    };
+                  } else {
+                    yield {
+                      kind: "report_failed" as const,
+                      reportName: result.name,
+                      scope: result.scope,
+                      error: result.error!,
+                    };
+                  }
+                }
+              }
+
+              if (output.status === "cancelled") {
+                return;
+              }
+
+              if (
+                error instanceof DOMException && error.name === "AbortError"
+              ) {
+                yield { kind: "error", error: cancelled(error) };
+                return;
+              }
+
+              yield { kind: "error", error: methodExecutionFailed(error) };
+              return;
+            }
+
+            // --- Process data artifacts ---
+            const postExecSpan = getTracer().startSpan(
+              "swamp.model.method.post_execute",
+            );
+            const dataArtifacts: DataArtifactView[] = [];
+            if (execResult.dataHandles && execResult.dataHandles.length > 0) {
+              for (const handle of execResult.dataHandles) {
+                const dataPath = deps.dataRepo.getPath(
+                  modelType,
+                  definition.id,
+                  handle.name,
+                  handle.version,
+                );
+
+                output.addDataArtifact({
+                  dataId: handle.dataId,
+                  name: handle.name,
+                  version: handle.version,
+                  tags: handle.tags,
+                });
+
+                // Parse content if JSON for display
+                let attributes: Record<string, unknown> | undefined;
+                if (handle.metadata.contentType === "application/json") {
+                  try {
+                    const content = await deps.dataRepo.getContent(
+                      modelType,
+                      evaluatedDefinition.id,
+                      handle.name,
+                      handle.version,
+                    );
+                    if (content) {
+                      const text = new TextDecoder().decode(content);
+                      attributes = JSON.parse(text) as Record<string, unknown>;
+                    }
+                  } catch {
+                    // Not valid JSON, skip attributes
+                  }
+                }
+
+                dataArtifacts.push({
+                  id: handle.dataId,
+                  name: handle.name,
+                  path: dataPath,
+                  attributes,
+                });
+                yield {
+                  kind: "data_artifact_saved",
+                  name: handle.name,
+                  path: dataPath,
+                };
               }
             }
 
-            // Run method-summary report for failed executions so JSON consumers
-            // see structured error output (not just the raw error event).
+            runLogger.debug(
+              "Method {method} completed on {model}",
+              { method: input.methodName, model: definition.name },
+            );
+
+            // Mark output as succeeded and save (write-once)
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            output.markSucceeded();
+            await deps.outputRepo.save(modelType, input.methodName, output);
+            if (deps.runTracker) {
+              deps.runTracker.complete(output.id, "completed");
+            }
+
             if (
-              output.status === "failed" && !input.skipAllReports &&
-              reportRegistry.getAll().length > 0
+              deps.eventBus &&
+              execResult.dataHandles && execResult.dataHandles.length > 0
             ) {
-              const failedMethodContext = buildMethodReportContext(
+              await deps.eventBus.publish(
+                createModelUpdated(
+                  modelType.normalized,
+                  definition.id,
+                  definition.name,
+                ),
+              );
+            }
+
+            // --- Post-run reports ---
+            const reportsSpan = getTracer().startSpan(
+              "swamp.model.method.reports",
+            );
+            let reportResults: Record<string, ReportResultView> | undefined;
+            let reportFailures = 0;
+
+            if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
+              const dataHandles = execResult.dataHandles ?? [];
+
+              // Run method-scope reports
+              const methodContext = buildMethodReportContext(
                 {
                   repoDir: deps.repoDir,
                   logger: runLogger,
@@ -1063,17 +1254,16 @@ export async function* modelMethodRun(
                   globalArgs: reportGlobalArgs,
                   methodArgs: reportMethodArgs,
                   methodName: input.methodName,
-                  executionStatus: "failed",
-                  errorMessage,
-                  dataHandles: recoveredDataHandles(error),
+                  executionStatus: "succeeded",
+                  dataHandles,
                   outputSpecs: buildOutputSpecs(modelDef),
                   extensionFilesRoot: modelDef.extensionFilesRoot,
                 },
               );
 
-              const failedSummary = await executeReports(
+              const methodSummary = await executeReports(
                 reportRegistry,
-                failedMethodContext,
+                methodContext,
                 modelType,
                 evaluatedDefinition.id,
                 definition.reportSelection,
@@ -1093,7 +1283,9 @@ export async function* modelMethodRun(
                 [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
               );
 
-              for (const result of failedSummary.results) {
+              // Yield report events and collect results
+              reportResults = {};
+              for (const result of methodSummary.results) {
                 yield {
                   kind: "report_started" as const,
                   reportName: result.name,
@@ -1115,310 +1307,129 @@ export async function* modelMethodRun(
                     error: result.error!,
                   };
                 }
+                reportResults[result.name] = toReportResultView(result);
               }
-            }
+              reportFailures += methodSummary.failures;
 
-            if (output.status === "cancelled") {
-              return;
-            }
-
-            if (
-              error instanceof DOMException && error.name === "AbortError"
-            ) {
-              yield { kind: "error", error: cancelled(error) };
-              return;
-            }
-
-            yield { kind: "error", error: methodExecutionFailed(error) };
-            return;
-          }
-
-          // --- Process data artifacts ---
-          const postExecSpan = getTracer().startSpan(
-            "swamp.model.method.post_execute",
-          );
-          const dataArtifacts: DataArtifactView[] = [];
-          if (execResult.dataHandles && execResult.dataHandles.length > 0) {
-            for (const handle of execResult.dataHandles) {
-              const dataPath = deps.dataRepo.getPath(
-                modelType,
-                definition.id,
-                handle.name,
-                handle.version,
-              );
-
-              output.addDataArtifact({
-                dataId: handle.dataId,
-                name: handle.name,
-                version: handle.version,
-                tags: handle.tags,
-              });
-
-              // Parse content if JSON for display
-              let attributes: Record<string, unknown> | undefined;
-              if (handle.metadata.contentType === "application/json") {
-                try {
-                  const content = await deps.dataRepo.getContent(
-                    modelType,
-                    evaluatedDefinition.id,
-                    handle.name,
-                    handle.version,
-                  );
-                  if (content) {
-                    const text = new TextDecoder().decode(content);
-                    attributes = JSON.parse(text) as Record<string, unknown>;
-                  }
-                } catch {
-                  // Not valid JSON, skip attributes
-                }
-              }
-
-              dataArtifacts.push({
-                id: handle.dataId,
-                name: handle.name,
-                path: dataPath,
-                attributes,
-              });
-              yield {
-                kind: "data_artifact_saved",
-                name: handle.name,
-                path: dataPath,
+              // Run model-scope reports
+              const modelContext: ModelReportContext = {
+                ...methodContext,
+                scope: "model",
               };
-            }
-          }
 
-          runLogger.debug(
-            "Method {method} completed on {model}",
-            { method: input.methodName, model: definition.name },
-          );
-
-          // Mark output as succeeded and save (write-once)
-          if (heartbeatInterval) clearInterval(heartbeatInterval);
-          output.markSucceeded();
-          await deps.outputRepo.save(modelType, input.methodName, output);
-          if (deps.runTracker) {
-            deps.runTracker.complete(output.id, "completed");
-          }
-
-          if (
-            deps.eventBus &&
-            execResult.dataHandles && execResult.dataHandles.length > 0
-          ) {
-            await deps.eventBus.publish(
-              createModelUpdated(
-                modelType.normalized,
-                definition.id,
-                definition.name,
-              ),
-            );
-          }
-
-          // --- Post-run reports ---
-          const reportsSpan = getTracer().startSpan(
-            "swamp.model.method.reports",
-          );
-          let reportResults: Record<string, ReportResultView> | undefined;
-          let reportFailures = 0;
-
-          if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
-            const dataHandles = execResult.dataHandles ?? [];
-
-            // Run method-scope reports
-            const methodContext = buildMethodReportContext(
-              {
-                repoDir: deps.repoDir,
-                logger: runLogger,
-                dataRepository: deps.dataRepo,
-                definitionRepository: deps.definitionRepo,
-                swampSha: input.swampSha,
-              },
-              {
+              const modelSummary = await executeReports(
+                reportRegistry,
+                modelContext,
                 modelType,
-                modelId: evaluatedDefinition.id,
-                definition: {
-                  id: evaluatedDefinition.id,
-                  name: evaluatedDefinition.name,
-                  version: evaluatedDefinition.version,
-                  tags: evaluatedDefinition.tags,
+                evaluatedDefinition.id,
+                definition.reportSelection,
+                {
+                  skipAllReports: input.skipAllReports,
+                  skipReportNames: input.skipReportNames,
+                  skipReportLabels: input.skipReportLabels,
+                  reportNames: input.reportNames,
+                  reportLabels: input.reportLabels,
                 },
-                globalArgs: reportGlobalArgs,
-                methodArgs: reportMethodArgs,
-                methodName: input.methodName,
-                executionStatus: "succeeded",
-                dataHandles,
-                outputSpecs: buildOutputSpecs(modelDef),
-                extensionFilesRoot: modelDef.extensionFilesRoot,
-              },
-            );
-
-            const methodSummary = await executeReports(
-              reportRegistry,
-              methodContext,
-              modelType,
-              evaluatedDefinition.id,
-              definition.reportSelection,
-              {
-                skipAllReports: input.skipAllReports,
-                skipReportNames: input.skipReportNames,
-                skipReportLabels: input.skipReportLabels,
-                reportNames: input.reportNames,
-                reportLabels: input.reportLabels,
-              },
-              {
-                onReportStarted: () => {},
-                onReportCompleted: () => {},
-                onReportFailed: () => {},
-              },
-              input.methodName,
-              [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
-            );
-
-            // Yield report events and collect results
-            reportResults = {};
-            for (const result of methodSummary.results) {
-              yield {
-                kind: "report_started" as const,
-                reportName: result.name,
-                scope: result.scope,
-              };
-              if (result.success) {
-                yield {
-                  kind: "report_completed" as const,
-                  reportName: result.name,
-                  scope: result.scope,
-                  markdown: result.markdown!,
-                  json: result.json!,
-                };
-              } else {
-                yield {
-                  kind: "report_failed" as const,
-                  reportName: result.name,
-                  scope: result.scope,
-                  error: result.error!,
-                };
-              }
-              reportResults[result.name] = toReportResultView(result);
-            }
-            reportFailures += methodSummary.failures;
-
-            // Run model-scope reports
-            const modelContext: ModelReportContext = {
-              ...methodContext,
-              scope: "model",
-            };
-
-            const modelSummary = await executeReports(
-              reportRegistry,
-              modelContext,
-              modelType,
-              evaluatedDefinition.id,
-              definition.reportSelection,
-              {
-                skipAllReports: input.skipAllReports,
-                skipReportNames: input.skipReportNames,
-                skipReportLabels: input.skipReportLabels,
-                reportNames: input.reportNames,
-                reportLabels: input.reportLabels,
-              },
-              {
-                onReportStarted: () => {},
-                onReportCompleted: () => {},
-                onReportFailed: () => {},
-              },
-              input.methodName,
-              [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
-              undefined,
-              // The method-scope call above already emitted failures for
-              // unresolvable required reports — suppress duplicates.
-              false,
-            );
-
-            for (const result of modelSummary.results) {
-              yield {
-                kind: "report_started" as const,
-                reportName: result.name,
-                scope: result.scope,
-              };
-              if (result.success) {
-                yield {
-                  kind: "report_completed" as const,
-                  reportName: result.name,
-                  scope: result.scope,
-                  markdown: result.markdown!,
-                  json: result.json!,
-                };
-              } else {
-                yield {
-                  kind: "report_failed" as const,
-                  reportName: result.name,
-                  scope: result.scope,
-                  error: result.error!,
-                };
-              }
-              reportResults[result.name] = toReportResultView(result);
-            }
-            reportFailures += modelSummary.failures;
-          }
-
-          reportsSpan.end();
-          postExecSpan.end();
-
-          // --- Complete ---
-          const view: ModelMethodRunView = {
-            modelId: definition.id,
-            modelName: definition.name,
-            modelType: modelType.normalized,
-            methodName: input.methodName,
-            status: reportFailures > 0 ? "failed" : "succeeded",
-            duration: output.durationMs,
-            outputId: output.id,
-            logFile: logFilePath,
-            dataArtifacts,
-            reports: reportResults,
-            globalArguments: reportGlobalArgs,
-            methodArguments: reportMethodArgs,
-            initiatedBy: input.initiatedBy,
-          };
-          yield { kind: "completed", run: view };
-
-          if (input.autoGc) {
-            yield { kind: "auto_gc_started" };
-            let lifecycleDeps: AutoGcLifecycleDeps | undefined;
-            if (deps.workflowRunRepo) {
-              const lifecycleService = new DefaultDataLifecycleService(
-                deps.dataRepo,
-                deps.workflowRunRepo,
+                {
+                  onReportStarted: () => {},
+                  onReportCompleted: () => {},
+                  onReportFailed: () => {},
+                },
+                input.methodName,
+                [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+                undefined,
+                // The method-scope call above already emitted failures for
+                // unresolvable required reports — suppress duplicates.
+                false,
               );
-              lifecycleDeps = {
-                dataRepo: deps.dataRepo,
-                lifecycleService,
-              };
+
+              for (const result of modelSummary.results) {
+                yield {
+                  kind: "report_started" as const,
+                  reportName: result.name,
+                  scope: result.scope,
+                };
+                if (result.success) {
+                  yield {
+                    kind: "report_completed" as const,
+                    reportName: result.name,
+                    scope: result.scope,
+                    markdown: result.markdown!,
+                    json: result.json!,
+                  };
+                } else {
+                  yield {
+                    kind: "report_failed" as const,
+                    reportName: result.name,
+                    scope: result.scope,
+                    error: result.error!,
+                  };
+                }
+                reportResults[result.name] = toReportResultView(result);
+              }
+              reportFailures += modelSummary.failures;
             }
-            const gcResult = await autoGc(
-              deps.dataRepo,
-              modelType,
-              definition.id,
-              lifecycleDeps,
-            );
-            if (
-              gcResult &&
-              (gcResult.versionsRemoved > 0 || gcResult.dataEntriesExpired > 0)
-            ) {
-              yield {
-                kind: "auto_gc_completed" as const,
-                versionsDeleted: gcResult.versionsRemoved,
-                bytesReclaimed: gcResult.bytesReclaimed,
-                dataEntriesExpired: gcResult.dataEntriesExpired,
-              };
+
+            reportsSpan.end();
+            postExecSpan.end();
+
+            // --- Complete ---
+            const view: ModelMethodRunView = {
+              modelId: definition.id,
+              modelName: definition.name,
+              modelType: modelType.normalized,
+              methodName: input.methodName,
+              status: reportFailures > 0 ? "failed" : "succeeded",
+              duration: output.durationMs,
+              outputId: output.id,
+              logFile: logFilePath,
+              dataArtifacts,
+              reports: reportResults,
+              globalArguments: reportGlobalArgs,
+              methodArguments: reportMethodArgs,
+              initiatedBy: input.initiatedBy,
+            };
+            yield { kind: "completed", run: view };
+
+            if (input.autoGc) {
+              yield { kind: "auto_gc_started" };
+              let lifecycleDeps: AutoGcLifecycleDeps | undefined;
+              if (deps.workflowRunRepo) {
+                const lifecycleService = new DefaultDataLifecycleService(
+                  deps.dataRepo,
+                  deps.workflowRunRepo,
+                );
+                lifecycleDeps = {
+                  dataRepo: deps.dataRepo,
+                  lifecycleService,
+                };
+              }
+              const gcResult = await autoGc(
+                deps.dataRepo,
+                modelType,
+                definition.id,
+                lifecycleDeps,
+              );
+              if (
+                gcResult &&
+                (gcResult.versionsRemoved > 0 ||
+                  gcResult.dataEntriesExpired > 0)
+              ) {
+                yield {
+                  kind: "auto_gc_completed" as const,
+                  versionsDeleted: gcResult.versionsRemoved,
+                  bytesReclaimed: gcResult.bytesReclaimed,
+                  dataEntriesExpired: gcResult.dataEntriesExpired,
+                };
+              }
             }
+          } finally {
+            runLog.cleanup();
+            ephemeral.dispose();
           }
-        } finally {
-          runLog.cleanup();
-          ephemeral.dispose();
-        }
-      })(),
-    ),
-  );
+        })(),
+      ),
+    ));
 }
 
 /**

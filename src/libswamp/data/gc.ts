@@ -33,6 +33,7 @@ import {
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type {
@@ -167,34 +168,35 @@ export async function dataGcPreview(
 
 /** Runs garbage collection on expired data. */
 export async function* dataGc(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: DataGcDeps,
   input: DataGcInput,
 ): AsyncIterable<DataGcEvent> {
-  yield* withGeneratorSpan(
-    "swamp.data.gc",
-    { "gc.dry_run": input.dryRun },
-    (async function* () {
-      yield { kind: "collecting" } as const;
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.data.gc",
+      { "gc.dry_run": input.dryRun },
+      (async function* () {
+        yield { kind: "collecting" } as const;
 
-      const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
+        const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
 
-      const compact = !input.dryRun ? deps.compactCatalog?.() : undefined;
+        const compact = !input.dryRun ? deps.compactCatalog?.() : undefined;
 
-      yield {
-        kind: "completed" as const,
-        data: {
-          dataEntriesExpired: result.dataEntriesExpired,
-          versionsDeleted: result.versionsDeleted,
-          bytesReclaimed: result.bytesReclaimed,
-          dryRun: result.dryRun,
-          expiredEntries: result.expiredEntries,
-          walPagesTotal: compact?.walPagesTotal ?? 0,
-          walPagesCheckpointed: compact?.walPagesCheckpointed ?? 0,
-        },
-      };
-    })(),
-  );
+        yield {
+          kind: "completed" as const,
+          data: {
+            dataEntriesExpired: result.dataEntriesExpired,
+            versionsDeleted: result.versionsDeleted,
+            bytesReclaimed: result.bytesReclaimed,
+            dryRun: result.dryRun,
+            expiredEntries: result.expiredEntries,
+            walPagesTotal: compact?.walPagesTotal ?? 0,
+            walPagesCheckpointed: compact?.walPagesCheckpointed ?? 0,
+          },
+        };
+      })(),
+    ));
 }
 
 /** Result of auto-GC including both version and lifetime expiration. */

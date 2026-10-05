@@ -28,6 +28,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  libSwampContextForRepo,
   type ModelLockResult,
   requireInitializedRepoUnlocked,
   runUnderModelLocks,
@@ -71,7 +72,6 @@ import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import {
   consumeStream,
-  createLibSwampContext,
   modelMethodRun,
   type ModelMethodRunDeps,
   type ModelMethodRunEvent,
@@ -433,7 +433,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           handler: () => abort.abort(),
           forceExitOnRepeat: true,
         });
-        const baseLibCtx = createLibSwampContext({ signal: abort.signal });
+        const baseLibCtx = libSwampContextForRepo(repoContext, {
+          signal: abort.signal,
+        });
         const libCtx = timeoutMs !== undefined
           ? baseLibCtx.withTimeout(timeoutMs)
           : baseLibCtx;

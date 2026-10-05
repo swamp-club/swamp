@@ -28,6 +28,7 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import type { LibSwampContext } from "../context.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 
@@ -90,75 +91,76 @@ export async function* workflowCreate(
   deps: WorkflowCreateDeps,
   input: WorkflowCreateInput,
 ): AsyncIterable<WorkflowCreateEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.create",
-    { "workflow.name": input.name },
-    (async function* () {
-      yield { kind: "creating" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.create",
+      { "workflow.name": input.name },
+      (async function* () {
+        yield { kind: "creating" };
 
-      ctx.logger.debug`Creating workflow: name=${input.name}`;
+        ctx.logger.debug`Creating workflow: name=${input.name}`;
 
-      const nameViolation = workflowNameViolation(input.name);
-      if (nameViolation) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Invalid workflow name: ${input.name}. ${nameViolation}`,
-          ),
+        const nameViolation = workflowNameViolation(input.name);
+        if (nameViolation) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Invalid workflow name: ${input.name}. ${nameViolation}`,
+            ),
+          };
+          return;
+        }
+
+        // Check name uniqueness
+        const existing = await deps.findByName(input.name);
+        if (existing) {
+          yield {
+            kind: "error",
+            error: alreadyExists("Workflow", input.name),
+          };
+          return;
+        }
+
+        // Create workflow with a default job (schema requires at least one job)
+        const defaultJob = Job.create({
+          name: "main",
+          description: "Main job (edit or replace)",
+          steps: [
+            Step.create({
+              name: "example",
+              description: "Example step (edit or replace)",
+              task: StepTask.model("example-model", "run"),
+            }),
+          ],
+        });
+
+        const workflow = Workflow.create({
+          name: input.name,
+          jobs: [defaultJob],
+        });
+
+        await deps.save(workflow);
+
+        ctx.logger.debug`Created workflow with ID: ${workflow.id}`;
+
+        const jobs: WorkflowCreateJobData[] = workflow.jobs.map((job) => ({
+          name: job.name,
+          description: job.description ?? "",
+          steps: job.steps.map((step) => ({
+            name: step.name,
+            description: step.description ?? "",
+            taskType: step.task.data.type,
+          })),
+        }));
+
+        const data: WorkflowCreateData = {
+          id: workflow.id,
+          name: workflow.name,
+          path: deps.getPath(workflow.id),
+          jobs,
         };
-        return;
-      }
 
-      // Check name uniqueness
-      const existing = await deps.findByName(input.name);
-      if (existing) {
-        yield {
-          kind: "error",
-          error: alreadyExists("Workflow", input.name),
-        };
-        return;
-      }
-
-      // Create workflow with a default job (schema requires at least one job)
-      const defaultJob = Job.create({
-        name: "main",
-        description: "Main job (edit or replace)",
-        steps: [
-          Step.create({
-            name: "example",
-            description: "Example step (edit or replace)",
-            task: StepTask.model("example-model", "run"),
-          }),
-        ],
-      });
-
-      const workflow = Workflow.create({
-        name: input.name,
-        jobs: [defaultJob],
-      });
-
-      await deps.save(workflow);
-
-      ctx.logger.debug`Created workflow with ID: ${workflow.id}`;
-
-      const jobs: WorkflowCreateJobData[] = workflow.jobs.map((job) => ({
-        name: job.name,
-        description: job.description ?? "",
-        steps: job.steps.map((step) => ({
-          name: step.name,
-          description: step.description ?? "",
-          taskType: step.task.data.type,
-        })),
-      }));
-
-      const data: WorkflowCreateData = {
-        id: workflow.id,
-        name: workflow.name,
-        path: deps.getPath(workflow.id),
-        jobs,
-      };
-
-      yield { kind: "completed", data };
-    })(),
-  );
+        yield { kind: "completed", data };
+      })(),
+    ));
 }

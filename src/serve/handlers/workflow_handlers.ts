@@ -23,7 +23,6 @@
 
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowApprovalsDeps,
   createWorkflowApproveDeps,
   createWorkflowCreateDeps,
@@ -154,6 +153,7 @@ import {
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
+  handlerLibSwampContext,
   isAuthorized,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
@@ -559,7 +559,7 @@ export async function handleWorkflowSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: WorkflowSearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
     };
@@ -631,7 +631,7 @@ export async function handleWorkflowApprovals(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const runRepo = ctx.repoContext.workflowRunRepo;
     const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
       ctx.repoDir,
@@ -736,7 +736,7 @@ export async function handleWorkflowGet(
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowGetDeps(ctx.repoContext.workflowRepo);
 
     let result: Record<string, unknown> | undefined;
@@ -842,7 +842,7 @@ export async function handleWorkflowHistoryGet(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -938,7 +938,7 @@ export async function handleWorkflowHistoryLogs(
   const { deps, reference } = authorized;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1005,7 +1005,7 @@ export async function handleWorkflowHistorySearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: WorkflowHistorySearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
@@ -1089,7 +1089,7 @@ export async function handleWorkflowRunSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: WorkflowRunSearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
@@ -1194,7 +1194,7 @@ export async function handleWorkflowSchema(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1263,7 +1263,7 @@ export async function handleWorkflowApprove(
     }
     release = reserved.release;
 
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowApproveDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.workflowRunRepo,
@@ -1397,7 +1397,7 @@ export async function handleWorkflowReject(
     }
     release = reserved.release;
 
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowRejectDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.workflowRunRepo,
@@ -1921,7 +1921,7 @@ export async function handleWorkflowCreate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowCreateDeps(
       ctx.repoDir,
       ctx.repoContext.workflowRepo,
@@ -2000,7 +2000,7 @@ export async function handleWorkflowDelete(
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowDeleteDeps(
       ctx.repoDir,
       ctx.datastoreResolver,
@@ -2098,7 +2098,7 @@ export async function handleWorkflowEdit(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowEditDeps(
       ctx.repoDir,
       ctx.repoContext.workflowRepo,
@@ -2221,7 +2221,7 @@ export async function handleWorkflowValidate(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowValidateDeps(
       ctx.repoContext.workflowRepo,
       ctx.repoContext.definitionRepo,
@@ -2313,7 +2313,7 @@ export async function handleWorkflowEvaluate(
   }
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkflowEvaluateDeps(
       ctx.repoDir,
       ctx.repoContext.workflowRepo,

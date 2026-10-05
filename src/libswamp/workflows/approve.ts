@@ -33,6 +33,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
 import {
   type AwaitingParentData,
@@ -188,73 +189,74 @@ async function approveClaimedRun(
 }
 
 export async function* workflowApprove(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowApproveDeps,
   input: WorkflowApproveInput,
 ): AsyncIterable<WorkflowApproveEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.approve",
-    {
-      "workflow.id_or_name": input.workflowIdOrName,
-      "step.name": input.stepName,
-    },
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.approve",
+      {
+        "workflow.id_or_name": input.workflowIdOrName,
+        "step.name": input.stepName,
+      },
+      (async function* () {
+        yield { kind: "resolving" };
 
-      // Resolved once to learn which run is meant, then again under that
-      // run's claim: only the second read is decided on.
-      let located: SuspendedRunInfo;
-      try {
-        located = await resolveSuspendedRun(
-          deps.workflowRepo,
-          deps.runRepo,
-          input.workflowIdOrName,
-          input.runId,
-          { byId: input.byId, expectedName: input.expectedName },
+        // Resolved once to learn which run is meant, then again under that
+        // run's claim: only the second read is decided on.
+        let located: SuspendedRunInfo;
+        try {
+          located = await resolveSuspendedRun(
+            deps.workflowRepo,
+            deps.runRepo,
+            input.workflowIdOrName,
+            input.runId,
+            { byId: input.byId, expectedName: input.expectedName },
+          );
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+
+        const outcome = await deps.runClaims.withClaim(
+          located.run.id,
+          () => approveClaimedRun(deps, input, located.run.id),
         );
-      } catch (error) {
+        if ("error" in outcome) {
+          yield { kind: "error", error: outcome.error };
+          return;
+        }
+        const { run, workflowName, decidedBy } = outcome;
+        // Whether a nested wait's child finished is derived from the child,
+        // never stored on this run.
+        // The decision is saved: an unreadable linked run must not turn it
+        // into an error, so these reads are best effort.
+        const allGatesDecided = run.status === "suspended" &&
+          run.findWaitingApprovalStep() === undefined &&
+          await new NestedRunLink(deps).childrenSettled(run).catch(() => false);
+        const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+          undefined
+        );
+
         yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+          kind: "completed",
+          data: {
+            runId: run.id,
+            workflowName,
+            stepName: input.stepName,
+            approved: true,
+            decidedBy,
+            reason: input.reason ?? null,
+            allGatesDecided,
+            ...(awaitingParent ? { awaitingParent } : {}),
+          },
         };
-        return;
-      }
-
-      const outcome = await deps.runClaims.withClaim(
-        located.run.id,
-        () => approveClaimedRun(deps, input, located.run.id),
-      );
-      if ("error" in outcome) {
-        yield { kind: "error", error: outcome.error };
-        return;
-      }
-      const { run, workflowName, decidedBy } = outcome;
-      // Whether a nested wait's child finished is derived from the child,
-      // never stored on this run.
-      // The decision is saved: an unreadable linked run must not turn it
-      // into an error, so these reads are best effort.
-      const allGatesDecided = run.status === "suspended" &&
-        run.findWaitingApprovalStep() === undefined &&
-        await new NestedRunLink(deps).childrenSettled(run).catch(() => false);
-      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
-        undefined
-      );
-
-      yield {
-        kind: "completed",
-        data: {
-          runId: run.id,
-          workflowName,
-          stepName: input.stepName,
-          approved: true,
-          decidedBy,
-          reason: input.reason ?? null,
-          allGatesDecided,
-          ...(awaitingParent ? { awaitingParent } : {}),
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

@@ -40,7 +40,10 @@ import {
   type InMemoryRemoteOptions,
   withMockedFetch,
 } from "@swamp-club/swamp-testing";
-import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import {
+  cacheRelativeMarkPath,
+  requireInitializedRepoUnlocked,
+} from "../src/cli/repo_context.ts";
 import {
   ModelNameType,
   ModelTypeType,
@@ -68,6 +71,12 @@ import {
   registerTestDatastoreType,
 } from "../src/infrastructure/testing/test_datastore_type.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import type { UnitOfWork } from "../src/domain/datastore/unit_of_work.ts";
+import {
+  createLegacyUnitOfWork,
+  legacyUnitOfWorkTarget,
+} from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
+import { useUnitOfWorkFactoryForTesting } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { createSyncGate } from "../src/serve/sync_gate.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -488,6 +497,13 @@ export interface UseCaseRow<S = void> {
    * those runs sorted. Their position among other ops stays pinned.
    */
   parallelMarks?: boolean;
+  /**
+   * Marks the composition makes outside any use case's unit of work (hand
+   * marks pinned in `PINNED_MARK_CALL_SITES`), as observed op strings. The
+   * hook-identity check removes them before comparing the remaining marks
+   * with what the use cases' units staged. Each entry names its pinned site.
+   */
+  outsideUseCase?: Partial<Record<Composition, string[]>>;
   seed?: (repos: RowRepos, composition: Composition) => Promise<S>;
   cli: ((repos: RowRepos, seed: S) => CliInvocation) | null;
   serve: ((repos: RowRepos, seed: S) => ServeInvocation) | null;
@@ -524,15 +540,20 @@ export async function runRow<S>(
   await withRowRepos(row.options ?? {}, async (repos) => {
     const seed = row.seed ? await row.seed(repos, composition) : undefined as S;
     if (!row.noSettle) await settle(repos);
+    // Seeds run before the capture on purpose: they are setup, not the use
+    // case under test, and run with production units.
+    let units: UnitOfWork[] = [];
     if (composition === "cli") {
       const base = baseline(repos);
       let error: string | undefined;
-      try {
-        await runCli(row.cli!(repos, seed));
-      } catch (caught) {
-        if (!row.refuses) throw caught;
-        error = caught instanceof Error ? caught.message : String(caught);
-      }
+      units = await captureUnits(async () => {
+        try {
+          await runCli(row.cli!(repos, seed));
+        } catch (caught) {
+          if (!row.refuses) throw caught;
+          error = caught instanceof Error ? caught.message : String(caught);
+        }
+      });
       observation = observe(repos, base);
       if (row.refuses) {
         assertEquals(typeof error, "string", `${row.name} did not refuse`);
@@ -541,13 +562,109 @@ export async function runRow<S>(
     } else {
       const ctx = serveCtx(repos, row.serveCtx?.(seed));
       const base = baseline(repos);
-      await runServe(ctx, row.serve!(repos, seed));
+      units = await captureUnits(async () => {
+        await runServe(ctx, row.serve!(repos, seed));
+      });
       observation = observe(repos, base);
     }
+    assertUnitsStagedTheirMarks(row, composition, repos, units, observation);
     await row.verify?.(repos, seed, composition);
   });
   if (row.parallelMarks) sortPathMarkRuns(observation!.ops);
   return observation!;
+}
+
+/**
+ * Runs `fn` with every repository-bound unit of work built in reject mode,
+ * so a change staged after its use case committed fails the row, and
+ * returns the units the use cases opened, in opening order. The factory
+ * receives the exact hook production binds, so a unit bound to the wrong
+ * hook collects nothing and fails the comparison below.
+ */
+async function captureUnits(fn: () => Promise<void>): Promise<UnitOfWork[]> {
+  const units: UnitOfWork[] = [];
+  const dispose = useUnitOfWorkFactoryForTesting((markDirty) => {
+    const uow = createLegacyUnitOfWork(markDirty, {
+      flush: undefined,
+      afterCommit: "reject",
+    });
+    units.push(uow);
+    return uow;
+  });
+  try {
+    await fn();
+  } finally {
+    dispose();
+  }
+  return units;
+}
+
+/** The observed op string a staged change causes, or undefined if none. */
+function markFor(
+  repos: RowRepos,
+  change: ReturnType<UnitOfWork["staged"]>[number],
+): string | undefined {
+  if (change.kind === "bulk") return "markDirty(bulk)";
+  const rel = cacheRelativeMarkPath(
+    change.path,
+    cacheDir(repos.repoA),
+    repos.repoA,
+  );
+  return rel === undefined
+    ? undefined
+    : `markDirty ${normalisePath(repos, rel)}`;
+}
+
+/**
+ * Hook identity (swamp-club#3025): every mark the row made inside a use
+ * case was staged by a unit of work the use case opened, and each unit's
+ * changes reached the remote in the order it staged them. Marks the row
+ * declares in `outsideUseCase` are removed first, and each must occur.
+ */
+function assertUnitsStagedTheirMarks(
+  row: Pick<AnyRow, "name" | "outsideUseCase" | "parallelMarks">,
+  composition: Composition,
+  repos: RowRepos,
+  units: readonly UnitOfWork[],
+  observation: Observation,
+): void {
+  const inUseCase = observation.ops.filter((op) => op.startsWith("markDirty"));
+  for (const outside of row.outsideUseCase?.[composition] ?? []) {
+    const at = inUseCase.indexOf(outside);
+    assertEquals(
+      at >= 0,
+      true,
+      `${row.name} (${composition}): declared outside-use-case mark ` +
+        `"${outside}" was not observed`,
+    );
+    inUseCase.splice(at, 1);
+  }
+  const perUnit = units
+    .filter((uow) => legacyUnitOfWorkTarget(uow) !== undefined)
+    .map((uow) =>
+      uow.staged().map((change) => markFor(repos, change)).filter(
+        (mark): mark is string => mark !== undefined,
+      )
+    );
+  assertEquals(
+    perUnit.flat().sort(),
+    [...inUseCase].sort(),
+    `${row.name} (${composition}): marks staged by the use cases' units ` +
+      "differ from the marks the use cases made",
+  );
+  if (row.parallelMarks) return;
+  for (const marks of perUnit) {
+    let from = 0;
+    for (const mark of marks) {
+      const at = inUseCase.indexOf(mark, from);
+      assertEquals(
+        at >= 0,
+        true,
+        `${row.name} (${composition}): unit staged "${mark}" out of order`,
+      );
+      from = at + 1;
+    }
+  }
 }
 
 /** Sorts each run of consecutive path marks in place. */

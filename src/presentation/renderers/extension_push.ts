@@ -39,6 +39,40 @@ import type { ReviewFinding } from "../../domain/extensions/extension_review_rul
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
 
+/**
+ * A review warning as it appears in the accepted-warnings record: the
+ * finding without its report skeleton, which the `reviewRuleWarnings`
+ * document already carries in full.
+ */
+export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
+
+/**
+ * The safety and review warnings the pusher waived with `--accept-warnings`.
+ * Recorded in the dry-run and push summaries so a reviewer can see exactly
+ * what was accepted. Advisory warnings (dependency trust, version drift,
+ * upgrade entries) never gate a push and are not part of the record.
+ */
+export interface AcceptedWarnings {
+  safety: SafetyIssue[];
+  review: AcceptedReviewWarning[];
+}
+
+/** Summary data for a completed dry run. */
+export interface ExtensionPushDryRunData {
+  name: string;
+  version: string;
+  archiveSize: number;
+  visibility: ExtensionPushResolvedData["visibility"];
+  /** Present only when `--accept-warnings` waived at least one warning. */
+  acceptedWarnings?: AcceptedWarnings;
+}
+
+/** Per-run inputs for the stream handlers. */
+export interface ExtensionPushHandlerOptions {
+  /** Present only when `--accept-warnings` waived at least one warning. */
+  acceptedWarnings?: AcceptedWarnings;
+}
+
 /** Extended renderer with methods for the prepare-phase outputs. */
 export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderResolved(data: ExtensionPushResolvedData): void;
@@ -57,12 +91,21 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderVersionDriftWarnings(warnings: QualityIssue[]): void;
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
-  renderDryRun(data: {
-    name: string;
-    version: string;
-    archiveSize: number;
-    visibility: ExtensionPushResolvedData["visibility"];
-  }): void;
+  /**
+   * Tells an interactive dry run that the warnings it just saw would stop a
+   * non-interactive push. The dry run itself never prompts.
+   */
+  renderAcceptWarningsHint(): void;
+  renderDryRun(data: ExtensionPushDryRunData): void;
+  handlers(
+    options?: ExtensionPushHandlerOptions,
+  ): EventHandlers<ExtensionPushEvent>;
+}
+
+function acceptedWarningsHeader(accepted: AcceptedWarnings): string {
+  const count = accepted.safety.length + accepted.review.length;
+  const noun = count === 1 ? "warning" : "warnings";
+  return `Accepted ${count} ${noun} with --accept-warnings:`;
 }
 
 function formatBytes(bytes: number): string {
@@ -271,19 +314,37 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
-  renderDryRun(data: {
-    name: string;
-    version: string;
-    archiveSize: number;
-    visibility: ExtensionPushResolvedData["visibility"];
-  }): void {
+  renderAcceptWarningsHint(): void {
+    this.logger.info(
+      "A non-interactive push (--json or no terminal) needs --accept-warnings for these warnings.",
+    );
+  }
+
+  private renderAcceptedWarnings(accepted: AcceptedWarnings): void {
+    this.logger.warn(acceptedWarningsHeader(accepted));
+    for (const w of accepted.safety) {
+      this.logger.warn`  ${w.file}: ${w.message}`;
+    }
+    for (const w of accepted.review) {
+      const summary = w.message.split("\n")[0];
+      this.logger
+        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+    }
+  }
+
+  renderDryRun(data: ExtensionPushDryRunData): void {
     this.logger.info`Dry run complete for ${data.name}@${data.version}`;
     renderRequestedVisibility(data.visibility);
     this.logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     this.logger.info("No API calls were made.");
+    if (data.acceptedWarnings) {
+      this.renderAcceptedWarnings(data.acceptedWarnings);
+    }
   }
 
-  handlers(): EventHandlers<ExtensionPushEvent> {
+  handlers(
+    options?: ExtensionPushHandlerOptions,
+  ): EventHandlers<ExtensionPushEvent> {
     return {
       pushing: () => {},
       completed: (e) => {
@@ -316,6 +377,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;
+        if (options?.acceptedWarnings) {
+          this.renderAcceptedWarnings(options.acceptedWarnings);
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -394,20 +458,28 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     console.log(JSON.stringify({ compilationErrors: errors }, null, 2));
   }
 
-  renderDryRun(data: {
-    name: string;
-    version: string;
-    archiveSize: number;
-    visibility: ExtensionPushResolvedData["visibility"];
-  }): void {
+  renderAcceptWarningsHint(): void {
+    // A JSON run never reaches the hint: without --accept-warnings it is
+    // refused, and with the flag the record goes in the summary instead.
+  }
+
+  renderDryRun(data: ExtensionPushDryRunData): void {
+    // `acceptedWarnings` is undefined when nothing was accepted, and
+    // JSON.stringify drops undefined fields, so the document is unchanged
+    // for runs without the flag.
     console.log(JSON.stringify({ ...data, status: "dry_run" }, null, 2));
   }
 
-  handlers(): EventHandlers<ExtensionPushEvent> {
+  handlers(
+    options?: ExtensionPushHandlerOptions,
+  ): EventHandlers<ExtensionPushEvent> {
     return {
       pushing: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const summary = options?.acceptedWarnings
+          ? { ...e.data, acceptedWarnings: options.acceptedWarnings }
+          : e.data;
+        console.log(JSON.stringify(summary, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

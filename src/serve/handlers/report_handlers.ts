@@ -23,7 +23,6 @@
 
 import {
   consumeStream,
-  createLibSwampContext,
   reportDescribe,
   type ReportDescribeDeps,
   reportGet,
@@ -50,6 +49,7 @@ import {
   authorizeOrReject,
   type ConnectionContext,
   filterByResources,
+  handlerLibSwampContext,
   resourceDecider,
   sanitizeErrorForClient,
   send,
@@ -96,7 +96,7 @@ export async function handleReportGet(
   ) => (await canonical.dataOwners(owner)).every(readable);
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: ReportGetDeps = {
       findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
       findAllForModel: (type, modelId) =>
@@ -201,7 +201,7 @@ export async function handleReportSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     await reportRegistry.ensureLoaded();
     const deps: ReportSearchDeps = {
       findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
@@ -300,7 +300,7 @@ export async function handleReportDescribe(
 
   try {
     await reportRegistry.ensureLoaded();
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps: ReportDescribeDeps = {
       getReport: async (name) => {
         await reportRegistry.ensureTypeLoaded(name);
@@ -364,7 +364,7 @@ export async function handleReportTypeSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     await reportRegistry.ensureLoaded();
     for (const lazy of reportRegistry.getAllLazy()) {
       await reportRegistry.ensureTypeLoaded(lazy.type);

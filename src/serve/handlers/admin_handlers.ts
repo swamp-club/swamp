@@ -47,7 +47,6 @@ import {
   createExtensionRmDeps,
   createExtensionUpdateDeps,
   createInstallContext,
-  createLibSwampContext,
   createModelDeleteDeps,
   createRepoPendingLockfileStore,
   createVaultMigrateDeps,
@@ -176,6 +175,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  handlerLibSwampContext,
   pushChangedToRemote,
   sanitizeErrorForClient,
   send,
@@ -282,7 +282,7 @@ export async function handleWorkerList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkerListDeps(ctx.repoContext.dataQueryService);
 
     let result: Record<string, unknown> | undefined;
@@ -333,7 +333,7 @@ export async function handleWorkerQueueList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkerQueueListDeps(ctx.repoContext.dataQueryService);
 
     let result: Record<string, unknown> | undefined;
@@ -464,7 +464,7 @@ export async function handleDatastoreStatus(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createDatastoreStatusDeps(ctx.datastoreResolver);
 
     let result: Record<string, unknown> | undefined;
@@ -515,7 +515,7 @@ export async function handleExtensionList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const marker = await new RepoMarkerRepository().read(
       RepoPath.create(ctx.repoDir),
     );
@@ -576,7 +576,7 @@ export async function handleExtensionSearch(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const serverUrl = resolveServerUrl();
     const identity = await loadIdentity();
     const client = new ExtensionApiClient(serverUrl, identity);
@@ -665,7 +665,7 @@ export async function handleExtensionInfo(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const identity = await loadIdentity();
     const deps = createExtensionInfoDeps(identity.bearerToken, identity);
 
@@ -731,7 +731,7 @@ export async function handleExtensionInstall(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const logger = getSwampLogger(["serve", "extension", "install"]);
     const marker = await new RepoMarkerRepository().read(
       RepoPath.create(ctx.repoDir),
@@ -833,9 +833,7 @@ export async function handleExtensionPull(
       localManifestIdentity: readLocalManifestIdentity(repoDir),
     });
 
-    const libCtx = createLibSwampContext({
-      signal: controller.signal,
-    });
+    const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
     const pullDeps = {
       getExtension: deps.getExtension,
       getLatestVersion: deps.getLatestVersion,
@@ -927,7 +925,7 @@ export async function handleExtensionRm(
 
     const rmDeps = await createExtensionRmDeps(repoDir, lockfilePath);
     deps = rmDeps;
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
 
     let result: Record<string, unknown> | undefined;
     await withManagedLockfileTransaction(
@@ -984,7 +982,7 @@ export async function handleExtensionOutdated(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
@@ -1056,7 +1054,7 @@ export async function handleExtensionUpdate(
 
   let catalog: ExtensionCatalogStore | undefined;
   try {
-    const libCtx = createLibSwampContext({ signal: controller.signal });
+    const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
     const logger = getSwampLogger(["serve", "extension", "update"]);
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
@@ -1174,7 +1172,7 @@ export async function handleDatastoreSetupExtension(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
@@ -1271,7 +1269,7 @@ export async function handleVaultMigrate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const repoDir = ctx.repoDir;
     // The shared repository's mark hook signals the config it writes and the
     // one it removes, which the scoped push then deletes remotely.
@@ -1360,7 +1358,7 @@ export async function handleDoctorVaults(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createDoctorVaultsDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -1409,7 +1407,7 @@ export async function handleDoctorDatastores(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     await datastoreTypeRegistry.ensureLoaded();
     const repoDir = ctx.repoDir;
     const deps: DoctorDatastoresDeps = {
@@ -1497,7 +1495,7 @@ export async function handleDoctorSecrets(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createDoctorSecretsDeps(ctx.repoDir);
 
     let result: Record<string, unknown> | undefined;
@@ -1910,7 +1908,7 @@ export async function handleAuditTimeline(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createAuditTimelineDeps(ctx.repoDir);
 
     const markerRepo = new RepoMarkerRepository();
@@ -2087,7 +2085,7 @@ export async function handleWorkerTokenCreate(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createWorkerTokenCreateDeps(
       libCtx,
       ctx.repoDir,
@@ -2152,7 +2150,7 @@ export async function handleWorkerTokenList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = createWorkerListDeps(
       ctx.repoContext.dataQueryService,
     );
@@ -2203,7 +2201,7 @@ export async function handleWorkerTokenRevoke(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const deps = await createWorkerTokenRevokeDeps(
       libCtx,
       ctx.repoDir,
@@ -2271,7 +2269,7 @@ export async function handleWorkerPrune(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const gracePeriodMs = payload?.gracePeriodMs ??
       DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
     const dryRun = payload?.dryRun ?? false;
@@ -2423,7 +2421,7 @@ export async function handleDatastoreNamespaceList(
   ) return;
 
   try {
-    const libCtx = createLibSwampContext();
+    const libCtx = handlerLibSwampContext(ctx);
     const dsBasePath = datastoreBasePath(ctx.datastoreConfig);
 
     let listProvider: DatastoreProvider | undefined;

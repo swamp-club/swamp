@@ -34,6 +34,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { withUnitOfWork } from "../unit_of_work.ts";
 import {
   type AwaitingParentData,
   awaitingParentOf,
@@ -205,73 +206,74 @@ async function rejectClaimedRun(
 }
 
 export async function* workflowReject(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowRejectDeps,
   input: WorkflowRejectInput,
 ): AsyncIterable<WorkflowRejectEvent> {
-  yield* withGeneratorSpan(
-    "swamp.workflow.reject",
-    {
-      "workflow.id_or_name": input.workflowIdOrName,
-      "step.name": input.stepName,
-    },
-    (async function* () {
-      yield { kind: "resolving" };
+  yield* withUnitOfWork(ctx, () =>
+    withGeneratorSpan(
+      "swamp.workflow.reject",
+      {
+        "workflow.id_or_name": input.workflowIdOrName,
+        "step.name": input.stepName,
+      },
+      (async function* () {
+        yield { kind: "resolving" };
 
-      // Resolved once to learn which run is meant, then again under that
-      // run's claim: only the second read is decided on.
-      let located: SuspendedRunInfo;
-      try {
-        located = await resolveSuspendedRun(
-          deps.workflowRepo,
-          deps.runRepo,
-          input.workflowIdOrName,
-          input.runId,
-          { byId: input.byId, expectedName: input.expectedName },
+        // Resolved once to learn which run is meant, then again under that
+        // run's claim: only the second read is decided on.
+        let located: SuspendedRunInfo;
+        try {
+          located = await resolveSuspendedRun(
+            deps.workflowRepo,
+            deps.runRepo,
+            input.workflowIdOrName,
+            input.runId,
+            { byId: input.byId, expectedName: input.expectedName },
+          );
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+
+        const outcome = await deps.runClaims.withClaim(
+          located.run.id,
+          () => rejectClaimedRun(deps, input, located.run.id),
         );
-      } catch (error) {
+        if ("error" in outcome) {
+          yield { kind: "error", error: outcome.error };
+          return;
+        }
+        const { run, workflowName, workflowId, decidedBy } = outcome;
+        // The decision is saved: an unreadable linked run must not turn it
+        // into an error, so these reads are best effort.
+        const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
+          () => [],
+        );
+        const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
+          undefined
+        );
+
         yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+          kind: "completed",
+          data: {
+            runId: run.id,
+            workflowId,
+            workflowName,
+            stepName: input.stepName,
+            approved: false,
+            decidedBy,
+            reason: input.reason ?? null,
+            runStatus: "failed",
+            ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+            ...(awaitingParent ? { awaitingParent } : {}),
+          },
         };
-        return;
-      }
-
-      const outcome = await deps.runClaims.withClaim(
-        located.run.id,
-        () => rejectClaimedRun(deps, input, located.run.id),
-      );
-      if ("error" in outcome) {
-        yield { kind: "error", error: outcome.error };
-        return;
-      }
-      const { run, workflowName, workflowId, decidedBy } = outcome;
-      // The decision is saved: an unreadable linked run must not turn it
-      // into an error, so these reads are best effort.
-      const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
-        () => [],
-      );
-      const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
-        undefined
-      );
-
-      yield {
-        kind: "completed",
-        data: {
-          runId: run.id,
-          workflowId,
-          workflowName,
-          stepName: input.stepName,
-          approved: false,
-          decidedBy,
-          reason: input.reason ?? null,
-          runStatus: "failed",
-          ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
-          ...(awaitingParent ? { awaitingParent } : {}),
-        },
-      };
-    })(),
-  );
+      })(),
+    ));
 }

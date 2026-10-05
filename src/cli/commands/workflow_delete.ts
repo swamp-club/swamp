@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import {
   consumeStream,
-  createLibSwampContext,
   createWorkflowDeleteDeps,
   workflowDelete,
   type WorkflowDeleteData,
@@ -35,7 +34,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  libSwampContextForRepo,
+  requireInitializedRepo,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
@@ -98,7 +100,7 @@ export const workflowDeleteCommand = withRemoteOptions(
         outputMode: cliCtx.outputMode,
       });
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createWorkflowDeleteDeps(
       repoDir,
       datastoreResolver,

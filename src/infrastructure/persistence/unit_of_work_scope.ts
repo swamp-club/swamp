@@ -23,10 +23,11 @@
  * A use case runs its operation inside {@link runInUnitOfWork}, and the
  * repositories it calls stage their changes into that unit of work instead of
  * calling their mark hook. Outside a scope, repositories call their hook
- * directly, as they always have. In Phase 1 no production code opens a scope
- * (pinned by `integration/datastore_write_seams_rules_test.ts`), so the
- * routing below changes nothing a user can see; Phase 2 opens scopes from use
- * cases.
+ * directly, as they always have. Only `withUnitOfWork`
+ * (`src/libswamp/unit_of_work.ts`) opens a scope, around each write use case
+ * (pinned by `integration/datastore_write_seams_rules_test.ts`). The units it
+ * opens forward each change to the same hook, so the routing below changes
+ * nothing a user can see.
  *
  * **One repository context per unit.** Two repository contexts can share a
  * process (side-by-side repos, namespace migration). A repository stages into
@@ -38,9 +39,12 @@
  * store: concurrent operations (serve handlers, `Promise.all`) each see their
  * own unit of work. A promise started inside a scope keeps that scope even
  * when it is awaited after the scope returns. If its unit has been committed
- * by then, the legacy unit rejects the late `stage` with "unit of work already
- * committed", so commit a unit only after every write started in its scope
- * has settled.
+ * by then, the late `stage` follows the unit's `afterCommit` policy: units
+ * built for tests reject it with "unit of work already committed", and
+ * production units (`repo_unit_of_work.ts`) send it straight to the hook. An
+ * abandoned unit, never committed, keeps recording such writes for as long as
+ * the escaped work runs. Commit a unit only after every write started in its
+ * scope has settled.
  *
  * @module
  */
@@ -83,10 +87,11 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
  * Call it before the write, as `notifyDirty` always has. A rejected hook
  * rejects the returned promise with the same error on either route.
  *
- * Route 2 is the only route a hooked write takes in Phase 1: no production
- * code opens a scope, so every hooked repository change reaches the sync
- * service through this direct hook call. Phase 2 removes it once every write path
- * runs inside a scope; `PINNED_UNIT_OF_WORK_SCOPES` in
+ * Route 2 still carries every hooked write made outside a write use case:
+ * CLI hand-written saves, serve code that writes without a use case, and the
+ * commands listed in `design/enablers/datastores.md`. A later Phase 2 step
+ * removes it once every write path runs inside a scope;
+ * `PINNED_TRANSACTIONAL_USE_CASES` in
  * `integration/datastore_write_seams_rules_test.ts` shows how far that has
  * got.
  */

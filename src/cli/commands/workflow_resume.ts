@@ -58,6 +58,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
+import { renderAwaitingParent } from "./nested_run_hints.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   awaitingParentOf,
@@ -611,10 +612,7 @@ export const workflowResumeCommand = withRemoteOptions(
         ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
           .catch(() => undefined)
         : undefined;
-      if (parent) {
-        cliCtx.logger
-          .info`Parent run ${parent.runId} of workflow ${parent.workflowName} waits on this run. Resume it with ${parent.resumeCommand}`;
-      }
+      if (parent) renderAwaitingParent(cliCtx, parent);
     }
 
     if (renderer.workflowFailed()) {
