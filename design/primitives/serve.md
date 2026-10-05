@@ -645,9 +645,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   module, and in-flight runs keep the old one. It also re-reads `triggers.*`
   overrides and `webhooks` from the config file serve was started with (the
   resolved `--config` path, carried as `ConnectionContext.serveConfigPath`, or
-  `.swamp/serve.yaml`). Webhook route changes (added,
-  removed or modified bindings) apply on the next request; in-flight runs finish
-  against the endpoint they matched. Webhook reload is skipped if `--webhook`
+  `.swamp/serve.yaml`). Webhook route changes (added, removed or modified
+  bindings) apply on the next request; in-flight runs finish against the
+  endpoint they matched. Webhook reload is skipped if `--webhook`
   CLI flags were used at startup, since flags are process arguments, not
   hot-reloadable config.
 
@@ -656,13 +656,13 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `ScheduledExecutionService` after writing, so no full reload or `--hot-reload`
   flag is needed (`src/serve/handlers/workflow_handlers.ts`). They read and
   write the same config file as the reload; writing rewrites it (YAML comments
-  are lost), through the real path of a symlinked `--config` file. When the
-  file cannot be written, such as a read-only ConfigMap mount, they refuse and
-  leave the scheduler unchanged; the client message names no server path (the
-  log does) and points at `swamp serve reload` or, without `--hot-reload`, a
-  restart. `workflow.trigger.get` reports the
-  override the scheduler holds (`getTriggerOverride`), or the file's entry when
-  serve runs without `--schedule`.
+  are lost, permission bits are kept), through the real path of a symlinked
+  `--config` file. When the file cannot be written, such as a read-only
+  ConfigMap mount, they refuse and leave the scheduler unchanged; the client
+  message names no server path (the log does) and points at `swamp serve
+  reload` or, without `--hot-reload`, a restart. `workflow.trigger.get` reports
+  the override the scheduler holds (`getTriggerOverride`), or the file's entry
+  when serve runs without `--schedule`.
 
   Pulled extensions live under `.swamp/pulled-extensions/`, or
   `.swamp/config/pulled-extensions/` when the datastore manages config

@@ -1370,6 +1370,30 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name: "writeServeConfigFile: an existing file keeps its permission bits",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const configPath = join(dir, "serve.yaml");
+      await Deno.writeTextFile(configPath, "port: 9090\n");
+      await Deno.chmod(configPath, 0o600);
+
+      await writeServeConfigFile(dir, {
+        port: 9090,
+        triggers: { "my-workflow": { schedule: "0 3 * * *" } },
+      }, configPath);
+
+      assertEquals((await Deno.stat(configPath)).mode! & 0o777, 0o600);
+    } finally {
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch { /* Windows EBUSY */ }
+    }
+  },
+});
+
 Deno.test("writeServeConfigFile: preserves other config sections", async () => {
   const dir = await Deno.makeTempDir();
   try {
