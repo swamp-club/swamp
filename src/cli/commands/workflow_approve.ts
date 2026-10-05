@@ -43,6 +43,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -79,7 +80,9 @@ export function renderApproveResult(
   if (!remote?.serveResuming) {
     const target = remote ? formatCommandTarget({ server: remote.server }) : "";
     writeOutput(
-      `After approval: swamp workflow resume ${data.workflowName} --run ${data.runId}${target}`,
+      `After approval: swamp workflow resume ${
+        quoteShellWord(data.workflowName)
+      } --run ${data.runId}${target}`,
     );
   }
   if (data.awaitingParent) {

@@ -119,3 +119,40 @@ Deno.test("renderApprovals: JSON mode prints only the approvals list", () => {
   );
   assertEquals(JSON.parse(lines.join("\n")), { approvals });
 });
+
+Deno.test("renderApprovals: shell-quotes a step name with spaces or shell syntax", () => {
+  const lines = stdout(() =>
+    renderApprovals(ctx(), [pending({ stepName: "verify build; rm -rf x" })])
+  );
+  assertEquals(lines, [
+    `  swamp workflow approve wipe-drive 'verify build; rm -rf x' --run ${RUN_ID}`,
+    `  swamp workflow reject  wipe-drive 'verify build; rm -rf x' --run ${RUN_ID}`,
+    `  After approval: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+  ]);
+});
+
+Deno.test("renderApprovals: carries an explicit --server into every command", () => {
+  const lines = stdout(() =>
+    renderApprovals(
+      ctx(),
+      [
+        pending({
+          parentRun: {
+            workflowId: "parent-id",
+            workflowName: "parent-wf",
+            runId: PARENT_RUN_ID,
+            stepName: "child",
+          },
+          parentWaiting: true,
+        }),
+      ],
+      "ws://localhost:9090",
+    )
+  );
+  assertEquals(lines, [
+    `  swamp workflow approve wipe-drive gate --run ${RUN_ID} --server ws://localhost:9090`,
+    `  swamp workflow reject  wipe-drive gate --run ${RUN_ID} --server ws://localhost:9090`,
+    `  After approval: swamp workflow resume wipe-drive --run ${RUN_ID} --server ws://localhost:9090`,
+    `  Nested run of parent-wf: once this run finishes, swamp workflow resume parent-wf --run ${PARENT_RUN_ID} --server ws://localhost:9090`,
+  ]);
+});

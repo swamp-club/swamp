@@ -36,6 +36,7 @@ import type { CommandContext } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
 import {
+  formatCommandTarget,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -43,6 +44,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -68,7 +70,9 @@ function formatInputsDigest(
 export function renderApprovals(
   cliCtx: CommandContext,
   pending: PendingApproval[],
+  server?: string,
 ): void {
+  const target = formatCommandTarget({ server });
   if (cliCtx.outputMode === "json") {
     console.log(JSON.stringify({ approvals: pending }, null, 2));
   } else {
@@ -105,16 +109,20 @@ export function renderApprovals(
         // and the pretty sink wraps long lines, and either breaks a
         // copy-pasted command (swamp-club#2977). `--quiet` hides them, as it
         // hides the logger's info lines.
+        // Step names are any non-empty string, so every name is
+        // shell-quoted; --server carries over the explicit flag.
         const quiet = cliCtx.verbosity === "quiet";
+        const workflow = quoteShellWord(item.workflowName);
+        const step = quoteShellWord(item.stepName);
         if (!quiet) {
           writeOutput(
-            `  swamp workflow approve ${item.workflowName} ${item.stepName} --run ${item.runId}`,
+            `  swamp workflow approve ${workflow} ${step} --run ${item.runId}${target}`,
           );
           writeOutput(
-            `  swamp workflow reject  ${item.workflowName} ${item.stepName} --run ${item.runId}`,
+            `  swamp workflow reject  ${workflow} ${step} --run ${item.runId}${target}`,
           );
           writeOutput(
-            `  After approval: swamp workflow resume ${item.workflowName} --run ${item.runId}`,
+            `  After approval: swamp workflow resume ${workflow} --run ${item.runId}${target}`,
           );
         }
         // A nested workflow's gate: its parent resumes after it
@@ -130,7 +138,9 @@ export function renderApprovals(
             );
           } else if (!quiet) {
             writeOutput(
-              `  Nested run of ${item.parentRun.workflowName}: once this run finishes, swamp workflow resume ${item.parentRun.workflowName} --run ${item.parentRun.runId}`,
+              `  Nested run of ${item.parentRun.workflowName}: once this run finishes, swamp workflow resume ${
+                quoteShellWord(item.parentRun.workflowName)
+              } --run ${item.parentRun.runId}${target}`,
             );
           }
         }
@@ -172,7 +182,11 @@ export const workflowApprovalsCommand = withRemoteOptions(
       },
     );
     const data = response.data as { approvals?: PendingApproval[] };
-    renderApprovals(cliCtx, data.approvals ?? []);
+    renderApprovals(
+      cliCtx,
+      data.approvals ?? [],
+      options.server as string | undefined,
+    );
     return;
   }
 
