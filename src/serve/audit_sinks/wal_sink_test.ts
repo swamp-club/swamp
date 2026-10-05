@@ -593,3 +593,35 @@ Deno.test(
     await sink.close();
   }),
 );
+
+Deno.test(
+  "WalSink: once close has given up, a checkpoint still queued deletes nothing",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    let flushes = 0;
+    downstream.flush = () => {
+      flushes++;
+      return Promise.resolve();
+    };
+    const sink = new WalSink({
+      wal,
+      downstream,
+      deliveryWaitMs: 20,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([makeEvent("delivered")]);
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "first delivered");
+    await sink.write([makeEvent("hung")]);
+    await waitFor(() => downstream.outstanding === 1, "hung delivery");
+
+    await sink.close();
+    downstream.release();
+    await waitFor(() => flushes === 1, "the queued checkpoint to run");
+    assertEquals(wal.segmentCount, 2);
+  }),
+);

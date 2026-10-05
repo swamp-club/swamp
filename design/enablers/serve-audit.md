@@ -45,8 +45,10 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    batch writes already running. A batch that reached some stores but not
    others is retried on each flush for the stores that missed it, under the
    same key so a landed retry never stores it twice; up to 32MB of these are
-   held, the oldest dropped for that one store past that. A batch that
-   reached no store makes the flush reject with the sequences it held
+   held, the oldest dropped for that one store past that. A batch is written
+   as one object per date, and counts as stored once any of them reached a
+   store; its other objects are retried the same way. A batch none of which
+   reached any store makes the flush reject with the sequences it held
    (`UnconfirmedEventsError`). Each WAL segment goes into exactly one
    StoreSink batch, so the checkpoint deletes the segments whose sequences
    were confirmed and delivers only the others again at the next checkpoint,
@@ -104,10 +106,9 @@ other sink:
   flush — gets up to the sink timeout to settle; if it does not, the events
   after it are written on their own and a warning names the sequence the
   stalled write ends at. With a hung store, shutdown can take the WalSink
-  delivery wait (30s) plus up to two sink timeouts. If the store is still
-  hung when serve exits, StoreSink's own close can run alongside a checkpoint
-  still queued behind it; that last checkpoint may then miss a failure and
-  delete segments it should keep. That
+  delivery wait (30s) plus up to two sink timeouts. Once WalSink's close has
+  stopped waiting, a checkpoint still queued behind the hung store deletes
+  nothing, so those segments are replayed on the next start. That
   last write is the one time a sink has two writes open; WalSink appends each
   write to its own segment file, so they do not collide.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per

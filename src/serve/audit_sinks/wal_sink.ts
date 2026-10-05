@@ -72,6 +72,10 @@ export class WalSink implements AuditSink {
   #completed = 0;
   #gaveUpAt: number | null = null;
   #checkpointQueued = false;
+  // Set once close has stopped waiting: anything the loop still runs after
+  // that may race the downstream sink's own close for its failure report, so
+  // it deletes nothing and the segments stay in the WAL for replay.
+  #closed = false;
   #checkpointTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WalSinkOptions) {
@@ -252,6 +256,7 @@ export class WalSink implements AuditSink {
     }
 
     for (const [segmentName, segmentSequences] of delivered) {
+      if (this.#closed) return;
       if (unconfirmed(segmentSequences)) {
         this.#redeliver.push(segmentName);
         continue;
@@ -305,6 +310,7 @@ export class WalSink implements AuditSink {
       this.#checkpointTimer = null;
     }
     await this.flush();
+    this.#closed = true;
     await this.#downstream.close();
   }
 }

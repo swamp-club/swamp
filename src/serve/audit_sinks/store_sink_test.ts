@@ -475,3 +475,37 @@ Deno.test("StoreSink: a tick runs with no active span when started under one", a
     }
   });
 });
+
+Deno.test("StoreSink: a batch spanning two dates counts as stored once one date lands, and the other is retried under its key", async () => {
+  let failDate: string | null = "2026-10-07";
+  const keys: string[] = [];
+  const store = createMockStore();
+  const put = store.put.bind(store);
+  store.put = (key: string, data: Uint8Array) => {
+    keys.push(key);
+    if (failDate !== null && key.includes(failDate)) {
+      return Promise.reject(new Error("store down"));
+    }
+    return put(key, data);
+  };
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([
+    { ...makeEvent("before"), timestamp: "2026-10-06T23:59:59.000Z" },
+    { ...makeEvent("after"), timestamp: "2026-10-07T00:00:01.000Z" },
+  ]);
+  await sink.flush();
+  failDate = null;
+  await sink.flush();
+
+  // The first put, a retry in the same flush, and the one that landed.
+  const lateKeys = keys.filter((k) => k.includes("2026-10-07"));
+  assertEquals(lateKeys.length, 3);
+  assertEquals(new Set(lateKeys).size, 1);
+  assertEquals(store.written.size, 2);
+  await sink.close();
+});

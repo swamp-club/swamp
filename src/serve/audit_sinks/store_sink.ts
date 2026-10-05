@@ -245,20 +245,24 @@ export class StoreSink implements AuditSink {
       partition.push(event);
     }
 
+    // One put per date partition. A batch counts as stored once any part of
+    // it reached a store: parts that missed a store are retried here under
+    // their own key, so re-sending the batch can never store a part twice.
+    // Only a batch no part of which reached any store is reported.
+    let anyStored = false;
+    const missed: PendingPut[] = [];
     for (const [dateKey, partitionEvents] of partitions) {
       const jsonl = partitionEvents.map((e) => JSON.stringify(e)).join("\n") +
         "\n";
       const data = this.#encoder.encode(jsonl);
       const key = `events/${dateKey}/${crypto.randomUUID()}.jsonl`;
 
-      let stored = 0;
-      const failed: AuditStore[] = [];
       for (const { store } of this.#stores) {
         try {
           await store.put(key, data);
-          stored++;
+          anyStored = true;
         } catch (error: unknown) {
-          failed.push(store);
+          missed.push({ store, key, data });
           logger.warn(
             "Failed to write audit batch to store for {date}: {error}",
             {
@@ -268,16 +272,16 @@ export class StoreSink implements AuditSink {
           );
         }
       }
-      if (stored === 0) {
-        // No store has it: the caller still holds it (the WAL) and is told.
-        for (const event of partitionEvents) {
-          const sequence = (event as { sequence?: unknown }).sequence;
-          if (typeof sequence === "number") this.#unstored.add(sequence);
-          else this.#unknownUnstored = true;
-        }
-      } else {
-        for (const store of failed) this.#queueRetry({ store, key, data });
-      }
+    }
+    if (anyStored) {
+      for (const retry of missed) this.#queueRetry(retry);
+      return;
+    }
+    // No store has any of it: the caller still holds it (the WAL) and is told.
+    for (const event of events) {
+      const sequence = (event as { sequence?: unknown }).sequence;
+      if (typeof sequence === "number") this.#unstored.add(sequence);
+      else this.#unknownUnstored = true;
     }
   }
 
