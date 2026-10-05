@@ -34,7 +34,9 @@
  * ({@link runInRootUnitOfWork}) that pushes once when it ends, on every
  * outcome. A unit opened while a unit for the same hook is ambient is that
  * unit's child: it forwards each change as before, rolls it up into the
- * root, and never pushes.
+ * root, and never pushes. A root can also push partway through with
+ * `checkpoint()` (swamp-club#3053), which stays off the domain
+ * {@link UnitOfWork} port.
  *
  * @module
  */
@@ -45,6 +47,7 @@ import { getSwampLogger } from "../logging/logger.ts";
 import {
   createLegacyUnitOfWork,
   legacyParentFor,
+  legacyUnitOfWorkSettled,
 } from "./legacy_unit_of_work.ts";
 import type { RepositoryContext } from "./repository_factory.ts";
 import { currentUnitOfWork, runInUnitOfWork } from "./unit_of_work_scope.ts";
@@ -129,15 +132,40 @@ export function repoUnitOfWorkFactory(
 }
 
 /**
- * What composition code gets of its root: it stages hand marks and can read
- * what was staged, but never ends the root; {@link runInRootUnitOfWork} does.
+ * What composition code gets of its root: it stages hand marks, can read
+ * what was staged, and can push partway through, but never ends the root;
+ * {@link runInRootUnitOfWork} does.
  */
-export type RootUnitOfWork = Pick<UnitOfWork, "stage" | "staged">;
+export interface RootUnitOfWork extends Pick<UnitOfWork, "stage" | "staged"> {
+  /**
+   * A mid-operation push (swamp-club#3053), not the catalog's WAL
+   * checkpoint (`CatalogStore.checkpoint`). Waits for every mark the root
+   * and its children sent before the call, as ending the root does, then
+   * awaits the `checkpoint` option the root was opened with. The root stays
+   * open and still runs its flush once when it ends.
+   *
+   * Throws when the root was opened without a `checkpoint` option, when the
+   * call that opened it became a child of an outer root (the outer root owns
+   * the checkpoint), and after the root has ended. A failing checkpoint
+   * push rejects here, inside `fn`, as a direct push would.
+   *
+   * It lives here and on the legacy adapter, not on the domain
+   * {@link UnitOfWork} port: what a Phase 3 commit-log unit means by a
+   * partial commit is a Phase 3 decision.
+   */
+  checkpoint(): Promise<void>;
+}
 
 /** Options for {@link runInRootUnitOfWork}. */
 export interface RootUnitOfWorkOptions {
   /** The push the root runs once when it ends, on every outcome. */
   flush: (() => Promise<void>) | undefined;
+  /**
+   * The mid-operation push `root.checkpoint()` runs; absent when the
+   * operation never pushes partway through. See
+   * {@link RootUnitOfWork.checkpoint}.
+   */
+  checkpoint?: () => Promise<void>;
   /**
    * Receives the push error when `fn` threw and the push failed too; `fn`'s
    * error is the one rethrown. Without it the push error is logged at warn.
@@ -168,6 +196,9 @@ export interface RootUnitOfWorkOptions {
  *   pushes; the outer root pushes. Such a nested call must pass
  *   `flush: undefined`: one given a push throws, rather than drop that push
  *   silently. With no open unit for the hook it is a root and flushes.
+ * - The same holds for `checkpoint`: a nested call given one throws, and
+ *   `checkpoint()` on a nested call's child throws, so the outer root owns
+ *   every mid-operation push.
  */
 export async function runInRootUnitOfWork<T>(
   repoContext: Pick<RepositoryContext, "markDirty">,
@@ -182,15 +213,46 @@ export async function runInRootUnitOfWork<T>(
         "its own push; give that push to the outer root, or run it outside",
     );
   }
+  if (parent !== undefined && options.checkpoint !== undefined) {
+    throw new Error(
+      "a root unit of work was opened inside another for the same hook with " +
+        "its own checkpoint; give that checkpoint to the outer root",
+    );
+  }
   const root = openUnit(markDirty, {
     flush: options.flush,
     parent,
     role: "root",
   });
+  let ended = false;
+  const view: RootUnitOfWork = {
+    stage: (change) => root.stage(change),
+    staged: () => root.staged(),
+    async checkpoint() {
+      if (ended) {
+        throw new Error("checkpoint called after its root unit of work ended");
+      }
+      if (parent !== undefined) {
+        throw new Error(
+          "checkpoint called on a nested root unit of work, which is a child " +
+            "of the outer root; the outer root owns the checkpoint",
+        );
+      }
+      if (options.checkpoint === undefined) {
+        throw new Error(
+          "checkpoint called on a root unit of work opened without a " +
+            "checkpoint option",
+        );
+      }
+      await legacyUnitOfWorkSettled(root);
+      await options.checkpoint();
+    },
+  };
   let value: T;
   try {
-    value = await runInUnitOfWork(root, () => fn(root));
+    value = await runInUnitOfWork(root, () => fn(view));
   } catch (error) {
+    ended = true;
     try {
       await root.abandon();
     } catch (flushError) {
@@ -203,6 +265,7 @@ export async function runInRootUnitOfWork<T>(
     }
     throw error;
   }
+  ended = true;
   await root.commit();
   return value;
 }

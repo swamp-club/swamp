@@ -85,6 +85,11 @@ interface LegacyUnitState {
    * ancestor waits for it.
    */
   track(mark: Promise<void>): void;
+  /**
+   * Waits for every mark tracked so far, this unit's and its descendants',
+   * without ending the unit.
+   */
+  settle(): Promise<void>;
 }
 
 const states = new WeakMap<UnitOfWork, LegacyUnitState>();
@@ -115,6 +120,17 @@ export function legacyUnitOfWorkParent(
   uow: UnitOfWork,
 ): UnitOfWork | undefined {
   return states.get(uow)?.parent;
+}
+
+/**
+ * Waits for every mark `uow` and its descendants sent before the call, as
+ * ending the unit does, but leaves it open. A rejected mark already rejected
+ * its own stage call, so it is not rethrown here. Resolves at once for any
+ * other {@link UnitOfWork}. A root's checkpoint uses it
+ * (`runInRootUnitOfWork`, swamp-club#3053).
+ */
+export async function legacyUnitOfWorkSettled(uow: UnitOfWork): Promise<void> {
+  await states.get(uow)?.settle();
 }
 
 /**
@@ -230,6 +246,9 @@ export function createLegacyUnitOfWork(
     track(mark) {
       if (ended === undefined) marks.push(mark);
       parentState?.track(mark);
+    },
+    async settle() {
+      await Promise.allSettled([...marks]);
     },
   };
 

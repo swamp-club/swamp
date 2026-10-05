@@ -34,6 +34,7 @@ import {
   createLegacyUnitOfWork,
   legacyParentFor,
   legacyUnitOfWorkParent,
+  legacyUnitOfWorkSettled,
   legacyUnitOfWorkTarget,
 } from "./legacy_unit_of_work.ts";
 
@@ -642,4 +643,63 @@ Deno.test("createLegacyUnitOfWork: a spent parent hands the new unit to its near
   assertStrictEquals(legacyParentFor(hook, spent), root);
   await unit.stage({ kind: "write", path: "/cache/data/a" });
   assertEquals(root.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+});
+
+Deno.test("legacyUnitOfWorkSettled: waits for a mark in flight, including a child's, and leaves the unit open", async () => {
+  const { hook, holdNext, calls } = recordingHook();
+  const flushes: string[] = [];
+  const root = createLegacyUnitOfWork(hook, {
+    flush: () => {
+      flushes.push("flush");
+      return Promise.resolve();
+    },
+  });
+  const child = createLegacyUnitOfWork(hook, {
+    flush: undefined,
+    parent: root,
+  });
+  const release = holdNext();
+  let marked = false;
+  const stage = child.stage({ kind: "write", path: "/cache/data/a" }).then(
+    () => {
+      marked = true;
+    },
+  );
+  let markedAtSettle: boolean | undefined;
+  const settled = legacyUnitOfWorkSettled(root).then(() => {
+    markedAtSettle = marked;
+  });
+  release();
+  await stage;
+  await settled;
+
+  assertEquals(markedAtSettle, true);
+  assertEquals(flushes, []);
+  await root.stage({ kind: "write", path: "/cache/data/b" });
+  assertEquals(calls, ["/cache/data/a", "/cache/data/b"]);
+  await root.commit();
+  assertEquals(flushes, ["flush"]);
+});
+
+Deno.test("legacyUnitOfWorkSettled: does not rethrow a rejected mark", async () => {
+  const { hook, failNext } = recordingHook();
+  const error = new Error("remote unreachable");
+  failNext(error);
+  const unit = createLegacyUnitOfWork(hook, { flush: undefined });
+
+  const stage = unit.stage({ kind: "write", path: "/cache/data/a" });
+  const settled = legacyUnitOfWorkSettled(unit);
+
+  assertStrictEquals(await assertRejects(() => stage), error);
+  await settled;
+});
+
+Deno.test("legacyUnitOfWorkSettled: resolves at once for a unit that is not a legacy unit", async () => {
+  const unit: UnitOfWork = {
+    stage: () => Promise.resolve(),
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [],
+  };
+  await legacyUnitOfWorkSettled(unit);
 });
