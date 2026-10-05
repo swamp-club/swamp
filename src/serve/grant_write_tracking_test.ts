@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import type { DatastoreSyncOptions } from "../domain/datastore/datastore_sync_service.ts";
+import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_unit_of_work.ts";
+import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createGrantWriteCommit,
   publishGrantWrites,
@@ -88,6 +91,50 @@ Deno.test("publishGrantWrites: logs a failed push instead of throwing", async ()
   await publishGrantWrites(["a"], deps);
 
   assertEquals(events.at(-1)?.kind, "push");
+});
+
+Deno.test("publishGrantWrites: stages each path through one root unit over the same hook", async () => {
+  const { events, deps } = recordingDeps();
+  const roots: { unit: UnitOfWork; hookMatches: boolean }[] = [];
+  const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+    const unit = createLegacyUnitOfWork(markDirty, {
+      flush: options.flush,
+      parent: options.parent,
+      afterCommit: "reject",
+    });
+    if (options.role === "root") {
+      roots.push({ unit, hookMatches: markDirty === deps.markDirty });
+    }
+    return unit;
+  });
+  try {
+    await publishGrantWrites(["a", "b"], deps);
+  } finally {
+    dispose();
+  }
+
+  assertEquals(roots.length, 1);
+  assertEquals(roots[0].hookMatches, true);
+  assertEquals(roots[0].unit.staged(), [
+    { kind: "write", path: "a" },
+    { kind: "write", path: "b" },
+  ]);
+  assertEquals(events.map((event) => event.kind), ["mark", "mark", "push"]);
+});
+
+Deno.test("publishGrantWrites: a failed mark skips the push and is logged, not thrown", async () => {
+  const { events, deps } = recordingDeps();
+  const failing = {
+    ...deps,
+    markDirty(path?: string) {
+      if (path === "b") return Promise.reject(new Error("index unwritable"));
+      return deps.markDirty(path);
+    },
+  };
+
+  await publishGrantWrites(["a", "b", "c"], failing);
+
+  assertEquals(events, [{ kind: "mark", path: "a" }]);
 });
 
 Deno.test("createGrantWriteCommit: pushes the unit's writes inside the exclusive gate", async () => {

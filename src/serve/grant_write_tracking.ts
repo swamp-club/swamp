@@ -35,6 +35,7 @@ import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "grant-write-tracking"]);
 
@@ -107,9 +108,10 @@ export interface GrantWritePublishDeps {
 }
 
 /**
- * Re-marks each written path and pushes once. Must run inside the exclusive
- * sync gate, in the same unit as the writes, so a poller pull cannot land
- * between them and the push (swamp-club#2247, swamp-club#2405).
+ * Re-marks each written path and pushes once, through a root unit of work
+ * whose flush is the push. Must run inside the exclusive sync gate, in the
+ * same unit as the writes, so a poller pull cannot land between them and the
+ * push (swamp-club#2247, swamp-club#2405).
  *
  * Paths are marked one by one, never with a bare markDirty(), which would
  * turn the push into a walk of the whole cache (swamp-club#2415). A push
@@ -121,11 +123,25 @@ export async function publishGrantWrites(
   deps: GrantWritePublishDeps,
 ): Promise<void> {
   if (!deps.syncService || paths.length === 0) return;
+  const syncService = deps.syncService;
   try {
-    for (const path of paths) {
-      await deps.markDirty?.(path);
-    }
-    await deps.syncService.pushChanged({ namespace: deps.namespace });
+    // The marks are staged through a root unit of work over the same hook,
+    // whose flush is the push. A legacy root flushes when it is abandoned
+    // too, but a failed mark skipped the push before, so the flush pushes
+    // only once every path was staged.
+    let marked = false;
+    await runInRootUnitOfWork({ markDirty: deps.markDirty }, {
+      flush: async () => {
+        if (marked) {
+          await syncService.pushChanged({ namespace: deps.namespace });
+        }
+      },
+    }, async (root) => {
+      for (const path of paths) {
+        await root.stage({ kind: "write", path });
+      }
+      marked = true;
+    });
   } catch (error) {
     logger.warn("Failed to push grant changes to the datastore: {error}", {
       error: error instanceof Error ? error.message : String(error),

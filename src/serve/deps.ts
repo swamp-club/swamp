@@ -25,7 +25,10 @@
 
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  repoUnitOfWorkFactory,
+  runInRootUnitOfWork,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type {
   ModelMethodRunDeps,
   WorkflowRunDeps,
@@ -405,6 +408,11 @@ export function createStepLockHook(
  * Locks are acquired and released per-step by the execution service rather
  * than held for the entire workflow duration.
  * The caller provides a callback to consume the event stream.
+ *
+ * The run executes in one root unit of work whose flush is the post-run push,
+ * under the sync gate's shared mode, on every outcome (succeeded, failed,
+ * suspended, cancelled, thrown). Each step's model lock still pushes on its
+ * own when the step releases it; only the post-run push is the root's.
  */
 export async function executeWorkflowWithLocks(
   repoDir: string,
@@ -545,52 +553,60 @@ export async function executeWorkflowWithLocks(
     }
   };
 
-  try {
-    if (!runTelemetry) {
-      await runTraced();
-      return;
-    }
-
-    // Record the run's own parent entry however it ends. Telemetry must never
-    // be able to fail a workflow run, so `finish` is isolated from the run's
-    // own error and the original error always propagates.
-    try {
-      await runTraced();
-    } catch (error) {
-      await finishRunTelemetry(
-        runTelemetry,
-        error instanceof Error ? error : new Error(String(error)),
-      );
-      throw error;
-    }
-
-    const failure = finalStatus === "succeeded" ? null : markErrorPaths(
-      new Error(
-        streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
-      ),
-      streamErrorPaths,
-    );
-    await finishRunTelemetry(runTelemetry, failure);
-  } finally {
-    if (syncService) {
-      const namespace = isCustomDatastoreConfig(datastoreConfig)
-        ? datastoreConfig.namespace
-        : undefined;
-      try {
-        await withSharedSyncGate(
-          options.syncGate,
-          () => syncService.pushChanged({ namespace }),
-        );
-      } catch (pushErr) {
-        logger.warn(
-          "Post-run push failed; terminal status may be delayed: {error}",
-          {
-            error: pushErr instanceof Error ? pushErr.message : String(pushErr),
-          },
-        );
+  await runInRootUnitOfWork(
+    repoContext,
+    {
+      flush: syncService
+        ? async () => {
+          const namespace = isCustomDatastoreConfig(datastoreConfig)
+            ? datastoreConfig.namespace
+            : undefined;
+          try {
+            await withSharedSyncGate(
+              options.syncGate,
+              () => syncService.pushChanged({ namespace }),
+            );
+          } catch (pushErr) {
+            logger.warn(
+              "Post-run push failed; terminal status may be delayed: {error}",
+              {
+                error: pushErr instanceof Error
+                  ? pushErr.message
+                  : String(pushErr),
+              },
+            );
+          }
+        }
+        : undefined,
+    },
+    async () => {
+      if (!runTelemetry) {
+        await runTraced();
+        return;
       }
-    }
-  }
+
+      // Record the run's own parent entry however it ends. Telemetry must never
+      // be able to fail a workflow run, so `finish` is isolated from the run's
+      // own error and the original error always propagates.
+      try {
+        await runTraced();
+      } catch (error) {
+        await finishRunTelemetry(
+          runTelemetry,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+
+      const failure = finalStatus === "succeeded" ? null : markErrorPaths(
+        new Error(
+          streamError ?? `workflow run ${finalStatus ?? "did not complete"}`,
+        ),
+        streamErrorPaths,
+      );
+      await finishRunTelemetry(runTelemetry, failure);
+    },
+  );
 }
 
 /**

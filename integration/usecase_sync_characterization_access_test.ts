@@ -200,9 +200,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token mint",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["push"] },
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: { cli: ["push"], serve: ["push", "release"] },
     // CLI bulk mark outside any use case, staged through the command's root
     // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -230,9 +232,14 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token revoke",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: {
+      cli: ["pull", "prepare", "commit", "release"],
+      serve: ["push", "release"],
+    },
     seed: async (repos) => {
       await runCli({
         args: [
@@ -277,9 +284,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token create",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["push"] },
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: { cli: ["push"], serve: ["push", "release"] },
     // CLI bulk mark outside any use case, staged through the command's root
     // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -302,9 +311,14 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token revoke",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["pull", "push", "prepare", "commit", "release"] },
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: {
+      cli: ["pull", "push", "prepare", "commit", "release"],
+      serve: ["push", "release"],
+    },
     // CLI bulk mark outside any use case, staged through the command's root
     // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -328,9 +342,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker prune",
-    rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["push"] },
+    // The CLI and serve each run in a root unit of work
+    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
+    // before its composition adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: { cli: ["push"], serve: ["push", "release"] },
     // CLI bulk mark outside any use case, staged through the command's root
     // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },

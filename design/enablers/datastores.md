@@ -1188,6 +1188,25 @@ operation inside a unit of work:
     relative to lock release (`syncOrder`, recorded before the change).
     `PINNED_CLI_ROOT_UNIT_COMMANDS` and `PINNED_LOCK_FLUSH_CALLERS` list the
     commands with a root and the callers of the combined flush.
+- **Serve roots (swamp-club#3034).** Each serve handler that pushes through
+  `pushChangedToRemote` after its work, on every outcome, runs that work in a
+  root whose flush is `pushChangedToRemote(ctx)`. The root opens where the
+  handler's `try` began, inside its sync gate, so a refused request still
+  pushes nothing and every reply keeps its place relative to the push.
+  `cancelLocatedRunAndPush` (`src/serve/suspended_run_cancel.ts`) does the
+  same. `executeWorkflowWithLocks` (`src/serve/deps.ts`) runs each workflow
+  run from the `workflow.run` handler, webhooks and the scheduler in a root
+  whose flush is the post-run push under the gate's shared mode. Each step's
+  model lock still pushes on its own when the step releases it. The device
+  auth mint, grant publishing and `access.reload` stage their per-path re-marks
+  through a root that covers only the marks and the push, as a failed write
+  pushed nothing before. Their flush pushes only once every mark was staged,
+  because a legacy root also flushes on abandon. The serve pushes not yet a
+  root's flush are pinned in `PINNED_SERVE_RAW_PUSHES`
+  (`integration/serve_root_unit_rules_test.ts`): handlers that push only on
+  success after their reply (model, vault and workflow create, edit and
+  delete, and `vault.migrate`) and the model method run and resume paths
+  (swamp-club#3035), plus background garbage collection.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`
@@ -1221,11 +1240,9 @@ each site):
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
-- Serve: device auth (`mintServerTokenImpl` in
-  `src/serve/device_auth_handler.ts`), grant tracking (`publishGrantWrites` in
-  `src/serve/grant_write_tracking.ts`), access reload (`handleAccessReload` in
-  `src/serve/handlers/access_handlers.ts`) and the extension lockfile
-  (`extensionLockfileTransaction` in `src/serve/handlers/admin_handlers.ts`).
+- Serve: the extension lockfile (`extensionLockfileTransaction` in
+  `src/serve/handlers/admin_handlers.ts`). Device auth, grant tracking and
+  access reload stage their marks through a root (swamp-club#3034).
 - The serve start-up definition migration, which marks each moved file by path
   (`serveCommand` in `src/cli/commands/serve.ts`).
 - The namespace catalog export, marked by path after it is written before a

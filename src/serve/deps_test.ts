@@ -25,6 +25,8 @@ import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_unit_of_work.ts";
+import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { createSyncGate } from "./sync_gate.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 
@@ -191,6 +193,47 @@ Deno.test("executeWorkflowWithLocks: skips pushChanged when no syncService", asy
     undefined,
     { syncGate: undefined },
   );
+});
+
+Deno.test("executeWorkflowWithLocks: runs in one root unit whose flush is the post-run push, if any", async () => {
+  for (const syncService of [stubSyncService(), undefined]) {
+    const ctx = stubRepoContextWithRepos();
+    const roots: { hookMatches: boolean; flushes: boolean }[] = [];
+    const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+      if (options.role === "root") {
+        roots.push({
+          hookMatches: markDirty === ctx.markDirty,
+          flushes: options.flush !== undefined,
+        });
+      }
+      return createLegacyUnitOfWork(markDirty, {
+        flush: options.flush,
+        parent: options.parent,
+        afterCommit: "forward",
+      });
+    });
+    try {
+      await executeWorkflowWithLocks(
+        "/tmp/repo",
+        ctx,
+        datastoreConfig,
+        { workflowIdOrName: "nonexistent" },
+        new AbortController().signal,
+        () => {},
+        syncService,
+        undefined,
+        { syncGate: undefined },
+      );
+    } finally {
+      dispose();
+    }
+
+    assertEquals(roots, [{
+      hookMatches: true,
+      flushes: syncService !== undefined,
+    }]);
+    if (syncService) assertEquals(syncService.pushCalledCount, 1);
+  }
 });
 
 Deno.test("executeWorkflowWithLocks: the post-run push waits while a pull holds the sync gate", async () => {

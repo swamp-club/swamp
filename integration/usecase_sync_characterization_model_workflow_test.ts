@@ -419,6 +419,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow approve",
+    // Serve runs the handler in a root unit of work (swamp-club#3034),
+    // pinned to push before the gate exit, as it did before.
+    rootUnit: { serve: true },
+    syncOrder: { serve: ["push", "release"] },
     seed: suspendAtGate,
     serveCtx: (run: SuspendedRun) => ({ activeRunRegistry: run.registry }),
     cli: (repos, run: SuspendedRun) => ({
@@ -443,6 +447,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow reject",
+    // Serve runs the handler in a root unit of work (swamp-club#3034),
+    // pinned to push before the gate exit, as it did before.
+    rootUnit: { serve: true },
+    syncOrder: { serve: ["push", "release"] },
     seed: suspendAtGate,
     serveCtx: (run: SuspendedRun) => ({ activeRunRegistry: run.registry }),
     cli: (repos, run: SuspendedRun) => ({
@@ -467,6 +475,10 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow cancel",
+    // Serve runs the handler in a root unit of work (swamp-club#3034),
+    // pinned to push before the gate exit, as it did before.
+    rootUnit: { serve: true },
+    syncOrder: { serve: ["push", "release"] },
     // CLI workflow cancel saves the run through repoContext.workflowRunRepo
     // itself, not through a use case, so the save marks through
     // signalChange's hook fallback (unit_of_work_scope.ts signalChange in

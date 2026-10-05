@@ -114,6 +114,7 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
@@ -1249,79 +1250,95 @@ export async function handleWorkflowApprove(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
-  let result: WorkflowApproveData | undefined;
-  let release: (() => void) | undefined;
-  try {
-    const reserved = await reserveSuspendedRun(
-      ctx,
-      workflow,
-      payload.runId,
-    );
-    if (!reserved.ok) {
-      sendError(socket, requestId, "workflow_approve_failed", reserved.message);
-      return;
-    }
-    release = reserved.release;
-
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowApproveDeps(
-      ctx.repoContext.workflowRepo,
-      ctx.repoContext.workflowRunRepo,
-      // The reservation above is this process's claim on the run.
-      unclaimedRuns,
-    );
-
-    await consumeStream(
-      workflowApprove(libCtx, deps, {
-        workflowIdOrName: workflow.idOrName,
-        byId: workflow.byId,
-        expectedName: workflow.expectedName,
-        stepName: payload.stepName,
-        reason: payload.reason,
-        runId: reserved.runId,
-        decidedBy: principal ? principalToString(principal) : payload.decidedBy,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data;
-        },
-        error: async (e) => {
-          // A nested step's refusal names the nested run only to a reader
-          // of its workflow (swamp-club#2736).
-          throw new Error(
-            await nestedGateRefusalForClient(
-              e.error,
-              nestedRunReadDecider(ctx, socket, principal),
-            ) ?? e.error.message,
+  // The approval runs in the request's root unit of work, which pushes once
+  // it ends, before the auto-resume and the reply below.
+  const result = await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async (): Promise<WorkflowApproveData | undefined> => {
+      let approved: WorkflowApproveData | undefined;
+      let release: (() => void) | undefined;
+      try {
+        const reserved = await reserveSuspendedRun(
+          ctx,
+          workflow,
+          payload.runId,
+        );
+        if (!reserved.ok) {
+          sendError(
+            socket,
+            requestId,
+            "workflow_approve_failed",
+            reserved.message,
           );
-        },
-      },
-    );
+          return undefined;
+        }
+        release = reserved.release;
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createWorkflowApproveDeps(
+          ctx.repoContext.workflowRepo,
+          ctx.repoContext.workflowRunRepo,
+          // The reservation above is this process's claim on the run.
+          unclaimedRuns,
+        );
 
-    if (!result) {
-      sendError(
-        socket,
-        requestId,
-        "workflow_approve_failed",
-        "Workflow approval failed",
-      );
-      return;
-    }
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_approve_failed", message);
-    return;
-  } finally {
-    // Released before the auto-resume below, which registers the run.
-    release?.();
-    await pushChangedToRemote(ctx);
-  }
+        await consumeStream(
+          workflowApprove(libCtx, deps, {
+            workflowIdOrName: workflow.idOrName,
+            byId: workflow.byId,
+            expectedName: workflow.expectedName,
+            stepName: payload.stepName,
+            reason: payload.reason,
+            runId: reserved.runId,
+            decidedBy: principal
+              ? principalToString(principal)
+              : payload.decidedBy,
+          }),
+          {
+            resolving: () => {},
+            completed: (e) => {
+              approved = e.data;
+            },
+            error: async (e) => {
+              // A nested step's refusal names the nested run only to a reader
+              // of its workflow (swamp-club#2736).
+              throw new Error(
+                await nestedGateRefusalForClient(
+                  e.error,
+                  nestedRunReadDecider(ctx, socket, principal),
+                ) ?? e.error.message,
+              );
+            },
+          },
+        );
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return undefined;
+        }
+
+        if (!approved) {
+          sendError(
+            socket,
+            requestId,
+            "workflow_approve_failed",
+            "Workflow approval failed",
+          );
+          return undefined;
+        }
+        return approved;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_approve_failed", message);
+        return undefined;
+      } finally {
+        // Released before the auto-resume below, which registers the run.
+        release?.();
+      }
+    },
+  );
+  if (!result) return;
 
   // Launched only once the approval is saved and pushed. The resume runs
   // detached and is never awaited here: this handler holds the sync gate,
@@ -1383,104 +1400,119 @@ export async function handleWorkflowReject(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
-  let release: (() => void) | undefined;
-  let rejected: WorkflowRejectData | undefined;
-  try {
-    const reserved = await reserveSuspendedRun(
-      ctx,
-      workflow,
-      payload.runId,
-    );
-    if (!reserved.ok) {
-      sendError(socket, requestId, "workflow_reject_failed", reserved.message);
-      return;
-    }
-    release = reserved.release;
-
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowRejectDeps(
-      ctx.repoContext.workflowRepo,
-      ctx.repoContext.workflowRunRepo,
-      // The reservation above is this process's claim on the run.
-      unclaimedRuns,
-      ctx.runTracker,
-    );
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      workflowReject(libCtx, deps, {
-        workflowIdOrName: workflow.idOrName,
-        byId: workflow.byId,
-        expectedName: workflow.expectedName,
-        stepName: payload.stepName,
-        reason: payload.reason,
-        runId: reserved.runId,
-        decidedBy: principal ? principalToString(principal) : payload.decidedBy,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: async (e) => {
-          // A nested step's refusal names the nested run only to a reader
-          // of its workflow (swamp-club#2736).
-          throw new Error(
-            await nestedGateRefusalForClient(
-              e.error,
-              nestedRunReadDecider(ctx, socket, principal),
-            ) ?? e.error.message,
+  const rejectedRun = await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async (): Promise<WorkflowRejectData | undefined> => {
+      let release: (() => void) | undefined;
+      let rejected: WorkflowRejectData | undefined;
+      try {
+        const reserved = await reserveSuspendedRun(
+          ctx,
+          workflow,
+          payload.runId,
+        );
+        if (!reserved.ok) {
+          sendError(
+            socket,
+            requestId,
+            "workflow_reject_failed",
+            reserved.message,
           );
-        },
-      },
-    );
+          return undefined;
+        }
+        release = reserved.release;
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createWorkflowRejectDeps(
+          ctx.repoContext.workflowRepo,
+          ctx.repoContext.workflowRunRepo,
+          // The reservation above is this process's claim on the run.
+          unclaimedRuns,
+          ctx.runTracker,
+        );
 
-    if (!result) {
-      sendError(
-        socket,
-        requestId,
-        "workflow_reject_failed",
-        "Workflow rejection failed",
-      );
-      return;
-    }
-    rejected = result as unknown as WorkflowRejectData;
-    // Other runs are named only to a reader of their workflow
-    // (swamp-club#2736).
-    const canRead = nestedRunReadDecider(ctx, socket, principal);
-    if (rejected.awaitingParent && !(await canRead(rejected.awaitingParent))) {
-      delete rejected.awaitingParent;
-    }
-    const detached = await readableNestedRuns(
-      rejected.detachedNestedRuns,
-      (d) => d.workflowId,
-      canRead,
-    );
-    if (detached) rejected.detachedNestedRuns = detached;
-    else delete rejected.detachedNestedRuns;
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          workflowReject(libCtx, deps, {
+            workflowIdOrName: workflow.idOrName,
+            byId: workflow.byId,
+            expectedName: workflow.expectedName,
+            stepName: payload.stepName,
+            reason: payload.reason,
+            runId: reserved.runId,
+            decidedBy: principal
+              ? principalToString(principal)
+              : payload.decidedBy,
+          }),
+          {
+            resolving: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: async (e) => {
+              // A nested step's refusal names the nested run only to a reader
+              // of its workflow (swamp-club#2736).
+              throw new Error(
+                await nestedGateRefusalForClient(
+                  e.error,
+                  nestedRunReadDecider(ctx, socket, principal),
+                ) ?? e.error.message,
+              );
+            },
+          },
+        );
 
-    send(socket, {
-      type: "workflow.reject",
-      id: requestId,
-      payload: { data: result },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "workflow_reject_failed", message);
-  } finally {
-    release?.();
-    await pushChangedToRemote(ctx);
-  }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return undefined;
+        }
+
+        if (!result) {
+          sendError(
+            socket,
+            requestId,
+            "workflow_reject_failed",
+            "Workflow rejection failed",
+          );
+          return undefined;
+        }
+        rejected = result as unknown as WorkflowRejectData;
+        // Other runs are named only to a reader of their workflow
+        // (swamp-club#2736).
+        const canRead = nestedRunReadDecider(ctx, socket, principal);
+        if (
+          rejected.awaitingParent && !(await canRead(rejected.awaitingParent))
+        ) {
+          delete rejected.awaitingParent;
+        }
+        const detached = await readableNestedRuns(
+          rejected.detachedNestedRuns,
+          (d) => d.workflowId,
+          canRead,
+        );
+        if (detached) rejected.detachedNestedRuns = detached;
+        else delete rejected.detachedNestedRuns;
+
+        send(socket, {
+          type: "workflow.reject",
+          id: requestId,
+          payload: { data: result },
+        });
+        return rejected;
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "workflow_reject_failed", message);
+        return undefined;
+      } finally {
+        release?.();
+      }
+    },
+  );
 
   // A rejected nested run has finished: its parent may continue. Launched
   // once the decision is saved, pushed and released; it may wait on a parent
   // this instance still drives, so the reply does not wait for it.
-  const rejectedRun = rejected;
   if (rejectedRun) {
     autoResumeParentAfterChild(
       ctx,

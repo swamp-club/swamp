@@ -158,6 +158,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   getExtensionLoadWarnings,
@@ -2084,54 +2085,58 @@ export async function handleWorkerTokenCreate(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createWorkerTokenCreateDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-      { vaultsDir: ctx.vaultsDir },
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createWorkerTokenCreateDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+          { vaultsDir: ctx.vaultsDir },
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      workerTokenCreate(libCtx, deps, {
-        name: payload.name,
-        durationMs: payload.durationMs,
-        // An explicit --vault wins: redeem reads the secret from the vault
-        // recorded on the token, so any configured vault works. Without one,
-        // use the control-plane vault, as the local CLI path does. Leaving it
-        // unset makes resolveVaultName count _token-secrets alongside any
-        // user vault and fail with "Multiple vaults are configured".
-        vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
-        maxEnrollments: payload.maxEnrollments,
-      }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          workerTokenCreate(libCtx, deps, {
+            name: payload.name,
+            durationMs: payload.durationMs,
+            // An explicit --vault wins: redeem reads the secret from the vault
+            // recorded on the token, so any configured vault works. Without one,
+            // use the control-plane vault, as the local CLI path does. Leaving it
+            // unset makes resolveVaultName count _token-secrets alongside any
+            // user vault and fail with "Multiple vaults are configured".
+            vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
+            maxEnrollments: payload.maxEnrollments,
+          }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "worker.token.create",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "worker_token_create_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "worker.token.create",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "worker_token_create_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleWorkerTokenList(
@@ -2200,56 +2205,60 @@ export async function handleWorkerTokenRevoke(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createWorkerTokenRevokeDeps(
-      libCtx,
-      ctx.repoDir,
-      ctx.repoContext,
-      { vaultsDir: ctx.vaultsDir },
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = await createWorkerTokenRevokeDeps(
+          libCtx,
+          ctx.repoDir,
+          ctx.repoContext,
+          { vaultsDir: ctx.vaultsDir },
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      workerTokenRevoke(libCtx, deps, { name: payload.name }),
-      withDefaults({
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          workerTokenRevoke(libCtx, deps, { name: payload.name }),
+          withDefaults({
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          }),
+        );
 
-    // The revoke is persisted even if the request was cancelled, and an
-    // already-revoked token may still hold workers this instance missed, so
-    // every worker enrolled on any mint of the name is cut off now.
-    const disconnectedWorkers = await ctx.workerGateway?.revokeToken(
-      payload.name,
-      "revoked",
-    );
+        // The revoke is persisted even if the request was cancelled, and an
+        // already-revoked token may still hold workers this instance missed, so
+        // every worker enrolled on any mint of the name is cut off now.
+        const disconnectedWorkers = await ctx.workerGateway?.revokeToken(
+          payload.name,
+          "revoked",
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "worker.token.revoke",
-      id: requestId,
-      payload: {
-        data: disconnectedWorkers === undefined
-          ? result ?? {}
-          : { ...result, disconnectedWorkers },
-      },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "worker_token_revoke_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "worker.token.revoke",
+          id: requestId,
+          payload: {
+            data: disconnectedWorkers === undefined
+              ? result ?? {}
+              : { ...result, disconnectedWorkers },
+          },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "worker_token_revoke_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleWorkerPrune(
@@ -2268,138 +2277,142 @@ export async function handleWorkerPrune(
     }, ctx).allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const gracePeriodMs = payload?.gracePeriodMs ??
-      DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
-    const dryRun = payload?.dryRun ?? false;
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const gracePeriodMs = payload?.gracePeriodMs ??
+          DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
+        const dryRun = payload?.dryRun ?? false;
 
-    const listDeps = createWorkerListDeps(ctx.repoContext.dataQueryService);
+        const listDeps = createWorkerListDeps(ctx.repoContext.dataQueryService);
 
-    const runDeps = await createWorkerModelRunDeps(
-      ctx.repoDir,
-      ctx.repoContext,
-      { vaultsDir: ctx.vaultsDir },
-    );
+        const runDeps = await createWorkerModelRunDeps(
+          ctx.repoDir,
+          ctx.repoContext,
+          { vaultsDir: ctx.vaultsDir },
+        );
 
-    const deleteDeps = createModelDeleteDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      undefined,
-      ctx.repoContext.markDirty,
-    );
+        const deleteDeps = createModelDeleteDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          undefined,
+          ctx.repoContext.markDirty,
+        );
 
-    const pruneDeps: WorkerPruneDeps = {
-      listWorkers: async () => {
-        const records = await ctx.repoContext.dataQueryService.query(
-          `modelType == "${WORKER_MODEL_TYPE.normalized}" && name == "state-main"`,
-          { loadAttributes: true },
-        ) as DataRecord[];
-        return records.flatMap((r) => {
-          const parsed = WorkerStateSchema.safeParse(r.attributes);
-          if (!parsed.success) return [];
-          const s = parsed.data;
-          return [{
-            name: s.name,
-            definitionName: `worker-${s.name}`,
-            status: s.status,
-            tokenName: s.tokenName,
-            disconnectedAt: s.disconnectedAt,
-          }];
-        });
-      },
+        const pruneDeps: WorkerPruneDeps = {
+          listWorkers: async () => {
+            const records = await ctx.repoContext.dataQueryService.query(
+              `modelType == "${WORKER_MODEL_TYPE.normalized}" && name == "state-main"`,
+              { loadAttributes: true },
+            ) as DataRecord[];
+            return records.flatMap((r) => {
+              const parsed = WorkerStateSchema.safeParse(r.attributes);
+              if (!parsed.success) return [];
+              const s = parsed.data;
+              return [{
+                name: s.name,
+                definitionName: `worker-${s.name}`,
+                status: s.status,
+                tokenName: s.tokenName,
+                disconnectedAt: s.disconnectedAt,
+              }];
+            });
+          },
 
-      listTokens: async () => {
-        const tokens: WorkerPruneDeps extends { listTokens(): Promise<infer R> }
-          ? R
-          : never = [];
-        await consumeStream(
-          workerTokenList(libCtx, listDeps),
-          withDefaults({
-            completed: (
-              e: {
-                data: {
-                  tokens: Array<
-                    { name: string; bindings: Array<{ machineId: string }> }
-                  >;
-                };
-              },
-            ) => {
-              for (const t of e.data.tokens) {
-                tokens.push({ name: t.name, bindings: t.bindings });
+          listTokens: async () => {
+            const tokens: WorkerPruneDeps extends
+              { listTokens(): Promise<infer R> } ? R
+              : never = [];
+            await consumeStream(
+              workerTokenList(libCtx, listDeps),
+              withDefaults({
+                completed: (
+                  e: {
+                    data: {
+                      tokens: Array<
+                        { name: string; bindings: Array<{ machineId: string }> }
+                      >;
+                    };
+                  },
+                ) => {
+                  for (const t of e.data.tokens) {
+                    tokens.push({ name: t.name, bindings: t.bindings });
+                  }
+                },
+              }),
+            );
+            return tokens;
+          },
+
+          deleteWorker: (definitionName) =>
+            modelDelete(libCtx, deleteDeps, {
+              modelIdOrName: definitionName,
+              force: true,
+            }),
+
+          pruneBindings: (tokenName, machineIds) =>
+            modelMethodRun(libCtx, runDeps, {
+              modelIdOrName: tokenName,
+              methodName: "prune_bindings",
+              inputs: { machineIds },
+              lastEvaluated: false,
+            }),
+
+          resolveStaleBindings: async (token, remainingWorkerNames) => {
+            const remaining = new Set(remainingWorkerNames);
+            const stale: string[] = [];
+            for (const binding of token.bindings) {
+              const suffix = await fleetMemberSuffix(binding.machineId);
+              const expectedName = `${token.name}-${suffix}`;
+              if (
+                !remaining.has(expectedName) && !remaining.has(token.name)
+              ) {
+                stale.push(binding.machineId);
               }
+            }
+            return stale.length > 0 ? stale : null;
+          },
+        };
+
+        let result: Record<string, unknown> | undefined;
+        let preview: unknown[] | undefined;
+        await consumeStream(
+          workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
+          withDefaults({
+            previewing: (e: { workers: unknown[] }) => {
+              preview = e.workers;
+            },
+            completed: (e: { result: unknown }) => {
+              result = e.result as Record<string, unknown>;
+            },
+            error: (e: { error: { message: string } }) => {
+              throw new Error(e.error.message);
             },
           }),
         );
-        return tokens;
-      },
-
-      deleteWorker: (definitionName) =>
-        modelDelete(libCtx, deleteDeps, {
-          modelIdOrName: definitionName,
-          force: true,
-        }),
-
-      pruneBindings: (tokenName, machineIds) =>
-        modelMethodRun(libCtx, runDeps, {
-          modelIdOrName: tokenName,
-          methodName: "prune_bindings",
-          inputs: { machineIds },
-          lastEvaluated: false,
-        }),
-
-      resolveStaleBindings: async (token, remainingWorkerNames) => {
-        const remaining = new Set(remainingWorkerNames);
-        const stale: string[] = [];
-        for (const binding of token.bindings) {
-          const suffix = await fleetMemberSuffix(binding.machineId);
-          const expectedName = `${token.name}-${suffix}`;
-          if (
-            !remaining.has(expectedName) && !remaining.has(token.name)
-          ) {
-            stale.push(binding.machineId);
-          }
+        if (dryRun && preview) {
+          result = { ...result, prunable: preview };
         }
-        return stale.length > 0 ? stale : null;
-      },
-    };
 
-    let result: Record<string, unknown> | undefined;
-    let preview: unknown[] | undefined;
-    await consumeStream(
-      workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
-      withDefaults({
-        previewing: (e: { workers: unknown[] }) => {
-          preview = e.workers;
-        },
-        completed: (e: { result: unknown }) => {
-          result = e.result as Record<string, unknown>;
-        },
-        error: (e: { error: { message: string } }) => {
-          throw new Error(e.error.message);
-        },
-      }),
-    );
-    if (dryRun && preview) {
-      result = { ...result, prunable: preview };
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "worker.prune",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "worker_prune_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "worker.prune",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "worker_prune_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleDatastoreNamespaceList(

@@ -113,6 +113,7 @@ import { latestRunForWorkflow } from "../../domain/workflows/workflow_lookup.ts"
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 export function resolveRunGcInput(
   payload: RunGcPayload | undefined,
@@ -924,56 +925,60 @@ export async function handleDataDelete(
   ) return;
   const model = targetArgument(target, payload.modelIdOrName);
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createDataDeleteDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.definitionRepo,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createDataDeleteDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.unifiedDataRepo,
+          ctx.repoContext.definitionRepo,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      dataDelete(libCtx, deps, {
-        modelIdOrName: model.idOrName,
-        byId: model.byId,
-        expectedName: model.expectedName,
-        dataName: payload.dataName,
-        version: payload.version,
-      }),
-      {
-        deleting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          dataDelete(libCtx, deps, {
+            modelIdOrName: model.idOrName,
+            byId: model.byId,
+            expectedName: model.expectedName,
+            dataName: payload.dataName,
+            version: payload.version,
+          }),
+          {
+            deleting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    if (!result) {
-      sendError(socket, requestId, "not_found", "Data not found");
-      return;
-    }
+        if (!result) {
+          sendError(socket, requestId, "not_found", "Data not found");
+          return;
+        }
 
-    send(socket, {
-      type: "data.delete",
-      id: requestId,
-      payload: { data: result },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_delete_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "data.delete",
+          id: requestId,
+          payload: { data: result },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "data_delete_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleDataRename(
@@ -1004,56 +1009,65 @@ export async function handleDataRename(
   ) return;
   const model = targetArgument(target, payload.modelIdOrName);
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createDataRenameDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.definitionRepo,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createDataRenameDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.unifiedDataRepo,
+          ctx.repoContext.definitionRepo,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      dataRename(libCtx, deps, {
-        modelIdOrName: model.idOrName,
-        byId: model.byId,
-        expectedName: model.expectedName,
-        oldName: payload.oldName,
-        newName: payload.newName,
-      }),
-      {
-        renaming: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          dataRename(libCtx, deps, {
+            modelIdOrName: model.idOrName,
+            byId: model.byId,
+            expectedName: model.expectedName,
+            oldName: payload.oldName,
+            newName: payload.newName,
+          }),
+          {
+            renaming: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    if (!result) {
-      sendError(socket, requestId, "rename_failed", "Rename operation failed");
-      return;
-    }
+        if (!result) {
+          sendError(
+            socket,
+            requestId,
+            "rename_failed",
+            "Rename operation failed",
+          );
+          return;
+        }
 
-    send(socket, {
-      type: "data.rename",
-      id: requestId,
-      payload: { data: result },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_rename_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "data.rename",
+          id: requestId,
+          payload: { data: result },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "data_rename_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleSummarise(
@@ -1134,44 +1148,48 @@ export async function handleDataGc(
       .allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createDataGcDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.markDirty,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createDataGcDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.markDirty,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      dataGc(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
-      {
-        collecting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          dataGc(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
+          {
+            collecting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "data.gc",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_gc_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "data.gc",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "data_gc_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleDataPrune(
@@ -1188,45 +1206,49 @@ export async function handleDataPrune(
       .allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createDataPruneDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.definitionRepo,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createDataPruneDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.unifiedDataRepo,
+          ctx.repoContext.definitionRepo,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      dataPrune(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
-      {
-        collecting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          dataPrune(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
+          {
+            collecting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "data.prune",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "data_prune_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "data.prune",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "data_prune_failed", message);
+      }
+    },
+  );
 }
 
 export async function handleRunGc(
@@ -1243,50 +1265,54 @@ export async function handleRunGc(
       .allowed
   ) return;
 
-  try {
-    const libCtx = handlerLibSwampContext(ctx);
-    const deps = createRunGcDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.markDirty,
-    );
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        const libCtx = handlerLibSwampContext(ctx);
+        const deps = createRunGcDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.markDirty,
+        );
 
-    const marker = await new RepoMarkerRepository().read(
-      RepoPath.create(ctx.repoDir),
-    );
-    const gcInput = resolveRunGcInput(
-      payload,
-      marker?.garbageCollection,
-    );
+        const marker = await new RepoMarkerRepository().read(
+          RepoPath.create(ctx.repoDir),
+        );
+        const gcInput = resolveRunGcInput(
+          payload,
+          marker?.garbageCollection,
+        );
 
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      runGc(libCtx, deps, gcInput),
-      {
-        collecting: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
+        let result: Record<string, unknown> | undefined;
+        await consumeStream(
+          runGc(libCtx, deps, gcInput),
+          {
+            collecting: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        );
 
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
 
-    send(socket, {
-      type: "run.gc",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "run_gc_failed", message);
-  } finally {
-    await pushChangedToRemote(ctx);
-  }
+        send(socket, {
+          type: "run.gc",
+          id: requestId,
+          payload: { data: result ?? {} },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "run_gc_failed", message);
+      }
+    },
+  );
 }
