@@ -37,12 +37,18 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
 5. **WalSink** appends each batch to a segment file on local disk, and its
    write returns once the append lands. It then delivers segments to
    StoreSink in the background, one at a time and in order, reading each back
-   from disk; a delivered segment is deleted on flush. A slow or hung remote
-   store therefore never holds the audit pipeline: later batches keep reaching
-   the WAL and queue behind it. A segment whose delivery fails stays on disk
-   and is replayed on the next start. `flush` waits up to 30s for queued
-   deliveries before leaving them in the WAL. Max size is configurable
-   (default 100MB).
+   from disk. A slow or hung remote store therefore never holds the audit
+   pipeline: later batches keep reaching the WAL and queue behind it. Every
+   `flush-interval` (and on flush) a checkpoint on the same queue flushes
+   StoreSink and then deletes the segments delivered before it, so the WAL
+   holds only events the store has not confirmed. StoreSink's flush waits for
+   batch writes already running and rejects if any batch since the last
+   flush, including one its own timer wrote, failed to reach a store; the
+   checkpoint then keeps those segments for replay on the next start. Replay
+   can store a batch twice when it reached one store but not another. A
+   segment whose delivery fails also stays on disk for replay. `flush` waits
+   up to 30s for queued work before leaving it in the WAL. Max size is
+   configurable (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention; old

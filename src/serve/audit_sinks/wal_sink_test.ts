@@ -433,3 +433,50 @@ Deno.test(
     await emitter.close();
   }),
 );
+
+Deno.test(
+  "WalSink: delivered segments are removed while running, without a flush",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 10 });
+
+    await sink.write([makeEvent("a")]);
+    await sink.write([makeEvent("b")]);
+    await waitFor(
+      () => wal.segmentCount === 0 && downstream.flushed > 0,
+      "the checkpoint to remove delivered segments",
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: segments whose store flush failed stay in the WAL past later checkpoints",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    let failNextFlush = true;
+    downstream.flush = () => {
+      if (failNextFlush) {
+        failNextFlush = false;
+        return Promise.reject(new Error("batch did not reach the store"));
+      }
+      return Promise.resolve();
+    };
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([makeEvent("unconfirmed")]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+
+    await sink.write([makeEvent("confirmed")]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    const kept = await wal.readSegment(wal.listSegments()[0]);
+    assertEquals(kept.map((e) => e.action), ["unconfirmed"]);
+    await sink.close();
+  }),
+);

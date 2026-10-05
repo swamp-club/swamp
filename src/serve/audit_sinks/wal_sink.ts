@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
@@ -32,9 +33,16 @@ export interface WalSinkOptions {
    * leaving the rest in the WAL. Default 30s.
    */
   readonly deliveryWaitMs?: number;
+  /**
+   * How often delivered segments are checkpointed: the downstream sink is
+   * flushed and the segments it confirmed are deleted from the WAL. 0 turns
+   * the timer off, leaving it to flush. Default 5s.
+   */
+  readonly checkpointIntervalMs?: number;
 }
 
 const DEFAULT_DELIVERY_WAIT_MS = 30_000;
+const DEFAULT_CHECKPOINT_INTERVAL_MS = 5_000;
 
 export class WalSink implements AuditSink {
   readonly name = "wal";
@@ -47,14 +55,28 @@ export class WalSink implements AuditSink {
   // this chain. It never rejects; flush and close wait on it.
   #deliveries: Promise<void> = Promise.resolve();
   #queued = 0;
-  // The chain a wait last gave up on; waiting on it again only delays
-  // shutdown, since nothing has been queued or settled since.
-  #gaveUpOn: Promise<void> | null = null;
+  // Deliveries and checkpoints finished so far, and the chain and count a
+  // wait last gave up at: waiting again on a chain that has not moved since
+  // only delays shutdown.
+  #completed = 0;
+  #gaveUpAt: { chain: Promise<void>; completed: number } | null = null;
+  #checkpointQueued = false;
+  #checkpointTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WalSinkOptions) {
     this.#wal = options.wal;
     this.#downstream = options.downstream;
     this.#deliveryWaitMs = options.deliveryWaitMs ?? DEFAULT_DELIVERY_WAIT_MS;
+    const checkpointMs = options.checkpointIntervalMs ??
+      DEFAULT_CHECKPOINT_INTERVAL_MS;
+    if (checkpointMs > 0) {
+      this.#checkpointTimer = runDetached(() =>
+        setInterval(() => {
+          if (this.#delivered.size > 0) this.#queueCheckpoint();
+        }, checkpointMs)
+      );
+      Deno.unrefTimer(this.#checkpointTimer);
+    }
   }
 
   get wal(): AuditWal {
@@ -100,13 +122,19 @@ export class WalSink implements AuditSink {
       );
     } finally {
       this.#queued--;
+      this.#completed++;
     }
   }
 
   /** Waits for queued deliveries, up to the delivery wait. */
   async #awaitDeliveries(): Promise<void> {
     const deliveries = this.#deliveries;
-    if (deliveries === this.#gaveUpOn) return;
+    if (
+      this.#gaveUpAt?.chain === deliveries &&
+      this.#gaveUpAt.completed === this.#completed
+    ) {
+      return;
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const done = await Promise.race([
@@ -116,7 +144,7 @@ export class WalSink implements AuditSink {
         }),
       ]);
       if (!done) {
-        this.#gaveUpOn = deliveries;
+        this.#gaveUpAt = { chain: deliveries, completed: this.#completed };
         logger.warn(
           "Downstream sink still has {count} WAL segment(s) to deliver after {seconds}s; they stay in the WAL and are replayed on the next start",
           {
@@ -130,25 +158,58 @@ export class WalSink implements AuditSink {
     }
   }
 
+  /**
+   * Waits, up to the delivery wait, for queued deliveries and a checkpoint
+   * that removes the segments the store has confirmed.
+   */
   async flush(): Promise<void> {
+    this.#queueCheckpoint();
     await this.#awaitDeliveries();
-    let flushSucceeded = false;
+  }
+
+  #queueCheckpoint(): void {
+    if (this.#checkpointQueued) return;
+    this.#checkpointQueued = true;
+    this.#deliveries = this.#deliveries.then(() => this.#checkpoint());
+  }
+
+  /**
+   * Flushes the downstream sink, then deletes the segments delivered before
+   * the flush began: only then are their events in the store. Runs on the
+   * delivery chain, so never alongside a delivery; never rejects.
+   */
+  async #checkpoint(): Promise<void> {
+    this.#checkpointQueued = false;
+    try {
+      await this.#removeConfirmedSegments();
+    } finally {
+      this.#completed++;
+    }
+  }
+
+  async #removeConfirmedSegments(): Promise<void> {
+    const delivered = [...this.#delivered];
+    if (delivered.length === 0) return;
     try {
       await this.#downstream.flush();
-      flushSucceeded = true;
     } catch (error: unknown) {
-      logger.warn("Downstream flush failed: {error}", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // The store did not confirm these. They stay in the WAL for replay on
+      // the next start, and are no longer tracked as delivered, so a later
+      // checkpoint cannot delete them.
+      for (const segmentName of delivered) this.#delivered.delete(segmentName);
+      logger.warn(
+        "Downstream flush failed, {count} WAL segment(s) kept for replay on the next start: {error}",
+        {
+          count: delivered.length,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return;
     }
-
-    if (!flushSucceeded) return;
-
-    const deleted: string[] = [];
-    for (const segmentName of this.#delivered) {
+    for (const segmentName of delivered) {
       try {
         await this.#wal.deleteSegment(segmentName);
-        deleted.push(segmentName);
+        this.#delivered.delete(segmentName);
       } catch (error: unknown) {
         logger.warn(
           "Failed to delete delivered WAL segment {segment}: {error}",
@@ -158,9 +219,6 @@ export class WalSink implements AuditSink {
           },
         );
       }
-    }
-    for (const name of deleted) {
-      this.#delivered.delete(name);
     }
   }
 
@@ -195,6 +253,10 @@ export class WalSink implements AuditSink {
   }
 
   async close(): Promise<void> {
+    if (this.#checkpointTimer !== null) {
+      clearInterval(this.#checkpointTimer);
+      this.#checkpointTimer = null;
+    }
     await this.flush();
     await this.#downstream.close();
   }

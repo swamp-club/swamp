@@ -19,15 +19,12 @@
 
 import React, { useState } from "react";
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { render } from "ink-testing-library";
 import { Text } from "ink";
 import { LruCache, usePreviewFetch } from "./use_preview_fetch.ts";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
-
-function tick(ms = 50): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // --- LruCache unit tests ---
 
@@ -157,10 +154,14 @@ Deno.test({
   fn: async () => {
     const fetchA = deferred<string>();
     let detail: string | undefined;
+    let aRequested = false;
     const bResult = "B-detail";
 
     const fetchFn = (item: string): Promise<string> => {
-      if (item === "A") return fetchA.promise;
+      if (item === "A") {
+        aRequested = true;
+        return fetchA.promise;
+      }
       return Promise.resolve(bResult);
     };
 
@@ -175,8 +176,7 @@ Deno.test({
       />,
     );
 
-    await tick(200);
-    assertEquals(detail, bResult);
+    await waitFor(() => detail === bResult, "B's detail");
 
     const setItem = (globalThis as Record<string, unknown>).__setProbeItem as (
       item: string,
@@ -184,17 +184,16 @@ Deno.test({
 
     // Switch to A — starts an async fetch (uncached)
     setItem("A");
-    await tick(50);
+    await waitFor(() => aRequested && detail === undefined, "A's fetch");
 
     // Switch to B — cache hit, should show B's detail immediately
     // and invalidate A's in-flight fetch via the fetch-id bump
     setItem("B");
-    await tick(50);
-    assertEquals(detail, bResult);
+    await waitFor(() => detail === bResult, "B's cached detail");
 
-    // Resolve A's fetch — must NOT overwrite B's detail
+    // Resolve A's fetch — must NOT overwrite B's detail.
     fetchA.resolve("A-detail-stale");
-    await tick(50);
+    await fetchA.promise;
 
     assertEquals(detail, bResult);
 

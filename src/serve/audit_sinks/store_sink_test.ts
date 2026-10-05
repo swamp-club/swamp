@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -180,10 +185,63 @@ Deno.test("StoreSink: store failure does not crash", async () => {
   });
 
   await sink.write([makeEvent("test")]);
+  await assertRejects(() => sink.flush(), Error, "failed to reach a store");
+  // Reported once; the next flush has nothing new to report.
   await sink.flush();
   await sink.close();
 
   assertEquals(goodStore.written.size, 1);
+});
+
+Deno.test("StoreSink: flush reports a batch the interval timer failed to store", async () => {
+  let puts = 0;
+  const failingStore: AuditStore = {
+    put(): Promise<void> {
+      puts++;
+      return Promise.reject(new Error("store down"));
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const sink = new StoreSink({
+    stores: [failingStore],
+    batchSize: 100,
+    flushIntervalMs: 10,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await waitFor(() => puts === 1, "timer flush");
+  await assertRejects(() => sink.flush(), Error, "failed to reach a store");
+  await sink.close();
+});
+
+Deno.test("StoreSink: flush waits for a batch write already running", async () => {
+  let finishPut: (() => void) | null = null;
+  const slowStore = createMockStore();
+  const put = slowStore.put.bind(slowStore);
+  slowStore.put = (key: string, data: Uint8Array) =>
+    new Promise<void>((resolve) => {
+      finishPut = () => put(key, data).then(resolve);
+    });
+  const sink = new StoreSink({
+    stores: [slowStore],
+    batchSize: 1,
+    flushIntervalMs: 60_000,
+  });
+
+  const writing = sink.write([makeEvent("slow")]);
+  let flushed = false;
+  const flushing = sink.flush().then(() => {
+    flushed = true;
+  });
+  await waitFor(() => finishPut !== null, "put started");
+  assertEquals(flushed, false);
+  finishPut!();
+  await writing;
+  await flushing;
+  assertEquals(slowStore.written.size, 1);
+  await sink.close();
 });
 
 Deno.test("StoreSink: flush is no-op when batch is empty", async () => {

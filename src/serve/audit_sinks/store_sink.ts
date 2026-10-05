@@ -60,6 +60,10 @@ export class StoreSink implements AuditSink {
   readonly #batchSize: number;
   readonly #flushIntervalMs: number;
   #batch: AuditEvent[] = [];
+  // Batch writes still running, so flush can wait for them.
+  readonly #writing = new Set<Promise<void>>();
+  // Set when a batch fails to reach a store; flush reports it and clears it.
+  #failedSinceFlush = false;
   #timer: ReturnType<typeof setInterval> | null = null;
   #gcTimer: ReturnType<typeof setInterval> | null = null;
   readonly #encoder = new TextEncoder();
@@ -72,7 +76,9 @@ export class StoreSink implements AuditSink {
 
     this.#timer = runDetached(() =>
       setInterval(() => {
-        this.flush().catch((error: unknown) => {
+        // Not flush(): a failure stays recorded for the next flush call.
+        if (this.#batch.length === 0) return;
+        this.#writeBatch().catch((error: unknown) => {
           logger.warn("Periodic flush failed: {error}", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -116,9 +122,22 @@ export class StoreSink implements AuditSink {
     }
   }
 
+  /**
+   * Writes the pending batch and waits for batch writes already running.
+   * Rejects when any batch since the previous flush failed to reach a store,
+   * including one the interval timer wrote, so a caller holding the events
+   * elsewhere (the WAL) knows to keep them.
+   */
   async flush(): Promise<void> {
     if (this.#batch.length > 0) {
       await this.#writeBatch();
+    }
+    await Promise.all([...this.#writing]);
+    if (this.#failedSinceFlush) {
+      this.#failedSinceFlush = false;
+      throw new Error(
+        "An audit batch failed to reach a store since the last flush",
+      );
     }
   }
 
@@ -178,6 +197,16 @@ export class StoreSink implements AuditSink {
   }
 
   async #writeBatch(): Promise<void> {
+    const write = this.#putBatch();
+    this.#writing.add(write);
+    try {
+      await write;
+    } finally {
+      this.#writing.delete(write);
+    }
+  }
+
+  async #putBatch(): Promise<void> {
     const events = this.#batch;
     this.#batch = [];
 
@@ -202,6 +231,7 @@ export class StoreSink implements AuditSink {
         try {
           await store.put(key, data);
         } catch (error: unknown) {
+          this.#failedSinceFlush = true;
           logger.warn(
             "Failed to write audit batch to store for {date}: {error}",
             {
