@@ -413,6 +413,14 @@ export function createStepLockHook(
  * under the sync gate's shared mode, on every outcome (succeeded, failed,
  * suspended, cancelled, thrown). Each step's model lock still pushes on its
  * own when the step releases it; only the post-run push is the root's.
+ *
+ * Call it only where no root unit of work is open: not from inside a serve
+ * request that opened one, and not from work started inside a running
+ * workflow (a timer it arms, or an event callback). There the run's root
+ * would be nested inside another with its own push, and
+ * `runInRootUnitOfWork` throws rather than drop that push. Launch such runs
+ * after the enclosing root has ended, as `workflow.approve` does for its
+ * auto-resume.
  */
 export async function executeWorkflowWithLocks(
   repoDir: string,

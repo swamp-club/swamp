@@ -1191,25 +1191,25 @@ operation inside a unit of work:
 - **Serve roots (swamp-club#3034).** Each serve handler that pushes through
   `pushChangedToRemote` after its work, on every outcome, runs that work in a
   root whose flush is `pushChangedToRemote(ctx)`. The root opens where the
-  handler's `try` began, inside its sync gate, so a refused request still
-  pushes nothing and every reply keeps its place relative to the push.
-  `cancelLocatedRunAndPush` (`src/serve/suspended_run_cancel.ts`) does the
-  same. `executeWorkflowWithLocks` (`src/serve/deps.ts`) runs each workflow
-  run from the `workflow.run` handler, webhooks and the scheduler in a root
-  whose flush is the post-run push under the gate's shared mode. Each step's
-  model lock still pushes on its own when the step releases it. A run's root
-  stays open for the whole run, so every change its steps stage is held in the
-  root's `staged()` list until the run ends. Each entry is a path, so this
-  costs little today, but a Phase 3 unit that keeps payloads in that list must
-  bound or spill it for long runs. The device auth mint, grant publishing and
-  `access.reload` stage their per-path re-marks through `stageWritesThenPush`
-  (`src/serve/stage_writes_then_push.ts`), a root that covers only the marks
-  and the push, as a failed write pushed nothing before. Its flush pushes only
-  once every mark was staged, because a legacy root also flushes on abandon. The serve pushes not yet a
-  root's flush are pinned in `PINNED_SERVE_RAW_PUSHES`
+  handler's `try` began, inside its sync gate, so a refused request still pushes
+  nothing and every reply keeps its place relative to the push.
+  `cancelLocatedRunAndPush` (`src/serve/suspended_run_cancel.ts`) does the same.
+  `executeWorkflowWithLocks` (`src/serve/deps.ts`) runs each workflow run from
+  the `workflow.run` handler, webhooks and the scheduler in a root whose flush
+  is the post-run push under the gate's shared mode. Each step's model lock
+  still pushes on its own when the step releases it. A run's root stays open for
+  the whole run, so every change its steps stage is held in the root's
+  `staged()` list until the run ends. Each entry is a path, so this costs little
+  today, but a Phase 3 unit that keeps payloads in that list must bound or spill
+  it for long runs. The device auth mint, grant publishing and `access.reload`
+  stage their per-path re-marks through `stageWritesThenPush`
+  (`src/serve/stage_writes_then_push.ts`), a root that covers only the marks and
+  the push, as a failed write pushed nothing before. Its flush pushes only once
+  every mark was staged, because a legacy root also flushes on abandon. The
+  serve pushes not yet a root's flush are pinned in `PINNED_SERVE_RAW_PUSHES`
   (`integration/serve_root_unit_rules_test.ts`): handlers that push only on
-  success after their reply (model, vault and workflow create, edit and
-  delete, and `vault.migrate`) and the model method run and resume paths
+  success after their reply (model, vault and workflow create, edit and delete,
+  and `vault.migrate`) and the model method run and resume paths
   (swamp-club#3035), plus background garbage collection.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to

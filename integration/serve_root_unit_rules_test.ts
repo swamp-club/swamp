@@ -30,7 +30,6 @@ import { join } from "@std/path";
 import {
   assertPinnedSet,
   countedKeys,
-  isCommentLine,
   productionSourceFiles,
   repoRelative,
   SRC_DIR,
@@ -77,9 +76,85 @@ function calls(source: string, callee: string): Call[] {
   return found;
 }
 
+/**
+ * `source` with the text of every comment and of every string and template
+ * literal replaced by spaces, keeping newlines and length so offsets and line
+ * numbers still match. Code inside a template's `${...}` is kept. Brackets and
+ * pushes inside a string or comment are then never mistaken for code. Regular
+ * expression literals are not recognised; serve's flush arguments contain
+ * none.
+ */
+function maskNonCode(source: string): string {
+  const out = source.split("");
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  // Each open template literal records the brace depth of its `${`.
+  const templates: number[] = [];
+  let braces = 0;
+  let i = 0;
+  const skipTemplateText = () => {
+    const start = i;
+    for (; i < source.length; i++) {
+      if (source[i] === "\\") {
+        i++;
+      } else if (source[i] === "`") {
+        blank(start, i);
+        templates.pop();
+        i++;
+        return;
+      } else if (source[i] === "$" && source[i + 1] === "{") {
+        blank(start, i);
+        templates[templates.length - 1] = braces;
+        braces++;
+        i += 2;
+        return;
+      }
+    }
+    blank(start, i);
+  };
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "/" && source[i + 1] === "/") {
+      const end = source.indexOf("\n", i);
+      const stop = end === -1 ? source.length : end;
+      blank(i, stop);
+      i = stop;
+    } else if (ch === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (ch === "'" || ch === '"') {
+      let j = i + 1;
+      while (j < source.length && source[j] !== ch && source[j] !== "\n") {
+        j += source[j] === "\\" ? 2 : 1;
+      }
+      blank(i + 1, j);
+      i = j + 1;
+    } else if (ch === "`") {
+      templates.push(-1);
+      i++;
+      skipTemplateText();
+    } else if (ch === "{") {
+      braces++;
+      i++;
+    } else if (ch === "}") {
+      braces--;
+      i++;
+      if (templates.length > 0 && templates[templates.length - 1] === braces) {
+        skipTemplateText();
+      }
+    } else {
+      i++;
+    }
+  }
+  return out.join("");
+}
+
 interface ServeSource {
   file: string;
-  /** The source with comment lines blanked, so offsets still match. */
+  /** The source with comments and string literal text masked out. */
   code: string;
   /** The top-level declaration owning each line. */
   owners: string[];
@@ -91,7 +166,7 @@ async function serveSources(): Promise<ServeSource[]> {
     const lines = (await Deno.readTextFile(path)).split("\n");
     sources.push({
       file: repoRelative(path),
-      code: lines.map((line) => isCommentLine(line) ? "" : line).join("\n"),
+      code: maskNonCode(lines.join("\n")),
       owners: topLevelOwners(lines),
     });
   }
@@ -265,7 +340,7 @@ Deno.test("serve root units: raw pushes outside a root are pinned (swamp-club#30
   );
 });
 
-Deno.test("serve root units: the scan tells a root's flush from a push in its body", () => {
+Deno.test("serve root units: the scan tells a root's flush from a push in its body, ignoring strings and comments", () => {
   const code = [
     "async function handler() {",
     "  await runInRootUnitOfWork(ctx.repoContext, {",
@@ -274,6 +349,12 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     "    await pushChangedToRemote(ctx);",
     "  });",
     "  // await pushChangedToRemote(ctx);",
+    "}",
+    "async function stringly() {",
+    '  await runInRootUnitOfWork(ctx.repoContext, { label: ")", ',
+    '    note: `${")"} (`, flush: () => pushChangedToRemote(ctx) },',
+    "    async () => {}); // a ) here, and pushChangedToRemote(ctx)",
+    '  log("pushChangedToRemote(ctx)");',
     "}",
     "async function stageWritesThenPush(context, paths, options) {}",
     "async function caller() {",
@@ -285,7 +366,7 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
   const lines = code.split("\n");
   const probe: ServeSource = {
     file: "probe.ts",
-    code: lines.map((line) => isCommentLine(line) ? "" : line).join("\n"),
+    code: maskNonCode(code),
     owners: topLevelOwners(lines),
   };
   assertEquals(
@@ -295,5 +376,6 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
   assertEquals(rootEntryPoints([probe]), [
     "probe.ts: caller",
     "probe.ts: handler",
+    "probe.ts: stringly",
   ]);
 });
