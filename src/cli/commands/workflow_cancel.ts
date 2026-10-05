@@ -468,13 +468,27 @@ export interface CancelAllResult {
   }[];
   /** Runs whose record was deleted during the cancel. */
   deleted: { runId: string; workflowName: string }[];
-  /** Runs another process took over during the cancel, left as they were. */
+  /**
+   * Runs left as they were: another process took them over during the
+   * cancel, or their claim could not be taken in time.
+   */
   notCancelled: {
     runId: string;
     workflowName: string;
     status: string;
     reason: string;
   }[];
+  /** A run in `notCancelled` is there because its claim timed out. */
+  claimTimedOut: boolean;
+}
+
+/** The exit code of a lock timeout (EX_TEMPFAIL): retry with backoff. */
+const LOCK_TIMEOUT_EXIT_CODE = 75;
+
+/** Whether `error` is a lock timeout, core's or a datastore extension's. */
+function isLockTimeout(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" && code.toLowerCase() === "lock_timeout";
 }
 
 /**
@@ -506,6 +520,7 @@ export async function cancelAllLocalRuns(
     finished: [],
     deleted: [],
     notCancelled: [],
+    claimTimedOut: false,
   };
   for (const { run, workflow } of runs) {
     const workflowName = workflow.name;
@@ -523,14 +538,30 @@ export async function cancelAllLocalRuns(
     } catch (error) {
       // The other runs' owners are already stopped: their records still
       // have to be settled.
-      if (!(error instanceof RunNotCancelledError)) throw error;
-      result.notCancelled.push({
-        runId: run.id,
-        workflowName,
-        status: error.status,
-        reason: error.message,
-      });
-      continue;
+      if (error instanceof RunNotCancelledError) {
+        result.notCancelled.push({
+          runId: run.id,
+          workflowName,
+          status: error.status,
+          reason: error.message,
+        });
+        continue;
+      }
+      if (!isLockTimeout(error)) throw error;
+      // The claim could not be taken, so nothing was settled here. The
+      // record is reported as it stands: a stopped owner may have saved its
+      // own outcome.
+      finalRun = await deps.runRepo.findById(workflow.id, run.id);
+      if (finalRun && !TERMINAL_STATUSES.has(finalRun.status)) {
+        result.claimTimedOut = true;
+        result.notCancelled.push({
+          runId: run.id,
+          workflowName,
+          status: finalRun.status,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
     }
     if (!finalRun) {
       result.deleted.push({ runId: run.id, workflowName });
@@ -739,6 +770,7 @@ export const workflowCancelCommand = withRemoteOptions(
               cancelled: [],
               finished: [],
               deleted: [],
+              notCancelled: [],
               skipped: [],
             }),
           );
@@ -758,7 +790,7 @@ export const workflowCancelCommand = withRemoteOptions(
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
       }
 
-      const { cancelled, finished, deleted, notCancelled } =
+      const { cancelled, finished, deleted, notCancelled, claimTimedOut } =
         await withRunTracker(
           repoDir,
           (runTracker) =>
@@ -814,9 +846,10 @@ export const workflowCancelCommand = withRemoteOptions(
         }
         if (notCancelled.length > 0) {
           cliCtx.logger
-            .warn`${notCancelled.length} run(s) were taken over by another process and not cancelled`;
+            .warn`${notCancelled.length} run(s) were not cancelled`;
           for (const entry of notCancelled) {
-            cliCtx.logger.warn`  ${entry.workflowName}: ${entry.reason}`;
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status} - ${entry.reason}`;
           }
         }
         if (serveSkipped.length > 0) {
@@ -834,6 +867,11 @@ export const workflowCancelCommand = withRemoteOptions(
         ) {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
+      }
+      // Every run was reported; a claim that timed out is still a temporary
+      // failure to retry, as it is for a single cancel.
+      if (claimTimedOut) {
+        Deno.exitCode = LOCK_TIMEOUT_EXIT_CODE;
       }
       return;
     }

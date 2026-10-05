@@ -1471,7 +1471,10 @@ first saved:
   when the process that took the run over is `swamp serve` (an approval
   through serve auto-resumed it), the local cancel is refused, saves nothing,
   and points at `--server`. `cancel --all` lists such a run under
-  `notCancelled` and goes on to settle the rest.
+  `notCancelled` and goes on to settle the rest. A run whose claim cannot be
+  taken in time is listed there too, unless its stopped owner already saved
+  it cancelled or finished, and the command then exits 75 once every run is
+  reported.
 
 The local commands back the claim with a datastore lock per run
 (`createWorkflowRunClaims`, `src/cli/repo_context.ts`; the key is under

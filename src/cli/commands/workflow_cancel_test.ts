@@ -60,7 +60,11 @@ import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
-import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
+import {
+  unclaimedRuns,
+  type WorkflowRunClaims,
+} from "../../domain/workflows/run_claim.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 
 await initializeLogging({});
 
@@ -788,6 +792,118 @@ Deno.test("cancelAllLocalRuns: reports a run serve took over as not cancelled an
   });
 });
 
+/** Claims that time out for `stuck` and exclude nobody otherwise. */
+function claimsStuckOn(stuck: string): WorkflowRunClaims {
+  return {
+    withClaim: (runId, fn) =>
+      runId === stuck
+        ? Promise.reject(
+          new LockTimeoutError(`workflow-run-claims/${runId}/.lock`, null, 1),
+        )
+        : fn(),
+  };
+}
+
+Deno.test("cancelAllLocalRuns: a claim that times out leaves that run reported and the rest cancelled", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runs = [0, 1, 2].map(() =>
+      WorkflowRun.fromData(suspendedData(crypto.randomUUID()))
+    );
+    for (const run of runs) await runRepo.save(workflowId, run);
+    const [first, stuck, last] = runs;
+
+    const result = await cancelAllLocalRuns(
+      runs.map((run) => ({ run, workflow: WORKFLOW })),
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: claimsStuckOn(stuck.id),
+        ...untracked,
+        killProcess: () => Promise.resolve(true),
+      },
+    );
+
+    // The run after the stuck one is still tried.
+    assertEquals(
+      result.cancelled.map((entry) => entry.runId),
+      [first.id, last.id],
+    );
+    assertEquals(result.notCancelled.length, 1);
+    assertEquals(result.notCancelled[0].runId, stuck.id);
+    assertEquals(result.notCancelled[0].status, "suspended");
+    assertEquals(result.notCancelled[0].reason.includes("timed out"), true);
+    assertEquals(result.claimTimedOut, true);
+    assertEquals(
+      (await runRepo.findById(workflowId, stuck.id))?.status,
+      "suspended",
+    );
+  });
+});
+
+Deno.test("cancelAllLocalRuns: a run its stopped owner cancelled counts as cancelled when its claim times out", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(workflowId, snapshot);
+
+    const result = await cancelAllLocalRuns(
+      [{ run: snapshot, workflow: WORKFLOW }],
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: claimsStuckOn(snapshot.id),
+        ...untracked,
+        // The owner saves its own cancelled record while handling SIGTERM.
+        killProcess: async () => {
+          await runRepo.save(
+            workflowId,
+            WorkflowRun.fromData(ownerFinalData(runId, "cancelled")),
+          );
+          return true;
+        },
+      },
+    );
+
+    assertEquals(result.cancelled.map((entry) => entry.runId), [runId]);
+    assertEquals(result.notCancelled, []);
+    assertEquals(result.claimTimedOut, false);
+  });
+});
+
+Deno.test("cancelAllLocalRuns: an error that is not a refusal or a lock timeout still propagates", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const snapshot = WorkflowRun.fromData(suspendedData(crypto.randomUUID()));
+    await runRepo.save(workflowId, snapshot);
+
+    await assertRejects(
+      () =>
+        cancelAllLocalRuns(
+          [{ run: snapshot, workflow: WORKFLOW }],
+          "No longer needed",
+          {
+            runRepo,
+            findEvaluatedWorkflow: noSnapshot,
+            runClaims: {
+              withClaim: () => Promise.reject(new Error("disk full")),
+            },
+            ...untracked,
+            killProcess: () => Promise.resolve(true),
+          },
+        ),
+      Error,
+      "disk full",
+    );
+  });
+});
+
 Deno.test("cancelLocalRun: cancels without a kill when no other process owns the run", async () => {
   for (const pid of [null, Deno.pid]) {
     await withTempDir(async (dir) => {
@@ -977,6 +1093,7 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
         workflowName: "test-workflow",
       }],
       notCancelled: [],
+      claimTimedOut: false,
     });
   });
 });
