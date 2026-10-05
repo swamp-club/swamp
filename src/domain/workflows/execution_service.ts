@@ -2622,13 +2622,17 @@ interface StepOptions {
 
 /**
  * Adds `jobName` to `started` once `stream` is first pulled, which
- * mergeWithConcurrency does only when the job gets a permit.
+ * mergeWithConcurrency does only when the job gets a permit. A job first
+ * pulled with `signal` already aborted never starts: a level holding one job
+ * is pulled whatever the signal, where a level holding several starts none.
  */
 async function* markStarted<T>(
   jobName: string,
   started: Set<string>,
   stream: AsyncIterable<T>,
+  signal: AbortSignal | undefined,
 ): AsyncGenerator<T> {
+  if (signal?.aborted) return;
   started.add(jobName);
   yield* stream;
 }
@@ -3210,6 +3214,7 @@ export class WorkflowExecutionService {
               expressionContext,
               levelStepOpts,
             ),
+            levelSignal,
           )
         );
         for await (
@@ -3867,6 +3872,7 @@ export class WorkflowExecutionService {
               expressionContext,
               levelStepOpts,
             ),
+            levelSignal,
           );
         });
         for await (
@@ -5918,7 +5924,8 @@ export class WorkflowExecutionService {
    * A job a resume inherited as running (the job the run was suspended in,
    * or one a failed run left running) that this walk never started, the abort
    * having fired before the level or while the job was queued, is settled the
-   * same way, whether or not the abort interrupted the level: its pending
+   * same way, whether or not the abort interrupted the level or the job
+   * shares it (markStarted): its pending
    * steps as a never-started job's, then the job from its steps' outcome
    * (settleNotResumedJob). Its approved work never ran, so a dependent gated
    * on it must not see it still running.
