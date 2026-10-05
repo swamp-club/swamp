@@ -67,6 +67,15 @@ loads.
 `DefinitionUpgradeService` (`src/domain/models/definition_upgrade_service.ts`).
 The upgraded definition is saved, so each upgrade runs only once.
 
+That save happens on whichever method runs first, including one that only reads.
+It changes the definition file and nothing else about it:
+`YamlDefinitionRepository.save()` merges the new values onto the file's existing
+YAML document, so comments and line layout survive. The same holds when the save
+also moves the file — a legacy `<id>.yaml` migrating to `<name>.yaml`, or a
+rename — and a file that moves with no change to its data is carried over
+byte-for-byte. A save whose data matches the file already at its path writes
+nothing.
+
 ### Who May Advance `typeVersion`
 
 `typeVersion` records the model type version a definition's global arguments

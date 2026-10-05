@@ -805,84 +805,70 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       unknown
     >;
 
-    // When the file already exists at the target path, check whether the
-    // definition data has actually changed. If it hasn't, skip the write
-    // entirely to avoid destroying YAML comments and producing git noise.
+    // When the definition already has a file — at the target path, or at the
+    // path it is moving from (a legacy uuid-named file, or its previous name)
+    // — check whether the definition data has actually changed. If it hasn't,
+    // skip the write entirely, or carry the text over verbatim when the file
+    // is moving, to avoid destroying YAML comments and producing git noise.
     // When the data HAS changed, use npm:yaml's Document API to merge the
     // new values onto the existing AST so that comments on unchanged nodes
-    // are preserved.
-    if (!isNew && await this.exists(targetPath)) {
-      try {
-        const existingRaw = await Deno.readTextFile(targetPath);
-        const existingParsed = parseYaml(existingRaw) as
-          | Record<
-            string,
-            unknown
-          >
-          | null;
-        if (!existingParsed) {
-          // Corrupt/empty file — remove it so the fresh-write path below
-          // overwrites with valid content.
-          try {
-            await Deno.remove(targetPath);
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) throw error;
-          }
-        }
-        const normalizedExisting = existingParsed
-          ? JSON.parse(
-            JSON.stringify(existingParsed),
-          ) as Record<string, unknown>
-          : null;
+    // are preserved (swamp-club#1842, swamp-club#3012).
+    const source = isNew ? null : await this.readMergeSource(
+      definition.id,
+      targetPath,
+      previousPath,
+      legacyPath,
+    );
+    if (source) {
+      const normalizedExisting = JSON.parse(
+        JSON.stringify(source.parsed),
+      ) as Record<string, unknown>;
+      const unchanged =
+        canonicalJson(cleanData) === canonicalJson(normalizedExisting);
 
-        if (
-          normalizedExisting &&
-          canonicalJson(cleanData) === canonicalJson(normalizedExisting)
-        ) {
-          this.idToActualPath.set(definition.id, targetPath);
-          logger.debug`Definition ${definition.name} unchanged, skipping write`;
-          return;
-        }
-
-        // Data changed — merge onto existing document to preserve comments
-        if (normalizedExisting) {
-          const doc = parseDocument(existingRaw, { version: "1.1" });
-          mergeIntoDocument(doc, cleanData);
-          await atomicWriteTextFile(targetPath, doc.toString());
-        }
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) {
-          // File disappeared between exists() and read — fall through to
-          // fresh write below.
-        } else {
-          throw error;
-        }
-      }
-
-      if (await this.exists(targetPath)) {
-        await this.cleanupOldPaths(
-          targetPath,
-          previousPath,
-          legacyPath,
-        );
+      if (unchanged && source.path === targetPath) {
         this.idToActualPath.set(definition.id, targetPath);
-        if (this.eventBus) {
-          await this.eventBus.publish(
-            createDefinitionUpdated(
-              type.normalized,
-              definition.id,
-              definition.name,
-            ),
-          );
-        }
+        logger.debug`Definition ${definition.name} unchanged, skipping write`;
         return;
       }
+
+      let content = source.raw;
+      if (!unchanged) {
+        // Data changed — merge onto existing document to preserve comments
+        const doc = parseDocument(source.raw, { version: "1.1" });
+        mergeIntoDocument(doc, cleanData);
+        content = doc.toString({ lineWidth: mergeLineWidth(source.raw) });
+      }
+      await atomicWriteTextFile(targetPath, content);
+
+      await this.cleanupOldPaths(
+        definition.id,
+        targetPath,
+        previousPath,
+        legacyPath,
+      );
+      this.idToActualPath.set(definition.id, targetPath);
+      if (this.eventBus) {
+        await this.eventBus.publish(
+          createDefinitionUpdated(
+            type.normalized,
+            definition.id,
+            definition.name,
+          ),
+        );
+      }
+      return;
     }
 
     const content = stringifyYaml(cleanData);
     await atomicWriteTextFile(targetPath, content);
 
-    await this.cleanupOldPaths(targetPath, previousPath, legacyPath);
+    await this.cleanupOldPaths(
+      definition.id,
+      targetPath,
+      previousPath,
+      legacyPath,
+    );
 
     this.idToActualPath.set(definition.id, targetPath);
 
@@ -1089,12 +1075,67 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
   }
 
+  /**
+   * Reads the file a save should merge onto: the target file when it exists,
+   * otherwise the file the definition is moving from — its cached previous
+   * path, or its legacy uuid-named path. A file other than the target is used
+   * only when it declares `id`: the cached path is a hint that may be stale,
+   * and the uuid-named path is also where a definition *named* with that UUID
+   * lives. Null when there is nothing to merge onto.
+   */
+  private async readMergeSource(
+    id: DefinitionId,
+    targetPath: string,
+    previousPath: string | undefined,
+    legacyPath: string,
+  ): Promise<
+    { path: string; raw: string; parsed: Record<string, unknown> } | null
+  > {
+    try {
+      const raw = await Deno.readTextFile(targetPath);
+      const parsed = parseYaml(raw) as Record<string, unknown> | null;
+      if (parsed) return { path: targetPath, raw, parsed };
+      // Corrupt/empty file — remove it so the fresh write overwrites it with
+      // valid content.
+      try {
+        await Deno.remove(targetPath);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      return null;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+
+    for (const path of [previousPath, legacyPath]) {
+      if (!path || path === targetPath) continue;
+      try {
+        const raw = await Deno.readTextFile(path);
+        const parsed = parseYaml(raw) as Record<string, unknown> | null;
+        if (parsed?.id === id) return { path, raw, parsed };
+      } catch {
+        // Missing, unreadable or unparseable — not something to merge onto.
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Removes the files a definition moved away from. A path that now holds a
+   * different definition is left alone, as delete() leaves it. The check is on
+   * id alone: a renamed definition's old file declares its old name, so the
+   * name cannot tell a rename apart from another definition.
+   */
   private async cleanupOldPaths(
+    id: DefinitionId,
     targetPath: string,
     previousPath: string | undefined,
     legacyPath: string,
   ): Promise<void> {
-    if (previousPath && previousPath !== targetPath) {
+    if (
+      previousPath && previousPath !== targetPath &&
+      !(await this.declaresOther(previousPath, id))
+    ) {
       try {
         await Deno.remove(previousPath);
         logger.debug`Migrated definition file from ${
@@ -1111,7 +1152,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
     if (
       targetPath !== legacyPath && previousPath !== legacyPath &&
-      await this.exists(legacyPath)
+      await this.exists(legacyPath) &&
+      !(await this.declaresOther(legacyPath, id))
     ) {
       try {
         await Deno.remove(legacyPath);
@@ -1266,6 +1308,20 @@ function canonicalJson(data: Record<string, unknown>): string {
     }
     return value;
   });
+}
+
+/**
+ * Line width for re-serializing a merged document. The serializer re-wraps
+ * every scalar, changed or not, so the width follows what the file already
+ * does: a file with a line past 80 columns is never folded, which keeps a long
+ * single-line expression on its line, and any other file is folded at 80 as
+ * swamp wrote it. Comment lines are not scalars and do not count.
+ */
+function mergeLineWidth(raw: string): number {
+  const hasLongLine = raw.split(/\r?\n/).some((line) =>
+    line.length > 80 && !line.trimStart().startsWith("#")
+  );
+  return hasLongLine ? 0 : 80;
 }
 
 function mergeIntoDocument(

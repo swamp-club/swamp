@@ -36,7 +36,9 @@
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { resolveStaleness } from "../src/domain/definitions/definition_staleness.ts";
@@ -46,6 +48,11 @@ import { DefinitionUpgradeService } from "../src/domain/models/definition_upgrad
 import { UserError } from "../src/domain/errors.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { resolveEffectiveDefinitionsDir } from "../src/infrastructure/persistence/paths.ts";
+import { DefaultMethodExecutionService } from "../src/domain/models/method_execution_service.ts";
+import { buildMethodContext } from "../src/domain/models/method_context.ts";
+import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 
 const TYPE = ModelType.create("test/staleness-integration");
 const V1 = "2026.01.01.1";
@@ -325,6 +332,137 @@ Deno.test("definition upgrade: a hand-authored definition with a malformed typeV
       );
     } finally {
       modelRegistry.invalidateType(HAND_AUTHORED_TYPE);
+    }
+  });
+});
+
+/**
+ * The lazy upgrade persists the definition on any method run, read-only ones
+ * included. A definition still in a legacy uuid-named file moves to its
+ * name-based file in that same write, and the move must carry the file's
+ * comments and layout with it rather than re-serializing the data from scratch
+ * (swamp-club#3012).
+ *
+ * Runs the method through the real execution service against the real
+ * repository, the path `swamp model method run` takes.
+ */
+const COMMENTED_TYPE = ModelType.create("test/commented-definition");
+
+Deno.test("definition upgrade: a read-only method run keeps a legacy definition file's comments and layout", async () => {
+  await withTempDir(async (dir) => {
+    modelRegistry.invalidateType(COMMENTED_TYPE);
+    const model = {
+      type: COMMENTED_TYPE,
+      version: V2,
+      globalArguments: z.object({ host: z.string(), note: z.string() }),
+      methods: {
+        ping: {
+          description: "Reads, writes nothing",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+      upgrades: [{
+        toVersion: V2,
+        description: "No-op upgrade",
+        upgradeAttributes: (args: Record<string, unknown>) => args,
+      }],
+    };
+    modelRegistry.register(model);
+
+    const id = "7c1d9f0e-52ab-4c1e-9d3f-6a8b2e4f1c05";
+    const typeDir = join(
+      resolveEffectiveDefinitionsDir(dir),
+      COMMENTED_TYPE.toDirectoryPath(),
+    );
+    await ensureDir(typeDir);
+    const legacyPath = join(typeDir, `${id}.yaml`);
+    const original = [
+      "# Design note: the host comes from live data, unlike the prod sibling.",
+      `type: ${COMMENTED_TYPE.normalized}`,
+      `typeVersion: ${V1}`,
+      `id: ${id}`,
+      "name: nodes",
+      "version: 1",
+      "tags: {}",
+      "globalArguments:",
+      "  # the filter exists because of overlapping CIDRs",
+      "  host: example.com",
+      '  note: ${{ data.latest("some-other-model-with-a-long-name", "some-resource-name").attributes.someField }}',
+      "methods: {}",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(legacyPath, original);
+
+    await ensureDir(join(dir, ".swamp", "data"));
+    const catalogStore = new CatalogStore(
+      join(dir, ".swamp", "data", "_catalog.db"),
+    );
+    try {
+      const repo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        undefined,
+        false,
+      );
+      const run = async () => {
+        const definition = await repo.findByName(COMMENTED_TYPE, "nodes");
+        const context = buildMethodContext(
+          {
+            dataRepository: new FileSystemUnifiedDataRepository(
+              dir,
+              undefined,
+              catalogStore,
+            ),
+            definitionRepository: repo,
+            createCelEnvironment: createExtensionCelEnvironment,
+          },
+          {
+            signal: new AbortController().signal,
+            repoDir: dir,
+            modelType: COMMENTED_TYPE,
+            modelId: definition!.id,
+            globalArgs: {},
+            definition: {
+              id: definition!.id,
+              name: definition!.name,
+              version: definition!.version,
+              tags: definition!.tags,
+            },
+            methodName: "ping",
+            logger: getLogger(["test", "definition-staleness"]),
+          },
+        );
+        await new DefaultMethodExecutionService().executeWorkflow(
+          definition!,
+          model,
+          "ping",
+          context,
+        );
+      };
+
+      await run();
+
+      const namePath = join(typeDir, "nodes.yaml");
+      const migrated = original.replace(
+        `typeVersion: ${V1}`,
+        `typeVersion: ${V2}`,
+      );
+      assertEquals(await Deno.readTextFile(namePath), migrated);
+      assertEquals(
+        (await Array.fromAsync(Deno.readDir(typeDir))).map((e) => e.name),
+        ["nodes.yaml"],
+        "the legacy uuid-named file is gone and nothing else was written",
+      );
+
+      // The upgrade ran once: a second run has nothing to persist.
+      await Deno.utime(namePath, new Date(0), new Date(0));
+      await run();
+      assertEquals(await Deno.readTextFile(namePath), migrated);
+      assertEquals((await Deno.stat(namePath)).mtime?.getTime(), 0);
+    } finally {
+      catalogStore.close();
+      modelRegistry.invalidateType(COMMENTED_TYPE);
     }
   });
 });
