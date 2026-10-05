@@ -1314,7 +1314,7 @@ The CLI extension commands follow the same rule. `extension pull`, `update`,
 `doctor extensions --repair` run their lockfile change in a managed lockfile
 transaction, which marks the config-tier lockfile by path and pushes it,
 bounded by the datastore's sync timeout, instead of the bulk mark that
-`pushManagedConfigChanges` sends. It publishes only when the lockfile changed
+`runManagedConfigMutation` stages. It publishes only when the lockfile changed
 or an earlier publish is still pending. `pushManagedConfigPaths`, used by the
 other per-path config writers, drops any path outside the namespace's cache
 tree rather than forwarding it. An extension that keeps its dirty set in
@@ -2262,16 +2262,17 @@ S3) as the only source of truth for configuration.
 
 Every CLI command and serve handler that changes config-tier files writes to the
 `config/` subdirectory resolved by `DatastorePathResolver`, then pushes to the
-remote through `src/cli/managed_config_sync.ts`: `pushManagedConfigChanges` for
-definitions and vault configs, and the per-path helpers for the extension
+remote through `src/cli/managed_config_sync.ts`: `runManagedConfigMutation` for
+definitions and vault configs (a bulk mark staged through the command's root
+unit, which pushes it), and the per-path helpers for the extension
 lockfile:
 
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
-| Model definition create/edit | `config/models/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Model definition delete | `config/models/` | Per-model lock flush, through `flushAfterManagedConfigMutation` | Via per-model lock flush |
-| Workflow definition create/edit | `config/workflows/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` |
-| Vault config create/migrate | `config/vaults/` | `pushManagedConfigChanges` | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
+| Model definition create/edit | `config/models/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
+| Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
+| Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
+| Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
 | Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |

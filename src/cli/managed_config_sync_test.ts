@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  assert,
   assertEquals,
   assertInstanceOf,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join, resolve } from "@std/path";
@@ -30,13 +30,13 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import {
   buildManagedLockfileTransaction,
   createManagedLockfileTransaction,
-  flushAfterManagedConfigMutation,
   ManagedConfigUnpublishedError,
   ManagedLockfileUnavailableError,
   pullManagedConfigAtBoot,
   pushManagedConfigChanges,
   pushManagedConfigPaths,
   pushManagedConfigPathsDeferred,
+  reportManagedConfigCleanupError,
   runManagedConfigMutation,
 } from "./managed_config_sync.ts";
 import { UserError } from "../domain/errors.ts";
@@ -899,13 +899,13 @@ Deno.test("createManagedLockfileTransaction: none unless the lockfile is shared 
   );
 });
 
-Deno.test("flushAfterManagedConfigMutation: a failed flush after the mutation throws ManagedConfigUnpublishedError", async () => {
+Deno.test("reportManagedConfigCleanupError: a failed push after the mutation throws ManagedConfigUnpublishedError", () => {
   const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  const error = await assertRejects(() =>
-    flushAfterManagedConfigMutation(
-      () => Promise.reject(cause),
+  const error = assertThrows(() =>
+    reportManagedConfigCleanupError(
+      cause,
       true,
       makeMarker({ managedConfig: true }),
       (e) => cleanupErrors.push(e),
@@ -916,12 +916,12 @@ Deno.test("flushAfterManagedConfigMutation: a failed flush after the mutation th
   assertEquals(cleanupErrors, []);
 });
 
-Deno.test("flushAfterManagedConfigMutation: before the mutation completed, a failed flush only reports", async () => {
+Deno.test("reportManagedConfigCleanupError: before the mutation completed, a failure only reports", () => {
   const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  await flushAfterManagedConfigMutation(
-    () => Promise.reject(cause),
+  reportManagedConfigCleanupError(
+    cause,
     false,
     makeMarker({ managedConfig: true }),
     (e) => cleanupErrors.push(e),
@@ -930,58 +930,18 @@ Deno.test("flushAfterManagedConfigMutation: before the mutation completed, a fai
   assertEquals(cleanupErrors, [cause]);
 });
 
-Deno.test("flushAfterManagedConfigMutation: an in-flight error is not replaced by the flush failure", async () => {
-  const original = new Error("delete failed");
-  const cleanupErrors: unknown[] = [];
-  let mutated = false;
-
-  const error = await assertRejects(async () => {
-    try {
-      await Promise.reject(original);
-      mutated = true;
-    } finally {
-      await flushAfterManagedConfigMutation(
-        () => Promise.reject(new Error("push failed")),
-        mutated,
-        makeMarker({ managedConfig: true }),
-        (e) => cleanupErrors.push(e),
-      );
-    }
-  });
-
-  assertEquals(error, original);
-  assertEquals(cleanupErrors.length, 1);
-});
-
-Deno.test("flushAfterManagedConfigMutation: without managedConfig a failed flush only reports", async () => {
+Deno.test("reportManagedConfigCleanupError: without managedConfig a failure only reports", () => {
+  const cause = new Error("push failed");
   const cleanupErrors: unknown[] = [];
 
-  await flushAfterManagedConfigMutation(
-    () => Promise.reject(new Error("push failed")),
+  reportManagedConfigCleanupError(
+    cause,
     true,
     makeMarker({ managedConfig: false }),
     (e) => cleanupErrors.push(e),
   );
 
-  assertEquals(cleanupErrors.length, 1);
-});
-
-Deno.test("flushAfterManagedConfigMutation: a successful flush neither throws nor reports", async () => {
-  const cleanupErrors: unknown[] = [];
-  let flushed = false;
-
-  await flushAfterManagedConfigMutation(
-    () => {
-      flushed = true;
-      return Promise.resolve();
-    },
-    true,
-    makeMarker({ managedConfig: true }),
-    (e) => cleanupErrors.push(e),
-  );
-
-  assert(flushed);
-  assertEquals(cleanupErrors, []);
+  assertEquals(cleanupErrors, [cause]);
 });
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

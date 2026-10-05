@@ -4076,3 +4076,36 @@ Deno.test("acquireModelLocks: push leaves the locks held until release", async (
     datastoreTypeRegistry.invalidateType(typeName);
   }
 });
+
+// CLI commands stage their bare marks through a root unit over
+// repoContext.markDirty and push with syncService (swamp-club#3033), so a
+// sync service without a mark hook would push a change that was never marked.
+Deno.test("requireInitializedRepoUnlocked: returns a mark hook exactly when it returns a sync service", async () => {
+  const events: string[] = [];
+  const typeName = registerRecordingLockType(events, {
+    twoPhase: false,
+    failPush: false,
+  });
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      const filesystem = await requireInitializedRepoUnlocked({
+        repoDir: dir,
+        outputMode: "json",
+      });
+      assertEquals(filesystem.syncService, undefined);
+      assertEquals(filesystem.repoContext.markDirty, undefined);
+
+      await configureExtensionDatastore(dir, typeName);
+      const custom = await requireInitializedRepoUnlocked({
+        repoDir: dir,
+        outputMode: "json",
+      });
+      assertExists(custom.syncService);
+      assertExists(custom.repoContext.markDirty);
+      await flushDatastoreSync();
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+});

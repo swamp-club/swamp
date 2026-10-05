@@ -113,7 +113,7 @@ export async function runCommandInRootUnit<T>(
     if (options.onCleanupError !== undefined) {
       options.onCleanupError(cleanup.error);
     } else if ("error" in outcome) {
-      logger.warn`Push after a failed command also failed: ${cleanup.error}`;
+      logger.warn`Failed to push changes to remote datastore: ${cleanup.error}`;
     } else {
       throw cleanup.error;
     }

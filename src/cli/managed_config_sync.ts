@@ -299,32 +299,13 @@ export async function pushManagedConfigPathsDeferred(
 }
 
 /**
- * Flushes per-model locks after a command that may have changed the config
- * tier; the flush is what pushes the change. When the mutation completed
- * under managedConfig, a failed flush throws
+ * Decides what a failed push or lock release means after a command that may
+ * have changed the config tier, run as cleanup of the command's root unit of
+ * work (swamp-club#3033). After a completed mutation under managedConfig the
+ * push is what publishes the change, so it throws
  * {@link ManagedConfigUnpublishedError}. Otherwise (the mutation never ran,
- * or an earlier error is already propagating) the failure only goes to
+ * or an earlier error is already propagating) the error goes to
  * `onCleanupError`, so it cannot replace that error.
- */
-export async function flushAfterManagedConfigMutation(
-  flush: () => Promise<void>,
-  mutated: boolean,
-  marker: RepoMarkerData | null,
-  onCleanupError: (error: unknown) => void,
-): Promise<void> {
-  try {
-    await flush();
-  } catch (error) {
-    reportManagedConfigCleanupError(error, mutated, marker, onCleanupError);
-  }
-}
-
-/**
- * The decision {@link flushAfterManagedConfigMutation} makes about a failed
- * flush, for a command whose push and lock release run as cleanup of a root
- * unit of work (swamp-club#3033): after a completed mutation under
- * managedConfig it throws {@link ManagedConfigUnpublishedError}; otherwise
- * the error goes to `onCleanupError`.
  */
 export function reportManagedConfigCleanupError(
   error: unknown,
