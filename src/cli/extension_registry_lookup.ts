@@ -35,5 +35,7 @@ export function createExtensionRegistryLookup(
   return {
     getExtension: (name) => client.getExtension(name, apiKey),
     searchExtensions: (params) => client.searchExtensions(params, apiKey),
+    getLatestVersionDetail: (name) =>
+      client.getLatestVersionDetail(name, apiKey),
   };
 }

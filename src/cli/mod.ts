@@ -981,6 +981,8 @@ export function configureExtensionAutoResolver(
         getExtension: (name) => extensionClient.getExtension(name, apiKey),
         searchExtensions: (params) =>
           extensionClient.searchExtensions(params, apiKey),
+        getLatestVersionDetail: (name) =>
+          extensionClient.getLatestVersionDetail(name, apiKey),
       },
       extensionInstaller: createAutoResolveInstallerAdapter({
         getExtension: (name) => extensionClient.getExtension(name, apiKey),

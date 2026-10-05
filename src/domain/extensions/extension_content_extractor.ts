@@ -814,9 +814,19 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
     );
     const description = descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "";
 
-    // Determine if optional
-    const required = !chain.includes(".optional()") &&
-      !chain.includes(".nullable()");
+    // A field is required unless its chain lets undefined through
+    // (optional, nullish) or replaces it (default, catch, prefault), or
+    // the field itself is written as z.optional(...) / z.nullish(...).
+    // nullable stays here for compatibility with what was published
+    // before, although Zod itself still rejects undefined for it.
+    const wrapperBase = baseType === "optional" || baseType === "nullish";
+    const required = !wrapperBase &&
+      !chain.includes(".optional()") &&
+      !chain.includes(".nullable()") &&
+      !chain.includes(".nullish()") &&
+      !chain.includes(".default(") &&
+      !chain.includes(".catch(") &&
+      !chain.includes(".prefault(");
 
     args.push({ name, type: baseType, description, required });
 

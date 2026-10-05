@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import { CalVer } from "../models/calver.ts";
 import { ModelType } from "../models/model_type.ts";
 import { type ModelDefinition, modelRegistry } from "../models/model.ts";
+import type { ExtensionContentMetadata } from "./extension_content.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
@@ -55,6 +56,14 @@ export interface ExtensionLookupPort {
     collective?: string;
     perPage?: number;
   }): Promise<{ extensions: ExtensionSearchResultEntry[] }>;
+  /**
+   * The content metadata the registry published for the extension's
+   * latest version, without installing it. Optional: a lookup without it
+   * simply cannot describe a type before install (swamp-club#3003).
+   */
+  getLatestVersionDetail?(
+    name: string,
+  ): Promise<{ contentMetadata: ExtensionContentMetadata | null } | null>;
 }
 
 /**
@@ -245,6 +254,41 @@ export class ExtensionAutoResolver {
   updateAllowedCollectives(collectives: string[]): void {
     this.config.allowedCollectives = collectives;
     this.warnedUntrusted.clear();
+  }
+
+  /**
+   * Describes a type from the registry's published content metadata
+   * without installing anything: the same candidate lookup `resolve`
+   * uses, then the latest version's metadata. Returns null whenever the
+   * answer is unknown — the collective is not trusted (so `resolve` would
+   * refuse it anyway), no extension provides the type, the lookup port
+   * cannot fetch version detail, or the request fails. Callers treat null
+   * as "check after install instead" (swamp-club#3003).
+   */
+  async describeTypeInRegistry(
+    normalizedType: string,
+  ): Promise<ExtensionContentMetadata | null> {
+    const lookup = this.config.extensionLookup;
+    if (!lookup.getLatestVersionDetail) return null;
+    const collective = this.extractCollective(normalizedType);
+    if (!collective || !this.config.allowedCollectives.includes(collective)) {
+      return null;
+    }
+    try {
+      const extensionName = await findExtensionForType(
+        normalizedType,
+        collective,
+        lookup,
+      );
+      if (!extensionName) return null;
+      const detail = await lookup.getLatestVersionDetail(extensionName);
+      return detail?.contentMetadata ?? null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger
+        .debug`Could not describe ${normalizedType} from the registry: ${message}`;
+      return null;
+    }
   }
 
   /**

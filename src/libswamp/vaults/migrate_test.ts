@@ -24,6 +24,8 @@ import {
   unreachable,
 } from "@std/assert";
 import { join } from "@std/path";
+import { z } from "zod";
+import type { VaultConfigField } from "../../domain/vaults/vault_config_fields.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
@@ -50,6 +52,8 @@ function makeDeps(
   const targetSecrets = new Map<string, string>();
   return {
     findVaultConfig: () => Promise.resolve(SOURCE_CONFIG),
+    isVaultTypeLoaded: () => Promise.resolve(true),
+    findRegistryConfigFields: () => Promise.resolve(null),
     resolveExtensionVaultType: () => Promise.resolve(),
     getVaultTypeInfo: (type) => {
       if (type === "mock" || type === "local_encryption") {
@@ -620,4 +624,187 @@ Deno.test("createVaultMigrateDeps: without an injected repository, uses the vaul
       SOURCE_CONFIG.id,
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Required config fields (swamp-club#3003)
+// ---------------------------------------------------------------------------
+
+const ONE_PASSWORD_SCHEMA = z.object({
+  op_vault: z.string().min(1).describe("The 1Password vault to use"),
+  op_account: z.string().optional().describe("Account shorthand or UUID"),
+}).strict();
+
+const ONE_PASSWORD_INFO = {
+  type: "@swamp/1password",
+  name: "1Password",
+  description: "1Password vault provider",
+  isBuiltIn: false,
+  configSchema: ONE_PASSWORD_SCHEMA,
+  createProvider: (name: string) => new MockVaultProvider(name),
+};
+
+const REGISTRY_FIELDS: VaultConfigField[] = [
+  {
+    name: "op_vault",
+    type: "string",
+    description: "The 1Password vault to use",
+    required: true,
+  },
+  { name: "op_account", type: "string", required: false },
+];
+
+/** Deps for a 1Password target that is installed only once resolved. */
+function makeOnePasswordDeps(
+  options: {
+    registryFields?: VaultConfigField[] | null;
+    loaded?: boolean;
+  } = {},
+) {
+  let loaded = options.loaded ?? false;
+  const resolved: string[] = [];
+  const deps = makeDeps({
+    isVaultTypeLoaded: () => Promise.resolve(loaded),
+    findRegistryConfigFields: () =>
+      Promise.resolve(options.registryFields ?? null),
+    resolveExtensionVaultType: (type) => {
+      resolved.push(type);
+      loaded = true;
+      return Promise.resolve();
+    },
+    getVaultTypeInfo: (type) =>
+      type === "@swamp/1password"
+        ? ONE_PASSWORD_INFO
+        : type === "mock"
+        ? { type, name: "Mock", description: "mock vault", isBuiltIn: true }
+        : undefined,
+  });
+  return { deps, resolved };
+}
+
+Deno.test("vaultMigratePreview: the registry's field list never refuses a config the installed schema accepts", async () => {
+  // Published metadata that still calls a defaulted field required.
+  const { deps, resolved } = makeOnePasswordDeps({
+    registryFields: [
+      { name: "op_vault", type: "string", required: true },
+      { name: "op_account", type: "string", required: true },
+    ],
+  });
+
+  const preview = await vaultMigratePreview(createLibSwampContext(), deps, {
+    vaultName: "my-vault",
+    targetType: "@swamp/1password",
+    targetConfig: { op_vault: "Private" },
+    repoDir: "/repo",
+  });
+
+  assertEquals(preview.targetTypeName, "1Password");
+  assertEquals(resolved, ["@swamp/1password"]);
+});
+
+Deno.test("vaultMigrate: a missing required field is named by the installed schema, with the supplied config kept in the hint", async () => {
+  const { deps, resolved } = makeOnePasswordDeps({
+    registryFields: REGISTRY_FIELDS,
+  });
+
+  const error = await assertRejects(() =>
+    collect<VaultMigrateEvent>(
+      vaultMigrate(createLibSwampContext(), deps, {
+        vaultName: "my-vault",
+        targetType: "@swamp/1password",
+        targetConfig: { op_account: "me" },
+        repoDir: "/repo",
+      }),
+    )
+  ) as { code: string; message: string };
+
+  assertEquals(resolved, ["@swamp/1password"]);
+  assertEquals(error.code, "validation_failed");
+  assertEquals(
+    error.message,
+    "Invalid config for vault type '@swamp/1password': missing required field " +
+      "'op_vault' (The 1Password vault to use). Re-run with: swamp vault migrate " +
+      "my-vault --to-type @swamp/1password --config " +
+      '\'{"op_account":"me","op_vault":"<op_vault>"}\'',
+  );
+});
+
+Deno.test("vaultMigratePreview: a complete config installs the target type and passes its schema", async () => {
+  const { deps, resolved } = makeOnePasswordDeps({
+    registryFields: REGISTRY_FIELDS,
+  });
+
+  const preview = await vaultMigratePreview(createLibSwampContext(), deps, {
+    vaultName: "my-vault",
+    targetType: "@swamp/1password",
+    targetConfig: { op_vault: "Private" },
+    repoDir: "/repo",
+  });
+
+  assertEquals(preview.targetTypeName, "1Password");
+  assertEquals(resolved, ["@swamp/1password"]);
+});
+
+Deno.test("vaultMigratePreview: without registry metadata the type is installed and its schema names the missing field", async () => {
+  const { deps, resolved } = makeOnePasswordDeps({ registryFields: null });
+
+  const error = await assertRejects(() =>
+    vaultMigratePreview(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "@swamp/1password",
+      repoDir: "/repo",
+    })
+  ) as { code: string; message: string };
+
+  assertEquals(resolved, ["@swamp/1password"]);
+  assertEquals(error.code, "validation_failed");
+  assertEquals(
+    error.message,
+    "Invalid config for vault type '@swamp/1password': missing required field " +
+      "'op_vault' (The 1Password vault to use). Re-run with: swamp vault migrate " +
+      'my-vault --to-type @swamp/1password --config \'{"op_vault":"<op_vault>"}\'',
+  );
+});
+
+Deno.test("vaultMigratePreview: a loaded target type is checked against its schema, not the registry", async () => {
+  let registryAsked = 0;
+  const { deps } = makeOnePasswordDeps({ loaded: true });
+  deps.findRegistryConfigFields = () => {
+    registryAsked++;
+    return Promise.resolve(REGISTRY_FIELDS);
+  };
+
+  const error = await assertRejects(() =>
+    vaultMigratePreview(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "@swamp/1password",
+      targetConfig: { op_vault: "Private", vault: "typo" },
+      repoDir: "/repo",
+    })
+  ) as { message: string };
+
+  assertEquals(registryAsked, 0);
+  assertStringIncludes(
+    error.message,
+    "unknown field 'vault'; accepted fields: op_vault, op_account",
+  );
+  assertStringIncludes(error.message, "Re-run with a corrected --config.");
+});
+
+Deno.test("vaultMigratePreview: the re-run hint stays pasteable when a supplied value has a single quote", async () => {
+  const { deps } = makeOnePasswordDeps({ registryFields: null });
+
+  const error = await assertRejects(() =>
+    vaultMigratePreview(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "@swamp/1password",
+      targetConfig: { op_account: "o'brien" },
+      repoDir: "/repo",
+    })
+  ) as { message: string };
+
+  assertStringIncludes(
+    error.message,
+    `--config '{"op_account":"o'\\''brien","op_vault":"<op_vault>"}'`,
+  );
 });

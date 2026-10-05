@@ -841,6 +841,15 @@ export {
   type VaultMigratePreview,
   vaultMigratePreview,
 } from "./vaults/migrate.ts";
+export {
+  describeVaultTargetConfig,
+  type VaultTypeConfigDeps,
+} from "./vaults/config_fields.ts";
+export {
+  findMissingRequiredFields,
+  isSecretLikeFieldName,
+  type VaultConfigField,
+} from "../domain/vaults/vault_config_fields.ts";
 
 // Extension search operations
 export {

@@ -58,6 +58,17 @@ import {
 } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  describeVaultConfigFields,
+  explainVaultConfigIssues,
+  type RerunHint,
+} from "../../domain/vaults/vault_config_fields.ts";
+
+/** vault edit has no --config: the fix goes into the definition itself. */
+const EDIT_RERUN_HINT: RerunHint = (_example, missing) =>
+  missing.length > 0
+    ? "Add the missing field(s) under config in the vault definition and save again."
+    : "Fix the config in the vault definition and save again.";
 /** Minimal vault config shape needed by the generator. */
 export interface VaultEditConfigInfo {
   id: string;
@@ -365,7 +376,13 @@ async function* updateVaultFromStdin(
       yield {
         kind: "error",
         error: validationFailed(
-          `Invalid config for vault type '${updated.type}': ${result.error.message}`,
+          explainVaultConfigIssues({
+            vaultType: updated.type,
+            config: updated.config,
+            issues: result.error.issues,
+            fields: describeVaultConfigFields(schema),
+            rerunHint: EDIT_RERUN_HINT,
+          }),
         ),
       };
       return;
@@ -559,7 +576,13 @@ async function* repairVaultFromStdin(
       yield {
         kind: "error",
         error: validationFailed(
-          `Invalid config for vault type '${repaired.type}': ${result.error.message}`,
+          explainVaultConfigIssues({
+            vaultType: repaired.type,
+            config: repaired.config,
+            issues: result.error.issues,
+            fields: describeVaultConfigFields(schema),
+            rerunHint: EDIT_RERUN_HINT,
+          }),
         ),
       };
       return;

@@ -36,6 +36,16 @@ import {
   VAULT_NAME_RULE,
 } from "../../domain/vaults/vault_name.ts";
 import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
+import {
+  describeVaultConfigFields,
+  explainVaultConfigIssues,
+  type RerunHint,
+  shellSingleQuote,
+} from "../../domain/vaults/vault_config_fields.ts";
+import {
+  createRegistryConfigFieldsLookup,
+  type RegistryConfigFieldsLookup,
+} from "./config_fields.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -78,6 +88,14 @@ export interface VaultCreateInput {
 
 /** Dependencies for the vault create operation. */
 export interface VaultCreateDeps {
+  /** Loads a lazily-indexed type if needed and says whether it is known. */
+  isVaultTypeLoaded: (type: string) => Promise<boolean>;
+  /**
+   * The config fields the registry publishes for an extension type that is
+   * not installed yet, so the CLI can ask for the missing ones before the
+   * install (swamp-club#3003).
+   */
+  findRegistryConfigFields: RegistryConfigFieldsLookup;
   resolveExtensionVaultType: (type: string) => Promise<void>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   findByName: (name: string) => Promise<boolean>;
@@ -96,6 +114,13 @@ export async function createVaultCreateDeps(
   await vaultTypeRegistry.ensureLoaded();
   const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   return {
+    isVaultTypeLoaded: async (type) => {
+      await vaultTypeRegistry.ensureTypeLoaded(type);
+      return vaultTypeRegistry.has(type);
+    },
+    findRegistryConfigFields: createRegistryConfigFieldsLookup(
+      getAutoResolver(),
+    ),
     resolveExtensionVaultType: async (type) => {
       await vaultTypeRegistry.ensureTypeLoaded(type);
       if (!vaultTypeRegistry.has(type) && type.startsWith("@")) {
@@ -128,6 +153,16 @@ function resolveBuiltInProviderConfig(
   return {};
 }
 
+/** How to try the creation again once the config is complete. */
+function createRerunHint(vaultType: string, name: string): RerunHint {
+  return (example, missing) =>
+    missing.length > 0
+      ? `Re-run with: swamp vault create ${vaultType} ${name} --config ${
+        shellSingleQuote(example)
+      }`
+      : "Re-run with a corrected --config.";
+}
+
 /** Creates a new vault configuration. */
 export async function* vaultCreate(
   ctx: LibSwampContext,
@@ -142,6 +177,8 @@ export async function* vaultCreate(
 
       ctx.logger
         .debug`Creating vault: type=${input.vaultType}, name=${input.name}`;
+
+      const rerunHint = createRerunHint(input.vaultType, input.name);
 
       // Auto-resolve extension vault types if not already registered
       await deps.resolveExtensionVaultType(input.vaultType);
@@ -204,7 +241,13 @@ export async function* vaultCreate(
             yield {
               kind: "error",
               error: validationFailed(
-                `Invalid config for vault type '${input.vaultType}': ${result.error.message}`,
+                explainVaultConfigIssues({
+                  vaultType: input.vaultType,
+                  config: providerConfig,
+                  issues: result.error.issues,
+                  fields: describeVaultConfigFields(typeInfo.configSchema),
+                  rerunHint,
+                }),
               ),
             };
             return;
