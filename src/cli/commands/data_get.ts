@@ -67,8 +67,8 @@ export const dataGetCommand = withRemoteOptions(
       "swamp data get my-server system-info --version 2",
     )
     .example(
-      "Get workflow data",
-      "swamp data get --workflow deploy --run latest",
+      "Get workflow data from the latest run",
+      "swamp data get --workflow deploy <data-name>",
     )
     .example(
       "Metadata only",

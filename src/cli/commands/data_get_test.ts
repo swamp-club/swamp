@@ -38,6 +38,16 @@ Deno.test("dataGetCommand: description marks it deprecated in favor of data quer
   assertStringIncludes(description, "swamp data query");
 });
 
+Deno.test("dataGetCommand: workflow example names the data and reads the latest run without --run", async () => {
+  const { dataGetCommand } = await import("./data_get.ts");
+  const workflowExamples = dataGetCommand.getExamples().filter((e) =>
+    e.description.includes("--workflow")
+  );
+  assertEquals(workflowExamples.map((e) => e.description), [
+    "swamp data get --workflow deploy <data-name>",
+  ]);
+});
+
 Deno.test("dataGetCommand is registered as subcommand of dataCommand", async () => {
   const { dataCommand } = await import("./data.ts");
   const commands = dataCommand.getCommands();
