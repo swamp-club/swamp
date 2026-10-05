@@ -64,6 +64,8 @@ async function editedVaultYaml(repos: RowRepos): Promise<string> {
 function vaultCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault create${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -82,6 +84,8 @@ function vaultCreateRow(managedConfig: boolean): AnyRow {
 function vaultEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault edit${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -109,6 +113,8 @@ function vaultMigrateRow(
 ): AnyRow {
   return row({
     name: `vault migrate${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.

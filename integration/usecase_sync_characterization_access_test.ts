@@ -145,6 +145,8 @@ async function managedConfigMarked(repos: RowRepos): Promise<boolean> {
 const ROWS: AnyRow[] = [
   row({
     name: "access grant create",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // access_grant.ts accessGrantCreateCommand in PINNED_MARK_CALL_SITES.
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -169,6 +171,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access grant revoke",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: createGrant,
     cli: (repos, grantId) => ({
       args: ["access", "grant", "revoke", grantId, ...json(repos)],
@@ -179,6 +183,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access group create",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // access_group.ts runGroupMethod in PINNED_MARK_CALL_SITES.
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -191,6 +197,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token mint",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // access_token_mint.ts accessTokenMintCommand in PINNED_MARK_CALL_SITES.
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -218,6 +226,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token revoke",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       await runCli({
         args: [
@@ -237,7 +247,32 @@ const ROWS: AnyRow[] = [
     serve: () => ({ type: "access.token.revoke", payload: { name: "tok1" } }),
   }),
   row({
+    name: "access token rotate",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
+    seed: async (repos) => {
+      await runCli({
+        args: [
+          "access",
+          "token",
+          "mint",
+          "tok1",
+          "--principal",
+          "user:adam",
+          ...json(repos),
+        ],
+      });
+    },
+    cli: (repos) => ({
+      args: ["access", "token", "rotate", "tok1", ...json(repos)],
+    }),
+    // The serve side of this use case belongs to swamp-club#3034.
+    serve: null,
+  }),
+  row({
     name: "worker token create",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // worker_token_create.ts workerTokenCreateCommand in
     // PINNED_MARK_CALL_SITES.
@@ -261,6 +296,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token revoke",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "push", "prepare", "commit", "release"] },
     // CLI bulk mark before the push, outside any use case:
     // worker_token_revoke.ts workerTokenRevokeCommand in
     // PINNED_MARK_CALL_SITES.
@@ -285,6 +322,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker prune",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // worker_prune.ts workerPruneCommand in PINNED_MARK_CALL_SITES.
     outsideUseCase: { cli: ["markDirty(bulk)"] },
@@ -306,6 +345,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "datastore config migrate",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["push"] },
     // CLI bulk mark before the push, outside any use case:
     // datastore_config_migrate.ts datastoreConfigMigrateCommand in
     // PINNED_MARK_CALL_SITES.
@@ -350,6 +391,38 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "access token rotate": {
+    cli: {
+      "ops": [
+        "pull[0]",
+        "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
+        "markDirty data/swamp/server-token/<id>/token-main",
+        "markDirty outputs/swamp/server-token/rotate/<id>-<time>.yaml",
+        "markDirty data/swamp/server-token/<id>/report-swamp-method-summary",
+        "markDirty data/swamp/server-token/<id>/report-swamp-method-summary-json",
+        "prepare[10]",
+        "commit[10]",
+      ],
+      "remote": {
+        "added": [
+          "data/swamp/server-token/<id>/report-swamp-method-summary-json/2/metadata.yaml",
+          "data/swamp/server-token/<id>/report-swamp-method-summary-json/2/raw",
+          "data/swamp/server-token/<id>/report-swamp-method-summary/2/metadata.yaml",
+          "data/swamp/server-token/<id>/report-swamp-method-summary/2/raw",
+          "data/swamp/server-token/<id>/token-main/2/metadata.yaml",
+          "data/swamp/server-token/<id>/token-main/2/raw",
+          "outputs/swamp/server-token/rotate/<id>-<time>.yaml",
+        ],
+        "removed": [],
+        "changed": [
+          "data/swamp/server-token/<id>/report-swamp-method-summary-json/latest",
+          "data/swamp/server-token/<id>/report-swamp-method-summary/latest",
+          "data/swamp/server-token/<id>/token-main/latest",
+        ],
+      },
+    },
+    serve: null,
+  },
   "access grant create": {
     // A first create has no definition to lock, so the command adds a bare
     // markDirty after the method's path marks and pushes the whole cache.

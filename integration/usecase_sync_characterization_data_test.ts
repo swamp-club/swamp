@@ -70,6 +70,8 @@ async function saveVersions(
 const ROWS: AnyRow[] = [
   row({
     name: "data delete",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       const model = await saveModel(repos.serveRepo, "m1");
       await saveData(repos.serveRepo, model, "state");
@@ -84,6 +86,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data rename",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       const model = await saveModel(repos.serveRepo, "m1");
       await saveData(repos.serveRepo, model, "state");

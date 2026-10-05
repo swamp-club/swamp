@@ -41,6 +41,7 @@ import {
   type PinnedRow,
   row,
   type RowRepos,
+  runCli,
 } from "./usecase_sync_fixtures.ts";
 
 await initializeLogging({});
@@ -114,6 +115,8 @@ async function suspendAtGate(
 function modelCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model create${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -147,6 +150,8 @@ function modelCreateRow(managedConfig: boolean): AnyRow {
 function modelEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model edit${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -174,6 +179,8 @@ function modelEditRow(managedConfig: boolean): AnyRow {
 function workflowCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow create${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -191,6 +198,8 @@ function workflowCreateRow(managedConfig: boolean): AnyRow {
 function workflowEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow edit${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
     // With managedConfig the CLI pushes config through a bulk mark after the
     // use case: managed_config_sync.ts pushManagedConfigChanges /
     // pushManagedConfigPaths in PINNED_MARK_CALL_SITES.
@@ -220,6 +229,8 @@ const seedModelAndWorkflow = async (repos: RowRepos) => {
 function modelDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model delete${managedConfig ? " (managedConfig)" : ""}`,
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     options: { managedConfig },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
@@ -269,6 +280,8 @@ const ROWS: AnyRow[] = [
   modelDeleteRow(true),
   row({
     name: "model evaluate",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
     },
@@ -294,6 +307,8 @@ const ROWS: AnyRow[] = [
   workflowDeleteRow(true),
   row({
     name: "workflow evaluate",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
       args: ["workflow", "evaluate", "wf1", ...json(repos)],
@@ -310,6 +325,64 @@ const ROWS: AnyRow[] = [
       args: ["workflow", "evaluate", "--all", ...json(repos)],
     }),
     serve: () => ({ type: "workflow.evaluate", payload: {} }),
+  }),
+  row({
+    name: "model method run",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: [] },
+    seed: async (repos) => {
+      await saveModel(repos.serveRepo, "m1");
+    },
+    cli: (repos) => ({
+      args: ["model", "method", "run", "m1", "noop", ...json(repos)],
+    }),
+    // The serve side of this use case belongs to swamp-club#3034.
+    serve: null,
+  }),
+  row({
+    name: "workflow run",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["pull", "prepare", "commit", "release", "push"] },
+    seed: seedModelAndWorkflow,
+    cli: (repos) => ({ args: ["workflow", "run", "wf1", ...json(repos)] }),
+    // The serve side of this use case belongs to swamp-club#3034.
+    serve: null,
+  }),
+  row({
+    name: "workflow resume",
+    // Recorded before the CLI adopted a root unit (swamp-club#3033).
+    syncOrder: { cli: ["release", "push"] },
+    // workflow_resume.ts drives WorkflowExecutionService directly, not
+    // through a libswamp use case, so no use-case unit stages these marks.
+    outsideUseCase: {
+      cli: [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
+    },
+    seed: async (repos, composition) => {
+      const run = await suspendAtGate(repos, composition);
+      await runCli({
+        args: [
+          "workflow",
+          "approve",
+          run.workflowName,
+          "gate",
+          "--run",
+          run.runId,
+          ...json(repos),
+        ],
+      });
+      return run;
+    },
+    cli: (repos, run: SuspendedRun) => ({
+      args: ["workflow", "resume", run.workflowName, ...json(repos)],
+    }),
+    // The serve side of this use case belongs to swamp-club#3034.
+    serve: null,
   }),
   row({
     name: "workflow approve",
@@ -394,6 +467,97 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "model method run": {
+    cli: {
+      "ops": [
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+      ],
+      "remote": {
+        "added": [],
+        "removed": [],
+        "changed": [],
+      },
+    },
+    serve: null,
+  },
+  "workflow run": {
+    cli: {
+      "ops": [
+        "markDirty workflows-evaluated/workflow-wf1.yaml",
+        "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "pull[0]",
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+        "prepare[11]",
+        "commit[11]",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[7]",
+      ],
+      "remote": {
+        "added": [
+          "data/<type>/<id>/report-swamp-method-summary-json/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary-json/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary-json/latest",
+          "data/<type>/<id>/report-swamp-method-summary/1/metadata.yaml",
+          "data/<type>/<id>/report-swamp-method-summary/1/raw",
+          "data/<type>/<id>/report-swamp-method-summary/latest",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/latest",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary/latest",
+          "definitions-evaluated/<type>/m1.yaml",
+          "outputs/<type>/noop/<id>-<time>.yaml",
+          "workflow-runs/<id>/workflow-run-<id>.yaml",
+          "workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+          "workflows-evaluated/workflow-wf1.yaml",
+        ],
+        "removed": [],
+        "changed": [],
+      },
+    },
+    serve: null,
+  },
+  "workflow resume": {
+    cli: {
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[7]",
+      ],
+      "remote": {
+        "added": [
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary-json/latest",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/metadata.yaml",
+          "data/workflow/<id>/report-swamp-workflow-summary/1/raw",
+          "data/workflow/<id>/report-swamp-workflow-summary/latest",
+        ],
+        "removed": [],
+        "changed": [
+          "workflow-runs/<id>/workflow-run-<id>.yaml",
+        ],
+      },
+    },
+    serve: null,
+  },
   "model create": {
     // Without managedConfig, definitions are repo-local: nothing is marked or
     // pushed.
