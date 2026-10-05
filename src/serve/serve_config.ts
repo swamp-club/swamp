@@ -36,7 +36,7 @@ import {
 import type { VerifierConfig } from "./webhook_verifiers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
-import { validateSinkFilter } from "../domain/serve_audit/sink_filter.ts";
+import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
 
 /**
  * A UserError about the serve config file at `path`, with the path marked so

@@ -153,6 +153,13 @@ Deno.test("validateSinkFilter: no problems for an absent or valid filter", () =>
     [],
   );
   assertEquals(validateSinkFilter({ filter: { tier: "all" } }), []);
+  // An empty YAML value reads as null, which parseSinkFilter treats as unset.
+  assertEquals(
+    validateSinkFilter({
+      filter: { tier: null, categories: null, outcomes: null },
+    }),
+    [],
+  );
 });
 
 Deno.test("validateSinkFilter: a filter that is not a mapping is one problem", () => {
@@ -185,5 +192,5 @@ Deno.test("validateSinkFilter: reports unknown keys, a bad tier and bad list val
 Deno.test("validateSinkFilter: parseSinkFilter still reads a bad filter as written", () => {
   const raw = { filter: { tier: "managment" } };
   assertEquals(validateSinkFilter(raw).length, 1);
-  assertEquals(parseSinkFilter(raw).tier, "managment" as never);
+  assertEquals(String(parseSinkFilter(raw).tier), "managment");
 });

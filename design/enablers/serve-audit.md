@@ -82,7 +82,9 @@ other sink:
   rejects them until restart. With `fail-open: true` nothing is rejected. At
   shutdown a stalled write gets up to the sink timeout to settle; if it does
   not, the events after it are written on their own so they reach the WAL,
-  and a warning names the sequence the stalled write ends at.
+  and a warning names the sequence the stalled write ends at. That last write
+  is the one time a sink has two writes open; WalSink appends each write to
+  its own segment file, so they do not collide.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink

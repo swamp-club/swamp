@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -1032,4 +1033,36 @@ Deno.test("AuditEmitter: sink timeout prevents drain loop blocking", async () =>
   emitter.emit(makeEvent("test"));
   await emitter.flush();
   await emitter.close();
+});
+
+Deno.test("AuditEmitter: the shared-name warning is logged once per set of shared names", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const shared = () =>
+      captured.filter((r) => r.properties.later !== undefined).length;
+    const durableSink = createMockSink("durable");
+    const pair = () => [
+      createMockSink("webhook:siem.example.com", false),
+      createMockSink("webhook:siem.example.com", false),
+    ];
+    const emitter = new AuditEmitter([durableSink, ...pair()]);
+    assertEquals(shared(), 1);
+    emitter.replaceSinks([durableSink, ...pair()]);
+    assertEquals(shared(), 1);
+    emitter.replaceSinks([durableSink, createMockSink("syslog:a:514", false)]);
+    emitter.replaceSinks([durableSink, ...pair()]);
+    assertEquals(shared(), 2);
+    await emitter.close();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
 });

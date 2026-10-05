@@ -85,7 +85,10 @@ interface SinkDelivery {
  * them (`webhook:siem.example.com#2`). Keys follow sink order, so hot-reload
  * hands each sink's cursor to its replacement.
  */
-function deliveryKeys(sinks: readonly AuditSink[]): Map<AuditSink, string> {
+function deliveryKeys(sinks: readonly AuditSink[]): {
+  keys: Map<AuditSink, string>;
+  shared: Map<string, number>;
+} {
   const keys = new Map<AuditSink, string>();
   const seen = new Map<string, number>();
   for (const sink of sinks) {
@@ -93,20 +96,15 @@ function deliveryKeys(sinks: readonly AuditSink[]): Map<AuditSink, string> {
     seen.set(sink.name, count);
     keys.set(sink, count === 1 ? sink.name : `${sink.name}#${count}`);
   }
-  for (const [name, count] of seen) {
-    if (count < 2) continue;
-    logger.warn(
-      "{count} audit sinks share the name {sink}; the later ones are reported as {later} onwards, and delivery state follows their order, so removing or reordering them on hot-reload moves it",
-      { count, sink: name, later: `${name}#2` },
-    );
-  }
-  return keys;
+  const shared = new Map([...seen].filter(([, count]) => count > 1));
+  return { keys, shared };
 }
 
 export class AuditEmitter {
   readonly #buffer: RingBuffer<AuditEvent>;
   #sinks: AuditSink[];
   #keys: Map<AuditSink, string> = new Map();
+  #sharedNames = "";
   readonly #cursors: Map<string, number> = new Map();
   readonly #deniedRequests = new Set<string>();
   readonly #chainState: AuditChainState;
@@ -165,7 +163,7 @@ export class AuditEmitter {
         DEFAULT_DURABLE_RETRY_MS;
       this.#now = sinksOrOptions.now ?? (() => Date.now());
     }
-    this.#keys = deliveryKeys(this.#sinks);
+    this.#assignDeliveryKeys();
     for (const key of this.#keys.values()) {
       this.#cursors.set(key, 0);
     }
@@ -209,7 +207,7 @@ export class AuditEmitter {
   replaceSinks(newSinks: AuditSink[]): void {
     const oldKeys = new Set(this.#keys.values());
     this.#sinks = newSinks;
-    this.#keys = deliveryKeys(newSinks);
+    this.#assignDeliveryKeys();
     for (const [sink, delivery] of this.#deliveries) {
       if (newSinks.includes(sink)) continue;
       if (delivery.timer !== null) clearTimeout(delivery.timer);
@@ -341,6 +339,24 @@ export class AuditEmitter {
       "Audit sink {sink} fell behind the audit buffer, {count} event(s) dropped for this sink",
       { sink: key, count },
     );
+  }
+
+  /**
+   * Keys the current sinks, warning when sinks share a name — once per set of
+   * shared names, so a reload that changes nothing does not repeat it.
+   */
+  #assignDeliveryKeys(): void {
+    const { keys, shared } = deliveryKeys(this.#sinks);
+    this.#keys = keys;
+    const signature = JSON.stringify([...shared]);
+    if (signature === this.#sharedNames) return;
+    this.#sharedNames = signature;
+    for (const [name, count] of shared) {
+      logger.warn(
+        "{count} audit sinks share the name {sink}; the later ones are reported as {later} onwards, and delivery state follows their order, so removing or reordering them on hot-reload moves it",
+        { count, sink: name, later: `${name}#2` },
+      );
+    }
   }
 
   /** The delivery key of a current sink; a sink hot-reload removed has none. */
@@ -840,6 +856,9 @@ export class AuditEmitter {
       }
       const key = this.#keyOf(sink) ?? sink.name;
       if (events.length > 0) {
+        // The one exception to one write at a time: the stalled call is still
+        // open. WalSink appends each write to its own segment file, so the
+        // later events still reach the WAL.
         try {
           await this.#withSinkTimeout(sink, sink.write(events));
         } catch (error: unknown) {
@@ -858,7 +877,19 @@ export class AuditEmitter {
         { sink: key, seq: delivery.inFlightThroughSeq },
       );
     }
-    if (settledLate) await this.flush();
+    if (!settledLate) return;
+    await this.flush();
+    for (const sink of stalled) {
+      const delivery = this.#deliveries.get(sink);
+      if (delivery?.stuckSince === null || delivery === undefined) continue;
+      logger.warn(
+        "Audit sink {sink} still had a durable write outstanding at shutdown; events through sequence {seq} are not confirmed stored",
+        {
+          sink: this.#keyOf(sink) ?? sink.name,
+          seq: delivery.inFlightThroughSeq,
+        },
+      );
+    }
   }
 
   /** Whether a promise that never rejects settles within the given time. */

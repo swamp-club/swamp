@@ -82,7 +82,7 @@ function addListProblems(
   field: string,
   allowed: readonly string[],
 ): void {
-  if (value === undefined) return;
+  if (value === undefined || value === null) return;
   if (!Array.isArray(value)) {
     problems.push(`${field} must be a list, got ${JSON.stringify(value)}`);
     return;
@@ -124,7 +124,7 @@ export function validateSinkFilter(raw: Record<string, unknown>): string[] {
     AUDIT_CATEGORIES,
   );
   if (
-    block.tier !== undefined &&
+    block.tier !== undefined && block.tier !== null &&
     (typeof block.tier !== "string" || !FILTER_TIERS.includes(block.tier))
   ) {
     problems.push(
