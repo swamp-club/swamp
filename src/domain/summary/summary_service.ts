@@ -253,19 +253,10 @@ export class SummaryService {
         group.failed++;
       }
 
-      // Find first failed step for failed runs
-      let firstFailedStep: string | undefined;
-      if (run.status === "failed") {
-        for (const job of run.jobs) {
-          for (const step of job.steps) {
-            if (step.status === "failed") {
-              firstFailedStep = step.stepName;
-              break;
-            }
-          }
-          if (firstFailedStep) break;
-        }
-      }
+      // The step a failed run reports as failed
+      const firstFailedStep = run.status === "failed"
+        ? run.failureInfo().failedStep
+        : undefined;
 
       // Build step summaries
       const stepModels = workflowStepModels.get(workflowId) ??

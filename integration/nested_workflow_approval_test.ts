@@ -350,7 +350,12 @@ Deno.test("nested approval: rejecting the child fails the parent's step as a rej
     const rejected = await completed<WorkflowRejectData>(
       workflowReject(
         createLibSwampContext(),
-        createWorkflowRejectDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+        createWorkflowRejectDeps(
+          h.workflowRepo,
+          h.runRepo,
+          unclaimedRuns,
+          () => Promise.resolve(null),
+        ),
         {
           workflowIdOrName: child.name,
           stepName: "gate",

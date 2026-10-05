@@ -25,7 +25,11 @@ import {
   type WorkflowApproveDeps,
   type WorkflowApproveEvent,
 } from "./approve.ts";
-import { workflowReject, type WorkflowRejectEvent } from "./reject.ts";
+import {
+  workflowReject,
+  type WorkflowRejectDeps,
+  type WorkflowRejectEvent,
+} from "./reject.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -36,6 +40,11 @@ import {
   unclaimedRuns,
   type WorkflowRunClaims,
 } from "../../domain/workflows/run_claim.ts";
+
+/** The approve deps, with no evaluated snapshot to settle a reject against. */
+function rejectDeps(deps: WorkflowApproveDeps): WorkflowRejectDeps {
+  return { ...deps, findEvaluatedWorkflow: () => Promise.resolve(null) };
+}
 
 function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
   return Workflow.create({
@@ -365,7 +374,7 @@ Deno.test("workflowApprove: a run failed by a rejected parallel gate names --fro
   run.suspend();
   const deps = makeDeps(workflow, run);
   const rejected = await collect<WorkflowRejectEvent>(
-    workflowReject(createLibSwampContext(), deps, {
+    workflowReject(createLibSwampContext(), rejectDeps(deps), {
       workflowIdOrName: "gated",
       stepName: "side-gate",
       runId: run.id,
@@ -373,7 +382,8 @@ Deno.test("workflowApprove: a run failed by a rejected parallel gate names --fro
     }),
   );
   assertEquals(rejected.at(-1)?.kind, "completed");
-  assertEquals(run.getJob("main")!.steps[0].status, "waiting_approval");
+  // The reject settled the other gate, so nothing is left to approve.
+  assertEquals(run.getJob("main")!.steps[0].status, "failed");
 
   const last = await approve(deps, "main-gate");
 
@@ -493,7 +503,7 @@ Deno.test("workflowReject: refuses a run cancelled before the claim was taken, a
   );
 
   const events = await collect<WorkflowRejectEvent>(
-    workflowReject(createLibSwampContext(), deps, {
+    workflowReject(createLibSwampContext(), rejectDeps(deps), {
       workflowIdOrName: "gated",
       stepName: "gate",
       decidedBy: "approver",
@@ -519,7 +529,7 @@ Deno.test("workflowReject: reads the run and saves the decision under the run's 
   const { deps, stored, saves, claimed } = makeStoredRunDeps(workflow, run);
 
   const events = await collect<WorkflowRejectEvent>(
-    workflowReject(createLibSwampContext(), deps, {
+    workflowReject(createLibSwampContext(), rejectDeps(deps), {
       workflowIdOrName: "gated",
       stepName: "gate",
       decidedBy: "approver",

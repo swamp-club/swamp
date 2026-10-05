@@ -1983,7 +1983,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       data.references = { ...this._references };
     }
 
-    const { failedStep, failureReason } = this.computeFailureInfo();
+    const { failedStep, failureReason } = this.failureInfo();
     if (failedStep !== undefined) {
       data.failedStep = failedStep;
     }
@@ -2020,26 +2020,41 @@ export class WorkflowRun implements TriggerEvaluationContext {
       this.findNestedWaits().length === 0;
   }
 
-  private computeFailureInfo(): {
+  /**
+   * The step the run reports as failed, and its error: the first failed
+   * step in stored order whose failure was not allowed. A step the run's end
+   * settled without running it (a sibling gate of a rejected one, a step its
+   * abort never started) reports the run's end, not why it ended, so it is
+   * named only when no other step failed.
+   */
+  failureInfo(): {
     failedStep: string | undefined;
     failureReason: string | undefined;
   } {
+    let settled: StepRun | undefined;
     for (const job of this._jobs) {
       for (const step of job.steps) {
         // A step detached when the run ended reports the run's end, not why
         // it ended.
         if (
-          step.status === "failed" && !step.allowedFailure &&
-          !step.detachedNestedRun
+          step.status !== "failed" || step.allowedFailure ||
+          step.detachedNestedRun
         ) {
+          continue;
+        }
+        if (!step.settledByAbort) {
           return {
             failedStep: step.stepName,
             failureReason: step.error,
           };
         }
+        settled ??= step;
       }
     }
-    return { failedStep: undefined, failureReason: undefined };
+    return {
+      failedStep: settled?.stepName,
+      failureReason: settled?.error,
+    };
   }
 
   private computeStepProgress():

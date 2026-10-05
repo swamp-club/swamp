@@ -93,6 +93,7 @@ Deno.test("createWorkflowGateService: approve returns richer result with correct
     workflowRepo,
     runRepo,
     unclaimedRuns,
+    () => Promise.resolve(null),
   );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "approval-step" },
@@ -119,6 +120,7 @@ Deno.test("createWorkflowGateService: reject returns richer result with approved
     workflowRepo,
     runRepo,
     unclaimedRuns,
+    () => Promise.resolve(null),
   );
   const result = await service.reject(
     {
@@ -149,6 +151,7 @@ Deno.test("createWorkflowGateService: approve auto-populates decidedBy from call
     workflowRepo,
     runRepo,
     unclaimedRuns,
+    () => Promise.resolve(null),
   );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "approval-step" },
@@ -178,6 +181,7 @@ Deno.test("createWorkflowGateService: approve returns error for non-existent wor
     workflowRepo,
     runRepo,
     unclaimedRuns,
+    () => Promise.resolve(null),
   );
   const result = await service.approve(
     { workflowIdOrName: "nonexistent", stepName: "any-step" },
@@ -201,6 +205,7 @@ Deno.test("createWorkflowGateService: approve returns error for wrong step name"
     workflowRepo,
     runRepo,
     unclaimedRuns,
+    () => Promise.resolve(null),
   );
   const result = await service.approve(
     { workflowIdOrName: "test-gate-workflow", stepName: "wrong-step" },

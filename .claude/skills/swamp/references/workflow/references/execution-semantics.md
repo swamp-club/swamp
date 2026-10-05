@@ -179,6 +179,11 @@ does: waiting gates and pending steps fail with error `cancelled` (or are
 skipped when their `dependsOn` is unmet), so `history get` shows failed jobs
 under a `cancelled` run. A guarded step that never ran stays `pending`.
 
+`swamp workflow reject` settles the same way before it marks the run `failed`:
+other waiting gates fail with error `cancelled`, and the run still reports the
+rejected gate as its failed step. `resume --from <rejected-gate>` asks every
+settled gate again.
+
 Cancelling a running run also cancels the child runs of its nested workflow
 steps. Over `--server`, cancel the parent's run id. A running child run is not
 cancellable by its own id there.

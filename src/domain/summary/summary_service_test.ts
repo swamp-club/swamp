@@ -397,6 +397,50 @@ Deno.test("summarise - populates verbose run details", async () => {
   assertEquals(run.error, "AccessDenied");
 });
 
+Deno.test("summarise - names the rejected gate over a gate the rejection settled", async () => {
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: crypto.randomUUID(),
+    workflowName: "deploy",
+    status: "failed" as const,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    jobs: [
+      {
+        jobName: "a-side",
+        status: "failed" as const,
+        steps: [{
+          stepName: "gate2",
+          status: "failed" as const,
+          error: "cancelled",
+          settledByAbort: true,
+        }],
+      },
+      {
+        jobName: "main",
+        status: "failed" as const,
+        steps: [{
+          stepName: "gate",
+          status: "failed" as const,
+          error: "not today",
+        }],
+      },
+    ],
+    tags: {},
+  });
+  const service = new SummaryService(
+    createMockOutputRepo([]),
+    createMockWorkflowRunRepo([
+      { run, workflowId: createWorkflowId(crypto.randomUUID()) },
+    ]),
+    createMockDataRepo([]),
+  );
+
+  const result = await service.summarise(new Date(0));
+
+  assertEquals(result.workflows[0].runs[0].firstFailedStep, "gate");
+});
+
 Deno.test("summarise - extracts first failed step from workflow runs", async () => {
   const service = new SummaryService(
     createMockOutputRepo([]),
