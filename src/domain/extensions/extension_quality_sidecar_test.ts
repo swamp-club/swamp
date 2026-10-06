@@ -131,7 +131,7 @@ function sidecar(overrides: Partial<QualitySidecar>): QualitySidecar {
   return { version: 1, accept: [], ...overrides };
 }
 
-Deno.test("sidecarDirectives: an extension-scoped entry becomes an extension directive declared at its index", () => {
+Deno.test("sidecarDirectives: a bare-specifiers entry is refused, naming the import-map fix", () => {
   const { directives, invalid } = sidecarDirectives(
     sidecar({
       accept: [{ rule: "bare-specifiers", reason: "scored locally" }],
@@ -139,14 +139,10 @@ Deno.test("sidecarDirectives: an extension-scoped entry becomes an extension dir
     SIDECAR,
     DIR,
   );
-  assertEquals(invalid, []);
-  assertEquals(directives, [{
-    ruleId: "bare-specifiers",
-    reason: "scored locally",
-    target: { kind: "extension" },
-    source: "sidecar",
-    declaredAt: { file: SIDECAR, line: 1 },
-  }]);
+  assertEquals(directives, []);
+  assertEquals(invalid.map((i) => i.line), [1]);
+  assertStringIncludes(invalid[0].problem, "not a rule that can be accepted");
+  assertStringIncludes(invalid[0].problem, "import-map target");
 });
 
 Deno.test("sidecarDirectives: a generated declaration accepts testing-completeness for the package", () => {
@@ -237,7 +233,7 @@ Deno.test("sidecarDirectives: testing-completeness without a file is refused in 
   assertStringIncludes(invalid[0].problem, "generated declaration");
 });
 
-Deno.test("sidecarDirectives: an error-level rule, an unknown rule and an extension rule with a file are refused", () => {
+Deno.test("sidecarDirectives: an error-level rule, an unknown rule and a non-acceptable rule with a file are refused", () => {
   const { directives, invalid } = sidecarDirectives(
     sidecar({
       accept: [
@@ -253,7 +249,7 @@ Deno.test("sidecarDirectives: an error-level rule, an unknown rule and an extens
   assertEquals(invalid.map((i) => i.line), [1, 2, 3]);
   assertStringIncludes(invalid[0].problem, "cannot be accepted");
   assertStringIncludes(invalid[1].problem, "not a rule id");
-  assertStringIncludes(invalid[2].problem, "takes no file");
+  assertStringIncludes(invalid[2].problem, "not a rule that can be accepted");
 });
 
 Deno.test("sidecarDirectives: a file that resolves outside the manifest directory is refused", () => {

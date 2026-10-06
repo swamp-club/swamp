@@ -59,8 +59,9 @@ const SIDECAR = [
   "  source: https://api.example.com/openapi.yaml",
   "  commit: 0123abcd",
   "accept:",
-  "  - rule: bare-specifiers",
-  "    reason: scored locally; the server cannot resolve the import map",
+  "  - rule: ipv4-address-literals",
+  "    file: docs/hosts.txt",
+  "    reason: documented lab addresses",
   "",
 ].join("\n");
 
@@ -180,7 +181,7 @@ Deno.test("declared acceptances: the content hash moves when the sidecar appears
     assertNotEquals(without, withSidecar);
     await Deno.writeTextFile(
       join(root, "quality.yaml"),
-      SIDECAR.replace("scored locally", "scored elsewhere"),
+      SIDECAR.replace("lab addresses", "test addresses"),
     );
     const changed = await computePackageCacheHash(hashInput(root, manifest));
     assertNotEquals(withSidecar, changed);

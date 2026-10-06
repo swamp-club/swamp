@@ -609,6 +609,37 @@ export function extractBareSpecifierNames(source: string): string[] {
 }
 
 /**
+ * What an import map resolves a bare specifier to, when that target is an
+ * explicit specifier an author can write in its place (`npm:`, `jsr:`, a
+ * URL or a relative path). An exact key wins; otherwise the longest key
+ * ending in `/` that prefixes the specifier, with the rest appended, as
+ * import maps resolve. Undefined when the map has no usable entry.
+ */
+export function importMapTarget(
+  specifier: string,
+  imports: Record<string, string> | undefined,
+): string | undefined {
+  if (!imports) return undefined;
+  let target: string | undefined = imports[specifier];
+  if (target === undefined) {
+    let bestKey = "";
+    for (const key of Object.keys(imports)) {
+      if (
+        key.endsWith("/") && specifier.startsWith(key) &&
+        key.length > bestKey.length
+      ) {
+        bestKey = key;
+      }
+    }
+    if (bestKey) {
+      target = imports[bestKey] + specifier.slice(bestKey.length);
+    }
+  }
+  if (typeof target !== "string" || isBareSpecifier(target)) return undefined;
+  return target;
+}
+
+/**
  * Determines whether a bundle failure is "expected" — i.e. a pulled extension
  * whose source contains bare specifiers but has no project config (deno.json /
  * deno.jsonc) to resolve them. In this case the failure is a known limitation,

@@ -1950,27 +1950,56 @@ Deno.test("extensionPushPrepare: a header comment accepts testing-completeness f
   });
 });
 
-Deno.test("extensionPushPrepare: a sidecar entry accepts the bare-specifiers finding", async () => {
+Deno.test("extensionPushPrepare: a sidecar entry for bare-specifiers is an invalid acceptance that blocks the push", async () => {
   await withAcceptanceFixture({
     "models/a.ts": 'import x from "lodash";\nexport const a = x;\n',
     "quality.yaml":
       "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: scored locally\n",
   }, async (dir, paths) => {
-    const result = await extensionPushPrepare(
-      ctx,
-      makePrepareDeps(),
-      acceptanceInput(dir, [paths["models/a.ts"]]),
-    );
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      )
+    ) as SwampError;
+    const details = error.details as { reviewRuleErrors: ReviewFinding[] };
     assertEquals(
-      result.reviewRulesResult.warnings.filter((w) =>
-        w.ruleId === "bare-specifiers"
-      ),
-      [],
+      details.reviewRuleErrors.map((f) => f.ruleId),
+      ["invalid-acceptance"],
     );
-    assertEquals(result.acceptances.accepted.length, 1);
-    assertEquals(result.acceptances.accepted[0].ruleId, "bare-specifiers");
-    assertEquals(result.acceptances.accepted[0].source, "sidecar");
-    assertEquals(result.acceptances.accepted[0].file, undefined);
+    assertStringIncludes(
+      details.reviewRuleErrors[0].message,
+      '"bare-specifiers" is not a rule that can be accepted. Replace each bare name',
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-map replacement and stays a warning", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import { z } from "zod";\nimport { join } from "@std/path";\nimport x from "lodash";\nexport const a = [z, join, x];\n',
+    "deno.json": JSON.stringify({
+      imports: { "zod": "npm:zod@4.3.6", "@std/": "jsr:@std/" },
+    }),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+    });
+    const bare = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "bare-specifiers"
+    );
+    assertEquals(bare.length, 1);
+    assertEquals(bare[0].severity, "medium");
+    assertEquals(
+      bare[0].message,
+      "Extension uses bare import specifiers, which the registry's scorer " +
+        "cannot resolve, so it would publish unscored. Replace " +
+        '"@std/path" with "jsr:@std/path"; ' +
+        '"lodash" with an explicit npm: or jsr: specifier; ' +
+        '"zod" with "npm:zod@4.3.6".',
+    );
   });
 });
 

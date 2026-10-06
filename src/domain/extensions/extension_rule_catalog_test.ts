@@ -81,7 +81,7 @@ Deno.test("isAcceptableRule: unknown ids are never acceptable", () => {
   assertEquals(remediationFor("no-such-rule"), undefined);
 });
 
-Deno.test("isAcceptableRule: the six site-scoped and the extension-scoped warnings are acceptable", () => {
+Deno.test("isAcceptableRule: the six site-scoped and the file-scoped warnings are acceptable; bare-specifiers is not", () => {
   for (
     const id of [
       "credentials-sensitive-field",
@@ -91,11 +91,11 @@ Deno.test("isAcceptableRule: the six site-scoped and the extension-scoped warnin
       "long-line",
       "ipv4-address-literals",
       "testing-completeness",
-      "bare-specifiers",
     ]
   ) {
     assertEquals(isAcceptableRule(id), true, id);
   }
+  assertEquals(isAcceptableRule("bare-specifiers"), false);
 });
 
 Deno.test("RULE_CATALOG: agrees with DEFAULT_REVIEW_RULES ids and severities", () => {

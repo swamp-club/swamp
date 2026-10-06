@@ -32,7 +32,10 @@ import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
-import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
+import {
+  extractBareSpecifierNames,
+  importMapTarget,
+} from "../../domain/models/bundle.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
 import type {
   ExtensionContentMetadata,
@@ -1423,6 +1426,48 @@ export interface QualityFindingsInput {
 }
 
 /**
+ * The project `deno.json` import map, or undefined when there is no config
+ * or it has no usable `imports` object.
+ */
+export async function readImportMap(
+  denoConfigPath: string | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (!denoConfigPath) return undefined;
+  try {
+    const config = JSON.parse(await Deno.readTextFile(denoConfigPath));
+    if (
+      config.imports && typeof config.imports === "object" &&
+      !Array.isArray(config.imports)
+    ) {
+      return config.imports as Record<string, string>;
+    }
+  } catch {
+    // Missing or unparseable config — fall back to no import map.
+  }
+  return undefined;
+}
+
+/**
+ * The bare-specifiers finding's message: what happens (the registry cannot
+ * score the extension) and, per name, the explicit specifier to write
+ * instead, taken from the import map when it has one.
+ */
+export function bareSpecifiersMessage(
+  names: string[],
+  imports: Record<string, string> | undefined,
+): string {
+  const fixes = names.map((name) => {
+    const target = importMapTarget(name, imports);
+    return target
+      ? `"${name}" with "${target}"`
+      : `"${name}" with an explicit npm: or jsr: specifier`;
+  });
+  return "Extension uses bare import specifiers, which the registry's scorer " +
+    "cannot resolve, so it would publish unscored. Replace " +
+    `${fixes.join("; ")}.`;
+}
+
+/**
  * Runs the review rules, the bare-specifier check and the declared
  * acceptances over an extension. Push calls it from prepare; quality calls
  * it on every run, including a cache hit, so both report the same findings
@@ -1479,15 +1524,13 @@ export async function runQualityFindings(
     }
   }
   if (bareSpecifiers.size > 0) {
-    const names = [...bareSpecifiers].sort();
+    const imports = await readImportMap(input.denoConfigPath);
     reviewRulesResult.warnings.push({
       ruleId: "bare-specifiers",
       dimension: "scoring",
       severity: "medium",
       file: "(multiple files)",
-      message: `Extension uses bare import specifiers (${
-        names.map((s) => `"${s}"`).join(", ")
-      }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
+      message: bareSpecifiersMessage([...bareSpecifiers].sort(), imports),
       remediation: remediationFor("bare-specifiers"),
     });
   }

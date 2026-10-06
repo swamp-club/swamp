@@ -25,6 +25,7 @@ import {
   bundleExtension,
   extractBareSpecifierNames,
   fixCjsEsmInterop,
+  importMapTarget,
   installZodGlobal,
   isExpectedBundleFailure,
   rejectZodV3Imports,
@@ -1167,4 +1168,40 @@ Deno.test("rejectZodV3Imports: throws on a zod@3 import beside zod@3 text in a t
   const input = 'export const t = `import { z } from "npm:zod@3";`;\n' +
     `import { z } from "npm:zod@3.23.8";\n`;
   assertThrows(() => rejectZodV3Imports(input), Error, "npm:zod@3.23.8");
+});
+
+// --- importMapTarget unit tests ---
+
+Deno.test("importMapTarget: an exact key resolves to its explicit specifier", () => {
+  const imports = {
+    "zod": "npm:zod@4.3.6",
+    "@azure/core-auth": "npm:@azure/core-auth@1.9.0",
+  };
+  assertEquals(importMapTarget("zod", imports), "npm:zod@4.3.6");
+  assertEquals(
+    importMapTarget("@azure/core-auth", imports),
+    "npm:@azure/core-auth@1.9.0",
+  );
+});
+
+Deno.test("importMapTarget: the longest trailing-slash prefix key resolves the rest of the path", () => {
+  const imports = {
+    "@std/": "jsr:@std/",
+    "@std/path/": "jsr:@std/path@1.1.0/",
+  };
+  assertEquals(importMapTarget("@std/assert", imports), "jsr:@std/assert");
+  assertEquals(
+    importMapTarget("@std/path/posix", imports),
+    "jsr:@std/path@1.1.0/posix",
+  );
+});
+
+Deno.test("importMapTarget: no entry, a non-matching key or a bare target gives no suggestion", () => {
+  assertEquals(importMapTarget("zod", undefined), undefined);
+  assertEquals(importMapTarget("zod/v4", { "zod": "npm:zod@4" }), undefined);
+  assertEquals(importMapTarget("lib", { "lib": "other-bare" }), undefined);
+  assertEquals(
+    importMapTarget("lib", { "lib": "./lib/mod.ts" }),
+    "./lib/mod.ts",
+  );
 });

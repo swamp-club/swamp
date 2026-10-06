@@ -42,6 +42,7 @@ import {
   type ExtensionPushPrepareInput,
   type LocalGateFailure,
   type QualityFindings,
+  readImportMap,
 } from "./push.ts";
 
 /** Emitted by the extension quality generator. */
@@ -91,25 +92,6 @@ export interface ExtensionQualityDeps {
   cache: ExtensionPackageCache;
   ensureDenoPath: () => Promise<string>;
   makeScoreDeps: (denoPath: string) => RubricScoreDeps;
-}
-
-async function readImportMap(
-  denoConfigPath: string | undefined,
-): Promise<Record<string, string> | undefined> {
-  if (!denoConfigPath) return undefined;
-  try {
-    const raw = await Deno.readTextFile(denoConfigPath);
-    const config = JSON.parse(raw);
-    if (
-      config.imports && typeof config.imports === "object" &&
-      !Array.isArray(config.imports)
-    ) {
-      return config.imports as Record<string, string>;
-    }
-  } catch {
-    // Missing or unparseable config — fall back to no import map.
-  }
-  return undefined;
 }
 
 /** Wires real infrastructure into ExtensionQualityDeps. */
