@@ -160,7 +160,86 @@ Deno.test(
 );
 
 Deno.test(
-  "WalSink: replay delivers undelivered WAL segments to downstream",
+  "WalSink: replay delivers undelivered WAL segments and deletes them once a checkpoint confirms them",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.append([withDigest("orphaned-1", 1)]);
+    await wal.append([withDigest("orphaned-2", 2)]);
+
+    const downstream = createMockSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    const count = await sink.replay();
+    assertEquals(count, 2);
+
+    await sink.flush();
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["orphaned-1", "orphaned-2"],
+    );
+    assertEquals(wal.segmentCount, 0);
+    // A crash restart after the deletion still resumes the chain from the
+    // replayed events.
+    const restarted = new AuditWal({ dir });
+    await restarted.initialize();
+    assertEquals(await restarted.loadChainState(), {
+      sequence: 2,
+      previousDigest: "d2",
+    });
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink with a StoreSink: replay keeps a previous session's segment until the store confirms it",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.append([chained("orphaned", 1)]);
+    let down = true;
+    const stored: number[] = [];
+    const store: AuditStore = {
+      put(_key: string, data: Uint8Array): Promise<void> {
+        if (down) return Promise.reject(new Error("store down"));
+        for (const line of new TextDecoder().decode(data).split("\n")) {
+          if (line.trim()) {
+            stored.push((JSON.parse(line) as { sequence: number }).sequence);
+          }
+        }
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    };
+    const storeSink = new StoreSink({
+      stores: [store],
+      batchSize: 100,
+      flushIntervalMs: 60_000,
+    });
+    const sink = new WalSink({
+      wal,
+      downstream: storeSink,
+      checkpointIntervalMs: 0,
+    });
+
+    assertEquals(await sink.replay(), 1);
+    assertEquals(wal.segmentCount, 1);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    assertEquals(stored, []);
+
+    down = false;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(stored, [1]);
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: replayed segments are delivered before events written after replay",
   withTempDir(async (dir) => {
     const wal = new AuditWal({ dir });
     await wal.initialize();
@@ -168,33 +247,39 @@ Deno.test(
     await wal.append([makeEvent("orphaned-2")]);
 
     const downstream = createMockSink();
-    const sink = new WalSink({ wal, downstream });
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
 
-    const count = await sink.replay();
+    await sink.replay();
+    await sink.write([makeEvent("live")]);
+    await sink.flush();
 
-    assertEquals(count, 2);
-    assertEquals(downstream.written.length, 2);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["orphaned-1", "orphaned-2", "live"],
+    );
     assertEquals(wal.segmentCount, 0);
+    await sink.close();
   }),
 );
 
 Deno.test(
-  "WalSink: replay stops at first failure and retains remaining segments",
+  "WalSink: replay keeps a segment whose delivery fails and delivers it again at the next checkpoint",
   withTempDir(async (dir) => {
     const wal = new AuditWal({ dir });
     await wal.initialize();
     await wal.append([makeEvent("first")]);
     await wal.append([makeEvent("second")]);
 
-    let writeCount = 0;
-    const failOnSecond: AuditSink = {
-      name: "fail-on-second",
+    const written: string[] = [];
+    let failing = true;
+    const failSecond: AuditSink = {
+      name: "fail-second",
       durable: true,
-      write(): Promise<void> {
-        writeCount++;
-        if (writeCount >= 2) {
-          return Promise.reject(new Error("fail on second"));
+      write(events: readonly AuditEvent[]): Promise<void> {
+        if (failing && events[0].action === "second") {
+          return Promise.reject(new Error("downstream unavailable"));
         }
+        written.push(events[0].action);
         return Promise.resolve();
       },
       flush(): Promise<void> {
@@ -204,12 +289,24 @@ Deno.test(
         return Promise.resolve();
       },
     };
-    const sink = new WalSink({ wal, downstream: failOnSecond });
+    const sink = new WalSink({
+      wal,
+      downstream: failSecond,
+      checkpointIntervalMs: 0,
+    });
 
-    const count = await sink.replay();
-
-    assertEquals(count, 1);
+    assertEquals(await sink.replay(), 2);
+    await sink.flush();
+    assertEquals(written, ["first"]);
+    const kept = await wal.readSegment(wal.listSegments()[0]);
     assertEquals(wal.segmentCount, 1);
+    assertEquals(kept.map((e) => e.action), ["second"]);
+
+    failing = false;
+    await sink.flush();
+    assertEquals(written, ["first", "second"]);
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
   }),
 );
 
@@ -283,6 +380,7 @@ Deno.test(
 
     const count = await sink.replay();
     assertEquals(count, 1);
+    await sink.flush();
     assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 0);
   }),

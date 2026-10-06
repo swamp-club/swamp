@@ -68,7 +68,16 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    crash would restart the chain from an older sequence. The delivery queue holds segment names
    only, and names the WAL size limit has evicted are pruned from it. `flush` waits up to 30s for
    queued work before leaving it in the WAL, where it is replayed on the next
-   start. Max size is configurable (default 100MB).
+   start. At startup the segments a previous session left are put on the same
+   delivery queue, ahead of anything written after, and empty ones from a
+   partial write are deleted; a segment that cannot be read stays in the WAL
+   and the rest are queued without it. Startup does not wait for their
+   delivery, and like live segments they are deleted only once a checkpoint
+   confirms them. Delivery is at least once: a crash after the store put but
+   before the checkpoint deletes the segment, live or replayed, sends it
+   again on the next start, so the store holds those sequences twice and
+   `swamp audit verify` reports the chain broken there. Max size is
+   configurable (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention; old
