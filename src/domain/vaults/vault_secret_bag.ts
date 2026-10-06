@@ -53,12 +53,64 @@ export interface ShellSecretResolution {
   singleQuoted: string[];
 }
 
+/** Characters after which a quote begins a new here-document token. */
+const TOKEN_BOUNDARY = /[\s=(|;&{[,:]/;
+
+/**
+ * Whether `position` reads as inside a double-quoted string of here-document
+ * text starting at `bodyStart`. Here-document text has no quoting of its own,
+ * so this reads it as the author's script or config would. Within a line
+ * every double quote opens or closes a string, as in shell, so attached
+ * strings (`-p"…"`, `>"…"`, `'a'"…"`) pair up. A string still open at the end
+ * of a line carries to the next line only when its opening quote sat at a
+ * token boundary (`echo "line1`), so a stray mid-word quote such as an inch
+ * mark (`5"`) ends with its line. A single-quoted span that opens at a token
+ * boundary and closes on the same line is skipped (`tr -d '"'`); a position
+ * inside one counts as quoted, so the reference stays bare inside the
+ * author's single quotes. Mid-word apostrophes (`don't`) are prose.
+ */
+function heredocDoubleQuoted(
+  command: string,
+  bodyStart: number,
+  position: number,
+): boolean {
+  let inDouble = false;
+  let carries = true;
+  for (let i = bodyStart; i < position; i++) {
+    const ch = command[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (ch === "\n") {
+      if (inDouble && !carries) inDouble = false;
+      continue;
+    }
+    const atBoundary = TOKEN_BOUNDARY.test(command[i - 1]);
+    if (ch === '"') {
+      if (inDouble) {
+        inDouble = false;
+      } else {
+        inDouble = true;
+        carries = atBoundary;
+      }
+    } else if (ch === "'" && !inDouble && atBoundary) {
+      const close = command.indexOf("'", i + 1);
+      const lineEnd = command.indexOf("\n", i);
+      if (close !== -1 && (lineEnd === -1 || close < lineEnd)) {
+        if (close >= position) return true;
+        i = close;
+      }
+    }
+  }
+  return inDouble;
+}
+
 /**
  * Builds the reader of the quote context a vault.get() reference in
  * `command` is chosen by, from the POSIX shell context of its occurrence.
- * A here-document body has no quoting of its own, so there only unescaped
- * double quotes counted from the start of the body decide: a double-quoted
- * string may span body lines, and apostrophes in prose do not count. A
+ * In a here-document body, {@link heredocDoubleQuoted} reads the text from
+ * the start of the body, so a double-quoted string may span body lines. A
  * reference in a body is never reported as single-quoted.
  */
 function posixVaultQuoter(
@@ -101,14 +153,10 @@ function posixVaultQuoter(
       case "ansi-c":
         return "single";
       case "heredoc":
-      case "heredoc-literal": {
-        let inDouble = false;
-        for (let i = bodyStartOf(position); i < position; i++) {
-          if (command[i] === "\\") i++;
-          else if (command[i] === '"') inDouble = !inDouble;
-        }
-        return inDouble ? "double" : "unquoted";
-      }
+      case "heredoc-literal":
+        return heredocDoubleQuoted(command, bodyStartOf(position), position)
+          ? "double"
+          : "unquoted";
       default:
         return "unquoted";
     }

@@ -392,6 +392,36 @@ Deno.test("getUserInfo: returns user info with collectives", async () => {
   }
 });
 
+Deno.test("getUserInfo: reads the preferred_username claim when present (swamp-club#3076)", async () => {
+  const cases: [unknown, string | undefined][] = [
+    ["alice", "alice"],
+    [undefined, undefined],
+    ["", undefined],
+    [42, undefined],
+  ];
+  for (const [claim, expected] of cases) {
+    const mock = startMockServer(() =>
+      Response.json({
+        sub: "user-1",
+        email: "user@example.com",
+        ...(claim !== undefined ? { preferred_username: claim } : {}),
+      })
+    );
+    try {
+      const result = await getUserInfo(
+        `http://localhost:${mock.port}`,
+        "my-token",
+        "collectives",
+        AbortSignal.timeout(5000),
+      );
+      assertEquals(result.username, expected, `claim ${String(claim)}`);
+      assertEquals("username" in result, expected !== undefined);
+    } finally {
+      await mock.shutdown();
+    }
+  }
+});
+
 Deno.test("getUserInfo: falls back to collectives when groups field absent", async () => {
   const mock = startMockServer(() =>
     Response.json({

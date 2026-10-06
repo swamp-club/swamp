@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type ActorIdentity,
   type AuditCategory,
   type AuditDecision,
   type AuditEvent,
@@ -55,6 +56,7 @@ export interface AuditEventInput {
   readonly principalKind: string;
   readonly principalId: string;
   readonly initiatedBy: string;
+  readonly actor?: ActorIdentity;
   readonly sourceIp: string;
   readonly requestId: string;
   readonly methodName?: string;
@@ -74,6 +76,14 @@ export function buildAuditEvent(input: AuditEventInput): AuditEvent {
     principalKind: input.principalKind,
     principalId: input.principalId,
     initiatedBy: input.initiatedBy,
+    // Set only when known, so an event without them keeps its old shape and
+    // chain digest.
+    ...(input.actor?.username !== undefined
+      ? { principalUsername: input.actor.username }
+      : {}),
+    ...(input.actor?.email !== undefined
+      ? { principalEmail: input.actor.email }
+      : {}),
     sourceIp: input.sourceIp,
     requestId: input.requestId,
     methodName: input.methodName,

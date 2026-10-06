@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
-import type { AuditCategory } from "../domain/serve_audit/audit_event.ts";
+import type {
+  ActorIdentity,
+  AuditCategory,
+} from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import {
@@ -40,6 +43,8 @@ export interface AuditedOptions {
   readonly requestId: string;
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
+  /** The caller's username and email, when known (swamp-club#3076). */
+  readonly actor?: ActorIdentity;
   readonly socket?: WebSocket;
 }
 
@@ -86,6 +91,7 @@ export function audited(
       principalKind,
       principalId,
       initiatedBy,
+      actor: options.actor,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,
@@ -106,6 +112,7 @@ export function audited(
       principalKind,
       principalId,
       initiatedBy,
+      actor: options.actor,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,

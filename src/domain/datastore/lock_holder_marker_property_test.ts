@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  LOCK_NONCE_PATTERN,
   type LockHolderEnvStore,
   LockHolderMarker,
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
@@ -81,7 +82,45 @@ Deno.test("withRemoteLockHolder property: a child skips exactly the holder's lis
   );
 });
 
-Deno.test("withRemoteLockHolder property: the holder pid never joins the chain without a tokens entry", () => {
+Deno.test("withRemoteLockHolder property: a holder on another host hands down exactly its listed locks", () => {
+  fc.assert(
+    fc.property(
+      pidArb,
+      fc.uniqueArray(nonceArb, { minLength: 1, maxLength: 8 }),
+      nonceArb,
+      fc.uniqueArray(pidArb, { maxLength: 8 }),
+      (pid, lockIds, otherNonce, workerChain) => {
+        fc.pre(!lockIds.includes(otherNonce));
+        const chain = workerChain.join(",");
+        const env = withRemoteLockHolder(
+          { [SWAMP_LOCK_ANCESTOR_PIDS]: chain },
+          { pid, hostname: "host-b", lockIds },
+          HOST,
+        );
+        const relationTo = new LockHolderMarker(
+          envStore(env),
+          CHILD_PID,
+          () => HOST,
+        ).lockRelation();
+
+        // A pid on another host is never declared an ancestor here.
+        assertEquals(env[SWAMP_LOCK_ANCESTOR_PIDS], chain);
+        for (const nonce of lockIds) {
+          assertEquals(
+            relationTo({ pid, hostname: "host-b", nonce }),
+            "ancestor",
+          );
+        }
+        assertEquals(
+          relationTo({ pid, hostname: "host-b", nonce: otherNonce }),
+          "other",
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("withRemoteLockHolder property: the holder pid never joins the chain without a tokens entry, or from another host", () => {
   fc.assert(
     fc.property(
       fc.oneof(pidArb, fc.integer(), fc.double()),
@@ -91,14 +130,81 @@ Deno.test("withRemoteLockHolder property: the holder pid never joins the chain w
         const env = withRemoteLockHolder({}, { pid, hostname, lockIds }, HOST);
 
         const chain = (env[SWAMP_LOCK_ANCESTOR_PIDS] ?? "").split(",");
-        const tokens = env[SWAMP_LOCK_HOLDER_TOKENS] ?? "";
-        if (chain.includes(String(pid))) {
-          // One entry, for this pid, holding at least one well-formed nonce.
-          assertEquals(/^[1-9][0-9]*:[A-Za-z0-9+-]+$/.test(tokens), true);
-          assertEquals(tokens.startsWith(`${pid}:`), true);
-        } else {
+        const tokens = env[SWAMP_LOCK_HOLDER_TOKENS];
+        if (tokens === undefined) {
           assertEquals(env, {});
+          return;
         }
+        // One entry, for this pid, holding at least one well-formed nonce.
+        assertEquals(/^[1-9][0-9]*:[A-Za-z0-9+-]+$/.test(tokens), true);
+        assertEquals(tokens.startsWith(`${pid}:`), true);
+        assertEquals(chain.includes(String(pid)), hostname === HOST);
+      },
+    ),
+  );
+});
+
+Deno.test("LockHolderMarker.lockRelation property: a lock is skipped only for a handed-down nonce or an ancestor's pid on this host", () => {
+  const lockArb = (nonces: readonly string[], pids: readonly number[]) =>
+    fc.record({
+      pid: fc.option(
+        pids.length > 0 ? fc.oneof(pidArb, fc.constantFrom(...pids)) : pidArb,
+        { nil: undefined },
+      ),
+      hostname: fc.option(fc.constantFrom(HOST, "host-b"), { nil: undefined }),
+      nonce: fc.option(
+        nonces.length > 0
+          ? fc.oneof(nonceArb, fc.constantFrom(...nonces))
+          : nonceArb,
+        { nil: undefined },
+      ),
+    });
+  fc.assert(
+    fc.property(
+      fc.tuple(
+        fc.uniqueArray(pidArb, { maxLength: 6 }),
+        fc.array(
+          fc.tuple(pidArb, fc.array(nonceArb, { maxLength: 4 })),
+          { maxLength: 6 },
+        ),
+      ).chain(([chain, entries]) =>
+        fc.tuple(
+          fc.constant(chain),
+          fc.constant(entries),
+          lockArb(entries.flatMap(([, nonces]) => nonces), chain),
+        )
+      ),
+      ([chain, entries, lock]) => {
+        const handedDown = new Set(entries.flatMap(([, nonces]) => nonces));
+        const relation = new LockHolderMarker(
+          envStore({
+            [SWAMP_LOCK_ANCESTOR_PIDS]: chain.join(","),
+            [SWAMP_LOCK_HOLDER_TOKENS]: entries
+              .map(([pid, nonces]) => `${pid}:${nonces.join("+")}`).join(","),
+          }),
+          CHILD_PID,
+          () => HOST,
+        ).lockRelation()(lock);
+
+        if (lock.nonce !== undefined && handedDown.has(lock.nonce)) {
+          assertEquals(relation, "ancestor");
+          return;
+        }
+        const ancestorHere = lock.pid !== undefined &&
+          chain.includes(lock.pid) &&
+          (lock.hostname === undefined || lock.hostname === HOST);
+        if (!ancestorHere) {
+          assertEquals(relation, "other");
+          return;
+        }
+        // Held to its list when it handed one down and the lock has a nonce.
+        const listed = entries.some(([pid]) => pid === lock.pid);
+        assertEquals(
+          relation,
+          listed && lock.nonce !== undefined
+            ? "ancestor-other-run"
+            : "ancestor",
+        );
       },
     ),
   );
@@ -113,90 +219,53 @@ function envWith(tokens?: string): LockHolderEnvStore {
   };
 }
 
-const forwardedPidArb = fc.oneof(fc.constant(OWN_PID), pidArb);
-/** A well-formed list, biased to name this process and the locks it holds. */
-const listArb = (held: readonly string[]) =>
-  fc.array(
-    fc.tuple(
-      forwardedPidArb,
-      fc.array(
-        held.length > 0
-          ? fc.oneof(nonceArb, fc.constantFrom(...held))
-          : nonceArb,
-        { maxLength: 6 },
-      ),
-    ),
-    { maxLength: 6 },
-  ).map((entries) =>
-    entries.map(([pid, nonces]) => `${pid}:${nonces.join("+")}`).join(",")
-  );
+/** A well-formed list naming this process and others. */
+const listArb = fc.array(
+  fc.tuple(
+    fc.oneof(fc.constant(OWN_PID), pidArb),
+    fc.array(nonceArb, { maxLength: 6 }),
+  ),
+  { maxLength: 6 },
+).map((entries) =>
+  entries.map(([pid, nonces]) => `${pid}:${nonces.join("+")}`).join(",")
+);
 
 /**
  * The nonces a request handler's child would be told this process holds for
- * it, when the handler adopts `forwarded` while another run holds `held`.
+ * it, when the handler adopts `forwarded`.
  */
-async function adopted(
-  held: readonly string[],
-  forwarded: string,
-): Promise<string[]> {
+async function adopted(forwarded: string): Promise<string[]> {
   const server = new LockHolderMarker(envWith(), OWN_PID);
-  let release = () => {};
-  const blocked = new Promise<void>((resolve) => release = resolve);
-  const run = server.runHolding(held, () => blocked);
-  try {
-    const tokens = await server.runAdopting(
-      forwarded,
-      () => Promise.resolve(server.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS]),
-    );
-    if (tokens === undefined) return [];
-    assert(tokens.startsWith(`${OWN_PID}:`), tokens);
-    return tokens.slice(`${OWN_PID}:`.length).split("+");
-  } finally {
-    release();
-    await run;
-  }
+  const tokens = await server.runAdopting(
+    forwarded,
+    () => Promise.resolve(server.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS]),
+  );
+  if (tokens === undefined) return [];
+  assert(tokens.startsWith(`${OWN_PID}:`), tokens);
+  return tokens.slice(`${OWN_PID}:`.length).split("+");
 }
 
-/** The nonces `list` names for this process, as written. */
-function namedForOwnPid(list: string): Set<string> {
-  const named = new Set<string>();
-  for (const entry of list.split(",")) {
-    const [pid, nonces] = entry.split(":");
-    if (pid === String(OWN_PID)) {
-      for (const nonce of (nonces ?? "").split("+")) named.add(nonce);
-    }
-  }
-  return named;
-}
-
-Deno.test("LockHolderMarker.runAdopting: adopts exactly the held locks a list names for its own pid", async () => {
+Deno.test("LockHolderMarker.runAdopting: adopts exactly the nonces a list names, whichever pid it names them for", async () => {
   await fc.assert(
-    fc.asyncProperty(
-      fc.uniqueArray(nonceArb, { maxLength: 5 }).chain((held) =>
-        fc.tuple(fc.constant(held), listArb(held))
-      ),
-      async ([held, list]) => {
-        const named = namedForOwnPid(list);
-        assertEquals(
-          (await adopted(held, list)).sort(),
-          held.filter((nonce) => named.has(nonce)).sort(),
-        );
-      },
-    ),
+    fc.asyncProperty(listArb, async (list) => {
+      const named = new Set(
+        list.split(",").flatMap((entry) =>
+          (entry.split(":")[1] ?? "").split("+")
+        ).filter((nonce) => nonce !== ""),
+      );
+      assertEquals((await adopted(list)).sort(), [...named].sort());
+    }),
   );
 });
 
-Deno.test("LockHolderMarker.runAdopting: arbitrary input never throws or adopts a lock that is not held", async () => {
+Deno.test("LockHolderMarker.runAdopting: arbitrary input never throws or adopts anything but a well-formed nonce it carries", async () => {
   await fc.assert(
-    fc.asyncProperty(
-      fc.uniqueArray(nonceArb, { maxLength: 5 }),
-      fc.string(),
-      async (held, forwarded) => {
-        for (const nonce of await adopted(held, forwarded)) {
-          assert(held.includes(nonce), nonce);
-        }
-      },
-    ),
+    fc.asyncProperty(fc.string(), async (forwarded) => {
+      for (const nonce of await adopted(forwarded)) {
+        assert(LOCK_NONCE_PATTERN.test(nonce), nonce);
+        assert(forwarded.includes(nonce), nonce);
+      }
+    }),
   );
 });
 
@@ -205,7 +274,7 @@ Deno.test("LockHolderMarker.forwardedLockTokens: never returns a list over the l
     fc.property(
       fc.oneof(
         fc.string(),
-        listArb([]),
+        listArb,
         fc.integer({ min: 1, max: MAX_FORWARDED_LOCK_TOKENS_LENGTH + 64 })
           .map((length) => `100:${"a".repeat(length)}`),
       ),

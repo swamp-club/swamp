@@ -66,10 +66,12 @@ import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import type {
+  ActorIdentity,
   AuditDecision,
   AuditOutcome,
 } from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
+import { resolveActorIdentity } from "../../domain/serve_audit/actor_identity.ts";
 import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
@@ -409,6 +411,7 @@ const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
 const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
+const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -866,6 +869,40 @@ export function getConnectionSourceIp(socket: WebSocket): string {
   return connectionSourceIp.get(socket) ?? "unknown";
 }
 
+/**
+ * Records who the OAuth provider said a connection's user is, from the token
+ * that authenticated it (swamp-club#3076).
+ */
+export function setConnectionLoginIdentity(
+  socket: WebSocket,
+  identity: ActorIdentity | undefined,
+): void {
+  if (identity) connectionLoginIdentity.set(socket, identity);
+}
+
+/** Who the OAuth provider said a connection's user is, when known. */
+export function getConnectionLoginIdentity(
+  socket: WebSocket,
+): ActorIdentity | undefined {
+  return connectionLoginIdentity.get(socket);
+}
+
+/**
+ * The username and email audit events record for a connection's principal,
+ * or `undefined` when none is known.
+ */
+export function connectionActorIdentity(
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: Pick<ConnectionContext, "resolvedUserNames">,
+): ActorIdentity | undefined {
+  return resolveActorIdentity(
+    principal,
+    ctx.resolvedUserNames,
+    connectionLoginIdentity.get(socket),
+  );
+}
+
 export interface AuthorizationResult {
   readonly allowed: boolean;
   readonly decision: AccessDecision | null;
@@ -1310,6 +1347,7 @@ function emitDenial(
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
+    actor: connectionActorIdentity(socket, principal, ctx),
     sourceIp: getConnectionSourceIp(socket),
     requestId,
     detail,
@@ -1739,6 +1777,8 @@ export interface RunCancelAudit {
   /** The run id, or `*` for a bulk cancel. */
   resourceName: string;
   principal: Principal | null;
+  /** Who the OAuth provider said the caller is, when their token says. */
+  loginIdentity?: ActorIdentity;
   sourceIp: string;
   requestId: string;
   outcome: AuditOutcome;
@@ -1769,6 +1809,11 @@ export function emitRunCancelAudit(
     principalKind: audit.principal?.kind ?? "anonymous",
     principalId: audit.principal?.id ?? "anonymous",
     initiatedBy: audit.principal ? cancelActor(audit.principal, ctx) : "ghost",
+    actor: resolveActorIdentity(
+      audit.principal,
+      ctx.resolvedUserNames,
+      audit.loginIdentity,
+    ),
     sourceIp: audit.sourceIp,
     requestId: audit.requestId,
     detail: audit.detail,

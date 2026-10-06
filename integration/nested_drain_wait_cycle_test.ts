@@ -47,6 +47,7 @@ import {
   processLockHolderMarker,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_TOKENS,
+  withRemoteLockHolder,
 } from "../src/domain/datastore/lock_holder_marker.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
@@ -188,17 +189,45 @@ async function markerFiles(
 }
 
 /**
+ * The lock-holder marker of a swamp started by a step `run` dispatched to a
+ * worker on another host: this process is not above it, and it knows the
+ * run's lock only by the nonce the dispatch handed down.
+ */
+async function childOnAnotherHost(
+  pid: number,
+  run: Run,
+): Promise<LockHolderMarker> {
+  const lockHolder = await runUnderModelLocks(
+    run.lock,
+    () => Promise.resolve(processLockHolderMarker.remoteLockHolder()),
+  );
+  const values = new Map(
+    Object.entries(withRemoteLockHolder({}, lockHolder, "another-host")),
+  );
+  const store: LockHolderEnvStore = {
+    get: (key) => values.get(key),
+    set: (key, value) => {
+      values.set(key, value);
+    },
+  };
+  const child = new LockHolderMarker(store, pid, () => "another-host");
+  child.publish();
+  return child;
+}
+
+/**
  * Starts one nested drain per run, waits until all but one have given way,
  * ends the runs whose commands failed, and returns the drains.
  */
 async function drainUnderParallelRuns(
   datastoreConfig: FilesystemDatastoreConfig,
   runs: Run[],
+  childFor: (pid: number, run: Run) => Promise<LockHolderMarker> = childOf,
 ): Promise<Drain[]> {
   const drains: Drain[] = [];
   try {
     for (const [i, run] of runs.entries()) {
-      drains.push(startDrain(datastoreConfig, await childOf(i + 1, run)));
+      drains.push(startDrain(datastoreConfig, await childFor(i + 1, run)));
     }
     await waitFor(
       () =>
@@ -253,6 +282,35 @@ Deno.test("nested drain wait cycle: of two parallel runs' nested commands one gi
         // It names the other run's lock, the one it could not outwait.
         const winner = runs[drains.findIndex((d) => !failed.includes(d))];
         assertEquals(error.message.includes(winner.modelId), true);
+        assertEquals(await markerFiles(datastoreConfig), []);
+      } finally {
+        await Promise.all(runs.map((run) => run.release()));
+      }
+    });
+  });
+});
+
+Deno.test("nested drain wait cycle: nested commands that know their run's lock only by its nonce still give way (swamp-club#3096)", async () => {
+  await withTempDir(async (repoDir) => {
+    const datastoreConfig = await initRepo(repoDir);
+    await withMockedEnv({
+      [SWAMP_LOCK_HOLDER_TOKENS]: undefined,
+      SWAMP_LOCK_TIMEOUT_MS: "30000",
+    }, async () => {
+      const runs = [
+        await startRun(datastoreConfig, repoDir),
+        await startRun(datastoreConfig, repoDir),
+      ];
+      try {
+        const drains = await drainUnderParallelRuns(
+          datastoreConfig,
+          runs,
+          childOnAnotherHost,
+        );
+
+        const failed = drains.filter((d) => d.outcome?.error !== undefined);
+        assertEquals(failed.length, 1);
+        assertInstanceOf(failed[0].outcome?.error, LockWaitCycleError);
         assertEquals(await markerFiles(datastoreConfig), []);
       } finally {
         await Promise.all(runs.map((run) => run.release()));

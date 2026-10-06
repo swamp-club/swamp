@@ -616,15 +616,89 @@ Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do
   }
 });
 
-Deno.test("VaultSecretBag.resolveForShell: an unbalanced double quote in here-document prose reads as open for the rest of the body", () => {
-  // Deliberate: double quotes count across body lines so a quoted string can
-  // span them; a stray one leaves later references bare, not quoted.
+Deno.test("VaultSecretBag.resolveForShell: a double quote inside single quotes on a here-document line opens no string", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const quoted = `"\${__SWAMP_VAULT_0}"`;
+  for (
+    const line of [
+      `tr -d '"' < in > out`,
+      `sed 's/"//g' f`,
+      `IFS='"'`,
+      `grep -c '"' f`,
+      `awk -F'"' '{print $2}' f`,
+    ]
+  ) {
+    assertEquals(
+      bag.resolveForShell(`cat <<EOF > gen.sh\n${line}\nset -- ${s}\nEOF`)
+        .command,
+      `cat <<EOF > gen.sh\n${line}\nset -- ${quoted}\nEOF`,
+    );
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForShell: mid-word quotes in here-document prose open no string", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const ref = "\${__SWAMP_VAULT_0}";
+  const cases: [string, string][] = [
+    [
+      `cat <<EOF\nscreen is 5" wide\nPASS=${s}\nEOF`,
+      `cat <<EOF\nscreen is 5" wide\nPASS="${ref}"\nEOF`,
+    ],
+    [
+      `cat <<EOF\ndon't say "it's" twice\nKEY="${s}"\nEOF`,
+      `cat <<EOF\ndon't say "it's" twice\nKEY="${ref}"\nEOF`,
+    ],
+  ];
+  for (const [command, expected] of cases) {
+    assertEquals(bag.resolveForShell(command).command, expected);
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForShell: here-document strings attached to other text pair up on their line", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const ref = "${__SWAMP_VAULT_0}";
+  for (
+    const [line, expected] of [
+      [`mysql -u root -p"${s}" db`, `mysql -u root -p"${ref}" db`],
+      [`curl -H"Authorization: ${s}" x`, `curl -H"Authorization: ${ref}" x`],
+      [`cmd >"${s}"`, `cmd >"${ref}"`],
+      [`echo \${A}"${s}"`, `echo \${A}"${ref}"`],
+      [`echo 'prefix: '"${s}"`, `echo 'prefix: '"${ref}"`],
+      [`echo "a""${s}"`, `echo "a""${ref}"`],
+      [`echo $(x)"${s}"`, `echo $(x)"${ref}"`],
+      [`echo foo"bar ${s}"`, `echo foo"bar ${ref}"`],
+    ]
+  ) {
+    assertEquals(
+      bag.resolveForShell(`cat <<EOF > gen.sh\n${line}\nEOF`).command,
+      `cat <<EOF > gen.sh\n${expected}\nEOF`,
+    );
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForShell: a vault.get use inside single quotes in a here-document stays bare", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("v");
   assertEquals(
-    bag.resolveForShell(`cat <<EOF\nscreen is 5" wide\nPASS=${s}\nEOF`)
+    bag.resolveForShell(`cat <<EOF > gen.sh\nPASS='${s}'\nEOF`).command,
+    `cat <<EOF > gen.sh\nPASS='\${__SWAMP_VAULT_0}'\nEOF`,
+  );
+});
+
+Deno.test("VaultSecretBag.resolveForShell: a single quote attached mid-word does not shield a double quote on the same here-document line", () => {
+  // Known limit (swamp-club#3106): -F'"' starts no single-quoted span, so its
+  // double quote opens a string for the rest of that line only.
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  assertEquals(
+    bag.resolveForShell(
+      `cat <<EOF > gen.sh\nawk -F'"' -v k=${s} f\nset -- ${s}\nEOF`,
+    )
       .command,
-    `cat <<EOF\nscreen is 5" wide\nPASS=\${__SWAMP_VAULT_0}\nEOF`,
+    `cat <<EOF > gen.sh\nawk -F'"' -v k=\${__SWAMP_VAULT_0} f\nset -- "\${__SWAMP_VAULT_0}"\nEOF`,
   );
 });
 

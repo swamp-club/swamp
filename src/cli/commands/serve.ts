@@ -80,6 +80,7 @@ import {
   sanitizeErrorForClient,
   setConnectionCollectives,
   setConnectionCompression,
+  setConnectionLoginIdentity,
   setConnectionSourceIp,
   setConnectionToken,
   terminateTokenSessions,
@@ -247,6 +248,7 @@ import {
   type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
 import {
+  type ActorIdentity,
   type AuditCategory,
   AuditChainState,
   AuditEmitter,
@@ -485,6 +487,8 @@ export interface CancelDeps {
 
 export interface CancelAuthorizationRequest {
   principal: Principal;
+  /** Who the OAuth provider said the caller is, when their token says. */
+  loginIdentity?: ActorIdentity;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
@@ -517,6 +521,7 @@ export function authorizeCancelRequest(
         : "execution",
       resourceName: request.execution?.id ?? "*",
       principal: request.principal,
+      loginIdentity: request.loginIdentity,
       sourceIp: request.sourceIp,
       requestId: crypto.randomUUID(),
       outcome: "denied",
@@ -5250,6 +5255,7 @@ export const serveCommand = new Command()
       trustProxy,
       auditEmitter: connectionCtx.auditEmitter,
       instanceId,
+      resolvedUserNames: connectionCtx.resolvedUserNames,
     };
 
     // Dashboard static file serving
@@ -5527,6 +5533,7 @@ export const serveCommand = new Command()
               instanceId: connectionCtx.instanceId,
               sourceIp: remoteAddr,
               ingress: `websocket:${transport}`,
+              resolvedUserNames: connectionCtx.resolvedUserNames,
             };
             const result = extracted
               ? await authenticateServerToken(
@@ -5584,6 +5591,7 @@ export const serveCommand = new Command()
               createdAt: result.tokenCreatedAt,
               principalId: result.principalId,
             });
+            setConnectionLoginIdentity(socket, result.oauthIdentity);
             setConnectionSourceIp(socket, remoteAddr);
             setConnectionCompression(
               socket,
@@ -5628,6 +5636,7 @@ export const serveCommand = new Command()
           const isBulkCancel = url.pathname === "/api/v1/cancel";
           let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
             null;
+          let cancelLoginIdentity: ActorIdentity | undefined;
           const cancelRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
@@ -5672,6 +5681,7 @@ export const serveCommand = new Command()
                   instanceId: connectionCtx.instanceId,
                   sourceIp: cancelRemoteAddr,
                   ingress: "http-cancel",
+                  resolvedUserNames: connectionCtx.resolvedUserNames,
                 },
               );
               if (!authResult.ok) {
@@ -5684,11 +5694,13 @@ export const serveCommand = new Command()
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
+              cancelLoginIdentity = authResult.oauthIdentity;
               const refusal = authorizeCancelRequest(
                 connectionCtx,
                 policySnapshotLoader,
                 {
                   principal: cancelPrincipal,
+                  loginIdentity: authResult.oauthIdentity,
                   collectives: authResult.collectives,
                   groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
@@ -5724,6 +5736,7 @@ export const serveCommand = new Command()
                 : "workflow",
               resourceName: executionId,
               principal: cancelAuditPrincipal,
+              loginIdentity: cancelLoginIdentity,
               sourceIp: cancelRemoteAddr,
               requestId: crypto.randomUUID(),
             };
@@ -5817,6 +5830,7 @@ export const serveCommand = new Command()
                 : "execution",
               resourceName: "*",
               principal: cancelAuditPrincipal,
+              loginIdentity: cancelLoginIdentity,
               sourceIp: cancelRemoteAddr,
               requestId: crypto.randomUUID(),
               outcome: "success",
@@ -6017,6 +6031,7 @@ export const serveCommand = new Command()
             connectionCtx.auditEmitter,
             connectionCtx.instanceId,
             deviceRemoteAddr,
+            connectionCtx.resolvedUserNames,
           );
         }
         if (isDashboardSessionRequest && authConfig.mode !== "none") {
@@ -6071,6 +6086,7 @@ export const serveCommand = new Command()
                   instanceId: connectionCtx.instanceId,
                   sourceIp: dashboardRemoteAddr,
                   ingress: "dashboard-session",
+                  resolvedUserNames: connectionCtx.resolvedUserNames,
                 },
               );
               if (!result.ok) {
@@ -6097,6 +6113,7 @@ export const serveCommand = new Command()
                   instanceId: connectionCtx.instanceId,
                   sourceIp: dashboardRemoteAddr,
                   ingress: "dashboard-session",
+                  resolvedUserNames: connectionCtx.resolvedUserNames,
                 },
               );
               if (!result.ok) {

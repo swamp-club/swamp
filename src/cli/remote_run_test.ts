@@ -425,10 +425,15 @@ Deno.test({
         assertEquals(forwarded[type].lockHolderTokens, "100:a+b", type);
       }
 
-      const overLimit = "100:".padEnd(
-        MAX_FORWARDED_LOCK_TOKENS_LENGTH + 1,
-        "a",
-      );
+      // Well-formed nonces, enough of them to pass the length limit.
+      let overLimit = "100:n0";
+      for (
+        let i = 1;
+        overLimit.length <= MAX_FORWARDED_LOCK_TOKENS_LENGTH;
+        i++
+      ) {
+        overLimit += `+n${i}`;
+      }
       for (const inherited of [undefined, overLimit]) {
         const sent = await sentWith(inherited);
         assertEquals(Object.keys(sent).length, 3);

@@ -162,3 +162,53 @@ Deno.test("buildAuditEvent: omits detail when undefined", () => {
 
   assertEquals(event.detail, undefined);
 });
+
+const actorBase = {
+  instanceId: "inst-1",
+  category: "execution",
+  stage: "response",
+  outcome: "success",
+  action: "model.method.run",
+  resourceKind: "model",
+  resourceName: "my-model",
+  principalKind: "user",
+  principalId: "sub-1",
+  initiatedBy: "user:sub-1",
+  sourceIp: "127.0.0.1",
+  requestId: "req-1",
+} as const;
+
+Deno.test("buildAuditEvent: records the actor's username and email", () => {
+  const event = buildAuditEvent({
+    ...actorBase,
+    actor: { username: "alice", email: "alice@example.com" },
+  });
+
+  assertEquals(event.principalUsername, "alice");
+  assertEquals(event.principalEmail, "alice@example.com");
+  assertEquals(event.principalId, "sub-1");
+});
+
+Deno.test("buildAuditEvent: records whichever actor field is known", () => {
+  const emailOnly = buildAuditEvent({
+    ...actorBase,
+    actor: { email: "alice@example.com" },
+  });
+  assertEquals("principalUsername" in emailOnly, false);
+  assertEquals(emailOnly.principalEmail, "alice@example.com");
+
+  const usernameOnly = buildAuditEvent({
+    ...actorBase,
+    actor: { username: "alice" },
+  });
+  assertEquals(usernameOnly.principalUsername, "alice");
+  assertEquals("principalEmail" in usernameOnly, false);
+});
+
+Deno.test("buildAuditEvent: leaves the actor fields out when unknown", () => {
+  for (const actor of [undefined, {}]) {
+    const event = buildAuditEvent({ ...actorBase, actor });
+    assertEquals("principalUsername" in event, false);
+    assertEquals("principalEmail" in event, false);
+  }
+});

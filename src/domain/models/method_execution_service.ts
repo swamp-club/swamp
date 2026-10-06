@@ -28,7 +28,11 @@ import {
   type ModelDefinition,
   modelRegistry,
 } from "./model.ts";
-import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
+import {
+  MAX_REMOTE_LOCK_IDS,
+  processLockHolderMarker,
+  type RemoteLockHolder,
+} from "../datastore/lock_holder_marker.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -148,6 +152,23 @@ export interface MethodExecutionService {
     methodName: string,
     context: MethodContext,
   ): Promise<MethodResult>;
+}
+
+/**
+ * The lock holder to send with a dispatch, or none when it names more locks
+ * than a worker accepts. The step then runs without it, and a structural
+ * swamp it starts waits on the locks held for the run.
+ */
+function remoteLockHolderFor(
+  context: Pick<MethodContext, "logger">,
+): RemoteLockHolder | undefined {
+  const holder = processLockHolderMarker.remoteLockHolder();
+  if (holder !== undefined && holder.lockIds.length > MAX_REMOTE_LOCK_IDS) {
+    context.logger
+      .warn`Not handing ${holder.lockIds.length} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
+    return undefined;
+  }
+  return holder;
 }
 
 /**
@@ -460,7 +481,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
         ...secretDelivery,
-        lockHolder: processLockHolderMarker.remoteLockHolder(),
+        lockHolder: remoteLockHolderFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {

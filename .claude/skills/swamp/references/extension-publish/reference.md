@@ -207,7 +207,14 @@ visibility.
 
 **On Failure:** If the push fails:
 
-- Version already exists → bump the MICRO component and retry
+- Version already exists on the channel you pushed to → bump the MICRO component
+  and retry
+- Version already exists on a lower channel (e.g. on `beta`, pushed with
+  `--channel stable`) → the error gives the exact `swamp extension promote`
+  command; promote that version instead of bumping, which would discard the
+  tested version and its review report
+- Version already exists on a higher channel → a version cannot move down a
+  channel; bump and publish a new version
 - Network error → check connectivity and retry
 - Auth error → re-run `swamp auth login` (go back to State 2)
 
@@ -235,7 +242,14 @@ swamp extension push manifest.yaml --channel rc --yes --json
 ```
 
 Valid channel values are `beta` and `rc`. Omitting `--channel` publishes to
-stable. The dry-run in State 7 also accepts `--channel` for validation.
+stable. The dry-run in State 7 also accepts `--channel` for validation; its
+`version-exists` registry check names the channel a published version is on
+(`existingChannel`) and the one requested (`requestedChannel`).
+
+An interactive push (no `--yes`, no `--json`) names the channel in its final
+confirmation and, when the version is already on a lower channel, offers
+promote, bump or stop. `--yes` never promotes; it fails with the promote command
+instead.
 
 ### Promoting between channels
 
@@ -251,12 +265,19 @@ swamp extension promote @collective/name 2026.06.10.1 --channel stable --json
 # Explicit source channel (skips direction validation)
 swamp extension promote @collective/name 2026.06.10.1 \
   --channel stable --from-channel rc --json
+
+# From a manifest: name and version come from the manifest, and the registry
+# is asked which channel the version is on before promoting
+swamp extension promote manifest.yaml --channel stable --json
 ```
 
-| Option           | Required | Description                                            |
-| ---------------- | -------- | ------------------------------------------------------ |
-| `--channel`      | Yes      | Target channel: `rc` or `stable`                       |
-| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted |
+With a manifest, promote fails with "Nothing to promote" when the version is on
+no channel, or already on the target channel or above it.
+
+| Option           | Required | Description                                                                         |
+| ---------------- | -------- | ----------------------------------------------------------------------------------- |
+| `--channel`      | Yes      | Target channel: `rc` or `stable`                                                    |
+| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted; not allowed with a manifest |
 
 Promotion direction must go upward: beta → rc → stable.
 

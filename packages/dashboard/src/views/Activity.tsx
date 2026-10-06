@@ -19,6 +19,7 @@
 
 import { useState } from "react";
 import type { AuditEvent } from "../client/useAuditStream";
+import { actorLabel } from "./actor_label.ts";
 
 const CATEGORY_COLORS: Record<string, string> = {
   auth: "#6366f1",
@@ -135,7 +136,7 @@ function EventRow({ event }: { event: AuditEvent }) {
             whiteSpace: "nowrap",
           }}
         >
-          {event.initiatedBy}
+          {actorLabel(event)}
         </span>
         <span
           className="mono"
@@ -180,6 +181,19 @@ function EventRow({ event }: { event: AuditEvent }) {
           </div>
           <div>
             <strong>Principal kind:</strong> {event.principalKind}
+          </div>
+          {event.principalUsername && (
+            <div>
+              <strong>Username:</strong> {event.principalUsername}
+            </div>
+          )}
+          {event.principalEmail && (
+            <div>
+              <strong>Email:</strong> {event.principalEmail}
+            </div>
+          )}
+          <div>
+            <strong>Principal ID:</strong> {event.principalId}
           </div>
           {event.methodName && (
             <div>

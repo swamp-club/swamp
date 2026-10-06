@@ -1738,9 +1738,10 @@ export async function waitForPerModelLocks(
               hostname?: string;
               nonce?: string;
             };
-            // Skip locks an ancestor swamp on this host holds for the run
-            // that started this one (prevents deadlock when a workflow
-            // shell step spawns a nested swamp command).
+            // Skip locks held for the run that started this one: those
+            // handed down by nonce, or an ancestor swamp's on this host
+            // (prevents deadlock when a workflow shell step spawns a nested
+            // swamp command).
             const relation = relationTo(info);
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();

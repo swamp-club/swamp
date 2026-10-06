@@ -33,6 +33,17 @@ class LogExtensionPromoteRenderer implements Renderer<ExtensionPromoteEvent> {
       promoting: () => {
         logger.info`Promoting...`;
       },
+      resolved: (e) => {
+        logger.info(
+          "Found {name}@{version} on channel {fromChannel}; promoting {fromChannel} → {toChannel}",
+          {
+            name: e.name,
+            version: e.version,
+            fromChannel: e.fromChannel,
+            toChannel: e.toChannel,
+          },
+        );
+      },
       completed: (e) => {
         logger.info(
           "Promoted {name}@{version} from {previousChannel} to {channel}",
@@ -55,6 +66,7 @@ class JsonExtensionPromoteRenderer implements Renderer<ExtensionPromoteEvent> {
   handlers(): EventHandlers<ExtensionPromoteEvent> {
     return {
       promoting: () => {},
+      resolved: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

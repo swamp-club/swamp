@@ -28,8 +28,12 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
-import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
+import type {
+  ActorIdentity,
+  AuditEvent,
+} from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import {
   parsePrincipal,
   type Principal,
@@ -55,6 +59,8 @@ export interface TokenAuthAuditContext {
   readonly sourceIp?: string;
   readonly requestId?: string;
   readonly ingress?: string;
+  /** Configured user names by id, for the event's username fallback. */
+  readonly resolvedUserNames?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -233,6 +239,11 @@ export type ServerTokenAuthResult =
      * which mint of the name a session was opened with.
      */
     tokenCreatedAt: string;
+    /**
+     * Who the OAuth provider said the user was at login. Absent on tokens
+     * minted any other way (swamp-club#3076).
+     */
+    oauthIdentity?: ActorIdentity;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
@@ -333,7 +344,7 @@ export async function authenticateServerToken(
       };
     }
 
-    emitTokenUseAuditEvent(auditContext, split.name, principal);
+    emitTokenUseAuditEvent(auditContext, split.name, principal, token);
     logger.info("Authenticated token {name} as {principal}", {
       name: split.name,
       principal: token.principalId,
@@ -345,6 +356,7 @@ export async function authenticateServerToken(
       groups: token.groups,
       tokenName: split.name,
       tokenCreatedAt: token.createdAt,
+      ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -400,7 +412,7 @@ export async function authenticateDashboardSession(
         reason: "invalid-principal",
       };
     }
-    emitTokenUseAuditEvent(auditContext, binding.tokenName, principal);
+    emitTokenUseAuditEvent(auditContext, binding.tokenName, principal, token);
     return {
       ok: true,
       principalId: token.principalId,
@@ -408,6 +420,7 @@ export async function authenticateDashboardSession(
       groups: token.groups,
       tokenName: binding.tokenName,
       tokenCreatedAt: token.createdAt,
+      ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -424,6 +437,7 @@ function emitTokenUseAuditEvent(
   auditContext: TokenAuthAuditContext | undefined,
   tokenName: string,
   principal: Principal,
+  token: ServerToken,
 ): void {
   if (!auditContext?.emitter) return;
   try {
@@ -438,6 +452,11 @@ function emitTokenUseAuditEvent(
       principalKind: principal.kind,
       principalId: principal.id,
       initiatedBy: principalToString(principal),
+      actor: resolveActorIdentity(
+        principal,
+        auditContext.resolvedUserNames,
+        token.oauthIdentity,
+      ),
       sourceIp: auditContext.sourceIp ?? "unknown",
       requestId: auditContext.requestId ?? crypto.randomUUID(),
       detail: auditContext.ingress,

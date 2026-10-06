@@ -176,3 +176,38 @@ Deno.test("verifyChain: can verify from a custom start digest", async () => {
   const result = await verifyChain(tail, midDigest);
   assertEquals(result.valid, true);
 });
+
+Deno.test("verifyChain: a chain mixing events with and without actor identity verifies", async () => {
+  const chain = new AuditChainState();
+  const events: ChainedAuditEvent[] = [
+    await chain.chain(makeEvent("before")),
+    await chain.chain({
+      ...makeEvent("after"),
+      principalUsername: "alice",
+      principalEmail: "alice@example.com",
+    }),
+    await chain.chain(makeEvent("service")),
+  ];
+
+  assertEquals((await verifyChain(events)).valid, true);
+
+  const tampered = [
+    events[0],
+    { ...events[1], principalEmail: "mallory@example.com" },
+    events[2],
+  ];
+  assertEquals(await verifyChain(tampered), { valid: false, brokenAt: 2 });
+});
+
+Deno.test("AuditChainState: an event without actor identity keeps its digest", async () => {
+  const event = makeEvent("same");
+  const withUndefined = {
+    ...event,
+    principalUsername: undefined,
+    principalEmail: undefined,
+  };
+
+  const a = await new AuditChainState().chain(event);
+  const b = await new AuditChainState().chain(withUndefined);
+  assertEquals(a.digest, b.digest);
+});

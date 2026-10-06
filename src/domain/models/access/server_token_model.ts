@@ -46,6 +46,12 @@ export const ServerTokenSchema = z.object({
   principalEmail: z.string().describe(
     "Display email (informational, not used for matching)",
   ),
+  oauthIdentity: z.object({
+    email: z.string().min(1),
+    username: z.string().min(1).optional(),
+  }).optional().describe(
+    "Identity the OAuth provider supplied at login; set only by OAuth login, never by a manual mint (swamp-club#3076)",
+  ),
   collectives: z.array(z.string()).default([]).describe(
     "Collective memberships snapshotted at login time (from OAuth userinfo)",
   ),
@@ -299,6 +305,9 @@ async function rotate(
     state: "active",
     principalId: existing.principalId,
     principalEmail: existing.principalEmail,
+    ...(existing.oauthIdentity
+      ? { oauthIdentity: existing.oauthIdentity }
+      : {}),
     collectives: existing.collectives,
     groups: existing.groups,
     createdAt: new Date(now).toISOString(),

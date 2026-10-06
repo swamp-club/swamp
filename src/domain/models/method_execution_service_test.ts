@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
+import {
+  MAX_REMOTE_LOCK_IDS,
+  processLockHolderMarker,
+  SWAMP_LOCK_HOLDER_TOKENS,
+} from "../datastore/lock_holder_marker.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
@@ -3005,7 +3010,11 @@ Deno.test("executeWorkflow - remote placement skips pre-flight checks (swamp-clu
   }
 });
 
-Deno.test("executeWorkflow - remote dispatch carries the locks held for the run (swamp-club#2983)", async () => {
+/** The lock holder each remote dispatch made inside `fn` carried. */
+async function dispatchedLockHolders(
+  inheritedTokens: string | undefined,
+  fn: (run: () => Promise<unknown>) => Promise<void>,
+): Promise<Array<RemoteStepRequest["lockHolder"]>> {
   const service = new DefaultMethodExecutionService();
   const model = createCheckModel({});
   const definition = Definition.create({
@@ -3026,23 +3035,61 @@ Deno.test("executeWorkflow - remote dispatch carries the locks held for the run 
     releaseAffinity: () => {},
   });
   try {
-    const run = () => {
-      const { context } = createTestContext({
-        modelType: model.type,
-        placement: { labels: { tier: "remote" } },
-      });
-      return service.executeWorkflow(definition, model, "create", context);
-    };
-    await processLockHolderMarker.runHolding(["nonce-a"], run);
-    // Outside any lock scope there is nothing to hand to the worker.
-    await run();
-
-    assertEquals(lockHolders[0]?.pid, Deno.pid);
-    assertEquals(lockHolders[0]?.lockIds, ["nonce-a"]);
-    assertEquals(lockHolders[1], undefined);
+    await withMockedEnv(
+      { [SWAMP_LOCK_HOLDER_TOKENS]: inheritedTokens },
+      () =>
+        fn(() => {
+          const { context } = createTestContext({
+            modelType: model.type,
+            placement: { labels: { tier: "remote" } },
+          });
+          return service.executeWorkflow(definition, model, "create", context);
+        }),
+    );
   } finally {
     setRemoteStepDispatcher(null);
   }
+  return lockHolders;
+}
+
+Deno.test("executeWorkflow - remote dispatch carries the locks held for the run (swamp-club#2983)", async () => {
+  const lockHolders = await dispatchedLockHolders(undefined, async (run) => {
+    await processLockHolderMarker.runHolding(["nonce-a"], run);
+    // Outside any lock scope there is nothing to hand to the worker.
+    await run();
+  });
+
+  assertEquals(lockHolders[0]?.pid, Deno.pid);
+  assertEquals(lockHolders[0]?.lockIds, ["nonce-a"]);
+  assertEquals(lockHolders[1], undefined);
+});
+
+Deno.test("executeWorkflow - remote dispatch also carries the locks handed down to this process (swamp-club#3096)", async () => {
+  const lockHolders = await dispatchedLockHolders(
+    "100:up-a,200:up-b",
+    async (run) => {
+      await processLockHolderMarker.runHolding(["nonce-a"], run);
+      await run();
+    },
+  );
+
+  assertEquals(lockHolders[0]?.lockIds, ["up-a", "up-b", "nonce-a"]);
+  assertEquals(lockHolders[1]?.lockIds, ["up-a", "up-b"]);
+});
+
+Deno.test("executeWorkflow - remote dispatch sends no lock holder naming more locks than a worker accepts (swamp-club#3096)", async () => {
+  const nonces = (count: number) =>
+    Array.from({ length: count }, (_, i) => `n${i}`);
+  const lockHolders = await dispatchedLockHolders(undefined, async (run) => {
+    await processLockHolderMarker.runHolding(nonces(MAX_REMOTE_LOCK_IDS), run);
+    await processLockHolderMarker.runHolding(
+      nonces(MAX_REMOTE_LOCK_IDS + 1),
+      run,
+    );
+  });
+
+  assertEquals(lockHolders[0]?.lockIds.length, MAX_REMOTE_LOCK_IDS);
+  assertEquals(lockHolders[1], undefined);
 });
 
 Deno.test("executeWorkflow - local execution still runs pre-flight checks", async () => {

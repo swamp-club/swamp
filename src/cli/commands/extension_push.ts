@@ -41,11 +41,13 @@ import {
   computePackageCacheHash,
   consumeStream,
   createApiCallRecorder,
+  createExtensionPromoteDeps,
   createExtensionPushExecuteDeps,
   createExtensionPushPrepareDeps,
   createLibSwampContext,
   defaultPackageCacheRoot,
   ExtensionPackageCache,
+  extensionPromote,
   extensionPush,
   extensionPushPrepare,
   registryChecksVerdict,
@@ -58,6 +60,12 @@ import {
   renderExtensionPushCancelled,
   type WarningsWaiver,
 } from "../../presentation/renderers/extension_push.ts";
+import {
+  bumpVersionPrompt,
+  existingVersionChoicePrompt,
+  finalPushPrompt,
+} from "../../presentation/renderers/extension_push_prompts.ts";
+import { createExtensionPromoteRenderer } from "../../presentation/renderers/extension_promote.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
@@ -74,7 +82,11 @@ import type {
 import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
-import { promptConfirmation } from "../prompt_helpers.ts";
+import { promptConfirmation, promptNumberedChoice } from "../prompt_helpers.ts";
+import {
+  placeExistingVersion,
+  promoteCommand,
+} from "../../domain/extensions/extension_publish_checks.ts";
 import {
   buildFindingsReport,
   withAcceptance,
@@ -145,6 +157,52 @@ export function resolveWarningsGate(input: {
     return { kind: "proceed" };
   }
   return { kind: "prompt" };
+}
+
+/** How push answers a version that is already published. */
+export type ExistingVersionResponse =
+  /** Fail with the version-exists error; no prompt. */
+  | { kind: "refuse"; message: string }
+  /** Ask whether to bump (same or higher channel: promote is impossible). */
+  | { kind: "bump-prompt" }
+  /** Offer promote, bump or stop (the version is on a lower channel). */
+  | { kind: "choose" };
+
+/**
+ * Decides how push answers a version that is already published.
+ *
+ * Only an interactive log run prompts, exactly as before swamp-club#2939:
+ * `--json`, `--yes` and `--force` refuse, so `--yes` can never promote. A log
+ * run without a terminal still reaches a prompt, whose own error says to
+ * pass `--yes`. A refusal keeps the pre-#2939 message for a duplicate on the
+ * requested channel; a version on another channel gets the check's message,
+ * which names that channel and, when lower, the promote command.
+ */
+export function resolveExistingVersionResponse(input: {
+  extensionName: string;
+  version: string;
+  checkMessage: string;
+  existingChannel?: string;
+  requestedChannel?: string;
+  outputMode: OutputMode;
+  yes?: boolean;
+  force?: boolean;
+}): ExistingVersionResponse {
+  const placement = input.existingChannel && input.requestedChannel
+    ? placeExistingVersion(input.existingChannel, input.requestedChannel)
+    : "same-channel";
+  if (input.outputMode !== "log" || input.yes || input.force) {
+    return {
+      kind: "refuse",
+      message: placement === "same-channel"
+        ? `Version ${input.version} already exists for ${input.extensionName}. ` +
+          `Use a different version or let the CLI bump it interactively.`
+        : input.checkMessage,
+    };
+  }
+  return placement === "lower-channel"
+    ? { kind: "choose" }
+    : { kind: "bump-prompt" };
 }
 
 /**
@@ -461,6 +519,7 @@ export const extensionPushCommand = new Command()
         binaryFilePaths,
         dryRun: options.dryRun ?? false,
         registryChecks,
+        channel: options.channel,
         releaseNotes: options.releaseNotes,
         denoConfigPath,
         packageJsonDir,
@@ -501,67 +560,116 @@ export const extensionPushCommand = new Command()
             details.mismatches as CollectiveMismatch[],
           );
         } else if (details?.existingVersion) {
-          // Version already exists — handle interactive bump
+          // Version already exists — promote, bump or stop interactively
           const existingVersion = details.existingVersion as string;
-          if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
-            const bumped = CalVer.bump(CalVer.create(existingVersion));
-            const confirmed = await promptConfirmation(
-              `Version ${existingVersion} already exists. Bump to ${bumped.value}?`,
+          const requestedChannel = (details.requestedChannel as
+            | string
+            | undefined) ?? options.channel ?? "stable";
+          const existingChannel =
+            (details.existingChannel as string | undefined) ??
+              requestedChannel;
+          const response = resolveExistingVersionResponse({
+            extensionName: manifest.name,
+            version: existingVersion,
+            checkMessage: error.message,
+            existingChannel,
+            requestedChannel,
+            outputMode: cliCtx.outputMode,
+            yes: options.yes,
+            force: options.force,
+          });
+          if (response.kind === "refuse") {
+            throw new UserError(response.message);
+          }
+          const bumped = CalVer.bump(CalVer.create(existingVersion));
+          const promptInput = {
+            name: manifest.name,
+            version: existingVersion,
+            bumpedVersion: bumped.value,
+            existingChannel,
+            requestedChannel,
+          };
+          let action: "promote" | "bump" | "stop";
+          if (response.kind === "choose") {
+            const prompt = existingVersionChoicePrompt(promptInput);
+            const index = await promptNumberedChoice(
+              prompt.details,
+              prompt.choices.map((c) => c.label),
             );
-            if (confirmed) {
-              manifest.version = bumped.value;
-              // The version is part of the content hash, so bumping it
-              // changes the hash and therefore the review-report path.
-              const bumpedHash = await computePackageCacheHash(cacheHashInput);
-              // Re-run prepare with bumped version
-              try {
-                prepared = await extensionPushPrepare(ctx, prepareDeps, {
-                  manifest,
-                  repoDir,
-                  manifestDir,
-                  modelsDir,
-                  allModelFiles,
-                  modelEntryPoints,
-                  vaultsDir,
-                  allVaultFiles,
-                  vaultEntryPoints,
-                  datastoresDir,
-                  allDatastoreFiles,
-                  datastoreEntryPoints,
-                  reportsDir,
-                  allReportFiles,
-                  reportEntryPoints,
-                  webhooksDir,
-                  allWebhookFiles,
-                  webhookEntryPoints,
-                  workflowFiles,
-                  skillDirs: resolved.skillDirs,
-                  allSkillFiles: resolved.allSkillFiles,
-                  includeFilePaths,
-                  additionalFilePaths,
-                  binaryFilePaths,
-                  dryRun: options.dryRun ?? false,
-                  registryChecks,
-                  releaseNotes: options.releaseNotes,
-                  denoConfigPath,
-                  packageJsonDir,
-                  contentHash: bumpedHash,
-                });
-              } catch (retryError) {
-                if (isSwampError(retryError)) {
-                  throw new UserError(retryError.message);
-                }
-                throw retryError;
+            action = index === null ? "stop" : prompt.choices[index].action;
+          } else {
+            const prompt = bumpVersionPrompt(promptInput);
+            action = await promptConfirmation(prompt.question, prompt.details)
+              ? "bump"
+              : "stop";
+          }
+          if (action === "promote") {
+            const command = promoteCommand(
+              manifest.name,
+              existingVersion,
+              requestedChannel,
+            );
+            cliCtx.logger.info`Running: ${command}`;
+            await consumeStream(
+              extensionPromote(ctx, createExtensionPromoteDeps(identity), {
+                extensionName: manifest.name,
+                version: existingVersion,
+                toChannel: requestedChannel,
+                fromChannel: existingChannel,
+              }),
+              createExtensionPromoteRenderer(cliCtx.outputMode).handlers(),
+            );
+            return;
+          }
+          if (action === "bump") {
+            manifest.version = bumped.value;
+            // The version is part of the content hash, so bumping it
+            // changes the hash and therefore the review-report path.
+            const bumpedHash = await computePackageCacheHash(cacheHashInput);
+            // Re-run prepare with bumped version
+            try {
+              prepared = await extensionPushPrepare(ctx, prepareDeps, {
+                manifest,
+                repoDir,
+                manifestDir,
+                modelsDir,
+                allModelFiles,
+                modelEntryPoints,
+                vaultsDir,
+                allVaultFiles,
+                vaultEntryPoints,
+                datastoresDir,
+                allDatastoreFiles,
+                datastoreEntryPoints,
+                reportsDir,
+                allReportFiles,
+                reportEntryPoints,
+                webhooksDir,
+                allWebhookFiles,
+                webhookEntryPoints,
+                workflowFiles,
+                skillDirs: resolved.skillDirs,
+                allSkillFiles: resolved.allSkillFiles,
+                includeFilePaths,
+                additionalFilePaths,
+                binaryFilePaths,
+                dryRun: options.dryRun ?? false,
+                registryChecks,
+                channel: options.channel,
+                releaseNotes: options.releaseNotes,
+                denoConfigPath,
+                packageJsonDir,
+                contentHash: bumpedHash,
+              });
+            } catch (retryError) {
+              if (isSwampError(retryError)) {
+                throw new UserError(retryError.message);
               }
-            } else {
-              renderExtensionPushCancelled(cliCtx.outputMode);
-              return;
+              throw retryError;
             }
           } else {
-            throw new UserError(
-              `Version ${existingVersion} already exists for ${manifest.name}. ` +
-                `Use a different version or let the CLI bump it interactively.`,
-            );
+            renderExtensionPushCancelled(cliCtx.outputMode);
+            return;
           }
         }
         if (!prepared) {
@@ -732,8 +840,14 @@ export const extensionPushCommand = new Command()
 
     // 8. Confirmation prompt
     if (!options.yes && !options.force && cliCtx.outputMode === "log") {
+      const prompt = finalPushPrompt({
+        name: prepared.manifest.name,
+        version: prepared.manifest.version,
+        channel: options.channel ?? "stable",
+      });
       const confirmed = await promptConfirmation(
-        `Push ${prepared.manifest.name}@${prepared.manifest.version} to registry?`,
+        prompt.question,
+        prompt.details,
       );
       if (!confirmed) {
         renderExtensionPushCancelled(cliCtx.outputMode);
