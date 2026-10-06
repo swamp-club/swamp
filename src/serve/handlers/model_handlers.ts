@@ -127,6 +127,7 @@ import {
   filterByResources,
   handlerLibSwampContext,
   isAdminOnlyModelType,
+  isAuthorized,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   pushChangedToRemote,
@@ -138,7 +139,6 @@ import {
   sendError,
   subscribeUntilDetach,
   wasRequestErrored,
-  wouldAuthorize,
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
@@ -245,7 +245,9 @@ async function resolveMethodRunTarget(
       };
     // The definition the run acts on is the one definitionName names. It is
     // authorized by its canonical name and fields when it exists, and by
-    // the name to be created otherwise (swamp-club#2672).
+    // the name to be created otherwise (swamp-club#2672). The run looks it
+    // up with the same findDefinitionByIdOrName (serve deps), and fails if
+    // it then finds anything else, so the two cannot disagree silently.
     const runDefinition = await findDefinitionByIdOrName(
       ctx.repoContext.definitionRepo,
       payload.definitionName,
@@ -443,13 +445,13 @@ async function authorizeRunInputs(
   if (expressions.length === 0) return true;
   const runOn = target.run?.resource ?? target.resource;
   const { methodName: _methodName, ...fields } = runOn.fields;
-  const writable = wouldAuthorize(
-    socket,
-    principal,
-    "write",
-    { ...runOn, fields },
-    ctx,
-  );
+  // Decided only when an input reads env, so a refusal is audited exactly
+  // when it decides the request.
+  const writable = !expressions.some((e) => e.references.usesEnv) ||
+    isAuthorized(socket, requestId, principal, "write", {
+      ...runOn,
+      fields,
+    }, ctx);
   const refusal = await authorizeExpressionReferences(
     socket,
     requestId,

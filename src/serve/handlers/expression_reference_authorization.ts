@@ -56,7 +56,10 @@ export const MAX_EXPRESSION_TARGETS = 32;
 export type EnvAccess =
   /** The principal holds write on the model: env is theirs to author. */
   | "allowed"
-  /** Run inputs from a principal without write on the model named. */
+  /**
+   * Run inputs from a principal without write on the model named. The
+   * caller has already audited that refusal.
+   */
   | { refusedFor: string };
 
 /** A refusal, worded the same whether the target exists or is denied. */
@@ -111,6 +114,13 @@ export async function authorizeExpressionReferences(
 
   for (const { raw, references } of expressions) {
     if (references.usesEnv && env !== "allowed") {
+      if (references.unanalyzable) {
+        return {
+          message: `Access denied: expression ${shown(raw)} could not be ` +
+            `analyzed, and run inputs that may read env need write on ` +
+            `${env.refusedFor}`,
+        };
+      }
       return {
         message: `Access denied: expression ${shown(raw)} reads env, which ` +
           `is only available in ` +

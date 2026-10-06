@@ -98,6 +98,11 @@ export interface ExpressionReferences {
   readonly runTargets: readonly { model: string; method: string }[];
   /** The expression runs a model method whose model or method is computed. */
   readonly runsComputed: boolean;
+  /**
+   * The text does not parse, so every flag above is set: it is judged as
+   * reading and running anything.
+   */
+  readonly unanalyzable: boolean;
 }
 
 /** An expression found in content, with what it reads. */
@@ -118,6 +123,7 @@ export interface AnalyzedExpression {
 const GRAMMAR = new Environment({
   unlistedVariablesAreDyn: true,
   enableOptionalTypes: true,
+  homogeneousAggregateLiterals: false,
 });
 
 interface Accumulator {
@@ -128,6 +134,7 @@ interface Accumulator {
   readsSelfOrInputs: boolean;
   runTargets: { model: string; method: string }[];
   runsComputed: boolean;
+  unanalyzable: boolean;
 }
 
 /** Analyzes one CEL expression (the text inside `${{ }}`). */
@@ -140,6 +147,7 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     readsSelfOrInputs: false,
     runTargets: [],
     runsComputed: false,
+    unanalyzable: false,
   };
   let ast: ASTNode;
   try {
@@ -151,6 +159,7 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     acc.runsComputed = true;
     acc.usesEnv = true;
     acc.readsSelfOrInputs = true;
+    acc.unanalyzable = true;
     return acc;
   }
   visit(ast, new Set(), acc);

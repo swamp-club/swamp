@@ -59,7 +59,7 @@ export async function authorizeStepTargets(
   principal: Principal | null,
   ctx: ConnectionContext,
   targets: readonly StepTarget[],
-  computedModelRun?: string,
+  computedModelRun?: { raw: string; unanalyzable: boolean },
 ): Promise<string | undefined> {
   // An expression that runs a model it computes (`model.method(inputs.m,
   // ...)`) can run any model, as a computed step target can.
@@ -71,9 +71,14 @@ export async function authorizeStepTargets(
       fields: {},
     }, ctx)
   ) {
-    return `Access denied: expression ${
-      shown(computedModelRun)
-    } runs a model method it computes, which needs admin`;
+    return computedModelRun.unanalyzable
+      ? `Access denied: expression ${
+        shown(computedModelRun.raw)
+      } could not be analyzed, and one that may run a model method needs ` +
+        `admin`
+      : `Access denied: expression ${
+        shown(computedModelRun.raw)
+      } runs a model method it computes, which needs admin`;
   }
   for (const target of targets) {
     if (!await stepAllowed(socket, requestId, principal, ctx, target)) {

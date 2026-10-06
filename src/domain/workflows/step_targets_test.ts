@@ -57,14 +57,24 @@ Deno.test("workflowStepTargets: lists model, direct and nested workflow steps", 
     { type: "manual_approval", prompt: "go?" },
   ]);
   assertEquals(workflowStepTargets(workflow), [
-    { kind: "model", modelIdOrName: "db", methodName: "get" },
+    {
+      kind: "model",
+      modelIdOrName: "db",
+      methodName: "get",
+      location: "jobs[0].steps[0]",
+    },
     {
       kind: "direct",
       modelType: "@acme/thing",
       modelName: "t1",
       methodName: "create",
+      location: "jobs[0].steps[1]",
     },
-    { kind: "workflow", workflowIdOrName: "child" },
+    {
+      kind: "workflow",
+      workflowIdOrName: "child",
+      location: "jobs[0].steps[2]",
+    },
   ]);
 });
 
@@ -120,6 +130,27 @@ Deno.test("stepTargetKey: equal targets share a key, different ones do not", () 
   const a: StepTarget = { kind: "model", modelIdOrName: "db", methodName: "x" };
   assertEquals(stepTargetKey(a), stepTargetKey({ ...a }));
   assertNotEquals(stepTargetKey(a), stepTargetKey({ ...a, methodName: "y" }));
+});
+
+Deno.test("stepTargetKey: only a self- or inputs-computed target depends on its step", () => {
+  const literal: StepTarget = {
+    kind: "model",
+    modelIdOrName: "db",
+    methodName: "x",
+  };
+  assertEquals(
+    stepTargetKey({ ...literal, location: "jobs[0].steps[0]" }),
+    stepTargetKey({ ...literal, location: "jobs[0].steps[1]" }),
+  );
+  const computed: StepTarget = {
+    kind: "model",
+    modelIdOrName: "${{ self.e }}",
+    methodName: "x",
+  };
+  assertNotEquals(
+    stepTargetKey({ ...computed, location: "jobs[0].steps[0]" }),
+    stepTargetKey({ ...computed, location: "jobs[0].steps[1]" }),
+  );
 });
 
 Deno.test("analyzeWorkflowExpressions: includes assert predicates written without ${{ }}", () => {

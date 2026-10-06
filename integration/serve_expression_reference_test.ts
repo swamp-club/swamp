@@ -920,3 +920,54 @@ Deno.test("serve expressions: a self-reading expression copied to another step i
     );
   });
 });
+
+Deno.test("serve expressions: a self-computed step target placed in another step is checked there", async () => {
+  await withStepFixtures(async (f) => {
+    for (
+      const task of [
+        {
+          type: "model_method",
+          modelIdOrName: "${{ self.e }}",
+          methodName: "noop",
+        },
+        { type: "workflow", workflowIdOrName: "${{ self.e }}" },
+      ]
+    ) {
+      // An admin's workflow: step a runs a computed target over dev items,
+      // step b iterates prod items with a literal task.
+      const flow = Workflow.fromData(
+        {
+          id: crypto.randomUUID(),
+          name: `loops-${task.type}`,
+          version: 1,
+          jobs: [{
+            name: "main",
+            steps: [
+              {
+                name: "a",
+                forEach: { item: "e", in: '${{ ["dev-db"] }}' },
+                task,
+              },
+              {
+                name: "b",
+                forEach: { item: "e", in: '${{ ["prod-db"] }}' },
+                task: {
+                  type: "model_method",
+                  modelIdOrName: "dev-db",
+                  methodName: "noop",
+                },
+              },
+            ],
+          }],
+        } as unknown as Parameters<typeof Workflow.fromData>[0],
+      );
+      await f.repo.repoContext.workflowRepo.save(flow);
+      assertRefused(
+        await editWorkflow(f.ctx, flow, (data) => {
+          data.jobs[0].steps[1].task = { ...task };
+        }),
+        `${task.type} target copied into the prod step`,
+      );
+    }
+  });
+});

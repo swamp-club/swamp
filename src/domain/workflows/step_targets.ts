@@ -34,30 +34,37 @@ import {
 import { scanExpressions } from "../expressions/expression_scanner.ts";
 import type { Workflow } from "./workflow.ts";
 
-/** One thing a workflow step runs. */
+/**
+ * One thing a workflow step runs. `location` is the step it sits in
+ * (`jobs[j].steps[k]`), absent for a target not tied to a step.
+ */
 export type StepTarget =
-  | {
-    readonly kind: "model";
-    /** A model name or id, or text with an expression computing one. */
-    readonly modelIdOrName: string;
-    readonly methodName: string;
-  }
-  | {
-    readonly kind: "direct";
-    readonly modelType: string;
-    readonly modelName: string;
-    readonly methodName: string;
-  }
-  | {
-    readonly kind: "workflow";
-    readonly workflowIdOrName: string;
-  };
+  & { readonly location?: string }
+  & (
+    | {
+      readonly kind: "model";
+      /** A model name or id, or text with an expression computing one. */
+      readonly modelIdOrName: string;
+      readonly methodName: string;
+    }
+    | {
+      readonly kind: "direct";
+      readonly modelType: string;
+      readonly modelName: string;
+      readonly methodName: string;
+    }
+    | {
+      readonly kind: "workflow";
+      readonly workflowIdOrName: string;
+    }
+  );
 
 /** Every step target in `workflow`, one per step that runs something. */
 export function workflowStepTargets(workflow: Workflow): StepTarget[] {
   const targets: StepTarget[] = [];
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
+  workflow.jobs.forEach((job, j) =>
+    job.steps.forEach((step, k) => {
+      const location = `jobs[${j}].steps[${k}]`;
       const task = step.task.data;
       if (task.type === "model_method") {
         if (task.modelIdOrName) {
@@ -65,6 +72,7 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
             kind: "model",
             modelIdOrName: task.modelIdOrName,
             methodName: task.methodName,
+            location,
           });
         } else if (task.modelType && task.modelName) {
           targets.push({
@@ -72,16 +80,18 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
             modelType: task.modelType,
             modelName: task.modelName,
             methodName: task.methodName,
+            location,
           });
         }
       } else if (task.type === "workflow") {
         targets.push({
           kind: "workflow",
           workflowIdOrName: task.workflowIdOrName,
+          location,
         });
       }
-    }
-  }
+    })
+  );
   return targets;
 }
 
@@ -135,9 +145,17 @@ function retargetSources(workflow: Workflow): unknown {
   };
 }
 
-/** A stable key for comparing targets across two versions of a workflow. */
+/**
+ * A stable key for comparing targets across two versions of a workflow. A
+ * computed target that reads `self` or `inputs` resolves per step (its
+ * forEach), so its key includes the step; any other target is the same
+ * wherever it sits.
+ */
 export function stepTargetKey(target: StepTarget): string {
-  return JSON.stringify(target);
+  const { location, ...rest } = target;
+  return isComputedStepTarget(target) && readsSelfOrInputs(target)
+    ? JSON.stringify({ ...rest, location })
+    : JSON.stringify(rest);
 }
 
 /** Whether any name in `target` is computed by an expression. */

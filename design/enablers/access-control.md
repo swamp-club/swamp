@@ -689,7 +689,9 @@ engine does not gate, so it needs `admin`; a computed nested workflow needs
 is a run, so users running a workflow an admin wrote are unaffected. An edit
 that changes the workflow's inputs or a step's `forEach` re-checks stored
 computed targets that read `inputs` or `self`, since those are what can
-retarget them; a retag or any other edit does not.
+retarget them; a retag or any other edit does not. Such a target placed in a
+step that did not hold it is checked there, since that step's `forEach` may
+differ.
 
 ## Expression references
 
