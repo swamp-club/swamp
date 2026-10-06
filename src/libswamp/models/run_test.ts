@@ -1460,6 +1460,24 @@ Deno.test("modelMethodRun: direct execution proceeds on a different definition t
       (error) => String(error),
     );
   assertEquals((await run(true)).includes("changed while"), false);
+  // A definition renamed in since a check that found one is never adopted,
+  // even when the caller may run it: its lock was not taken.
+  const renamedIn = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      modelIdOrName: "my-instance",
+      methodName: "run",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@myorg/raced-model",
+      definitionName: "my-instance",
+      expectedDefinitionId: "authorized-id",
+      authorizeResolvedDefinition: () => true,
+    }),
+  ).then(
+    (events) => JSON.stringify(events.find((e) => e.kind === "error") ?? ""),
+    (error) => String(error),
+  );
+  assertStringIncludes(renamedIn, "changed while the request was being");
   assertStringIncludes(await run(false), "changed while the request was being");
   assertEquals(seen.every((id) => id === winner.id), true);
 });

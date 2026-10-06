@@ -377,11 +377,11 @@ acts on the definition `definitionName` names, which a request may set apart
 from `modelIdOrName`. That definition is authorized too, by its canonical name
 and fields (or, before it exists, by the name to be created with the named
 type), after the requested model and the type; it is the one locked, recorded
-for cancel and attach, and audited. The run is handed that definition's id. If
-the name resolves to another definition by then (renamed, or created by a
-concurrent run), the run proceeds only if the caller may run that one, judged
-the same way; a definition deleted in between fails the run
-(swamp-club#2672). Because
+for cancel and attach, and audited. The run is handed that definition's id and
+fails if the name resolves to anything else by then (renamed in, or deleted).
+The exception is a name no definition had at the check: if a concurrent run
+created it since, the run adopts it when the caller may run that definition,
+judged the same way (swamp-club#2672). Because
 a direct run can rewrite an existing definition's global arguments, it takes
 that definition's model lock whatever the method's kind. The
 name vaults are authorized under is tracked by swamp-club#2676.
@@ -685,7 +685,8 @@ what the workflow runs. A served `workflow.edit` that adds a step needs `run`
 on the step's model (with the type, and `admin` for a restricted or
 control-plane type, as a direct run needs) or on its nested workflow. A guard
 or assert that calls `model.method("<model>", "<method>")` runs that method, so
-it is held to the same check. A model target computed by an expression can
+it is held to the same check; `model` used any other way (aliased with
+`cel.bind`, wrapped in `dyn()`) may run any model and needs `admin`. A model target computed by an expression can
 resolve to any model, restricted and control-plane ones included, which the
 engine does not gate, so it needs `admin`; a computed nested workflow needs
 `run` on every workflow. Steps already stored are not re-checked, and neither

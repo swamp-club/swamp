@@ -336,3 +336,20 @@ Deno.test("analyzeExpression: text that does not parse is assumed to read everyt
   assertEquals(r.readsSelfOrInputs, true);
   assertEquals(r.runsComputed, true);
 });
+
+Deno.test("analyzeExpression: model used other than as a direct receiver may run any model", () => {
+  for (
+    const cel of [
+      'cel.bind(m, model, m.method("prod", "destroy"))',
+      '[model].map(m, m.method("prod", "destroy"))[0]',
+      'dyn(model).method("prod", "destroy")',
+    ]
+  ) {
+    const r = analyzeExpression(cel);
+    assertEquals(r.runsComputed, true, cel);
+    assertEquals(r.dataWide, true, cel);
+  }
+  // Reading a model entry runs nothing.
+  assertEquals(analyzeExpression("model.prod.resource.x").runsComputed, false);
+  assertEquals(analyzeExpression('model["prod"].input').runsComputed, false);
+});

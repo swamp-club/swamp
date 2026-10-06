@@ -355,6 +355,9 @@ function visit(
       if (name === "data" || name === "model" || name === "file") {
         acc.dataWide = true;
       }
+      // An aliased model namespace (cel.bind, dyn(), a list) still
+      // dispatches model.method at evaluation, so it may run any model.
+      if (name === "model") acc.runsComputed = true;
       return;
     }
     case ".":

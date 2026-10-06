@@ -773,6 +773,28 @@ Deno.test("serve expressions: workflow.edit checks assert predicates and the met
       ),
       "assert running a computed model",
     );
+    for (
+      const aliased of [
+        'dyn(model).method("locked-db", "noop") != null',
+        'cel.bind(m, model, m.method("locked-db", "noop")) != null',
+      ]
+    ) {
+      // No data deny, so only the run check can refuse it.
+      const runDenyOnly = createServeCtx(f.repo, [
+        grant({ resource: { kind: "model", pattern: "*" } }),
+        grant({ resource: { kind: "workflow", pattern: "*" } }),
+        grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+        grant({
+          effect: "deny",
+          actions: ["run"],
+          resource: { kind: "model", pattern: "locked-*" },
+        }),
+      ]);
+      assertRefused(
+        await editWorkflow(runDenyOnly, f.flow, assertStep(aliased)),
+        `aliased model: ${aliased}`,
+      );
+    }
     assertAllowed(
       await editWorkflow(
         f.ctx,

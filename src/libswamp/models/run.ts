@@ -291,10 +291,10 @@ export interface ModelMethodRunInput {
    */
   expectedDefinitionId?: string | null;
   /**
-   * Called when the definition `definitionName` resolves to is not the one
-   * `expectedDefinitionId` names: renamed in between, or created by a
-   * concurrent run. The run proceeds on it only if this allows it, so the
-   * caller authorizes what actually runs (swamp-club#2672).
+   * Called when `expectedDefinitionId` is null (no definition had the name)
+   * and a concurrent run has since created one. The run proceeds on it only
+   * if this allows it, so the caller authorizes what actually runs
+   * (swamp-club#2672).
    */
   authorizeResolvedDefinition?: (
     found: { definition: Definition; type: ModelType },
@@ -414,12 +414,19 @@ export async function* modelMethodRun(
                   ? deps.lookupDefinition
                   : async (name) => {
                     const found = await deps.lookupDefinition(name);
-                    // A definition gone since the check is refused: what
-                    // the run would create was never authorized.
+                    // Only a definition created since a check that found
+                    // none (a concurrent run) may be adopted, if the caller
+                    // may run it: creation is serialized by the
+                    // auto-definition lock. One renamed in or deleted since
+                    // is refused, since the lock held is not its lock and
+                    // what would be created was never authorized.
+                    const adoptable = input.expectedDefinitionId === null &&
+                      found !== null &&
+                      input.authorizeResolvedDefinition?.(found) === true;
                     if (
                       (found?.definition.id ?? null) !==
                         input.expectedDefinitionId &&
-                      !(found && input.authorizeResolvedDefinition?.(found))
+                      !adoptable
                     ) {
                       throw new UserError(
                         `Model ${name} changed while the request was being ` +
