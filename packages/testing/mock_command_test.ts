@@ -144,6 +144,83 @@ Deno.test("withMockedCommand: restores original Deno.Command after error", async
   assertEquals(Deno.Command, OriginalCommand);
 });
 
+// --- Command options ---
+
+Deno.test("withMockedCommand: handler mode records env, cwd and clearEnv", async () => {
+  const { calls } = await withMockedCommand(
+    () => ({ stdout: "", code: 0 }),
+    async () => {
+      const c = new Deno.Command("op", {
+        args: ["read", "op://vault/key"],
+        env: { OP_SERVICE_ACCOUNT_TOKEN: "test-token" },
+        cwd: "/work",
+        clearEnv: true,
+      });
+      await c.output();
+    },
+  );
+
+  assertEquals(calls[0].env, { OP_SERVICE_ACCOUNT_TOKEN: "test-token" });
+  assertEquals(calls[0].cwd, "/work");
+  assertEquals(calls[0].clearEnv, true);
+});
+
+Deno.test("withMockedCommand: sequential mode records env, cwd and clearEnv", async () => {
+  const { calls } = await withMockedCommand([
+    { stdout: "", code: 0 },
+  ], async () => {
+    const c = new Deno.Command("git", {
+      args: ["status"],
+      env: { GIT_DIR: "/repo/.git" },
+      cwd: "/repo",
+      clearEnv: false,
+    });
+    await c.output();
+  });
+
+  assertEquals(calls[0].env, { GIT_DIR: "/repo/.git" });
+  assertEquals(calls[0].cwd, "/repo");
+  assertEquals(calls[0].clearEnv, false);
+});
+
+Deno.test("withMockedCommand: records a URL cwd as given", async () => {
+  const cwd = new URL("file:///work/dir");
+  const { calls } = await withMockedCommand([
+    { stdout: "", code: 0 },
+  ], async () => {
+    await new Deno.Command("ls", { cwd }).output();
+  });
+
+  assertEquals(calls[0].cwd, cwd);
+});
+
+Deno.test("withMockedCommand: omits option keys the caller did not pass", async () => {
+  const { calls } = await withMockedCommand([
+    { stdout: "", code: 0 },
+    { stdout: "", code: 0 },
+  ], async () => {
+    await new Deno.Command("bare").output();
+    await new Deno.Command("args-only", { args: ["-v"] }).output();
+  });
+
+  assertEquals(Object.keys(calls[0]).sort(), ["args", "command", "timestamp"]);
+  assertEquals(Object.keys(calls[1]).sort(), ["args", "command", "timestamp"]);
+});
+
+Deno.test("withMockedCommand: env is snapshotted at construction", async () => {
+  const { calls } = await withMockedCommand([
+    { stdout: "", code: 0 },
+  ], async () => {
+    const env: Record<string, string> = { TOKEN: "original" };
+    const c = new Deno.Command("op", { env });
+    env.TOKEN = "mutated";
+    env.EXTRA = "added";
+    await c.output();
+  });
+
+  assertEquals(calls[0].env, { TOKEN: "original" });
+});
+
 // --- Return value ---
 
 Deno.test("withMockedCommand: returns callback result", async () => {

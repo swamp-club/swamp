@@ -157,8 +157,15 @@ Deno.test("get reads secret via op CLI", async () => {
 
   assertEquals(result, "sk-test-123");
   assertEquals(calls.length, 2); // --version + read
+  // If the provider passes its service-account token only to the op child,
+  // assert it through the recorded env option
+  assertEquals(calls[1].env?.OP_SERVICE_ACCOUNT_TOKEN, "test-token");
 });
 ```
+
+Each recorded call has `command`, `args` and `timestamp`, plus `env`, `cwd` and
+`clearEnv` when the code passed them to `Deno.Command`. `env` is recorded
+verbatim, so don't log `calls`.
 
 `withMockedCommand` supports two modes:
 
