@@ -1070,8 +1070,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       this.catalogStore.recordLocalWrite();
 
       // Update latest marker if needed
-      const versions = await this.listVersions(type, modelId, dataName);
-      const newLatest = maxOf(versions);
+      const { onDisk, promoted } = await this.listPromotedVersions(
+        type,
+        modelId,
+        dataName,
+      );
+      const newLatest = maxOf(promoted);
       if (newLatest !== undefined) {
         await this.updateLatestMarker(type, modelId, dataName, newLatest);
         // Update catalog to reflect new latest version
@@ -1094,6 +1098,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         } else if (latestData) {
           this.catalogUpsert(type, modelId, latestData);
         }
+      } else if (onDisk.length > 0) {
+        await this.removeLatestMarkerFile(type, modelId, dataName);
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -1955,7 +1961,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const allData = await this.findAllForModel(type, modelId);
 
     for (const data of allData) {
-      const versions = await this.listVersions(type, modelId, data.name);
+      // Only promoted versions are counted, kept or pruned.
+      const { promoted: versions } = await this.listPromotedVersions(
+        type,
+        modelId,
+        data.name,
+      );
       if (versions.length <= 1) continue;
 
       const gc = data.garbageCollection;
@@ -2045,12 +2056,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
         this.catalogStore.recordLocalWrite();
 
-        const currentVersions = await this.listVersions(
+        const { onDisk, promoted } = await this.listPromotedVersions(
           type,
           modelId,
           data.name,
         );
-        const latestVersion = maxOf(currentVersions);
+        const latestVersion = maxOf(promoted);
         if (latestVersion !== undefined) {
           await this.updateLatestMarker(
             type,
@@ -2068,6 +2079,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           if (latestData) {
             this.catalogUpsert(type, modelId, latestData);
           }
+        } else if (onDisk.length > 0) {
+          await this.removeLatestMarkerFile(type, modelId, data.name);
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
           await this.stage({ kind: "remove", path: dataNameDir });
@@ -2286,6 +2299,42 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       throw error;
     }
+  }
+
+  /**
+   * The versions on disk, and those of them that are promoted. An in-flight
+   * deferred write (a pending catalog row) is on disk before it is promoted,
+   * so delete and GC must not make it latest, count it as the latest to keep,
+   * or prune it until it is promoted or rolled back.
+   */
+  private async listPromotedVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<{ onDisk: number[]; promoted: number[] }> {
+    const onDisk = await this.listVersions(type, modelId, dataName);
+    const pending = this.catalogStore.pendingVersions(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
+    return { onDisk, promoted: onDisk.filter((v) => !pending.has(v)) };
+  }
+
+  /**
+   * Removes the latest marker when no promoted version is left but an
+   * in-flight deferred write still lives in the data name directory. The
+   * write's own promotion moves the marker forward again.
+   */
+  private async removeLatestMarkerFile(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await this.stage({ kind: "write", path: dataNameDir });
+    await Deno.remove(join(dataNameDir, "latest")).catch(() => {});
   }
 
   private async updateLatestMarker(

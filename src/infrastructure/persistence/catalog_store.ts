@@ -766,6 +766,26 @@ export class CatalogStore {
   }
 
   /**
+   * Versions of one (namespace, type, model, name) group that are in-flight
+   * deferred writes: written but not yet promoted or rolled back.
+   */
+  pendingVersions(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): Set<number> {
+    const rows = this.db.prepare(
+      `SELECT version FROM catalog
+       WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?
+         AND is_pending = 1`,
+    ).all(namespace, typeNormalized, modelId, dataName) as {
+      version: number;
+    }[];
+    return new Set(rows.map((r) => r.version));
+  }
+
+  /**
    * Iterates over all catalog rows using paged queries.
    * Fetches rows in batches of {@link ITERATE_PAGE_SIZE} to bound memory.
    */

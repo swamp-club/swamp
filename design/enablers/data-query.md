@@ -431,8 +431,11 @@ group's remaining promoted rows, in the same transaction as the removal
 (`CatalogStore.removeVersion`, `bulkRemoveVersions`). A step whose latest was
 removed falls back to its previous version (swamp-club#2975). A deferred write
 that is not promoted yet is marked `is_pending = 1` and holds neither flag;
-the recompute skips it. Deleting a specific version still re-promotes the
-highest version on disk afterwards, which can be an in-flight deferred write.
+the recompute skips it. Delete and GC choose the new latest from promoted
+versions only, and GC never counts, keeps or prunes a pending version, so an
+in-flight deferred write is never promoted early. When no promoted version is
+left, delete and GC remove only the latest marker while a pending version
+still lives in the data name directory.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in

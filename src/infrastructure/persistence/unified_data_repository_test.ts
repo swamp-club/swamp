@@ -1958,3 +1958,57 @@ Deno.test("save: every step keeps a step latest after the write-time version cap
     assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
   }, true);
 });
+
+Deno.test("delete: deleting a version leaves an in-flight deferred write unpromoted (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2"), bytes("b"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("c"));
+
+    await repo.delete(testType, "m1", "out", 2);
+
+    assertEquals(outFlags(catalogStore), ["1:1:1", "3:0:0"]);
+    const inFlight = [...catalogStore.iterate()].find((r) => r.version === 3);
+    assertEquals(inFlight?.is_pending, 1);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 1);
+  });
+});
+
+Deno.test("delete: deleting the only promoted version keeps an in-flight deferred write, which promotes later (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+
+    await repo.delete(testType, "m1", "out", 1);
+
+    // The directory and the in-flight write stay; the catalog keeps it
+    // unpromoted until its own promotion.
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2]);
+    assertEquals(outFlags(catalogStore), ["2:0:0"]);
+
+    await repo.advanceLatestMarkers([inFlight]);
+
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+    assertEquals(outFlags(catalogStore), ["2:1:1"]);
+  });
+});
+
+Deno.test("collectGarbage: counts, keeps and prunes only promoted versions, never an in-flight deferred write (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 1), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1", 1), bytes("b"));
+    await repo.saveDeferred(testType, "m1", stepData("s1", 1), bytes("c"));
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2, 3]);
+    assertEquals(outFlags(catalogStore), ["2:1:1", "3:0:0"]);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+  });
+});
