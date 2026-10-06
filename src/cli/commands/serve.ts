@@ -29,6 +29,7 @@ import {
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
   resolveSignalWaitSupport,
+  runsLiveInDatastore,
 } from "../repo_context.ts";
 import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -2991,6 +2992,9 @@ export const serveCommand = new Command()
       repoContext,
       resolveSignalWaitSupport(datastoreConfig, syncService, {
         namespaceBound: true,
+        runsInDatastore: runsLiveInDatastore(
+          new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
+        ),
       }),
     );
 

@@ -96,6 +96,7 @@ import {
   isManagedConfigBaseResolved,
   managedConfigLockfilePath,
   registerManagedConfig,
+  SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import {
@@ -1169,7 +1170,9 @@ export function requireInitializedRepo(
     });
     attachSignalWaits(
       repoContext,
-      resolveSignalWaitSupport(datastoreConfig, syncService),
+      resolveSignalWaitSupport(datastoreConfig, syncService, {
+        runsInDatastore: runsLiveInDatastore(datastoreResolver),
+      }),
     );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
@@ -1345,7 +1348,9 @@ export async function requireInitializedRepoUnlocked(
   });
   attachSignalWaits(
     repoContext,
-    resolveSignalWaitSupport(datastoreConfig, syncService),
+    resolveSignalWaitSupport(datastoreConfig, syncService, {
+      runsInDatastore: runsLiveInDatastore(datastoreResolver),
+    }),
   );
 
   return {
@@ -1472,12 +1477,19 @@ export function resolveSignalWaitSupport(
      * `swamp serve` after boot, so the store is used as it is.
      */
     namespaceBound?: boolean;
+    /**
+     * Run records are stored in the datastore itself, beside the wait
+     * records (see {@link runsLiveInDatastore}). Only a filesystem
+     * datastore of which this is true lets the sweep judge a wait by its
+     * run record.
+     */
+    runsInDatastore?: boolean;
   },
 ): SignalWaitSupport {
   if (!isCustomDatastoreConfig(config)) {
     return {
       supported: true,
-      localRunAbsenceIsAuthoritative: true,
+      localRunAbsenceIsAuthoritative: options?.runsInDatastore === true,
       store: new ControlPlaneSignalWaitStore(
         new FileSystemControlPlaneStore(
           config.namespace ? join(config.path, config.namespace) : config.path,
@@ -1513,6 +1525,18 @@ export function resolveSignalWaitSupport(
     store: new ControlPlaneSignalWaitStore(remote.store),
     ready: remote.open,
   };
+}
+
+/**
+ * Whether workflow run records are stored in the datastore, where wait
+ * records are, and not kept in the repository by the datastore's
+ * `directories` or `exclude` settings. Repositories that share a datastore
+ * but keep their runs to themselves cannot see each other's runs, so none
+ * of them can tell a deleted run from another repository's.
+ */
+export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
+  return resolver.isDatastoreSubdir(SWAMP_SUBDIRS.workflowRuns) &&
+    !resolver.isExcluded(SWAMP_SUBDIRS.workflowRuns);
 }
 
 /**

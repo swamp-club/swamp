@@ -54,6 +54,7 @@ import {
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
   resolveSignalWaitSupport,
+  runsLiveInDatastore,
   runUnderModelLocks,
   signalWaitsOf,
   waitForPerModelLocks,
@@ -61,6 +62,7 @@ import {
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { InMemorySignalWaitStore } from "../domain/workflows/signal_wait_store_test_helpers.ts";
 import { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { SignalWait } from "../domain/workflows/signal_wait.ts";
 import {
   registrationOf,
@@ -4372,11 +4374,15 @@ Deno.test("resolveSignalWaitSupport: a filesystem datastore keeps wait records u
   await withTempDir(async (datastore) => {
     // Two repositories that share one datastore directory.
     const config: DatastoreConfig = { type: "filesystem", path: datastore };
-    const one = resolveSignalWaitSupport(config);
+    const one = resolveSignalWaitSupport(config, undefined, {
+      runsInDatastore: true,
+    });
     const two = resolveSignalWaitSupport(config);
     assert(one.supported && two.supported);
+    // Run records are the datastore's own only where they are stored in
+    // it; a repository that keeps its runs to itself is not told so.
     assertEquals(one.localRunAbsenceIsAuthoritative, true);
-    assertEquals(two.localRunAbsenceIsAuthoritative, true);
+    assertEquals(two.localRunAbsenceIsAuthoritative, false);
     const registration = waitRegistrationFor(crypto.randomUUID());
 
     await one.store.register(registration);
@@ -4404,8 +4410,6 @@ Deno.test("resolveSignalWaitSupport: a namespaced filesystem datastore keeps eac
       namespace: "team-b",
     });
     assert(team.supported && other.supported);
-    assertEquals(team.localRunAbsenceIsAuthoritative, true);
-    assertEquals(other.localRunAbsenceIsAuthoritative, true);
     const registration = waitRegistrationFor(crypto.randomUUID());
 
     await team.store.register(registration);
@@ -4699,5 +4703,46 @@ Deno.test("attachSignalWaits: a wait store that cannot be reached does not stop 
       reason: "none",
     });
     assertEquals(runRepo.beforeSave, undefined);
+  });
+});
+
+Deno.test("runsLiveInDatastore: true only when run records are stored in the datastore, not kept in the repository", () => {
+  const dir = join("some", "repo");
+  const path = join("some", "shared");
+  const resolverFor = (config: DatastoreConfig) =>
+    new DefaultDatastorePathResolver(dir, config);
+
+  // The default layout keeps runs in the datastore.
+  assertEquals(
+    runsLiveInDatastore(resolverFor({ type: "filesystem", path })),
+    true,
+  );
+  // A datastore told to hold other directories only.
+  assertEquals(
+    runsLiveInDatastore(
+      resolverFor({ type: "filesystem", path, directories: ["data"] }),
+    ),
+    false,
+  );
+  // Or told to leave the runs out.
+  assertEquals(
+    runsLiveInDatastore(
+      resolverFor({ type: "filesystem", path, exclude: ["workflow-runs"] }),
+    ),
+    false,
+  );
+});
+
+Deno.test("requireInitializedRepoUnlocked: the default datastore lets the sweep judge a wait by its run record", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: dir,
+      outputMode: "json",
+    });
+    const support = signalWaitsOf(repoContext);
+    assert(support.supported);
+    assertEquals(support.localRunAbsenceIsAuthoritative, true);
+    await flushDatastoreSync();
   });
 });

@@ -802,13 +802,31 @@ with the stored receipt from any host, and it is removed with the run: the
 workflow run garbage collection removes the wait records of the runs it deletes
 (`src/libswamp/data/run_gc.ts`), and deleting a workflow removes those of its
 runs (`src/libswamp/workflows/delete.ts`). `sweepWaitRecords` is the safety net
-for a record nothing else removed. It closes the registration of a run that
-ended after the wait was registered. A wait registered after the run record
-here says the run ended belongs to a retry this host has not synced, and is
-left alone. On filesystem datastores, it removes a registration or outcome whose run
-cannot be found once the wait's deadline plus 24 hours has passed. On custom
-datastores, missing local runs may only be unsynced, so their records are kept
-regardless of age. An accepted signal may still be needed on a later resume.
+for a record nothing else removed. It acts only where the run records this host
+reads are the datastore's own: a filesystem datastore that stores
+`workflow-runs` itself (`runsLiveInDatastore` in `src/cli/repo_context.ts`).
+There it closes the registration of a run that ended after the wait was
+registered, and removes a registration or outcome whose run is gone once the
+wait's deadline plus 24 hours has passed.
+
+Everywhere else it does nothing, because a run record there is not evidence
+about the wait:
+
+- On a custom datastore a run record reaches this host later than the wait's
+  records. A stale `failed` copy hides a retry, which reuses the run ID and
+  whose new wait is already registered; closing it would cancel a live wait.
+  Comparing when the wait was registered with when the run ended narrows this
+  but depends on two hosts' clocks, so it is not relied on alone.
+- On a filesystem datastore whose `directories` or `exclude` settings keep
+  runs in each repository, another repository's run looks deleted; removing its
+  records would delete an accepted signal.
+
+There, waits are closed by the host that ends the run, and records are removed
+with the run by its garbage collection or its workflow's deletion. A registration
+left by a close that failed stays until then; a signal for it sent from a host
+that has the run record is still answered from that record. A run file that
+cannot be read is skipped, so one damaged run does not stop the sweep, and a
+sweep that fails does not fail `workflow waits`.
 The sweep runs from `workflow waits` and from the run garbage collection.
 
 **Supersede.** `workflow run` cancels suspended runs of the same workflow with

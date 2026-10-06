@@ -357,13 +357,24 @@ export interface WaitRecordSweep {
 }
 
 /**
- * The safety net for wait records nothing else removed. A registration
- * whose run has ended is closed. A registration or an outcome whose run
- * cannot be found is removed only when the lookup is authoritative and
- * the wait's deadline plus {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed.
- * Without that authority, missing runs' records are kept regardless of
- * age. An outcome whose run exists is never
- * removed here: it lives as long as the run.
+ * The safety net for wait records nothing else removed, on a datastore
+ * where the run records this host reads are the datastore's own
+ * (`localRunAbsenceIsAuthoritative`). There it closes the registration of
+ * a run that ended after the wait was registered, and removes a
+ * registration or an outcome whose run is gone once the wait's deadline
+ * plus {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed. An outcome whose run
+ * exists is never removed here: it lives as long as the run.
+ *
+ * Anywhere else it does nothing. A run record that reaches this host later
+ * than the wait's records, or not at all, says nothing true about the wait:
+ * a stale `failed` record hides a retry whose new wait is live, and a run
+ * kept in another repository looks deleted. Acting on either would cancel a
+ * live wait or delete an accepted signal. Such records are closed by the
+ * host that ends the run, and removed with the run by its garbage
+ * collection or its workflow's deletion.
+ *
+ * A run that cannot be read is skipped, so one damaged run file does not
+ * stop the sweep or fail the command that runs it.
  */
 export async function sweepWaitRecords(
   store: SignalWaitStore,
@@ -375,12 +386,25 @@ export async function sweepWaitRecords(
   options: { localRunAbsenceIsAuthoritative?: boolean } = {},
 ): Promise<WaitRecordSweep> {
   const swept: WaitRecordSweep = { registrations: 0, outcomes: 0 };
+  if (!options.localRunAbsenceIsAuthoritative) return swept;
   const orphaned = (ref: { deadline: string }) =>
     now.getTime() >
       new Date(ref.deadline).getTime() + ORPHAN_WAIT_RECORD_GRACE_MS;
+  // `unreadable` when the run file is there and cannot be parsed: nothing
+  // is known about that run, so its records are left as they are.
+  const lookUp = async (
+    ref: { workflowId: string; runId: string },
+  ): Promise<WorkflowRun | null | "unreadable"> => {
+    try {
+      return await findRun(ref.workflowId, ref.runId);
+    } catch {
+      return "unreadable";
+    }
+  };
 
   for (const registration of await store.listRegistrations()) {
-    const run = await findRun(registration.workflowId, registration.runId);
+    const run = await lookUp(registration);
+    if (run === "unreadable") continue;
     if (run && endedAfterRegistering(run, registration)) {
       const outcome = await store.findOutcome(registration.waitId);
       if (outcome.kind === "absent") {
@@ -388,17 +412,14 @@ export async function sweepWaitRecords(
       }
       await store.removeRegistration(registration.waitId);
       swept.registrations++;
-    } else if (
-      !run && options.localRunAbsenceIsAuthoritative && orphaned(registration)
-    ) {
+    } else if (!run && orphaned(registration)) {
       await store.removeRegistration(registration.waitId);
       swept.registrations++;
     }
   }
-  if (!options.localRunAbsenceIsAuthoritative) return swept;
   for (const outcome of await store.listOutcomes()) {
     if (!orphaned(outcome)) continue;
-    if (await findRun(outcome.workflowId, outcome.runId)) continue;
+    if (await lookUp(outcome) !== null) continue;
     await store.removeOutcome(outcome.waitId);
     swept.outcomes++;
   }

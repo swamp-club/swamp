@@ -163,10 +163,12 @@ function serviceOfAnotherProcess(h: Harness): WorkflowExecutionService {
 function waitSupportOf(
   repoDir: string,
 ): SignalWaitSupport & { supported: true } {
-  const support = resolveSignalWaitSupport({
-    type: "filesystem",
-    path: join(repoDir, ".swamp"),
-  });
+  // The default datastore stores run records itself, as the CLI finds.
+  const support = resolveSignalWaitSupport(
+    { type: "filesystem", path: join(repoDir, ".swamp") },
+    undefined,
+    { runsInDatastore: true },
+  );
   assert(support.supported);
   return support;
 }

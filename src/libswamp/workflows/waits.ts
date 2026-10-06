@@ -192,7 +192,7 @@ async function collectRegistrations(
  * {@link sweepWaitRecords}).
  */
 export async function* workflowWaits(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowWaitsDeps,
 ): AsyncIterable<WorkflowWaitsEvent> {
   yield* withGeneratorSpan(
@@ -208,19 +208,26 @@ export async function* workflowWaits(
         ? deps.signalWaits.store
         : undefined;
       if (store) {
-        await sweepWaitRecords(
-          store,
-          (workflowId, runId) =>
-            deps.runRepo.findById(
-              createWorkflowId(workflowId),
-              createWorkflowRunId(runId),
-            ),
-          now,
-          {
-            localRunAbsenceIsAuthoritative: deps.signalWaits.supported &&
-              deps.signalWaits.localRunAbsenceIsAuthoritative,
-          },
-        );
+        // Housekeeping: a failure here must not hide the waits.
+        try {
+          await sweepWaitRecords(
+            store,
+            (workflowId, runId) =>
+              deps.runRepo.findById(
+                createWorkflowId(workflowId),
+                createWorkflowRunId(runId),
+              ),
+            now,
+            {
+              localRunAbsenceIsAuthoritative: deps.signalWaits.supported &&
+                deps.signalWaits.localRunAbsenceIsAuthoritative,
+            },
+          );
+        } catch (error) {
+          ctx.logger.warn`Could not sweep signal wait records: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
       }
 
       const waits: SignalWaitInfo[] = [];

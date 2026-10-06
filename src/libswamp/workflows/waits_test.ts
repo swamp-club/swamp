@@ -307,7 +307,13 @@ Deno.test("workflowWaits: sweeps ended runs and authoritative orphans after the 
 
   // Just past the deadline: the missing run is still inside the grace period.
   const soon = new Date("2026-01-01T00:02:00.000Z");
-  const listed = await list(depsOf([ended], soon, waits));
+  const sure = depsOf([ended], soon, waits);
+  sure.signalWaits = {
+    supported: true,
+    store: waits,
+    localRunAbsenceIsAuthoritative: true,
+  };
+  const listed = await list(sure);
   assertEquals(listed.map((w) => w.waitId), [unsyncedWait]);
   assertEquals((await waits.findRegistration(endedWait)).kind, "absent");
   // The ended run's wait was closed, so a late signal is answered closed.
@@ -376,4 +382,27 @@ Deno.test("workflowWaits: a registration that cannot be read is rebuilt from the
   ]);
   assertEquals((await waits.findRegistration(wait.id)).kind, "found");
   assertEquals(await listUnreadable(deps), []);
+});
+
+Deno.test("workflowWaits: a sweep that fails does not hide the waits", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+  class FailingSweep extends InMemorySignalWaitStore {
+    private lists = 0;
+    override listRegistrations() {
+      // The sweep lists first; the listing itself lists after.
+      return this.lists++ === 0
+        ? Promise.reject(new Error("bucket unreachable"))
+        : super.listRegistrations();
+    }
+  }
+  const store = new FailingSweep();
+  const deps = depsOf([run], T1, store);
+  deps.signalWaits = {
+    supported: true,
+    store,
+    localRunAbsenceIsAuthoritative: true,
+  };
+
+  assertEquals((await list(deps)).map((w) => w.waitId), [wait.id]);
 });

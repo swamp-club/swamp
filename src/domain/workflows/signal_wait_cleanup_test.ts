@@ -352,7 +352,9 @@ Deno.test("sweepWaitRecords: closes the registration of an ended run, keeps its 
     TOO_LATE.getTime() + 10 * ORPHAN_WAIT_RECORD_GRACE_MS,
   );
 
-  const swept = await sweepWaitRecords(store, findRun, farFuture);
+  const swept = await sweepWaitRecords(store, findRun, farFuture, {
+    localRunAbsenceIsAuthoritative: true,
+  });
 
   assertEquals(swept, { registrations: 1, outcomes: 0 });
   assertEquals(
@@ -530,7 +532,7 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
   const findRun = () => Promise.resolve(run);
   const later = new Date(stale.getTime() + 60_000);
 
-  assertEquals(await sweepWaitRecords(store, findRun, later), {
+  assertEquals(await sweepWaitRecords(store, findRun, later, AUTHORITATIVE), {
     registrations: 0,
     outcomes: 0,
   });
@@ -543,9 +545,74 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
     ...registration,
     registeredAt: new Date(stale.getTime() - 1000).toISOString(),
   });
-  assertEquals(await sweepWaitRecords(store, findRun, later), {
+  assertEquals(await sweepWaitRecords(store, findRun, later, AUTHORITATIVE), {
     registrations: 1,
     outcomes: 0,
   });
   assertEquals((await store.listOutcomes()).map((o) => o.kind), ["cancelled"]);
+});
+
+const AUTHORITATIVE = { localRunAbsenceIsAuthoritative: true };
+
+Deno.test("sweepWaitRecords: where run records are not the datastore's own it changes nothing, whatever they say", async () => {
+  // A stale copy that says the run ended, and a run kept in another
+  // repository that looks deleted: neither is evidence about the wait.
+  const store = new InMemorySignalWaitStore();
+  const { run: stale } = await waitingRun(["a"], store);
+  const { run: elsewhere } = await waitingRun(["a"], store);
+  await store.settle(accept(elsewhere, "a"));
+  stale.endAsCancelled("operator");
+  const before = {
+    registrations: new Map(store.registrations),
+    outcomes: new Map(store.outcomes),
+  };
+  const findRun = (_workflowId: string, runId: string) =>
+    Promise.resolve(runId === stale.id ? stale : null);
+  const farFuture = new Date(
+    TOO_LATE.getTime() + 10 * ORPHAN_WAIT_RECORD_GRACE_MS,
+  );
+
+  for (
+    const options of [undefined, { localRunAbsenceIsAuthoritative: false }]
+  ) {
+    assertEquals(await sweepWaitRecords(store, findRun, farFuture, options), {
+      registrations: 0,
+      outcomes: 0,
+    });
+    assertEquals(store.registrations, before.registrations);
+    assertEquals(store.outcomes, before.outcomes);
+  }
+});
+
+Deno.test("sweepWaitRecords: a run that cannot be read is skipped, and the rest are still swept", async () => {
+  const store = new InMemorySignalWaitStore();
+  const { run: damaged } = await waitingRun(["a"], store);
+  await store.settle(accept(damaged, "a"));
+  const { run: ended } = await waitingRun(["a"], store);
+  ended.endAsCancelled("operator");
+  const findRun = (_workflowId: string, runId: string) =>
+    runId === damaged.id
+      ? Promise.reject(new Error("run file does not parse"))
+      : Promise.resolve(runId === ended.id ? ended : null);
+  const farFuture = new Date(
+    TOO_LATE.getTime() + 10 * ORPHAN_WAIT_RECORD_GRACE_MS,
+  );
+
+  const swept = await sweepWaitRecords(
+    store,
+    findRun,
+    farFuture,
+    AUTHORITATIVE,
+  );
+
+  assertEquals(swept, { registrations: 1, outcomes: 0 });
+  // Nothing is known about the damaged run, so its records stay.
+  assertEquals(
+    (await store.listRegistrations()).map((r) => r.runId),
+    [damaged.id],
+  );
+  assertEquals(
+    (await store.listOutcomes()).map((o) => o.runId).sort(),
+    [damaged.id, ended.id].sort(),
+  );
 });

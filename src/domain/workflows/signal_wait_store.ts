@@ -68,7 +68,13 @@ export type SignalWaitSupport =
   | {
     readonly supported: true;
     readonly store: SignalWaitStore;
-    /** Missing local runs are absent from the datastore, not merely unsynced. */
+    /**
+     * The run records this host reads are the datastore's own, shared by
+     * every writer of it: a run missing here is gone, and a run's status
+     * here is current. False where run records are synced from a remote, or
+     * kept in the repository while wait records are shared. Only then may
+     * the sweep act on a wait from what a run record says.
+     */
     readonly localRunAbsenceIsAuthoritative?: boolean;
     /**
      * Opens the store, and rejects with the reason when it turns out not to
