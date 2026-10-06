@@ -228,7 +228,7 @@ Deno.test("resolveServeTlsPaths: resolves paths that came from env vars", () => 
   });
 });
 
-Deno.test("resolveServeTlsPaths: leaves absolute and unset paths alone", () => {
+Deno.test("resolveServeTlsPaths: leaves absolute paths alone", () => {
   withTempDir((dir) => {
     withTempDir((elsewhere) => {
       const cert = join(elsewhere, "server.pem");
@@ -243,12 +243,45 @@ Deno.test("resolveServeTlsPaths: leaves absolute and unset paths alone", () => {
       assertPathEquals(resolved.certFile!, cert);
       assertPathEquals(resolved.keyFile!, key);
     });
-    const none = resolveServeTlsPaths(
+  });
+});
+
+Deno.test("resolveServeTlsPaths: leaves unset paths unset", () => {
+  withTempDir((dir) => {
+    const resolved = resolveServeTlsPaths(
       dir,
       mergeServeOptions(null, {}, new Set<string>(), () => undefined),
     );
-    assertEquals(none.certFile, undefined);
-    assertEquals(none.keyFile, undefined);
+    assertEquals(resolved.certFile, undefined);
+    assertEquals(resolved.keyFile, undefined);
+  });
+});
+
+Deno.test("resolveServeTlsPaths: an empty env var stays empty, so TLS stays off", () => {
+  withTempDir((dir) => {
+    const merged = mergeServeOptions(null, {}, new Set<string>(), (name) => {
+      if (name === "SWAMP_SERVE_CERT_FILE") return "";
+      if (name === "SWAMP_SERVE_KEY_FILE") return "";
+      return undefined;
+    });
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertEquals(resolved.certFile, "");
+    assertEquals(resolved.keyFile, "");
+  });
+});
+
+Deno.test("resolveServeTlsPaths: an empty serve.yaml value stays empty, so TLS stays off", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { tls: { "cert-file": "", "key-file": "" } });
+    const merged = mergeServeOptions(
+      loadServeConfig(undefined, dir),
+      {},
+      new Set<string>(),
+      () => undefined,
+    );
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertEquals(resolved.certFile, "");
+    assertEquals(resolved.keyFile, "");
   });
 });
 

@@ -1048,7 +1048,7 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
  * names that path when it cannot be read, since it may differ from the
  * relative one the operator configured.
  */
-async function readTlsFile(
+export async function readTlsFile(
   kind: "certificate" | "private key",
   path: string,
 ): Promise<string> {
@@ -1074,7 +1074,8 @@ async function readTlsFile(
  * fail on every start. Options are resolved as the daemon process sees them:
  * explicit flags are the ones written into the unit, env vars come from the
  * unit environment alone (never the enabling shell), and a relative --config
- * resolves against the repository, which is the unit's working directory.
+ * resolves against the repository, as loadServeConfig resolves it for the
+ * daemon itself (resolveServePath).
  */
 export function validateServeDaemonArgs(
   options: AnyOptions,

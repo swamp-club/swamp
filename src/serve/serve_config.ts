@@ -955,19 +955,21 @@ export interface MergedServeOptions {
 
 // Applies the relative-path rule of resolveServePath to the TLS files, once,
 // on the merged options, so the certificate serve reads and the one it
-// reports to administrators are the same path.
+// reports to administrators are the same path. An empty value (an env var set
+// to nothing, or `cert-file: ""`) is left as it is: it means TLS is off, and
+// resolving it would name the repository directory.
 export function resolveServeTlsPaths(
   repoDir: string,
   merged: MergedServeOptions,
 ): MergedServeOptions {
   return {
     ...merged,
-    certFile: merged.certFile === undefined
-      ? undefined
-      : resolveServePath(repoDir, merged.certFile),
-    keyFile: merged.keyFile === undefined
-      ? undefined
-      : resolveServePath(repoDir, merged.keyFile),
+    certFile: merged.certFile
+      ? resolveServePath(repoDir, merged.certFile)
+      : merged.certFile,
+    keyFile: merged.keyFile
+      ? resolveServePath(repoDir, merged.keyFile)
+      : merged.keyFile,
   };
 }
 
