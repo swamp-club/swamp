@@ -136,6 +136,13 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   ): EventHandlers<ExtensionPushEvent>;
 }
 
+/** `file:line` when the finding has a line, else the file alone. */
+function fileAndLine(finding: { file: string; line?: number }): string {
+  return finding.line !== undefined
+    ? `${finding.file}:${finding.line}`
+    : finding.file;
+}
+
 function acceptedWarningsHeader(accepted: WarningsAcceptance): string {
   const count = accepted.warnings.safety.length +
     accepted.warnings.review.length;
@@ -271,7 +278,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       // skeleton) stays in the JSON output.
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
     }
   }
 
@@ -280,21 +287,23 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     for (const e of errors) {
       const summary = e.message.split("\n")[0];
       this.logger
-        .error`  [${e.severity}] ${e.dimension} — ${e.file}: ${summary}`;
+        .error`  [${e.severity}] ${e.dimension} — ${
+        fileAndLine(e)
+      }: ${summary}`;
     }
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
     this.logger.warn`Safety warnings:`;
     for (const w of warnings) {
-      this.logger.warn`  ${w.file}: ${w.message}`;
+      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
     }
   }
 
   renderSafetyErrors(errors: SafetyIssue[]): void {
     this.logger.error`Safety errors (push blocked):`;
     for (const e of errors) {
-      this.logger.error`  ${e.file}: ${e.message}`;
+      this.logger.error`  ${fileAndLine(e)}: ${e.message}`;
     }
   }
 
