@@ -45,6 +45,25 @@ export interface WorkflowRunIndexEntry {
   parentRun?: unknown;
   waitingOnRun?: unknown;
   waitsOnlyOnNestedRuns?: boolean;
+  /**
+   * The stat of the run record file this entry was built from, so a record
+   * replaced since can be told apart without reading it (swamp-club#3051).
+   * Optional and read back leniently: an entry without a valid one is
+   * checked by reading its record.
+   */
+  record?: RecordFingerprint;
+}
+
+/**
+ * What a stat of a run record file says about its version. An atomic write
+ * replaces the inode, and `utime` can set mtime back but not ctime; a
+ * platform that reports neither (Windows) is left with mtime and size.
+ */
+export interface RecordFingerprint {
+  mtimeMs: number;
+  size: number;
+  ctimeMs?: number;
+  ino?: number;
 }
 
 export type WorkflowRunIndex = Record<string, WorkflowRunIndexEntry>;
@@ -170,4 +189,44 @@ export async function withIndexQueue<T>(
     // Drop the chain once nothing is queued behind it.
     if (indexQueues.get(key) === tail) indexQueues.delete(key);
   }
+}
+
+/**
+ * Stats a run record file. Returns null when it does not exist, and
+ * undefined when the platform gives no mtime to fingerprint it by.
+ */
+export async function statRecord(
+  path: string,
+): Promise<RecordFingerprint | undefined | null> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.stat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+  if (!info.mtime) return undefined;
+  return {
+    mtimeMs: info.mtime.getTime(),
+    size: info.size,
+    ...(info.ctime ? { ctimeMs: info.ctime.getTime() } : {}),
+    ...(typeof info.ino === "number" ? { ino: info.ino } : {}),
+  };
+}
+
+/**
+ * Whether `stored`, an entry's fingerprint as read from the index file,
+ * names the same version of the record as `current`. The index is not
+ * trusted, so anything that is not a fingerprint never matches.
+ */
+export function fingerprintMatches(
+  stored: unknown,
+  current: RecordFingerprint,
+): boolean {
+  if (typeof stored !== "object" || stored === null) return false;
+  const fields = stored as Record<string, unknown>;
+  return fields.mtimeMs === current.mtimeMs &&
+    fields.size === current.size &&
+    fields.ctimeMs === current.ctimeMs &&
+    fields.ino === current.ino;
 }

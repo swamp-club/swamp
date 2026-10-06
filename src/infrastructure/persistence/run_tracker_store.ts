@@ -48,6 +48,11 @@ export function localOwnerLiveness(): OwnerLiveness {
   return { hostname: hostname(), isDead: isProcessDead };
 }
 const RETENTION_DAYS = 7;
+/**
+ * How long an unsettled `interrupted` row is kept past RETENTION_DAYS: the
+ * backstop for a row no path ever settles (swamp-club#2917).
+ */
+const UNSETTLED_RETENTION_DAYS = 90;
 const SCHEMA_VERSION = 4;
 
 export interface PendingRunEntry {
@@ -260,20 +265,20 @@ export class RunTrackerStore implements RunTrackerRepository {
   }
 
   private purgeOldRuns(): void {
-    const cutoff = new Date(
-      Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000,
-    ).toISOString();
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     // An interrupted row with no reason was reaped on liveness alone; its
     // workflow or method run record may still say running, and the row is
     // what lets recover and doctor settle it. Kept until markSettled() gives
-    // a reason.
+    // a reason, or for UNSETTLED_RETENTION_DAYS at most.
     const result = this.db.prepare(
       `DELETE FROM active_runs
        WHERE status NOT IN ('running', 'suspended')
          AND completed_at IS NOT NULL AND completed_at < ?
          AND NOT (run_kind IN ('workflow', 'model_method')
-                  AND status = 'interrupted' AND cancel_reason IS NULL)`,
-    ).run(cutoff);
+                  AND status = 'interrupted' AND cancel_reason IS NULL
+                  AND completed_at >= ?)`,
+    ).run(daysAgo(RETENTION_DAYS), daysAgo(UNSETTLED_RETENTION_DAYS));
     if (result.changes > 0) {
       logger
         .debug`Purged ${result.changes} terminal run(s) older than ${RETENTION_DAYS} days`;
@@ -531,6 +536,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       initiatedBy: row.initiated_by,
       instanceId: row.instance_id ?? undefined,
       settled: row.status === "interrupted" && row.cancel_reason !== null,
+      cancelReason: row.cancel_reason,
     };
   }
 }

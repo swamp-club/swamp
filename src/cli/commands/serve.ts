@@ -401,7 +401,9 @@ import {
 } from "../../infrastructure/runtime/process.ts";
 import {
   reapOrphanedWorkflowRuns,
+  runRecordFinder,
   settleDeadOwnerMethodRuns,
+  settleInterruptedWorkflowRows,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -6095,6 +6097,20 @@ export const serveCommand = new Command()
           run.methodName ?? run.workflowName ?? "unknown"
         })`;
       }
+    }
+
+    // Interrupted workflow rows whose record is no longer running, such as a
+    // row reaped while its owner went on to finish the run, would otherwise
+    // be kept by retention for good (swamp-club#2917).
+    const settledRows = await settleInterruptedWorkflowRows(
+      runTracker,
+      runRecordFinder(repoContext.workflowRunRepo, repoContext.workflowRepo),
+    );
+    if (settledRows > 0) {
+      logger.info(
+        "Boot: settled {count} interrupted workflow run row(s) whose run is no longer running",
+        { count: settledRows },
+      );
     }
 
     const configuredWebhookWorkflows = new Set(

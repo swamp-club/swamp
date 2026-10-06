@@ -26,12 +26,15 @@ import {
   type OwnerLiveness,
   reapOrphanedWorkflowRuns,
   runHasDeadOwner,
+  runRecordFinder,
   settleDeadOwnerMethodRuns,
   settleDeadOwnerRun,
+  settleInterruptedWorkflowRows,
   trackerShowsDeadOwner,
 } from "./orphaned_run_reaper.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 import type { WorkflowRunRepository } from "./repositories.ts";
+import type { Workflow } from "./workflow.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
@@ -1155,4 +1158,122 @@ Deno.test("cancelOrphanedMethodRuns: a failed read leaves every row failed", asy
   );
   assertEquals(closed, []);
   assertEquals(failed.map((r) => r.id), [row.id]);
+});
+
+// --- runRecordFinder and settleInterruptedWorkflowRows (swamp-club#2917) ---
+
+const NAMED_WORKFLOW = "11111111-1111-4111-8111-111111111111" as WorkflowId;
+const OTHER_WORKFLOW = "22222222-2222-4222-8222-222222222222" as WorkflowId;
+
+/**
+ * A record store holding `byWorkflow`, and a workflow lookup that knows only
+ * "test-workflow", as NAMED_WORKFLOW. `failing` run ids throw on read.
+ */
+function recordFinder(
+  byWorkflow: Map<WorkflowId, WorkflowRun[]>,
+  failing: string[] = [],
+) {
+  const reads: string[] = [];
+  const find = runRecordFinder(
+    {
+      findById: (workflowId, runId) => {
+        reads.push(`${workflowId}:${runId}`);
+        if (failing.includes(runId)) {
+          return Promise.reject(new Error("permission denied"));
+        }
+        return Promise.resolve(
+          byWorkflow.get(workflowId)?.find((r) => r.id === runId) ?? null,
+        );
+      },
+      listWorkflowIds: () => Promise.resolve([...byWorkflow.keys()]),
+    },
+    {
+      findByName: (name: string) =>
+        Promise.resolve(
+          name === "test-workflow"
+            ? { id: NAMED_WORKFLOW } as unknown as Workflow
+            : null,
+        ),
+    },
+  );
+  return { find, reads };
+}
+
+Deno.test("runRecordFinder: finds a record under the row's workflow without listing others", async () => {
+  const run = makeRun();
+  const { find, reads } = recordFinder(
+    new Map([[NAMED_WORKFLOW, [run]], [OTHER_WORKFLOW, []]]),
+  );
+
+  const found = await find(trackerRow(run.id));
+
+  assertEquals(found?.workflowId, NAMED_WORKFLOW);
+  assertEquals(reads, [`${NAMED_WORKFLOW}:${run.id}`]);
+});
+
+Deno.test("runRecordFinder: finds a renamed workflow's record by run id", async () => {
+  const run = makeRun();
+  const { find } = recordFinder(
+    new Map([[NAMED_WORKFLOW, []], [OTHER_WORKFLOW, [run]]]),
+  );
+
+  const found = await find(trackerRow(run.id));
+
+  assertEquals(found?.workflowId, OTHER_WORKFLOW);
+  assertEquals(found?.run.id, run.id);
+});
+
+Deno.test("runRecordFinder: null when no workflow stores the record", async () => {
+  const { find } = recordFinder(
+    new Map([[NAMED_WORKFLOW, []], [OTHER_WORKFLOW, []]]),
+  );
+
+  assertEquals(await find(trackerRow(crypto.randomUUID())), null);
+});
+
+Deno.test("settleInterruptedWorkflowRows: settles rows whose record finished or is gone, and nothing else", async () => {
+  const finished = makeRun();
+  finished.interrupt("server_crash");
+  const renamed = makeRun();
+  renamed.interrupt("server_shutdown");
+  const running = makeRun();
+  const goneId = crypto.randomUUID();
+  const unreadableId = crypto.randomUUID();
+  const alreadySettled = ActiveRun.fromData({
+    ...trackerRow(crypto.randomUUID(), { status: "interrupted" }).toData(),
+    settled: true,
+  });
+  const rows = [
+    trackerRow(finished.id, { status: "interrupted" }),
+    trackerRow(renamed.id, { status: "interrupted" }),
+    trackerRow(running.id, { status: "interrupted" }),
+    trackerRow(goneId, { status: "interrupted" }),
+    trackerRow(unreadableId, { status: "interrupted" }),
+    trackerRow(crypto.randomUUID(), { status: "running" }),
+    trackerRow(crypto.randomUUID(), { status: "completed" }),
+    alreadySettled,
+  ];
+  const marked: [string, string][] = [];
+  const runTracker = {
+    findAll: () => rows,
+    markSettled: (runId: string, reason: string) => {
+      marked.push([runId, reason]);
+    },
+  } as unknown as RunTrackerRepository;
+  const { find } = recordFinder(
+    new Map([
+      [NAMED_WORKFLOW, [finished, running]],
+      [OTHER_WORKFLOW, [renamed]],
+    ]),
+    [unreadableId],
+  );
+
+  const settled = await settleInterruptedWorkflowRows(runTracker, find);
+
+  assertEquals(settled, 3);
+  assertEquals(marked, [
+    [finished.id, "record_settled"],
+    [renamed.id, "record_settled"],
+    [goneId, "record_missing"],
+  ]);
 });
