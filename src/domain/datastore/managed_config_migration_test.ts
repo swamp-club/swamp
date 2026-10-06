@@ -487,6 +487,34 @@ Deno.test({
   },
 });
 
+Deno.test("migrateConfigToDatastore: keeps other extensions in a scope it copies into", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const configRoot = join(dir, "config");
+    const pulled = join(repoDir, ".swamp", "pulled-extensions");
+    await ensureDir(join(pulled, "@acme", "mine"));
+    await Deno.writeTextFile(join(pulled, "@acme", "mine", "a.ts"), "a");
+    const other = join(configRoot, "pulled-extensions", "@acme", "other");
+    await ensureDir(other);
+    await Deno.writeTextFile(join(other, "b.ts"), "b");
+
+    await migrateConfigToDatastore(
+      repoDir,
+      join(repoDir, "missing.json"),
+      configRoot,
+      pulled,
+    );
+
+    assertEquals(await Deno.readTextFile(join(other, "b.ts")), "b");
+    assertEquals(
+      await Deno.readTextFile(
+        join(configRoot, "pulled-extensions", "@acme", "mine", "a.ts"),
+      ),
+      "a",
+    );
+  });
+});
+
 Deno.test("isConfigTierPopulated: false when the config root does not exist", async () => {
   await withTempDir(async (dir) => {
     assertEquals(await isConfigTierPopulated(join(dir, "config")), false);

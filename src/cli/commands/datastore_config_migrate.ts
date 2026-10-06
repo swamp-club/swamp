@@ -211,18 +211,11 @@ export const datastoreConfigMigrateCommand = new Command()
 
         if (result.alreadyMigrated) {
           // Publishes the sentinel if an earlier run's push of it failed;
-          // when the datastore already has it, nothing is sent.
+          // re-sending one the datastore already has is harmless.
           if (syncService) {
             await root.stage({ kind: "write", path: sentinelPath });
           }
-          if (ctx.outputMode === "json") {
-            writeOutput(
-              JSON.stringify({ alreadyMigrated: true, managedConfigSet }),
-            );
-          } else {
-            ctx.logger.info`Config migration already completed`;
-          }
-          return undefined;
+          return { alreadyMigrated: true as const, managedConfigSet };
         }
 
         const copied = [
@@ -245,10 +238,26 @@ export const datastoreConfigMigrateCommand = new Command()
           await root.stage({ kind: "write", path: sentinelPath });
           pushed = true;
         }
-        return { result, managedConfigSet, copied };
+        return {
+          alreadyMigrated: false as const,
+          result,
+          managedConfigSet,
+          copied,
+        };
       },
     );
-    if (migrated === undefined) return;
+    // Reported only once the root's push has published the sentinel.
+    if (migrated.alreadyMigrated) {
+      if (ctx.outputMode === "json") {
+        writeOutput(JSON.stringify({
+          alreadyMigrated: true,
+          managedConfigSet: migrated.managedConfigSet,
+        }));
+      } else {
+        ctx.logger.info`Config migration already completed`;
+      }
+      return;
+    }
     const { result, managedConfigSet, copied } = migrated;
 
     if (ctx.outputMode === "json") {

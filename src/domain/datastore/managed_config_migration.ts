@@ -33,7 +33,7 @@ export interface MigrationResult {
   copiedLockfile: boolean;
   copiedPulledExtensions: boolean;
   alreadyMigrated: boolean;
-  /** The source paths the migration copied from, for the sentinel. */
+  /** The source paths the migration copies from, for the sentinel. */
   sources: readonly string[];
 }
 
@@ -195,22 +195,35 @@ export async function isConfigTierPopulated(
 }
 
 /**
- * Copies the pulled-extensions root entry by entry, leaving out install
- * staging: an interrupted install's journal names paths under the root
- * it was written in, so it stays there for crash recovery. Each entry's
- * earlier copy is removed first: a re-run after a failed push copies again,
- * and an extension's read-only `manifest.yaml` cannot be overwritten
- * (swamp-club#3117).
+ * Copies the pulled-extensions root extension by extension, leaving out
+ * install staging: an interrupted install's journal names paths under the
+ * root it was written in, so it stays there for crash recovery. Each
+ * extension's earlier copy is removed first: a re-run after a failed push
+ * copies again, and an extension's read-only `manifest.yaml` cannot be
+ * overwritten (swamp-club#3117). Only this repo's extensions are replaced;
+ * others in the same `@scope` directory are left as they are.
  */
 async function copyPulledExtensions(src: string, dest: string): Promise<void> {
   await ensureDir(dest);
   for await (const entry of Deno.readDir(src)) {
     if (isStagingEntryName(entry.name)) continue;
-    await Deno.remove(join(dest, entry.name), { recursive: true }).catch(
-      (error) => {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      },
-    );
-    await copy(join(src, entry.name), join(dest, entry.name));
+    if (entry.name.startsWith("@") && entry.isDirectory) {
+      await ensureDir(join(dest, entry.name));
+      for await (const extension of Deno.readDir(join(src, entry.name))) {
+        await replaceCopy(
+          join(src, entry.name, extension.name),
+          join(dest, entry.name, extension.name),
+        );
+      }
+    } else {
+      await replaceCopy(join(src, entry.name), join(dest, entry.name));
+    }
   }
+}
+
+async function replaceCopy(src: string, dest: string): Promise<void> {
+  await Deno.remove(dest, { recursive: true }).catch((error) => {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  });
+  await copy(src, dest);
 }

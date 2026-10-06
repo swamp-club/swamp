@@ -496,14 +496,18 @@ export async function runCli(invocation: CliInvocation): Promise<string[]> {
 /**
  * Parses the real command in-process and returns the error it threw, then
  * flushes registered syncs best-effort, as `src/cli/mod.ts` does when a
- * command fails. Fails when the command resolved.
+ * command fails. Fails when the command resolved. What the command logged
+ * to stdout is appended to `stdout` when given.
  */
 export async function runCliRejecting(
   invocation: CliInvocation,
+  stdout?: string[],
 ): Promise<unknown> {
   const originalLog = console.log;
   const previousExitCode = Deno.exitCode;
-  console.log = () => {};
+  console.log = (...args: unknown[]) => {
+    stdout?.push(args.map(String).join(" "));
+  };
   try {
     try {
       await root().parse(invocation.args);

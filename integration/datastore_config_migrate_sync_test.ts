@@ -213,3 +213,21 @@ Deno.test("datastore config migrate: a repo that migrated after a failed push st
     assertStringIncludes(remoteModel(repos, "m1") ?? "", model.id);
   });
 });
+
+Deno.test("datastore config migrate: reports already migrated only once the sentinel is published", async () => {
+  await withRowRepos(REMOTE, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await runCli({ args: migrate(repos.repoA) });
+
+    repos.remote.failNext("push", new Error("datastore unreachable"));
+    const stdout: string[] = [];
+    const error = await runCliRejecting({ args: migrate(repos.repoA) }, stdout);
+
+    assert(error instanceof ManagedConfigUnpublishedError, String(error));
+    assertEquals(
+      stdout.some((line) => line.includes("alreadyMigrated")),
+      false,
+      `no success output before the push failed: ${JSON.stringify(stdout)}`,
+    );
+  });
+});
