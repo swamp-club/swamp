@@ -39,6 +39,7 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
   isPulledExtensionManifest,
+  projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -97,7 +98,7 @@ export const extensionQualityCommand = new Command()
   )
   .option(
     "--extensions-dir <dir:string>",
-    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+    "Extensions root: the directory that contains extensions/ (models, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
   )
   .action(
     async function (options: ExtensionQualityOptions, manifestPath: string) {
@@ -136,7 +137,7 @@ export const extensionQualityCommand = new Command()
       const manifestDir = dirname(absoluteManifestPath);
       const denoConfigPath = await findDenoConfig(
         manifestDir,
-        resolved.extensionsRoot,
+        projectConfigBoundary(manifestDir, resolved.extensionsRoot, repoDir),
       );
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });

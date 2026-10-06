@@ -109,8 +109,9 @@ Each entry is a skill directory name resolved in priority order:
 3. **Project-local skill directory** — e.g., `.claude/skills/create-story/`
 
 The global skill directory (`~/.claude/skills/`) is never searched: push does
-not package a skill from a locally installed copy by name. A skill found under
-both the extensions root and the repo dir is refused rather than guessed.
+not package a skill from a locally installed copy by name. Without
+`--extensions-dir`, a skill found under both the inferred root and the repo dir
+is refused rather than guessed; with the flag, the flag's root wins.
 
 In multi-tool repos, all enrolled tools' directories are searched at each
 priority level. The tool determines the skill directory path:

@@ -24,6 +24,7 @@ import {
   isAbsolute,
   join,
   resolve,
+  SEPARATOR,
 } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -232,6 +233,8 @@ const TYPED_KIND: Record<TypedField, string> = {
 /** What a typed-key lookup needs to find a file and to explain a miss. */
 interface TypedLookup {
   extensionsRoot: string;
+  /** True when `--extensions-dir` named the root; the author chose it. */
+  explicitRoot: boolean;
   manifestDir: string;
   /** Configured typed directory per field, relative to the root. */
   typedDirs: Record<TypedField, string>;
@@ -246,6 +249,29 @@ interface SelectExtensionsRootOptions {
   typedDirs: Record<TypedField, string>;
   useManifestBase: boolean;
   logger: Logger;
+}
+
+function isSameOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(root + SEPARATOR);
+}
+
+/**
+ * Where the `deno.json` / `package.json` walk up from the manifest stops:
+ * the extensions root or the repo dir, whichever contains the manifest, so
+ * the walk never leaves the tree the manifest belongs to; the manifest's own
+ * directory when neither does.
+ */
+export function projectConfigBoundary(
+  manifestDir: string,
+  extensionsRoot: string,
+  repoDir: string,
+): string {
+  const dir = resolve(manifestDir);
+  const root = resolve(extensionsRoot);
+  const repo = resolve(repoDir);
+  if (isSameOrUnder(dir, root)) return root;
+  if (isSameOrUnder(dir, repo)) return repo;
+  return dir;
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -393,17 +419,27 @@ function twoRootsError(
 }
 
 /**
- * Refuse a bundled entry (workflow or skill) found under both the extensions
- * root and the repo dir at different real paths; with root == repoDir the
- * two lists coincide and nothing can be ambiguous.
+ * Refuse a bundled entry (workflow or skill) found under both the inferred
+ * extensions root and the repo dir at different real paths. The check is
+ * skipped when `--extensions-dir` named the root (the author chose it, and
+ * a git worktree holds every tracked file in both trees by design) and when
+ * the entry was found next to the manifest under `paths.base: manifest`
+ * (neither contested copy is the one packaged). With root == repoDir the two
+ * lists coincide and nothing can be ambiguous.
  */
 async function assertSingleRoot(
+  lookup: TypedLookup,
   kind: string,
   ref: string,
+  foundIn: string,
   underRoot: readonly string[],
   underRepo: readonly string[],
   directories = false,
 ): Promise<void> {
+  if (lookup.explicitRoot) return;
+  if (lookup.useManifestBase && isSameOrUnder(foundIn, lookup.manifestDir)) {
+    return;
+  }
   const exists = directories ? isDirectory : isFile;
   const firstReal = async (paths: readonly string[]) => {
     for (const path of paths) {
@@ -577,6 +613,7 @@ export async function resolveExtensionFiles(
   const webhooksDir = typedBase("webhooks");
   const lookup: TypedLookup = {
     extensionsRoot,
+    explicitRoot: ctx.extensionsDir !== undefined,
     manifestDir,
     typedDirs,
     useManifestBase,
@@ -665,10 +702,12 @@ export async function resolveExtensionFiles(
     const wfEntries: WorkflowManifestEntry[] = [];
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
+      let foundIn = "";
 
       for (const candidateDir of wfCandidateDirs) {
         try {
           realPath = await Deno.realPath(resolve(candidateDir, wfRef));
+          foundIn = candidateDir;
           break;
         } catch { /* not found here */ }
       }
@@ -686,8 +725,10 @@ export async function resolveExtensionFiles(
         );
       }
       await assertSingleRoot(
+        lookup,
         "Workflow file",
         wfRef,
+        foundIn,
         rootWfDirs.map((d) => resolve(d, wfRef)),
         repoWfDirs.map((d) => resolve(d, wfRef)),
       );
@@ -895,6 +936,7 @@ export async function resolveExtensionFiles(
 
     for (const skillName of manifest.skills) {
       let skillPath: string | null = null;
+      let foundIn = "";
 
       for (const base of candidateBases) {
         const candidate = join(base, skillName);
@@ -902,6 +944,7 @@ export async function resolveExtensionFiles(
           const stat = await Deno.stat(candidate);
           if (stat.isDirectory) {
             skillPath = candidate;
+            foundIn = base;
             break;
           }
         } catch { /* not found here */ }
@@ -922,8 +965,10 @@ export async function resolveExtensionFiles(
         );
       }
       await assertSingleRoot(
+        lookup,
         "Skill directory",
         skillName,
+        foundIn,
         rootSkillDirs.map((d) => join(d, skillName)),
         repoSkillDirs.map((d) => join(d, skillName)),
         true,

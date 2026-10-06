@@ -26,7 +26,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveExtensionFiles } from "../resolve_extension_files.ts";
+import {
+  projectConfigBoundary,
+  resolveExtensionFiles,
+} from "../resolve_extension_files.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
@@ -274,7 +277,7 @@ export const extensionPushCommand = new Command()
   )
   .option(
     "--extensions-dir <dir:string>",
-    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+    "Extensions root: the directory that contains extensions/ (models, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
   )
   .option(
     "-y, --yes",
@@ -392,17 +395,19 @@ export const extensionPushCommand = new Command()
     // The walk up from the manifest stops at the extensions root, so a
     // manifest outside the repo never picks up a deno.json above it.
     const manifestDir = dirname(absoluteManifestPath);
-    const denoConfigPath = await findDenoConfig(
+    const configBoundary = projectConfigBoundary(
       manifestDir,
       resolved.extensionsRoot,
+      repoDir,
     );
+    const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
     let packageJsonDir: string | undefined;
     if (denoConfigPath) {
       cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
     } else {
       const candidateDir = await findPackageJson(
         manifestDir,
-        resolved.extensionsRoot,
+        configBoundary,
       );
       if (candidateDir) {
         const allEntryPoints = [

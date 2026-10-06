@@ -251,9 +251,10 @@ dir, so a sub-directory extension in the swamp-extensions layout pushes from a
 sibling repo or from its monorepo root without flags. `--extensions-dir` names
 the directory that _contains_ `extensions/`; swamp appends `extensions/models`
 (and the other typed directories) to it, and the flag covers workflows and
-skills too. An entry that exists under both the repo dir and the inferred root
-is refused rather than guessed. Every not-found error lists the paths it looked
-in and names the flag or `paths.base: manifest` as the fix.
+skills too. Without the flag, an entry that exists under both the repo dir and
+the inferred root is refused rather than guessed; with the flag, the flag's root
+wins. Every not-found error lists the paths it looked in and names the flag or
+`paths.base: manifest` as the fix.
 
 ### Name Rules
 

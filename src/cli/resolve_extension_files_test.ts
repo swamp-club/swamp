@@ -30,6 +30,7 @@ import {
   inferExtensionsRoot,
   isPulledExtensionManifest,
   planWorkflowArchiveNames,
+  projectConfigBoundary,
   resolveExtensionFiles,
 } from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
@@ -2029,7 +2030,41 @@ Deno.test("resolveExtensionFiles: a model present under both the repo dir and th
   });
 });
 
-Deno.test("resolveExtensionFiles: a workflow present under both roots with --extensions-dir is an ambiguity error", async () => {
+Deno.test("resolveExtensionFiles: with --extensions-dir a workflow present under both roots comes from the flag's root (worktree layout)", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(
+      ext,
+      "@test/wf-both",
+      {
+        skill: false,
+      },
+    );
+    await Deno.mkdir(join(dir, "extensions", "workflows", "hello-wf"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "workflows", "hello-wf", "workflow.yaml"),
+      "name: hello-wf-at-root\njobs: {}",
+    );
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+      extensionsDir: ext,
+    });
+    assertEquals(result.workflowFiles.length, 1);
+    assertPathEquals(
+      result.workflowFiles[0].sourcePath,
+      await Deno.realPath(
+        join(ext, "extensions", "workflows", "hello-wf", "workflow.yaml"),
+      ),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: without the flag a workflow present under both the inferred root and the repo dir is an ambiguity error", async () => {
   await withTempRepo(async (dir) => {
     const ext = join(dir, "ext", "sub");
     const manifestPath = await stageSubDirectoryExtension(
@@ -2053,7 +2088,6 @@ Deno.test("resolveExtensionFiles: a workflow present under both roots with --ext
           manifestPath,
           repoContext: stubWorkflowRepoContext,
           logger,
-          extensionsDir: ext,
         }),
       UserError,
     );
@@ -2066,7 +2100,78 @@ Deno.test("resolveExtensionFiles: a workflow present under both roots with --ext
   });
 });
 
-Deno.test("resolveExtensionFiles: a skill present under both roots with --extensions-dir is an ambiguity error", async () => {
+Deno.test("resolveExtensionFiles: under paths.base manifest the manifest-dir copy wins and no ambiguity is raised", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    await stageSubDirectoryExtension(ext, "@test/wf-manifest-copy", {
+      skill: false,
+    });
+    // The manifest-dir copy, the inferred-root copy and the repo copy all
+    // exist; only the manifest-dir one is packaged, so the other two must
+    // not be reported as contested.
+    await Deno.mkdir(join(ext, "hello-wf"), { recursive: true });
+    await Deno.writeTextFile(
+      join(ext, "hello-wf", "workflow.yaml"),
+      "name: hello-wf-next-to-manifest\njobs: {}",
+    );
+    await Deno.mkdir(join(dir, "extensions", "workflows", "hello-wf"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "workflows", "hello-wf", "workflow.yaml"),
+      "name: hello-wf-at-root\njobs: {}",
+    );
+    const manifestPath = join(ext, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/wf-manifest-copy",
+        version: "2026.10.06.1",
+        paths: { base: "manifest" },
+        models: ["extensions/models/hello.ts"],
+        workflows: ["hello-wf/workflow.yaml"],
+      }),
+    );
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+    });
+    assertPathEquals(
+      result.workflowFiles[0].sourcePath,
+      await Deno.realPath(join(ext, "hello-wf", "workflow.yaml")),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: with --extensions-dir a skill present under both roots comes from the flag's root", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(
+      ext,
+      "@test/skill-both",
+      {
+        workflow: false,
+      },
+    );
+    await createSkillDir(join(dir, ".claude", "skills"), "hello-skill");
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+      extensionsDir: ext,
+    });
+    assertPathEquals(
+      result.skillDirs[0].absolutePath,
+      join(ext, ".claude", "skills", "hello-skill"),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: without the flag a skill present under both the inferred root and the repo dir is an ambiguity error", async () => {
   await withTempRepoWithTools(["claude"], async (dir) => {
     const ext = join(dir, "ext", "sub");
     const manifestPath = await stageSubDirectoryExtension(
@@ -2084,7 +2189,6 @@ Deno.test("resolveExtensionFiles: a skill present under both roots with --extens
           manifestPath,
           repoContext: stubRepoContext,
           logger,
-          extensionsDir: ext,
         }),
       UserError,
     );
@@ -2093,6 +2197,21 @@ Deno.test("resolveExtensionFiles: a skill present under both roots with --extens
       "Skill directory hello-skill exists under two roots",
     );
   });
+});
+
+Deno.test("projectConfigBoundary: the root or repo dir that contains the manifest, else the manifest dir", () => {
+  const repo = join("/", "repo");
+  const root = join("/", "elsewhere", "ext");
+  assertPathEquals(
+    projectConfigBoundary(join(repo, "ext", "sub"), root, repo),
+    repo,
+  );
+  assertPathEquals(projectConfigBoundary(join(root, "sub"), root, repo), root);
+  assertPathEquals(projectConfigBoundary(repo, root, repo), repo);
+  assertPathEquals(
+    projectConfigBoundary(join("/", "nowhere", "m"), root, repo),
+    join("/", "nowhere", "m"),
+  );
 });
 
 Deno.test("resolveExtensionFiles: default in-repo search order for workflows and skills is unchanged", async () => {

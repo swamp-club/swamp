@@ -490,9 +490,11 @@ searched, not only the primary tool's. The user's global skill directory
 (`~/.claude/skills/`) is never searched: a skill is not packaged from a locally
 installed copy just because it has the same name (swamp-club#3018).
 
-When a bundled workflow or skill exists under both the extensions root and the
-repo dir at different paths, push refuses with an error naming both, rather
-than silently packaging one of them.
+When the root was inferred (no `--extensions-dir`) and a bundled workflow or
+skill exists under both it and the repo dir at different paths, push refuses
+with an error naming both, rather than silently packaging one of them. With
+`--extensions-dir` the flag's root simply wins: a git worktree holds every
+tracked file in both trees by design, and the author chose the root.
 
 Local source loading also honours `paths.base: manifest`. At startup the loader
 scans every known extension directory for such manifests. If one declares a kind
@@ -965,6 +967,10 @@ additively, so an existing manifest never packages a different set of files:
    If any entry resolves under the repo dir, the repo dir stays the root
    (today's behaviour). Only a manifest that resolves nothing under the repo
    dir moves to the inferred root.
+
+The `deno.json` / `package.json` walk up from the manifest stops at whichever
+of the extensions root or the repo dir contains the manifest
+(`projectConfigBoundary`), never above the tree the manifest belongs to.
 
 This is what lets `swamp extension push ~/sc/swamp-extensions/kubernetes` work
 from any swamp repo, and lets a monorepo of sub-directory extensions push each

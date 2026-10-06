@@ -63,7 +63,7 @@ export const extensionFmtCommand = new Command()
   )
   .option(
     "--extensions-dir <dir:string>",
-    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+    "Extensions root: the directory that contains extensions/ (models, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
   )
   .option("--check", "Check only, do not auto-fix")
   .action(async function (options: ExtensionFmtOptions, manifestPath: string) {
