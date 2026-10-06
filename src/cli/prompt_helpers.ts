@@ -59,20 +59,37 @@ function assertInteractiveStdin(): void {
  * Returns the trimmed response, or an empty string on EOF.
  */
 export async function promptLine(message: string): Promise<string> {
+  return (await readLine(message)) ?? "";
+}
+
+/** Writes `message` and reads one line; `null` on EOF. */
+async function readLine(message: string): Promise<string | null> {
   await Deno.stderr.write(encoder.encode(message));
   const buf = new Uint8Array(1024);
   const n = await Deno.stdin.read(buf);
-  if (n === null) return "";
+  if (n === null) return null;
   return decoder.decode(buf.subarray(0, n)).trim();
+}
+
+/** Writes each line to stderr, ahead of a prompt. */
+async function writeLines(lines: string[]): Promise<void> {
+  for (const line of lines) {
+    await Deno.stderr.write(encoder.encode(`${line}\n`));
+  }
 }
 
 /**
  * Prompt for a yes/no confirmation.
  * Appends ` [y/N] ` to the message. Returns `true` for "y" or "yes"
- * (case-insensitive), `false` otherwise (including EOF).
+ * (case-insensitive), `false` otherwise (including EOF). `details` are
+ * printed above the question, so a prompt can say what each answer does.
  */
-export async function promptConfirmation(message: string): Promise<boolean> {
+export async function promptConfirmation(
+  message: string,
+  details: string[] = [],
+): Promise<boolean> {
   assertInteractiveStdin();
+  await writeLines(details);
   const response = await promptLine(`${message} [y/N] `);
   if (response === "") return false;
   return response.toLowerCase() === "y" ||
@@ -104,6 +121,35 @@ export async function promptChoice(
     if (response === "") return choices[0];
     await Deno.stderr.write(
       encoder.encode(`Invalid choice. Please enter 1-${choices.length}.\n`),
+    );
+  }
+}
+
+/**
+ * Prompt for one of a numbered list of choices, with no default. `details`
+ * are printed above the list. Enter or an answer outside the list asks again,
+ * so nothing is chosen by accident. Returns the chosen index, or `null` on
+ * EOF, which callers treat as the answer that changes nothing.
+ */
+export async function promptNumberedChoice(
+  details: string[],
+  choices: string[],
+): Promise<number | null> {
+  assertInteractiveStdin();
+  await writeLines(details);
+  await writeLines(choices.map((choice, i) => `  ${i + 1}. ${choice}`));
+  const range = choices.map((_, i) => i + 1).join("/");
+  while (true) {
+    const response = await readLine(`Choose [${range}]: `);
+    if (response === null) return null;
+    const index = Number(response) - 1;
+    if (Number.isInteger(index) && index >= 0 && index < choices.length) {
+      return index;
+    }
+    await Deno.stderr.write(
+      encoder.encode(
+        `Please enter ${choices.map((_, i) => i + 1).join(", ")}.\n`,
+      ),
     );
   }
 }

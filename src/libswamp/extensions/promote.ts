@@ -20,6 +20,9 @@
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { PromoteResult } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+import type { PublishedVersion } from "../../domain/extensions/extension_publish_checks.ts";
+import { findPublishedVersion } from "./published_version_lookup.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, notFound, validationFailed } from "../errors.ts";
@@ -40,6 +43,14 @@ export interface ExtensionPromoteData {
 
 export type ExtensionPromoteEvent =
   | { kind: "promoting" }
+  /** The registry lookup found the version on a channel below the target. */
+  | {
+    kind: "resolved";
+    name: string;
+    version: string;
+    fromChannel: string;
+    toChannel: string;
+  }
   | { kind: "completed"; data: ExtensionPromoteData }
   | { kind: "error"; error: SwampError };
 
@@ -48,6 +59,12 @@ export interface ExtensionPromoteInput {
   version: string;
   toChannel: string;
   fromChannel?: string;
+  /**
+   * Look the version up in the registry first and promote from the channel
+   * it is on, failing with "Nothing to promote" when no channel below the
+   * target carries it. Set when the name and version came from a manifest.
+   */
+  resolveFromChannel?: boolean;
 }
 
 export interface ExtensionPromoteDeps {
@@ -61,13 +78,21 @@ export interface ExtensionPromoteDeps {
     toChannel: string,
     apiKey: string,
   ) => Promise<PromoteResult>;
+  findPublishedVersion: (
+    serverUrl: string,
+    name: string,
+    version: string,
+    apiKey: string,
+  ) => Promise<PublishedVersion | null>;
 }
 
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-export function createExtensionPromoteDeps(): ExtensionPromoteDeps {
+export function createExtensionPromoteDeps(
+  identity?: ClientIdentity,
+): ExtensionPromoteDeps {
   const authRepo = new AuthRepository();
   return {
     loadCredentials: async () => {
@@ -85,8 +110,13 @@ export function createExtensionPromoteDeps(): ExtensionPromoteDeps {
       toChannel: string,
       apiKey: string,
     ) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       return await client.promoteExtension(name, version, toChannel, apiKey);
+    },
+    findPublishedVersion: async (serverUrl, name, version, apiKey) => {
+      // Built like push's lookup client, so both ask the same server.
+      const client = new ExtensionApiClient(serverUrl, identity);
+      return await findPublishedVersion(client, name, version, apiKey);
     },
   };
 }
@@ -141,6 +171,63 @@ export async function* extensionPromote(
       if (!credentials) {
         yield { kind: "error", error: notAuthenticated() };
         return;
+      }
+
+      if (input.resolveFromChannel) {
+        let published: PublishedVersion | null;
+        try {
+          published = await deps.findPublishedVersion(
+            credentials.serverUrl,
+            input.extensionName,
+            input.version,
+            credentials.apiKey,
+          );
+        } catch (error) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          // Mapped like the promote call below; a missing version is not an
+          // error here (the lookup answers null), so there is no 404 case.
+          const isAuth = error instanceof UserError &&
+            message.includes("Not authenticated");
+          yield {
+            kind: "error",
+            error: isAuth ? notAuthenticated() : validationFailed(message),
+          };
+          return;
+        }
+        const ref = `${input.extensionName}@${input.version}`;
+        if (!published) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Nothing to promote: ${ref} is not published on any channel.`,
+            ),
+          };
+          return;
+        }
+        if (
+          !ReleaseChannel.isValid(published.channel) ||
+          !ReleaseChannel.create(published.channel).canPromoteTo(
+            ReleaseChannel.create(input.toChannel),
+          )
+        ) {
+          const where = published.channel === input.toChannel
+            ? `is already on '${input.toChannel}'.`
+            : `is on channel '${published.channel}', which is not below '${input.toChannel}'.`;
+          yield {
+            kind: "error",
+            error: validationFailed(`Nothing to promote: ${ref} ${where}`),
+          };
+          return;
+        }
+        yield {
+          kind: "resolved",
+          name: input.extensionName,
+          version: input.version,
+          fromChannel: published.channel,
+          toChannel: input.toChannel,
+        };
       }
 
       let result: PromoteResult;

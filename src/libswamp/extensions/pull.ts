@@ -393,11 +393,16 @@ export function parseExtensionRef(ref: string): ExtensionRef {
   return { name, version };
 }
 
+/** Whether a string is a scoped extension name (`@collective/name`). */
+export function isScopedExtensionName(name: string): boolean {
+  return SCOPED_NAME_PATTERN.test(name);
+}
+
 /**
  * Validates a scoped extension name matches the expected pattern.
  */
 export function validateExtensionName(name: string): void {
-  if (!SCOPED_NAME_PATTERN.test(name)) {
+  if (!isScopedExtensionName(name)) {
     throw new UserError(
       `Invalid extension name: "${name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
     );

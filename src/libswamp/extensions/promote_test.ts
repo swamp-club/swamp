@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { assertCompletes, assertErrors } from "../testing.ts";
+import { assertCompletes, assertErrors, collect } from "../testing.ts";
+import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   extensionPromote,
@@ -45,6 +46,7 @@ function fakeDeps(
         channel: "rc",
         message: "Promoted",
       }),
+    findPublishedVersion: () => Promise.resolve(null),
     ...overrides,
   };
 }
@@ -203,4 +205,146 @@ Deno.test("extensionPromote: yields error when API call fails", async () => {
     extensionPromote(ctx, deps, input),
     "validation_failed",
   );
+});
+
+// ── Promote from a manifest (swamp-club#2939, swamp-club#2751) ─────────
+
+const MANIFEST_INPUT: ExtensionPromoteInput = {
+  extensionName: "@test/ext",
+  version: "2026.06.10.1",
+  toChannel: "stable",
+  resolveFromChannel: true,
+};
+
+Deno.test("extensionPromote: from a manifest, reports the channel found and promotes from it", async () => {
+  const promoted: string[] = [];
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.06.10.1", channel: "beta" }),
+    promoteExtension: (_url, name, version, toChannel) => {
+      promoted.push(`${name}@${version}->${toChannel}`);
+      return Promise.resolve({
+        name,
+        version,
+        previousChannel: "beta",
+        channel: toChannel,
+        message: "Promoted",
+      });
+    },
+  });
+  const events = await collect(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+  );
+  assertEquals(events.map((e) => e.kind), [
+    "promoting",
+    "resolved",
+    "completed",
+  ]);
+  assertEquals(events[1], {
+    kind: "resolved",
+    name: "@test/ext",
+    version: "2026.06.10.1",
+    fromChannel: "beta",
+    toChannel: "stable",
+  });
+  assertEquals(promoted, ["@test/ext@2026.06.10.1->stable"]);
+});
+
+Deno.test("extensionPromote: from a manifest, an unpublished version is nothing to promote", async () => {
+  let promoteCalls = 0;
+  const deps = fakeDeps({
+    promoteExtension: () => {
+      promoteCalls++;
+      return Promise.reject(new Error("unreachable"));
+    },
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "validation_failed",
+  );
+  assertEquals(
+    error.message,
+    "Nothing to promote: @test/ext@2026.06.10.1 is not published on any channel.",
+  );
+  assertEquals(promoteCalls, 0);
+});
+
+Deno.test("extensionPromote: from a manifest, a version already on the target is nothing to promote", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.06.10.1", channel: "stable" }),
+    promoteExtension: () => Promise.reject(new Error("unreachable")),
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "validation_failed",
+  );
+  assertEquals(
+    error.message,
+    "Nothing to promote: @test/ext@2026.06.10.1 is already on 'stable'.",
+  );
+});
+
+Deno.test("extensionPromote: from a manifest, a version above the target is nothing to promote", async () => {
+  for (const channel of ["stable"]) {
+    const deps = fakeDeps({
+      findPublishedVersion: () =>
+        Promise.resolve({ version: "2026.06.10.1", channel }),
+      promoteExtension: () => Promise.reject(new Error("unreachable")),
+    });
+    const error = await assertErrors<ExtensionPromoteEvent>(
+      extensionPromote(createLibSwampContext(), deps, {
+        ...MANIFEST_INPUT,
+        toChannel: "rc",
+      }),
+      "validation_failed",
+    );
+    assertEquals(
+      error.message,
+      `Nothing to promote: @test/ext@2026.06.10.1 is on channel '${channel}', which is not below 'rc'.`,
+    );
+  }
+});
+
+Deno.test("extensionPromote: from a manifest, a rejected key on the lookup is not_authenticated", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.reject(
+        new UserError("Not authenticated. Run 'swamp auth login'."),
+      ),
+  });
+  await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "not_authenticated",
+  );
+});
+
+Deno.test("extensionPromote: from a manifest, any other lookup failure keeps its message", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () => Promise.reject(new Error("registry down")),
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "validation_failed",
+  );
+  assertEquals(error.message, "registry down");
+});
+
+Deno.test("extensionPromote: by name and version, never asks the registry where the version is", async () => {
+  let lookups = 0;
+  const deps = fakeDeps({
+    findPublishedVersion: () => {
+      lookups++;
+      return Promise.resolve(null);
+    },
+  });
+  const events = await collect(
+    extensionPromote(createLibSwampContext(), deps, {
+      extensionName: "@test/ext",
+      version: "2026.06.10.1",
+      toChannel: "rc",
+    }),
+  );
+  assertEquals(events.map((e) => e.kind), ["promoting", "completed"]);
+  assertEquals(lookups, 0);
 });
