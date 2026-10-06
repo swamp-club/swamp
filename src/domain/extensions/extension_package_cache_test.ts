@@ -291,3 +291,37 @@ Deno.test("computeFileContentHashIfExists: returns null for a missing file and t
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("computePackageCacheHash: the CI layout (repo dir is the extension dir) hashes the same from any parent, unlike a sibling repo dir", async () => {
+  const parentA = await Deno.makeTempDir();
+  const parentB = await Deno.makeTempDir();
+  try {
+    const hashes: string[] = [];
+    for (const parent of [parentA, parentB]) {
+      const ext = join(parent, "ext");
+      await Deno.mkdir(ext);
+      const model = join(ext, "model.ts");
+      await Deno.writeTextFile(model, "export function hi() {}\n");
+      hashes.push(
+        await computePackageCacheHash(
+          await makeHashInput(ext, { rootDir: ext, modelFilePaths: [model] }),
+        ),
+      );
+    }
+    assertEquals(hashes[0], hashes[1]);
+
+    // The same files hashed from the parent directory, as a sibling swamp
+    // repo would, label them by a different relative path.
+    const ext = join(parentA, "ext");
+    const sibling = await computePackageCacheHash(
+      await makeHashInput(ext, {
+        rootDir: parentA,
+        modelFilePaths: [join(ext, "model.ts")],
+      }),
+    );
+    assertNotEquals(sibling, hashes[0]);
+  } finally {
+    await Deno.remove(parentA, { recursive: true }).catch(() => {});
+    await Deno.remove(parentB, { recursive: true }).catch(() => {});
+  }
+});

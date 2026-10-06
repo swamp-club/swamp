@@ -24,6 +24,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { Logger } from "@logtape/logtape";
 import {
+  createExtensionPushPrepareDeps,
   extensionPush,
   type ExtensionPushExecuteDeps,
   type ExtensionPushExecuteInput,
@@ -32,7 +33,8 @@ import {
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
 } from "./push.ts";
-import type { SwampError } from "../errors.ts";
+import { notAuthenticated, type SwampError } from "../errors.ts";
+import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
@@ -67,6 +69,7 @@ function makeManifest(
 function makePrepareInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
 ): ExtensionPushPrepareInput {
+  const dryRun = overrides?.dryRun ?? true;
   return {
     manifest: makeManifest(),
     repoDir: "/tmp/test-repo",
@@ -91,7 +94,8 @@ function makePrepareInput(
     includeFilePaths: [],
     additionalFilePaths: [],
     binaryFilePaths: [],
-    dryRun: true,
+    dryRun,
+    registryChecks: dryRun ? "collect" : "enforce",
     ...overrides,
   };
 }
@@ -128,7 +132,7 @@ function makePrepareDeps(
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getDenoEnv: () => Deno.env.toObject(),
-    getLatestVersion: () => Promise.resolve(null),
+    findPublishedVersion: () => Promise.resolve(null),
     getLatestVersionDetail: () => Promise.resolve(null),
     ...overrides,
   };
@@ -597,18 +601,406 @@ Deno.test("extensionPushPrepare: review-rule warnings are returned in result", a
   );
 });
 
-Deno.test("extensionPushPrepare: skips auth for dry run", async () => {
-  let credentialsCalled = false;
+Deno.test("extensionPushPrepare: dry run collects every registry check as passed", async () => {
+  const deps = makePrepareDeps();
+  const input = makePrepareInput({ dryRun: true, contentHash: "abc123" });
+
+  const result = await extensionPushPrepare(ctx, deps, input);
+  assertEquals(result.contentHash, "abc123");
+  assertEquals(
+    result.registryChecks.map((c) => [c.name, c.status]),
+    [
+      ["authentication", "passed"],
+      ["reserved-collective", "passed"],
+      ["collective-membership", "passed"],
+      ["version-exists", "passed"],
+    ],
+  );
+  assertEquals(result.registryChecks[0].message, "Signed in as testuser.");
+});
+
+Deno.test("extensionPushPrepare: dry run without credentials lists every check as not run and calls nothing", async () => {
+  let registryCalls = 0;
   const deps = makePrepareDeps({
-    loadCredentials: () => {
-      credentialsCalled = true;
+    loadCredentials: () => Promise.resolve(null),
+    fetchCollectives: () => {
+      registryCalls++;
+      return Promise.resolve([]);
+    },
+    findPublishedVersion: () => {
+      registryCalls++;
       return Promise.resolve(null);
     },
   });
-  const input = makePrepareInput({ dryRun: true });
 
-  await extensionPushPrepare(ctx, deps, input);
-  assertEquals(credentialsCalled, false);
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(registryCalls, 0);
+  assertEquals(result.registryChecks.length, 4);
+  for (const check of result.registryChecks) {
+    assertEquals(check.status, "not-run");
+    assertEquals(check.cause, "no-credentials");
+    assertStringIncludes(check.message, "no credentials");
+  }
+});
+
+Deno.test("extensionPushPrepare: dry run reports a version published on any channel as failed, without throwing", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.03.22.1", channel: "beta" }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const check = result.registryChecks.find((c) => c.name === "version-exists");
+  assertEquals(check?.status, "failed");
+  assertEquals(
+    check?.message,
+    "Version 2026.03.22.1 already exists for @testuser/test-ext.",
+  );
+});
+
+Deno.test("extensionPushPrepare: dry run reports a foreign collective as failed and still checks the version", async () => {
+  let versionLookups = 0;
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.resolve(["other-org"]),
+    findPublishedVersion: () => {
+      versionLookups++;
+      return Promise.resolve(null);
+    },
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const membership = result.registryChecks.find((c) =>
+    c.name === "collective-membership"
+  );
+  assertEquals(membership?.status, "failed");
+  assertEquals(
+    membership?.message,
+    'Extension collective "@testuser" is not one of your collectives (@other-org). ' +
+      "Use one of: @other-org",
+  );
+  assertEquals(versionLookups, 1);
+  assertEquals(
+    result.registryChecks.find((c) => c.name === "version-exists")?.status,
+    "passed",
+  );
+});
+
+Deno.test("extensionPushPrepare: dry run reports a rejected key as failed authentication and skips the rest", async () => {
+  let versionLookups = 0;
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.reject(notAuthenticated()),
+    findPublishedVersion: () => {
+      versionLookups++;
+      return Promise.resolve(null);
+    },
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(versionLookups, 0);
+  assertEquals(
+    result.registryChecks.map((c) => [c.name, c.status, c.cause]),
+    [
+      ["authentication", "failed", undefined],
+      ["reserved-collective", "not-run", "authentication-failed"],
+      ["collective-membership", "not-run", "authentication-failed"],
+      ["version-exists", "not-run", "authentication-failed"],
+    ],
+  );
+  assertEquals(
+    result.registryChecks[0].message,
+    "Not authenticated. Run 'swamp auth login' to sign in.",
+  );
+  assertEquals(result.registryChecks[3].message, "authentication failed");
+});
+
+Deno.test("extensionPushPrepare: dry run reports authentication as not run when the registry did not answer", async () => {
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.reject(new Error("fetch failed")),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(result.registryChecks[0].status, "not-run");
+  assertEquals(result.registryChecks[0].cause, "registry-unavailable");
+  assertEquals(
+    result.registryChecks[0].message,
+    "registry did not answer: fetch failed",
+  );
+  // A plain collective still passes on the username fallback.
+  assertEquals(
+    result.registryChecks.find((c) => c.name === "collective-membership")
+      ?.status,
+    "passed",
+  );
+});
+
+Deno.test("extensionPushPrepare: dry run reports a failed version lookup as not run", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () => Promise.reject(new Error("registry down")),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const check = result.registryChecks.find((c) => c.name === "version-exists");
+  assertEquals(check?.status, "not-run");
+  assertEquals(check?.cause, "registry-unavailable");
+  assertEquals(check?.message, "registry lookup failed: registry down");
+});
+
+Deno.test("extensionPushPrepare: push fails authentication on a rejected key instead of falling back to the username", async () => {
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.reject(notAuthenticated()),
+  });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, makePrepareInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.code, "not_authenticated");
+});
+
+Deno.test("extensionPushPrepare: push rejects a version published on any channel", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.03.22.1", channel: "rc" }),
+  });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, makePrepareInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertEquals(
+    error.message,
+    "Version 2026.03.22.1 already exists for @testuser/test-ext.",
+  );
+  assertEquals(
+    (error.details as { existingVersion: string }).existingVersion,
+    "2026.03.22.1",
+  );
+});
+
+Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts the registry", async () => {
+  let calls = 0;
+  const deps = makePrepareDeps({
+    loadCredentials: () => {
+      calls++;
+      return Promise.resolve(null);
+    },
+    fetchCollectives: () => {
+      calls++;
+      return Promise.resolve([]);
+    },
+    findPublishedVersion: () => {
+      calls++;
+      return Promise.resolve(null);
+    },
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true, registryChecks: "skip" }),
+  );
+  assertEquals(calls, 0);
+  assertEquals(result.registryChecks, []);
+});
+
+// ── Deps factory tests ────────────────────────────────────────────────
+
+const REGISTRY = "https://registry.test";
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+Deno.test("createExtensionPushPrepareDeps: findPublishedVersion asks every channel and pages until the version is found", async () => {
+  const recorder = createApiCallRecorder();
+  const requested: URL[] = [];
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    recorder,
+    fetch: (url) => {
+      const u = new URL(String(url));
+      requested.push(u);
+      const page = Number(u.searchParams.get("page"));
+      const versions = page === 1
+        ? Array.from({ length: 100 }, (_, i) => ({
+          version: `2026.01.01.${i}`,
+          channel: "stable",
+          publishedAt: "",
+        }))
+        : [{ version: "2026.03.22.1", channel: "beta", publishedAt: "" }];
+      return Promise.resolve(jsonResponse({
+        versions,
+        meta: { total: 101, page, perPage: 100 },
+      }));
+    },
+  });
+
+  const found = await deps.findPublishedVersion(
+    REGISTRY,
+    "@testuser/test-ext",
+    "2026.03.22.1",
+    "swamp_test",
+  );
+  assertEquals(found, { version: "2026.03.22.1", channel: "beta" });
+  assertEquals(requested.length, 2);
+  assertEquals(
+    requested[0].pathname,
+    "/api/v1/extensions/%40testuser%2Ftest-ext/versions",
+  );
+  assertEquals(requested[0].searchParams.getAll("channel"), [
+    "stable",
+    "rc",
+    "beta",
+  ]);
+  assertEquals(recorder.calls.map((c) => [c.service, c.method, c.outcome]), [
+    ["registry", "GET", "ok"],
+    ["registry", "GET", "ok"],
+  ]);
+});
+
+Deno.test("createExtensionPushPrepareDeps: findPublishedVersion stops at a short page", async () => {
+  let pages = 0;
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    fetch: () => {
+      pages++;
+      return Promise.resolve(jsonResponse({
+        versions: [{
+          version: "2026.01.01.1",
+          channel: "stable",
+          publishedAt: "",
+        }],
+        meta: { total: 1, page: 1, perPage: 100 },
+      }));
+    },
+  });
+  assertEquals(
+    await deps.findPublishedVersion(REGISTRY, "@t/e", "2026.03.22.1", "k"),
+    null,
+  );
+  assertEquals(pages, 1);
+});
+
+Deno.test("createExtensionPushPrepareDeps: findPublishedVersion does not page a response without paging metadata", async () => {
+  let pages = 0;
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    fetch: () => {
+      pages++;
+      return Promise.resolve(jsonResponse({
+        versions: Array.from({ length: 100 }, (_, i) => ({
+          version: `2026.01.01.${i}`,
+          channel: "stable",
+          publishedAt: "",
+        })),
+      }));
+    },
+  });
+  assertEquals(
+    await deps.findPublishedVersion(REGISTRY, "@t/e", "2026.03.22.1", "k"),
+    null,
+  );
+  assertEquals(pages, 1);
+});
+
+Deno.test("createExtensionPushPrepareDeps: findPublishedVersion resolves null for an unpublished extension", async () => {
+  const recorder = createApiCallRecorder();
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    recorder,
+    fetch: () => Promise.resolve(new Response("not found", { status: 404 })),
+  });
+  const found = await deps.findPublishedVersion(
+    REGISTRY,
+    "@testuser/test-ext",
+    "2026.03.22.1",
+    "swamp_test",
+  );
+  assertEquals(found, null);
+  assertEquals(recorder.calls.map((c) => c.outcome), ["not-found"]);
+});
+
+Deno.test("createExtensionPushPrepareDeps: fetchCollectives fails authentication on whoami's 401 body", async () => {
+  const recorder = createApiCallRecorder();
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    recorder,
+    fetch: () => Promise.resolve(jsonResponse({ authenticated: false }, 401)),
+  });
+  const error = await assertRejects(() =>
+    deps.fetchCollectives(REGISTRY, "swamp_stale")
+  ) as SwampError;
+  assertEquals(error.code, "not_authenticated");
+  assertEquals(recorder.calls.map((c) => [c.service, c.outcome]), [
+    ["registry", "error"],
+  ]);
+});
+
+Deno.test("createExtensionPushPrepareDeps: records the npm and OSV calls the trust audit makes, and nothing without npm specifiers", async () => {
+  const recorder = createApiCallRecorder();
+  let fetches = 0;
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    recorder,
+    fetch: (url) => {
+      fetches++;
+      const u = new URL(String(url));
+      if (u.host === "registry.npmjs.org") {
+        return Promise.resolve(jsonResponse({
+          "dist-tags": { latest: "3.0.0" },
+          versions: {
+            "3.0.0": { license: "MIT", maintainers: [{}, {}] },
+          },
+          time: { "3.0.0": new Date().toISOString() },
+        }));
+      }
+      if (u.host === "api.npmjs.org") {
+        return Promise.resolve(jsonResponse({ downloads: 1_000_000 }));
+      }
+      if (u.host === "api.osv.dev") {
+        return Promise.resolve(jsonResponse({ vulns: [] }));
+      }
+      throw new Error(`unexpected call to ${u.host}`);
+    },
+  });
+
+  await deps.checkDependencyTrust([]);
+  assertEquals(fetches, 0);
+  assertEquals(recorder.calls, []);
+
+  await deps.checkDependencyTrust([
+    { name: "zod", version: "3.0.0", registry: "npm", sourceFile: "a.ts" },
+  ]);
+  assertEquals(
+    recorder.calls.map((c) => c.service).sort(),
+    ["npm", "npm", "osv"],
+  );
+  for (const call of recorder.calls) {
+    assertEquals(
+      Object.keys(call).sort(),
+      ["method", "outcome", "service", "status", "url"],
+    );
+  }
 });
 
 // ── Push tests ────────────────────────────────────────────────────────

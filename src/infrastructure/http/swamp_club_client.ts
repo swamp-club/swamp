@@ -22,6 +22,7 @@ import {
   type ClientIdentity,
   mergeIdentityHeaders,
 } from "./client_identity.ts";
+import type { Fetcher } from "./recording_fetcher.ts";
 import {
   fetchWithRateLimitRetry,
   hasCredential,
@@ -262,7 +263,7 @@ export class SwampClubClient {
   constructor(
     private readonly serverUrl: string,
     private readonly identity: ClientIdentity = {},
-    private readonly options: { sleep?: Sleep } = {},
+    private readonly options: { sleep?: Sleep; fetch?: Fetcher } = {},
   ) {}
 
   /**
@@ -1194,9 +1195,10 @@ export class SwampClubClient {
     // Authorization values (e.g. signIn, getCurrentUser session token,
     // whoami) override the constructor identity.
     const headers = mergeIdentityHeaders(this.identity, init.headers);
+    const doFetch = this.options.fetch ?? globalThis.fetch;
     try {
       const res = await fetchWithRateLimitRetry(
-        () => fetch(url, { ...init, headers, signal: attemptSignal() }),
+        () => doFetch(url, { ...init, headers, signal: attemptSignal() }),
         {
           method: init.method,
           signal: callerSignal,

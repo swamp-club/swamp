@@ -110,6 +110,37 @@ the archive bytes and checksum stay the same.
 `swamp extension push manifest.yaml --channel beta` to beta. With no
 `--channel` flag, push goes to stable.
 
+Before uploading, push runs four registry checks: authentication, collective
+membership, reserved collective (`@swamp`, `@si` need the registry's own word
+on membership) and version exists. The version check asks the versions
+endpoint for every channel, because a version is unique across them. A
+rejected key fails authentication; it never falls back to the username.
+
+### Dry run
+
+A green dry run means a green push. `--dry-run` runs the same four registry
+checks read-only when credentials are present and reports each verdict with
+the wording the real push fails with; a failed check exits non-zero, after the
+summary. Without credentials the summary lists each check it could not run and
+why, and the run stays green: the registry was never asked. A check the
+registry was asked about but did not answer also exits non-zero: the dry run
+cannot confirm what the push needs, so it does not claim green. A dry run
+never prompts and never writes to the registry.
+
+The dry-run summary lists every HTTP call the run made (the registry for
+whoami, the versions list and the drift lookup; OSV and npm for the
+dependency-trust audit) and says "No API calls were made." only when the list
+is empty. In JSON these are the `registryChecks` and `apiCalls` fields of the
+`dry_run` document, beside `contentHash`. `extension quality` packages
+through the same prepare phase but skips the registry checks and makes no
+registry call.
+
+The content hash is layout-bound: files are labelled by their path relative
+to the swamp repo dir, so the same extension hashes differently from a
+sibling repo. CI publishes from a swamp repo initialised inside the extension
+directory; a dry run reproduces that hash only in that layout (see the
+`swamp` skill's publish reference for the recipe).
+
 ### Pull
 
 `swamp extension pull @name` resolves the latest stable version. For a
