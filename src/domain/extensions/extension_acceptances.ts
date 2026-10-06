@@ -196,8 +196,35 @@ export function parseAcceptanceDirectives(
   if (form === "none") return { directives, invalid };
 
   const lines = content.split("\n");
+  // Text that documents a directive is not one: a Markdown fenced code block,
+  // or a `/* ... */` block (a JSDoc example) in source.
+  let fenced = false;
+  let blockComment = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (form === "html") {
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenced = !fenced;
+        continue;
+      }
+      if (fenced) continue;
+    } else {
+      if (blockComment) {
+        if (line.includes("*/")) blockComment = false;
+        continue;
+      }
+      const open = line.indexOf("/*");
+      if (
+        open !== -1 && !isInsideQuotes(line, open) &&
+        !line.includes("*/", open + 2)
+      ) {
+        // A block comment spanning lines (a JSDoc example) is documentation.
+        // One that closes on its own line is parsed as usual, and a
+        // directive inside it is refused below.
+        blockComment = true;
+        continue;
+      }
+    }
     const found = findDirectiveStart(line, form);
     if (found === undefined) continue;
     const { at, openerAt } = found;
@@ -278,7 +305,7 @@ export function parseAcceptanceDirectives(
       target = {
         kind: "line",
         file,
-        line: standalone ? nextNonBlankLine(lines, i, form) : lineNumber,
+        line: standalone ? nextTargetLine(lines, i, form) : lineNumber,
       };
     }
     directives.push({
@@ -315,20 +342,29 @@ function reasonProblemInSource(reason: string): string | undefined {
 }
 
 /**
- * The 1-based number of the first non-blank line after index `i`, so a
- * standalone directive still targets its line when a formatter puts a blank
- * line after an HTML comment block. Falls back to the next line when
- * nothing follows.
+ * The 1-based number of the line a standalone directive at index `i`
+ * targets: the first following line that is not another standalone
+ * directive (stacked directives all target the same line), allowing one
+ * blank line in between, which a formatter puts after an HTML comment
+ * block. Falls back to the next line when nothing qualifies, which then
+ * reads as stale.
  */
-function nextNonBlankLine(
+function nextTargetLine(
   lines: string[],
   i: number,
   form: Exclude<CommentForm, "none">,
 ): number {
+  let blanksSkipped = 0;
   for (let j = i + 1; j < lines.length; j++) {
-    if (lines[j].trim().length === 0) continue;
-    // Stacked directives all target the first line that is not one of them.
-    if (isStandaloneDirectiveLine(lines[j], form)) continue;
+    if (lines[j].trim().length === 0) {
+      if (blanksSkipped >= 1) break;
+      blanksSkipped++;
+      continue;
+    }
+    if (isStandaloneDirectiveLine(lines[j], form)) {
+      blanksSkipped = 0;
+      continue;
+    }
     return j + 1;
   }
   return i + 2;

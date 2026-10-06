@@ -112,10 +112,10 @@ Deno.test("parseAcceptanceDirectives: a standalone directive skips blank lines t
   );
   assertEquals(md.directives[0].target, { kind: "line", file: MD, line: 3 });
   const ts = parseAcceptanceDirectives(
-    "// swamp-quality-ignore deno-command: vendor CLI\n\n\nnew Deno.Command('x');\n",
+    "// swamp-quality-ignore deno-command: vendor CLI\n\nnew Deno.Command('x');\n",
     TS,
   );
-  assertEquals(ts.directives[0].target, { kind: "line", file: TS, line: 4 });
+  assertEquals(ts.directives[0].target, { kind: "line", file: TS, line: 3 });
 });
 
 Deno.test("parseAcceptanceDirectives: a comment opener inside a string literal is not a directive", () => {
@@ -217,6 +217,55 @@ Deno.test("withoutDirective: leaves a span holding a quote in place, so a fooled
   const line =
     '/"/.test(s) + "// swamp-quality-ignore long-line: y"; new Deno.Command("sh");';
   assertEquals(withoutDirective(line, TS), line);
+});
+
+Deno.test("parseAcceptanceDirectives: directive text inside a Markdown fenced block or a source block comment is documentation, not a directive", () => {
+  const md = parseAcceptanceDirectives(
+    [
+      "# Accepting a finding",
+      "```markdown",
+      "<!-- swamp-quality-ignore ipv4-address-literals: <reason> -->",
+      "```",
+      "~~~",
+      "<!-- swamp-quality-ignore ipv4-address-literals: still fenced -->",
+      "~~~",
+      "<!-- swamp-quality-ignore ipv4-address-literals: documented lab gateway -->",
+      "Gateway: 10.0.0.1",
+    ].join("\n"),
+    MD,
+  );
+  assertEquals(md.invalid, []);
+  assertEquals(md.directives.length, 1);
+  assertEquals(md.directives[0].target, { kind: "line", file: MD, line: 9 });
+
+  const ts = parseAcceptanceDirectives(
+    [
+      "/**",
+      " * Accept a finding like this:",
+      " * // swamp-quality-ignore credentials-sensitive-field: <reason>",
+      " */",
+      "const S = z.object({",
+      "  apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: vault key name",
+      "});",
+    ].join("\n"),
+    TS,
+  );
+  assertEquals(ts.invalid, []);
+  assertEquals(ts.directives.length, 1);
+  assertEquals(ts.directives[0].target, { kind: "line", file: TS, line: 6 });
+});
+
+Deno.test("parseAcceptanceDirectives: a standalone directive reaches past one blank line, not two", () => {
+  const one = parseAcceptanceDirectives(
+    "// swamp-quality-ignore deno-command: vendor CLI\n\nnew Deno.Command('x');\n",
+    TS,
+  );
+  assertEquals(one.directives[0].target, { kind: "line", file: TS, line: 3 });
+  const two = parseAcceptanceDirectives(
+    "// swamp-quality-ignore deno-command: vendor CLI\n\n\nnew Deno.Command('x');\n",
+    TS,
+  );
+  assertEquals(two.directives[0].target, { kind: "line", file: TS, line: 2 });
 });
 
 Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", () => {

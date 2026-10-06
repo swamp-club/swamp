@@ -631,8 +631,10 @@ nothing: the summaries print the exact text to paste.
 
 **Site-scoped rules** (`credentials-sensitive-field`, `schema-strictness`,
 `deno-command`, `base64-run`, `long-line`, `ipv4-address-literals`) take a
-comment on the finding's line, or on the line directly above, with a required
-reason:
+comment on the finding's line, or on the line directly above (one blank line in
+between is allowed; several directives may stack), with a required reason.
+Directive text inside a fenced code block or a `/* ... */` block is
+documentation and is ignored:
 
 ```typescript
 apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: holds the name of a vault key

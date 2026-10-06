@@ -1020,8 +1020,10 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   so a directive cannot trigger the rule it accepts; only the long-line
   count discounts the directive's own text (at most about 230 characters,
   and never a span holding a quote). A standalone directive targets the next
-  non-blank line, so a formatter's blank line after an HTML comment is
-  harmless. No reason, the
+  line, or the one after a single blank line, so a formatter's blank line
+  after an HTML comment is harmless; stacked directives share a target.
+  Directive text inside a Markdown fenced code block or a source `/* ... */`
+  block is documentation and is not parsed. No reason, the
   `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
   rule, a `*/` after the directive on its line (a block comment that would
   hide code from the safety scan), or more than 50 directives in a file is a
