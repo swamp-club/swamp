@@ -51,8 +51,10 @@ import type { ReviewFinding } from "./extension_review_rules.ts";
  * blocking finding (`invalid-acceptance`).
  *
  * The parser reads raw lines. The review rules strip comments before
- * matching and the safety checks drop a trailing directive before scanning,
- * so a directive never triggers the rule it accepts.
+ * matching, and the safety checks scan every line as written; a directive's
+ * reason may not contain a quote, `Deno.Command(` or a base64 run, so a
+ * directive cannot trigger the rule it accepts and nothing can hide behind
+ * one. Only the long-line count discounts the directive's own text.
  */
 
 /** The directive keyword, in the spirit of `deno-lint-ignore`. */
@@ -260,7 +262,8 @@ export function parseAcceptanceDirectives(
       });
       continue;
     }
-    const problem = validateAcceptance(ruleId, reason, "comment");
+    const problem = validateAcceptance(ruleId, reason, "comment") ??
+      (form === "line" ? reasonProblemInSource(reason) : undefined);
     if (problem !== undefined) {
       invalid.push({ file, line: lineNumber, text, problem });
       continue;
@@ -287,6 +290,28 @@ export function parseAcceptanceDirectives(
     });
   }
   return { directives, invalid };
+}
+
+/** A run the safety analyzer reads as base64. */
+const BASE64_RUN = /[A-Za-z0-9+/=]{100,}/;
+
+/**
+ * Why a reason may not appear in a source comment. The safety analyzer
+ * scans source lines as written, so the reason must not carry anything the
+ * line checks would match, and must not carry a quote, which could make a
+ * string's text read as a comment.
+ */
+function reasonProblemInSource(reason: string): string | undefined {
+  if (/["'`]/.test(reason)) {
+    return "the reason may not contain a quote character";
+  }
+  if (reason.includes("Deno.Command(")) {
+    return "the reason may not contain Deno.Command(";
+  }
+  if (BASE64_RUN.test(reason)) {
+    return "the reason may not contain a run of 100 or more base64 characters";
+  }
+  return undefined;
 }
 
 /**
@@ -362,10 +387,17 @@ export function directiveSpan(
   };
 }
 
-/** The line with its acceptance directive removed, for scanners. */
+/**
+ * The line with its acceptance directive removed. Used for the long-line
+ * count and for Markdown content rules, where the HTML span is bounded by
+ * `-->`; the other safety checks scan the line as written. A span whose text
+ * holds a quote character is left in place, since the opener could then be
+ * inside a string.
+ */
 export function withoutDirective(line: string, file: string): string {
   const span = directiveSpan(line, file);
   if (span === undefined) return line;
+  if (/["'`]/.test(line.slice(span.start, span.end))) return line;
   return line.slice(0, span.start) + line.slice(span.end);
 }
 
@@ -564,19 +596,14 @@ export function acceptanceSnippet(
   }
   const form = commentFormFor(finding.file);
   if (scope === "file") {
+    // A file-scoped rule is always accepted in the file itself; a collapsed
+    // finding stands for several files, and the comment goes at the top of
+    // each one it lists.
     if (finding.file.startsWith("(")) {
-      // A collapsed finding stands for several files; the comment goes at
-      // the top of each one it lists.
       return {
         text:
           `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
         placement: "at the top of each file listed",
-      };
-    }
-    if (form !== "line") {
-      return {
-        text: sidecarEntry(finding.ruleId, rel),
-        placement: "in quality.yaml beside manifest.yaml",
       };
     }
     return {

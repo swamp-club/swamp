@@ -978,17 +978,19 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   line directly above, or `<!-- … -->` on the line above in Markdown; the
   same comment anywhere in a file accepts the file-scoped
   `testing-completeness`. The parser reads raw lines; the review rules strip
-  comments and the safety checks drop a trailing directive before scanning,
-  so a directive never triggers the rule it accepts. A standalone directive
-  targets the next non-blank line, so a formatter's blank line after an HTML
-  comment is harmless. No reason, the
+  comments, and the safety checks scan every source line as written, so
+  nothing can hide behind a directive, on push or on pull. A directive's
+  reason may not contain a quote character, `Deno.Command(` or a base64 run,
+  so a directive cannot trigger the rule it accepts; only the long-line
+  count discounts the directive's own text (at most about 230 characters,
+  and never a span holding a quote). A standalone directive targets the next
+  non-blank line, so a formatter's blank line after an HTML comment is
+  harmless. No reason, the
   `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
   rule, a `*/` after the directive on its line (a block comment that would
   hide code from the safety scan), or more than 50 directives in a file is a
   blocking `invalid-acceptance` finding naming the comment; reasons are
-  capped at 200 characters and rejected, never truncated. Directive
-  detection is per line, so a `//` inside a multi-line template literal reads
-  as a comment; that line is scanned without the directive text only.
+  capped at 200 characters and rejected, never truncated.
 - **Sidecar** (`src/domain/extensions/extension_quality_sidecar.ts`):
   `quality.yaml` beside `manifest.yaml`, discovered by location only (most
   manifests are regenerated and the manifest schema drops unknown keys

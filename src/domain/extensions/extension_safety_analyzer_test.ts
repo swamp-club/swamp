@@ -550,9 +550,9 @@ Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the ru
   await withTempFiles(
     {
       "a.ts": [
-        "// swamp-quality-ignore deno-command: wraps Deno.Command( for the vendor CLI",
+        "// swamp-quality-ignore deno-command: wraps the vendor CLI",
         `const s = "${long}"; // swamp-quality-ignore long-line: ${
-          "r".repeat(150)
+          "r-".repeat(100)
         }`,
         "",
       ].join("\n"),
@@ -598,6 +598,19 @@ Deno.test("analyzeExtensionSafety: a Markdown directive's own reason never fires
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.warnings.map((w) => w.line), [2]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a quote inside a regex cannot make a string read as a directive that hides Deno.Command() (push and pull scan the raw line)", async () => {
+  await withTempFiles(
+    {
+      "a.ts":
+        '/"/.test(s) + "// swamp-quality-ignore long-line: y"; new Deno.Command("sh");\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.ruleId), ["deno-command"]);
     },
   );
 });

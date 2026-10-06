@@ -748,12 +748,9 @@ Deno.test("extensionQuality: a cache hit still fails on an invalid acceptance in
     const first = await collect(extensionQuality(ctx, deps, input));
     assertEquals(completedData(first).cacheHit, false);
 
-    // A directive naming an error-level rule in a file that is not part of
-    // the hash input (the hash covers the model file list, not this one).
-    await Deno.writeTextFile(
-      join(repoDir, "models", "echo.ts"),
-      CLEAN_MODEL_SOURCE,
-    );
+    // Same source, so the second run is a cache hit; the review rules are
+    // stubbed to report an invalid acceptance, as an upgraded rule set could
+    // without the source hash moving.
     const second = await collect(extensionQuality(ctx, {
       ...deps,
       pushPrepareDeps: makePushPrepareDeps({

@@ -36,9 +36,12 @@ const siteRuleIds = RULE_CATALOG.filter((r) =>
 ).map((r) => r.id);
 
 /** A reason: printable, no newline, within the cap, trimmed non-empty. */
-const reasonArb = fc.stringMatching(/^[a-zA-Z0-9 ,.'()-]{1,200}$/)
+const reasonArb = fc.stringMatching(/^[a-zA-Z0-9 ,.()-]{1,200}$/)
   .map((s) => s.trim())
-  .filter((s) => s.length > 0 && s.length <= MAX_ACCEPTANCE_REASON_LENGTH);
+  .filter((s) =>
+    s.length > 0 && s.length <= MAX_ACCEPTANCE_REASON_LENGTH &&
+    !/[A-Za-z0-9+/=]{100,}/.test(s)
+  );
 
 Deno.test("acceptance property: a rendered trailing directive parses back to the same rule, reason and line", () => {
   fc.assert(

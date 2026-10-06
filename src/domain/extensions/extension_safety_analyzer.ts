@@ -334,11 +334,12 @@ export async function analyzeExtensionSafety(
       // warns.
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        // Drop exactly the acceptance directive the parser recognises (a
-        // real comment, never text inside a string literal), so a directive
-        // never triggers the rule it accepts and nothing else is hidden.
-        const line = withoutDirective(lines[i], file);
-        const stripped = line.replace(/\s/g, "");
+        // Every check scans the line as written, so nothing can hide behind
+        // a directive (a directive's reason may not carry a quote,
+        // Deno.Command( or a base64 run, so it cannot trigger these rules).
+        // Only the long-line count discounts the directive's own text.
+        const line = lines[i];
+        const stripped = withoutDirective(line, file).replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
           warnings.push(issue(
             "long-line",

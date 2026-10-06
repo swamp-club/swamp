@@ -665,7 +665,9 @@ Rules, enforced by construction:
 - A comment with no reason, with the `<reason>` placeholder still in place,
   naming an unknown or error-level rule, or more than 50 per file, is a blocking
   `invalid-acceptance` error naming the comment. Reasons are capped at 200
-  characters.
+  characters, and in source files may not contain a quote character,
+  `Deno.Command(` or a base64 run: the safety checks scan every line as written,
+  so a directive can never trigger or hide a finding.
 - An acceptance whose rule no longer fires there is a `stale-acceptance` warning
   at the comment, so acceptances do not accumulate.
 - A malformed `quality.yaml` blocks the push before any gate runs, like a

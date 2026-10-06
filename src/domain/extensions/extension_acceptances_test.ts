@@ -189,6 +189,36 @@ Deno.test("parseAcceptanceDirectives: a directive inside a block comment that cl
   assertStringIncludes(parsed.invalid[0].problem, "must end its line");
 });
 
+Deno.test("parseAcceptanceDirectives: a reason may not carry a quote, Deno.Command( or a base64 run in source", () => {
+  for (
+    const [reason, problem] of [
+      ['y"; new Deno.Command("sh")', "quote"],
+      ["wraps Deno.Command( for the CLI", "Deno.Command("],
+      ["A".repeat(100), "base64"],
+    ]
+  ) {
+    const parsed = parseAcceptanceDirectives(
+      `x; // swamp-quality-ignore deno-command: ${reason}\n`,
+      TS,
+    );
+    assertEquals(parsed.directives, [], reason);
+    assertStringIncludes(parsed.invalid[0].problem, problem);
+  }
+  // Markdown reasons are bounded by the comment and may quote freely.
+  const md = parseAcceptanceDirectives(
+    '<!-- swamp-quality-ignore ipv4-address-literals: the "lab" gateway -->\n10.0.0.1\n',
+    MD,
+  );
+  assertEquals(md.invalid, []);
+  assertEquals(md.directives.length, 1);
+});
+
+Deno.test("withoutDirective: leaves a span holding a quote in place, so a fooled opener hides nothing", () => {
+  const line =
+    '/"/.test(s) + "// swamp-quality-ignore long-line: y"; new Deno.Command("sh");';
+  assertEquals(withoutDirective(line, TS), line);
+});
+
 Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", () => {
   const parsed = parseAcceptanceDirectives(
     "<!-- swamp-quality-ignore ipv4-address-literals: lab\n10.0.0.1\n",
