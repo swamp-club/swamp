@@ -33,6 +33,7 @@ import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { RenameForward } from "../../domain/data/repositories.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -1798,4 +1799,162 @@ Deno.test("findAllGlobal: walks types, model ids and data names in name order", 
       expected.slice(1),
     );
   });
+});
+
+// --- Removing a version keeps every step's latest (swamp-club#2975) ---
+
+function stepData(stepName: string, garbageCollection = 100): Data {
+  return Data.create({
+    name: "out",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "workflow-step",
+      ownerRef: "test/model:run",
+      stepName,
+    },
+  });
+}
+
+/** `version:is_latest:is_step_latest` for every catalog row of `out`. */
+function outFlags(catalogStore: CatalogStore): string[] {
+  return [...catalogStore.iterate()]
+    .filter((r) => r.data_name === "out")
+    .sort((a, b) => a.version - b.version)
+    .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
+/** The flags a full catalog rebuild derives for the promoted rows of `out`. */
+function rebuiltOutFlags(catalogStore: CatalogStore): string[] {
+  const rows = [...catalogStore.iterate()].filter((r) =>
+    r.data_name === "out" && r.is_pending === 0
+  );
+  computeLatestFlags(rows);
+  return rows
+    .sort((a, b) => a.version - b.version)
+    .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
+async function withStepRepo(
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    catalogStore: CatalogStore,
+  ) => Promise<void>,
+  enableWriteGc = false,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    await fn(
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        SOLO_NAMESPACE,
+        enableWriteGc,
+      ),
+      catalogStore,
+    );
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const bytes = (s: string) => new TextEncoder().encode(s);
+
+Deno.test("delete: deleting a step's latest version makes its previous version that step's latest again (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2"), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1"), bytes("c"));
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:1", "3:1:1"]);
+
+    await repo.delete(testType, "m1", "out", 3);
+
+    assertEquals(outFlags(catalogStore), ["1:0:1", "2:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("rollbackVersions: rolling back a step's deferred write makes its promoted version that step's latest (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    // s1 reserves v1 and v2 as deferred writes; s2 then promotes v3.
+    const first = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+    const second = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+    await repo.save(testType, "m1", stepData("s2"), bytes("c"));
+    // v1 promotes while v2 is still in flight, so v2 outranks it in s1.
+    await repo.advanceLatestMarkers([first]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:0", "3:1:1"]);
+
+    await repo.rollbackVersions([second]);
+
+    assertEquals(outFlags(catalogStore), ["1:0:1", "3:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("rollbackVersions: rolling back one deferred write leaves another in-flight one unpromoted (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const rolledBack = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s2"),
+      bytes("b"),
+    );
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("c"));
+
+    await repo.rollbackVersions([rolledBack]);
+
+    assertEquals(outFlags(catalogStore), ["1:1:1", "3:0:0"]);
+    const inFlight = [...catalogStore.iterate()].find((r) => r.version === 3);
+    assertEquals(inFlight?.is_pending, 1);
+  });
+});
+
+Deno.test("collectGarbage: every step keeps a step latest after pruning old versions (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2", 3), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("c"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("d"));
+
+    const result = await repo.collectGarbage(testType, "m1");
+    assertEquals(result.versionsRemoved, 1);
+
+    assertEquals(outFlags(catalogStore), ["2:0:1", "3:0:0", "4:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("save: every step keeps a step latest after the write-time version cap prunes (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2", 3), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("c"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("d"));
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2, 3, 4]);
+    assertEquals(outFlags(catalogStore), ["2:0:1", "3:0:0", "4:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  }, true);
 });

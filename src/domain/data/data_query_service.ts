@@ -470,6 +470,7 @@ export class DataQueryService {
         stale.model_id,
         stale.data_name,
         stale.version,
+        computeLatestFlags,
       );
     }
     if (higherOnDisk) return null;

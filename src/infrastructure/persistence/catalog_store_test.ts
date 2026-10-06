@@ -383,7 +383,14 @@ Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
   store.upsertNewVersion(makeRow({ version: 2 }));
   store.upsertNewVersion(makeRow({ version: 3 }));
 
-  store.removeVersion("", "test-model", "model-001", "my-data", 2);
+  store.removeVersion(
+    "",
+    "test-model",
+    "model-001",
+    "my-data",
+    2,
+    computeLatestFlags,
+  );
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 2);
@@ -744,7 +751,14 @@ Deno.test("CatalogStore: bulkRemoveVersions deletes all specified versions atomi
   store.upsertNewVersion(makeRow({ version: 3 }));
   store.upsertNewVersion(makeRow({ version: 4 }));
 
-  store.bulkRemoveVersions("", "test-model", "model-001", "my-data", [1, 2, 3]);
+  store.bulkRemoveVersions(
+    "",
+    "test-model",
+    "model-001",
+    "my-data",
+    [1, 2, 3],
+    computeLatestFlags,
+  );
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 1);
@@ -757,9 +771,80 @@ Deno.test("CatalogStore: bulkRemoveVersions is a no-op for empty array", () => {
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
-  store.bulkRemoveVersions("", "test-model", "model-001", "my-data", []);
+  store.bulkRemoveVersions(
+    "",
+    "test-model",
+    "model-001",
+    "my-data",
+    [],
+    computeLatestFlags,
+  );
 
   assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: removeVersion makes a step's previous version its step latest again (swamp-club#2975)", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
+  store.upsertNewVersion(makeRow({ version: 3, step_name: "s1" }));
+  assertEquals(flagsByVersion(store), ["1:0:0", "2:0:1", "3:1:1"]);
+
+  store.removeVersion(
+    "",
+    "test-model",
+    "model-001",
+    "my-data",
+    3,
+    computeLatestFlags,
+  );
+
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: bulkRemoveVersions recomputes both flags for the group's promoted rows (swamp-club#2975)", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
+  store.upsertNewVersion(makeRow({ version: 3, step_name: "s2" }));
+  store.upsertNewVersion(makeRow({ version: 4, step_name: "s1" }));
+  // An unpromoted deferred write of s2.
+  store.upsert(
+    makeRow({ version: 5, step_name: "s2", is_latest: 0, is_pending: 1 }),
+  );
+  // Another data name in the same model is left alone.
+  store.upsertNewVersion(makeRow({ data_name: "other", version: 1 }));
+
+  store.bulkRemoveVersions(
+    "",
+    "test-model",
+    "model-001",
+    "my-data",
+    [3, 4],
+    computeLatestFlags,
+  );
+
+  const rows = [...store.iterate()]
+    .filter((r) => r.data_name === "my-data")
+    .sort((a, b) => a.version - b.version)
+    .map((r) =>
+      `${r.version}:${r.is_latest}:${r.is_step_latest}:${r.is_pending}`
+    );
+  assertEquals(rows, ["1:0:1:0", "2:1:1:0", "5:0:0:1"]);
+  assertEquals(store.findLatestRow("test-model-name", "other")?.version, 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion clears the pending mark of the version it promotes", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.upsert(makeRow({ version: 1, is_latest: 0, is_pending: 1 }));
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+
+  const [row] = [...store.iterate()];
+  assertEquals([row.is_latest, row.is_step_latest, row.is_pending], [1, 1, 0]);
   store.close();
 });
 
@@ -819,7 +904,14 @@ Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
   }
   // Delete the even versions to free pages and fragment the file.
   for (let version = 2; version <= total; version += 2) {
-    store.removeVersion("", "test-model", "model-001", "my-data", version);
+    store.removeVersion(
+      "",
+      "test-model",
+      "model-001",
+      "my-data",
+      version,
+      computeLatestFlags,
+    );
   }
   store.checkpoint();
 
@@ -943,7 +1035,14 @@ Deno.test("CatalogStore: removeVersion is scoped to a namespace", () => {
   store.upsert(makeRow({ namespace: "infra", version: 1 }));
   store.upsert(makeRow({ namespace: "security", version: 1 }));
 
-  store.removeVersion("infra", "test-model", "model-001", "my-data", 1);
+  store.removeVersion(
+    "infra",
+    "test-model",
+    "model-001",
+    "my-data",
+    1,
+    computeLatestFlags,
+  );
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 1);
@@ -1135,6 +1234,27 @@ Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current bu
   ).get() as { value: string };
   check.close();
   assertEquals(version.value, CATALOG_SCHEMA_VERSION);
+});
+
+Deno.test("CatalogStore: rebuilds a schema 7 catalog, which has no is_pending column (swamp-club#2975)", () => {
+  const dbPath = makeTempDbPath();
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    ALTER TABLE catalog DROP COLUMN is_pending;
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
+      VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '7');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+  `);
+  db.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "rebuild drops the stale rows");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  store.upsert(makeRow({ version: 1, is_latest: 0, is_pending: 1 }));
+  assertEquals([...store.iterate()][0].is_pending, 1);
+  store.close();
 });
 
 Deno.test("CatalogStore: rebuilds a populated catalog whose table is missing under the current version", () => {

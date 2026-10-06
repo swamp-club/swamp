@@ -424,10 +424,14 @@ may return several records for one data name written by different workflow
 steps; an older step's record reports `isLatest: false`. `data.latest()`
 returns the single latest record regardless of step.
 
-Known gap: deleting a version (`swamp data delete --version`, GC, the version
-cap, or rolling back an unpromoted deferred write) re-promotes only the
-surviving highest version. Another step whose latest was deleted keeps no
-`is_step_latest` row until the catalog is rebuilt.
+Removing versions (`swamp data delete --version`, GC, the version cap,
+rolling back a deferred write, or dropping a row whose version another
+repository deleted) recomputes both flags with `computeLatestFlags` over the
+group's remaining promoted rows, in the same transaction as the removal
+(`CatalogStore.removeVersion`, `bulkRemoveVersions`). A step whose latest was
+removed falls back to its previous version (swamp-club#2975). A deferred write
+that is not promoted yet is marked `is_pending = 1` and holds neither flag;
+the recompute skips it, so it is never promoted early.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
@@ -572,6 +576,7 @@ CREATE TABLE catalog (
   job_name        TEXT NOT NULL DEFAULT '',
   step_name       TEXT NOT NULL DEFAULT '',
   source          TEXT NOT NULL DEFAULT '',
+  is_pending      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
 );
 

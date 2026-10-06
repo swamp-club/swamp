@@ -308,6 +308,8 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   (`catalog_store.ts` `migrateIfNeeded`). Every write path keeps one
   `is_latest=1` row per name and one `is_step_latest=1` row per
   `(name, step_name)` via `upsertNewVersion` ([`latest`](#the-record)).
+  Every removal recomputes both flags for the name's remaining promoted rows
+  in the same transaction (`removeVersion`, `bulkRemoveVersions`).
 - **Datastores and sync.** The repository writes wherever the
   `DatastorePathResolver` points. A remote backend (S3 extension) gets a
   `markDirty` hook on its changes, is pulled when a write command starts, and is

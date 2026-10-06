@@ -57,6 +57,7 @@ import {
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 // Re-export domain repository types so existing infra-path importers keep working.
 // New domain code should import directly from src/domain/data/repositories.ts.
@@ -894,6 +895,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       job_name: dataToSave.ownerDefinition.jobName ?? "",
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
+      is_pending: 1,
     });
     this.catalogStore.recordLocalWrite();
 
@@ -1063,6 +1065,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         dataName,
         version,
+        computeLatestFlags,
       );
       this.catalogStore.recordLocalWrite();
 
@@ -1505,6 +1508,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       job_name: dataToSave.ownerDefinition.jobName ?? "",
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
+      is_pending: 1,
     });
     this.catalogStore.recordLocalWrite();
 
@@ -1560,6 +1564,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.modelId,
           receipt.dataName,
           receipt.version,
+          computeLatestFlags,
         );
         this.catalogStore.recordLocalWrite();
       } catch (error) {
@@ -2036,6 +2041,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           modelId,
           data.name,
           versionsToRemove,
+          computeLatestFlags,
         );
         this.catalogStore.recordLocalWrite();
 
@@ -2162,6 +2168,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         dataName,
         toRemove,
+        computeLatestFlags,
       );
       this.catalogStore.recordLocalWrite();
       logger
