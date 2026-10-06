@@ -228,7 +228,7 @@ Deno.test("workflowWaits: a wait a signal settled is not listed, though its step
   );
 
   assertEquals(await list(depsOf([run], T1, waits)), []);
-  assertEquals(step.status, "waiting_signal");
+  assertEquals(step.status, "waiting");
 });
 
 Deno.test("workflowWaits: registers a wait a run holds without a registration, and settles an expired one as timed out", async () => {
@@ -280,7 +280,7 @@ Deno.test("workflowWaits: lists a registered wait whose run record is not on thi
   assertEquals(listed[0].waitingSince, T0.toISOString());
 });
 
-Deno.test("workflowWaits: sweeps the registration of a run that ended, and of a run long gone, and keeps one that may not be synced yet", async () => {
+Deno.test("workflowWaits: sweeps ended runs and authoritative orphans after the grace period", async () => {
   const waits = new InMemorySignalWaitStore();
   const register = async (run: WorkflowRun) => {
     const step = run.getJob("main")!.getStep("review")!;
@@ -305,7 +305,7 @@ Deno.test("workflowWaits: sweeps the registration of a run that ended, and of a 
   const unsynced = waitingRun(workflowNamed("unsynced"), { review: T0 });
   const unsyncedWait = await register(unsynced);
 
-  // Just past the deadline: the missing run may only be unsynced.
+  // Just past the deadline: the missing run is still inside the grace period.
   const soon = new Date("2026-01-01T00:02:00.000Z");
   const listed = await list(depsOf([ended], soon, waits));
   assertEquals(listed.map((w) => w.waitId), [unsyncedWait]);
@@ -315,12 +315,18 @@ Deno.test("workflowWaits: sweeps the registration of a run that ended, and of a 
   assert(closed.kind === "found");
   assertEquals(closed.record.kind, "cancelled");
 
-  // Past the deadline by the grace period: nobody answers that wait now.
+  // Only an authoritative lookup permits removal after the grace period.
   const later = new Date(
     new Date("2026-01-01T00:01:00.000Z").getTime() +
       ORPHAN_WAIT_RECORD_GRACE_MS + 1,
   );
-  assertEquals(await list(depsOf([ended], later, waits)), []);
+  const authoritative = depsOf([ended], later, waits);
+  authoritative.signalWaits = {
+    supported: true,
+    store: waits,
+    localRunAbsenceIsAuthoritative: true,
+  };
+  assertEquals(await list(authoritative), []);
   assertEquals((await waits.findRegistration(unsyncedWait)).kind, "absent");
   assertEquals((await waits.findOutcome(unsyncedWait)).kind, "absent");
   // The outcome of the run that exists lives as long as the run.
@@ -355,4 +361,19 @@ Deno.test("workflowWaits: without a wait store it lists what run records hold an
 
 Deno.test("workflowWaits: no suspended runs lists nothing", async () => {
   assertEquals(await list(depsOf([], T1)), []);
+});
+
+Deno.test("workflowWaits: a registration that cannot be read is rebuilt from the run record and listed as the open wait it is", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+  const waits = new InMemorySignalWaitStore();
+  waits.registrations.set(wait.id, new Uint8Array());
+
+  const deps = depsOf([run], T1, waits);
+
+  assertEquals((await list(deps)).map((w) => [w.waitId, w.expired]), [
+    [wait.id, false],
+  ]);
+  assertEquals((await waits.findRegistration(wait.id)).kind, "found");
+  assertEquals(await listUnreadable(deps), []);
 });

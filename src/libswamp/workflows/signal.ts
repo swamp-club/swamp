@@ -35,7 +35,10 @@ import {
   type SignalWaitStore,
   type SignalWaitSupport,
 } from "../../domain/workflows/signal_wait_store.ts";
-import { outcomeAt } from "../../domain/workflows/signal_wait_cleanup.ts";
+import {
+  ensureRegistered,
+  outcomeAt,
+} from "../../domain/workflows/signal_wait_cleanup.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -239,6 +242,21 @@ function stepHoldsUnreadableWait(
 }
 
 /**
+ * The step of the run record here that held this wait and no longer waits
+ * on it, or undefined when the record is not here or the step still waits.
+ */
+function stepLeftWait(
+  run: WorkflowRun | null,
+  registration: WaitRegistration,
+): StepRun | undefined {
+  const step = run?.getJob(registration.jobName)?.getStep(
+    registration.stepName,
+  );
+  if (!step || step.signalWait?.id !== registration.waitId) return undefined;
+  return step.isSignalWait ? undefined : step;
+}
+
+/**
  * Whether the run can be resumed now that this wait is settled: suspended,
  * with no gate undecided, no nested run waited on, and an outcome for every
  * other wait. Read from the run record as this host has it; false when the
@@ -274,10 +292,9 @@ async function resolveRegistration(
 ): Promise<{ registration: WaitRegistration } | { error: SwampError }> {
   const stored = await store.findRegistration(waitId);
   if (stored.kind === "found") return { registration: stored.record };
-  if (stored.kind === "unreadable") {
-    return { error: unreadableRecord(typedId) };
-  }
 
+  // No registration, or one that cannot be read: the run record still
+  // holds the whole wait, so it is asked, and the registration rebuilt.
   const held = await locateInRunRecords(deps, waitId);
   const outcome = await store.findOutcome(waitId);
   if (!held) {
@@ -300,7 +317,9 @@ async function resolveRegistration(
       };
     }
     return {
-      error: outcome.kind === "absent"
+      error: stored.kind === "unreadable"
+        ? unreadableRecord(typedId)
+        : outcome.kind === "absent"
         ? unknownWait(typedId)
         : outcome.kind === "unreadable"
         ? unreadableRecord(typedId)
@@ -336,13 +355,16 @@ async function resolveRegistration(
       ),
     };
   }
-  const registration = registrationOf(
-    place,
-    step.signalWait,
-    step.startedAt ?? deps.now?.() ?? new Date(),
-  );
-  await store.register(registration);
-  return { registration };
+  return {
+    registration: await ensureRegistered(
+      store,
+      registrationOf(
+        place,
+        step.signalWait,
+        step.startedAt ?? deps.now?.() ?? new Date(),
+      ),
+    ),
+  };
 }
 
 async function deliver(
@@ -357,6 +379,27 @@ async function deliver(
   const { registration } = resolved;
   const now = deps.now?.() ?? new Date();
   const run = await runOf(deps, registration);
+  // A step never returns to a wait it left. So when the run record here
+  // shows the step past this wait, with no outcome stored, something that
+  // writes run records directly settled it (a build from before outcome
+  // records, which also cancels without closing the wait). The signal is
+  // answered from the record instead of being accepted and never applied.
+  const left = stepLeftWait(run, registration);
+  if (
+    left && (await store.findOutcome(registration.waitId)).kind === "absent"
+  ) {
+    const receipt = left.signalWait?.receipt;
+    return {
+      error: receipt
+        ? alreadySettled(typedId, whereOf(registration), receipt)
+        : validationFailed(
+          `Wait ${typedId} is closed: ${
+            whereOf(registration)
+          } is ${left.status}` +
+            (left.error ? ` (${left.error})` : "") + ".",
+        ),
+    };
+  }
   if (stepHoldsUnreadableWait(run, registration)) {
     return {
       error: validationFailed(

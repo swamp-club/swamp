@@ -571,5 +571,5 @@ Deno.test("workflowApprove: a step waiting for a signal is not a gate to approve
   const last = await approve(makeDeps(workflow, run), "deploy");
 
   assertEquals(last?.kind, "error");
-  assertEquals(run.getJob("main")!.getStep("deploy")!.status, "waiting_signal");
+  assertEquals(run.getJob("main")!.getStep("deploy")!.status, "waiting");
 });

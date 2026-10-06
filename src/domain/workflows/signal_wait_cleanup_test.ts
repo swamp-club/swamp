@@ -39,6 +39,8 @@ import {
   closeRunWaits,
   closeStepWait,
   closeWaitsOfEndedRun,
+  ensureRegistered,
+  findRegistrationOfStep,
   findUnsettledWait,
   isEndedRunStatus,
   ORPHAN_WAIT_RECORD_GRACE_MS,
@@ -176,20 +178,22 @@ Deno.test("applyAcceptedSignals: applies each accepted signal and reports the fi
     stepName: "a",
     wait: { id: stepOf(run, "a").signalWait!.id },
   });
-  assertEquals(stepOf(run, "a").status, "waiting_signal");
+  assertEquals(stepOf(run, "a").status, "waiting");
   assertEquals(stepOf(run, "b").status, "succeeded");
   assertEquals(stepOf(run, "b").output, {
     type: "wait_for_signal",
     payload: { verdict: "fix" },
     signal: accepted.receipt,
   });
-  assertEquals(stepOf(run, "c").status, "waiting_signal");
+  assertEquals(stepOf(run, "c").status, "waiting");
 });
 
 Deno.test("applyAcceptedSignals: a wait that timed out, was cancelled or cannot be read is not open, and is left for the walk to fail", async () => {
   const { run, store } = await waitingRun(["late", "gone", "bad", "forged"]);
   await store.settle(
-    unsignalledOutcomeFor(stepOf(run, "gone").signalWait!, "cancelled"),
+    unsignalledOutcomeFor(stepOf(run, "gone").signalWait!, "cancelled", {
+      runId: run.id,
+    }),
   );
   store.outcomes.set(
     stepOf(run, "bad").signalWait!.id,
@@ -213,10 +217,14 @@ Deno.test("settleReenteredWait: fails the step by what settled its wait, and lea
   const { run, store } = await waitingRun(names);
   await store.settle(accept(run, "signalled"));
   await store.settle(
-    unsignalledOutcomeFor(stepOf(run, "late").signalWait!, "timed_out"),
+    unsignalledOutcomeFor(stepOf(run, "late").signalWait!, "timed_out", {
+      runId: run.id,
+    }),
   );
   await store.settle(
-    unsignalledOutcomeFor(stepOf(run, "gone").signalWait!, "cancelled"),
+    unsignalledOutcomeFor(stepOf(run, "gone").signalWait!, "cancelled", {
+      runId: run.id,
+    }),
   );
   store.outcomes.set(
     stepOf(run, "bad").signalWait!.id,
@@ -228,10 +236,10 @@ Deno.test("settleReenteredWait: fails the step by what settled its wait, and lea
     settleReenteredWait(store, run, stepOf(run, name), IN_TIME);
 
   assertEquals(await settle("open"), "open");
-  assertEquals(stepOf(run, "open").status, "waiting_signal");
+  assertEquals(stepOf(run, "open").status, "waiting");
   // A signal is applied by the resume's takeover, not here.
   assertEquals(await settle("signalled"), "open");
-  assertEquals(stepOf(run, "signalled").status, "waiting_signal");
+  assertEquals(stepOf(run, "signalled").status, "waiting");
 
   assertEquals(await settle("late"), "failed");
   assertEquals(stepOf(run, "late").error, WAIT_TIMEOUT_STEP_ERROR);
@@ -367,16 +375,142 @@ Deno.test("sweepWaitRecords: records of a run that cannot be found go only once 
   const justInside = new Date(DEADLINE.getTime() + ORPHAN_WAIT_RECORD_GRACE_MS);
   const justPast = new Date(justInside.getTime() + 1);
 
-  assertEquals(await sweepWaitRecords(store, nowhere, justInside), {
-    registrations: 0,
-    outcomes: 0,
-  });
+  assertEquals(
+    await sweepWaitRecords(store, nowhere, justInside, {
+      localRunAbsenceIsAuthoritative: true,
+    }),
+    {
+      registrations: 0,
+      outcomes: 0,
+    },
+  );
   assertEquals((await store.listRegistrations()).length, 2);
 
-  assertEquals(await sweepWaitRecords(store, nowhere, justPast), {
-    registrations: 2,
-    outcomes: 1,
-  });
+  assertEquals(
+    await sweepWaitRecords(store, nowhere, justPast, {
+      localRunAbsenceIsAuthoritative: true,
+    }),
+    {
+      registrations: 2,
+      outcomes: 1,
+    },
+  );
   assertEquals(store.registrations.size, 0);
   assertEquals(store.outcomes.size, 0);
+});
+
+Deno.test("sweepWaitRecords: uncertain run absence retains records regardless of age", async () => {
+  for (const authority of [undefined, false]) {
+    const { run, store } = await waitingRun();
+    const accepted = accept(run, "a");
+    await store.settle(accepted);
+    const farFuture = new Date(
+      DEADLINE.getTime() + 100 * ORPHAN_WAIT_RECORD_GRACE_MS,
+    );
+    assertEquals(
+      await sweepWaitRecords(store, () => Promise.resolve(null), farFuture, {
+        localRunAbsenceIsAuthoritative: authority,
+      }),
+      { registrations: 0, outcomes: 0 },
+    );
+    assertEquals((await store.listRegistrations()).length, 1);
+    assertEquals(await store.listOutcomes(), [accepted]);
+    assertEquals(await applyAcceptedSignals(store, run, farFuture), undefined);
+    assertEquals(stepOf(run, "a").output, {
+      type: "wait_for_signal",
+      payload: accepted.payload,
+      signal: accepted.receipt,
+    });
+  }
+});
+
+Deno.test("settleReenteredWait: an accepted outcome with another wait's identity fails without replacing the outcome", async () => {
+  for (const mismatch of ["outcome", "receipt"]) {
+    const { run, store } = await waitingRun();
+    const step = stepOf(run, "a");
+    const outcome = accept(run, "a");
+    if (mismatch === "outcome") outcome.waitId = crypto.randomUUID();
+    else outcome.receipt.waitId = crypto.randomUUID();
+    // Also exercise stores that return a parsed outcome without checking its key.
+    store.findOutcome = () =>
+      Promise.resolve({ kind: "found", record: outcome });
+    const before = structuredClone(outcome);
+    assertEquals(await applyAcceptedSignals(store, run, IN_TIME), undefined);
+    assertEquals(step.status, "waiting");
+    assertEquals(
+      await settleReenteredWait(store, run, step, IN_TIME),
+      "failed",
+    );
+    assertEquals(step.error, WAIT_UNREADABLE_STEP_ERROR);
+    assertEquals(step.output, undefined);
+    assertEquals(outcome, before);
+    assertEquals(store.outcomes.size, 0);
+  }
+});
+
+Deno.test("outcomeAt: an outcome that names another run is not this wait's outcome", async () => {
+  const { run, store } = await waitingRun();
+  const step = stepOf(run, "a");
+  await store.settle(
+    acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+      runId: crypto.randomUUID(),
+    }),
+  );
+
+  assertEquals(await outcomeAt(store, waitRefOf(run, step)!, IN_TIME), {
+    kind: "unreadable",
+  });
+  // The resume fails the step instead of applying another run's signal.
+  assertEquals(await applyAcceptedSignals(store, run, IN_TIME), undefined);
+  assertEquals(step.status, "waiting");
+  assertEquals(await settleReenteredWait(store, run, step, IN_TIME), "failed");
+  assertEquals(step.error, WAIT_UNREADABLE_STEP_ERROR);
+});
+
+Deno.test("ensureRegistered: keeps a readable registration, and replaces one that cannot be read", async () => {
+  const { run, store } = await waitingRun();
+  const [original] = await store.listRegistrations();
+  const rebuilt = { ...original, stepName: "renamed" };
+
+  // A readable registration holds, whatever is offered.
+  assertEquals(await ensureRegistered(store, rebuilt), original);
+
+  store.registrations.set(original.waitId, new Uint8Array());
+  assertEquals(await store.listRegistrations(), []);
+  assertEquals(await ensureRegistered(store, rebuilt), rebuilt);
+  assertEquals(await store.listRegistrations(), [rebuilt]);
+
+  await store.removeRegistration(original.waitId);
+  assertEquals(await ensureRegistered(store, original), original);
+  assertEquals(run.id, original.runId);
+});
+
+Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, and no other step's or run's", async () => {
+  const store = new InMemorySignalWaitStore();
+  const { run } = await waitingRun(["a", "b"], store);
+  await waitingRun(["a"], store);
+
+  const found = await findRegistrationOfStep(store, {
+    runId: run.id,
+    jobName: "main",
+    stepName: "b",
+  });
+
+  assertEquals(found?.waitId, stepOf(run, "b").signalWait!.id);
+  assertEquals(
+    await findRegistrationOfStep(store, {
+      runId: run.id,
+      jobName: "main",
+      stepName: "c",
+    }),
+    undefined,
+  );
+  assertEquals(
+    await findRegistrationOfStep(store, {
+      runId: crypto.randomUUID(),
+      jobName: "main",
+      stepName: "a",
+    }),
+    undefined,
+  );
 });

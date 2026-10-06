@@ -31,6 +31,7 @@ import type {
   SignalWaitSupport,
 } from "../../domain/workflows/signal_wait_store.ts";
 import {
+  ensureRegistered,
   outcomeAt,
   sweepWaitRecords,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
@@ -170,8 +171,12 @@ async function collectRegistrations(
         ref.wait,
         step?.startedAt ?? now,
       );
-      await store?.register(registration);
-      registrations.set(registration.waitId, registration);
+      // Also replaces a stored registration that cannot be read, which is
+      // why it was not listed: the run record still holds the whole wait.
+      registrations.set(
+        registration.waitId,
+        store ? await ensureRegistered(store, registration) : registration,
+      );
     }
   }
   return registrations;
@@ -211,6 +216,10 @@ export async function* workflowWaits(
               createWorkflowRunId(runId),
             ),
           now,
+          {
+            localRunAbsenceIsAuthoritative: deps.signalWaits.supported &&
+              deps.signalWaits.localRunAbsenceIsAuthoritative,
+          },
         );
       }
 

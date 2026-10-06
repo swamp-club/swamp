@@ -18200,7 +18200,7 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
     const job = stored.getJob("job1")!;
     assertEquals(stored.status, "suspended");
     assertEquals(job.status, "running");
-    assertEquals(job.getStep("review")!.status, "waiting_signal");
+    assertEquals(job.getStep("review")!.status, "waiting");
     assertEquals(job.getStep("sibling")!.status, "succeeded");
     assertEquals(job.getStep("after")!.status, "pending");
     assertEquals(executed, ["sibling"]);

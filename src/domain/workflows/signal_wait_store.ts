@@ -65,7 +65,12 @@ export interface SignalWaitStore {
  * holds their records, or not at all, with the reason to show.
  */
 export type SignalWaitSupport =
-  | { readonly supported: true; readonly store: SignalWaitStore }
+  | {
+    readonly supported: true;
+    readonly store: SignalWaitStore;
+    /** Missing local runs are absent from the datastore, not merely unsynced. */
+    readonly localRunAbsenceIsAuthoritative?: boolean;
+  }
   | { readonly supported: false; readonly reason: string };
 
 /** The support of a context that was given no store. */

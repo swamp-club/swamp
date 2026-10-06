@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-06 @ 77141f20
 ---
 
 # Workflows
@@ -522,17 +522,21 @@ learns whether it won by comparing the stored outcome with its own, never from
 the create's answer: a retried conditional write whose first reply was lost
 reports the key as taken to the writer that took it. Both records are plaintext
 in a store other writers can reach, so each is parsed on every read; one that
-does not parse reads as unreadable, never as absent.
+does not parse reads as unreadable, never as absent. Registrations larger than
+256 KiB of encoded JSON are rejected before writing or suspending the step, so
+every registration written fits the read limit.
 
 The transitions live on `StepRun` (`src/domain/workflows/workflow_run.ts`):
 
-- `waitForSignal(wait)` parks the step in the `waiting_signal` status.
+- `waitForSignal(wait)` parks the step in the `waiting` status.
 - `applyWaitOutcome(outcome)` is the only way a wait ends: an accepted signal
   succeeds the step with the payload and receipt, `timed_out` fails it with
   error `wait_timeout`, `cancelled` fails it with error `cancelled`. The payload
   is checked again against the schema the step captured before it is kept; an
   outcome of another wait, or one whose payload the wait would have refused,
-  changes nothing.
+  changes nothing. An outcome that names another run, or whose payload does not
+  survive parsing unchanged (a reserved key such as `__proto__` is dropped by
+  it), reads as unreadable and fails the step.
 - `failUnreadableWait()` fails a waiting step whose stored wait cannot be read
   with error `wait_unreadable`. The wait is parsed leniently so a hand-edited
   record never makes a run unloadable; such a step has no ID to signal and no
@@ -548,20 +552,21 @@ The transitions live on `StepRun` (`src/domain/workflows/workflow_run.ts`):
 What a wait accepts is decided by `decideSignal`, a pure function over the
 registration, so the rule is in one place and needs no run record.
 
-**The `waiting_signal` status.** A waiting step does not reuse
-`waiting_approval`. An older binary would list the wait as an approval gate, and
-approving it would succeed the step with no payload. A status the older binary
-does not know makes it refuse the run instead. swamp-club#3068 stored such a
-step as `waiting`; a binary of that build would time out a wait whose signal sat
-in an outcome record it never reads, so waits opened since use
-`waiting_signal`, which that build cannot parse. `isSignalWait` is true for
-both, a run suspended by the earlier build is handled by the same code, and
-every view shows the step as `waiting`. A run that holds no wait is unaffected.
-The kind of wait is recorded beside the status (`wait.kind: signal`), which
-leaves room for other kinds of wait. `isUnfinishedStatus`
-(`src/domain/workflows/trigger_condition.ts`) is the one predicate for "this
-step has not reached an outcome"; code that only needs to know that uses it
-rather than naming the statuses.
+**The `waiting` status.** A waiting step does not reuse `waiting_approval`. An
+older binary would list the wait as an approval gate, and approving it would
+succeed the step with no payload. A status the older binary does not know makes
+it refuse the run instead. The kind of wait is recorded beside the status
+(`wait.kind: signal`), which leaves room for other kinds of wait.
+`isUnfinishedStatus` (`src/domain/workflows/trigger_condition.ts`) is the one
+predicate for "this step has not reached an outcome"; code that only needs to
+know that uses it rather than naming the statuses.
+
+The status and the wait stored on the step are unchanged from swamp-club#3068,
+so a binary of that build still reads every run. That was chosen over a new
+status, which would have made one waiting run break that build's repo-wide
+commands (`workflow approvals`, `workflow cancel --all`) for every workflow. The
+cost is that such a binary does not know about outcome records; see "Mixing
+builds" below.
 
 **Which datastores support a wait.** Wait records must be visible to every
 process that can settle the wait, so `resolveSignalWaitSupport`
@@ -616,7 +621,7 @@ must be a UUID before a key is built from it. Each refusal has its own message:
 | payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                |
 | already settled   | A signal already settled the wait. The stored receipt is shown.                                                      |
 | closed            | The run ended, or its step was reset, before a signal arrived.                                                       |
-| cannot be read    | The registration or the outcome does not parse, or the run record here shows the step holding an unreadable wait.   |
+| cannot be read    | The outcome does not parse, the registration does not and no run record here can rebuild it, or the run record here shows the step holding an unreadable wait. |
 | not supported     | The datastore cannot hold wait records.                                                                              |
 
 A signal that loses the create to a timeout, a cancel or another signal gets
@@ -629,16 +634,40 @@ step still shows `waiting`, the record's derived `awaitingResume` is unset, and
 `workflow run` keeps the run instead of superseding it. `workflow waits` and the
 signal's own result are where a settled wait shows.
 
-**Runs suspended before waits were registered.** A run suspended by
-swamp-club#3068 holds its wait only in the run record. When the registration is
-missing, `workflow signal` falls back to scanning run records, as that build
-did, and registers the wait from the step it finds; `workflow waits` does the
-same for every such wait it meets. From there the wait behaves like any other. A
-wait that build already settled in the run record is answered "already settled"
-from that record. A resume needs no registration: it reads the outcome by the
-ID on the step. One limit remains: a binary of that build can still resume such
-a run after a newer binary accepted its signal, and past the deadline it fails
-the step with `wait_timeout`. Upgrade every host before signalling.
+**A wait with no usable registration.** When the registration is missing or
+cannot be read, `workflow signal` falls back to scanning run records and
+rebuilds it from the step that holds the wait (`ensureRegistered`);
+`workflow waits` does the same for every such wait it meets. The run record
+holds the whole wait, so a damaged registration file does not leave a wait
+nothing can signal. This is also how a run suspended by swamp-club#3068, which
+never registered its waits, takes a signal. A resume needs no registration: it
+reads the outcome by the ID on the step.
+
+**A step that registered a wait and never saved it.** A process killed between
+registering a wait and saving the run leaves a registration the run record does
+not know. `workflow waits` lists it and a signal for it is accepted. When the
+step runs again, after `workflow recover` or a resume, it takes that wait over
+instead of opening another (`adoptableWait` in
+`src/domain/workflows/execution_service.ts`), so the accepted signal is applied
+by the next resume. A wait that passed its deadline unsignalled is closed
+instead and the step opens a new one, as a retry does.
+
+**Mixing builds.** A binary from swamp-club#3068 reads these runs but writes
+the run record directly and never reads an outcome record. On a repository or
+datastore that such a binary still uses:
+
+- Its `workflow resume` does not see a signal accepted as an outcome: it refuses
+  the run as still waiting, and past the deadline fails the step with
+  `wait_timeout`, discarding the signal. This is the known cost of keeping the
+  status.
+- Its `workflow signal` and `workflow cancel` settle the step in the run record
+  and leave the registration open. A later signal from this build finds the
+  step already past its wait in the run record and is answered from that record
+  ("already settled" with its receipt, or "closed") instead of being accepted.
+  That check reads the run record on this host, so it does not help on a second
+  host that has not synced the run.
+
+Upgrade every host before signalling.
 
 Every refusal names the wait ID exactly as it was typed, and none names the
 person who sent an earlier signal. Telemetry records the first line of an error
@@ -703,6 +732,12 @@ again. An owner on another host cannot be checked and is not refused, which
 leaves that case open. `swamp serve` does not make this check: a run it is
 still executing is reserved in its active-run registry.
 
+The owner's saves also overwrite an approval or rejection made in that window,
+which was true before this check existed. So the refusal tells the user to
+check the run once the owner has finished and give the decision again if it was
+not kept; resuming straight after the owner exits can otherwise answer "still
+awaiting approval".
+
 **Timing out.** A deadline is enforced lazily, by whoever looks: `workflow
 signal`, `workflow waits` and `workflow resume` each settle a wait as
 `timed_out` when it has no outcome and its deadline has passed (`outcomeAt`).
@@ -752,9 +787,10 @@ workflow run garbage collection removes the wait records of the runs it deletes
 (`src/libswamp/data/run_gc.ts`), and deleting a workflow removes those of its
 runs (`src/libswamp/workflows/delete.ts`). `sweepWaitRecords` is the safety net
 for a record nothing else removed. It closes the registration of a run that has
-ended, and removes a registration or outcome whose run cannot be found only once
-the wait's deadline plus 24 hours has passed: run records reach another host
-later than wait records do, so a run that is missing here may only be unsynced.
+ended. On filesystem datastores, it removes a registration or outcome whose run
+cannot be found once the wait's deadline plus 24 hours has passed. On custom
+datastores, missing local runs may only be unsynced, so their records are kept
+regardless of age. An accepted signal may still be needed on a later resume.
 The sweep runs from `workflow waits` and from the run garbage collection.
 
 **Supersede.** `workflow run` cancels suspended runs of the same workflow with
@@ -779,25 +815,25 @@ to start while any of them is still open.
 
 **Limits of this version:**
 
-- A signal must be sent from the host that ran the workflow. The check that
-  keeps a signal from being saved over while a level is still finishing reads
-  that host's run tracker. On a datastore shared between hosts, a signal sent
-  from another host while sibling steps of the wait's level are still
-  finishing can be accepted and then overwritten: the step goes back to
-  `waiting` and the signal must be sent again.
 - Only the CLI can signal. An outside system cannot call in by itself;
-  something must run `swamp workflow signal` on a machine with the repository
-  and its datastore.
+  something must run `swamp workflow signal` on a machine with a repository on
+  the datastore.
 - Resume is manual, including for runs that `swamp serve` started: serve does
-  not auto-resume a run that still has a step waiting for a signal, open or
-  past its deadline. The local command does no authorization, as local
+  not auto-resume a run that still has a step waiting for a signal, signalled,
+  open or past its deadline. The local command does no authorization, as local
   `approve` does none.
 - Deadlines are noticed only when something looks. An expired wait stays
   suspended until the next resume.
-- Finding a wait by ID scans the suspended runs, and every run when none of
-  them holds it. There is no index from wait ID to run.
-- Older binaries cannot read a run with a waiting step, and treat a workflow
-  file containing the task as broken.
+- A signal does not show in the run record until the run is resumed, so
+  `workflow history` and the dashboard cannot tell a signalled wait from an open
+  one. `workflow waits` can.
+- A binary from swamp-club#3068 can discard an accepted signal (see "Mixing
+  builds"), and older binaries treat a workflow file containing the task as
+  broken.
+- A resume from another host while the run's owner still runs the level it
+  suspended in is not refused: the run tracker is local to a host.
+- A run tracker row whose pid was reused by another live process keeps the
+  resume refused until the run is cancelled.
 - The dashboard lists suspended runs as awaiting approval or awaiting resume.
   A run suspended only on a signal wait is in neither list.
 

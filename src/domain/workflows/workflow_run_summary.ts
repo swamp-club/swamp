@@ -119,10 +119,7 @@ function deriveAwaitingResume(
     if (!Array.isArray(steps)) continue;
     for (const step of steps) {
       const stepStatus = (step as { status?: unknown } | null)?.status;
-      if (
-        stepStatus === "waiting_approval" || stepStatus === "waiting" ||
-        stepStatus === "waiting_signal"
-      ) {
+      if (stepStatus === "waiting_approval" || stepStatus === "waiting") {
         return undefined;
       }
     }
@@ -148,7 +145,7 @@ function deriveWaitingOnRun(
     for (const step of steps) {
       const s = step as { status?: unknown; nestedRun?: unknown } | null;
       // A wait for a signal is a wait of the run's own, as a gate is.
-      if (s?.status === "waiting" || s?.status === "waiting_signal") {
+      if (s?.status === "waiting") {
         gateWaits = true;
         continue;
       }

@@ -943,8 +943,13 @@ swamp workflow resume release --run <run-id>
   store (current `@swamp/s3-datastore` and `@swamp/gcs-datastore`). On any
   other, `workflow run` refuses a workflow with a `wait_for_signal` step and
   names the extension to update.
-- A run suspended on a wait cannot be read by a swamp older than the one that
-  started it: upgrade every host before using waits.
+- Upgrade every host before signalling. An older swamp that knows
+  `wait_for_signal` reads these runs but not the stored signal: its `resume`
+  refuses the run as still waiting, and past the deadline fails the step with
+  `wait_timeout`.
+- `resume` refused with "has not finished suspending": wait for the first
+  process to finish, then check the run. An approval or rejection made while it
+  was still running may not have been kept and must be given again.
 - A step that fails with `wait_unreadable` held a wait record that could not be
   read (a hand-edited run file); `workflow waits` lists it under
   `unreadableWaits`.

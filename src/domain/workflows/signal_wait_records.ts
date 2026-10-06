@@ -188,12 +188,25 @@ export function decodeWaitRegistration(
   return decode(bytes, WaitRegistrationSchema, waitId);
 }
 
-/** Reads the outcome stored for `waitId`. */
+/**
+ * Reads the outcome stored for `waitId`. A payload that does not survive
+ * parsing unchanged is unreadable: parsing drops a key such as `__proto__`,
+ * and a payload a signal could never have sent must not be applied in part.
+ */
 export function decodeWaitOutcome(
   bytes: Uint8Array | null,
   waitId: string,
 ): StoredWaitRecord<WaitOutcome> {
-  return decode(bytes, WaitOutcomeSchema, waitId);
+  const stored = decode(bytes, WaitOutcomeSchema, waitId);
+  if (stored.kind !== "found" || stored.record.kind !== "accepted") {
+    return stored;
+  }
+  const raw = JSON.parse(new TextDecoder().decode(bytes!)) as {
+    payload: unknown;
+  };
+  return JSON.stringify(raw.payload) === JSON.stringify(stored.record.payload)
+    ? stored
+    : { kind: "unreadable" };
 }
 
 /** The registration of `wait`, held by a step of a run. */

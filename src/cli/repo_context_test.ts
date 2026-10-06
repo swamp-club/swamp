@@ -4375,6 +4375,8 @@ Deno.test("resolveSignalWaitSupport: a filesystem datastore keeps wait records u
     const one = resolveSignalWaitSupport(config);
     const two = resolveSignalWaitSupport(config);
     assert(one.supported && two.supported);
+    assertEquals(one.localRunAbsenceIsAuthoritative, true);
+    assertEquals(two.localRunAbsenceIsAuthoritative, true);
     const registration = waitRegistrationFor(crypto.randomUUID());
 
     await one.store.register(registration);
@@ -4402,6 +4404,8 @@ Deno.test("resolveSignalWaitSupport: a namespaced filesystem datastore keeps eac
       namespace: "team-b",
     });
     assert(team.supported && other.supported);
+    assertEquals(team.localRunAbsenceIsAuthoritative, true);
+    assertEquals(other.localRunAbsenceIsAuthoritative, true);
     const registration = waitRegistrationFor(crypto.randomUUID());
 
     await team.store.register(registration);
@@ -4452,6 +4456,7 @@ Deno.test("resolveSignalWaitSupport: a custom datastore's store is bound to the 
     controlPlaneStore: () => remote,
   });
   assert(support.supported);
+  assertEquals(support.localRunAbsenceIsAuthoritative, undefined);
   // Resolving touches neither the store nor the remote.
   assertEquals(events, []);
   assertEquals(calls, []);
@@ -4484,6 +4489,7 @@ Deno.test("resolveSignalWaitSupport: no pull is made without a namespace, or whe
     );
     assert(support.supported);
 
+    assertEquals(support.localRunAbsenceIsAuthoritative, undefined);
     await support.store.register(waitRegistrationFor(crypto.randomUUID()));
 
     assertEquals(events, []);

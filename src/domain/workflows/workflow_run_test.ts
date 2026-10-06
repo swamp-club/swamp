@@ -2851,30 +2851,15 @@ function unsignalledOutcome(
 Deno.test("StepRun.waitForSignal: the step waits, holds the wait, and round-trips", () => {
   const { step, wait } = waitingStep();
 
-  assertEquals(step.status, "waiting_signal");
+  assertEquals(step.status, "waiting");
   assertEquals(step.isSignalWait, true);
   assertEquals(step.isNestedWait, false);
   assertEquals(step.signalWait?.id, wait.id);
 
   const loaded = StepRun.fromData(step.toData());
-  assertEquals(loaded.status, "waiting_signal");
+  assertEquals(loaded.status, "waiting");
   assertEquals(loaded.signalWait?.equals(wait), true);
   assertEquals(loaded.toData(), step.toData());
-});
-
-Deno.test("StepRun: a step stored as waiting by an earlier build is a signal wait too", () => {
-  const { step, wait } = waitingStep();
-  const earlier = StepRun.fromData({ ...step.toData(), status: "waiting" });
-
-  assertEquals(earlier.status, "waiting");
-  assertEquals(earlier.isSignalWait, true);
-  // It is written back as it was read, and settles like any other wait.
-  assertEquals(earlier.toData().status, "waiting");
-  assertEquals(
-    earlier.applyWaitOutcome(acceptedOutcome(wait, { verdict: "ship" })),
-    true,
-  );
-  assertEquals(earlier.status, "succeeded");
 });
 
 Deno.test("StepRun.applyWaitOutcome: an accepted signal succeeds the step with its payload and receipt", () => {
@@ -2994,7 +2979,7 @@ Deno.test("StepRun: a waiting step whose stored wait cannot be read fails as unr
   const { step, wait } = waitingStep();
   const broken = StepRun.fromData({ ...step.toData(), wait: { kind: "?" } });
 
-  assertEquals(broken.status, "waiting_signal");
+  assertEquals(broken.status, "waiting");
   assertEquals(broken.signalWait, undefined);
   // The unreadable value is written back as read.
   assertEquals(broken.toData().wait, { kind: "?" });
@@ -3007,7 +2992,7 @@ Deno.test("StepRun: a waiting step whose stored wait cannot be read fails as unr
     broken.applyWaitOutcome(unsignalledOutcome(wait, "timed_out")),
     false,
   );
-  assertEquals(broken.status, "waiting_signal");
+  assertEquals(broken.status, "waiting");
   assertEquals(broken.failUnreadableWait(), true);
   assertEquals(broken.status, "failed");
   assertEquals(broken.error, WAIT_UNREADABLE_STEP_ERROR);
@@ -3016,7 +3001,7 @@ Deno.test("StepRun: a waiting step whose stored wait cannot be read fails as unr
 Deno.test("StepRun.failUnreadableWait: leaves a step with a readable wait, or no wait, alone", () => {
   const { step } = waitingStep();
   assertEquals(step.failUnreadableWait(), false);
-  assertEquals(step.status, "waiting_signal");
+  assertEquals(step.status, "waiting");
 
   const pending = StepRun.pending("other");
   assertEquals(pending.failUnreadableWait(), false);
@@ -3060,7 +3045,7 @@ Deno.test("StepRun.cancelOpenWait: fails a waiting step as cancelled and leaves 
 Deno.test("StepRun.cancelUndecidedApproval: leaves a step waiting for a signal alone", () => {
   const { step } = waitingStep();
   step.cancelUndecidedApproval();
-  assertEquals(step.status, "waiting_signal");
+  assertEquals(step.status, "waiting");
 });
 
 Deno.test("StepRun.resetToPending: clears the wait, so a retry opens a new one", () => {

@@ -131,6 +131,7 @@ export interface RunGcDeps {
 function waitRecordCollector(
   store: SignalWaitStore,
   runRepo: Pick<WorkflowRunRepository, "findById">,
+  localRunAbsenceIsAuthoritative = false,
 ): (deletedRunIds: readonly string[]) => Promise<void> {
   return async (deletedRunIds) => {
     await removeWaitRecordsOfRuns(store, new Set(deletedRunIds));
@@ -142,6 +143,7 @@ function waitRecordCollector(
           createWorkflowRunId(runId),
         ),
       new Date(),
+      { localRunAbsenceIsAuthoritative },
     );
   };
 }
@@ -176,7 +178,11 @@ export function createRunGcDeps(
     evaluatedWorkflowRepo,
     () => workflowRunRepo.listRunIds(),
     signalWaits?.supported
-      ? waitRecordCollector(signalWaits.store, workflowRunRepo)
+      ? waitRecordCollector(
+        signalWaits.store,
+        workflowRunRepo,
+        signalWaits.localRunAbsenceIsAuthoritative,
+      )
       : undefined,
   );
   return {

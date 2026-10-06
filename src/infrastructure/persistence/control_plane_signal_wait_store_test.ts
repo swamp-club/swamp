@@ -17,15 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import {
   cancelledOutcome,
   decideSignal,
+  encodeWaitRecord,
   registrationOf,
   timedOutOutcome,
+  WAIT_RECORD_MAX_BYTES,
   type WaitRegistration,
 } from "../../domain/workflows/signal_wait_records.ts";
 import { settledBy } from "../../domain/workflows/signal_wait_store.ts";
@@ -283,4 +285,53 @@ Deno.test("ControlPlaneSignalWaitStore: of many concurrent settles on a real dir
     assertEquals(winners.length, 1);
     for (const stored of results) assertEquals(stored, winners[0]);
   });
+});
+
+Deno.test("ControlPlaneSignalWaitStore.register: enforces the encoded byte limit before writing, including multibyte text", async () => {
+  for (const character of ["a", "é", "🐸"]) {
+    for (const excess of [0, 1]) {
+      const backing = memoryStore();
+      let writes = 0;
+      const store = new ControlPlaneSignalWaitStore({
+        ...backing,
+        putIfAbsent: async (key, bytes) => {
+          writes++;
+          return await backing.putIfAbsent(key, bytes);
+        },
+      });
+      const reg = registration();
+      reg.workflowName = "";
+      const padding = WAIT_RECORD_MAX_BYTES - encodeWaitRecord(reg).byteLength;
+      const width = new TextEncoder().encode(character).byteLength;
+      reg.workflowName = character.repeat(Math.floor(padding / width)) +
+        "x".repeat(padding % width + excess);
+      assertEquals(
+        encodeWaitRecord(reg).byteLength,
+        WAIT_RECORD_MAX_BYTES + excess,
+      );
+      if (excess) {
+        await assertRejects(
+          () => store.register(reg),
+          Error,
+          `${
+            WAIT_RECORD_MAX_BYTES + excess
+          } bytes, over the ${WAIT_RECORD_MAX_BYTES} byte limit`,
+        );
+        assertEquals(writes, 0);
+        assertEquals(backing.data.size, 0);
+      } else {
+        await store.register(reg);
+        assertEquals(writes, 1);
+        assertEquals(await store.findRegistration(reg.waitId), {
+          kind: "found",
+          record: reg,
+        });
+        const outcome = accepted(reg, "ship");
+        assertEquals(await store.settle(outcome), {
+          kind: "found",
+          record: outcome,
+        });
+      }
+    }
+  }
 });

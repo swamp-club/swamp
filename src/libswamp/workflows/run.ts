@@ -399,16 +399,6 @@ export interface WorkflowRunInput {
 }
 
 /**
- * A step or job status as shown: a wait for a signal is `waiting` however
- * its record spells it.
- */
-function viewStatus(
-  status: WorkflowRun["jobs"][number]["status"],
-): StepRunView["status"] {
-  return status === "waiting_signal" ? "waiting" : status;
-}
-
-/**
  * Extracts artifact data from a step's output for verbose mode.
  */
 export function extractStepArtifacts(
@@ -523,14 +513,14 @@ export function toRunData(
 
       return {
         name: job.jobName,
-        status: viewStatus(job.status),
+        status: job.status,
         steps: job.steps.map((step) => {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
 
           const stepData: StepRunView = {
             name: step.stepName,
-            status: viewStatus(step.status),
+            status: step.status,
             error: step.error,
             startedAt: step.startedAt?.toISOString(),
             completedAt: step.completedAt?.toISOString(),

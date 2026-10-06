@@ -33,14 +33,14 @@ import {
   timedOutOutcome,
   type WaitOutcome,
   type WaitRef,
+  type WaitRegistration,
 } from "./signal_wait_records.ts";
 import type { SignalWaitStore } from "./signal_wait_store.ts";
 
 /**
- * How long after its deadline a record whose run cannot be found is kept.
- * A run record reaches another host later than its wait records do, so a
- * run that is missing here may only be one not synced yet; a wait past its
- * deadline by this much is not one anybody still answers.
+ * How long after its deadline a record is kept when its run is confirmed
+ * absent. Age alone never proves absence from a shared datastore: an
+ * accepted outcome may still be needed by a run this host has not synced.
  */
 export const ORPHAN_WAIT_RECORD_GRACE_MS = 24 * 60 * 60 * 1000;
 
@@ -76,9 +76,60 @@ export async function outcomeAt(
   ref: WaitRef,
   now: Date,
 ): Promise<StoredWaitRecord<WaitOutcome>> {
-  const stored = await store.findOutcome(ref.waitId);
+  const stored = belongsTo(ref, await store.findOutcome(ref.waitId));
   if (stored.kind !== "absent" || !isWaitExpired(ref, now)) return stored;
-  return await store.settle(timedOutOutcome(ref, now));
+  return belongsTo(ref, await store.settle(timedOutOutcome(ref, now)));
+}
+
+/** An outcome that names another run is not this wait's outcome. */
+function belongsTo(
+  ref: WaitRef,
+  stored: StoredWaitRecord<WaitOutcome>,
+): StoredWaitRecord<WaitOutcome> {
+  return stored.kind === "found" && stored.record.runId !== ref.runId
+    ? { kind: "unreadable" }
+    : stored;
+}
+
+/**
+ * Makes `registration` the wait's registration unless a readable one is
+ * stored already, and returns the one that holds. A stored registration
+ * that cannot be read is replaced: the caller built this one from the run
+ * record, which still holds the whole wait, so a damaged file does not
+ * leave a wait nothing can signal.
+ */
+export async function ensureRegistered(
+  store: SignalWaitStore,
+  registration: WaitRegistration,
+): Promise<WaitRegistration> {
+  const stored = await store.findRegistration(registration.waitId);
+  if (stored.kind === "found") return stored.record;
+  if (stored.kind === "unreadable") {
+    await store.removeRegistration(registration.waitId);
+  }
+  await store.register(registration);
+  const now = await store.findRegistration(registration.waitId);
+  return now.kind === "found" ? now.record : registration;
+}
+
+/**
+ * The registration a step of a run already made, if any. A process that
+ * died after registering a wait and before saving its run leaves one behind;
+ * the step that runs again takes that wait over instead of opening another,
+ * so a signal accepted for it in between is applied, not lost.
+ */
+export async function findRegistrationOfStep(
+  store: SignalWaitStore,
+  at: { runId: string; jobName: string; stepName: string },
+): Promise<WaitRegistration | undefined> {
+  for (const registration of await store.listRegistrations()) {
+    if (
+      registration.runId === at.runId &&
+      registration.jobName === at.jobName &&
+      registration.stepName === at.stepName
+    ) return registration;
+  }
+  return undefined;
 }
 
 /** A step of a run still waiting on a wait nothing has settled. */
@@ -176,9 +227,7 @@ export async function settleReenteredWait(
   if (stored.record.kind === "accepted") {
     // Applied by a resume's takeover; one that cannot be applied never
     // will be, so the step fails instead of waiting for good.
-    const usable = step.signalWait?.validatePayload(stored.record.payload)
-      .valid ?? false;
-    if (usable) return "open";
+    if (step.canApplyWaitOutcome(stored.record)) return "open";
     step.failUnusableOutcome();
     return "failed";
   }
@@ -290,9 +339,10 @@ export interface WaitRecordSweep {
 /**
  * The safety net for wait records nothing else removed. A registration
  * whose run has ended is closed. A registration or an outcome whose run
- * cannot be found is removed only once the wait's deadline plus
- * {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed, since the run may be one
- * this host has not synced yet. An outcome whose run exists is never
+ * cannot be found is removed only when the lookup is authoritative and
+ * the wait's deadline plus {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed.
+ * Without that authority, missing runs' records are kept regardless of
+ * age. An outcome whose run exists is never
  * removed here: it lives as long as the run.
  */
 export async function sweepWaitRecords(
@@ -302,6 +352,7 @@ export async function sweepWaitRecords(
     runId: string,
   ) => Promise<WorkflowRun | null>,
   now: Date,
+  options: { localRunAbsenceIsAuthoritative?: boolean } = {},
 ): Promise<WaitRecordSweep> {
   const swept: WaitRecordSweep = { registrations: 0, outcomes: 0 };
   const orphaned = (ref: { deadline: string }) =>
@@ -317,11 +368,14 @@ export async function sweepWaitRecords(
       }
       await store.removeRegistration(registration.waitId);
       swept.registrations++;
-    } else if (!run && orphaned(registration)) {
+    } else if (
+      !run && options.localRunAbsenceIsAuthoritative && orphaned(registration)
+    ) {
       await store.removeRegistration(registration.waitId);
       swept.registrations++;
     }
   }
+  if (!options.localRunAbsenceIsAuthoritative) return swept;
   for (const outcome of await store.listOutcomes()) {
     if (!orphaned(outcome)) continue;
     if (await findRun(outcome.workflowId, outcome.runId)) continue;

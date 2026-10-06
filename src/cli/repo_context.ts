@@ -1477,6 +1477,7 @@ export function resolveSignalWaitSupport(
   if (!isCustomDatastoreConfig(config)) {
     return {
       supported: true,
+      localRunAbsenceIsAuthoritative: true,
       store: new ControlPlaneSignalWaitStore(
         new FileSystemControlPlaneStore(
           config.namespace ? join(config.path, config.namespace) : config.path,

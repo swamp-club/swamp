@@ -475,7 +475,7 @@ const WAIT_TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
   (s) => s.failUnusableOutcome(),
 ];
 
-const WAITING = ["waiting_signal", "waiting"];
+const WAITING = ["waiting"];
 
 Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one its wait accepts, and a refusal changes nothing (property)", () => {
   fc.assert(
@@ -486,7 +486,9 @@ Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one i
         { verdict: "nope" },
         { verdict: "ship", extra: 1 },
       ),
-      (ops, payload) => {
+      fc.boolean(),
+      fc.boolean(),
+      (ops, payload, wrongOutcome, wrongReceipt) => {
         const run = createFailedRun();
         const step = run.jobs[0].steps[0];
         step.resetToPending();
@@ -500,11 +502,19 @@ Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one i
           wait ?? SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED),
           payload,
         );
+        if (wrongOutcome) outcome.waitId = crypto.randomUUID();
+        if (wrongReceipt) outcome.receipt.waitId = crypto.randomUUID();
+        const canApply = step.canApplyWaitOutcome(outcome);
+        assertEquals(step.toData(), before);
         const applied = step.applyWaitOutcome(outcome);
+        assertEquals(applied, canApply);
 
         const valid = payload.verdict === "ship" &&
           Object.keys(payload).length === 1;
-        assertEquals(applied, waiting && valid);
+        assertEquals(
+          applied,
+          waiting && valid && !wrongOutcome && !wrongReceipt,
+        );
         if (applied) {
           assertEquals(step.status, "succeeded");
           assertEquals(step.signalWait?.receipt, outcome.receipt);

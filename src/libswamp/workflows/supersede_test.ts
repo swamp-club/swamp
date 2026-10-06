@@ -353,7 +353,7 @@ Deno.test("supersedeSuspendedRuns: leaves a matching run that waits for a signal
   assertEquals(result.skippedRuns, [{ runId: run.id, waitIds: [waitId] }]);
   assertEquals(saved, []);
   assertEquals(run.status, "suspended");
-  assertEquals(run.getJob("j")!.getStep("s")!.status, "waiting_signal");
+  assertEquals(run.getJob("j")!.getStep("s")!.status, "waiting");
 });
 
 Deno.test("supersedeSuspendedRuns: leaves a run whose wait is past its deadline, so a resume can still fail its step", async () => {

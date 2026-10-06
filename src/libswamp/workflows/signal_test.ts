@@ -515,18 +515,37 @@ Deno.test("workflowSignal: a step that no longer waits, with no outcome, is clos
   assertEquals(fixture.waits.registrations.size, 0);
 });
 
-Deno.test("workflowSignal: a record that cannot be read is refused, never treated as an open wait", async () => {
+Deno.test("workflowSignal: a registration that cannot be read is rebuilt from the run record, and the signal is delivered", async () => {
+  for (const damaged of [new Uint8Array(), new TextEncoder().encode("{no")]) {
+    const { run, waitId } = suspendedAtWait(makeWorkflow());
+    const fixture = await fixtureOf([run]);
+    fixture.waits.registrations.set(waitId, damaged);
+
+    const event = await send(fixture, waitId, { verdict: "ship" });
+
+    assert(event.kind === "completed", JSON.stringify(event));
+    const registration = await fixture.waits.findRegistration(waitId);
+    assert(registration.kind === "found");
+    assertEquals(registration.record.stepName, "review");
+    assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
+  }
+});
+
+Deno.test("workflowSignal: a record that cannot be read, with nothing to rebuild it from, is refused and never treated as an open wait", async () => {
   const garbage = new TextEncoder().encode("{not json");
 
+  // The run record is not on this host, so the wait cannot be rebuilt.
   const first = suspendedAtWait(makeWorkflow());
   const badRegistration = await fixtureOf([first.run]);
   badRegistration.waits.registrations.set(first.waitId, garbage);
+  badRegistration.stored.clear();
   assertStringIncludes(
     errorOf(await send(badRegistration, first.waitId, { verdict: "ship" }))
       .message,
     "cannot be read",
   );
   assertEquals(badRegistration.waits.outcomes.size, 0);
+  assertEquals(badRegistration.waits.registrations.get(first.waitId), garbage);
 
   const second = suspendedAtWait(makeWorkflow());
   const badOutcome = await fixtureOf([second.run]);
@@ -536,6 +555,39 @@ Deno.test("workflowSignal: a record that cannot be read is refused, never treate
     "cannot be read",
   );
   assertEquals(badOutcome.waits.outcomes.get(second.waitId), garbage);
+});
+
+Deno.test("workflowSignal: a registered wait whose step the run record shows already past it is answered from the record, not accepted", async () => {
+  const workflow = makeWorkflow();
+
+  // Settled in the run record by a build that writes it directly.
+  const settled = suspendedAtWait(workflow);
+  const settledFixture = await fixtureOf([settled.run]);
+  const review = settled.run.getJob("main")!.getStep("review")!;
+  const earlier = acceptedOutcomeFor(review.signalWait!, { verdict: "ship" });
+  review.applyWaitOutcome(earlier);
+  settledFixture.stored.set(settled.run.id, settled.run.toData());
+
+  const again = await send(settledFixture, settled.waitId, { verdict: "fix" });
+  assert(again.kind === "error");
+  assertStringIncludes(again.error.message, "already settled");
+  assertEquals(
+    (again.error.details as { receipt: unknown }).receipt,
+    earlier.receipt,
+  );
+  assertEquals(settledFixture.waits.outcomes.size, 0);
+
+  // Cancelled by a writer that did not close the wait.
+  const cancelled = suspendedAtWait(workflow);
+  const cancelledFixture = await fixtureOf([cancelled.run]);
+  cancelAndSettle(cancelled.run, workflow, "operator");
+  cancelledFixture.stored.set(cancelled.run.id, cancelled.run.toData());
+
+  const closed = errorOf(
+    await send(cancelledFixture, cancelled.waitId, { verdict: "ship" }),
+  );
+  assertStringIncludes(closed.message, "is closed");
+  assertEquals(cancelledFixture.waits.outcomes.size, 0);
 });
 
 Deno.test("workflowSignal: a datastore that cannot hold wait records refuses with the reason", async () => {
@@ -730,6 +782,7 @@ Deno.test("workflowSignal: every refusal names the wait id exactly as typed", as
       const { run, waitId } = suspendedAtWait(workflow);
       const fixture = await fixtureOf([run]);
       fixture.waits.registrations.set(waitId, new Uint8Array([1]));
+      fixture.stored.clear();
       const event = await send(fixture, typed(waitId), { verdict: "ship" });
       return { message: errorOf(event).message, typedId: typed(waitId) };
     },

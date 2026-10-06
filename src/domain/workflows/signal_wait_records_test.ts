@@ -233,3 +233,25 @@ Deno.test("decideSignal: a wait past its deadline refuses before the payload is 
     });
   }
 });
+
+Deno.test("decodeWaitOutcome: a payload that parsing would change is unreadable, not applied in part", () => {
+  const reg = registration();
+  const decision = decideSignal(reg, { verdict: "ship" }, "ada", IN_TIME);
+  assert(decision.accepted);
+  const stored = JSON.stringify(decision.outcome);
+  // Hand-written: a signal is refused a reserved key, and parsing drops it.
+  const forged = stored.replace(
+    '"payload":{',
+    '"payload":{"__proto__":{"x":1},',
+  );
+  assert(forged !== stored);
+
+  assertEquals(
+    decodeWaitOutcome(new TextEncoder().encode(forged), reg.waitId),
+    { kind: "unreadable" },
+  );
+  assertEquals(
+    decodeWaitOutcome(new TextEncoder().encode(stored), reg.waitId).kind,
+    "found",
+  );
+});

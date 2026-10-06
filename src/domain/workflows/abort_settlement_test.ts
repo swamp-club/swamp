@@ -653,8 +653,7 @@ Deno.test("cancelAndSettle: an unsignalled wait fails as cancelled, marked settl
   assertEquals(review.settledByAbort, true);
   assertEquals(
     Object.values(statuses(run)).filter((status) =>
-      status === "waiting" || status === "waiting_signal" ||
-      status === "waiting_approval" ||
+      status === "waiting" || status === "waiting_approval" ||
       status === "running" || status === "pending"
     ),
     [],
@@ -672,8 +671,7 @@ Deno.test("completeAndSettle: a rejected gate beside a wait leaves no step waiti
   assertEquals(statuses(run)["main/review"], "failed");
   assertEquals(
     Object.values(statuses(run)).filter((status) =>
-      status === "waiting" || status === "waiting_signal" ||
-      status === "waiting_approval"
+      status === "waiting" || status === "waiting_approval"
     ),
     [],
   );

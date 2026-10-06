@@ -52,6 +52,14 @@ import {
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "../src/domain/workflows/signal_wait.ts";
+import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
+import {
+  decideSignal,
+  encodeWaitRecord,
+  WAIT_RECORD_MAX_BYTES,
+  type WaitOutcome,
+  waitOutcomeKey,
+} from "../src/domain/workflows/signal_wait_records.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -377,7 +385,7 @@ Deno.test("signal wait: the run suspends on the wait and reports its id", async 
     const waitId = waitIdOf(run);
 
     assertEquals(run.status, "suspended");
-    assertEquals(stepOf(run, "review").status, "waiting_signal");
+    assertEquals(stepOf(run, "review").status, "waiting");
     assertEquals(h.executor.executed, []);
     // The executor registered the wait, so it can be signalled by its id.
     const registration = await h.waits.findRegistration(waitId);
@@ -428,7 +436,7 @@ Deno.test("signal wait: a resume refuses while the wait is open and names the si
     );
     assertEquals(
       stepOf(await reload(h, run), "review").status,
-      "waiting_signal",
+      "waiting",
     );
   });
 });
@@ -464,7 +472,7 @@ Deno.test("signal wait: each refusal is distinct and leaves the wait open", asyn
 
     // Nothing was stored by a refused signal.
     const after = await reload(h, run);
-    assertEquals(stepOf(after, "review").status, "waiting_signal");
+    assertEquals(stepOf(after, "review").status, "waiting");
     assertEquals(stepOf(after, "review").output, undefined);
     assertEquals(waitIdOf(after), waitId);
     assertEquals((await h.waits.findOutcome(waitId)).kind, "absent");
@@ -495,7 +503,7 @@ Deno.test("signal wait: a signal then a resume runs the branch the payload selec
     assertEquals(outcome.record.receipt, data.signal);
     const signalled = await reload(h, run);
     assertEquals(signalled.toData(), run.toData());
-    assertEquals(stepOf(signalled, "review").status, "waiting_signal");
+    assertEquals(stepOf(signalled, "review").status, "waiting");
     assertEquals((await listWaits(h)).waits, []);
 
     // A second signal is refused and shown the stored receipt.
@@ -556,7 +564,7 @@ Deno.test("signal wait: past the deadline a signal is refused and a resume fails
     assertStringIncludes(expired.message, "swamp workflow resume");
     assertEquals(
       stepOf(await reload(h, run), "review").status,
-      "waiting_signal",
+      "waiting",
     );
     // The refusal settled the wait as timed out, so the resume and every
     // other reader decide the same way whatever their clocks say.
@@ -682,7 +690,7 @@ Deno.test("signal wait: a new run does not supersede a run that waits for a sign
     assertEquals(result.skippedRuns, [{ runId: run.id, waitIds: [waitId] }]);
     assertEquals(
       stepOf(await reload(h, run), "review").status,
-      "waiting_signal",
+      "waiting",
     );
 
     // A signalled run is kept too: its step waits in the record until a
@@ -777,7 +785,7 @@ Deno.test("signal wait: rejecting a gate beside the wait leaves no step waiting"
     await drain(h.service.run(workflow.name));
     const run = await only(h, workflow);
     assertEquals(stepOf(run, "gate").status, "waiting_approval");
-    assertEquals(stepOf(run, "review").status, "waiting_signal");
+    assertEquals(stepOf(run, "review").status, "waiting");
 
     for await (
       const event of workflowReject(
@@ -1030,7 +1038,7 @@ Deno.test("signal wait: a signal is accepted while the owner still runs the leve
       await signalOk(h, waitId, { verdict: "ship" });
       assertEquals(
         stepOf(await reload(h, run), "review").status,
-        "waiting_signal",
+        "waiting",
       );
 
       // The resume does wait: the owner still saves the record.
@@ -1238,7 +1246,7 @@ Deno.test("signal wait: a signal sent while a sibling of the level still runs su
     assertEquals(suspended.status, "suspended");
     assertEquals(stepOf(suspended, "sibling").status, "succeeded");
     // The owner's saves left the step waiting; the signal is not in them.
-    assertEquals(stepOf(suspended, "review").status, "waiting_signal");
+    assertEquals(stepOf(suspended, "review").status, "waiting");
     const outcome = await h.waits.findOutcome(delivered.waitId);
     assert(outcome.kind === "found" && outcome.record.kind === "accepted");
 
@@ -1390,45 +1398,62 @@ Deno.test("signal wait: a run suspended before waits were registered takes a sig
   });
 });
 
-Deno.test("signal wait: an outcome whose payload the captured schema refuses is not applied, and the resume fails the step", async () => {
-  const workflow = release("forged-outcome");
-  await withHarness([workflow], async (h) => {
-    await drain(h.service.run(workflow.name));
-    const run = await only(h, workflow);
-    const waitId = waitIdOf(run);
-    // Written straight to the store, as anything that can write the
-    // datastore could: a payload no signal would have been allowed to send.
-    const wait = stepOf(run, "review").signalWait!;
-    await h.waits.settle({
-      kind: "accepted",
-      waitId,
-      workflowId: run.workflowId,
-      runId: run.id,
-      deadline: wait.deadline.toISOString(),
-      settledAt: new Date().toISOString(),
-      receipt: {
-        id: crypto.randomUUID(),
-        waitId,
-        receivedAt: new Date().toISOString(),
-        submittedBy: "nobody",
-      },
-      payload: { verdict: "ship", constructor: { prototype: {} } },
+for (const corruption of ["payload", "receipt", "outcome"] as const) {
+  for (const allowFailure of [false, true]) {
+    Deno.test(`signal wait: unusable accepted ${corruption} fails on resume with allowFailure=${allowFailure}`, async () => {
+      const workflow = release("forged-outcome", { allowFailure });
+      await withHarness([workflow], async (h) => {
+        await drain(h.service.run(workflow.name));
+        const run = await only(h, workflow);
+        const waitId = waitIdOf(run);
+        const wait = stepOf(run, "review").signalWait!;
+        const outcome: WaitOutcome = {
+          kind: "accepted",
+          waitId: corruption === "outcome" ? crypto.randomUUID() : waitId,
+          workflowId: run.workflowId,
+          runId: run.id,
+          deadline: wait.deadline.toISOString(),
+          settledAt: new Date().toISOString(),
+          receipt: {
+            id: crypto.randomUUID(),
+            waitId: corruption === "receipt" ? crypto.randomUUID() : waitId,
+            receivedAt: new Date().toISOString(),
+            submittedBy: "nobody",
+          },
+          payload: corruption === "payload"
+            ? { verdict: "ship", constructor: { prototype: {} } }
+            : { verdict: "ship" },
+        };
+        // Model a malformed write from another datastore writer, including
+        // an outcome whose ID disagrees with the key it was stored under.
+        const backing = new FileSystemControlPlaneStore(
+          join(h.repoDir, ".swamp"),
+        );
+        const bytes = encodeWaitRecord(outcome);
+        await backing.put(waitOutcomeKey(waitId), bytes);
+
+        const events = await drain(h.service.resume(workflow.name, run.id));
+        const failed = events.find((e) =>
+          e.kind === "step_failed" && e.stepId === "review"
+        );
+        assert(failed?.kind === "step_failed");
+        assertEquals(failed.error, WAIT_UNREADABLE_STEP_ERROR);
+        assertEquals(failed.allowedFailure, allowFailure || undefined);
+        assertEquals(
+          events.some((e) => e.kind === "signal_wait_requested"),
+          false,
+        );
+        const finished = await reload(h, run);
+        assertEquals(finished.status, allowFailure ? "succeeded" : "failed");
+        assertEquals(stepOf(finished, "review").output, undefined);
+        assertEquals(stepOf(finished, "ship").status, "skipped");
+        assertEquals(stepOf(finished, "escalate").status, "succeeded");
+        assertEquals(h.executor.executed, [`${workflow.name}/escalate`]);
+        assertEquals(await backing.get(waitOutcomeKey(waitId)), bytes);
+      });
     });
-
-    const events = await drain(h.service.resume(workflow.name, run.id));
-
-    const failed = events.find((e) =>
-      e.kind === "step_failed" && e.stepId === "review"
-    );
-    assert(failed?.kind === "step_failed");
-    assertEquals(failed.error, WAIT_UNREADABLE_STEP_ERROR);
-    const finished = await reload(h, run);
-    assertEquals(stepOf(finished, "review").output, undefined);
-    assertEquals(stepOf(finished, "ship").status, "skipped");
-    assertEquals(stepOf(finished, "escalate").status, "succeeded");
-    assertEquals(h.executor.executed, [`${workflow.name}/escalate`]);
-  });
-});
+  }
+}
 
 Deno.test("signal wait: a workflow with a wait is refused before anything runs where wait records cannot be shared", async () => {
   const workflow = waitBesideSibling("unsupported");
@@ -1528,6 +1553,8 @@ Deno.test("signal wait: a resume after an approval is refused while the owner st
         UserError,
       );
       assertStringIncludes(refused.message, "has not finished suspending");
+      // It says what to do: the owner's last save can drop the approval.
+      assertStringIncludes(refused.message, "must be given again");
       assertEquals(h.executor.executed, []);
 
       // The owner finished the level and marked its row suspended.
@@ -1610,5 +1637,270 @@ Deno.test("signal wait: collecting a run removes its outcome with it, and keeps 
     assertEquals((await reload(h, liveRun)).status, "suspended");
     assertEquals((await h.waits.findRegistration(liveWait)).kind, "found");
     assertEquals((await h.waits.findOutcome(liveWait)).kind, "found");
+  });
+});
+
+for (const namespace of [undefined, "team-a"]) {
+  for (const cache of ["empty", "stale"] as const) {
+    Deno.test(`signal wait: ${cache} custom datastore cache preserves old shared outcomes (namespace=${namespace})`, async () => {
+      const workflow = release("shared-outcome");
+      await withHarness([workflow], async (h) => {
+        const remoteRoot = join(h.repoDir, "remote");
+        const cacheDir = join(h.repoDir, "second-host");
+        const supportFor = (repoDir: string) =>
+          resolveSignalWaitSupport({
+            type: "@test/shared",
+            config: {},
+            datastorePath: "test://shared",
+            cachePath: join(repoDir, ".swamp"),
+            namespace,
+          }, {
+            capabilities: () => ({ controlPlane: true }),
+            controlPlaneStore: () =>
+              new FileSystemControlPlaneStore(
+                namespace ? join(remoteRoot, namespace) : remoteRoot,
+              ),
+            // A pull need not hydrate the owner run into this host's cache.
+            pullChanged: () => Promise.resolve(0),
+            pushChanged: () => Promise.resolve(0),
+            markDirty: () => Promise.resolve(),
+          });
+        const ownerSupport = supportFor(h.repoDir);
+        assert(ownerSupport.supported);
+        h.waits = ownerSupport.store;
+        h.service.signalWaits = ownerSupport;
+        attachSignalWaits({ workflowRunRepo: h.runRepo }, ownerSupport);
+        await drain(h.service.run(workflow.name));
+        const run = await only(h, workflow);
+        // The authoritative wait and its registration are now years past
+        // their deadlines; the accepted signal arrived before that deadline.
+        await expireWaits(h, run);
+        const waitId = waitIdOf(run);
+        const registration = await h.waits.findRegistration(waitId);
+        assert(registration.kind === "found");
+        const decision = decideSignal(
+          registration.record,
+          { verdict: "ship" },
+          "ada",
+          new Date("2019-12-31T23:59:59.000Z"),
+        );
+        assert(decision.accepted);
+        await h.waits.settle(decision.outcome);
+        const expectedOutcome = await h.waits.findOutcome(waitId);
+
+        const otherSupport = supportFor(cacheDir);
+        assert(otherSupport.supported);
+        assertEquals(otherSupport.localRunAbsenceIsAuthoritative, undefined);
+        const otherRepo = new YamlWorkflowRunRepository(cacheDir);
+        if (cache === "stale") {
+          // This host knows the suspended run but has never seen its signal.
+          await otherRepo.save(workflow.id, await reload(h, run));
+        }
+        const deps = createWorkflowWaitsDeps(otherRepo, otherSupport);
+        for await (
+          const event of workflowWaits(createLibSwampContext(), deps)
+        ) {
+          assert(event.kind !== "error");
+          if (event.kind === "completed") assertEquals(event.data.waits, []);
+        }
+        assertEquals(await h.waits.findRegistration(waitId), registration);
+        assertEquals(await h.waits.findOutcome(waitId), expectedOutcome);
+        const gc = createRunGcDeps(
+          cacheDir,
+          undefined,
+          undefined,
+          otherSupport,
+        );
+        await gc.gcAll({
+          workflowRunRetentionDays: 0,
+          outputRetentionDays: 0,
+          dryRun: false,
+        });
+        assertEquals(await h.waits.findRegistration(waitId), registration);
+        assertEquals(await h.waits.findOutcome(waitId), expectedOutcome);
+
+        await drain(h.service.resume(workflow.name, run.id));
+        const finished = await reload(h, run);
+        assertEquals(finished.status, "succeeded");
+        assertEquals(stepOf(finished, "review").output, {
+          type: "wait_for_signal",
+          payload: { verdict: "ship" },
+          signal: decision.outcome.receipt,
+        });
+        assertEquals(await h.waits.findOutcome(waitId), expectedOutcome);
+      });
+    });
+  }
+}
+
+Deno.test("signal wait: filesystem listing and GC remove authoritative orphans after the grace period", async () => {
+  for (const action of ["list", "gc"]) {
+    const workflow = release("orphan");
+    await withHarness([workflow], async (h) => {
+      await drain(h.service.run(workflow.name));
+      const run = await only(h, workflow);
+      await expireWaits(h, run);
+      const waitId = waitIdOf(run);
+      const registration = await h.waits.findRegistration(waitId);
+      assert(registration.kind === "found");
+      const decision = decideSignal(
+        registration.record,
+        { verdict: "ship" },
+        "ada",
+        new Date("2019-12-31T23:59:59.000Z"),
+      );
+      assert(decision.accepted);
+      await h.waits.settle(decision.outcome);
+      await h.runRepo.deleteAllByWorkflowId(workflow.id);
+      const support = waitSupportOf(h.repoDir);
+      if (action === "list") {
+        for await (
+          const event of workflowWaits(
+            createLibSwampContext(),
+            createWorkflowWaitsDeps(h.runRepo, support),
+          )
+        ) {
+          assert(event.kind !== "error");
+        }
+      } else {
+        await createRunGcDeps(h.repoDir, undefined, undefined, support).gcAll({
+          workflowRunRetentionDays: 0,
+          outputRetentionDays: 0,
+          dryRun: false,
+        });
+      }
+      assertEquals((await h.waits.findRegistration(waitId)).kind, "absent");
+      assertEquals((await h.waits.findOutcome(waitId)).kind, "absent");
+    });
+  }
+});
+
+Deno.test("signal wait: oversized enum registrations fail normally before suspension and a smaller schema accepts signals", async () => {
+  for (const large of [true, false]) {
+    const schema: InputsSchema = {
+      type: "object",
+      required: ["verdict"],
+      properties: {
+        verdict: {
+          type: "string",
+          enum: large
+            ? [
+              "ship",
+              ...Array.from({ length: 20000 }, (_, i) => `choice-${i}-🐸`),
+            ]
+            : ["ship"],
+        },
+      },
+    };
+    const workflow = Workflow.create({
+      name: "enum-registration",
+      jobs: [Job.create({
+        name: "release",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(3600, schema),
+          }),
+        ],
+      })],
+    });
+    await withHarness([workflow], async (h) => {
+      const events = await drain(h.service.run(workflow.name));
+      const run = await only(h, workflow);
+      const review = stepOf(run, "review");
+      if (large) {
+        assertEquals(run.status, "failed");
+        assertEquals(review.status, "failed");
+        assertEquals(review.signalWait, undefined);
+        assertStringIncludes(
+          review.error ?? "",
+          `over the ${WAIT_RECORD_MAX_BYTES} byte limit`,
+        );
+        assertEquals(
+          events.some((e) => e.kind === "signal_wait_requested"),
+          false,
+        );
+        assert(
+          events.some((e) => e.kind === "step_failed" && e.stepId === "review"),
+        );
+        assertEquals(await h.waits.listRegistrations(), []);
+        assertEquals(await h.waits.listOutcomes(), []);
+      } else {
+        assertEquals(run.status, "suspended");
+        await signalOk(h, waitIdOf(run), { verdict: "ship" });
+        await drain(h.service.resume(workflow.name, run.id));
+        assertEquals((await reload(h, run)).status, "succeeded");
+      }
+    });
+  }
+});
+
+Deno.test("signal wait: a step that runs again after its process died takes over the wait it had registered, so a signal accepted in between is applied", async () => {
+  const workflow = release("crashed-after-registering");
+  await withHarness([workflow], async (h) => {
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    const waitId = waitIdOf(run);
+    // What a kill between registering the wait and saving the run leaves,
+    // once recovered: the registration exists, and the record shows the
+    // step not started, with no wait.
+    const data = run.toData();
+    const review = data.jobs[0].steps.find((s) => s.stepName === "review")!;
+    review.status = "pending";
+    review.startedAt = undefined;
+    review.wait = undefined;
+    await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
+    assertEquals((await listWaits(h)).waits.map((w) => w.waitId), [waitId]);
+
+    const sent = await signalOk(h, waitId, { verdict: "ship" });
+
+    // The step runs again and waits on the same wait, not a new one.
+    await drain(h.service.resume(workflow.name, run.id));
+    const again = await reload(h, run);
+    assertEquals(again.status, "suspended");
+    assertEquals(waitIdOf(again), waitId);
+    assertEquals((await h.waits.listRegistrations()).length, 1);
+
+    await drain(h.service.resume(workflow.name, run.id));
+    const finished = await reload(h, run);
+    assertEquals(finished.status, "succeeded");
+    assertEquals(stepOf(finished, "review").output, {
+      type: "wait_for_signal",
+      payload: { verdict: "ship" },
+      signal: sent.signal,
+    });
+    assertEquals(stepOf(finished, "ship").status, "succeeded");
+  });
+});
+
+Deno.test("signal wait: a step that runs again does not take over a wait that expired unsignalled; it opens a new one", async () => {
+  const workflow = release("crashed-then-expired");
+  await withHarness([workflow], async (h) => {
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    const oldWaitId = waitIdOf(run);
+    await expireWaits(h, run);
+    const data = (await reload(h, run)).toData();
+    const review = data.jobs[0].steps.find((s) => s.stepName === "review")!;
+    review.status = "pending";
+    review.startedAt = undefined;
+    review.wait = undefined;
+    await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
+
+    await drain(h.service.resume(workflow.name, run.id));
+
+    const again = await reload(h, run);
+    const newWaitId = waitIdOf(again);
+    assertNotEquals(newWaitId, oldWaitId);
+    assertEquals(
+      (await h.waits.listRegistrations()).map((r) => r.waitId),
+      [newWaitId],
+    );
+    // The old wait is closed, so a signal for it is answered, not accepted.
+    assertStringIncludes(
+      (await signalError(h, oldWaitId, { verdict: "ship" })).message,
+      "is closed",
+    );
+    await signalOk(h, newWaitId, { verdict: "ship" });
   });
 });

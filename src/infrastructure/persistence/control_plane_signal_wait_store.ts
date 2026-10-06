@@ -24,6 +24,7 @@ import {
   encodeWaitRecord,
   type StoredWaitRecord,
   WAIT_OUTCOME_PREFIX,
+  WAIT_RECORD_MAX_BYTES,
   WAIT_REGISTRATION_PREFIX,
   waitIdFromKey,
   type WaitOutcome,
@@ -58,9 +59,15 @@ export class ControlPlaneSignalWaitStore implements SignalWaitStore {
   }
 
   async register(registration: WaitRegistration): Promise<void> {
+    const bytes = encodeWaitRecord(registration);
+    if (bytes.byteLength > WAIT_RECORD_MAX_BYTES) {
+      throw new Error(
+        `Signal wait registration is ${bytes.byteLength} bytes, over the ${WAIT_RECORD_MAX_BYTES} byte limit`,
+      );
+    }
     await this.#store.putIfAbsent(
       waitRegistrationKey(registration.waitId),
-      encodeWaitRecord(registration),
+      bytes,
     );
   }
 

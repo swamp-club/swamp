@@ -46,7 +46,12 @@ import {
   type OwnerLiveness,
   suspendedRunOwnerStillRuns,
 } from "./orphaned_run_reaper.ts";
-import { registrationOf } from "./signal_wait_records.ts";
+import {
+  cancelledOutcome,
+  isWaitExpired,
+  registrationOf,
+  type WaitRegistration,
+} from "./signal_wait_records.ts";
 import {
   SIGNAL_WAITS_NOT_CONFIGURED,
   type SignalWaitStore,
@@ -55,6 +60,7 @@ import {
 import {
   applyAcceptedSignals,
   closeRunWaits,
+  findRegistrationOfStep,
   settleReenteredWait,
 } from "./signal_wait_cleanup.ts";
 import {
@@ -3593,8 +3599,8 @@ export class WorkflowExecutionService {
         )
       ) {
         throw new UserError(
-          `Run ${runId} has not finished suspending: the process that started it is still running other steps. ` +
-            `Resume it again once they finish.`,
+          `Run ${runId} has not finished suspending: the process that started it is still running other steps and still saves the run. ` +
+            `Wait for it to finish, then check the run before resuming: an approval or rejection made while it was still running may not have been kept and must be given again.`,
         );
       }
       if (existingRun.findSignalWaits().length > 0) {
@@ -4935,22 +4941,39 @@ export class WorkflowExecutionService {
           return;
         }
         const openedAt = new Date();
-        const wait = SignalWait.open(task.schema, task.timeout, openedAt);
+        const waits = this.requireSignalWaits(workflow.name);
+        // A wait this step registered before its process died, with the run
+        // not yet saved, is taken over: a signal may have been accepted for
+        // it since, and a new wait would leave that signal unread.
+        const earlier = await this.adoptableWait(waits, run, {
+          jobName: job.name,
+          stepName,
+        }, openedAt);
+        const wait = earlier
+          ? SignalWait.fromData({
+            kind: "signal",
+            id: earlier.waitId,
+            schema: earlier.schema,
+            deadline: earlier.deadline,
+          })
+          : SignalWait.open(task.schema, task.timeout, openedAt);
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
-        await this.requireSignalWaits(workflow.name).register(
-          registrationOf(
-            {
-              workflowId: run.workflowId,
-              workflowName: run.workflowName,
-              runId: run.id,
-              jobName: job.name,
-              stepName,
-            },
-            wait,
-            openedAt,
-          ),
-        );
+        if (!earlier) {
+          await waits.register(
+            registrationOf(
+              {
+                workflowId: run.workflowId,
+                workflowName: run.workflowName,
+                runId: run.id,
+                jobName: job.name,
+                stepName,
+              },
+              wait,
+              openedAt,
+            ),
+          );
+        }
         stepRun.waitForSignal(wait);
         yield {
           kind: "signal_wait_requested",
@@ -6439,6 +6462,38 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
+  }
+
+  /**
+   * The wait a step of this run registered before, when the step should
+   * take it over: one still open, or one a signal was accepted for. A wait
+   * that passed its deadline unsignalled is closed instead, so the step
+   * opens a fresh one, as it does on a retry.
+   */
+  private async adoptableWait(
+    waits: SignalWaitStore,
+    run: WorkflowRun,
+    at: { jobName: string; stepName: string },
+    now: Date,
+  ): Promise<WaitRegistration | undefined> {
+    const earlier = await findRegistrationOfStep(waits, {
+      runId: run.id,
+      ...at,
+    });
+    if (!earlier) return undefined;
+    const outcome = await waits.findOutcome(earlier.waitId);
+    const accepted = outcome.kind === "found" &&
+      outcome.record.kind === "accepted";
+    if (
+      accepted || (outcome.kind === "absent" && !isWaitExpired(earlier, now))
+    ) {
+      return earlier;
+    }
+    if (outcome.kind === "absent") {
+      await waits.settle(cancelledOutcome(earlier, now));
+    }
+    await waits.removeRegistration(earlier.waitId);
+    return undefined;
   }
 
   /**
