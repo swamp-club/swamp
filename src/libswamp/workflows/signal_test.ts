@@ -237,6 +237,7 @@ Deno.test("workflowSignal: a valid payload creates the wait's outcome, reports t
   assertEquals(event.data.signal.submittedBy, "tux");
   assertEquals(event.data.signal.receivedAt, IN_TIME.toISOString());
   assertEquals(event.data.awaitingResume, true);
+  assertEquals(event.data.runRecordAvailable, true);
   assertEquals(
     event.data.resumeCommand,
     `swamp workflow resume release --run ${run.id}`,
@@ -263,8 +264,9 @@ Deno.test("workflowSignal: a registered wait is delivered without reading a run 
   assert(event.kind === "completed", JSON.stringify(event));
   assertEquals(event.data.workflowName, "release");
   assertEquals(event.data.stepName, "review");
-  // Whether the run can resume is not known here.
+  // Whether the run can resume is not known here, and the result says so.
   assertEquals(event.data.awaitingResume, false);
+  assertEquals(event.data.runRecordAvailable, false);
   assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
   assertEquals(fixture.calls.includes("findAllGlobal"), false);
   assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
@@ -826,4 +828,26 @@ Deno.test("workflowSignal: the already-settled message names no person; the rece
     (again.error.details as { receipt: unknown }).receipt,
     first.data.signal,
   );
+});
+
+Deno.test("workflowSignal: names read from a wait record are printed without control characters", async () => {
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const fixture = await fixtureOf([run], { now: TOO_LATE });
+  const stored = await fixture.waits.findRegistration(waitId);
+  assert(stored.kind === "found");
+  await fixture.waits.removeRegistration(waitId);
+  // As a writer of the datastore could leave it.
+  await fixture.waits.register({
+    ...stored.record,
+    stepName: "review\u001b[2J",
+    workflowName: "release\u0007",
+  });
+  fixture.stored.clear();
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+  assertStringIncludes(error.message, 'step "review?[2J"');
+  assertStringIncludes(error.message, 'workflow "release?"');
+  // deno-lint-ignore no-control-regex
+  assertEquals(/[\u0000-\u001f]/.test(error.message), false);
 });

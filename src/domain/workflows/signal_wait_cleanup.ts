@@ -334,6 +334,22 @@ export async function removeWaitRecordsOfRuns(
   return waitIds.size;
 }
 
+/**
+ * True when the run record here says the run ended after the wait was
+ * registered. A failed run can be retried under the same id, and a run
+ * record reaches another host later than its wait records do, so a record
+ * here that says ended may predate a retry whose new wait is already
+ * registered. Such a wait is live and must not be closed.
+ */
+function endedAfterRegistering(
+  run: WorkflowRun,
+  registration: WaitRegistration,
+): boolean {
+  if (!isEndedRunStatus(run.status) || !run.completedAt) return false;
+  return new Date(registration.registeredAt).getTime() <=
+    run.completedAt.getTime();
+}
+
 /** What a sweep removed. */
 export interface WaitRecordSweep {
   registrations: number;
@@ -365,7 +381,7 @@ export async function sweepWaitRecords(
 
   for (const registration of await store.listRegistrations()) {
     const run = await findRun(registration.workflowId, registration.runId);
-    if (run && isEndedRunStatus(run.status)) {
+    if (run && endedAfterRegistering(run, registration)) {
       const outcome = await store.findOutcome(registration.waitId);
       if (outcome.kind === "absent") {
         await store.settle(cancelledOutcome(registration, now));

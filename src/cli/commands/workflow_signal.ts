@@ -81,9 +81,13 @@ export function renderSignalResult(
   cliCtx.logger
     .info`Signalled step ${data.stepName} in workflow ${data.workflowName}`;
   if (cliCtx.verbosity === "quiet") return;
+  // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
       ? `After the signal: ${data.resumeCommand}`
+      : !data.runRecordAvailable
+      ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
+        `Check with "swamp workflow waits", then resume where the run is: ${data.resumeCommand}`
       : `The run still waits on something else. Once that settles: ${data.resumeCommand}`,
   );
 }

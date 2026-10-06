@@ -1561,6 +1561,11 @@ export function signalWaitsOf(
  * only call that binds, as in `initializeControlPlaneVaultForCli`), and
  * only then is the store created. `open` rejects with `notAtomic` when the
  * store lacks `putIfAbsent`. A failed open is tried again by the next call.
+ *
+ * The pull can therefore happen partway through a command, as the pulls of
+ * `acquireModelLocks` do. It brings remote changes into the cache and does
+ * not discard this command's own unpushed writes, and a run being resumed
+ * or saved is held in memory and written after.
  */
 function lazyRemoteStore(
   syncService: DatastoreSyncService,

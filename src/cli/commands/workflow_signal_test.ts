@@ -16,7 +16,7 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import type { WorkflowSignalData } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
@@ -42,6 +42,7 @@ function signalled(
       submittedBy: "tester",
     },
     awaitingResume: true,
+    runRecordAvailable: true,
     resumeCommand: `swamp workflow resume release --run ${RUN_ID}`,
     ...overrides,
   };
@@ -79,6 +80,23 @@ Deno.test("renderSignalResult: log mode says so when the run still waits on some
   assertEquals(lines, [
     `The run still waits on something else. Once that settles: swamp workflow resume release --run ${RUN_ID}`,
   ]);
+});
+
+Deno.test("renderSignalResult: log mode does not claim the run still waits when this host has no copy of it", () => {
+  const lines = captureStdout(() =>
+    renderSignalResult(
+      hintTestContext(),
+      signalled({ awaitingResume: false, runRecordAvailable: false }),
+    )
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "This host has no copy of the run");
+  assertStringIncludes(lines[0], "swamp workflow waits");
+  assertStringIncludes(
+    lines[0],
+    `swamp workflow resume release --run ${RUN_ID}`,
+  );
+  assertEquals(lines[0].startsWith("The run still waits"), false);
 });
 
 Deno.test("renderSignalResult: quiet prints no command", () => {

@@ -142,6 +142,23 @@ function secondContext(h: Harness): Harness {
   };
 }
 
+/**
+ * A service as another process would build it: it did not start any run,
+ * so a step it runs again looks for a wait that step registered before.
+ */
+function serviceOfAnotherProcess(h: Harness): WorkflowExecutionService {
+  const service = new WorkflowExecutionService(
+    h.workflowRepo,
+    h.runRepo,
+    h.repoDir,
+    h.executor,
+    undefined,
+    h.catalogStore,
+  );
+  service.signalWaits = h.service.signalWaits;
+  return service;
+}
+
 /** Wait support as the CLI resolves it for the default datastore. */
 function waitSupportOf(
   repoDir: string,
@@ -1855,13 +1872,13 @@ Deno.test("signal wait: a step that runs again after its process died takes over
     const sent = await signalOk(h, waitId, { verdict: "ship" });
 
     // The step runs again and waits on the same wait, not a new one.
-    await drain(h.service.resume(workflow.name, run.id));
+    await drain(serviceOfAnotherProcess(h).resume(workflow.name, run.id));
     const again = await reload(h, run);
     assertEquals(again.status, "suspended");
     assertEquals(waitIdOf(again), waitId);
     assertEquals((await h.waits.listRegistrations()).length, 1);
 
-    await drain(h.service.resume(workflow.name, run.id));
+    await drain(serviceOfAnotherProcess(h).resume(workflow.name, run.id));
     const finished = await reload(h, run);
     assertEquals(finished.status, "succeeded");
     assertEquals(stepOf(finished, "review").output, {
@@ -1887,7 +1904,7 @@ Deno.test("signal wait: a step that runs again does not take over a wait that ex
     review.wait = undefined;
     await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
 
-    await drain(h.service.resume(workflow.name, run.id));
+    await drain(serviceOfAnotherProcess(h).resume(workflow.name, run.id));
 
     const again = await reload(h, run);
     const newWaitId = waitIdOf(again);
@@ -1913,7 +1930,7 @@ Deno.test("signal wait: a store that turns out unusable when opened refuses the 
       store: h.waits,
       ready: () =>
         Promise.reject(
-          new Error("the store cannot create a record atomically"),
+          new UserError("the store cannot create a record atomically"),
         ),
     };
 
@@ -1954,5 +1971,125 @@ Deno.test("signal wait: a run left waiting on a datastore that cannot hold wait 
     const finished = await reload(h, run);
     assertEquals(stepOf(finished, "review").error, WAIT_TIMEOUT_STEP_ERROR);
     assertEquals(stepOf(finished, "escalate").status, "succeeded");
+  });
+});
+
+Deno.test("signal wait: a new run opens its waits without reading every registration, and a resumed run looks for one to take over", async () => {
+  const workflow = release("no-scan-on-new-run");
+  await withHarness([workflow], async (h) => {
+    let listed = 0;
+    const counting: SignalWaitStore = {
+      register: (r) => h.waits.register(r),
+      findRegistration: (id) => h.waits.findRegistration(id),
+      listRegistrations: () => {
+        listed++;
+        return h.waits.listRegistrations();
+      },
+      findOutcome: (id) => h.waits.findOutcome(id),
+      listOutcomes: () => h.waits.listOutcomes(),
+      settle: (o) => h.waits.settle(o),
+      removeRegistration: (id) => h.waits.removeRegistration(id),
+      removeOutcome: (id) => h.waits.removeOutcome(id),
+    };
+    h.service.signalWaits = { supported: true, store: counting };
+
+    await drain(h.service.run(workflow.name));
+    assertEquals(listed, 0);
+
+    // A step that runs again in a run taken up later does look.
+    const run = await only(h, workflow);
+    const data = run.toData();
+    const review = data.jobs[0].steps.find((s) => s.stepName === "review")!;
+    review.status = "pending";
+    review.startedAt = undefined;
+    review.wait = undefined;
+    await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
+    const resuming = new WorkflowExecutionService(
+      h.workflowRepo,
+      h.runRepo,
+      h.repoDir,
+      h.executor,
+      undefined,
+      h.catalogStore,
+    );
+    resuming.signalWaits = { supported: true, store: counting };
+    await drain(resuming.resume(workflow.name, run.id));
+    assertEquals(listed, 1);
+    assertEquals(waitIdOf(await reload(h, run)), waitIdOf(run));
+  });
+});
+
+Deno.test("signal wait: a resume opens the wait store before anything runs, and a network failure is not reported as a missing capability", async () => {
+  const workflow = Workflow.create({
+    name: "gate-then-wait",
+    jobs: [
+      Job.create({
+        name: "release",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: "build",
+            dependsOn: [{
+              step: "gate",
+              condition: TriggerCondition.succeeded(),
+            }],
+            task: StepTask.model("test-model", "run"),
+          }),
+          Step.create({
+            name: "review",
+            dependsOn: [{
+              step: "build",
+              condition: TriggerCondition.succeeded(),
+            }],
+            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+  await withHarness([workflow], async (h) => {
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    for await (
+      const event of workflowApprove(
+        createLibSwampContext(),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+        { workflowIdOrName: workflow.name, stepName: "gate" },
+      )
+    ) {
+      if (event.kind === "error") throw new Error(event.error.message);
+    }
+
+    // The store turns out not to be usable: a refusal naming the workflow.
+    h.service.signalWaits = {
+      supported: true,
+      store: h.waits,
+      ready: () =>
+        Promise.reject(new UserError("the store cannot create atomically")),
+    };
+    const refused = await assertRejects(
+      () => drain(h.service.resume(workflow.name, run.id)),
+      UserError,
+    );
+    assertStringIncludes(refused.message, "cannot support");
+    assertEquals(h.executor.executed, []);
+    assertEquals((await reload(h, run)).status, "suspended");
+
+    // The network is down: passed on as it is.
+    h.service.signalWaits = {
+      supported: true,
+      store: h.waits,
+      ready: () => Promise.reject(new Error("connection reset")),
+    };
+    const failed = await assertRejects(
+      () => drain(h.service.resume(workflow.name, run.id)),
+      Error,
+      "connection reset",
+    );
+    assertEquals(failed.message.includes("cannot support"), false);
+    assertEquals(h.executor.executed, []);
   });
 });

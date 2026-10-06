@@ -514,3 +514,38 @@ Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, an
     undefined,
   );
 });
+
+Deno.test("sweepWaitRecords: a wait registered after the run record here says the run ended is live, and is left alone", async () => {
+  // A failed run is retried under the same id on another host. Its new
+  // wait is registered at once; the run record here still says failed.
+  const { run, store } = await waitingRun();
+  const [registration] = await store.listRegistrations();
+  run.endAsCancelled("operator");
+  const stale = run.completedAt!;
+  await store.removeRegistration(registration.waitId);
+  await store.register({
+    ...registration,
+    registeredAt: new Date(stale.getTime() + 1000).toISOString(),
+  });
+  const findRun = () => Promise.resolve(run);
+  const later = new Date(stale.getTime() + 60_000);
+
+  assertEquals(await sweepWaitRecords(store, findRun, later), {
+    registrations: 0,
+    outcomes: 0,
+  });
+  assertEquals((await store.listRegistrations()).length, 1);
+  assertEquals(store.outcomes.size, 0);
+
+  // One registered before the run ended is closed as before.
+  await store.removeRegistration(registration.waitId);
+  await store.register({
+    ...registration,
+    registeredAt: new Date(stale.getTime() - 1000).toISOString(),
+  });
+  assertEquals(await sweepWaitRecords(store, findRun, later), {
+    registrations: 1,
+    outcomes: 0,
+  });
+  assertEquals((await store.listOutcomes()).map((o) => o.kind), ["cancelled"]);
+});

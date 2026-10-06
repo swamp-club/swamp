@@ -271,7 +271,8 @@ export class SummaryService {
             jobName: job.jobName,
             stepName: step.stepName,
             modelName: stepModels.get(step.stepName),
-            status: step.status,
+            // A wait for a signal is shown as `waiting` however it is stored.
+            status: step.isSignalWait ? "waiting" : step.status,
             durationMs,
             error: step.error,
           });

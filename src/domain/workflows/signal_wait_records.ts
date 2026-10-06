@@ -90,10 +90,9 @@ export function waitIdFromKey(key: string): string | undefined {
   return undefined;
 }
 
-/**
- * What the executor records when a step starts waiting: where the wait
- * lives and what it accepts. `kind` leaves room for other kinds of wait.
- */
+/** A wait id as swamp writes it: a UUID in lowercase, the form keys use. */
+const LowercaseUuid = z.string().regex(UUID, "must be a lowercase UUID");
+
 /**
  * A workflow id as a record may name it: one path segment. The id is used
  * to find the run, and a record is read from a store other writers can
@@ -104,9 +103,13 @@ const WorkflowIdInRecord = z.string().min(1).refine(
   "must be a single path segment",
 );
 
+/**
+ * What the executor records when a step starts waiting: where the wait
+ * lives and what it accepts. `kind` leaves room for other kinds of wait.
+ */
 export const WaitRegistrationSchema = z.object({
   kind: z.literal("signal"),
-  waitId: z.string().uuid(),
+  waitId: LowercaseUuid,
   workflowId: WorkflowIdInRecord,
   workflowName: z.string().min(1),
   runId: z.string().uuid(),
@@ -122,7 +125,7 @@ export type WaitRegistration = z.infer<typeof WaitRegistrationSchema>;
 // What every outcome carries, so a sweep can judge one without its
 // registration.
 const outcomeBase = {
-  waitId: z.string().uuid(),
+  waitId: LowercaseUuid,
   workflowId: WorkflowIdInRecord,
   runId: z.string().uuid(),
   deadline: z.string().datetime(),
@@ -184,7 +187,7 @@ function decode<T>(
   if (!parsed.success) return { kind: "unreadable" };
   // A record stored under one wait's key that names another is not that
   // wait's record.
-  if ((parsed.data as { waitId: string }).waitId !== waitId) {
+  if ((parsed.data as { waitId: string }).waitId !== waitId.toLowerCase()) {
     return { kind: "unreadable" };
   }
   return { kind: "found", record: parsed.data };

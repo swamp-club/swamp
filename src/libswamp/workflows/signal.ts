@@ -64,6 +64,12 @@ export interface WorkflowSignalData {
    * record as this host has it, which on a shared datastore may be behind.
    */
   awaitingResume: boolean;
+  /**
+   * False when this host has no copy of the run record, as on a second host
+   * that has not synced it. `awaitingResume` is then unknown, and reported
+   * as false.
+   */
+  runRecordAvailable: boolean;
   /** The command that resumes the run. */
   resumeCommand: string;
 }
@@ -155,8 +161,20 @@ function resumeCommandFor(place: WaitPlace): string {
   } --run ${place.runId}`;
 }
 
+/**
+ * A name read from a wait record, for a message. The record comes from a
+ * store other writers can reach, so control characters, which could carry
+ * terminal escape sequences, are not printed.
+ */
+function printable(name: string): string {
+  // deno-lint-ignore no-control-regex
+  return name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
+}
+
 function whereOf(place: WaitPlace): string {
-  return `step "${place.stepName}" of workflow "${place.workflowName}" (run ${place.runId})`;
+  return `step "${printable(place.stepName)}" of workflow "${
+    printable(place.workflowName)
+  }" (run ${printable(place.runId)})`;
 }
 
 function unknownWait(typedId: string): SwampError {
@@ -478,6 +496,7 @@ async function deliver(
       stepName: registration.stepName,
       signal: { ...stored.record.receipt },
       awaitingResume: await isAwaitingResume(store, run),
+      runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(registration),
     },
   };

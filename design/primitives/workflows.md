@@ -597,7 +597,9 @@ under the wrong prefix. Every command builds a repository context; only one
 that uses a wait binds the namespace with a pull, as
 `initializeControlPlaneVaultForCli` does, and then creates the store. Whether
 the store has `putIfAbsent` is known only then, so a workflow with a wait opens
-it before it starts and is refused if it has not. Serve has bound the namespace
+it before it starts, on a new run and on a resume alike, and is refused if it
+has not. A failure to open for another reason, such as the network, is passed
+on as it is. Serve has bound the namespace
 at boot and skips the pull. A failed open is tried again by the next call.
 
 A run already waiting on a datastore that cannot hold wait records, suspended
@@ -627,7 +629,9 @@ must be a UUID before a key is built from it. Each refusal has its own message:
 A signal that loses the create to a timeout, a cancel or another signal gets
 the refusal for what is stored. The result reports `awaitingResume`, read from
 the run record as this host has it together with the outcomes of the run's other
-waits; on a second host that has not synced the run it is `false`.
+waits. On a host that has no copy of the run it cannot be known: it is reported
+`false` with `runRecordAvailable: false`, and the log output says so instead of
+claiming the run still waits on something else.
 
 A signal does not change what the run record says. Until the run is resumed its
 step still shows `waiting`, the record's derived `awaitingResume` is unset, and
@@ -648,7 +652,8 @@ registering a wait and saving the run leaves a registration the run record does
 not know. `workflow waits` lists it and a signal for it is accepted. When the
 step runs again, after `workflow recover` or a resume, it takes that wait over
 instead of opening another (`adoptableWait` in
-`src/domain/workflows/execution_service.ts`), so the accepted signal is applied
+`src/domain/workflows/execution_service.ts`; only a run taken up again looks,
+since the search reads every registration), so the accepted signal is applied
 by the next resume. A wait that passed its deadline unsignalled is closed
 instead and the step opens a new one, as a retry does.
 
@@ -797,8 +802,10 @@ with the stored receipt from any host, and it is removed with the run: the
 workflow run garbage collection removes the wait records of the runs it deletes
 (`src/libswamp/data/run_gc.ts`), and deleting a workflow removes those of its
 runs (`src/libswamp/workflows/delete.ts`). `sweepWaitRecords` is the safety net
-for a record nothing else removed. It closes the registration of a run that has
-ended. On filesystem datastores, it removes a registration or outcome whose run
+for a record nothing else removed. It closes the registration of a run that
+ended after the wait was registered. A wait registered after the run record
+here says the run ended belongs to a retry this host has not synced, and is
+left alone. On filesystem datastores, it removes a registration or outcome whose run
 cannot be found once the wait's deadline plus 24 hours has passed. On custom
 datastores, missing local runs may only be unsynced, so their records are kept
 regardless of age. An accepted signal may still be needed on a later resume.

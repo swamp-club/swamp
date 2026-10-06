@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { quoteShellWord } from "../shell_word.ts";
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -2728,6 +2727,12 @@ export class WorkflowExecutionService {
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
   /**
+   * The runs this service created. A step of one cannot have registered a
+   * wait before, so opening its wait skips the search for one to take over.
+   */
+  private readonly startedRunIds = new Set<string>();
+
+  /**
    * Whether a process on this host is alive, for refusing a resume while
    * the run's owner still runs the level it suspended in. Without it, or
    * without a run tracker, that resume is not refused.
@@ -3080,6 +3085,7 @@ export class WorkflowExecutionService {
           options?.initiatedBy,
           options?.triggerSource,
         );
+        this.startedRunIds.add(run.id);
         run.attachSensitiveValues(sensitiveValues);
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
@@ -3602,9 +3608,8 @@ export class WorkflowExecutionService {
       ) {
         throw new UserError(
           `Run ${runId} has not finished suspending: the process that started it is still running other steps and still saves the run. ` +
-            `Wait for it to finish, then check the run before resuming (swamp workflow history ${
-              quoteShellWord(workflow.name)
-            }): an approval or rejection made while it was still running may not have been kept and must be given again.`,
+            `Wait for it to finish, then check the run before resuming (swamp workflow history get ${runId}): ` +
+            `an approval or rejection made while it was still running may not have been kept and must be given again.`,
         );
       }
       if (existingRun.findSignalWaits().length > 0) {
@@ -3736,6 +3741,10 @@ export class WorkflowExecutionService {
     if (!located) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // A resume can reach a wait for the first time. The store is opened
+    // before anything runs, as for a new run, so one that turns out
+    // unusable refuses here and not after earlier steps have executed.
+    if (holdsSignalWait(workflow)) await this.readySignalWaits(workflow.name);
     // Created before anything is resolved, so every sensitive value this
     // resume reads, from the stored run or afterwards, is recorded and
     // redacted from its logs.
@@ -6486,6 +6495,9 @@ export class WorkflowExecutionService {
     at: { jobName: string; stepName: string },
     now: Date,
   ): Promise<WaitRegistration | undefined> {
+    // Only a run taken up again (a resume, or a recover) can hold one, and
+    // the search reads every registration in the store.
+    if (this.startedRunIds.has(run.id)) return undefined;
     const earlier = await findRegistrationOfStep(waits, {
       runId: run.id,
       ...at,
@@ -6526,14 +6538,23 @@ export class WorkflowExecutionService {
    */
   private async openSignalWaits(workflowName: string): Promise<void> {
     this.requireSignalWaits(workflowName);
+    await this.readySignalWaits(workflowName);
+  }
+
+  /**
+   * Opens the wait store when there is one to open. A store that turns out
+   * unusable is a refusal naming the workflow; any other failure, such as
+   * the network, is passed on as it is, not reported as a missing
+   * capability.
+   */
+  private async readySignalWaits(workflowName: string): Promise<void> {
     if (!this.signalWaits.supported || !this.signalWaits.ready) return;
     try {
       await this.signalWaits.ready();
     } catch (error) {
+      if (!(error instanceof UserError)) throw error;
       throw new UserError(
-        `Workflow "${workflowName}" waits for a signal, which this datastore cannot support: ${
-          error instanceof Error ? error.message : String(error)
-        }.`,
+        `Workflow "${workflowName}" waits for a signal, which this datastore cannot support: ${error.message}.`,
       );
     }
   }
