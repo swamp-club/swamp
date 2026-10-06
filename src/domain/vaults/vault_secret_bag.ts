@@ -54,55 +54,65 @@ export interface ShellSecretResolution {
 }
 
 /**
- * Start of the here-document body holding `position`: the earliest line
- * start of the unbroken run of here-document lines that ends at the
- * occurrence's own line.
+ * Builds the reader of the quote context a vault.get() reference in
+ * `command` is chosen by, from the POSIX shell context of its occurrence.
+ * A here-document body has no quoting of its own, so there only unescaped
+ * double quotes counted from the start of the body decide: a double-quoted
+ * string may span body lines, and apostrophes in prose do not count. A
+ * reference in a body is never reported as single-quoted.
  */
-function heredocBodyStart(command: string, position: number): number {
-  // Line starts from the occurrence's own line back to the first.
-  const lineStarts: number[] = [];
-  for (let i = position - 1; i >= 0; i--) {
-    if (command[i] === "\n") lineStarts.push(i + 1);
-  }
-  lineStarts.push(0);
-  const contexts = classifyShellPositions(command, lineStarts);
-  let bodyStart = lineStarts[0];
-  for (let i = 0; i < lineStarts.length; i++) {
-    if (contexts[i] !== "heredoc" && contexts[i] !== "heredoc-literal") break;
-    bodyStart = lineStarts[i];
-  }
-  return bodyStart;
-}
-
-/**
- * The quote context a vault.get() reference is chosen by, read from the
- * POSIX shell context of its occurrence. In a here-document body the
- * scanner has no quote context, so the quote characters counted from the
- * start of that body decide, which spans a quoted string over several body
- * lines; a reference there is never reported as single-quoted.
- */
-function posixVaultQuote(
+function posixVaultQuoter(
   command: string,
-  position: number,
-  context: ShellContext,
-): QuoteContext {
-  switch (context) {
-    case "double":
-      return "double";
-    case "single":
-    case "ansi-c":
-      return "single";
-    case "heredoc":
-    case "heredoc-literal": {
-      const bodyStart = heredocBodyStart(command, position);
-      return getQuoteContext(command.slice(bodyStart), position - bodyStart) ===
-          "double"
-        ? "double"
-        : "unquoted";
+): (position: number, context: ShellContext) => QuoteContext {
+  let lineStarts: number[] | undefined;
+  let bodyStarts: number[] = [];
+  /** Start of the here-document body holding `position`. */
+  const bodyStartOf = (position: number): number => {
+    if (lineStarts === undefined) {
+      const starts = [0];
+      for (let i = 0; i < command.length; i++) {
+        if (command[i] === "\n") starts.push(i + 1);
+      }
+      const contexts = classifyShellPositions(command, starts);
+      const inBody = (i: number) =>
+        contexts[i] === "heredoc" || contexts[i] === "heredoc-literal";
+      bodyStarts = starts.map(() => 0);
+      starts.forEach((start, i) => {
+        bodyStarts[i] = i > 0 && inBody(i) && inBody(i - 1)
+          ? bodyStarts[i - 1]
+          : start;
+      });
+      lineStarts = starts;
     }
-    default:
-      return "unquoted";
-  }
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (lineStarts[mid] <= position) low = mid;
+      else high = mid - 1;
+    }
+    return bodyStarts[low];
+  };
+  return (position, context) => {
+    switch (context) {
+      case "double":
+        return "double";
+      case "single":
+      case "ansi-c":
+        return "single";
+      case "heredoc":
+      case "heredoc-literal": {
+        let inDouble = false;
+        for (let i = bodyStartOf(position); i < position; i++) {
+          if (command[i] === "\\") i++;
+          else if (command[i] === '"') inDouble = !inDouble;
+        }
+        return inDouble ? "double" : "unquoted";
+      }
+      default:
+        return "unquoted";
+    }
+  };
 }
 
 /**
@@ -417,7 +427,7 @@ export class VaultSecretBag {
             return `"\${${envName}}"`;
         }
       },
-      (position, context) => posixVaultQuote(command, position, context),
+      posixVaultQuoter(command),
       (envName, quote) =>
         quote === "double" ? `\${${envName}}` : `"\${${envName}}"`,
     );

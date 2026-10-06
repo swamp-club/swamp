@@ -591,15 +591,29 @@ Deno.test("VaultSecretBag.resolveForShell: quotes before a here-document do not 
   }
 });
 
-Deno.test("VaultSecretBag.resolveForShell: an apostrophe earlier in the same here-document body still counts as a quote", () => {
-  // Known limitation, as before swamp-club#2881: here-document text has no
-  // quoting, so an earlier apostrophe in the body reads as an open quote.
+Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do not change placement", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("v");
-  assertEquals(
-    bag.resolveForShell(`cat <<EOF\nit's here\n{"k": "${s}"}\nEOF`).command,
-    `cat <<EOF\nit's here\n{"k": ""\${__SWAMP_VAULT_0}""}\nEOF`,
-  );
+  const ref = "${__SWAMP_VAULT_0}";
+  const cases: [string, string][] = [
+    [
+      `cat <<EOF\nit's here\n{"k": "${s}"}\nEOF`,
+      `cat <<EOF\nit's here\n{"k": "${ref}"}\nEOF`,
+    ],
+    [
+      `cat <<EOF > app.env\n# Don't commit this file\nDB_PASSWORD="${s}"\nEOF`,
+      `cat <<EOF > app.env\n# Don't commit this file\nDB_PASSWORD="${ref}"\nEOF`,
+    ],
+    [
+      `cat <<EOF\nit's "a \\" b"\necho "x\n${s}"\nEOF`,
+      `cat <<EOF\nit's "a \\" b"\necho "x\n${ref}"\nEOF`,
+    ],
+  ];
+  for (const [command, expected] of cases) {
+    const resolved = bag.resolveForShell(command);
+    assertEquals(resolved.command, expected);
+    assertEquals(resolved.singleQuoted, []);
+  }
 });
 
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
