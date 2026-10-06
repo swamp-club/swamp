@@ -22,8 +22,17 @@ import { isAbsolute, join, resolve } from "@std/path";
 import { createContext, resolveRepoDir } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { migrateConfigToDatastore } from "../../domain/datastore/managed_config_migration.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
+} from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  getMigrationSentinelPath,
+  migrateConfigToDatastore,
+  writeMigrationSentinel,
+} from "../../domain/datastore/managed_config_migration.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
@@ -34,6 +43,40 @@ import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { ManagedConfigUnpublishedError } from "../managed_config_sync.ts";
+
+/**
+ * Pulls the datastore's config tier into the cache, so the migration
+ * sentinel check sees a migration another repo published since this cache
+ * last pulled (swamp-club#2621). A failed pull refuses before anything is
+ * written.
+ */
+async function pullConfigTier(
+  syncService: DatastoreSyncService,
+  datastoreConfig: DatastoreConfig,
+  namespace: string | undefined,
+): Promise<void> {
+  const timeoutMs = isCustomDatastoreConfig(datastoreConfig)
+    ? resolveSyncTimeoutMs(datastoreConfig)
+    : 30_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await syncService.pullChanged({
+      subdirs: ["config"],
+      signal: controller.signal,
+      namespace,
+    });
+  } catch (error) {
+    throw new UserError(
+      `Failed to pull config from remote datastore: ${
+        error instanceof Error ? error.message : String(error)
+      }. Check datastore connectivity and credentials.`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Sets `managedConfig: true` in the repo's `.swamp.yaml` when the marker's
@@ -64,7 +107,9 @@ export const datastoreConfigMigrateCommand = new Command()
       "the extension lockfile, and pulled extensions into the datastore\n" +
       "config tier. Sets managedConfig: true in .swamp.yaml if not already\n" +
       "set, including when another repo has already migrated the datastore.\n" +
-      "Idempotent — safe to re-run (sentinel prevents duplicate work).",
+      "Idempotent — safe to re-run: the datastore's migration sentinel\n" +
+      "prevents duplicate work, and a re-run after a failed push publishes\n" +
+      "the migration.",
   )
   .option("--repo-dir <dir:string>", "Path to the swamp repository")
   // deno-lint-ignore no-explicit-any
@@ -117,22 +162,36 @@ export const datastoreConfigMigrateCommand = new Command()
     );
     const pulledExtensionsSource = swampPath(repoDir, "pulled-extensions");
 
-    // The migration marks the whole cache and pushes it, only once it
-    // completed and copied something or set managedConfig.
     const namespace = isCustomDatastoreConfig(datastoreConfig)
       ? datastoreConfig.namespace
+      : undefined;
+    if (syncService) {
+      await pullConfigTier(syncService, datastoreConfig, namespace);
+    }
+
+    // The migrated files are pushed at a checkpoint, and the sentinel is
+    // written only after that push and pushed as the root's flush, so the
+    // datastore's sentinel always means its migration is published. Either
+    // push failing leaves migrate re-runnable (swamp-club#3117).
+    const sentinelPath = getMigrationSentinelPath(configRoot);
+    const publish = syncService
+      ? async () => {
+        try {
+          await pushNamespace(syncService, namespace);
+        } catch (error) {
+          throw new ManagedConfigUnpublishedError(
+            error,
+            "Run 'swamp datastore config migrate' again to publish it.",
+            "The migration is saved locally but was not published to the " +
+              "datastore",
+          );
+        }
+      }
       : undefined;
     let pushed = false;
     const migrated = await runCommandInRootUnit(
       repoContext,
-      {
-        push: syncService
-          ? async () => {
-            if (pushed) await pushNamespace(syncService, namespace);
-          }
-          : undefined,
-        pushWhen: "completed",
-      },
+      { push: publish, pushWhen: "completed", checkpoint: publish },
       async (root) => {
         const result = await migrateConfigToDatastore(
           repoDir,
@@ -151,6 +210,11 @@ export const datastoreConfigMigrateCommand = new Command()
         }
 
         if (result.alreadyMigrated) {
+          // Publishes the sentinel if an earlier run's push of it failed;
+          // when the datastore already has it, nothing is sent.
+          if (syncService) {
+            await root.stage({ kind: "write", path: sentinelPath });
+          }
           if (ctx.outputMode === "json") {
             writeOutput(
               JSON.stringify({ alreadyMigrated: true, managedConfigSet }),
@@ -174,6 +238,11 @@ export const datastoreConfigMigrateCommand = new Command()
             kind: "bulk",
             reason: "datastore config migrate",
           });
+          await root.checkpoint();
+        }
+        await writeMigrationSentinel(configRoot, result.sources);
+        if (syncService) {
+          await root.stage({ kind: "write", path: sentinelPath });
           pushed = true;
         }
         return { result, managedConfigSet, copied };

@@ -33,8 +33,17 @@ export interface MigrationResult {
   copiedLockfile: boolean;
   copiedPulledExtensions: boolean;
   alreadyMigrated: boolean;
+  /** The source paths the migration copied from, for the sentinel. */
+  sources: readonly string[];
 }
 
+/**
+ * Copies config into the config tier unless its migration sentinel exists.
+ * The sentinel is not written here: the caller writes it with
+ * {@link writeMigrationSentinel} once the copied files are published, so a
+ * datastore's sentinel always means its migration is published
+ * (swamp-club#3117).
+ */
 export async function migrateConfigToDatastore(
   repoDir: string,
   lockfileSourcePath: string,
@@ -53,6 +62,7 @@ export async function migrateConfigToDatastore(
       copiedLockfile: false,
       copiedPulledExtensions: false,
       alreadyMigrated: true,
+      sources: [],
     };
   } catch {
     // Sentinel doesn't exist — proceed with migration
@@ -67,12 +77,13 @@ export async function migrateConfigToDatastore(
     copiedLockfile: false,
     copiedPulledExtensions: false,
     alreadyMigrated: false,
+    sources: [],
   };
 
   const sources: Array<{
     src: string;
     dest: string;
-    key: keyof MigrationResult;
+    key: Exclude<keyof MigrationResult, "sources">;
     isFile?: boolean;
   }> = [
     {
@@ -115,7 +126,7 @@ export async function migrateConfigToDatastore(
         } else {
           await copy(src, dest, { overwrite: true });
         }
-        (result as unknown as Record<string, boolean>)[key] = true;
+        result[key] = true;
         logger.info`Copied ${src} → ${dest}`;
       }
     } catch (error) {
@@ -127,15 +138,19 @@ export async function migrateConfigToDatastore(
     }
   }
 
-  await Deno.writeTextFile(
-    sentinelPath,
-    JSON.stringify({
-      migratedAt: new Date().toISOString(),
-      sources: sources.map((s) => s.src),
-    }),
-  );
+  return { ...result, sources: sources.map((s) => s.src) };
+}
 
-  return result;
+/** Writes the migration sentinel into `configRoot`. */
+export async function writeMigrationSentinel(
+  configRoot: string,
+  sources: readonly string[],
+): Promise<void> {
+  await ensureDir(configRoot);
+  await Deno.writeTextFile(
+    join(configRoot, MIGRATION_SENTINEL),
+    JSON.stringify({ migratedAt: new Date().toISOString(), sources }),
+  );
 }
 
 export function getMigrationSentinelPath(configRoot: string): string {
@@ -182,14 +197,20 @@ export async function isConfigTierPopulated(
 /**
  * Copies the pulled-extensions root entry by entry, leaving out install
  * staging: an interrupted install's journal names paths under the root
- * it was written in, so it stays there for crash recovery.
+ * it was written in, so it stays there for crash recovery. Each entry's
+ * earlier copy is removed first: a re-run after a failed push copies again,
+ * and an extension's read-only `manifest.yaml` cannot be overwritten
+ * (swamp-club#3117).
  */
 async function copyPulledExtensions(src: string, dest: string): Promise<void> {
   await ensureDir(dest);
   for await (const entry of Deno.readDir(src)) {
     if (isStagingEntryName(entry.name)) continue;
-    await copy(join(src, entry.name), join(dest, entry.name), {
-      overwrite: true,
-    });
+    await Deno.remove(join(dest, entry.name), { recursive: true }).catch(
+      (error) => {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      },
+    );
+    await copy(join(src, entry.name), join(dest, entry.name));
   }
 }

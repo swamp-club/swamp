@@ -58,9 +58,10 @@ export async function pushGlobalLockAtEnd(
 /**
  * Pushes everything changed in `namespace`: the whole-namespace push a
  * command makes as its root's flush (workflow run and resume, access grant
- * and group, worker prune, datastore config migrate, the managed-config
- * publish) or checkpoint (access token mint, worker token create and
- * revoke).
+ * and group, worker prune, the managed-config publish) or checkpoint (access
+ * token mint, worker token create and revoke), or both (datastore config
+ * migrate, which pushes the migrated files at a checkpoint and the sentinel
+ * as the flush).
  */
 export async function pushNamespace(
   syncService: Pick<DatastoreSyncService, "pushChanged">,

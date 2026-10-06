@@ -376,11 +376,19 @@ const ROWS: AnyRow[] = [
   row({
     name: "datastore config migrate",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["push"] },
+    // Recorded before the CLI adopted a root unit (swamp-club#3033). The
+    // config pull, then the migrated files' checkpoint push, then the
+    // sentinel's push (swamp-club#2621, swamp-club#3117).
+    syncOrder: { cli: ["pull", "push", "push"] },
     // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
-    outsideUseCase: { cli: ["markDirty(bulk)"] },
+    // unit (swamp-club#3033), and the sentinel's mark, staged after the
+    // migrated files are pushed (swamp-club#3117).
+    outsideUseCase: {
+      cli: [
+        "markDirty(bulk)",
+        "markDirty config/managed-config-migrated.json",
+      ],
+    },
     options: {
       remote: { capabilities: { twoPhaseSync: true, configRefresh: true } },
     },
@@ -830,10 +838,19 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "datastore config migrate": {
-    // A bare markDirty uploads the migrated config and its marker file.
-    // Datastore refactor phase 2 is expected to change this.
+    // The config tier is pulled first, so a migration another repo
+    // published is seen (swamp-club#2621). A bare markDirty uploads the
+    // migrated config; the marker file is written and pushed only after
+    // that push (swamp-club#3117). Datastore refactor phase 2 is expected to
+    // change this.
     cli: {
-      "ops": ["markDirty(bulk)", "push[2]"],
+      "ops": [
+        "pull[0]",
+        "markDirty(bulk)",
+        "push[1]",
+        "markDirty config/managed-config-migrated.json",
+        "push[1]",
+      ],
       "remote": {
         "added": [
           "config/managed-config-migrated.json",
