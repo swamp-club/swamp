@@ -100,6 +100,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     null,
   );
   const socketRef = useRef<WebSocket | null>(null);
+  const sessionGenerationRef = useRef(0);
   const pendingRef = useRef<
     Map<
       string,
@@ -116,6 +117,22 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     setVerificationBaseUri(info.verificationBaseUri ?? null);
   }, []);
 
+  const restoreSession = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++sessionGenerationRef.current;
+    try {
+      const response = await globalThis.fetch("/auth/dashboard/session", {
+        signal,
+      });
+      await response.body?.cancel();
+      if (generation !== sessionGenerationRef.current) return false;
+      setToken(response.ok ? "" : null);
+      return response.ok;
+    } catch (error) {
+      if (generation === sessionGenerationRef.current) setToken(null);
+      throw error;
+    }
+  }, []);
+
   // Serve may be down when the page loads; keep asking rather than guess a
   // mode, which would connect without a token and never show login.
   useEffect(() => loadAuthInfo({ ...timers, fetchAuthInfo }, applyAuthInfo), [
@@ -124,26 +141,27 @@ export function SwampProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    globalThis.fetch("/auth/dashboard/session", { signal: controller.signal })
-      .then(async (response) => {
-        await response.body?.cancel();
-        if (response.ok) setToken("");
-      })
+    let active = true;
+    restoreSession(controller.signal)
       .catch(() => {})
-      .finally(() => setSessionReady(true));
-    return () => controller.abort();
-  }, []);
+      .finally(() => {
+        if (active) setSessionReady(true);
+      });
+    return () => {
+      active = false;
+      sessionGenerationRef.current++;
+      controller.abort();
+    };
+  }, [restoreSession]);
 
   const clearToken = useCallback(() => {
+    sessionGenerationRef.current++;
     setToken(null);
   }, []);
 
   const sessionAuthenticated = useCallback(async () => {
-    const response = await globalThis.fetch("/auth/dashboard/session");
-    await response.body?.cancel();
-    if (!response.ok) throw new Error("Authentication failed");
-    setToken("");
-  }, []);
+    if (!(await restoreSession())) throw new Error("Authentication failed");
+  }, [restoreSession]);
 
   const notifyReauthenticated = useCallback(() => {
     if (!("BroadcastChannel" in globalThis)) return;
