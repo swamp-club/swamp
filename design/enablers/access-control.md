@@ -740,16 +740,19 @@ from the AST evaluation parses) and
   run inputs it needs `write` on the model run; a run-only caller is refused
   and told to reference env in the definition. `evaluate` and `validate` never
   resolve env, which is resolved only when a method runs.
-- **Vault secrets.** `vault.get` is an author's capability and is not checked
-  against grants on any serve path (swamp-club#3086). A writer, holding
-  `write` on the model or workflow, may use any vault secret in what they
-  author. Unlike env, `vault.get` is also allowed in model method run inputs
-  to any caller, since run-only callers such as CI tokens pass secrets that
-  way; the value reaches the method and is masked in output. So `write` on
-  workflows or models, and `run` on a model whose method can surface its
+- **Vault secrets.** A `vault.get(...)` expression is an author's capability
+  and is not checked against grants on any serve path (swamp-club#3086); the
+  analyzer records no vault reference, so `authorizeExpressionReferences`
+  never sees one. This is the expression function, not the `vault.get` serve
+  request, which needs `read` on `data:vault`. A writer, holding `write` on
+  the model or workflow, may use any vault secret in what they author. Unlike
+  env, a `vault.get(...)` expression is also allowed in model method run
+  inputs to any caller, since run-only callers such as CI tokens pass secrets
+  that way; the value reaches the method and is masked in output. So `write`
+  on workflows or models, and `run` on a model whose method can surface its
   inputs, include access to the repo's vault secrets; grant them on that
-  basis. Workflow run inputs are inert and never resolve `vault.get`.
-  Per-vault scoping is swamp-club#2676.
+  basis. Workflow run inputs are inert and never resolve a `vault.get(...)`
+  expression. Per-vault scoping is swamp-club#2676.
 - **Retargeting.** A stored expression that reads data through a target
   computed from `self` or `inputs` is re-checked when an edit could point it
   elsewhere: a model edit that changes its name, version, tags, global
@@ -781,8 +784,8 @@ What this does not cover, by design:
   argument when runners shouldn't choose the model.
 - The check runs when text is saved. Expressions stored before this check
   existed are not re-checked.
-- Vault secrets: `vault.get` is not checked on any path; see **Vault
-  secrets** above.
+- Vault secrets: a `vault.get(...)` expression is not checked on any path;
+  see **Vault secrets** above.
 
 ## The can-i request
 
