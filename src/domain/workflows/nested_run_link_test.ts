@@ -30,6 +30,7 @@ import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import { WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
+import { SignalWait } from "./signal_wait.ts";
 
 class Runs {
   readonly byId = new Map<string, WorkflowRun>();
@@ -354,4 +355,103 @@ Deno.test("assertNestedWaitsSettled: refuses with every child named, and a gener
   child.getJob("child-job")!.succeed();
   child.complete();
   await assertNestedWaitsSettled(deps, parent);
+});
+
+/** A parent suspended on a child that waits for a signal opened at `now`. */
+function signalWaitPair(now: Date, timeoutSeconds: number) {
+  const childWorkflow = Workflow.create({
+    name: "child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(timeoutSeconds, { type: "object" }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = WorkflowRun.create(parentWorkflow);
+  parent.start();
+  const child = WorkflowRun.create(childWorkflow);
+  child.recordParentRun({
+    workflowId: parentWorkflow.id,
+    workflowName: parentWorkflow.name,
+    runId: parent.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parentWorkflow.name],
+  });
+  child.start();
+  const review = child.getJob("child-job")!.getStep("review")!;
+  review.start();
+  const wait = SignalWait.open({ type: "object" }, timeoutSeconds, now);
+  review.waitForSignal(wait);
+  child.suspend();
+  parent.getJob("main")!.getStep("call-child")!.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  parent.suspend();
+  const runs = new Runs();
+  runs.add(parent, child);
+  return {
+    parent,
+    child,
+    wait,
+    deps: {
+      runRepo: runs,
+      workflowRepo: new Workflows(parentWorkflow, childWorkflow),
+    },
+  };
+}
+
+Deno.test("NestedRunLink.describeWait: a child with an open signal wait is signalled, and the hint names the wait", async () => {
+  const { parent, deps, wait, child } = signalWaitPair(new Date(), 3600);
+
+  const [pending] = await new NestedRunLink(deps).pendingWaits(parent);
+
+  assertEquals(pending.action, {
+    kind: "signal",
+    target: pending.action.target,
+    stepName: "review",
+    waitId: wait.id,
+  });
+  const hint = nestedWaitHint(pending.action);
+  assert(hint.includes(`swamp workflow signal ${wait.id}`));
+  assert(hint.includes(`swamp workflow resume child --run ${child.id}`));
+});
+
+Deno.test("NestedRunLink.describeWait: a child whose signal wait expired is resumed, which fails its step", async () => {
+  const { parent, deps } = signalWaitPair(
+    new Date("2020-01-01T00:00:00.000Z"),
+    1,
+  );
+
+  const [pending] = await new NestedRunLink(deps).pendingWaits(parent);
+
+  assertEquals(pending.action.kind, "resume");
+});
+
+Deno.test("nestedWaitHint: the signal command quotes its payload placeholder so it can be pasted", () => {
+  const hint = nestedWaitHint({
+    kind: "signal",
+    target: {
+      workflowId: "w",
+      workflowName: "child",
+      runId: "r-1",
+      serveOwned: false,
+    },
+    stepName: "review",
+    waitId: "wait-1",
+  });
+
+  assert(
+    hint.includes("swamp workflow signal wait-1 --payload '<json>', then"),
+    hint,
+  );
 });

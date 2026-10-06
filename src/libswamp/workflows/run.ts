@@ -70,7 +70,11 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
-import { type SupersedeDeps, supersedeSuspendedRuns } from "./supersede.ts";
+import {
+  type SkippedSupersedeData,
+  type SupersedeDeps,
+  supersedeSuspendedRuns,
+} from "./supersede.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 
 /**
@@ -93,6 +97,8 @@ export type WorkflowRunEvent =
     cancelledRunIds: string[];
     /** Nested runs the superseded runs had waited on, left suspended. */
     detachedNestedRuns?: DetachedNestedRunData[];
+    /** Matching suspended runs left alone because they wait for a signal. */
+    skippedRuns?: SkippedSupersedeData[];
   }
   | { kind: "evaluating_workflow" }
   | {
@@ -145,6 +151,18 @@ export type WorkflowRunEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+  }
+  | {
+    kind: "signal_wait_requested";
+    runId: string;
+    /** The workflow the wait belongs to, which differs for a nested run. */
+    workflowName?: string;
+    jobId: string;
+    stepId: string;
+    /** The id `workflow signal` names to settle this wait. */
+    waitId: string;
+    /** When the wait stops accepting a signal, as an ISO timestamp. */
+    deadline: string;
   }
   | {
     kind: "step_failed";
@@ -266,6 +284,11 @@ export type WorkflowRunEvent =
      * (swamp-club#2736). `jobId` and `stepId` are then the nested step.
      */
     nested?: { workflowName: string; runId: string };
+    /**
+     * Set when the run suspended on a step waiting for a signal: the wait
+     * `workflow signal` names. `jobId` and `stepId` are then that step.
+     */
+    wait?: { id: string; deadline: string };
   }
   | { kind: "error"; error: SwampError };
 
@@ -548,6 +571,16 @@ export function toRunData(
             };
           }
 
+          if (step.signalWait) {
+            stepData.wait = {
+              id: step.signalWait.id,
+              deadline: step.signalWait.deadline.toISOString(),
+              ...(step.signalWait.receipt
+                ? { receipt: { ...step.signalWait.receipt } }
+                : {}),
+            };
+          }
+
           if (step.approvalDecision) {
             stepData.approval = mapApprovalDecision(
               step.approvalDecision,
@@ -652,6 +685,7 @@ export function mapWorkflowExecutionEvent(
         prompt: event.prompt,
         timeout: event.timeout,
         ...(event.nested ? { nested: { ...event.nested } } : {}),
+        ...(event.wait ? { wait: { ...event.wait } } : {}),
       };
     }
     case "step_failed": {
@@ -682,6 +716,7 @@ export function mapWorkflowExecutionEvent(
     case "step_started":
     case "step_skipped":
     case "approval_requested":
+    case "signal_wait_requested":
     case "step_queued":
     case "step_target_disconnected":
     case "env_var_warning":
@@ -785,20 +820,21 @@ export async function* workflowRun(
           }
 
           if (!resolvedInput.noSupersede && deps.supersede) {
-            const { cancelledRunIds, detachedNestedRuns } =
+            const { cancelledRunIds, detachedNestedRuns, skippedRuns } =
               await supersedeSuspendedRuns(
                 workflow,
                 resolvedInput.inputs ?? {},
                 deps.supersede,
                 deps.runRepo,
               );
-            if (cancelledRunIds.length > 0) {
+            if (cancelledRunIds.length > 0 || skippedRuns.length > 0) {
               yield {
                 kind: "superseded_runs",
                 cancelledRunIds,
                 ...(detachedNestedRuns.length > 0
                   ? { detachedNestedRuns }
                   : {}),
+                ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
               };
             }
           }

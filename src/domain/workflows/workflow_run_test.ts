@@ -32,6 +32,11 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
+import {
+  SignalWait,
+  WAIT_TIMEOUT_STEP_ERROR,
+  WAIT_UNREADABLE_STEP_ERROR,
+} from "./signal_wait.ts";
 
 function createTestWorkflow(): Workflow {
   return Workflow.create({
@@ -2783,4 +2788,301 @@ Deno.test("WorkflowRun.parentRun: round-trips, and a malformed link is kept as w
   const broken = WorkflowRun.fromData({ ...run.toData(), parentRun: raw });
   assertEquals(broken.parentRun, { kind: "broken", raw });
   assertEquals(broken.toData().parentRun, raw);
+});
+
+const WAIT_NOW = new Date("2026-01-01T00:00:00.000Z");
+const VERDICT_SCHEMA = {
+  type: "object" as const,
+  additionalProperties: false,
+  required: ["verdict"],
+  properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
+};
+
+/** A step waiting for a signal on a wait opened at WAIT_NOW for 60 seconds. */
+function waitingStep(): { step: StepRun; wait: SignalWait } {
+  const step = StepRun.pending("review");
+  step.start();
+  const wait = SignalWait.open(VERDICT_SCHEMA, 60, WAIT_NOW);
+  step.waitForSignal(wait);
+  return { step, wait };
+}
+
+Deno.test("StepRun.waitForSignal: the step waits, holds the wait, and round-trips", () => {
+  const { step, wait } = waitingStep();
+
+  assertEquals(step.status, "waiting");
+  assertEquals(step.isSignalWait, true);
+  assertEquals(step.isNestedWait, false);
+  assertEquals(step.signalWait?.id, wait.id);
+
+  const loaded = StepRun.fromData(step.toData());
+  assertEquals(loaded.status, "waiting");
+  assertEquals(loaded.signalWait?.equals(wait), true);
+  assertEquals(loaded.toData(), step.toData());
+});
+
+Deno.test("StepRun.acceptSignal: an open wait accepts a valid payload and the step succeeds with it", () => {
+  const { step, wait } = waitingStep();
+  const at = new Date(WAIT_NOW.getTime() + 1000);
+
+  const outcome = step.acceptSignal({ verdict: "ship" }, "ada", at);
+
+  if (!outcome.accepted) throw new Error("refused");
+  assertEquals(outcome.receipt.waitId, wait.id);
+  assertEquals(outcome.receipt.submittedBy, "ada");
+  assertEquals(outcome.receipt.receivedAt, at.toISOString());
+  assertEquals(step.status, "succeeded");
+  assertEquals(step.isSignalWait, false);
+  assertEquals(step.output, {
+    type: "wait_for_signal",
+    payload: { verdict: "ship" },
+    signal: outcome.receipt,
+  });
+  assertEquals(step.signalWait?.receipt, outcome.receipt);
+  assertEquals(StepRun.fromData(step.toData()).toData(), step.toData());
+});
+
+Deno.test("StepRun.acceptSignal: an invalid payload is refused and the wait stays open", () => {
+  const { step, wait } = waitingStep();
+  const before = step.toData();
+
+  const outcome = step.acceptSignal({ verdict: "maybe" }, "ada", WAIT_NOW);
+
+  if (outcome.accepted) throw new Error("accepted");
+  assertEquals(outcome.refusal.kind, "invalid_payload");
+  assertEquals(step.toData(), before);
+  assertEquals(step.signalWait?.id, wait.id);
+  // The same wait still accepts a valid payload afterwards.
+  assertEquals(
+    step.acceptSignal({ verdict: "fix" }, "ada", WAIT_NOW).accepted,
+    true,
+  );
+});
+
+Deno.test("StepRun.acceptSignal: a wait past its deadline refuses the signal and stays waiting", () => {
+  const { step, wait } = waitingStep();
+  const late = new Date(wait.deadline.getTime() + 1);
+  const before = step.toData();
+
+  const outcome = step.acceptSignal({ verdict: "ship" }, "ada", late);
+
+  if (outcome.accepted) throw new Error("accepted");
+  assertEquals(outcome.refusal, { kind: "expired", deadline: wait.deadline });
+  assertEquals(step.toData(), before);
+});
+
+Deno.test("StepRun.acceptSignal: a settled wait refuses a second signal with the stored receipt", () => {
+  const { step } = waitingStep();
+  const first = step.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW);
+  if (!first.accepted) throw new Error("refused");
+  const before = step.toData();
+
+  const second = step.acceptSignal({ verdict: "fix" }, "bob", WAIT_NOW);
+
+  if (second.accepted) throw new Error("accepted");
+  assertEquals(second.refusal, {
+    kind: "already_settled",
+    receipt: first.receipt,
+  });
+  assertEquals(step.toData(), before);
+});
+
+Deno.test("StepRun.acceptSignal: a step that is not waiting refuses the signal", () => {
+  const never = StepRun.pending("review");
+  const { step: cancelled } = waitingStep();
+  cancelled.cancelOpenWait();
+  const { step: timedOut, wait } = waitingStep();
+  timedOut.timeOutWait(new Date(wait.deadline.getTime() + 1));
+
+  for (const step of [never, cancelled, timedOut]) {
+    const before = step.toData();
+    const outcome = step.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW);
+    if (outcome.accepted) throw new Error("accepted");
+    assertEquals(outcome.refusal, { kind: "not_waiting" });
+    assertEquals(step.toData(), before);
+  }
+});
+
+Deno.test("StepRun.timeOutWait: fails only a waiting step whose deadline has passed", () => {
+  const { step, wait } = waitingStep();
+
+  assertEquals(step.timeOutWait(wait.deadline), false);
+  assertEquals(step.status, "waiting");
+
+  assertEquals(step.timeOutWait(new Date(wait.deadline.getTime() + 1)), true);
+  assertEquals(step.status, "failed");
+  assertEquals(step.error, WAIT_TIMEOUT_STEP_ERROR);
+  assertEquals(step.settledByAbort, false);
+  assertEquals(step.signalWait?.id, wait.id);
+
+  const notWaiting = StepRun.pending("other");
+  assertEquals(notWaiting.timeOutWait(new Date()), false);
+  assertEquals(notWaiting.status, "pending");
+});
+
+Deno.test("StepRun: a waiting step whose stored wait cannot be read fails as unreadable, not as a timeout", () => {
+  const { step } = waitingStep();
+  const broken = StepRun.fromData({ ...step.toData(), wait: { kind: "?" } });
+
+  assertEquals(broken.status, "waiting");
+  assertEquals(broken.signalWait, undefined);
+  // The unreadable value is written back as read.
+  assertEquals(broken.toData().wait, { kind: "?" });
+  assertEquals(
+    broken.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW).accepted,
+    false,
+  );
+  // It is not a timeout: there is no deadline to have passed.
+  assertEquals(broken.timeOutWait(new Date("2099-01-01T00:00:00.000Z")), false);
+  assertEquals(broken.status, "waiting");
+  assertEquals(broken.failUnreadableWait(), true);
+  assertEquals(broken.status, "failed");
+  assertEquals(broken.error, WAIT_UNREADABLE_STEP_ERROR);
+});
+
+Deno.test("StepRun.failUnreadableWait: leaves a step with a readable wait, or no wait, alone", () => {
+  const { step } = waitingStep();
+  assertEquals(step.failUnreadableWait(), false);
+  assertEquals(step.status, "waiting");
+
+  const pending = StepRun.pending("other");
+  assertEquals(pending.failUnreadableWait(), false);
+  assertEquals(pending.status, "pending");
+
+  const { step: signalled } = waitingStep();
+  signalled.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW);
+  assertEquals(signalled.failUnreadableWait(), false);
+  assertEquals(signalled.status, "succeeded");
+});
+
+Deno.test("StepRun.cancelOpenWait: fails a waiting step as cancelled and leaves any other status alone", () => {
+  const { step } = waitingStep();
+  step.cancelOpenWait();
+  assertEquals(step.status, "failed");
+  assertEquals(step.error, CANCELLED_STEP_ERROR);
+  assertEquals(step.settledByAbort, true);
+
+  const gate = StepRun.pending("gate");
+  gate.waitForApproval("ok?");
+  gate.cancelOpenWait();
+  assertEquals(gate.status, "waiting_approval");
+
+  const { step: signalled } = waitingStep();
+  signalled.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW);
+  signalled.cancelOpenWait();
+  assertEquals(signalled.status, "succeeded");
+});
+
+Deno.test("StepRun.cancelUndecidedApproval: leaves a step waiting for a signal alone", () => {
+  const { step } = waitingStep();
+  step.cancelUndecidedApproval();
+  assertEquals(step.status, "waiting");
+});
+
+Deno.test("StepRun.resetToPending: clears the wait, so a retry opens a new one", () => {
+  const { step, wait } = waitingStep();
+  step.timeOutWait(new Date(wait.deadline.getTime() + 1));
+
+  step.resetToPending();
+
+  assertEquals(step.status, "pending");
+  assertEquals(step.signalWait, undefined);
+  assertEquals(step.toData().wait, undefined);
+});
+
+function signalAndGateRun(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "release",
+      jobs: [
+        Job.create({
+          name: "a-review",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(60, VERDICT_SCHEMA),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "b-gate",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+  run.start();
+  run.getJob("a-review")!.start();
+  const review = run.getJob("a-review")!.getStep("review")!;
+  review.start();
+  review.waitForSignal(SignalWait.open(VERDICT_SCHEMA, 60, WAIT_NOW));
+  run.getJob("b-gate")!.start();
+  run.getJob("b-gate")!.getStep("gate")!.waitForApproval("Approve");
+  run.suspend();
+  return run;
+}
+
+Deno.test("WorkflowRun: a signal wait is not an approval gate and keeps the run from awaiting resume", () => {
+  const run = signalAndGateRun();
+  const review = run.getJob("a-review")!.getStep("review")!;
+
+  assertEquals(run.findWaitingApprovalStep(), {
+    jobName: "b-gate",
+    stepName: "gate",
+  });
+  assertEquals(
+    run.findSignalWaits().map((w) => [w.jobName, w.stepName, w.wait?.id]),
+    [["a-review", "review", review.signalWait?.id]],
+  );
+  assertEquals(run.findNestedWaits(), []);
+
+  run.getJob("b-gate")!.getStep("gate")!.succeed();
+  assertEquals(run.isAwaitingResume(), false);
+  assertEquals(run.toData().awaitingResume, undefined);
+
+  review.acceptSignal({ verdict: "ship" }, "ada", WAIT_NOW);
+  assertEquals(run.findSignalWaits(), []);
+  assertEquals(run.isAwaitingResume(), true);
+  assertEquals(run.toData().awaitingResume, true);
+});
+
+Deno.test("WorkflowRun.findOpenSignalWait: a wait past its deadline is not open, but still keeps the run from awaiting resume", () => {
+  const run = signalAndGateRun();
+  run.getJob("b-gate")!.getStep("gate")!.succeed();
+  const wait = run.getJob("a-review")!.getStep("review")!.signalWait!;
+
+  assertEquals(run.findOpenSignalWait(WAIT_NOW)?.wait.id, wait.id);
+  const late = new Date(wait.deadline.getTime() + 1);
+  assertEquals(run.findOpenSignalWait(late), undefined);
+  assertEquals(run.findSignalWaits().length, 1);
+  assertEquals(run.isAwaitingResume(), false);
+});
+
+Deno.test("JobRun.getStatus: a forEach template with an iteration waiting for a signal reads as running", () => {
+  const job = JobRun.pending("release", ["review-eu", "review-us"]);
+  job.registerForEachExpansion("review", ["review-eu", "review-us"]);
+  job.getStep("review-eu")!.succeed();
+  job.getStep("review-us")!.waitForSignal(
+    SignalWait.open(VERDICT_SCHEMA, 60, WAIT_NOW),
+  );
+
+  assertEquals(job.getStatus("review"), "running");
+});
+
+Deno.test("JobRun.settleNotResumed: a job with a step waiting for a signal is unknown, not succeeded", () => {
+  const job = JobRun.pending("release", ["done", "review"]);
+  job.start();
+  job.getStep("done")!.succeed();
+  job.getStep("review")!.waitForSignal(
+    SignalWait.open(VERDICT_SCHEMA, 60, WAIT_NOW),
+  );
+
+  job.settleNotResumed();
+
+  assertEquals(job.status, "unknown");
 });

@@ -130,6 +130,7 @@ const CLAIMED_PINNED = [
   "src/domain/workflows/execution_service.ts",
   "src/libswamp/workflows/approve.ts",
   "src/libswamp/workflows/reject.ts",
+  "src/libswamp/workflows/signal.ts",
   "src/libswamp/workflows/supersede.ts",
 ];
 

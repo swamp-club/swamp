@@ -588,3 +588,33 @@ Deno.test("InputValidationService.validateProvided supports the flat schema form
     [{ path: "replicas", message: "replicas must be an integer" }],
   );
 });
+
+Deno.test("InputValidationService.validate does not treat Object.prototype names as present or declared in a nested object", () => {
+  const schema: InputsSchema = {
+    properties: {
+      detail: {
+        type: "object",
+        additionalProperties: false,
+        required: ["valueOf"],
+        properties: { valueOf: { type: "integer" as const } },
+      },
+    },
+  };
+
+  // An empty object inherits valueOf, which does not make it supplied.
+  assertEquals(
+    validationService.validate({ detail: {} }, schema).errors,
+    [{ path: "detail.valueOf", message: "detail.valueOf is required" }],
+  );
+  // toString is inherited by `properties`, which does not declare it.
+  assertEquals(
+    validationService.validate(
+      { detail: { valueOf: 1, toString: "x" } },
+      schema,
+    ).errors,
+    [{
+      path: "detail.toString",
+      message: "detail.toString is not a valid property",
+    }],
+  );
+});

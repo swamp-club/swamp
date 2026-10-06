@@ -863,6 +863,80 @@ left `running` by a serve process that has died. If it answers that the run was
 not cancelled, the reply says what still holds it. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
+**`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a
+deadline passes. The message becomes the step's output, so later steps branch on
+it. Use it when a step needs a value, not a yes or no:
+
+```yaml
+- name: review
+  allowFailure: true # a timeout then does not fail the run
+  task:
+    type: wait_for_signal
+    timeout: 86400 # Required: seconds the wait stays open (max 31536000)
+    schema: # Required: needs "type: object" or "properties"
+      type: object
+      additionalProperties: false
+      required: [verdict]
+      properties:
+        verdict: { type: string, enum: [ship, fix, abandon] }
+- name: ship
+  dependsOn: [{ step: review, condition: { type: succeeded } }]
+  # A truthy guard skips the step: skip unless the verdict is ship.
+  guard: ${{ steps.review.outputs.payload.verdict != "ship" }}
+  task: { type: model_method, modelIdOrName: release, methodName: deploy }
+- name: escalate
+  dependsOn: [{ step: review, condition: { type: failed } }]
+  task: { type: model_method, modelIdOrName: release, methodName: escalate }
+```
+
+```
+swamp workflow run release     # runs to the wait, prints the wait ID, suspends
+swamp workflow waits           # wait ID, workflow, step, deadline, schema
+swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
+swamp workflow resume release --run <run-id>
+```
+
+- The schema may read `inputs.*` only. `self`, `steps`, `data`, `env` and
+  `vault` are refused by `workflow validate`: a wait under `forEach` cannot vary
+  its schema per iteration. The flat inputs form (a bare map of properties) is
+  refused too.
+- Schema keywords are limited to what a payload is checked against: `type`,
+  `enum`, `required`, `properties`, `additionalProperties`, `items`, `minItems`,
+  `maxItems`, `uniqueItems` (plus `description`, `title`, `examples`,
+  `$comment`). Others such as `pattern`, `minimum` or `format` fail the workflow
+  parse. So do `default`, an empty `enum`, and on a nested schema
+  `properties`/`required` without `type: object` or `items` without
+  `type: array`. A `null` value is refused for any property the schema declares;
+  a key the schema allows without declaring (any key under a bare
+  `type: object`) is unchecked and may be `null`, so declare the keys a guard
+  reads and set `additionalProperties: false` to rule the rest out.
+- A signal names the **wait ID**, never a workflow or step name. Get it from the
+  `workflow run` output (`signalWaits[].waitId` with `--json`, which lists every
+  open wait of the run) or `workflow waits`.
+- Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
+  schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
+  (`id`, `waitId`, `receivedAt`, `submittedBy`).
+- An invalid payload is refused and the wait stays open. Payloads are JSON
+  objects of at most 16 KiB, stored in plaintext: never send a secret. The keys
+  `__proto__`, `constructor` and `prototype` are refused at any depth.
+- `resume` refuses while a wait is open. Past the deadline, a signal is refused
+  and the next `resume` fails the step with `wait_timeout`, so a `failed`
+  dependent runs. `workflow waits` flags such a wait as expired.
+- Resume is always manual, also under `swamp serve`: serve never auto-resumes a
+  run with a step waiting for a signal, and there is no `--server` form of
+  `workflow signal`.
+- A new `workflow run` does not supersede a run that waits for a signal; it
+  reports it as kept.
+- Send a signal from the host that ran the workflow. From another host on a
+  shared datastore it can be accepted and then overwritten while sibling steps
+  finish; the step shows `waiting` again and the signal must be re-sent.
+- "not ready ... has not suspended yet" means sibling steps are still finishing:
+  send the signal again. If the process running them was killed, the signal is
+  accepted and the resume runs those steps again.
+- A step that fails with `wait_unreadable` held a wait record that could not be
+  read (a hand-edited run file); `workflow waits` lists it under
+  `unreadableWaits`.
+
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the
 workflow to have `swamp serve` resume the run by itself once every gate is
 approved. The approval must go through serve: the dashboard, or

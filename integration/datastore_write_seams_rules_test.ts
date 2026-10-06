@@ -800,6 +800,7 @@ const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
   "src/libswamp/workflows/evaluate.ts: workflowEvaluate",
   "src/libswamp/workflows/reject.ts: workflowReject",
   "src/libswamp/workflows/run.ts: workflowRun",
+  "src/libswamp/workflows/signal.ts: workflowSignal",
 ];
 
 // Production references to the unit-of-work test seam. Empty: only tests

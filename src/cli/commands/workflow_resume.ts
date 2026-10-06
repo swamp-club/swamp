@@ -38,6 +38,7 @@ import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
+import { openSignalWaitMessage } from "../../domain/workflows/signal_wait.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
@@ -330,6 +331,8 @@ export const workflowResumeCommand = withRemoteOptions(
             `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
         );
       }
+      const openWait = run.findOpenSignalWait(new Date());
+      if (openWait) throw new UserError(openSignalWaitMessage(openWait));
     }
 
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
@@ -472,6 +475,9 @@ export const workflowResumeCommand = withRemoteOptions(
       quiet: cliCtx.verbosity === "quiet",
       verbose: cliCtx.verbosity === "verbose",
       commandTarget: formatCommandTarget({
+        repoDir: options.repoDir as string | undefined,
+      }),
+      localCommandTarget: formatCommandTarget({
         repoDir: options.repoDir as string | undefined,
       }),
     });

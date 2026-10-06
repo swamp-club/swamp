@@ -25,6 +25,22 @@ import type { SwampError } from "../libswamp/mod.ts";
 import type { SerializedError, SerializedEvent } from "./protocol.ts";
 
 /**
+ * Event kinds a workflow run produces that are never sent to a client. A
+ * client dispatches each event to a handler by kind and has none for a kind
+ * newer than itself, so a released client crashes on one. What these events
+ * say reaches the client another way: `signal_wait_requested` is repeated in
+ * the `suspended` event's `wait`, a field an older client ignores.
+ */
+const LOCAL_ONLY_EVENT_KINDS: ReadonlySet<string> = new Set([
+  "signal_wait_requested",
+]);
+
+/** Whether a run event is sent to clients. */
+export function isWireEvent(event: { kind: string }): boolean {
+  return !LOCAL_ONLY_EVENT_KINDS.has(event.kind);
+}
+
+/**
  * Serializes a libswamp event (WorkflowRunEvent or ModelMethodRunEvent) into
  * a JSON-safe object. Handles non-serializable values like Error instances.
  */

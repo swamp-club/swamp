@@ -352,3 +352,50 @@ Deno.test("parseWorkflowRunSummary: a gate beside a nested wait, and malformed l
   assertEquals(summary.waitingOnRun, undefined);
   assertEquals(summary.waitsOnlyOnNestedRuns, undefined);
 });
+
+function suspendedRecord(steps: unknown[]): Record<string, unknown> {
+  return {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "release",
+    status: "suspended",
+    jobs: [{ jobName: "release", status: "running", steps }],
+  };
+}
+
+Deno.test("parseWorkflowRunSummary: a run suspended only on a signal wait is not awaiting resume", () => {
+  const summary = parseWorkflowRunSummary(suspendedRecord([
+    { stepName: "review", status: "waiting", wait: { kind: "signal" } },
+    { stepName: "ship", status: "pending" },
+  ]));
+
+  assertEquals(summary.awaitingResume, undefined);
+});
+
+Deno.test("parseWorkflowRunSummary: a run whose signal wait settled is awaiting resume", () => {
+  const summary = parseWorkflowRunSummary(suspendedRecord([
+    { stepName: "review", status: "succeeded", wait: { kind: "signal" } },
+    { stepName: "ship", status: "pending" },
+  ]));
+
+  assertEquals(summary.awaitingResume, true);
+});
+
+Deno.test("parseWorkflowRunSummary: a run with a nested wait and a signal wait does not wait only on nested runs", () => {
+  const nestedRun = {
+    workflowId: "11111111-1111-4111-8111-111111111111",
+    workflowName: "child",
+    runId: "22222222-2222-4222-8222-222222222222",
+  };
+  const both = parseWorkflowRunSummary(suspendedRecord([
+    { stepName: "call-child", status: "waiting_approval", nestedRun },
+    { stepName: "review", status: "waiting", wait: { kind: "signal" } },
+  ]));
+  const nestedOnly = parseWorkflowRunSummary(suspendedRecord([
+    { stepName: "call-child", status: "waiting_approval", nestedRun },
+  ]));
+
+  assertEquals(both.waitingOnRun, [nestedRun]);
+  assertEquals(both.waitsOnlyOnNestedRuns, undefined);
+  assertEquals(nestedOnly.waitsOnlyOnNestedRuns, true);
+});

@@ -28,7 +28,9 @@ import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import {
+  nestedWaitView,
   workflowHistoryGet,
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,
@@ -287,4 +289,142 @@ Deno.test("workflowHistoryGet: reports a passed workflow with no runs as today",
     error.error.message,
     "Workflow run not found: no runs for workflow: my-workflow",
   );
+});
+
+/** A run suspended with `review` waiting for a signal opened at `opened`. */
+function runWaitingForSignal(opened: Date): WorkflowRun {
+  const workflow = RealWorkflow.create({
+    name: "my-workflow",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, { type: "object" }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = RealWorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("review")!;
+  step.start();
+  step.waitForSignal(SignalWait.open({ type: "object" }, 60, opened));
+  run.suspend();
+  return run;
+}
+
+Deno.test("workflowHistoryGet: a step waiting for a signal shows its wait", async () => {
+  const run = runWaitingForSignal(new Date("2026-01-01T00:00:00.000Z"));
+  const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({ findLatestRun: () => Promise.resolve(run) }),
+      "my-workflow",
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  const step = completed.data.jobs[0].steps[0];
+  assertEquals(step.status, "waiting");
+  assertEquals(step.wait, {
+    id: wait.id,
+    deadline: "2026-01-01T00:01:00.000Z",
+  });
+});
+
+Deno.test("workflowHistoryGet: a signalled step shows the receipt", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const run = runWaitingForSignal(opened);
+  const outcome = run.getJob("main")!.getStep("review")!.acceptSignal(
+    { ok: true },
+    "ada",
+    opened,
+  );
+  if (!outcome.accepted) throw new Error("refused");
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({ findLatestRun: () => Promise.resolve(run) }),
+      "my-workflow",
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.jobs[0].steps[0].wait?.receipt, outcome.receipt);
+});
+
+Deno.test("nestedWaitView: a run with a finished nested run is not awaiting resume while a step waits for a signal", async () => {
+  const childWorkflow = RealWorkflow.create({
+    name: "child",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "work", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const parentWorkflow = RealWorkflow.create({
+    name: "parent",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "call", task: StepTask.workflow("child") }),
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, { type: "object" }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = RealWorkflowRun.create(parentWorkflow);
+  parent.start();
+  const child = RealWorkflowRun.create(childWorkflow);
+  child.recordParentRun({
+    workflowId: parentWorkflow.id,
+    workflowName: parentWorkflow.name,
+    runId: parent.id,
+    jobName: "main",
+    stepName: "call",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parentWorkflow.name],
+  });
+  child.start();
+  child.complete();
+  const job = parent.getJob("main")!;
+  job.start();
+  job.getStep("call")!.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  const review = job.getStep("review")!;
+  review.waitForSignal(SignalWait.open({ type: "object" }, 60, new Date()));
+  parent.suspend();
+  const deps = {
+    runRepo: { findById: () => Promise.resolve(child) },
+    workflowRepo: { findById: () => Promise.resolve(childWorkflow) },
+  };
+
+  const waiting = await nestedWaitView(deps, parent);
+  assertEquals(waiting.nestedWaits?.length, 1);
+  assertEquals(waiting.awaitingResume, undefined);
+
+  review.acceptSignal({}, "ada", new Date());
+  assertEquals((await nestedWaitView(deps, parent)).awaitingResume, true);
 });

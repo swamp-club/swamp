@@ -403,3 +403,29 @@ Deno.test("createDataRepositoryAttributeReader: records the sensitive values it 
   const raw = await createDataRepositoryAttributeReader(dataRepo)(ref);
   assertEquals(raw?.token, stored.token);
 });
+
+Deno.test("StepOutputResolver.resolve: a wait_for_signal step's outputs are its payload and receipt, with no datastore read", async () => {
+  const signal = {
+    id: "33333333-3333-4333-8333-333333333333",
+    waitId: "44444444-4444-4444-8444-444444444444",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "ada",
+  };
+  const run = runWithSteps([{
+    name: "review",
+    output: { type: "wait_for_signal", payload: { verdict: "ship" }, signal },
+  }]);
+  let reads = 0;
+  const resolver = new StepOutputResolver({
+    readAttributes: () => {
+      reads++;
+      return Promise.resolve(undefined);
+    },
+  });
+
+  const resolved = await resolver.resolve(stepOf(run, "review"));
+
+  assertEquals(resolved.outputs, { payload: { verdict: "ship" }, signal });
+  assertEquals(resolved.attributesByDataId, {});
+  assertEquals(reads, 0);
+});

@@ -83,10 +83,22 @@ export type RunStatus =
   | "pending"
   | "running"
   | "waiting_approval"
+  | "waiting"
   | "succeeded"
   | "failed"
   | "skipped"
   | "unknown";
+
+/**
+ * True for a step status that has not reached an outcome: the step has yet
+ * to run, is running, or is paused on an approval gate, a nested run
+ * (`waiting_approval`) or a wait (`waiting`). Takes a plain string so a
+ * stored record can be asked before it is parsed.
+ */
+export function isUnfinishedStatus(status: unknown): boolean {
+  return status === "pending" || status === "running" ||
+    status === "waiting_approval" || status === "waiting";
+}
 
 /**
  * Context for evaluating trigger conditions.

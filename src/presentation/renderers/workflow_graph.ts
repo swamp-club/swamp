@@ -32,6 +32,8 @@ function taskLabel(task: { type: string; [key: string]: unknown }): string {
       return "approval";
     case "assert":
       return "assert";
+    case "wait_for_signal":
+      return "signal";
     default:
       return task.type;
   }

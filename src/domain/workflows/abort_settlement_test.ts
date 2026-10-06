@@ -30,6 +30,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 import { CANCELLED_STEP_ERROR, WorkflowRun } from "./workflow_run.ts";
+import { SignalWait } from "./signal_wait.ts";
 
 function gate(name: string): Step {
   return Step.create({ name, task: StepTask.manualApproval(`${name}?`) });
@@ -600,4 +601,89 @@ Deno.test("resolveSettlementWorkflow: falls back to the repository definition", 
     await resolveSettlementWorkflow(run, undefined, noSnapshot),
     undefined,
   );
+});
+
+/** A gate and a signal wait side by side, then a step depending on each. */
+function gateAndWaitWorkflow(): Workflow {
+  return Workflow.create({
+    name: "gate-and-wait",
+    jobs: [
+      job("main", [
+        gate("gate"),
+        Step.create({
+          name: "review",
+          task: StepTask.waitForSignal(600, { type: "object" }),
+        }),
+        modelStep("after-gate", {
+          step: "gate",
+          condition: TriggerCondition.succeeded(),
+        }),
+        modelStep("on-timeout", {
+          step: "review",
+          condition: TriggerCondition.failed(),
+        }),
+      ]),
+    ],
+  });
+}
+
+function suspendedAtGateAndWait(workflow: Workflow): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const main = run.getJob("main")!;
+  main.start();
+  main.getStep("gate")!.waitForApproval("gate?");
+  const review = main.getStep("review")!;
+  review.start();
+  review.waitForSignal(SignalWait.open({ type: "object" }, 600, new Date()));
+  run.suspend();
+  return reload(run);
+}
+
+Deno.test("cancelAndSettle: an unsignalled wait fails as cancelled, marked settled by the abort, and nothing stays waiting", () => {
+  const workflow = gateAndWaitWorkflow();
+  const run = suspendedAtGateAndWait(workflow);
+
+  cancelAndSettle(run, workflow, "operator");
+
+  assertEquals(run.status, "cancelled");
+  const review = run.getJob("main")!.getStep("review")!;
+  assertEquals(review.status, "failed");
+  assertEquals(review.error, CANCELLED_STEP_ERROR);
+  assertEquals(review.settledByAbort, true);
+  assertEquals(
+    Object.values(statuses(run)).filter((status) =>
+      status === "waiting" || status === "waiting_approval" ||
+      status === "running" || status === "pending"
+    ),
+    [],
+  );
+});
+
+Deno.test("completeAndSettle: a rejected gate beside a wait leaves no step waiting", () => {
+  const workflow = gateAndWaitWorkflow();
+  const run = suspendedAtGateAndWait(workflow);
+  run.getJob("main")!.getStep("gate")!.fail("rejected");
+
+  completeAndSettle(run, workflow);
+
+  assertEquals(run.status, "failed");
+  assertEquals(statuses(run)["main/review"], "failed");
+  assertEquals(
+    Object.values(statuses(run)).filter((status) =>
+      status === "waiting" || status === "waiting_approval"
+    ),
+    [],
+  );
+});
+
+Deno.test("settleCancelledRun: settling a run with a wait twice changes nothing", () => {
+  const workflow = gateAndWaitWorkflow();
+  const run = suspendedAtGateAndWait(workflow);
+
+  settleCancelledRun(run, workflow);
+  const once = run.toData();
+  settleCancelledRun(run, workflow);
+
+  assertEquals(run.toData().jobs, once.jobs);
 });

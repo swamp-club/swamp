@@ -68,6 +68,13 @@ export type NestedWaitAction =
     readonly jobName: string;
     readonly stepName: string;
   }
+  | {
+    /** A step of the run waits for a signal on a wait still open. */
+    readonly kind: "signal";
+    readonly target: NestedRunTarget;
+    readonly stepName: string;
+    readonly waitId: string;
+  }
   | { readonly kind: "resume"; readonly target: NestedRunTarget }
   | { readonly kind: "recover"; readonly target: NestedRunTarget }
   | {
@@ -278,6 +285,17 @@ export class NestedRunLink {
       };
     }
 
+    // A wait past its deadline is settled by a resume, which fails its step.
+    const openWait = child.findOpenSignalWait(new Date());
+    if (openWait) {
+      return {
+        kind: "signal",
+        target,
+        stepName: openWait.stepName,
+        waitId: openWait.wait.id,
+      };
+    }
+
     if (depth < MAX_WORKFLOW_NESTING_DEPTH) {
       for (const wait of child.findNestedWaits()) {
         const resolved = await this.resolveChild(child, wait);
@@ -309,6 +327,12 @@ export function nestedWaitHint(action: NestedWaitAction): string {
         `'swamp workflow approve ${t.workflowName} ${action.stepName} --run ${t.runId}${
           server(t)
         }', then 'swamp workflow resume ${t.workflowName} --run ${t.runId}${
+          server(t)
+        }'.`;
+    case "signal":
+      // Only the local command delivers a signal, so no --server form.
+      return `Nested ${run} waits for a signal on step "${action.stepName}": ` +
+        `swamp workflow signal ${action.waitId} --payload '<json>', then 'swamp workflow resume ${t.workflowName} --run ${t.runId}${
           server(t)
         }'.`;
     case "resume":

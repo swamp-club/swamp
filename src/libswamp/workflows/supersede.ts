@@ -40,6 +40,20 @@ export interface SupersedeResult {
    * on their own (swamp-club#2736).
    */
   detachedNestedRuns: DetachedNestedRunData[];
+  /**
+   * Suspended runs with matching inputs left alone because a step of theirs
+   * waits for a signal. Cancelling one would discard the wait, and a
+   * workflow with no inputs would cancel its own waiting run each time it is
+   * started. A wait past its deadline is left too: a resume fails its step,
+   * so `failed` handlers run.
+   */
+  skippedRuns: SkippedSupersedeData[];
+}
+
+/** A run supersede left alone, with the ids of the waits it holds. */
+export interface SkippedSupersedeData {
+  runId: string;
+  waitIds: string[];
 }
 
 /**
@@ -84,6 +98,7 @@ export async function supersedeSuspendedRuns(
   const suspendedRuns = await findSuspendedRuns(workflow.id);
   const cancelledRunIds: string[] = [];
   const detachedNestedRuns: DetachedNestedRunData[] = [];
+  const skippedRuns: SkippedSupersedeData[] = [];
 
   for (const listed of suspendedRuns) {
     if (!isSuperseded(listed, newInputs)) continue;
@@ -93,6 +108,14 @@ export async function supersedeSuspendedRuns(
     const run = await runClaims.withClaim(listed.id, async () => {
       const current = await runRepo.findById(workflow.id, listed.id);
       if (!current || !isSuperseded(current, newInputs)) return null;
+      const signalWaits = current.findSignalWaits();
+      if (signalWaits.length > 0) {
+        skippedRuns.push({
+          runId: current.id,
+          waitIds: signalWaits.flatMap((ref) => ref.wait ? [ref.wait.id] : []),
+        });
+        return null;
+      }
       cancelAndSettle(
         current,
         await resolveSettlementWorkflow(
@@ -112,5 +135,5 @@ export async function supersedeSuspendedRuns(
     }
   }
 
-  return { cancelledRunIds, detachedNestedRuns };
+  return { cancelledRunIds, detachedNestedRuns, skippedRuns };
 }

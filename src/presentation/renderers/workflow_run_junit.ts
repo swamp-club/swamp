@@ -94,6 +94,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       step_target_disconnected: () => {},
       step_failed: () => {},
       approval_requested: () => {},
+      signal_wait_requested: () => {},
       model_resolved: () => {},
       env_var_warning: () => {},
       method_executing: () => {},

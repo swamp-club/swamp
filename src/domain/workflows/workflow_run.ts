@@ -31,9 +31,10 @@ import {
 } from "../expressions/deferred_expression.ts";
 import { z } from "zod";
 import { createWorkflowRunId, type WorkflowRunId } from "./workflow_id.ts";
-import type {
-  RunStatus,
-  TriggerEvaluationContext,
+import {
+  isUnfinishedStatus,
+  type RunStatus,
+  type TriggerEvaluationContext,
 } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
@@ -47,6 +48,16 @@ import {
   persistedLink,
   type RunLink,
 } from "./nested_run_ref.ts";
+import {
+  parseStoredWait,
+  persistedWait,
+  type SignalOutcome,
+  type SignalReceipt,
+  type SignalWait,
+  type StoredWait,
+  WAIT_TIMEOUT_STEP_ERROR,
+  WAIT_UNREADABLE_STEP_ERROR,
+} from "./signal_wait.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -151,6 +162,7 @@ export const StepRunSchema = z.object({
     "pending",
     "running",
     "waiting_approval",
+    "waiting",
     "succeeded",
     "failed",
     "skipped",
@@ -177,6 +189,9 @@ export const StepRunSchema = z.object({
   // Set when the run ended while this step still waited on its child run,
   // leaving the child suspended on its own.
   detachedNestedRun: z.boolean().optional(),
+  // The wait a `waiting` step holds, or held before it settled. Kept as read
+  // and validated in the domain (see parseStoredWait), as nestedRun is.
+  wait: z.unknown().optional(),
 });
 
 /**
@@ -193,6 +208,7 @@ export const JobRunSchema = z.object({
     "pending",
     "running",
     "waiting_approval",
+    "waiting",
     "succeeded",
     "failed",
     "skipped",
@@ -336,6 +352,7 @@ export class StepRun {
     private _settledByAbort: boolean = false,
     private _nestedRun: RunLink<NestedRunRef> | undefined = undefined,
     private _detachedNestedRun: boolean = false,
+    private _wait: StoredWait | undefined = undefined,
   ) {}
 
   /**
@@ -385,6 +402,7 @@ export class StepRun {
       validated.settledByAbort ?? false,
       parseNestedRunLink(validated.nestedRun),
       validated.detachedNestedRun ?? false,
+      parseStoredWait(validated.wait),
     );
   }
 
@@ -497,6 +515,21 @@ export class StepRun {
   }
 
   /**
+   * The wait this step holds, or held before it settled. A malformed wait
+   * reads as undefined and never accepts a signal.
+   */
+  get signalWait(): SignalWait | undefined {
+    return this._wait?.kind === "valid" ? this._wait.wait : undefined;
+  }
+
+  /**
+   * True while the step is paused on a wait for a signal.
+   */
+  get isSignalWait(): boolean {
+    return this._status === "waiting";
+  }
+
+  /**
    * Records an approval or rejection decision on this step.
    */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
@@ -538,6 +571,7 @@ export class StepRun {
     this._settledByAbort = false;
     this._nestedRun = undefined;
     this._detachedNestedRun = false;
+    this._wait = undefined;
   }
 
   /**
@@ -593,6 +627,96 @@ export class StepRun {
     if (this._status !== "waiting_approval") return;
     this.fail(CANCELLED_STEP_ERROR);
     this._settledByAbort = true;
+  }
+
+  /**
+   * Fails a wait the run's cancellation left unsignalled (`waiting`) with
+   * {@link CANCELLED_STEP_ERROR}, marked {@link settledByAbort} like an
+   * undecided approval. Any other status is left alone.
+   */
+  cancelOpenWait(): void {
+    if (this._status !== "waiting") return;
+    this.fail(CANCELLED_STEP_ERROR);
+    this._settledByAbort = true;
+  }
+
+  /**
+   * Marks the step as waiting for a signal on `wait`.
+   */
+  waitForSignal(wait: SignalWait): void {
+    this._status = "waiting";
+    this._resetByResume = false;
+    this._wait = { kind: "valid", wait };
+  }
+
+  /**
+   * Delivers a signal to this step. Only an open, unexpired wait accepts
+   * one, and only with a payload its captured schema allows: the step then
+   * succeeds with the payload and the receipt as its output. A refusal
+   * changes nothing.
+   */
+  acceptSignal(
+    payload: unknown,
+    submittedBy: string,
+    now: Date,
+  ): SignalOutcome {
+    const wait = this.signalWait;
+    if (wait?.receipt) {
+      return {
+        accepted: false,
+        refusal: { kind: "already_settled", receipt: { ...wait.receipt } },
+      };
+    }
+    if (this._status !== "waiting" || !wait) {
+      return { accepted: false, refusal: { kind: "not_waiting" } };
+    }
+    if (wait.isExpired(now)) {
+      return {
+        accepted: false,
+        refusal: { kind: "expired", deadline: wait.deadline },
+      };
+    }
+    const validation = wait.validatePayload(payload);
+    if (!validation.valid) {
+      return {
+        accepted: false,
+        refusal: { kind: "invalid_payload", errors: validation.errors },
+      };
+    }
+    const settled = wait.settle(submittedBy, now);
+    const receipt = settled.receipt as SignalReceipt;
+    this._wait = { kind: "valid", wait: settled };
+    this.succeed({
+      type: "wait_for_signal",
+      payload: validation.payload,
+      signal: { ...receipt },
+    });
+    return { accepted: true, receipt: { ...receipt } };
+  }
+
+  /**
+   * Fails a waiting step whose wait passed its deadline with
+   * {@link WAIT_TIMEOUT_STEP_ERROR}. Returns false, changing nothing, when
+   * the step is not waiting, its wait is still open at `now`, or its wait
+   * cannot be read (see {@link failUnreadableWait}).
+   */
+  timeOutWait(now: Date): boolean {
+    if (this._status !== "waiting") return false;
+    const wait = this.signalWait;
+    if (!wait || !wait.isExpired(now)) return false;
+    this.fail(WAIT_TIMEOUT_STEP_ERROR);
+    return true;
+  }
+
+  /**
+   * Fails a waiting step whose stored wait cannot be read with
+   * {@link WAIT_UNREADABLE_STEP_ERROR}: nothing can signal it and it has no
+   * deadline to pass. Returns false, changing nothing, for any other step.
+   */
+  failUnreadableWait(): boolean {
+    if (this._status !== "waiting" || this.signalWait) return false;
+    this.fail(WAIT_UNREADABLE_STEP_ERROR);
+    return true;
   }
 
   /**
@@ -744,6 +868,9 @@ export class StepRun {
     if (this._detachedNestedRun) {
       data.detachedNestedRun = true;
     }
+    if (this._wait !== undefined) {
+      data.wait = persistedWait(this._wait);
+    }
     return data;
   }
 }
@@ -822,11 +949,7 @@ export class JobRun implements TriggerEvaluationContext {
       statuses.push(status);
     }
 
-    if (
-      statuses.some((s) =>
-        s === "pending" || s === "running" || s === "waiting_approval"
-      )
-    ) {
+    if (statuses.some(isUnfinishedStatus)) {
       return "running";
     }
     if (statuses.some((s) => s === "unknown")) return "unknown";
@@ -1060,12 +1183,7 @@ export class JobRun implements TriggerEvaluationContext {
       )
     ) {
       this.fail();
-    } else if (
-      this._steps.some((step) =>
-        step.status === "pending" || step.status === "running" ||
-        step.status === "waiting_approval"
-      )
-    ) {
+    } else if (this._steps.some((step) => isUnfinishedStatus(step.status))) {
       this.markUnknown();
     } else {
       this.succeed();
@@ -1119,6 +1237,17 @@ export interface FailedStepRef {
 export interface StepRunRef {
   readonly jobName: string;
   readonly stepName: string;
+}
+
+/**
+ * A step waiting for a signal, as returned by
+ * {@link WorkflowRun.findSignalWaits}.
+ */
+export interface SignalWaitRef {
+  readonly jobName: string;
+  readonly stepName: string;
+  /** Undefined when the stored wait cannot be read. */
+  readonly wait: SignalWait | undefined;
 }
 
 /**
@@ -1847,6 +1976,42 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Lists, in stored order, the steps waiting for a signal, with the wait
+   * each holds. A waiting step whose wait cannot be read is listed without
+   * one.
+   */
+  findSignalWaits(): SignalWaitRef[] {
+    const result: SignalWaitRef[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (!step.isSignalWait) continue;
+        result.push({
+          jobName: job.jobName,
+          stepName: step.stepName,
+          wait: step.signalWait,
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The first step waiting for a signal on a wait still open at `now`. A
+   * wait past its deadline, or one that cannot be read, is not open: a
+   * resume settles it.
+   */
+  findOpenSignalWait(
+    now: Date,
+  ): { jobName: string; stepName: string; wait: SignalWait } | undefined {
+    for (const ref of this.findSignalWaits()) {
+      if (ref.wait && !ref.wait.isExpired(now)) {
+        return { jobName: ref.jobName, stepName: ref.stepName, wait: ref.wait };
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Lists, in stored order, the nested workflow steps waiting on a suspended
    * child run.
    */
@@ -1908,8 +2073,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
         detached = true;
       }
       const unfinished = job.steps.some((step) =>
-        step.status === "pending" || step.status === "running" ||
-        step.status === "waiting_approval"
+        isUnfinishedStatus(step.status)
       );
       if (
         detached && !unfinished &&
@@ -2010,14 +2174,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * True when the run is suspended, no gate is still waiting for a decision
-   * and no step waits on a nested run: the run needs a resume to continue.
+   * and no step waits on a nested run or for a signal: the run needs a
+   * resume to continue. A wait past its deadline still counts as waiting.
    * Whether a nested wait's child has finished is derived from the child
    * (see NestedRunLink), never stored here.
    */
   isAwaitingResume(): boolean {
     return this._status === "suspended" &&
       this.findWaitingApprovalStep() === undefined &&
-      this.findNestedWaits().length === 0;
+      this.findNestedWaits().length === 0 &&
+      this.findSignalWaits().length === 0;
   }
 
   /**

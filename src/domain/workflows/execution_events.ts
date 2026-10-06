@@ -108,6 +108,18 @@ export type WorkflowExecutionEvent =
     timeout?: number;
   }
   | {
+    kind: "signal_wait_requested";
+    runId: string;
+    /** The workflow the wait belongs to, which differs for a nested run. */
+    workflowName?: string;
+    jobId: string;
+    stepId: string;
+    /** The id a signal names to settle this wait. */
+    waitId: string;
+    /** When the wait stops accepting a signal, as an ISO timestamp. */
+    deadline: string;
+  }
+  | {
     kind: "step_failed";
     jobId: string;
     stepId: string;
@@ -268,4 +280,9 @@ export type WorkflowExecutionEvent =
      * `jobId` and `stepId` are then the nested step.
      */
     nested?: { workflowName: string; runId: string };
+    /**
+     * Set when the run suspended on a step waiting for a signal rather than
+     * a gate: the wait a signal names. `jobId` and `stepId` are that step.
+     */
+    wait?: { id: string; deadline: string };
   };

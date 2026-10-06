@@ -84,6 +84,7 @@ export interface StepRunView {
     | "pending"
     | "running"
     | "waiting_approval"
+    | "waiting"
     | "succeeded"
     | "failed"
     | "skipped"
@@ -125,6 +126,22 @@ export interface StepRunView {
     runId: string;
     detached?: true;
   };
+  /**
+   * On a `wait_for_signal` step: the wait it holds while `waiting`, or held
+   * before it settled, with the receipt of the signal that settled it.
+   */
+  wait?: SignalWaitView;
+}
+
+export interface SignalWaitView {
+  id: string;
+  deadline: string;
+  receipt?: {
+    id: string;
+    waitId: string;
+    receivedAt: string;
+    submittedBy: string;
+  };
 }
 
 export interface JobRunView {
@@ -133,6 +150,7 @@ export interface JobRunView {
     | "pending"
     | "running"
     | "waiting_approval"
+    | "waiting"
     | "succeeded"
     | "failed"
     | "skipped"

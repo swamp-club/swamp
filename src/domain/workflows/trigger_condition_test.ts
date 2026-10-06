@@ -19,6 +19,8 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  isUnfinishedStatus,
+  type RunStatus,
   TriggerCondition,
   TriggerConditionSchema,
   type TriggerEvaluationContext,
@@ -251,4 +253,26 @@ Deno.test("TriggerConditionSchema rejects and with less than 2 conditions", () =
       conditions: [{ type: "always" }],
     });
   });
+});
+
+Deno.test("isUnfinishedStatus: true for every status short of an outcome, false for every outcome", () => {
+  const expected: Record<RunStatus, boolean> = {
+    pending: true,
+    running: true,
+    waiting_approval: true,
+    waiting: true,
+    succeeded: false,
+    failed: false,
+    skipped: false,
+    unknown: false,
+  };
+  for (const [status, unfinished] of Object.entries(expected)) {
+    assertEquals(isUnfinishedStatus(status), unfinished, status);
+  }
+});
+
+Deno.test("isUnfinishedStatus: a value that is not a step status is not unfinished", () => {
+  for (const value of [undefined, null, 3, "", "suspended", "WAITING"]) {
+    assertEquals(isUnfinishedStatus(value), false);
+  }
 });

@@ -50,7 +50,8 @@ export interface WorkflowApproveData {
   reason: string | null;
   /**
    * True when this approval decided the run's last pending gate, so the run
-   * is suspended with nothing left awaiting approval and can be resumed.
+   * is suspended with nothing left awaiting approval or a signal and can be
+   * resumed.
    * A nested workflow step counts as decided once its child run finished.
    */
   allGatesDecided: boolean;
@@ -239,6 +240,7 @@ export async function* workflowApprove(
         // into an error, so these reads are best effort.
         const allGatesDecided = run.status === "suspended" &&
           run.findWaitingApprovalStep() === undefined &&
+          run.findSignalWaits().length === 0 &&
           await new NestedRunLink(deps).childrenSettled(run).catch(() => false);
         const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
           undefined

@@ -133,3 +133,18 @@ Deno.test("createErrorResult: removes a marked Windows path quoted by a runtime 
     "Load failed: The system cannot find the file specified. (os error 2): readfile '<PATH>'",
   );
 });
+
+Deno.test("createErrorResult: a wait id typed in upper case is removed from a workflow signal error line", () => {
+  const typed = "6F1C0A52-3F0E-4C4B-9D53-2F6A7C1E8B90";
+  // The message names the id as typed, which is what telemetry knows.
+  const result = createErrorResult(
+    new Error(
+      `Wait ${typed} is already settled: step "review" of workflow "release" (run r-1) received signal s-1.`,
+    ),
+    true,
+    [typed],
+  );
+
+  assertEquals(result.errorMessage?.includes(typed), false);
+  assertEquals(result.errorMessage?.includes(typed.toLowerCase()), false);
+});

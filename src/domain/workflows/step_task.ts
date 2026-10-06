@@ -18,6 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  type InputsSchema,
+  RequiredInputsSchemaSchema,
+} from "../definitions/definition.ts";
+import {
+  SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
+  SUPPORTED_WAIT_SCHEMA_KEYWORDS,
+  unenforcedSchemaKeywords,
+} from "./signal_wait.ts";
 
 const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}\s*$/s;
 
@@ -37,6 +46,7 @@ export type AssertSeverity = z.infer<typeof AssertSeveritySchema>;
  * - A nested workflow invocation (`type: "workflow"`)
  * - A manual approval gate (`type: "manual_approval"`)
  * - A CEL predicate assertion (`type: "assert"`)
+ * - A wait for a JSON signal (`type: "wait_for_signal"`)
  */
 const StepTaskRawSchema = z.discriminatedUnion("type", [
   z.object({
@@ -63,6 +73,14 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     expr: z.string().min(1),
     message: z.string().min(1),
     severity: AssertSeveritySchema.default("high"),
+  }),
+  z.object({
+    type: z.literal("wait_for_signal"),
+    // Seconds the wait stays open. Required and bounded: a wait never stays
+    // open forever.
+    timeout: z.number().positive().max(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS),
+    // The payload schema, in the same form as workflow `inputs`.
+    schema: RequiredInputsSchemaSchema,
   }),
 ]);
 
@@ -98,6 +116,43 @@ export const StepTaskSchema = z.preprocess((data) => {
           `    inputs:\n` +
           `      param: value`,
       );
+    }
+    if (d.type === "wait_for_signal") {
+      const schema = d.schema;
+      // An inputs schema may be written flat, as a bare map of properties.
+      // For a wait that form is ambiguous with the schema's own keywords, so
+      // the nested form is required.
+      if (
+        schema && typeof schema === "object" && !Array.isArray(schema) &&
+        (schema as Record<string, unknown>).type !== "object" &&
+        !("properties" in schema)
+      ) {
+        throw new Error(
+          `A wait_for_signal schema must declare "type: object" or "properties". ` +
+            `List the payload's fields under "properties".\n\n` +
+            `Example:\n` +
+            `  task:\n` +
+            `    type: wait_for_signal\n` +
+            `    timeout: 3600\n` +
+            `    schema:\n` +
+            `      type: object\n` +
+            `      required: [verdict]\n` +
+            `      properties:\n` +
+            `        verdict: { type: string }`,
+        );
+      }
+      // A signal comes from outside the workflow, so a schema keyword that
+      // no payload is checked against is refused, not silently ignored.
+      const unenforced = unenforcedSchemaKeywords(schema);
+      if (unenforced.length > 0) {
+        throw new Error(
+          `A wait_for_signal schema may only use keywords a payload is checked against. Not checked:\n` +
+            unenforced.map((entry) => `  - ${entry}`).join("\n") +
+            `\n\nSupported keywords: ${
+              SUPPORTED_WAIT_SCHEMA_KEYWORDS.join(", ")
+            }.`,
+        );
+      }
     }
     if (d.type === "model_method") {
       const hasExisting = "modelIdOrName" in d && d.modelIdOrName;
@@ -242,6 +297,22 @@ export class StepTask {
   }
 
   /**
+   * Creates a wait for signal task.
+   */
+  static waitForSignal(
+    timeout: number,
+    schema: InputsSchema,
+  ): StepTask {
+    // Parsed, so the schema's keys are in the order a loaded task has them
+    // and equals() compares the two alike.
+    return StepTask.fromData({
+      type: "wait_for_signal",
+      timeout,
+      schema,
+    });
+  }
+
+  /**
    * Returns true if this is a model method task.
    */
   isModelMethod(): boolean {
@@ -275,6 +346,13 @@ export class StepTask {
    */
   isAssert(): boolean {
     return this.data.type === "assert";
+  }
+
+  /**
+   * Returns true if this is a wait for signal task.
+   */
+  isWaitForSignal(): boolean {
+    return this.data.type === "wait_for_signal";
   }
 
   /**

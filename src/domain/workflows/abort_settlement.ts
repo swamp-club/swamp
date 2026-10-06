@@ -216,7 +216,8 @@ export interface SettleOptions {
  * Settles the run's unfinished work, then marks it cancelled with the
  * reason. No-op unless the run {@link WorkflowRun.isCancellable}. Every
  * production cancel of a run goes through here, so a cancelled record never
- * keeps a job `running` or a step `running` or `waiting_approval`.
+ * keeps a job `running` or a step `running`, `waiting_approval` or
+ * `waiting`.
  */
 export function cancelAndSettle(
   run: WorkflowRun,
@@ -257,7 +258,8 @@ export function completeAndSettle(
  *   ({@link WorkflowRun.detachNestedWaits}), so the child stays suspended on
  *   its own and is reported as detached;
  * - a step still `running` (its owner died) fails as cancelled;
- * - an undecided approval gate fails as cancelled, marked `settledByAbort`;
+ * - an undecided approval gate, or a wait no signal settled, fails as
+ *   cancelled, marked `settledByAbort`;
  * - a pending step is skipped when its `dependsOn` is unmet, otherwise
  *   cancelled, marked `settledByAbort`; a guarded step stays pending;
  * - a pending job whose `dependsOn` is unmet is skipped; any other job
@@ -269,7 +271,8 @@ export function completeAndSettle(
  * evaluated while it is still open. The definition's jobs follow in
  * dependency order. With no definition, or one whose jobs or steps cannot
  * be ordered (edited into a cycle), every job is settled from its records.
- * Settling touches only pending, running and waiting_approval records, so
+ * Settling touches only pending, running, waiting_approval and waiting
+ * records, so
  * settling a run twice changes nothing.
  */
 export function settleCancelledRun(
@@ -319,12 +322,15 @@ function isOpenJob(jobRun: JobRun): boolean {
 
 /**
  * Fails the job's in-flight steps with `inFlightError` and its undecided
- * approval gates as cancelled. Nothing will finish them once the run is
+ * approval gates and unsignalled waits as cancelled. Nothing will finish them once the run is
  * cancelled.
  */
 function settleInFlightSteps(jobRun: JobRun, inFlightError: string): void {
   failAbandonedSteps(jobRun, inFlightError);
-  for (const step of jobRun.steps) step.cancelUndecidedApproval();
+  for (const step of jobRun.steps) {
+    step.cancelUndecidedApproval();
+    step.cancelOpenWait();
+  }
 }
 
 /**

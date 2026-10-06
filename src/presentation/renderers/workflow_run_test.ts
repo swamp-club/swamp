@@ -1549,3 +1549,522 @@ Deno.test("ConsoleWorkflowRunRenderer: the approval block shell-quotes a step na
   );
   assertStringIncludes(output, "awaiting approval on step verify build");
 });
+
+const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
+const WAIT_DEADLINE = "2026-01-02T00:00:00.000Z";
+
+Deno.test("ConsoleWorkflowRunRenderer: a run suspended on a signal wait shows the wait ID and the signal and resume commands", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "release",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "release",
+      jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "signal_wait_requested",
+      runId: "run-1",
+      workflowName: "release",
+      jobId: "release",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "signal required on step review");
+  assertEquals(output.includes("waiting waiting"), false);
+  assertStringIncludes(output, WAIT_DEADLINE);
+  assertStringIncludes(output, "Suspended");
+  assertStringIncludes(output, `step review waits for signal ${WAIT_ID}`);
+  assertStringIncludes(
+    output,
+    `swamp workflow signal ${WAIT_ID} --payload '<json>'`,
+  );
+  assertStringIncludes(output, "swamp workflow resume release --run run-1");
+  assertEquals(output.includes("workflow approve"), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: the signal command carries no server target, the resume command does", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "release",
+    commandTarget: " --server ws://localhost:9090",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "release",
+      jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const signalLine = lines.find((line) => line.includes("workflow signal"));
+  const resumeLine = lines.find((line) => line.includes("workflow resume"));
+  assertEquals(signalLine?.includes("--server"), false);
+  assertStringIncludes(resumeLine ?? "", "--server ws://localhost:9090");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: the signal command keeps a local repository target", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "release",
+    commandTarget: " --repo-dir /repo",
+    localCommandTarget: " --repo-dir /repo",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "release",
+      jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "signal_wait_requested",
+      runId: "run-1",
+      jobId: "release",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const signalLines = lines.filter((line) => line.includes("workflow signal"));
+  assertEquals(signalLines.length, 2);
+  for (const line of signalLines) {
+    assertStringIncludes(
+      line,
+      `swamp workflow signal ${WAIT_ID} --payload '<json>' --repo-dir /repo`,
+    );
+  }
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a matching run kept because it waits for a signal is reported with its wait IDs", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "release",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "superseded_runs",
+      cancelledRunIds: [],
+      skippedRuns: [{ runId: "run-0", waitIds: [WAIT_ID] }],
+    },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "release",
+      jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Kept");
+  assertStringIncludes(
+    output,
+    `suspended run run-0 (matching inputs) still waits for a signal: ${WAIT_ID}`,
+  );
+  assertEquals(output.includes("Superseded"), false);
+});
+
+/** Renders `events` in JSON mode and returns stdout and stderr documents. */
+async function renderJson(
+  events: WorkflowRunEvent[],
+): Promise<{ stdout: unknown[]; stderr: unknown[] }> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "release",
+    });
+    await consumeStream(toStream(events), renderer.handlers());
+    return {
+      stdout: stdout.map((line) => JSON.parse(line)),
+      stderr: stderr.map((line) => JSON.parse(line)),
+    };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+}
+
+Deno.test("JsonWorkflowRunRenderer: a run suspended on a signal wait reports signalRequired with the wait ID, not approvalRequired", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "signal_wait_requested",
+      runId: "run-1",
+      workflowName: "release",
+      jobId: "release",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ]);
+
+  assertEquals(stdout.length, 1);
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.signalRequired, {
+    workflowName: "test-pipeline",
+    runId: "run-1",
+    stepId: "review",
+    jobId: "release",
+    waitId: WAIT_ID,
+    deadline: WAIT_DEADLINE,
+  });
+  assertEquals(parsed.approvalRequired, undefined);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run's signal wait", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "signal_wait_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.signalRequired, {
+    workflowName: "child",
+    runId: "child-1",
+    stepId: "review",
+    jobId: "child-job",
+    waitId: WAIT_ID,
+    deadline: WAIT_DEADLINE,
+  });
+  assertEquals(parsed.approvalRequired, undefined);
+  assertEquals(parsed.waitingOnNestedRun, {
+    workflowName: "child",
+    runId: "child-1",
+  });
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension with a gate in the stream still names the gate", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "signal_wait_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "approval_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "gate",
+      prompt: "Approve?",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, Record<string, unknown>>;
+  assertEquals(parsed.approvalRequired.stepId, "gate");
+  assertEquals(parsed.signalRequired, undefined);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run's wait, not a sibling run's earlier gate", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "approval_requested",
+      runId: "child-a",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "gate",
+      prompt: "Approve?",
+    },
+    {
+      kind: "signal_wait_requested",
+      runId: "child-b",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child-b",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-b" },
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, Record<string, unknown>>;
+  assertEquals(parsed.signalRequired.runId, "child-b");
+  assertEquals(parsed.signalRequired.waitId, WAIT_ID);
+  assertEquals(parsed.approvalRequired, undefined);
+});
+
+Deno.test("JsonWorkflowRunRenderer: skipped supersedes go to stderr with their wait IDs", async () => {
+  const { stdout, stderr } = await renderJson([
+    {
+      kind: "superseded_runs",
+      cancelledRunIds: [],
+      skippedRuns: [{ runId: "run-0", waitIds: [WAIT_ID] }],
+    },
+  ]);
+
+  assertEquals(stdout, []);
+  assertEquals(stderr, [{
+    event: "superseded_runs",
+    cancelledRunIds: [],
+    skippedRuns: [{ runId: "run-0", waitIds: [WAIT_ID] }],
+  }]);
+});
+
+/** A suspended run view whose `release` job has the given steps. */
+function waitingRunView(
+  steps: WorkflowRunView["jobs"][number]["steps"],
+): WorkflowRunView {
+  return {
+    ...makeRunView("succeeded"),
+    jobs: [{ name: "release", status: "running", steps }],
+  };
+}
+
+Deno.test("JsonWorkflowRunRenderer: a run with several waits lists every one in signalWaits", async () => {
+  const other = "11111111-1111-4111-8111-111111111111";
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: waitingRunView([
+        {
+          name: "review-eu",
+          status: "waiting",
+          wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+        },
+        {
+          name: "review-us",
+          status: "waiting",
+          wait: { id: other, deadline: WAIT_DEADLINE },
+        },
+        // Settled, so no longer something to signal.
+        {
+          name: "review-done",
+          status: "succeeded",
+          wait: { id: "22222222-2222-4222-8222-222222222222", deadline: "x" },
+        },
+      ]),
+      jobId: "release",
+      stepId: "review-eu",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.signalWaits, [
+    {
+      stepId: "review-eu",
+      jobId: "release",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      stepId: "review-us",
+      jobId: "release",
+      waitId: other,
+      deadline: WAIT_DEADLINE,
+    },
+  ]);
+  assertEquals(
+    (parsed.signalRequired as Record<string, unknown>).waitId,
+    WAIT_ID,
+  );
+});
+
+Deno.test("JsonWorkflowRunRenderer: a gate beside a wait reports the gate and still lists the wait", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: waitingRunView([
+        { name: "gate", status: "waiting_approval" },
+        {
+          name: "review",
+          status: "waiting",
+          wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+        },
+      ]),
+      jobId: "release",
+      stepId: "gate",
+      prompt: "Approve?",
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(
+    (parsed.approvalRequired as Record<string, unknown>).stepId,
+    "gate",
+  );
+  assertEquals(parsed.signalRequired, undefined);
+  assertEquals(parsed.signalWaits, [{
+    stepId: "review",
+    jobId: "release",
+    waitId: WAIT_ID,
+    deadline: WAIT_DEADLINE,
+  }]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a run suspended only on a gate has no signalWaits", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: waitingRunView([{ name: "gate", status: "waiting_approval" }]),
+      jobId: "release",
+      stepId: "gate",
+      prompt: "Approve?",
+    },
+  ]);
+
+  assertEquals(
+    "signalWaits" in (stdout[0] as Record<string, unknown>),
+    false,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a parent suspended on a child that waits for a signal says to signal, not approve", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "signal_wait_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "main",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "signal its wait as shown above");
+  assertEquals(output.includes("approve its gate"), false);
+  assertStringIncludes(output, "swamp workflow resume child --run child-1");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a parent suspended on a child that showed neither a gate nor a wait names both ways to decide it", async () => {
+  // A remote stream carries no signal_wait_requested, so a child's wait is
+  // never shown; nor is anything shown when a resume finds the child
+  // suspended again.
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "approve its gate or signal its wait, then");
+  assertEquals(output.includes("as shown above"), false);
+  assertStringIncludes(output, "swamp workflow resume child --run child-1");
+});

@@ -99,9 +99,10 @@ export interface InputsSchema {
 }
 
 /**
- * Zod schema for definition inputs.
+ * Zod schema for an inputs schema that must be present, such as the payload
+ * schema of a `wait_for_signal` step.
  */
-export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
+export const RequiredInputsSchemaSchema: z.ZodType<InputsSchema> = z
   .object({
     type: z.literal("object").optional(),
     properties: z.record(z.string(), JsonSchemaPropertySchema).optional(),
@@ -109,8 +110,13 @@ export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
     additionalProperties: z.union([z.boolean(), JsonSchemaPropertySchema])
       .optional(),
   })
-  .passthrough()
-  .optional();
+  .passthrough();
+
+/**
+ * Zod schema for definition inputs.
+ */
+export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> =
+  RequiredInputsSchemaSchema.optional();
 
 /**
  * Zod schema for the core properties of a Definition.

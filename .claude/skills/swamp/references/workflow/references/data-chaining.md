@@ -198,6 +198,10 @@ step, keyed by step name — no model or instance name needed.
 - **No outputs, no key.** A step that wrote no JSON resource (file outputs only,
   `manual_approval`, `assert`) has no `outputs` — `No such key: outputs`. Test
   with `has(steps.x.outputs)` when that is expected.
+- **A `wait_for_signal` step's outputs** are `payload` (the message exactly as
+  sent) and `signal` (the receipt: `id`, `waitId`, `receivedAt`, `submittedBy`):
+  `steps.review.outputs.payload.verdict`. A parent workflow cannot read a nested
+  workflow's payload.
 - **Names that are not CEL identifiers** (hyphens, forEach-expanded names such
   as `deploy-dev`) use bracket access: `steps["deploy-dev"].status`.
 - **Nested workflows:** a `type: workflow` step's outputs are its child's

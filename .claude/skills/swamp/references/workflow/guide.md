@@ -47,6 +47,8 @@ skill.
 | Retry failed steps | `swamp workflow resume <wf> --run <id>` (run is failed)                  |
 | Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
 | List approvals     | `swamp workflow approvals`                                               |
+| List signal waits  | `swamp workflow waits`                                                   |
+| Signal a wait      | `swamp workflow signal <wait_id> --payload '<json>'`                     |
 | Cancel a run       | `swamp workflow cancel <workflow> [--run <id>]`                          |
 | Cancel by run id   | `swamp workflow cancel --run <id>`                                       |
 | Cancel serve run   | `swamp workflow cancel --run <id> --server <url>`                        |
@@ -117,7 +119,7 @@ swamp workflow schema get --json
   "step": {/* JSON Schema for step objects */},
   "stepDependency": {/* JSON Schema for step dependency with condition */},
   "stepTask": {
-    /* JSON Schema for task (model_method, workflow, manual_approval, or assert) */
+    /* JSON Schema for task (model_method, workflow, manual_approval, assert, or wait_for_signal) */
   },
   "triggerCondition": {/* JSON Schema for dependency conditions */}
 }

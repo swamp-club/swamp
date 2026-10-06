@@ -359,7 +359,9 @@ export class InputValidationService {
     // Validate required properties
     if (schema.required) {
       for (const key of schema.required) {
-        if (!(key in value) || value[key] === undefined) {
+        // Own properties only: a required key named after an
+        // Object.prototype member (toString) is not present in `{}`.
+        if (!Object.hasOwn(value, key) || value[key] === undefined) {
           errors.push({
             path: `${path}.${key}`,
             message: `${path}.${key} is required`,
@@ -371,7 +373,9 @@ export class InputValidationService {
     // Validate properties
     if (schema.properties) {
       for (const [key, propValue] of Object.entries(value)) {
-        const propSchema = schema.properties[key];
+        const propSchema = Object.hasOwn(schema.properties, key)
+          ? schema.properties[key]
+          : undefined;
         if (propSchema) {
           const propErrors = this.validateProperty(
             `${path}.${key}`,

@@ -22,6 +22,7 @@ import { WorkflowSchema } from "./workflow.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { createWorkflowId } from "./workflow_id.ts";
+import { schemaExpressions } from "./signal_wait.ts";
 import {
   CyclicDependencyError,
   DuplicateNodeNameError,
@@ -177,6 +178,9 @@ export class DefaultWorkflowValidationService
 
     // 11. Assert expr must not be wrapped in ${{ }}
     results.push(...this.validateAssertExprNotInterpolated(workflow));
+    for (const result of this.validateWaitSchemaExpressions(workflow)) {
+      results.push(result);
+    }
 
     // 12. affinity without placement is a no-op
     results.push(...this.validateAffinityPlacement(workflow));
@@ -339,6 +343,42 @@ export class DefaultWorkflowValidationService
               `assert expr must be a raw CEL expression — remove the ` +
                 `\${{ }} wrapper. Interpolation converts the expression ` +
                 `before runtime evaluation, which causes a type error`,
+            ),
+          );
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * A wait_for_signal schema is captured as data when the step starts
+   * waiting. Workflow evaluation resolves `inputs.*` in it, but not `self`,
+   * `steps` or `data`, which would stay in the schema as literal text and
+   * match no payload.
+   */
+  private validateWaitSchemaExpressions(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    // A root, not a field: `inputs.env.region` reads inputs only.
+    const unresolvedRoot =
+      /(?<![\w.])(self|steps|data|env|vault|model)\s*[.[(]/;
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (!step.task) continue;
+        const taskData = step.task.data;
+        if (taskData.type !== "wait_for_signal") continue;
+        const offending = schemaExpressions(taskData.schema).find((expr) =>
+          unresolvedRoot.test(expr)
+        );
+        if (offending) {
+          results.push(
+            WorkflowValidationResult.fail(
+              `Wait schema in job '${job.name}' step '${step.name}'`,
+              `a wait_for_signal schema may read inputs.* only, but contains ` +
+                `${offending}. The schema is captured when the step starts ` +
+                `waiting, and self, steps and data are not resolved in it`,
             ),
           );
         }
