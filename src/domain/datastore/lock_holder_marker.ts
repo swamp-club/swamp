@@ -321,7 +321,9 @@ export function withRemoteLockHolder(
   for (const nonce of nonces) {
     listed.add(nonce);
   }
-  // Re-inserted last, so the cap on entries never drops it.
+  // Re-inserted last, so the cap leaves it in the env built here. The
+  // runner's own entry goes after it; past the cap the chain drops this pid
+  // no later than the tokens do, and the lock is then waited on.
   tokens.delete(pid);
   tokens.set(pid, listed);
   return {

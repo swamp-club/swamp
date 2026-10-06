@@ -885,8 +885,8 @@ against the same datastore skips the step's own lock instead of waiting on it
 until `SWAMP_LOCK_TIMEOUT_MS` ([datastores](datastores.md), "Parent-Process
 Lock Awareness"). On any other host the field is ignored. It is still sent, so
 every worker that runs a locked step learns the orchestrator's pid and
-hostname. Neither is a credential, and `dispatch-env-allow` does not scope the field: it
-is not part of the snapshot. The field is optional, so
+hostname. Neither is a credential, and `dispatch-env-allow` does not scope the
+field: it is not part of the snapshot. The field is optional, so
 `REMOTE_PROTOCOL_VERSION` is unchanged.
 
 The supervisor (the worker process) talks to the runner over length-prefixed

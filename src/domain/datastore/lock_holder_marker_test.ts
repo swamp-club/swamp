@@ -575,7 +575,7 @@ Deno.test("withRemoteLockHolder: drops malformed nonces and never adds the pid w
   }
 });
 
-Deno.test("withRemoteLockHolder: keeps the orchestrator in a full chain", () => {
+Deno.test("withRemoteLockHolder: a full chain still names the orchestrator in the runner's env", () => {
   const full = Array.from({ length: MAX_LOCK_ANCESTORS }, (_, i) => 1000 + i);
   const env = withRemoteLockHolder(
     { [SWAMP_LOCK_ANCESTOR_PIDS]: full.join(",") },

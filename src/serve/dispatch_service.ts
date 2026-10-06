@@ -547,6 +547,7 @@ export class DispatchService {
       secretValues: request.secretValues,
       unresolvedMethodArgs: request.unresolvedMethodArgs,
       secretBag: request.secretBag,
+      // Copied only to drop `readonly` for the schema's inferred type.
       lockHolder: request.lockHolder
         ? { ...request.lockHolder, lockIds: [...request.lockHolder.lockIds] }
         : undefined,

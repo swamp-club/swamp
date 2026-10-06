@@ -2094,6 +2094,11 @@ Known limits of the run-level match:
   datastore (e.g. over NFS) runs while serve holds its lock. The hand-off
   above is for a worker on serve's own host, so a nested structural swamp
   there waits on its own step's lock.
+- The dispatch hand-off names only the locks the orchestrator itself holds
+  for the step. Locks held by a swamp above the orchestrator (a
+  `swamp workflow run` whose shell step started the orchestrating swamp) are
+  not passed on, so a nested structural swamp on the worker still waits on
+  those.
 - A child left running in the background after its ancestors exit can skip a
   lock taken by an unrelated process that reused an ancestor's pid on this
   host.

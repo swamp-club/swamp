@@ -202,9 +202,9 @@ export function buildRunnerEnvironment(
   const env = stripInheritedTraceContext(
     overlayEnvironment(workerEnv, snapshot),
   );
-  // Set directly: traceHeadersToEnv yields only TRACEPARENT and TRACESTATE,
-  // which the denylisted overlay would drop.
-  // Set directly too: the overlay drops every SWAMP_* variable shipped.
+  // Both set directly, since the denylisted overlay would drop them: the
+  // lock holder goes into SWAMP_* variables, and traceHeadersToEnv yields
+  // only TRACEPARENT and TRACESTATE.
   return stripWorkerCredentials({
     ...withRemoteLockHolder(env, lockHolder, host),
     ...traceHeadersToEnv(traceHeaders),
