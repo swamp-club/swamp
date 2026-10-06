@@ -107,6 +107,9 @@ const BUNDLE_PARSER_PLUGINS: ParserPlugin[] = [
   "importAttributes",
   "explicitResourceManagement",
   "decorators",
+  "decoratorAutoAccessors",
+  "sourcePhaseImports",
+  "deferredImportEvaluation",
 ];
 
 /** One import declaration in a bundle: its text span and its specifier. */

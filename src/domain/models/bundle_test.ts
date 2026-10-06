@@ -348,6 +348,25 @@ Deno.test("rewriteZodImports: throws rather than guess when zod import text is i
   );
 });
 
+// Syntax Babel only parses with a plugin enabled. A bundle using it beside a
+// zod import must still be rewritten, not rejected as unparseable.
+const PLUGIN_GATED_SYNTAX: Record<string, string> = {
+  "import attributes": `import j from "./a.json" with { type: "json" };`,
+  "a using declaration": `{ using r = f(); }`,
+  "a decorated accessor": `@d class A { @e accessor x = 1; }`,
+  "a source phase import": `import source w from "./a.wasm";`,
+  "a dynamic source phase import": `const w = await import.source("./a.wasm");`,
+  "a deferred import": `import defer * as m from "./m.js";`,
+  "a dynamic deferred import": `const m = await import.defer("./m.js");`,
+};
+
+for (const [syntax, line] of Object.entries(PLUGIN_GATED_SYNTAX)) {
+  Deno.test(`rewriteZodImports: rewrites a bundle that uses ${syntax}`, () => {
+    const result = rewriteZodImports(`${line}\n${REAL_ZOD_IMPORT}\n`);
+    assertEquals(result, `${line}\n${REWRITTEN_ZOD_IMPORT}\n`);
+  });
+}
+
 Deno.test("rewriteZodImports: does not parse a bundle with no zod import text", () => {
   const input = `const = ;\n`;
   assertEquals(rewriteZodImports(input), input);
