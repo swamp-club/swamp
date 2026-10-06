@@ -941,7 +941,7 @@ export function validateDashboardSessionOrigin(
     return {
       allowed: true,
       origin: normalizedOrigin,
-      secure: normalizedOrigin.startsWith("https://"),
+      secure: true,
     };
   }
   return {
@@ -955,14 +955,9 @@ function isTrustedDashboardOrigin(
   origin: string,
   trustedHosts: readonly string[],
 ): boolean {
-  const originHost = new URL(origin).hostname.toLowerCase();
   return trustedHosts.some((trustedHost) => {
-    try {
-      return new URL(`http://${trustedHost}`).hostname.toLowerCase() ===
-        originHost;
-    } catch {
-      return false;
-    }
+    const trustedOrigin = normalizeDashboardOrigin(`https://${trustedHost}`);
+    return trustedOrigin !== null && trustedOrigin === origin;
   });
 }
 

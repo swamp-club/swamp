@@ -260,7 +260,7 @@ export class ControlPlaneDashboardSessionStore
     } catch {
       // A malformed expired slot is safe to replace; its record cannot be
       // attributed to a token index for targeted cleanup.
-      await this.#store.delete(this.#slotKey(slot));
+      await this.#deleteSlotIfUnchanged(slot, data);
       return;
     }
     const rawSession = await this.#store.get(this.#key(expiredSlot.id));
@@ -272,14 +272,25 @@ export class ControlPlaneDashboardSessionStore
         );
       } catch {
         await this.#store.delete(this.#key(expiredSlot.id));
-        await this.#store.delete(this.#slotKey(slot));
+        await this.#deleteSlotIfUnchanged(slot, data);
         return;
       }
       if (session.id === expiredSlot.id) {
         await this.#deleteSession(session, false);
       }
     }
-    await this.#store.delete(this.#slotKey(slot));
+    await this.#deleteSlotIfUnchanged(slot, data);
+  }
+
+  async #deleteSlotIfUnchanged(
+    slot: number,
+    expected: Uint8Array,
+  ): Promise<void> {
+    const key = this.#slotKey(slot);
+    const current = await this.#store.get(key);
+    if (current !== null && equalBytes(current, expected)) {
+      await this.#store.delete(key);
+    }
   }
 
   async #deleteSession(
@@ -326,4 +337,9 @@ export class ControlPlaneDashboardSessionStore
       (byte) => byte.toString(16).padStart(2, "0"),
     ).join("");
   }
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }

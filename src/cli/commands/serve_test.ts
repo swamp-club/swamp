@@ -396,6 +396,26 @@ Deno.test("validateDashboardSessionOrigin: honors a configured public host witho
   });
 });
 
+Deno.test("validateDashboardSessionOrigin: requires the exact configured trusted origin", () => {
+  const trustedHosts = ["swamp.example.test"];
+  for (
+    const origin of [
+      "http://swamp.example.test",
+      "https://swamp.example.test:3000",
+    ]
+  ) {
+    const request = new Request(
+      "http://127.0.0.1:9090/auth/dashboard/session",
+      { headers: { host: "127.0.0.1:9090", origin } },
+    );
+    assertEquals(
+      validateDashboardSessionOrigin(request, false, false, trustedHosts)
+        .allowed,
+      false,
+    );
+  }
+});
+
 Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () => {
   const result = validateWebSocketOrigin(
     "http://evil.com",

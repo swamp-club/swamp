@@ -802,8 +802,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
    reject `Secure` cookies over HTTP. Behind a trusted TLS-terminating proxy,
    serve uses `X-Forwarded-Proto` and `X-Forwarded-Host` to enforce the public
    origin and set `Secure`. A proxy that does not preserve those headers must
-   configure its public authority with `--trusted-hosts`; serve then recognizes
-   that configured browser origin and sets `Secure` from its HTTPS scheme.
+   configure its full public HTTPS authority with `--trusted-hosts`; serve then
+   recognizes that exact configured browser origin and sets `Secure`.
    Direct TLS deployments do the same from their listener configuration.
 
   After an unexpected close it reconnects with jittered exponential backoff
