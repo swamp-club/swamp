@@ -547,6 +547,9 @@ export class DispatchService {
       secretValues: request.secretValues,
       unresolvedMethodArgs: request.unresolvedMethodArgs,
       secretBag: request.secretBag,
+      lockHolder: request.lockHolder
+        ? { ...request.lockHolder, lockIds: [...request.lockHolder.lockIds] }
+        : undefined,
     };
 
     try {

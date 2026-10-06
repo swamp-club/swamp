@@ -841,8 +841,9 @@ in a shell step needs from the swamp that started it. None is a credential.
   parent's pid. The proof cannot call swamp-club, and the gate accepts it only
   from a live ancestor started before the proof expired. It does expose the
   proof's identity metadata (`sub`, `org`, `fpr`) to the child.
-- `SWAMP_LOCK_HOLDER_PID` and `SWAMP_LOCK_ANCESTOR_PIDS` let the nested swamp
-  skip the per-model locks held by its parent and every swamp above it
+- `SWAMP_LOCK_HOLDER_PID`, `SWAMP_LOCK_ANCESTOR_PIDS` and
+  `SWAMP_LOCK_HOLDER_TOKENS` let the nested swamp skip the per-model locks
+  that its parent and every swamp above it hold for the run that started it
   ([datastores](datastores.md), "Parent-Process Lock Awareness").
 
 `SWAMP_API_KEY`, `SWAMP_API_KEY_FILE`, `SWAMP_SIGNIN_TOKEN` and every other
@@ -872,6 +873,21 @@ top at spawn time. `stripWorkerCredentials` removes the worker control-plane
 credentials (`SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`,
 `SWAMP_ORCHESTRATOR_URL`) before the child starts. The runner does not need
 them: it gets its data-plane credential in `RunnerBootstrapParams` over stdio.
+
+The orchestrator holds a step's per-model lock while the worker runs it. A
+dispatch made under a lock carries an optional `lockHolder` in
+`DispatchParams`: the orchestrator's pid, its hostname and the lock-file
+nonces of the locks held for that step. The snapshot cannot carry this, since
+it drops every `SWAMP_*` variable. When the hostname is the worker's own,
+`buildRunnerEnvironment` declares the orchestrator an ancestor of the runner
+in the runner's lock variables, so a nested structural `swamp` the step starts
+against the same datastore skips the step's own lock instead of waiting on it
+until `SWAMP_LOCK_TIMEOUT_MS` ([datastores](datastores.md), "Parent-Process
+Lock Awareness"). On any other host the field is ignored. It is still sent, so
+every worker that runs a locked step learns the orchestrator's pid and
+hostname. Neither is a credential, and `dispatch-env-allow` does not scope the field: it
+is not part of the snapshot. The field is optional, so
+`REMOTE_PROTOCOL_VERSION` is unchanged.
 
 The supervisor (the worker process) talks to the runner over length-prefixed
 stdio frames (`StdioTransport`), using the same `RpcChannel` as the

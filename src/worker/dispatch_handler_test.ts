@@ -225,6 +225,46 @@ Deno.test("buildRunnerEnvironment: drops a TRACEPARENT inherited from the worker
   assertEquals(env["DEPLOY_ENV"], "dev");
 });
 
+Deno.test("buildRunnerEnvironment: declares a same-host orchestrator's step locks to the runner", () => {
+  const env = buildRunnerEnvironment(
+    { SWAMP_LOCK_ANCESTOR_PIDS: "700" },
+    {},
+    undefined,
+    { pid: 500, hostname: "host-a", lockIds: ["nonce-a"] },
+    "host-a",
+  );
+  assertEquals(env["SWAMP_LOCK_ANCESTOR_PIDS"], "500,700");
+  assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], "500:nonce-a");
+});
+
+Deno.test("buildRunnerEnvironment: ignores a lock holder on another host", () => {
+  const env = buildRunnerEnvironment(
+    { SWAMP_LOCK_ANCESTOR_PIDS: "700" },
+    {},
+    undefined,
+    { pid: 500, hostname: "host-b", lockIds: ["nonce-a"] },
+    "host-a",
+  );
+  assertEquals(env["SWAMP_LOCK_ANCESTOR_PIDS"], "700");
+  assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], undefined);
+});
+
+Deno.test("buildRunnerEnvironment: lock variables shipped in the snapshot never reach the runner", () => {
+  // Only the validated lockHolder field may name the orchestrator's locks.
+  const env = buildRunnerEnvironment(
+    { SWAMP_LOCK_ANCESTOR_PIDS: "700" },
+    {
+      SWAMP_LOCK_ANCESTOR_PIDS: "500",
+      SWAMP_LOCK_HOLDER_PID: "500",
+      SWAMP_LOCK_HOLDER_TOKENS: "500:nonce-a",
+    },
+    undefined,
+  );
+  assertEquals(env["SWAMP_LOCK_ANCESTOR_PIDS"], "700");
+  assertEquals(env["SWAMP_LOCK_HOLDER_PID"], undefined);
+  assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], undefined);
+});
+
 Deno.test("buildRunnerEnvironment: drops trace context shipped in the snapshot", () => {
   // An older orchestrator still ships its own TRACEPARENT in the snapshot.
   const env = buildRunnerEnvironment(

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
@@ -2999,6 +3000,46 @@ Deno.test("executeWorkflow - remote placement skips pre-flight checks (swamp-clu
     );
     assertEquals(result !== undefined, true);
     assertEquals(checkExecuted.value, false);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - remote dispatch carries the locks held for the run (swamp-club#2983)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    globalArguments: {},
+  });
+  const lockHolders: Array<RemoteStepRequest["lockHolder"]> = [];
+  setRemoteStepDispatcher({
+    executeRemote: (request) => {
+      lockHolders.push(request.lockHolder);
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const run = () => {
+      const { context } = createTestContext({
+        modelType: model.type,
+        placement: { labels: { tier: "remote" } },
+      });
+      return service.executeWorkflow(definition, model, "create", context);
+    };
+    await processLockHolderMarker.runHolding(["nonce-a"], run);
+    // Outside any lock scope there is nothing to hand to the worker.
+    await run();
+
+    assertEquals(lockHolders[0]?.pid, Deno.pid);
+    assertEquals(lockHolders[0]?.lockIds, ["nonce-a"]);
+    assertEquals(lockHolders[1], undefined);
   } finally {
     setRemoteStepDispatcher(null);
   }

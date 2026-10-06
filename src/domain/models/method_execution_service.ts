@@ -28,6 +28,7 @@ import {
   type ModelDefinition,
   modelRegistry,
 } from "./model.ts";
+import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -459,6 +460,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
         ...secretDelivery,
+        lockHolder: processLockHolderMarker.remoteLockHolder(),
         declaredWrites: context.declaredWrites,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {

@@ -54,6 +54,22 @@ export const SWAMP_LOCK_HOLDER_TOKENS = "SWAMP_LOCK_HOLDER_TOKENS";
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
 
+/** What a lock-file nonce may contain; anything else is dropped. */
+export const LOCK_NONCE_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * The per-model locks an orchestrator holds for a run it dispatches to a
+ * remote worker: its pid, its hostname, and those locks' lock-file nonces.
+ * A worker on the same host is not a descendant of the orchestrator, so it
+ * declares the orchestrator an ancestor of the dispatch runner from this
+ * (see {@link withRemoteLockHolder}).
+ */
+export interface RemoteLockHolder {
+  readonly pid: number;
+  readonly hostname: string;
+  readonly lockIds: readonly string[];
+}
+
 /** The slice of `Deno.env` that {@link LockHolderMarker} reads and writes. */
 export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
 
@@ -190,6 +206,19 @@ export class LockHolderMarker {
   }
 
   /**
+   * The locks held by the {@link runHolding} scope this is called from, for
+   * a run about to be dispatched to a remote worker. Undefined outside any
+   * scope and when the scope holds no lock, so nothing is handed over.
+   */
+  remoteLockHolder(): RemoteLockHolder | undefined {
+    const held = this.#held.getStore();
+    if (held === undefined || held.length === 0) {
+      return undefined;
+    }
+    return { pid: this.pid, hostname: this.host(), lockIds: [...held] };
+  }
+
+  /**
    * A test for how a lock file relates to this process (see
    * {@link LockRelation}). It is an ancestor's when its pid is an
    * ancestor's and it was taken on this host. A process on another host
@@ -259,6 +288,51 @@ export class LockHolderMarker {
 }
 
 /**
+ * The env for a dispatch runner on `host`, with the orchestrator that holds
+ * `holder`'s locks declared an ancestor: its pid goes at the front of
+ * {@link SWAMP_LOCK_ANCESTOR_PIDS} and its locks into
+ * {@link SWAMP_LOCK_HOLDER_TOKENS}, so a swamp the dispatched step starts
+ * skips those locks and no other lock the orchestrator holds.
+ *
+ * Returns `env` unchanged when the orchestrator is on another host, or when
+ * the holder carries no usable pid or nonce. `holder` arrives over the
+ * network, so it is checked here as well as by the dispatch schema; the pid
+ * is never added without its tokens entry, which would match every lock the
+ * orchestrator holds.
+ */
+export function withRemoteLockHolder(
+  env: Record<string, string>,
+  holder: RemoteLockHolder | undefined,
+  host: string,
+): Record<string, string> {
+  if (holder === undefined || holder.hostname !== host) {
+    return env;
+  }
+  const pid = parsePid(String(holder.pid));
+  const nonces = holder.lockIds.filter((id) => LOCK_NONCE_PATTERN.test(id));
+  if (pid === undefined || nonces.length === 0) {
+    return env;
+  }
+  const chain = (env[SWAMP_LOCK_ANCESTOR_PIDS] ?? "").split(",")
+    .map(parsePid)
+    .filter((entry): entry is number => entry !== undefined && entry !== pid);
+  const tokens = parseTokens(env[SWAMP_LOCK_HOLDER_TOKENS]);
+  const listed = tokens.get(pid) ?? new Set<string>();
+  for (const nonce of nonces) {
+    listed.add(nonce);
+  }
+  // Re-inserted last, so the cap on entries never drops it.
+  tokens.delete(pid);
+  tokens.set(pid, listed);
+  return {
+    ...env,
+    [SWAMP_LOCK_ANCESTOR_PIDS]: [pid, ...chain.slice(-(MAX_LOCK_ANCESTORS - 1))]
+      .join(","),
+    [SWAMP_LOCK_HOLDER_TOKENS]: formatTokens(tokens),
+  };
+}
+
+/**
  * The inherited chain, seeded from the single holder when the parent
  * published no chain (an older swamp), deduplicated, without `ownPid`, and
  * capped at the newest {@link MAX_LOCK_ANCESTORS} entries.
@@ -297,7 +371,7 @@ function parseTokens(value: string | undefined): Map<number, Set<string>> {
     }
     const nonces = entries.get(pid) ?? new Set<string>();
     for (const nonce of entry.slice(separator + 1).split("+")) {
-      if (/^[A-Za-z0-9-]+$/.test(nonce)) {
+      if (LOCK_NONCE_PATTERN.test(nonce)) {
         nonces.add(nonce);
       }
     }

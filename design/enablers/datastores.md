@@ -2017,7 +2017,8 @@ clears the first two from its own env:
   Until then it keeps the value it inherited, so through a swamp that takes
   no locks (e.g. a read-only `model method run`) it still names the real lock
   holder.
-- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never in the process env:
+- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never written to a swamp's
+  own process env (a dispatch runner is started with one, below):
   comma-separated `<pid>:<nonce>+<nonce>` entries naming, for each swamp
   above the child, the per-model locks it holds for the run that started the
   child. A nonce is the one each lock file already records. The shell model
@@ -2056,6 +2057,28 @@ process holds for its other runs instead of racing their in-flight writes.
 When that wait times out, the `LockTimeoutError` names the locks held for an
 ancestor's other runs and says why.
 
+A step dispatched to a remote worker runs while the orchestrator holds its
+lock, and a worker is not a descendant of the orchestrator, so ancestry alone
+would leave a nested structural swamp on a same-host worker waiting on its own
+step's lock (swamp-club#2983). The dispatch carries the lock holder instead.
+When the orchestrator builds the request for a remote step
+(`method_execution_service.ts`), `LockHolderMarker.remoteLockHolder()` reads
+the `runHolding` scope and returns the orchestrator's pid, its hostname and
+the nonces of the locks held for that run. Nothing is sent when the run holds
+no lock. It travels as the optional `lockHolder` field of `DispatchParams`.
+The worker passes it to `withRemoteLockHolder` when it builds the dispatch
+runner's env (`buildRunnerEnvironment`, `src/worker/dispatch_handler.ts`).
+If the hostname is the worker's own, the orchestrator's pid goes at the front
+of the runner's `SWAMP_LOCK_ANCESTOR_PIDS` and its nonces into
+`SWAMP_LOCK_HOLDER_TOKENS`. The runner and the shell model then hand both
+down as they would an inherited chain. The pid is never added without its
+tokens entry, so the nested swamp skips the dispatched step's locks and waits
+on every other lock the orchestrator holds. The field arrives over the
+network: the dispatch schema bounds it and `withRemoteLockHolder` checks the
+pid and nonces again, dropping anything malformed. If the orchestrator
+releases the step's lock while the runner's child is still running, the nonce
+matches no lock file and nothing is skipped.
+
 Known limits of the run-level match:
 
 - Two parallel steps or runs that each start a nested structural command
@@ -2067,9 +2090,10 @@ Known limits of the run-level match:
   a server-side run in a new scope. A nested structural swamp under that run
   waits on the calling step's lock, which process ancestry cannot connect
   across the WebSocket (swamp-club#2982).
-- A step dispatched to a remote worker on the same host runs while serve
-  holds its lock, and the worker is not a descendant of serve, so a nested
-  structural swamp there waits on its own step's lock (swamp-club#2983).
+- A step dispatched to a remote worker on another host that shares the
+  datastore (e.g. over NFS) runs while serve holds its lock. The hand-off
+  above is for a worker on serve's own host, so a nested structural swamp
+  there waits on its own step's lock.
 - A child left running in the background after its ancestors exit can skip a
   lock taken by an unrelated process that reused an ancestor's pid on this
   host.
@@ -2099,6 +2123,10 @@ it that holds locks, as before this change:
   older swamp in the middle strips it from a shell step's env, so the child
   matches every ancestor on the pid alone. Neither waits on a lock it skipped
   before.
+
+- A worker that predates `lockHolder` ignores the field, and an orchestrator
+  that predates it never sends it. A nested swamp on that worker waits on its
+  step's lock, as before.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
