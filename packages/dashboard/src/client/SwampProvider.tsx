@@ -35,6 +35,7 @@ import {
   requestTokenProbe,
   type SocketHandlers,
 } from "./connection.ts";
+import { createDashboardSessionClient } from "./dashboard_session.ts";
 import {
   detachFrame,
   RequestError,
@@ -69,6 +70,7 @@ interface SwampContextValue {
 
 const SwampContext = createContext<SwampContextValue | null>(null);
 const SESSION_CHANNEL = "swamp-dashboard-session";
+const dashboardSession = createDashboardSessionClient(globalThis.fetch);
 
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -120,13 +122,10 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   const restoreSession = useCallback(async (signal?: AbortSignal) => {
     const generation = ++sessionGenerationRef.current;
     try {
-      const response = await globalThis.fetch("/auth/dashboard/session", {
-        signal,
-      });
-      await response.body?.cancel();
+      const restored = await dashboardSession.restore(signal);
       if (generation !== sessionGenerationRef.current) return false;
-      setToken(response.ok ? "" : null);
-      return response.ok;
+      setToken(restored ? "" : null);
+      return restored;
     } catch (error) {
       if (generation === sessionGenerationRef.current) setToken(null);
       throw error;
@@ -290,13 +289,9 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   }, [token, authMode, sessionReady]);
 
   const login = useCallback(async (newToken: string) => {
-    const response = await globalThis.fetch("/auth/dashboard/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token: newToken }),
-    });
-    await response.body?.cancel();
-    if (!response.ok) throw new Error("Authentication failed");
+    if (!(await dashboardSession.exchange(newToken))) {
+      throw new Error("Authentication failed");
+    }
     setToken("");
     notifyReauthenticated();
   }, [notifyReauthenticated]);
@@ -309,8 +304,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       channel.postMessage("logout");
       channel.close();
     }
-    globalThis.fetch("/auth/dashboard/session", { method: "DELETE" })
-      .catch(() => {});
+    dashboardSession.clear().catch(() => {});
   }, [clearToken]);
 
   const send = useCallback(
