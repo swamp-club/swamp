@@ -20,6 +20,7 @@
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  type RemoteStepRequest,
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
 } from "../remote/remote_dispatch.ts";
@@ -3969,4 +3970,67 @@ Deno.test("executeWorkflow - a method's marked paths survive the in-process reth
     "cannot read",
   );
   assertEquals(errorPaths(error), [path]);
+});
+
+async function captureRemoteRequest(
+  secretBag: VaultSecretBag | undefined,
+  methodArgs: Record<string, unknown>,
+): Promise<RemoteStepRequest> {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-secret-def",
+    methods: { start: { arguments: methodArgs } },
+  });
+  const captured: RemoteStepRequest[] = [];
+  setRemoteStepDispatcher({
+    executeRemote: (request) => {
+      captured.push(request);
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+      vaultSecrets: secretBag,
+    });
+    await service.executeWorkflow(definition, model, "start", context);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(captured.length, 1);
+  return captured[0];
+}
+
+Deno.test("executeWorkflow - placed step ships its secret bag and unresolved args (swamp-club#2760)", async () => {
+  const secretBag = new VaultSecretBag();
+  const sentinel = secretBag.addSecret("s3cret-value");
+
+  const request = await captureRemoteRequest(secretBag, {
+    value: `token ${sentinel}`,
+  });
+
+  // Resolved args still travel for workers that predate the bag fields.
+  assertEquals(request.methodArgs.value, "token s3cret-value");
+  assertEquals(request.unresolvedMethodArgs?.value, `token ${sentinel}`);
+  assertEquals(request.secretBag, [{
+    sentinel,
+    value: "s3cret-value",
+    dataOrigin: false,
+  }]);
+  assertEquals(request.secretValues?.includes("s3cret-value"), true);
+});
+
+Deno.test("executeWorkflow - placed step without secrets ships no bag fields", async () => {
+  const request = await captureRemoteRequest(undefined, { value: "plain" });
+  assertEquals(request.methodArgs.value, "plain");
+  assertEquals(request.unresolvedMethodArgs, undefined);
+  assertEquals(request.secretBag, undefined);
 });

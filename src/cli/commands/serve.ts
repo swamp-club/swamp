@@ -157,6 +157,10 @@ import {
   setRemoteStepDispatcher,
 } from "../../domain/remote/remote_dispatch.ts";
 import {
+  isDeniedEnvVar,
+  parseDispatchEnvAllow,
+} from "../../domain/remote/environment_snapshot.ts";
+import {
   enableServeOutput,
   getSwampLogger,
 } from "../../infrastructure/logging/logger.ts";
@@ -417,6 +421,13 @@ import {
   type VaultClassification,
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
+
+const DISPATCH_ENV_ALLOW_HELP =
+  "Comma-separated environment variable names; only these ship to workers with each " +
+  "dispatch (case-insensitive, never HOME, PATH, SWAMP_* or the other denylisted names). " +
+  "Unset ships serve's whole environment minus the denylist. To ship none, set " +
+  "'dispatch-env-allow: []' in serve.yaml or an empty SWAMP_DISPATCH_ENV_ALLOW " +
+  "(env: SWAMP_DISPATCH_ENV_ALLOW)";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -974,6 +985,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.trustedHosts) {
     args.push("--trusted-hosts", options.trustedHosts as string);
   }
+  if (options.dispatchEnvAllow) {
+    args.push("--dispatch-env-allow", options.dispatchEnvAllow as string);
+  }
   if (options.heartbeatInterval) {
     args.push("--heartbeat-interval", options.heartbeatInterval as string);
   }
@@ -1483,6 +1497,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--trusted-hosts <hosts:string>",
     "Comma-separated hostnames to trust for Host header validation (env: SWAMP_TRUSTED_HOSTS)",
+  )
+  .option(
+    "--dispatch-env-allow <names:string>",
+    DISPATCH_ENV_ALLOW_HELP,
   )
   .option(
     "--detach-runs",
@@ -2133,6 +2151,10 @@ export const serveCommand = new Command()
       "(env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
+    "--dispatch-env-allow <names:string>",
+    DISPATCH_ENV_ALLOW_HELP,
+  )
+  .option(
     "--detach-runs",
     "Deprecated — HA mode is now detected automatically based on your datastore configuration. " +
       "This flag is accepted for backwards compatibility but has no effect.",
@@ -2394,6 +2416,23 @@ export const serveCommand = new Command()
       )
       : undefined;
 
+    const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
+    if (dispatchEnvAllow !== undefined) {
+      if (dispatchEnvAllow.length === 0) {
+        logger
+          .info`dispatch-env-allow is empty: no environment variables ship to workers`;
+      } else {
+        logger
+          .info`dispatch-env-allow: only these environment variables ship to workers: ${
+          dispatchEnvAllow.join(", ")
+        }`;
+      }
+      for (const name of dispatchEnvAllow.filter(isDeniedEnvVar)) {
+        logger
+          .warn`dispatch-env-allow lists ${name}, which never ships to workers`;
+      }
+    }
+
     const rejectionGuard = installUnhandledRejectionGuard();
 
     const raiseResult = tryRaiseOpenFileLimit();
@@ -2457,6 +2496,7 @@ export const serveCommand = new Command()
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
       queueTimeoutMs,
+      dispatchEnvAllow,
     });
     const verifyOnEnroll = merged.verifyOnEnroll;
     const workerGateway = new WorkerGateway({

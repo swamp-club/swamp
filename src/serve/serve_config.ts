@@ -60,6 +60,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
   verifyOnEnroll: "SWAMP_VERIFY_ON_ENROLL",
   trustedHosts: "SWAMP_TRUSTED_HOSTS",
+  dispatchEnvAllow: "SWAMP_DISPATCH_ENV_ALLOW",
   heartbeatInterval: "SWAMP_HEARTBEAT_INTERVAL",
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
@@ -129,6 +130,7 @@ export interface ServeConfigFile {
   "detach-runs"?: boolean;
   "trust-proxy"?: boolean;
   "trusted-hosts"?: string[];
+  "dispatch-env-allow"?: string[];
   "grants-file"?: string;
   "grants-dir"?: string;
   "grant-reload"?: string;
@@ -251,6 +253,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "detach-runs",
   "trust-proxy",
   "trusted-hosts",
+  "dispatch-env-allow",
   "grants-file",
   "grants-dir",
   "grant-reload",
@@ -633,6 +636,21 @@ function validateConfigValues(
     }
   }
 
+  if (raw["dispatch-env-allow"] !== undefined) {
+    const allow = raw["dispatch-env-allow"];
+    if (
+      !Array.isArray(allow) ||
+      !allow.every((name) =>
+        typeof name === "string" && name.trim() !== "" && !name.includes(",")
+      )
+    ) {
+      throw configError(
+        path,
+        `Invalid dispatch-env-allow in ${path}: expected array of environment variable names`,
+      );
+    }
+  }
+
   if (raw.audit !== undefined) {
     validateAuditConfig(raw.audit, path);
   }
@@ -929,6 +947,7 @@ export interface MergedServeOptions {
   queueTimeout?: string;
   verifyOnEnroll: boolean;
   trustedHosts?: string;
+  dispatchEnvAllow?: string;
   detachRuns: boolean;
   heartbeatInterval?: string;
   staleTtl?: string;
@@ -1239,6 +1258,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const dispatchEnvAllow = resolveString(
+    "dispatch-env-allow",
+    cliOptions.dispatchEnvAllow as string | undefined,
+    config?.["dispatch-env-allow"]?.join(","),
+    undefined,
+  );
+
   const detachRuns = resolveBoolean(
     "detach-runs",
     cliOptions.detachRuns as boolean,
@@ -1409,6 +1435,7 @@ export function mergeServeOptions(
     queueTimeout,
     verifyOnEnroll,
     trustedHosts,
+    dispatchEnvAllow,
     detachRuns,
     heartbeatInterval,
     staleTtl,

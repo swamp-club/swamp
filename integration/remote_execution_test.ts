@@ -57,6 +57,9 @@ import {
   tokenSecretKey,
 } from "../src/domain/models/worker/enrollment_token_model.ts";
 import { sweepStaleRecords } from "../src/serve/boot_reconciliation.ts";
+import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import type { RpcStreamEvent } from "../src/domain/remote/protocol.ts";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
@@ -690,6 +693,165 @@ Deno.test({
       } finally {
         for (const stop of stops) stop.abort();
         await Promise.allSettled(dones);
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+// ── Secret delivery on the worker (swamp-club#2760) ─────────────────────
+
+const SHELL_TYPE = ModelType.create("command/shell");
+const SHELL_DEFINITION_ID = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+const VAULT_SECRET = "vault-s3cret-value";
+const DATA_SECRET = "data-s3cret-value";
+
+/**
+ * Prints the step shell's own command line. `&& true` keeps `ps` from being
+ * the last command of the `-c` string, which bash would exec in place of the
+ * shell (pattern from integration/sensitive_data_delivery_test.ts).
+ */
+const SHOW_ARGV = "ps -o args= -p $$ && true";
+
+/** Checks a delivered value without writing it into the command line. */
+function checkValue(word: string, secret: string, label: string): string {
+  return `v=${word}; [ \${#v} -eq ${secret.length} ] && ` +
+    `case "$v" in ${secret.slice(0, 5)}*) echo ${label}_OK;; esac`;
+}
+
+/**
+ * A command/shell dispatch built the way #executeRemotely builds it: the
+ * resolved args always, and with `shipBag` the unresolved args and the
+ * step's bag beside them.
+ */
+function shellStepRequest(
+  shipBag: boolean,
+  onEvent?: (event: RpcStreamEvent) => void,
+) {
+  const bag = new VaultSecretBag();
+  const vaultSentinel = bag.addSecret(VAULT_SECRET);
+  const dataSentinel = bag.addDataSecret(DATA_SECRET);
+  // Its own secret: the single-quote check looks at a sentinel's first use.
+  const quotedSentinel = bag.addSecret("quoted-s3cret-value");
+  const unresolved = {
+    run: `echo STEP=secrets; ` +
+      `${checkValue(`"${vaultSentinel}"`, VAULT_SECRET, "VAULT")}; ` +
+      `${checkValue(dataSentinel, DATA_SECRET, "DATA")}; ` +
+      `: '${quotedSentinel}'; ` +
+      SHOW_ARGV,
+  };
+  return {
+    placement: { labels: { tier: "it" } },
+    modelDef: modelRegistry.get(SHELL_TYPE)!,
+    modelType: SHELL_TYPE,
+    modelId: SHELL_DEFINITION_ID,
+    methodName: "execute",
+    definitionName: "remote-shell-def",
+    definitionTags: {},
+    definitionMeta: {
+      id: SHELL_DEFINITION_ID,
+      name: "remote-shell-def",
+      version: 1,
+      tags: {},
+    },
+    globalArgs: {},
+    methodArgs: bag.resolveDeep(unresolved) as Record<string, unknown>,
+    secretValues: bag.rawValues,
+    ...(shipBag
+      ? { unresolvedMethodArgs: unresolved, secretBag: bag.toEntries() }
+      : {}),
+    workflowName: "it-workflow",
+    stepName: "it-shell-step",
+    onEvent,
+  };
+}
+
+async function shellStdout(
+  orchestrator: Orchestrator,
+  outputs: Array<{ specName: string; name: string }>,
+): Promise<string> {
+  const name = outputs.find((o) => o.specName === "result")!.name;
+  const content = await orchestrator.repoContext.unifiedDataRepo.getContent(
+    SHELL_TYPE,
+    SHELL_DEFINITION_ID,
+    name,
+  );
+  return String(JSON.parse(new TextDecoder().decode(content!)).stdout);
+}
+
+Deno.test({
+  name:
+    "remote execution: a shell step on a worker gets vault and data secrets through the environment, not argv (swamp-club#2760)",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const workerStop = new AbortController();
+      let workerDone: Promise<WorkerExitResult> | null = null;
+      try {
+        const token = await orchestrator.mintToken("secret-worker");
+        workerDone = runWorker({
+          url: orchestrator.serverUrl,
+          token,
+          labels: { tier: "it" },
+          swampVersion: "test",
+          cacheDir: join(dir, "worker-cache"),
+          signal: workerStop.signal,
+          runnerCommand: TEST_RUNNER_COMMAND,
+        });
+        await waitFor(
+          () => orchestrator.gateway.workers().length === 1,
+          "worker enrollment",
+        );
+
+        // With the bag: the worker's command line carries env references.
+        const events: RpcStreamEvent[] = [];
+        const result = await orchestrator.dispatchService.executeRemote(
+          shellStepRequest(true, (event) => events.push(event)),
+        );
+        const stdout = await shellStdout(orchestrator, result.outputs);
+        assertStringIncludes(stdout, "VAULT_OK");
+        assertStringIncludes(stdout, "DATA_OK");
+        const argv = stdout.split("\n").find((line) =>
+          line.includes("echo STEP=")
+        );
+        assertEquals(argv !== undefined, true, stdout);
+        assertStringIncludes(argv!, "__SWAMP_VAULT_");
+        // The worker redacts both values, so plaintext in argv shows as ***.
+        assertEquals(argv!.includes("***"), false, argv);
+        // The single-quote warning raised on the worker reached serve.
+        assertEquals(
+          events.some((e) =>
+            e.kind === "method_event" &&
+            (e.event as { type?: string })?.type ===
+              "vault_single_quote_warning"
+          ),
+          true,
+          JSON.stringify(events),
+        );
+
+        // Without the bag (a serve that predates it): the step still runs,
+        // with the resolved args in the command line as before.
+        await waitFor(
+          () => orchestrator.gateway.worker("secret-worker")?.status === "idle",
+          "worker to return to idle",
+        );
+        const fallback = await orchestrator.dispatchService.executeRemote(
+          shellStepRequest(false),
+        );
+        const fallbackOut = await shellStdout(orchestrator, fallback.outputs);
+        assertStringIncludes(fallbackOut, "VAULT_OK");
+        assertStringIncludes(fallbackOut, "DATA_OK");
+        const fallbackArgv = fallbackOut.split("\n").find((line) =>
+          line.includes("echo STEP=")
+        );
+        assertEquals(fallbackArgv !== undefined, true, fallbackOut);
+        assertStringIncludes(fallbackArgv!, "***");
+      } finally {
+        workerStop.abort();
+        if (workerDone) await workerDone.catch(() => {});
         await orchestrator.shutdown();
       }
     });

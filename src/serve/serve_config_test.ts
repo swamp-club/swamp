@@ -2768,3 +2768,77 @@ Deno.test("loadServeConfig: a valid audit sink filter does not warn", async () =
   });
   assertEquals(warnings, []);
 });
+
+// ── dispatch-env-allow (swamp-club#2791) ─────────────────────────────
+
+Deno.test("mergeServeOptions: dispatch-env-allow config list joined to a comma string", () => {
+  const merged = mergeServeOptions(
+    { "dispatch-env-allow": ["DEPLOY_ENV", "AWS_REGION"] },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.dispatchEnvAllow, "DEPLOY_ENV,AWS_REGION");
+});
+
+Deno.test("mergeServeOptions: an empty dispatch-env-allow list is kept, not unset", () => {
+  const merged = mergeServeOptions(
+    { "dispatch-env-allow": [] },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.dispatchEnvAllow, "");
+});
+
+Deno.test("mergeServeOptions: dispatch-env-allow is unset by default", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.dispatchEnvAllow, undefined);
+});
+
+Deno.test("mergeServeOptions: dispatch-env-allow flag wins over env and config", () => {
+  const merged = mergeServeOptions(
+    { "dispatch-env-allow": ["FROM_CONFIG"] },
+    { dispatchEnvAllow: "" },
+    new Set(["dispatch-env-allow"]),
+    (name) => name === "SWAMP_DISPATCH_ENV_ALLOW" ? "FROM_ENV" : undefined,
+  );
+  assertEquals(merged.dispatchEnvAllow, "");
+});
+
+Deno.test("mergeServeOptions: SWAMP_DISPATCH_ENV_ALLOW wins over config", () => {
+  const merged = mergeServeOptions(
+    { "dispatch-env-allow": ["FROM_CONFIG"] },
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_DISPATCH_ENV_ALLOW" ? "FROM_ENV" : undefined,
+  );
+  assertEquals(merged.dispatchEnvAllow, "FROM_ENV");
+});
+
+Deno.test("loadServeConfig: dispatch-env-allow must be a list of names", () => {
+  for (
+    const bad of [
+      "dispatch-env-allow: DEPLOY_ENV",
+      'dispatch-env-allow: [""]',
+      "dispatch-env-allow: [1]",
+      'dispatch-env-allow: ["A,B"]',
+    ]
+  ) {
+    withTempDir((dir) => {
+      const swampDir = join(dir, ".swamp");
+      Deno.mkdirSync(swampDir, { recursive: true });
+      Deno.writeTextFileSync(join(swampDir, "serve.yaml"), bad);
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "Invalid dispatch-env-allow",
+      );
+    });
+  }
+});

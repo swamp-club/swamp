@@ -798,10 +798,19 @@ host. `env.*` runtime expressions are unaffected: like `vault.get(...)`, they
 already resolve on the orchestrator at dispatch time. The snapshot covers the
 ambient reads inside method code and its subprocesses.
 
-As a trade-off, every dispatched step sees the orchestrator's
+By default, as a trade-off, every dispatched step sees the orchestrator's
 whole environment, the same ambient access as running on the orchestrator host.
-Scoping the snapshot (allowlists per token or per label) is a later refinement.
-v1 prefers single-host fidelity over a new partial-environment failure mode.
+An operator scopes it with serve's `dispatch-env-allow` (flag, `serve.yaml` key
+or `SWAMP_DISPATCH_ENV_ALLOW`): only the listed names ship (matched
+case-insensitively, still minus the denylist), and an empty list (`[]` in
+`serve.yaml`, or an empty `SWAMP_DISPATCH_ENV_ALLOW`; the flag needs a value)
+ships nothing.
+Leaving a name off the list also leaves the worker's own value in place, so a
+worker keeps its own cloud identity (`AWS_ROLE_ARN`,
+`AWS_WEB_IDENTITY_TOKEN_FILE`, …) when those names are not listed. Serve logs
+the scope at startup and warns about listed names the denylist always drops.
+The option is opt-in, so unset keeps single-host fidelity; the allowlist is
+global to serve, not per token or per label.
 
 ### Method-to-child env scrubbing (third boundary)
 
@@ -844,7 +853,7 @@ The three boundaries form a defense-in-depth chain:
 
 | Boundary                 | Mechanism                             | What is stripped                                                     |
 | ------------------------ | ------------------------------------- | -------------------------------------------------------------------- |
-| orchestrator → worker    | `captureEnvironmentSnapshot` denylist | `HOME`, `PATH`, `SWAMP_*`, `DENO_*`, `XDG_*`, …                      |
+| orchestrator → worker    | `captureEnvironmentSnapshot` denylist, optional `dispatch-env-allow` | `HOME`, `PATH`, `SWAMP_*`, `DENO_*`, `XDG_*`, …; with an allowlist, every unlisted name |
 | worker → dispatch runner | `stripWorkerCredentials`              | `SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL` |
 | method → child process   | `createSafeMethodEnv` + `clearEnv`    | all `SWAMP_*` variables except `NESTED_SWAMP_ENV_VARS`               |
 
@@ -1303,6 +1312,20 @@ credentials and extensions onto workers:
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 
+  **Secret delivery on the worker.** Beside the resolved args, the dispatch
+  carries the step's `VaultSecretBag` entries (`secretBag`: sentinel, value,
+  data-origin flag) and its method args with the sentinels intact
+  (`unresolvedMethodArgs`). A worker that receives both rebuilds the bag
+  (`VaultSecretBag.fromEntries`) as `context.vaultSecrets` and builds the step
+  from the unresolved args, so the method execution service resolves them on
+  the worker exactly as a local run does: extension models get plaintext args,
+  and a `command/shell` step gets `vault.get()` and sensitive data values as
+  `__SWAMP_VAULT_N` environment variables, never in its `sh -c` argv. Both
+  fields are optional, so the protocol version is unchanged: a worker that
+  predates them drops them and runs the resolved args, with the values in its
+  command line as before, and a newer worker under an older orchestrator does
+  the same.
+
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output (log resources, result resources and workflow-run records) before they
   reach durable storage or the WS event stream. Two layers enforce this:
@@ -1362,7 +1385,7 @@ credentials and extensions onto workers:
 | Checks and reports pipeline       | **Reuse** at the orchestrator: checks skipped for remote steps; reports run after the execution seam                                        |
 | Pure injectable operations        | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                                                                                  |
 | Worker/token/lease persistence    | **Reuse** the datastore + catalog: built-in models, not a private registry                                                                   |
-| Out-of-process secret resolution  | **Reuse** the resolve-before-dispatch pattern                                                                                                |
+| Out-of-process secret resolution  | **Reuse** the resolve-before-dispatch pattern, plus the step's secret bag so the worker delivers values as a local run does                 |
 | Run-event serialization           | **Reuse** `serializeEvent()`; worker → orchestrator events ride `rpc.stream` frames                                                          |
 | Driver abstraction                | **Remove** `ExecutionDriver`, raw/docker/custom drivers, registry, `driver:` fields                                                          |
 | Role split (server ≠ executor)    | **New**: request-dispatch handling moves to the worker side; two handler registries                                                          |

@@ -33,6 +33,7 @@
 
 import { errorPaths } from "../errors.ts";
 import { z } from "zod";
+import { SENTINEL_EXACT } from "../vaults/vault_secret_bag.ts";
 
 /**
  * Version of the remote-execution protocol. Negotiated at enrollment: a
@@ -298,6 +299,21 @@ export const DispatchParamsSchema = z.object({
    * Optional for backward compatibility with older workers.
    */
   secretValues: z.array(z.string()).optional(),
+  /**
+   * The step's method args before vault sentinels were resolved. Sent with
+   * {@link secretBag} so a worker delivers vault and sensitive data values
+   * the way a local run does (to a `command/shell` step as environment
+   * variables, never in its command line). `execution.methodArgs` still
+   * carries the resolved args, so an older worker that drops both fields
+   * runs as before. Absent when the step has no secrets.
+   */
+  unresolvedMethodArgs: z.record(z.string(), z.unknown()).optional(),
+  /** The step's vault secret bag entries; see {@link unresolvedMethodArgs}. */
+  secretBag: z.array(z.object({
+    sentinel: z.string().regex(SENTINEL_EXACT),
+    value: z.string(),
+    dataOrigin: z.boolean(),
+  })).optional(),
 });
 
 export type DispatchParams = z.infer<typeof DispatchParamsSchema>;

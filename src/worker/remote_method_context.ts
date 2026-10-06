@@ -59,6 +59,7 @@ import {
 } from "../domain/models/data_writer.ts";
 import { wrapLoggerWithOutput } from "../domain/models/in_process_executor.ts";
 import { SecretRedactor } from "../domain/secrets/mod.ts";
+import { VaultSecretBag } from "../domain/vaults/vault_secret_bag.ts";
 import { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
@@ -492,6 +493,32 @@ export interface RemoteMethodContextResult {
   getHandles: () => DataHandle[];
 }
 
+/** Whether the orchestrator shipped the step's secret bag (swamp-club#2760). */
+function shipsSecretBag(
+  dispatch: DispatchParams,
+): dispatch is DispatchParams & {
+  unresolvedMethodArgs: Record<string, unknown>;
+  secretBag: NonNullable<DispatchParams["secretBag"]>;
+} {
+  return dispatch.unresolvedMethodArgs !== undefined &&
+    dispatch.secretBag !== undefined && dispatch.secretBag.length > 0;
+}
+
+/**
+ * The method args to build the step's definition from. With a shipped
+ * secret bag these are the unresolved args, so the method execution service
+ * resolves them on the worker and a `command/shell` step gets its secrets as
+ * environment variables, as in a local run. Otherwise the resolved args the
+ * orchestrator sent.
+ */
+export function dispatchMethodArgs(
+  dispatch: DispatchParams,
+): Record<string, unknown> {
+  return shipsSecretBag(dispatch)
+    ? dispatch.unresolvedMethodArgs
+    : dispatch.execution.methodArgs;
+}
+
 /**
  * Assemble the full remote MethodContext for one dispatch. The method
  * author API is identical to a local run; only the implementations behind
@@ -651,6 +678,9 @@ export function createRemoteMethodContext(
     outputRepository,
     vaultService,
     redactor,
+    vaultSecrets: shipsSecretBag(dispatch)
+      ? VaultSecretBag.fromEntries(dispatch.secretBag)
+      : undefined,
     dataQueryService,
     writeResource: writers.writeResource,
     readResource,

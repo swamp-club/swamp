@@ -664,6 +664,18 @@ Deno.test("collectServeExtraArgs: forwards --club-api-key-file as an absolute pa
   assert(isAbsolute(args[1]));
 });
 
+Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {
+  assertEquals(collectServeExtraArgs({ dispatchEnvAllow: "DEPLOY_ENV,A" }), [
+    "--dispatch-env-allow",
+    "DEPLOY_ENV,A",
+  ]);
+});
+
+Deno.test("collectServeExtraArgs: never forwards an empty --dispatch-env-allow", () => {
+  // The flag needs a value; an empty one would stop the daemon starting.
+  assertEquals(collectServeExtraArgs({ dispatchEnvAllow: "" }), []);
+});
+
 Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
   const args = collectServeExtraArgs({});
   assertEquals(args, []);

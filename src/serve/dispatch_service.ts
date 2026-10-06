@@ -129,6 +129,11 @@ export interface DispatchServiceOptions {
   queueTimeoutMs?: number;
   /** Test seam: overrides the modelMethodRun-backed lease transitions. */
   runModelMethod?: ModelMethodRunner;
+  /**
+   * Serve's `dispatch-env-allow`: the only variables the environment
+   * snapshot ships. Unset ships the full snapshot (minus the denylist).
+   */
+  dispatchEnvAllow?: readonly string[];
   /** Test seam: overrides the shipped environment snapshot capture. */
   captureEnvironment?: () => Record<string, string>;
 }
@@ -168,7 +173,11 @@ export class DispatchService {
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
     this.#captureEnvironment = options.captureEnvironment ??
-      (() => captureEnvironmentSnapshot(Deno.env.toObject()));
+      (() =>
+        captureEnvironmentSnapshot(
+          Deno.env.toObject(),
+          options.dispatchEnvAllow,
+        ));
   }
 
   #buildDispatchRedactor(
@@ -536,6 +545,8 @@ export class DispatchService {
       },
       probeMarker: request.probeMarker,
       secretValues: request.secretValues,
+      unresolvedMethodArgs: request.unresolvedMethodArgs,
+      secretBag: request.secretBag,
     };
 
     try {

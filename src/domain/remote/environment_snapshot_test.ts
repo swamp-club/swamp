@@ -25,6 +25,7 @@ import {
   isSwampEnvVar,
   NESTED_SWAMP_ENV_VARS,
   overlayEnvironment,
+  parseDispatchEnvAllow,
   stripInheritedTraceContext,
   stripWorkerCredentials,
 } from "./environment_snapshot.ts";
@@ -284,4 +285,46 @@ Deno.test("createSafeMethodEnv: NESTED_SWAMP_ENV_VARS keeps the nested-swamp var
     SWAMP_LOCK_HOLDER_TOKENS: "4141:n1",
     PATH: "/usr/bin",
   });
+});
+
+const SERVE_ENV = {
+  HOME: "/home/orchestrator",
+  PATH: "/usr/bin",
+  OP_SERVICE_ACCOUNT_TOKEN: "ops_master",
+  AWS_ROLE_ARN: "arn:aws:iam::1:role/serve",
+  DEPLOY_ENV: "prod",
+  Region_Hint: "eu",
+};
+
+Deno.test("captureEnvironmentSnapshot: an allowlist ships only the named variables (swamp-club#2791)", () => {
+  assertEquals(
+    captureEnvironmentSnapshot(SERVE_ENV, ["DEPLOY_ENV", "region_hint"]),
+    { DEPLOY_ENV: "prod", Region_Hint: "eu" },
+  );
+});
+
+Deno.test("captureEnvironmentSnapshot: an empty allowlist ships nothing", () => {
+  assertEquals(captureEnvironmentSnapshot(SERVE_ENV, []), {});
+});
+
+Deno.test("captureEnvironmentSnapshot: the denylist still applies to allowed names", () => {
+  assertEquals(
+    captureEnvironmentSnapshot(SERVE_ENV, ["PATH", "HOME", "DEPLOY_ENV"]),
+    { DEPLOY_ENV: "prod" },
+  );
+});
+
+Deno.test("captureEnvironmentSnapshot: without an allowlist the whole environment ships minus the denylist", () => {
+  assertEquals(captureEnvironmentSnapshot(SERVE_ENV), {
+    OP_SERVICE_ACCOUNT_TOKEN: "ops_master",
+    AWS_ROLE_ARN: "arn:aws:iam::1:role/serve",
+    DEPLOY_ENV: "prod",
+    Region_Hint: "eu",
+  });
+});
+
+Deno.test("parseDispatchEnvAllow: unset, empty and listed values", () => {
+  assertEquals(parseDispatchEnvAllow(undefined), undefined);
+  assertEquals(parseDispatchEnvAllow(""), []);
+  assertEquals(parseDispatchEnvAllow(" A , ,B "), ["A", "B"]);
 });

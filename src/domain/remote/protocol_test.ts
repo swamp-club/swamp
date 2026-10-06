@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { markErrorPaths } from "../errors.ts";
 import {
   dispatchErrorPaths,
@@ -119,6 +119,61 @@ Deno.test("DispatchParamsSchema: round-trips a dispatch through JSON", () => {
   assertEquals(parsed.execution.methodName, "create");
   assertEquals(parsed.environmentSnapshot.DEPLOY_ENV, "prod");
   assertEquals(parsed.reportBundleFingerprints, ["fp-rep"]);
+});
+
+function dispatchWithSecretBag(sentinel: string) {
+  return {
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    execution: {
+      protocolVersion: 4,
+      modelType: "command/shell",
+      modelId: "m-1",
+      methodName: "execute",
+      globalArgs: {},
+      methodArgs: { run: "echo s3cret" },
+      definitionMeta: { id: "m-1", name: "sh", version: 1, tags: {} },
+      resourceSpecs: {},
+    },
+    bundleFingerprint: "builtin:command/shell",
+    environmentSnapshot: {},
+    unresolvedMethodArgs: { run: `echo ${sentinel}` },
+    secretBag: [{ sentinel, value: "s3cret", dataOrigin: false }],
+  };
+}
+
+Deno.test("DispatchParamsSchema: carries the unresolved args and secret bag (swamp-club#2760)", () => {
+  const sentinel = "__SWAMP_VSEC_0a1b2c3d_0__";
+  const parsed = DispatchParamsSchema.parse(
+    JSON.parse(JSON.stringify(dispatchWithSecretBag(sentinel))),
+  );
+  assertEquals(parsed.unresolvedMethodArgs, { run: `echo ${sentinel}` });
+  assertEquals(parsed.secretBag, [{
+    sentinel,
+    value: "s3cret",
+    dataOrigin: false,
+  }]);
+  assertEquals(parsed.execution.methodArgs, { run: "echo s3cret" });
+});
+
+Deno.test("DispatchParamsSchema: rejects a malformed secret bag sentinel", () => {
+  assertThrows(() =>
+    DispatchParamsSchema.parse(dispatchWithSecretBag("$(touch /tmp/x)"))
+  );
+});
+
+Deno.test("DispatchParamsSchema: a schema without the bag fields keeps the resolved args", () => {
+  // An older worker's schema strips the fields it does not know and runs
+  // the resolved args exactly as before.
+  const olderSchema = DispatchParamsSchema.omit({
+    unresolvedMethodArgs: true,
+    secretBag: true,
+  });
+  const parsed = olderSchema.parse(
+    dispatchWithSecretBag("__SWAMP_VSEC_0a1b2c3d_0__"),
+  );
+  assertEquals("secretBag" in parsed, false);
+  assertEquals(parsed.execution.methodArgs, { run: "echo s3cret" });
 });
 
 Deno.test("DispatchResultSchema: accepts success with persisted outputs", () => {
