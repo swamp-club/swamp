@@ -50,7 +50,8 @@ import type { ReviewFinding } from "./extension_review_rules.ts";
  * malformed, has no reason, or names a rule that cannot be accepted is a
  * blocking finding (`invalid-acceptance`).
  *
- * The parser reads raw lines. The detectors strip comments before matching,
+ * The parser reads raw lines. The review rules strip comments before
+ * matching and the safety checks drop a trailing directive before scanning,
  * so a directive never triggers the rule it accepts.
  */
 
@@ -193,17 +194,10 @@ export function parseAcceptanceDirectives(
   const lines = content.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const at = line.indexOf(ACCEPTANCE_DIRECTIVE);
-    if (at === -1) continue;
+    const found = findDirectiveStart(line, form);
+    if (found === undefined) continue;
+    const { at, openerAt, opener } = found;
     const lineNumber = i + 1;
-    const opener = form === "line" ? "//" : "<!--";
-    const openerAt = line.lastIndexOf(opener, at);
-    if (openerAt === -1) {
-      // The keyword outside a comment is not a directive (a string, prose).
-      continue;
-    }
-    const betweenOpenerAndKeyword = line.slice(openerAt + opener.length, at);
-    if (betweenOpenerAndKeyword.trim().length > 0) continue;
 
     const text = line.slice(openerAt).trim();
     if (directives.length + invalid.length >= MAX_DIRECTIVES_PER_FILE) {
@@ -267,7 +261,7 @@ export function parseAcceptanceDirectives(
       target = {
         kind: "line",
         file,
-        line: standalone ? lineNumber + 1 : lineNumber,
+        line: standalone ? nextNonBlankLine(lines, i) : lineNumber,
       };
     }
     directives.push({
@@ -279,6 +273,60 @@ export function parseAcceptanceDirectives(
     });
   }
   return { directives, invalid };
+}
+
+/**
+ * The 1-based number of the first non-blank line after index `i`, so a
+ * standalone directive still targets its line when a formatter puts a blank
+ * line after an HTML comment block. Falls back to the next line when
+ * nothing follows.
+ */
+function nextNonBlankLine(lines: string[], i: number): number {
+  for (let j = i + 1; j < lines.length; j++) {
+    if (lines[j].trim().length > 0) return j + 1;
+  }
+  return i + 2;
+}
+
+/**
+ * Finds the directive on a line: the first keyword that directly follows a
+ * comment opener which is not inside a string literal. The keyword inside a
+ * string, or outside a comment, is not a directive.
+ */
+function findDirectiveStart(
+  line: string,
+  form: Exclude<CommentForm, "none">,
+): { at: number; openerAt: number; opener: string } | undefined {
+  const opener = form === "line" ? "//" : "<!--";
+  let from = 0;
+  while (from < line.length) {
+    const at = line.indexOf(ACCEPTANCE_DIRECTIVE, from);
+    if (at === -1) return undefined;
+    const openerAt = line.lastIndexOf(opener, at);
+    if (
+      openerAt !== -1 && !isInsideQuotes(line, openerAt) &&
+      line.slice(openerAt + opener.length, at).trim().length === 0
+    ) {
+      return { at, openerAt, opener };
+    }
+    from = at + ACCEPTANCE_DIRECTIVE.length;
+  }
+  return undefined;
+}
+
+/** True when `index` sits inside a quoted string literal on the line. */
+function isInsideQuotes(line: string, index: number): boolean {
+  let quote: string | undefined;
+  for (let k = 0; k < index; k++) {
+    const ch = line[k];
+    if (quote !== undefined) {
+      if (ch === "\\") k++;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    }
+  }
+  return quote !== undefined;
 }
 
 /** The identity a finding carries; both finding types satisfy it. */

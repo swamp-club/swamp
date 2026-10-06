@@ -432,6 +432,7 @@ import {
   type AcceptanceSource,
   applyAcceptances,
   commentFormFor,
+  fileRelativeToManifest,
   type InvalidAcceptance,
   invalidAcceptanceFinding,
   parseAcceptanceDirectives,
@@ -1278,7 +1279,7 @@ export async function runQualityFindings(
     ruleId: a.finding.ruleId,
     ...(a.finding.file.startsWith("(")
       ? {}
-      : { file: relativeToManifest(input.manifestDir, a.finding.file) }),
+      : { file: fileRelativeToManifest(input.manifestDir, a.finding.file) }),
     ...(a.finding.line !== undefined ? { line: a.finding.line } : {}),
     reason: a.reason,
     source: a.source,
@@ -1307,11 +1308,6 @@ function isReviewFinding(
   return "dimension" in finding;
 }
 
-/** A finding's file relative to the manifest's directory, with forward slashes. */
-function relativeToManifest(manifestDir: string, file: string): string {
-  return relative(manifestDir, file).replaceAll("\\", "/");
-}
-
 const TESTING_COMPLETENESS_LISTED = 5;
 
 /**
@@ -1332,7 +1328,7 @@ function collapseTestingCompleteness(
     input.datastoreEntryPoints.length + input.reportEntryPoints.length +
     input.webhookEntryPoints.length;
   const listed = files.slice(0, TESTING_COMPLETENESS_LISTED).map((f) =>
-    relativeToManifest(input.manifestDir, f)
+    fileRelativeToManifest(input.manifestDir, f)
   );
   const more = files.length - listed.length;
   const first = untested[0];

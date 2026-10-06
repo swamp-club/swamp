@@ -103,6 +103,36 @@ Deno.test("parseAcceptanceDirectives: a Markdown HTML comment on the line above 
   assertEquals(parsed.directives[0].reason, "documented lab address");
 });
 
+Deno.test("parseAcceptanceDirectives: a standalone directive skips blank lines to its target, in both forms", () => {
+  const md = parseAcceptanceDirectives(
+    "<!-- swamp-quality-ignore ipv4-address-literals: lab -->\n\nGateway: 10.0.0.1\n",
+    MD,
+  );
+  assertEquals(md.directives[0].target, { kind: "line", file: MD, line: 3 });
+  const ts = parseAcceptanceDirectives(
+    "// swamp-quality-ignore deno-command: vendor CLI\n\n\nnew Deno.Command('x');\n",
+    TS,
+  );
+  assertEquals(ts.directives[0].target, { kind: "line", file: TS, line: 4 });
+});
+
+Deno.test("parseAcceptanceDirectives: a comment opener inside a string literal is not a directive", () => {
+  const parsed = parseAcceptanceDirectives(
+    'const HEADER = "// swamp-quality-ignore testing-completeness: <reason>";\n' +
+      "const T = `// swamp-quality-ignore deno-command: x`;\n" +
+      "const U = '// swamp-quality-ignore deno-command'; // swamp-quality-ignore deno-command: real\n",
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].reason, "real");
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: TS,
+    line: 3,
+  });
+});
+
 Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", () => {
   const parsed = parseAcceptanceDirectives(
     "<!-- swamp-quality-ignore ipv4-address-literals: lab\n10.0.0.1\n",

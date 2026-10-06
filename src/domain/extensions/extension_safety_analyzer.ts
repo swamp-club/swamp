@@ -199,6 +199,8 @@ const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
 const LONG_LINE_THRESHOLD = 500;
 const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
 const MAX_REPORTED_LOCATIONS = 5;
+/** A trailing acceptance directive, dropped before the line checks so it never triggers the rule it accepts. */
+const ACCEPTANCE_DIRECTIVE_COMMENT = /\/\/\s*swamp-quality-ignore\b.*$/;
 
 const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
   "eval-reference": "eval",
@@ -333,7 +335,7 @@ export async function analyzeExtensionSafety(
       // warns.
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        const line = lines[i].replace(ACCEPTANCE_DIRECTIVE_COMMENT, "");
         const stripped = line.replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
           warnings.push(issue(

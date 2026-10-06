@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { FindingsReport } from "./extension_findings_report.ts";
+import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
 import type {
   ApiCallRecord,
   ExtensionPushEvent,
@@ -502,4 +503,39 @@ Deno.test("extensionPushRenderer: log dry run and completed summaries print the 
   );
   // Printed twice: once for the dry run, once for the completed push.
   assertEquals(output.split("For next time:").length, 3);
+});
+
+Deno.test("extensionPushRenderer: log report prints braces in messages, remediation and reasons verbatim", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const braces: FindingsReport = {
+    declaredAcceptances: {
+      accepted: [{
+        ruleId: "schema-strictness",
+        file: "models/a.ts",
+        line: 2,
+        reason: "the {id} shape is validated by the {caller}",
+        source: "inline",
+        message: "Uses `z.object({}).passthrough()`",
+      }],
+    },
+    forNextTime: [{
+      ruleId: "credentials-sensitive-field",
+      file: "models/b.ts",
+      line: 4,
+      message:
+        'Field on line "z.object({ apiKey: z.string() })" looks like a secret',
+      remediation: remediationFor("credentials-sensitive-field"),
+      acceptance:
+        "// swamp-quality-ignore credentials-sensitive-field: <reason>",
+      placement: "on line 4 of models/b.ts, or the line above",
+    }],
+  };
+  const logs = await capture(() =>
+    renderer.renderDryRun({ ...dryRunBase, report: braces })
+  );
+  const output = logs.join("\n");
+  assertStringIncludes(output, "the {id} shape is validated by the {caller}");
+  assertStringIncludes(output, "z.object({ apiKey: z.string() })");
+  assertStringIncludes(output, ".meta({ sensitive: true })");
+  assertEquals(output.includes("undefined"), false);
 });

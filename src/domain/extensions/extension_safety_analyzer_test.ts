@@ -544,3 +544,22 @@ Deno.test("analyzeExtensionSafety: IP detection does not fire on .ts files", asy
     },
   );
 });
+
+Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the rule it accepts", async () => {
+  const long = "x-".repeat(200);
+  await withTempFiles(
+    {
+      "a.ts": [
+        "// swamp-quality-ignore deno-command: wraps Deno.Command( for the vendor CLI",
+        `const s = "${long}"; // swamp-quality-ignore long-line: ${
+          "r".repeat(150)
+        }`,
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings, []);
+    },
+  );
+});

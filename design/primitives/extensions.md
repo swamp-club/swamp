@@ -977,8 +977,11 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   `// swamp-quality-ignore <rule-id>: <reason>` on the finding's line or the
   line directly above, or `<!-- … -->` on the line above in Markdown; the
   same comment anywhere in a file accepts the file-scoped
-  `testing-completeness`. The parser reads raw lines; the detectors strip
-  comments, so a directive never triggers the rule it accepts. No reason, the
+  `testing-completeness`. The parser reads raw lines; the review rules strip
+  comments and the safety checks drop a trailing directive before scanning,
+  so a directive never triggers the rule it accepts. A standalone directive
+  targets the next non-blank line, so a formatter's blank line after an HTML
+  comment is harmless. No reason, the
   `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
   rule, or more than 50 directives in a file is a blocking
   `invalid-acceptance` finding naming the comment; reasons are capped at 200
