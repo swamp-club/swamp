@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { FindingsReport } from "./extension_findings_report.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import { evaluateVersionExists } from "../../domain/extensions/extension_publish_checks.ts";
 import type {
   ApiCallRecord,
   ExtensionPushEvent,
@@ -366,6 +367,56 @@ Deno.test("extensionPushRenderer: JSON dry run carries contentHash, registryChec
   assertEquals(parsed.registryChecks, checks);
   assertEquals(parsed.apiCalls, calls);
   assertEquals(parsed.status, "dry_run");
+});
+
+Deno.test("extensionPushRenderer: JSON dry run carries the channels on the version-exists row only", async () => {
+  const versionExists = evaluateVersionExists({
+    extensionName: "@test/ext",
+    version: "2026.09.16.1",
+    published: { version: "2026.09.16.1", channel: "beta" },
+    requestedChannel: "stable",
+  });
+  const renderer = createExtensionPushRenderer("json");
+  const logs = await capture(() =>
+    renderer.renderDryRun({
+      ...dryRunBase,
+      registryChecks: [checks[0], versionExists],
+      apiCalls: [],
+    })
+  );
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.registryChecks[0], checks[0]);
+  assertEquals(parsed.registryChecks[1], {
+    name: "version-exists",
+    status: "failed",
+    message:
+      "Version 2026.09.16.1 already exists for @test/ext on channel 'beta'. " +
+      "To move it to 'stable' without re-publishing, run: " +
+      "swamp extension promote @test/ext 2026.09.16.1 --channel stable",
+    existingChannel: "beta",
+    requestedChannel: "stable",
+  });
+});
+
+Deno.test("extensionPushRenderer: log dry run names the existing channel on the version-exists row", async () => {
+  const versionExists = evaluateVersionExists({
+    extensionName: "@test/ext",
+    version: "2026.09.16.1",
+    published: { version: "2026.09.16.1", channel: "beta" },
+    requestedChannel: "stable",
+  });
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.renderDryRun({
+      ...dryRunBase,
+      registryChecks: [versionExists],
+      apiCalls: [],
+    })
+  );
+  assertStringIncludes(
+    stripAnsiCode(logs.join("\n")),
+    "version exists: failed — Version 2026.09.16.1 already exists for @test/ext on channel 'beta'.",
+  );
 });
 
 Deno.test("extensionPushRenderer: log dry run prints the content hash, each check's verdict and the calls made", async () => {

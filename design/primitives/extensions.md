@@ -33,8 +33,13 @@ Extensions use **CalVer** `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`), the same
 scheme as models (see [models](./models.md)). The micro counter allows several
 versions a day and resets each new date.
 
-Each name+version pair must be unique in the registry. On a push conflict, the
-CLI offers to bump the version.
+Each name+version pair must be unique in the registry, across every release
+channel. On a push conflict an interactive push says which channel the version
+is on and what each answer does. A version on the requested channel or a higher
+one can only be bumped; a version on a lower channel can also be promoted in
+place (see [Promotion](#promotion)), which moves the published build without
+uploading the local files. `--yes` and `--json` never prompt: they fail, and
+the message gives the promote command when one applies.
 
 ### Epoch suffix
 
@@ -210,6 +215,12 @@ allowed:
 - stable → rc ❌
 - rc → beta ❌
 - stable → beta ❌
+
+`swamp extension promote path/to/manifest.yaml --channel stable` takes the name
+and version from the manifest, asks the registry which channel the version is
+on, and promotes from there, or fails with "Nothing to promote" when no channel
+below the target carries it. An argument matching `@collective/name` is always
+the name form.
 
 Promotion changes registry metadata only; the archive is not uploaded again.
 The server then recalculates the latest version per channel. The CLI checks the

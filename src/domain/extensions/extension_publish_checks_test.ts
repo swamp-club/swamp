@@ -27,6 +27,7 @@ import {
   evaluatePrivateEntitlement,
   evaluateVersionExists,
   explainPrivatePublishRefusal,
+  placeExistingVersion,
   registryCheckNotRun,
   type RegistryCheckResult,
   registryChecksVerdict,
@@ -115,17 +116,80 @@ Deno.test("evaluateCollectiveMembership: reserved collective needs the registry'
   assertEquals(outsider.membership.status, "failed");
 });
 
-Deno.test("evaluateVersionExists: a match on any channel fails with the push's exact message", () => {
+Deno.test("evaluateVersionExists: a duplicate on the requested channel keeps the push's exact message", () => {
   const result = evaluateVersionExists({
     extensionName: "@acme/tool",
     version: "2026.10.06.1",
     published: { version: "2026.10.06.1", channel: "beta" },
+    requestedChannel: "beta",
   });
   assertEquals(result.status, "failed");
   assertEquals(
     result.message,
     "Version 2026.10.06.1 already exists for @acme/tool.",
   );
+  assertEquals(result.existingChannel, "beta");
+  assertEquals(result.requestedChannel, "beta");
+});
+
+Deno.test("evaluateVersionExists: an omitted channel is stable", () => {
+  const result = evaluateVersionExists({
+    extensionName: "@acme/tool",
+    version: "2026.10.06.1",
+    published: { version: "2026.10.06.1", channel: "stable" },
+  });
+  assertEquals(
+    result.message,
+    "Version 2026.10.06.1 already exists for @acme/tool.",
+  );
+  assertEquals(result.requestedChannel, "stable");
+});
+
+Deno.test("evaluateVersionExists: a lower channel names it and gives the promote command", () => {
+  const result = evaluateVersionExists({
+    extensionName: "@acme/tool",
+    version: "2026.10.06.1",
+    published: { version: "2026.10.06.1", channel: "beta" },
+    requestedChannel: "stable",
+  });
+  assertEquals(result.status, "failed");
+  assertEquals(
+    result.message,
+    "Version 2026.10.06.1 already exists for @acme/tool on channel 'beta'. " +
+      "To move it to 'stable' without re-publishing, run: " +
+      "swamp extension promote @acme/tool 2026.10.06.1 --channel stable",
+  );
+  assertEquals(result.existingChannel, "beta");
+  assertEquals(result.requestedChannel, "stable");
+});
+
+Deno.test("evaluateVersionExists: a higher channel says a version cannot move down", () => {
+  const result = evaluateVersionExists({
+    extensionName: "@acme/tool",
+    version: "2026.10.06.1",
+    published: { version: "2026.10.06.1", channel: "stable" },
+    requestedChannel: "rc",
+  });
+  assertEquals(result.status, "failed");
+  assertEquals(
+    result.message,
+    "Version 2026.10.06.1 already exists for @acme/tool on channel 'stable', " +
+      "above 'rc'. A version cannot move down a channel; publish a new version instead.",
+  );
+});
+
+Deno.test("placeExistingVersion: orders beta below rc below stable", () => {
+  assertEquals(placeExistingVersion("beta", "rc"), "lower-channel");
+  assertEquals(placeExistingVersion("beta", "stable"), "lower-channel");
+  assertEquals(placeExistingVersion("rc", "stable"), "lower-channel");
+  assertEquals(placeExistingVersion("rc", "rc"), "same-channel");
+  assertEquals(placeExistingVersion("stable", "beta"), "higher-channel");
+  assertEquals(placeExistingVersion("rc", "beta"), "higher-channel");
+});
+
+Deno.test("placeExistingVersion: an unknown channel never offers a promotion", () => {
+  assertEquals(placeExistingVersion("nightly", "stable"), "same-channel");
+  assertEquals(placeExistingVersion("beta", "nightly"), "same-channel");
 });
 
 Deno.test("evaluateVersionExists: no published match passes", () => {
@@ -133,8 +197,11 @@ Deno.test("evaluateVersionExists: no published match passes", () => {
     extensionName: "@acme/tool",
     version: "2026.10.06.1",
     published: null,
+    requestedChannel: "stable",
   });
   assertEquals(result.status, "passed");
+  assertEquals(result.existingChannel, undefined);
+  assertEquals(result.requestedChannel, undefined);
   assertEquals(
     result.message,
     "Version 2026.10.06.1 is not published for @acme/tool.",

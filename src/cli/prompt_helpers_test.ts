@@ -24,6 +24,7 @@ import {
   promptConfirmation,
   promptLine,
   promptLineWithDefault,
+  promptNumberedChoice,
 } from "./prompt_helpers.ts";
 
 // ---------------------------------------------------------------------------
@@ -38,10 +39,14 @@ import {
 // ---------------------------------------------------------------------------
 
 function fakeStdinRead(
-  response: string | null,
+  input: string | null | Array<string | null>,
 ): (buf: Uint8Array) => Promise<number | null> {
   const encoder = new TextEncoder();
+  // An array answers one read per entry, in order; a single value answers
+  // every read.
+  const queue = Array.isArray(input) ? [...input] : undefined;
   return (buf: Uint8Array) => {
+    const response = queue ? (queue.shift() ?? null) : input as string | null;
     if (response === null) return Promise.resolve(null);
     const encoded = encoder.encode(response);
     buf.set(encoded);
@@ -58,7 +63,7 @@ function fakeStdinRead(
  * in infrastructure/logging/logger.ts) and so never reaches these captures.
  */
 function stubIO(
-  input: string | null,
+  input: string | null | Array<string | null>,
   options?: { isTerminal?: boolean },
 ): {
   written: string[];
@@ -357,6 +362,101 @@ Deno.test("promptLineWithDefault: writes the prompt to stderr, never stdout", as
     await promptLineWithDefault("Value:", "fallback");
     assertEquals(io.written, ["Value: (default: fallback) "]);
     assertEquals(io.stdoutWritten, []);
+  } finally {
+    io.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Consequence lines and numbered choices (swamp-club#2939)
+// ---------------------------------------------------------------------------
+
+Deno.test("promptConfirmation: prints the details above the question on stderr", async () => {
+  const io = stubIO("n\n");
+  try {
+    assertEquals(
+      await promptConfirmation("Push?", ["  y = push", "  N = exit"]),
+      false,
+    );
+    assertEquals(io.written, ["  y = push\n", "  N = exit\n", "Push? [y/N] "]);
+    assertEquals(io.stdoutWritten, []);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptConfirmation: prints no details on a non-interactive stdin", async () => {
+  const io = stubIO("y\n", { isTerminal: false });
+  try {
+    await assertRejects(
+      () => promptConfirmation("Push?", ["  y = push"]),
+      UserError,
+      "stdin is not a terminal",
+    );
+    assertEquals(io.written, []);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptNumberedChoice: returns the chosen index", async () => {
+  const io = stubIO("2\n");
+  try {
+    assertEquals(
+      await promptNumberedChoice(["Pick one."], ["Promote", "Bump", "Stop"]),
+      1,
+    );
+    assertEquals(io.written, [
+      "Pick one.\n",
+      "  1. Promote\n",
+      "  2. Bump\n",
+      "  3. Stop\n",
+      "Choose [1/2/3]: ",
+    ]);
+    assertEquals(io.stdoutWritten, []);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptNumberedChoice: has no default; Enter and invalid answers ask again", async () => {
+  const io = stubIO(["\n", "4\n", "x\n", "3\n"]);
+  try {
+    assertEquals(
+      await promptNumberedChoice([], ["Promote", "Bump", "Stop"]),
+      2,
+    );
+    assertEquals(
+      io.written.filter((w) => w === "Choose [1/2/3]: ").length,
+      4,
+    );
+    assertEquals(
+      io.written.filter((w) => w === "Please enter 1, 2, 3.\n").length,
+      3,
+    );
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptNumberedChoice: returns null on EOF instead of asking forever", async () => {
+  const io = stubIO(null);
+  try {
+    assertEquals(await promptNumberedChoice([], ["Promote", "Stop"]), null);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptNumberedChoice: throws UserError on non-interactive stdin before printing", async () => {
+  const io = stubIO("1\n", { isTerminal: false });
+  try {
+    await assertRejects(
+      () => promptNumberedChoice(["Pick one."], ["Promote"]),
+      UserError,
+      "stdin is not a terminal",
+    );
+    assertEquals(io.written, []);
   } finally {
     io.restore();
   }

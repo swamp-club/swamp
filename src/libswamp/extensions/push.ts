@@ -213,6 +213,12 @@ export interface ExtensionPushPrepareInput {
    * them and never contact the registry.
    */
   registryChecks: RegistryChecksMode;
+  /**
+   * The channel the push publishes to; stable when omitted. The
+   * version-exists check compares it with the channel a published version
+   * is already on.
+   */
+  channel?: string;
   releaseNotes?: string;
   denoConfigPath?: string;
   packageJsonDir?: string;
@@ -447,6 +453,7 @@ import {
   REGISTRY_FORBIDDEN_CODE,
 } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+import { findPublishedVersion } from "./published_version_lookup.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   checkExtensionQuality,
@@ -503,11 +510,6 @@ export interface ExtensionPushPrepareDepsOptions {
   /** The fetch to make calls with; tests pass a fake. Defaults to global fetch. */
   fetch?: Fetcher;
 }
-
-/** Release channels a version may be published on. */
-const ALL_RELEASE_CHANNELS = ["stable", "rc", "beta"];
-const VERSIONS_PAGE_SIZE = 100;
-const VERSIONS_MAX_PAGES = 50;
 
 /** Wires real infrastructure into ExtensionPushPrepareDeps. */
 export function createExtensionPushPrepareDeps(
@@ -567,29 +569,7 @@ export function createExtensionPushPrepareDeps(
       const client = new ExtensionApiClient(serverUrl, identity, {
         fetch: fetcherFor(serverUrl),
       });
-      // A version is unique per extension across channels, so every channel
-      // is asked and the first match on any of them answers.
-      for (let page = 1; page <= VERSIONS_MAX_PAGES; page++) {
-        const listed = await client.listVersions(name, {
-          channel: ALL_RELEASE_CHANNELS,
-          perPage: VERSIONS_PAGE_SIZE,
-          page,
-        }, apiKey);
-        const match = listed.versions.find((v) => v.version === version);
-        if (match) return { version: match.version, channel: match.channel };
-        // A short page is the last page; so is reaching the total. A
-        // response without usable paging metadata is not paged further.
-        const perPage = listed.meta?.perPage;
-        const total = listed.meta?.total;
-        const seen = (page - 1) * perPage + listed.versions.length;
-        if (
-          listed.versions.length === 0 || !Number.isFinite(seen) ||
-          listed.versions.length < perPage || seen >= total
-        ) {
-          return null;
-        }
-      }
-      return null;
+      return await findPublishedVersion(client, name, version, apiKey);
     },
     getLatestVersionDetail: async (serverUrl, name, apiKey) => {
       const client = new ExtensionApiClient(serverUrl, identity, {
@@ -1170,10 +1150,13 @@ export async function extensionPushPrepare(
           extensionName: input.manifest.name,
           version: input.manifest.version,
           published,
+          requestedChannel: input.channel,
         });
         if (check.status === "failed" && mode === "enforce") {
           throw validationFailed(check.message, {
             existingVersion: input.manifest.version,
+            existingChannel: check.existingChannel,
+            requestedChannel: check.requestedChannel,
           });
         }
         registryChecks.push(check);

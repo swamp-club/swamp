@@ -648,13 +648,34 @@ Deno.test("extensionPushPrepare: dry run reports a version published on any chan
   const result = await extensionPushPrepare(
     ctx,
     deps,
-    makePrepareInput({ dryRun: true }),
+    makePrepareInput({ dryRun: true, channel: "beta" }),
   );
   const check = result.registryChecks.find((c) => c.name === "version-exists");
   assertEquals(check?.status, "failed");
   assertEquals(
     check?.message,
     "Version 2026.03.22.1 already exists for @testuser/test-ext.",
+  );
+});
+
+Deno.test("extensionPushPrepare: dry run names the lower channel a version is on and how to promote it", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.03.22.1", channel: "beta" }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const check = result.registryChecks.find((c) => c.name === "version-exists");
+  assertEquals(check?.status, "failed");
+  assertEquals(check?.existingChannel, "beta");
+  assertEquals(check?.requestedChannel, "stable");
+  assertStringIncludes(
+    check?.message ?? "",
+    "swamp extension promote @testuser/test-ext 2026.03.22.1 --channel stable",
   );
 });
 
@@ -779,17 +800,40 @@ Deno.test("extensionPushPrepare: push rejects a version published on any channel
   });
 
   const error = await assertRejects(
-    () => extensionPushPrepare(ctx, deps, makePrepareInput({ dryRun: false })),
+    () =>
+      extensionPushPrepare(
+        ctx,
+        deps,
+        makePrepareInput({ dryRun: false, channel: "rc" }),
+      ),
   ) as SwampError;
   assertEquals(error.code, "validation_failed");
   assertEquals(
     error.message,
     "Version 2026.03.22.1 already exists for @testuser/test-ext.",
   );
-  assertEquals(
-    (error.details as { existingVersion: string }).existingVersion,
-    "2026.03.22.1",
-  );
+  assertEquals(error.details, {
+    existingVersion: "2026.03.22.1",
+    existingChannel: "rc",
+    requestedChannel: "rc",
+  });
+});
+
+Deno.test("extensionPushPrepare: push rejection carries the existing and requested channels", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.03.22.1", channel: "rc" }),
+  });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, makePrepareInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.details, {
+    existingVersion: "2026.03.22.1",
+    existingChannel: "rc",
+    requestedChannel: "stable",
+  });
+  assertStringIncludes(error.message, "on channel 'rc'");
 });
 
 Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts the registry", async () => {

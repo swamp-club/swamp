@@ -1078,6 +1078,7 @@ export {
   type InstallContext,
   installExtension,
   type InstallResult,
+  isScopedExtensionName,
   isVersionConstraint,
   parseExtensionRef,
   resolveServerUrl,

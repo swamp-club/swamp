@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveExtensionsDir,
+  resolveRepoDir,
+} from "../context.ts";
+import { resolveManifestArgument } from "../resolve_manifest_path.ts";
+import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   consumeStream,
@@ -26,12 +33,43 @@ import {
   createLibSwampContext,
   extensionPromote,
   extensionPromoteValidate,
+  isScopedExtensionName,
   validateExtensionName,
 } from "../../libswamp/mod.ts";
 import { createExtensionPromoteRenderer } from "../../presentation/renderers/extension_promote.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/** What the promote arguments name. */
+export type PromoteTarget =
+  | { kind: "name"; name: string; version: string }
+  | { kind: "manifest"; path: string };
+
+/**
+ * Splits the promote arguments. An `@collective/name` argument is the name,
+ * as it always was, and needs a version; anything else is a manifest path or
+ * extension directory, whose manifest supplies the version.
+ */
+export function resolvePromoteTarget(
+  target: string,
+  versionArgument: string | undefined,
+): PromoteTarget {
+  if (isScopedExtensionName(target)) {
+    if (versionArgument === undefined) {
+      throw new UserError(
+        "Missing version: pass <extension> <version>, or a manifest path.",
+      );
+    }
+    return { kind: "name", name: target, version: versionArgument };
+  }
+  if (versionArgument !== undefined) {
+    throw new UserError(
+      "Pass either a manifest path or <extension> <version>, not both: the version comes from the manifest.",
+    );
+  }
+  return { kind: "manifest", path: target };
+}
 
 export const extensionPromoteCommand = new Command()
   .name("promote")
@@ -46,7 +84,11 @@ export const extensionPromoteCommand = new Command()
     "Promote rc to stable",
     "swamp extension promote @myorg/ext 2026.06.10.1 --channel stable",
   )
-  .arguments("<extension:string> <version:string>")
+  .example(
+    "Promote the version a manifest names",
+    "swamp extension promote extensions/models/my-ext/manifest.yaml --channel stable",
+  )
+  .arguments("<extension-or-manifest:string> [version:string]")
   .option(
     "--channel <channel:string>",
     "Target channel to promote to: 'rc' or 'stable'",
@@ -56,10 +98,18 @@ export const extensionPromoteCommand = new Command()
     "--from-channel <fromChannel:string>",
     "Source channel ('beta' or 'rc'); skips direction validation if omitted",
   )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory a relative manifest path resolves against (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--extensions-dir <dir:string>",
+    "Extensions root a relative manifest path resolves against (env: SWAMP_EXTENSIONS_DIR)",
+  )
   .action(async function (
     options: AnyOptions,
-    extension: string,
-    version: string,
+    target: string,
+    versionArgument: string | undefined,
   ) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -67,6 +117,26 @@ export const extensionPromoteCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension promote`;
 
+    const promoteTarget = resolvePromoteTarget(target, versionArgument);
+    let extension: string;
+    let version: string;
+    const fromManifest = promoteTarget.kind === "manifest";
+    if (promoteTarget.kind === "manifest") {
+      const { absoluteManifestPath } = await resolveManifestArgument({
+        argument: promoteTarget.path,
+        cwd: Deno.cwd(),
+        repoDir: resolveRepoDir(options.repoDir),
+        extensionsDir: resolveExtensionsDir(options.extensionsDir),
+      });
+      const manifest = parseExtensionManifest(
+        await Deno.readTextFile(absoluteManifestPath),
+      );
+      extension = manifest.name;
+      version = manifest.version;
+    } else {
+      extension = promoteTarget.name;
+      version = promoteTarget.version;
+    }
     validateExtensionName(extension);
 
     const toChannel = options.channel as string;
@@ -76,6 +146,7 @@ export const extensionPromoteCommand = new Command()
       version,
       toChannel,
       fromChannel,
+      resolveFromChannel: fromManifest,
     };
 
     try {

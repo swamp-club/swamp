@@ -77,6 +77,8 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   // The hidden shell-completion command's action, called by completion scripts.
   "action",
   "args",
+  // `extension promote`: an extension name or a manifest path, so a path.
+  "extension-or-manifest",
   "extra",
   // Access groups and their members: a principal can be an email address.
   "group",

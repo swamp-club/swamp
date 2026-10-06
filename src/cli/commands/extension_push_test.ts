@@ -22,6 +22,7 @@ import type { OutputMode } from "../../presentation/output/output.ts";
 import type { WarningsWaiver } from "../../presentation/renderers/extension_push.ts";
 import {
   buildAcceptedWarnings,
+  resolveExistingVersionResponse,
   resolveWarningsGate,
   resolveWarningsWaiver,
 } from "./extension_push.ts";
@@ -156,4 +157,89 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
     ],
   });
   assertEquals("skeleton" in record.review[0], false);
+});
+
+// ── Existing version (swamp-club#2939) ────────────────────────────────
+
+const LOWER_CHANNEL_MESSAGE =
+  "Version 2026.10.06.1 already exists for @x/y on channel 'beta'. " +
+  "To move it to 'stable' without re-publishing, run: " +
+  "swamp extension promote @x/y 2026.10.06.1 --channel stable";
+
+function existing(overrides: {
+  existingChannel?: string;
+  requestedChannel?: string;
+  checkMessage?: string;
+  outputMode?: OutputMode;
+  yes?: boolean;
+  force?: boolean;
+}) {
+  return resolveExistingVersionResponse({
+    extensionName: "@x/y",
+    version: "2026.10.06.1",
+    checkMessage: "Version 2026.10.06.1 already exists for @x/y.",
+    existingChannel: "stable",
+    requestedChannel: "stable",
+    outputMode: "log",
+    ...overrides,
+  });
+}
+
+const SAME_CHANNEL_REFUSAL = "Version 2026.10.06.1 already exists for @x/y. " +
+  "Use a different version or let the CLI bump it interactively.";
+
+Deno.test("resolveExistingVersionResponse: interactive, a lower channel offers the three-way choice", () => {
+  assertEquals(
+    existing({ existingChannel: "beta", requestedChannel: "stable" }),
+    { kind: "choose" },
+  );
+  assertEquals(
+    existing({ existingChannel: "beta", requestedChannel: "rc" }),
+    { kind: "choose" },
+  );
+});
+
+Deno.test("resolveExistingVersionResponse: interactive, the same or a higher channel asks to bump", () => {
+  assertEquals(existing({}), { kind: "bump-prompt" });
+  assertEquals(
+    existing({ existingChannel: "stable", requestedChannel: "beta" }),
+    { kind: "bump-prompt" },
+  );
+});
+
+Deno.test("resolveExistingVersionResponse: --yes and --force never promote", () => {
+  for (const flags of [{ yes: true }, { force: true }]) {
+    assertEquals(
+      existing({
+        existingChannel: "beta",
+        requestedChannel: "stable",
+        checkMessage: LOWER_CHANNEL_MESSAGE,
+        ...flags,
+      }),
+      { kind: "refuse", message: LOWER_CHANNEL_MESSAGE },
+    );
+  }
+});
+
+Deno.test("resolveExistingVersionResponse: --json refuses a same-channel duplicate with the pre-#2939 message", () => {
+  assertEquals(existing({ outputMode: "json" }), {
+    kind: "refuse",
+    message: SAME_CHANNEL_REFUSAL,
+  });
+  assertEquals(existing({ yes: true }), {
+    kind: "refuse",
+    message: SAME_CHANNEL_REFUSAL,
+  });
+});
+
+Deno.test("resolveExistingVersionResponse: --json on another channel refuses with the channel-aware message", () => {
+  assertEquals(
+    existing({
+      existingChannel: "beta",
+      requestedChannel: "stable",
+      checkMessage: LOWER_CHANNEL_MESSAGE,
+      outputMode: "json",
+    }),
+    { kind: "refuse", message: LOWER_CHANNEL_MESSAGE },
+  );
 });

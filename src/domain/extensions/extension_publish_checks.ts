@@ -35,6 +35,7 @@
  */
 
 import { ModelType } from "../models/model_type.ts";
+import { ReleaseChannel } from "./release_channel.ts";
 
 /** The registry checks a push runs before uploading. */
 export type RegistryCheckName =
@@ -73,6 +74,10 @@ export interface RegistryCheckResult {
   message: string;
   /** Present only when the check did not run. */
   cause?: RegistryCheckNotRunCause;
+  /** version-exists only: the channel the version is already published on. */
+  existingChannel?: string;
+  /** version-exists only: the channel the push asked for. */
+  requestedChannel?: string;
 }
 
 /**
@@ -403,21 +408,74 @@ export interface PublishedVersion {
 }
 
 /**
+ * Where an already-published version sits relative to the channel a push
+ * asked for. Only `lower-channel` can be promoted; the registry moves a
+ * version forward (beta → rc → stable) and never back.
+ */
+export type ExistingVersionPlacement =
+  | "same-channel"
+  | "lower-channel"
+  | "higher-channel";
+
+/**
+ * Places an existing version's channel against the requested one. A channel
+ * name this client does not know is treated as the same channel, so it never
+ * offers a promotion the registry has not been seen to allow.
+ */
+export function placeExistingVersion(
+  existingChannel: string,
+  requestedChannel: string,
+): ExistingVersionPlacement {
+  if (
+    !ReleaseChannel.isValid(existingChannel) ||
+    !ReleaseChannel.isValid(requestedChannel)
+  ) {
+    return "same-channel";
+  }
+  const existing = ReleaseChannel.create(existingChannel);
+  const requested = ReleaseChannel.create(requestedChannel);
+  if (existing.canPromoteTo(requested)) return "lower-channel";
+  if (requested.canPromoteTo(existing)) return "higher-channel";
+  return "same-channel";
+}
+
+/** The promote command that moves a published version to a channel. */
+export function promoteCommand(
+  extensionName: string,
+  version: string,
+  toChannel: string,
+): string {
+  return `swamp extension promote ${extensionName} ${version} --channel ${toChannel}`;
+}
+
+/**
  * Decides the version-exists check. A version is unique per extension across
  * every release channel, so a match on any channel fails the check with the
- * message a real push throws.
+ * message a real push throws. A duplicate on the requested channel keeps the
+ * plain message; a match on another channel names that channel and, when the
+ * version sits on a lower one, the promote command that moves it.
  */
 export function evaluateVersionExists(input: {
   extensionName: string;
   version: string;
   published: PublishedVersion | null;
+  /** The channel the push asked for; stable when omitted. */
+  requestedChannel?: string;
 }): RegistryCheckResult {
   if (input.published && input.published.version === input.version) {
+    const requestedChannel = input.requestedChannel ?? "stable";
+    const existingChannel = input.published.channel;
     return {
       name: "version-exists",
       status: "failed",
-      message:
-        `Version ${input.version} already exists for ${input.extensionName}.`,
+      message: versionExistsMessage({
+        extensionName: input.extensionName,
+        version: input.version,
+        existingChannel,
+        requestedChannel,
+      }),
+      existingChannel,
+      requestedChannel,
     };
   }
   return {
@@ -426,6 +484,26 @@ export function evaluateVersionExists(input: {
     message:
       `Version ${input.version} is not published for ${input.extensionName}.`,
   };
+}
+
+function versionExistsMessage(input: {
+  extensionName: string;
+  version: string;
+  existingChannel: string;
+  requestedChannel: string;
+}): string {
+  const { extensionName, version, existingChannel, requestedChannel } = input;
+  switch (placeExistingVersion(existingChannel, requestedChannel)) {
+    case "same-channel":
+      return `Version ${version} already exists for ${extensionName}.`;
+    case "lower-channel":
+      return `Version ${version} already exists for ${extensionName} on channel '${existingChannel}'. ` +
+        `To move it to '${requestedChannel}' without re-publishing, run: ` +
+        promoteCommand(extensionName, version, requestedChannel);
+    case "higher-channel":
+      return `Version ${version} already exists for ${extensionName} on channel '${existingChannel}', ` +
+        `above '${requestedChannel}'. A version cannot move down a channel; publish a new version instead.`;
+  }
 }
 
 /** A check that could not run, with the reason. */
