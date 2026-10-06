@@ -71,7 +71,6 @@ export class WalSink implements AuditSink {
   // on a loop that has not moved since only delays shutdown.
   #completed = 0;
   #gaveUpAt: number | null = null;
-  #checkpointQueued = false;
   // Set once close has stopped waiting: anything the loop still runs after
   // that may race the downstream sink's own close for its failure report, so
   // it deletes nothing and the segments stay in the WAL for replay.
@@ -116,12 +115,19 @@ export class WalSink implements AuditSink {
   #enqueue(item: string | typeof CHECKPOINT): void {
     this.#queue.push(item);
     // While downstream hangs the queue only grows; names the WAL size limit
-    // has already dropped are pruned, so it stays bounded by the WAL.
+    // has already dropped are pruned, and so is a checkpoint left directly
+    // behind another, so it stays bounded by the WAL. A checkpoint at the
+    // head is kept: segments already delivered wait on it.
     if (this.#queue.length > 2 * this.#wal.segmentCount + 16) {
       const held = new Set(this.#wal.listSegments());
-      this.#queue = this.#queue.filter((entry) =>
-        entry === CHECKPOINT || held.has(entry)
-      );
+      const kept: (string | typeof CHECKPOINT)[] = [];
+      for (const entry of this.#queue) {
+        const keep = entry === CHECKPOINT
+          ? kept.at(-1) !== CHECKPOINT
+          : held.has(entry);
+        if (keep) kept.push(entry);
+      }
+      this.#queue = kept;
     }
     if (!this.#looping) {
       this.#looping = true;
@@ -136,7 +142,6 @@ export class WalSink implements AuditSink {
         const item = this.#queue.shift()!;
         try {
           if (item === CHECKPOINT) {
-            this.#checkpointQueued = false;
             await this.#removeConfirmedSegments();
           } else {
             await this.#deliverSegment(item);
@@ -216,9 +221,13 @@ export class WalSink implements AuditSink {
     await this.#awaitDeliveries();
   }
 
+  /**
+   * Queues a checkpoint behind everything queued so far. One already waiting
+   * covers only the segments ahead of it, so it stands in for this one only
+   * when nothing has been queued behind it.
+   */
   #queueCheckpoint(): void {
-    if (this.#checkpointQueued) return;
-    this.#checkpointQueued = true;
+    if (this.#queue.at(-1) === CHECKPOINT) return;
     this.#enqueue(CHECKPOINT);
   }
 

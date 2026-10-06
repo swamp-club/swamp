@@ -41,7 +41,10 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    pipeline: later batches keep reaching the WAL and queue behind it. Every
    `flush-interval` (and on flush) a checkpoint on the same queue flushes
    StoreSink and then deletes the segments delivered before it, so the WAL
-   holds only events the store has not confirmed. StoreSink's flush waits for
+   holds only events the store has not confirmed. A checkpoint is queued
+   behind every segment already on the queue, even when an earlier one is
+   still waiting, so a flush that returns in time leaves no delivered segment
+   behind. StoreSink's flush waits for
    batch writes already running. A batch that reached some stores but not
    others is retried on each flush for the stores that missed it, under the
    same key so a landed retry never stores it twice; up to 32MB of these are
@@ -66,7 +69,8 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    startup recovers
    the chain position from the segments on disk or that file; without it a
    crash would restart the chain from an older sequence. The delivery queue holds segment names
-   only, and names the WAL size limit has evicted are pruned from it. `flush` waits up to 30s for
+   only, and names the WAL size limit has evicted are pruned from it, as is a
+   checkpoint left directly behind another. `flush` waits up to 30s for
    queued work before leaving it in the WAL, where it is replayed on the next
    start. At startup the segments a previous session left are put on the same
    delivery queue, ahead of anything written after, and empty ones from a
