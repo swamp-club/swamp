@@ -240,7 +240,9 @@ export class LockHolderMarker {
    *
    * A run that outlives the request keeps the nonces after the calling step
    * releases its lock. That is harmless: every acquisition writes a new
-   * nonce, so a stale one matches no lock file.
+   * nonce, so a stale one matches no lock file. Until the step releases it,
+   * though, a run the client no longer waits on still skips that lock
+   * (design/enablers/datastores.md, Known limits).
    */
   runAdopting<T>(
     forwarded: string | undefined,
@@ -268,13 +270,19 @@ export class LockHolderMarker {
    * matches its locks on the pid alone, as before. Empty when there is
    * nothing to hand down. Spread it into the child's env; never write it to
    * the process env, which every run in the process shares.
+   *
+   * An inherited entry under this process's own pid is kept, and its nonces
+   * stay in the entry a scope writes: it is a lock handed down from a swamp
+   * on another host that has the same pid, not a lock of this process.
    */
   childLockEnv(): Record<string, string> {
     const entries = parseTokens(this.#inheritedOrLive().tokens);
-    entries.delete(this.pid);
     const held = this.#held.getStore();
     if (held !== undefined) {
-      entries.set(this.pid, new Set(held));
+      const own = new Set([...(entries.get(this.pid) ?? []), ...held]);
+      // Re-inserted so this process's entry is the newest.
+      entries.delete(this.pid);
+      entries.set(this.pid, own);
     }
     if (entries.size === 0) {
       return {};
@@ -286,15 +294,19 @@ export class LockHolderMarker {
    * The locks held for a run about to be dispatched to a remote worker:
    * those of the {@link runHolding} scope this is called from, and those
    * handed down to this process, which the worker's runner cannot inherit.
-   * Undefined when there are none, so nothing is handed over. The list can
+   * A swamp started from a shell step hands on what it inherited with every
+   * dispatch it makes, for as long as it runs: the run that started it holds
+   * those locks until it exits. Undefined when there are none, so nothing is
+   * handed over. The list can
    * exceed {@link MAX_REMOTE_LOCK_IDS}; the caller must not send one that
    * does.
    */
   remoteLockHolder(): RemoteLockHolder | undefined {
-    const inherited = parseTokens(this.#inheritedOrLive().tokens);
-    inherited.delete(this.pid);
     const lockIds = [
-      ...new Set([...allNonces(inherited), ...(this.#held.getStore() ?? [])]),
+      ...new Set([
+        ...this.inheritedLockIds(),
+        ...(this.#held.getStore() ?? []),
+      ]),
     ];
     if (lockIds.length === 0) {
       return undefined;

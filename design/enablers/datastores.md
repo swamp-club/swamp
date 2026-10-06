@@ -2135,7 +2135,10 @@ orchestrator builds the request for a remote step
 the orchestrator's pid, its hostname and the nonces of every lock held for the
 run: those of the `runHolding` scope the dispatch is made from, which includes
 any a `--server` request adopted, and those the orchestrator itself inherited
-(swamp-club#3096). Nothing is sent when there are none. It travels as the
+(swamp-club#3096). A swamp started from a shell step therefore hands on what
+it inherited with every dispatch it makes for as long as it runs, which is
+what its own drain already assumes: the run that started it holds those locks
+until it exits. Nothing is sent when there are none. It travels as the
 optional `lockHolder` field of `DispatchParams`, which carries at most 256
 nonces (`MAX_REMOTE_LOCK_IDS`). A worker refuses a dispatch naming more, so
 for a longer list the orchestrator sends no holder and logs a warning; a
@@ -2165,13 +2168,15 @@ Known limits of the run-level match:
   failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
   run such commands one at a time or in a step of their own.
 - A nested swamp that outlives the hop that started it keeps its nonce list.
-  The skip assumes the holder waits on the nested swamp, which stops being
-  true when a `--server` client is killed without cancelling the run it
-  requested, when a dispatch is cancelled (the orchestrator does not wait for
-  the worker to confirm the runner is dead), or when a worker is lost and its
-  step is dispatched again under the same lock. Until the holder releases
-  that lock, a structural swamp still running under the abandoned run skips
-  it while the holder may be writing (swamp-club#3111).
+  The skip assumes the holder waits on the nested swamp, which stops being true
+  when a `--server` client is killed without cancelling the run it requested,
+  when a dispatch is cancelled (the orchestrator does not wait for the worker
+  to confirm the runner is dead), or when a worker is lost and its step is
+  dispatched again under the same lock. Until the holder releases that lock, a
+  structural swamp still running under the abandoned run skips it while the
+  holder may be writing (swamp-club#3111). The same holds for a run requested
+  over `--server` that the client stops waiting on while the calling step still
+  holds its lock.
 - A lock held for another run of a swamp that is not above the child (the
   orchestrator of a worker on another host, the caller of a `--server` run)
   is waited on like any unrelated lock. When that wait times out the error
@@ -2240,8 +2245,9 @@ directory is outside `data/`, so the lock scan never sees it. The marker
 
 - `skipping`: the live locks the drain skips because they are named in
   `SWAMP_LOCK_HOLDER_TOKENS`, whichever process holds them, which are held
-  until this drain's process exits. A lock skipped on the pid alone is left out: it may be held for
-  another run and released first, so it proves no cycle;
+  until this drain's process exits. A lock skipped on the pid alone is left
+  out: it may be held for another run and released first, so it proves no
+  cycle;
 - `waitingOn`: the live locks it waits on.
 
 It also carries the drain's pid, hostname, start time, last refresh and a

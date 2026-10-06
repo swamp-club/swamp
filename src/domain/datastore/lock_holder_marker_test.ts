@@ -516,8 +516,9 @@ Deno.test("LockHolderMarker.remoteLockHolder: also names the locks handed down t
   const marker = new LockHolderMarker(
     fakeEnv({
       [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
-      // An entry for its own pid is a reused pid's, not its own.
-      [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a+up-b,400:up-c,500:stale",
+      // An entry under its own pid is a lock handed down from a swamp on
+      // another host with the same pid.
+      [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a+up-b,400:up-c,500:up-d",
     }).store,
     500,
     () => "host-a",
@@ -526,14 +527,33 @@ Deno.test("LockHolderMarker.remoteLockHolder: also names the locks handed down t
   assertEquals(marker.remoteLockHolder(), {
     pid: 500,
     hostname: "host-a",
-    lockIds: ["up-a", "up-b", "up-c"],
+    lockIds: ["up-a", "up-b", "up-c", "up-d"],
   });
   assertEquals(
     await marker.runHolding(
       ["nonce-a", "up-a"],
       () => Promise.resolve(marker.remoteLockHolder()?.lockIds),
     ),
-    ["up-a", "up-b", "up-c", "nonce-a"],
+    ["up-a", "up-b", "up-c", "up-d", "nonce-a"],
+  );
+});
+
+Deno.test("LockHolderMarker.childLockEnv: keeps the locks handed down under its own pid (swamp-club#3096)", async () => {
+  // A dispatch runner whose pid equals its orchestrator's on another host.
+  const runner = new LockHolderMarker(
+    fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a,500:remote" }).store,
+    500,
+  );
+
+  assertEquals(runner.childLockEnv(), {
+    [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a,500:remote",
+  });
+  assertEquals(
+    await runner.runHolding(
+      ["own"],
+      () => Promise.resolve(runner.childLockEnv()),
+    ),
+    { [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a,500:remote+own" },
   );
 });
 
