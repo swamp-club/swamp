@@ -810,7 +810,9 @@ By default, as a trade-off, every dispatched step sees the orchestrator's
 whole environment, the same ambient access as running on the orchestrator host.
 An operator scopes it with serve's `dispatch-env-allow` (flag, `serve.yaml` key
 or `SWAMP_DISPATCH_ENV_ALLOW`): only the listed names ship (matched
-case-insensitively, still minus the denylist), and an empty list ships nothing.
+case-insensitively, still minus the denylist), and an empty list (`[]` in
+`serve.yaml`, or an empty `SWAMP_DISPATCH_ENV_ALLOW`; the flag needs a value)
+ships nothing.
 Leaving a name off the list also leaves the worker's own value in place, so a
 worker keeps its own cloud identity (`AWS_ROLE_ARN`,
 `AWS_WEB_IDENTITY_TOKEN_FILE`, …) when those names are not listed. Serve logs

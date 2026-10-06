@@ -423,7 +423,8 @@ import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_val
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
   "dispatch (case-insensitive, never HOME, PATH, SWAMP_* or the other denylisted names). " +
-  "An empty value ships none. Unset ships serve's whole environment minus the denylist " +
+  "Unset ships serve's whole environment minus the denylist. To ship none, set " +
+  "'dispatch-env-allow: []' in serve.yaml or an empty SWAMP_DISPATCH_ENV_ALLOW " +
   "(env: SWAMP_DISPATCH_ENV_ALLOW)";
 
 // deno-lint-ignore no-explicit-any
@@ -982,7 +983,7 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.trustedHosts) {
     args.push("--trusted-hosts", options.trustedHosts as string);
   }
-  if (options.dispatchEnvAllow !== undefined) {
+  if (options.dispatchEnvAllow) {
     args.push("--dispatch-env-allow", options.dispatchEnvAllow as string);
   }
   if (options.heartbeatInterval) {
