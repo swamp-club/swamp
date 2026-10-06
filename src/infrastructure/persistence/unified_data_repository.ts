@@ -1099,7 +1099,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           this.catalogUpsert(type, modelId, latestData);
         }
       } else if (onDisk.length > 0) {
-        await this.removeLatestMarkerFile(type, modelId, dataName);
+        // Only in-flight deferred writes are left. The marker keeps naming
+        // the deleted version, so reads find nothing instead of falling back
+        // to the highest version on disk; the write's promotion replaces it.
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -2080,7 +2082,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             this.catalogUpsert(type, modelId, latestData);
           }
         } else if (onDisk.length > 0) {
-          await this.removeLatestMarkerFile(type, modelId, data.name);
+          // Only in-flight deferred writes are left: leave the marker, as
+          // delete does.
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
           await this.stage({ kind: "remove", path: dataNameDir });
@@ -2162,8 +2165,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     priorVersions: number[],
     cap: number,
   ): Promise<void> {
-    if (priorVersions.length < cap) return;
-    const sorted = [...priorVersions].sort((a, b) => a - b);
+    // An in-flight deferred write is neither counted nor pruned, as in GC.
+    const pending = this.catalogStore.pendingVersions(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
+    const promoted = priorVersions.filter((v) => !pending.has(v));
+    if (promoted.length < cap) return;
+    const sorted = [...promoted].sort((a, b) => a - b);
     const toRemove = sorted.slice(0, sorted.length - cap + 1);
     for (const version of toRemove) {
       const versionDir = this.getPath(type, modelId, dataName, version);
@@ -2305,7 +2316,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * The versions on disk, and those of them that are promoted. An in-flight
    * deferred write (a pending catalog row) is on disk before it is promoted,
    * so delete and GC must not make it latest, count it as the latest to keep,
-   * or prune it until it is promoted or rolled back.
+   * or prune it until it is promoted or rolled back. A catalog rebuild marks
+   * every version on disk as promoted, an in-flight one included.
    */
   private async listPromotedVersions(
     type: ModelType,
@@ -2320,21 +2332,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
     );
     return { onDisk, promoted: onDisk.filter((v) => !pending.has(v)) };
-  }
-
-  /**
-   * Removes the latest marker when no promoted version is left but an
-   * in-flight deferred write still lives in the data name directory. The
-   * write's own promotion moves the marker forward again.
-   */
-  private async removeLatestMarkerFile(
-    type: ModelType,
-    modelId: string,
-    dataName: string,
-  ): Promise<void> {
-    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-    await this.stage({ kind: "write", path: dataNameDir });
-    await Deno.remove(join(dataNameDir, "latest")).catch(() => {});
   }
 
   private async updateLatestMarker(

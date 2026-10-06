@@ -1986,10 +1986,12 @@ Deno.test("delete: deleting the only promoted version keeps an in-flight deferre
 
     await repo.delete(testType, "m1", "out", 1);
 
-    // The directory and the in-flight write stay; the catalog keeps it
-    // unpromoted until its own promotion.
+    // The directory and the in-flight write stay, but neither the catalog
+    // nor a disk read sees the write until its own promotion.
     assertEquals(await repo.listVersions(testType, "m1", "out"), [2]);
     assertEquals(outFlags(catalogStore), ["2:0:0"]);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(repo.findByNameSync(testType, "m1", "out"), null);
 
     await repo.advanceLatestMarkers([inFlight]);
 
@@ -2011,4 +2013,15 @@ Deno.test("collectGarbage: counts, keeps and prunes only promoted versions, neve
     assertEquals(outFlags(catalogStore), ["2:1:1", "3:0:0"]);
     assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
   });
+});
+
+Deno.test("save: the write-time version cap neither counts nor prunes an in-flight deferred write (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.saveDeferred(testType, "m1", stepData("s1", 2), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1", 2), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 2), bytes("c"));
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2, 3]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:0", "3:1:1"]);
+  }, true);
 });

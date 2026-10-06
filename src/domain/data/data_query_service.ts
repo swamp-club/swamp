@@ -436,7 +436,8 @@ export class DataQueryService {
     // repository deleted it) would otherwise outrank the marker's version in
     // upsertNewVersion, which orders by version (swamp-club#2520). A higher
     // promoted version still on disk means the marker lags — the catalog row
-    // stands. An unpromoted deferred write (neither flag) does not count.
+    // stands. An unpromoted deferred write does not count: it holds neither
+    // flag, and the removal's recompute skips pending rows.
     const higherWhere =
       "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?";
     const higherParams = [

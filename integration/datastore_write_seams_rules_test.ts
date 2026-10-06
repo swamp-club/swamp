@@ -729,7 +729,7 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
 const PINNED_STAGED_CHANGES: readonly string[] = [
   // swamp-club#2979, move A.
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x7)",
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x9)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x8)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
   // swamp-club#2980, move B. "write|remove" is a delete whose resolved path

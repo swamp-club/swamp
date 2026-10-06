@@ -432,10 +432,12 @@ group's remaining promoted rows, in the same transaction as the removal
 removed falls back to its previous version (swamp-club#2975). A deferred write
 that is not promoted yet is marked `is_pending = 1` and holds neither flag;
 the recompute skips it. Delete and GC choose the new latest from promoted
-versions only, and GC never counts, keeps or prunes a pending version, so an
-in-flight deferred write is never promoted early. When no promoted version is
-left, delete and GC remove only the latest marker while a pending version
-still lives in the data name directory.
+versions only, and GC and the write-time version cap never count, keep or
+prune a pending version, so an in-flight deferred write is never promoted
+early. When only pending versions are left, the latest marker keeps naming
+the deleted version, so reads find nothing until the write is promoted. A
+catalog rebuild derives rows from disk and treats an in-flight write as
+promoted; rolling it back afterwards still recomputes the flags.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
