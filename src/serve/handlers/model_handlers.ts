@@ -127,9 +127,11 @@ import {
   filterByResources,
   handlerLibSwampContext,
   isAdminOnlyModelType,
+  isAuthorized,
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   pushChangedToRemote,
+  recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
   sanitizeErrorForClient,
@@ -152,6 +154,12 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  analyzeContentExpressions,
+  definitionRetargetSourcesChanged,
+  expressionsAddedByEdit,
+} from "../../domain/expressions/expression_references.ts";
+import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -184,15 +192,32 @@ interface MethodRunTarget {
   expectedName?: string;
   /** The id of the model run by id, recorded for cancel and attach. */
   resourceId?: string;
+  /**
+   * A direct type execution acts on the definition `definitionName` names,
+   * which a request may set apart from `modelIdOrName` (swamp-club#2672):
+   * that definition (null when the run will create it) and the resource it
+   * is authorized on. Absent on the standard path.
+   */
+  run?: { definition: DefinitionLookupResult | null; resource: AccessResource };
+}
+
+/**
+ * The definition a method run executes and locks: for a direct type
+ * execution the one `definitionName` names, otherwise the one resolved.
+ */
+function executedDefinition(
+  target: MethodRunTarget,
+): DefinitionLookupResult | null {
+  return target.run ? target.run.definition : target.definition;
 }
 
 /**
  * Resolves a method run's model. The standard path authorizes the model's
  * canonical name and full fields, then runs it by id (swamp-club#2674). A
  * direct type execution (a type and a definition name) may create its
- * definition, so it keeps authorizing the requested name and running by it;
- * how that path authorizes the definition it writes is swamp-club#2672.
- * Throws when the lookup fails.
+ * definition, so it runs by name: it authorizes the requested name, the
+ * type, and the definition `definitionName` names, which is the one it acts
+ * on (swamp-club#2672). Throws when a lookup fails.
  */
 async function resolveMethodRunTarget(
   ctx: ConnectionContext,
@@ -218,6 +243,27 @@ async function resolveMethodRunTarget(
         modelType: normalizedTypeOrRaw(payload.typeArg),
         tags: {},
       };
+    // The definition the run acts on is the one definitionName names. It is
+    // authorized by its canonical name and fields when it exists, and by
+    // the name to be created otherwise (swamp-club#2672). The run looks it
+    // up with the same findDefinitionByIdOrName (serve deps), and fails if
+    // it then finds anything else, so the two cannot disagree silently.
+    const runDefinition = await findDefinitionByIdOrName(
+      ctx.repoContext.definitionRepo,
+      payload.definitionName,
+    );
+    const created = payload.definitionName;
+    const runResource: AccessResource = runDefinition
+      ? modelAccessResource(runDefinition)
+      : {
+        kind: "model",
+        name: created,
+        fields: {
+          name: created,
+          modelType: normalizedTypeOrRaw(payload.typeArg),
+          tags: {},
+        },
+      };
     return {
       definition,
       resource: {
@@ -227,6 +273,14 @@ async function resolveMethodRunTarget(
       },
       modelIdOrName: payload.modelIdOrName,
       byId: false,
+      resourceId: runDefinition?.definition.id,
+      run: {
+        definition: runDefinition,
+        resource: {
+          ...runResource,
+          fields: { ...runResource.fields, methodName },
+        },
+      },
     };
   }
   const resolution: ResourceResolution = definition
@@ -293,18 +347,33 @@ function authorizeMethodRun(
   target: MethodRunTarget,
   ctx: ConnectionContext,
 ): boolean {
+  const restricted = ctx.authConfig.restrictedModelTypes;
   if (
     isAdminOnlyModelType(
       payload.typeArg,
       target.definition?.type.normalized,
-      ctx.authConfig.restrictedModelTypes,
+      restricted,
+    ) ||
+    isAdminOnlyModelType(
+      undefined,
+      target.run?.definition?.type.normalized,
+      restricted,
     )
   ) {
+    // Judged on the requested model's fields and, for a direct type
+    // execution, on those of the definition it acts on, so a condition on
+    // the record's name applies (swamp-club#2672).
     return authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "access",
       name: "*",
       fields: target.resource.fields,
-    }, ctx).allowed;
+    }, ctx).allowed &&
+      (!target.run ||
+        authorizeOrReject(socket, requestId, principal, "admin", {
+          kind: "access",
+          name: "*",
+          fields: target.run.resource.fields,
+        }, ctx).allowed);
   }
   if (
     !authorizeOrReject(
@@ -321,18 +390,112 @@ function authorizeMethodRun(
     const executionTarget = ModelType.create(payload.typeArg).normalized;
     // A type carries no tags; every resource field is present so a
     // conditional deny decides on it rather than failing closed.
-    return authorizeOrReject(socket, requestId, principal, "run", {
-      kind: "model",
-      name: executionTarget,
-      fields: {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "run", {
+        kind: "model",
         name: executionTarget,
-        modelType: executionTarget,
-        tags: {},
-        methodName: payload.methodName,
-      },
-    }, ctx).allowed;
+        fields: {
+          name: executionTarget,
+          modelType: executionTarget,
+          tags: {},
+          methodName: payload.methodName,
+        },
+      }, ctx).allowed
+    ) return false;
+  }
+  // Last, so the requested model and the type are reported first.
+  if (target.run) {
+    if (
+      !authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "run",
+        target.run.resource,
+        ctx,
+      ).allowed
+    ) return false;
+    recordAuditedResource(
+      socket,
+      requestId,
+      "model",
+      target.run.resource.name,
+      ctx,
+    );
   }
   return true;
+}
+
+/**
+ * Whether a direct run may proceed on `found`, a definition other than the
+ * one it was authorized on: renamed in between, or created by a concurrent
+ * run under the same name. It is judged as the run's own target would be,
+ * by its canonical name and fields, and as admin for a restricted or
+ * control-plane type (swamp-club#2672).
+ */
+function resolvedRunAllowed(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  methodName: string,
+  found: DefinitionLookupResult,
+  ctx: ConnectionContext,
+): boolean {
+  const resource = modelAccessResource(found);
+  const fields = { ...resource.fields, methodName };
+  return isAdminOnlyModelType(
+      undefined,
+      found.type.normalized,
+      ctx.authConfig.restrictedModelTypes,
+    )
+    ? isAuthorized(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields,
+    }, ctx)
+    : isAuthorized(socket, requestId, principal, "run", {
+      ...resource,
+      fields,
+    }, ctx);
+}
+
+/**
+ * Authorizes the expressions in a run's inputs against the caller, who
+ * wrote them (swamp-club#2755, swamp-club#2786): data they read must be
+ * readable by the caller, and `env` needs write on the model, as authoring
+ * it in the definition would. Inputs with no expressions pass untouched.
+ * Replies and returns false on a refusal.
+ */
+async function authorizeRunInputs(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  payload: ModelMethodRunPayload,
+  target: MethodRunTarget,
+  ctx: ConnectionContext,
+): Promise<boolean> {
+  const expressions = analyzeContentExpressions(payload.inputs ?? {});
+  if (expressions.length === 0) return true;
+  const runOn = target.run?.resource ?? target.resource;
+  const { methodName: _methodName, ...fields } = runOn.fields;
+  // Decided only when an input reads env, so a refusal is audited exactly
+  // when it decides the request.
+  const writable = !expressions.some((e) => e.references.usesEnv) ||
+    isAuthorized(socket, requestId, principal, "write", {
+      ...runOn,
+      fields,
+    }, ctx);
+  const refusal = await authorizeExpressionReferences(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    expressions,
+    writable ? "allowed" : { refusedFor: runOn.name },
+  );
+  if (!refusal) return true;
+  sendError(socket, requestId, "unauthorized", refusal.message);
+  return false;
 }
 
 export async function handleModelMethodRun(
@@ -394,7 +557,17 @@ export async function handleModelMethodRun(
       if (
         !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
       ) return;
-      const preResult = target.definition;
+      if (
+        !await authorizeRunInputs(
+          socket,
+          requestId,
+          principal,
+          payload,
+          target,
+          ctx,
+        )
+      ) return;
+      const preResult = executedDefinition(target);
 
       // The root's flush is the model lock's push when the run took one, on
       // every outcome; otherwise the run's push once it completed. The
@@ -431,10 +604,13 @@ export async function handleModelMethodRun(
         async () => {
           try {
             if (preResult) {
-              mutating = await isMethodMutating(
-                preResult.type.normalized,
-                payload.methodName,
-              );
+              // A direct type execution can rewrite an existing definition's
+              // global arguments whatever the method, so it always locks.
+              mutating = target.run !== undefined ||
+                await isMethodMutating(
+                  preResult.type.normalized,
+                  payload.methodName,
+                );
               if (mutating) {
                 const lockResult = await acquireModelLocks(
                   ctx.datastoreConfig,
@@ -485,6 +661,18 @@ export async function handleModelMethodRun(
                   runtimeTags: payload.runtimeTags,
                   typeArg: payload.typeArg,
                   definitionName: payload.definitionName,
+                  expectedDefinitionId: target.run
+                    ? target.run.definition?.definition.id ?? null
+                    : undefined,
+                  authorizeResolvedDefinition: (found) =>
+                    resolvedRunAllowed(
+                      socket,
+                      requestId,
+                      principal,
+                      payload.methodName,
+                      found,
+                      ctx,
+                    ),
                   skipAllReports: payload.skipAllReports || isDirectExecution,
                   skipReportNames: payload.skipReportNames,
                   skipReportLabels: payload.skipReportLabels,
@@ -569,10 +757,20 @@ export async function handleModelMethodRun(
   if (
     !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
   ) return;
-  const preResult = target.definition;
+  if (
+    !await authorizeRunInputs(
+      socket,
+      requestId,
+      principal,
+      payload,
+      target,
+      ctx,
+    )
+  ) return;
+  const preResult = executedDefinition(target);
   const recorded = recordedRunModel(
-    target.definition,
-    target.resource.name,
+    preResult,
+    target.run?.resource.name ?? target.resource.name,
     payload.typeArg,
   );
 
@@ -629,7 +827,8 @@ export async function handleModelMethodRun(
   );
 
   const detachedMutating = preResult
-    ? await isMethodMutating(preResult.type.normalized, payload.methodName)
+    ? target.run !== undefined ||
+      await isMethodMutating(preResult.type.normalized, payload.methodName)
     : true;
 
   (async () => {
@@ -745,6 +944,18 @@ export async function handleModelMethodRun(
                   runtimeTags: payload.runtimeTags,
                   typeArg: payload.typeArg,
                   definitionName: payload.definitionName,
+                  expectedDefinitionId: target.run
+                    ? target.run.definition?.definition.id ?? null
+                    : undefined,
+                  authorizeResolvedDefinition: (found) =>
+                    resolvedRunAllowed(
+                      socket,
+                      requestId,
+                      principal,
+                      payload.methodName,
+                      found,
+                      ctx,
+                    ),
                   skipAllReports: payload.skipAllReports || isDirectExecution,
                   skipReportNames: payload.skipReportNames,
                   skipReportLabels: payload.skipReportLabels,
@@ -1098,6 +1309,20 @@ export async function handleModelCreate(
         },
       }, ctx).allowed
     ) return;
+  }
+  // Every expression in a new model is added by this writer
+  // (swamp-club#2755).
+  const refusal = await authorizeExpressionReferences(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    analyzeContentExpressions(payload.globalArguments ?? {}),
+    "allowed",
+  );
+  if (refusal) {
+    sendError(socket, requestId, "unauthorized", refusal.message);
+    return;
   }
 
   // The root pushes only once the success reply was sent (swamp-club#3035).
@@ -2210,6 +2435,29 @@ export async function handleModelEdit(
                 modelEditResource(after),
                 ctx,
               ).allowed,
+            // The expressions the edit adds are authorized against this
+            // writer; those already stored are not (swamp-club#2755).
+            authorizeContent: async (before, after) => {
+              const beforeData = before.toData();
+              const afterData = after.toData();
+              // An edit to what self or inputs read can retarget a stored
+              // reference computed from them.
+              const refusal = await authorizeExpressionReferences(
+                socket,
+                requestId,
+                principal,
+                ctx,
+                expressionsAddedByEdit(
+                  analyzeContentExpressions(beforeData),
+                  analyzeContentExpressions(afterData),
+                  definitionRetargetSourcesChanged(beforeData, afterData),
+                ),
+                "allowed",
+              );
+              if (!refusal) return true;
+              sendError(socket, requestId, "unauthorized", refusal.message);
+              return false;
+            },
           }),
           {
             resolving: () => {},

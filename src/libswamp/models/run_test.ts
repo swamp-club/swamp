@@ -1354,3 +1354,130 @@ Deno.test("modelMethodRun keeps an empty-markdown report in the completed run's 
     reportRegistry.invalidateType(reportName);
   }
 });
+
+Deno.test("modelMethodRun: direct execution refuses a definition other than the one the caller authorized", async () => {
+  const nsType = ModelType.create("@myorg/guarded-model");
+  const modelDef: ModelDefinition = {
+    type: nsType,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  // The name now resolves to a different definition than the one the caller
+  // checked, as after a rename between the check and the run.
+  const swapped = Definition.create({ name: "my-instance" });
+  let executed = false;
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    lookupDefinition: () =>
+      Promise.resolve({ definition: swapped, type: nsType }),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      return key === nsType.normalized ? modelDef : undefined;
+    },
+    createAndSaveDefinition: (_type, _def) => {
+      executed = true;
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+
+  for (const expectedDefinitionId of ["authorized-id", null]) {
+    const failure = await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        modelIdOrName: "my-instance",
+        methodName: "run",
+        inputs: {},
+        lastEvaluated: false,
+        typeArg: "@myorg/guarded-model",
+        definitionName: "my-instance",
+        expectedDefinitionId,
+      }),
+    ).then(
+      (events) => JSON.stringify(events.find((e) => e.kind === "error")),
+      (error) => String(error),
+    );
+    assertStringIncludes(failure, "changed while the request was being");
+  }
+  assertEquals(executed, false);
+});
+
+Deno.test("modelMethodRun: direct execution proceeds on a different definition the caller authorizes", async () => {
+  const nsType = ModelType.create("@myorg/raced-model");
+  const modelDef: ModelDefinition = {
+    type: nsType,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  // A concurrent run created the definition after this one was authorized.
+  const winner = Definition.create({ name: "my-instance" });
+  const seen: string[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    lookupDefinition: (name: string) =>
+      Promise.resolve(
+        name === "my-instance" ? { definition: winner, type: nsType } : null,
+      ),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      return key === nsType.normalized ? modelDef : undefined;
+    },
+    createAndSaveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+  const run = (allow: boolean) =>
+    collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        modelIdOrName: "my-instance",
+        methodName: "run",
+        inputs: {},
+        lastEvaluated: false,
+        typeArg: "@myorg/raced-model",
+        definitionName: "my-instance",
+        expectedDefinitionId: null,
+        authorizeResolvedDefinition: (found) => {
+          seen.push(found.definition.id);
+          return allow;
+        },
+      }),
+    ).then(
+      (events) => JSON.stringify(events.find((e) => e.kind === "error") ?? ""),
+      (error) => String(error),
+    );
+  assertEquals((await run(true)).includes("changed while"), false);
+  // A definition renamed in since a check that found one is never adopted,
+  // even when the caller may run it: its lock was not taken.
+  const renamedIn = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      modelIdOrName: "my-instance",
+      methodName: "run",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@myorg/raced-model",
+      definitionName: "my-instance",
+      expectedDefinitionId: "authorized-id",
+      authorizeResolvedDefinition: () => true,
+    }),
+  ).then(
+    (events) => JSON.stringify(events.find((e) => e.kind === "error") ?? ""),
+    (error) => String(error),
+  );
+  assertStringIncludes(renamedIn, "changed while the request was being");
+  assertStringIncludes(await run(false), "changed while the request was being");
+  assertEquals(seen.every((id) => id === winner.id), true);
+});

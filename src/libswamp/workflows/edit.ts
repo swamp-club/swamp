@@ -97,6 +97,16 @@ export interface WorkflowEditInput {
     before: WorkflowEditTarget,
     after: WorkflowEditTarget,
   ) => Promise<boolean> | boolean;
+  /**
+   * Called before every stdin update is saved, after `authorizeUpdate`, with
+   * the stored and the edited workflow. Returning false leaves the file
+   * untouched. Serve uses it to authorize the expressions and steps the edit
+   * adds against the writer (swamp-club#2755).
+   */
+  authorizeContent?: (
+    before: Workflow,
+    after: Workflow,
+  ) => Promise<boolean> | boolean;
 }
 
 function editTarget(workflow: Workflow): WorkflowEditTarget {
@@ -272,10 +282,14 @@ export async function* workflowEdit(
 
           try {
             const before = editTarget(workflow);
-            const authorizeUpdate = input.authorizeUpdate;
-            const beforeSave = authorizeUpdate
-              ? (candidate: Workflow) =>
-                Promise.resolve(authorizeUpdate(before, editTarget(candidate)))
+            const stored = workflow;
+            const { authorizeUpdate, authorizeContent } = input;
+            const beforeSave = authorizeUpdate || authorizeContent
+              ? async (candidate: Workflow) =>
+                (!authorizeUpdate ||
+                  await authorizeUpdate(before, editTarget(candidate))) &&
+                (!authorizeContent ||
+                  await authorizeContent(stored, candidate))
               : undefined;
             const updated = await deps.updateFromStdin(
               workflow,

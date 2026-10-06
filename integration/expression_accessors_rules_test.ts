@@ -46,6 +46,11 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ROOT } from "./arch_fitness_helpers.ts";
 import { DATA_NAMESPACE_ACCESSORS } from "../src/domain/expressions/expression_parser.ts";
+import {
+  CLASSIFIED_DATA_ACCESSORS,
+  CROSS_MODEL_DATA_ACCESSORS,
+  MODEL_SCOPED_DATA_ACCESSORS,
+} from "../src/domain/expressions/expression_references.ts";
 
 const CEL_EVALUATOR = join(ROOT, "src/infrastructure/cel/cel_evaluator.ts");
 const MODEL_RESOLVER = join(ROOT, "src/domain/expressions/model_resolver.ts");
@@ -132,4 +137,15 @@ Deno.test("registeredAccessors ignores names that appear outside a registration"
     "    );",
   ].join("\n");
   assertEquals(registeredAccessors(stub), ["latest"]);
+});
+
+// Serve authorizes expression text by what it reads (swamp-club#2755). The
+// reference analyzer must classify every accessor, as naming its model or as
+// reading across models; one it does not know is judged as reading any data,
+// so a new accessor stays safe but should be classified here on purpose.
+Deno.test("the expression reference analyzer classifies every data accessor exactly once", () => {
+  assertEquals([...CLASSIFIED_DATA_ACCESSORS].sort(), expected);
+  for (const name of MODEL_SCOPED_DATA_ACCESSORS) {
+    assertEquals(CROSS_MODEL_DATA_ACCESSORS.has(name), false, name);
+  }
 });

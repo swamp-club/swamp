@@ -43,6 +43,7 @@ import {
   filterByResources,
   isAccessModelType,
   isAuthorized,
+  isAuthorizedForAll,
   LibSwampStreamError,
   listTokenSessions,
   MAX_STREAM_SESSIONS_PER_PRINCIPAL,
@@ -1621,4 +1622,47 @@ Deno.test("pushChangedToRemote: a failed push without onError is logged, not thr
   const { ctx, pushes } = pushCtx(new Error("remote unavailable"));
   await pushChangedToRemote(ctx);
   assertEquals(pushes.length, 1);
+});
+
+Deno.test("isAuthorizedForAll: any deny that applies to the kind refuses, whatever its pattern", () => {
+  const { socket, frames } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const allowAll = makeGrant({ resource: { kind: "data", pattern: "*" } });
+  const audited = (grants: Grant[]) => {
+    const ctx = makeCtx(grants);
+    const audit = withAuditLog(ctx);
+    const allowed = isAuthorizedForAll(
+      socket,
+      "req-1",
+      makePrincipal("adam"),
+      "read",
+      "data",
+      ctx,
+    );
+    return { allowed, audit };
+  };
+
+  assertEquals(audited([allowAll]).allowed, true);
+  const narrowDeny = audited([
+    allowAll,
+    makeGrant({
+      effect: "deny",
+      resource: { kind: "data", pattern: "prod-*" },
+    }),
+  ]);
+  assertEquals(narrowDeny.allowed, false);
+  assertEquals(narrowDeny.audit.length, 1);
+  assertEquals(narrowDeny.audit[0].outcome, "denied");
+  // A deny on another kind does not apply.
+  assertEquals(
+    audited([
+      allowAll,
+      makeGrant({
+        effect: "deny",
+        resource: { kind: "model", pattern: "prod-*" },
+      }),
+    ]).allowed,
+    true,
+  );
+  assertEquals(frames, []);
 });
