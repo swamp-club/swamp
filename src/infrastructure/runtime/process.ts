@@ -16,6 +16,25 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+import { hostname } from "node:os";
+
+/**
+ * Identifies where this process's pids live, for judging whether a pid
+ * another process recorded is still running: the hostname, plus on Linux the
+ * pid namespace. Containers that share a hostname (host networking) but not a
+ * pid namespace get different identities, so one never reads the other's
+ * live pid as dead. Falls back to the hostname alone when the namespace
+ * cannot be read.
+ */
+export function processHostIdentity(): string {
+  const host = hostname();
+  if (Deno.build.os !== "linux") return host;
+  try {
+    return `${host}#${Deno.readLinkSync("/proc/self/ns/pid")}`;
+  } catch {
+    return host;
+  }
+}
 
 /**
  * Check if a process with the given PID is no longer running.

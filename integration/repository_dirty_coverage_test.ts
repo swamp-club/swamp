@@ -181,7 +181,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** The repositories one context exposes, plus the hand-built one. */
 /**
  * Points every pending catalog row of `modelId` at a pid no process can hold,
  * as if the deferred write's process had died before promoting it.
@@ -194,6 +193,7 @@ function orphanPendingRows(catalogStore: CatalogStore, modelId: string): void {
   }
 }
 
+/** The repositories one context exposes, plus the hand-built one. */
 interface Repos {
   ctx: RepositoryContext;
   evaluatedWorkflowRepo: YamlEvaluatedWorkflowRepository;

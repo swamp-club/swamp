@@ -438,11 +438,12 @@ early. When only pending versions are left, the latest marker keeps naming
 the deleted version, so reads find nothing until the write is promoted. A
 catalog rebuild derives rows from disk and treats an in-flight write as
 promoted; rolling it back afterwards still recomputes the flags. A pending row
-records the pid and hostname of the process that wrote it. GC (not a dry run)
-first rolls back each pending write of the model whose writer ran on this host
-and is no longer alive, since nothing else will promote or roll it back, and
-removes a data name that leaves with no versions. A row from another host,
-the current process or a live pid stays in flight.
+records the pid and host identity (hostname, plus pid namespace on Linux) of
+the process that wrote it. GC (not a dry run) first rolls back each pending
+write of the model whose writer had this process's host identity and is no
+longer alive, since nothing else will promote or roll it back, and
+removes a data name that leaves with no versions. A row from another host or
+container, the current process or a live pid stays in flight.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in

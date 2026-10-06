@@ -67,7 +67,8 @@ export interface CatalogRow {
    */
   is_pending?: number;
   /**
-   * The pid and hostname of the process that wrote a pending row, so GC can
+   * The pid and host identity (hostname, plus pid namespace on Linux; see
+   * processHostIdentity) of the process that wrote a pending row, so GC can
    * tell a write whose process died (never to be promoted or rolled back)
    * from one still in flight. 0 and "" when the row is not pending.
    */

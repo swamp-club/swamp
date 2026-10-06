@@ -30,6 +30,7 @@ import {
 } from "./unified_data_repository.ts";
 
 import { hostname } from "node:os";
+import { processHostIdentity } from "../runtime/process.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
@@ -2038,7 +2039,7 @@ function setPendingWriter(
   modelId: string,
   version: number,
   pid: number,
-  host = hostname(),
+  host = processHostIdentity(),
 ): void {
   const row = [...catalogStore.iterate()].find((r) =>
     r.model_id === modelId && r.version === version
@@ -2062,9 +2063,9 @@ Deno.test("collectGarbage: rolls back a deferred write whose process died (swamp
   });
 });
 
-Deno.test("collectGarbage: leaves a deferred write from a live process, this process or another host in flight (swamp-club#2975)", async () => {
+Deno.test("collectGarbage: leaves a deferred write from a live process, this process, another host or another container in flight (swamp-club#2975)", async () => {
   await withStepRepo(async (repo, catalogStore) => {
-    for (const modelId of ["live", "self", "remote"]) {
+    for (const modelId of ["live", "self", "remote", "container"]) {
       await repo.save(testType, modelId, stepData("s1"), bytes("a"));
       await repo.saveDeferred(testType, modelId, stepData("s1"), bytes("b"));
     }
@@ -2073,12 +2074,20 @@ Deno.test("collectGarbage: leaves a deferred write from a live process, this pro
     );
     assertEquals([self?.pending_pid, self?.pending_host], [
       Deno.pid,
-      hostname(),
+      processHostIdentity(),
     ]);
     setPendingWriter(catalogStore, "live", 2, Deno.ppid);
     setPendingWriter(catalogStore, "remote", 2, DEAD_PID, "another-host");
+    // Same hostname, another pid namespace: host networking in a container.
+    setPendingWriter(
+      catalogStore,
+      "container",
+      2,
+      DEAD_PID,
+      `${hostname()}#pid:[1]`,
+    );
 
-    for (const modelId of ["live", "self", "remote"]) {
+    for (const modelId of ["live", "self", "remote", "container"]) {
       const result = await repo.collectGarbage(testType, modelId);
       assertEquals(result.versionsRemoved, 0, modelId);
       assertEquals(

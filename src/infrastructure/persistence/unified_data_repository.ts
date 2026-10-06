@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { existsSync } from "@std/fs";
-import { hostname } from "node:os";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { signalChange } from "./unit_of_work_scope.ts";
@@ -26,7 +25,7 @@ import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
-import { isProcessDead } from "../runtime/process.ts";
+import { isProcessDead, processHostIdentity } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   Data,
@@ -899,7 +898,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       source: dataToSave.ownerDefinition.source ?? "",
       is_pending: 1,
       pending_pid: Deno.pid,
-      pending_host: hostname(),
+      pending_host: processHostIdentity(),
     });
     this.catalogStore.recordLocalWrite();
 
@@ -1522,7 +1521,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       source: dataToSave.ownerDefinition.source ?? "",
       is_pending: 1,
       pending_pid: Deno.pid,
-      pending_host: hostname(),
+      pending_host: processHostIdentity(),
     });
     this.catalogStore.recordLocalWrite();
 
@@ -2353,15 +2352,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Rolls back deferred writes whose process died before promoting or
    * rolling them back. Their pending rows would otherwise keep the versions
    * out of GC and the version cap until a catalog rebuild. A row counts as
-   * orphaned only when this host wrote it and its pid is dead; a row from
-   * another host, this process, or a live pid is left in flight. A data name
-   * left with no versions is removed, as GC removes an emptied name.
+   * orphaned only when it was written under this process's host identity
+   * (hostname, plus pid namespace on Linux) and its pid is dead; a row from
+   * another host or container, this process, or a live pid is left in
+   * flight. A data name left with no versions is removed, as GC removes an
+   * emptied name.
    */
   private async reclaimOrphanedDeferredWrites(
     type: ModelType,
     modelId: string,
   ): Promise<GarbageCollectionResult> {
-    const host = hostname();
+    const host = processHostIdentity();
     const orphans = this.catalogStore
       .pendingRows(this.namespace, type.normalized, modelId)
       .filter((row) =>
