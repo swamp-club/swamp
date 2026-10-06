@@ -149,6 +149,7 @@ export class DefaultDataWriter implements DataWriter {
         this.modelType,
         this.modelId,
         data,
+        { deferred: this.deferred },
       );
       // Write empty file to create it
       await Deno.writeFile(this.allocated.contentPath, new Uint8Array());
@@ -184,6 +185,7 @@ export class DefaultDataWriter implements DataWriter {
       this.modelType,
       this.modelId,
       data,
+      { deferred: this.deferred },
     );
 
     // Open file for writing
@@ -242,6 +244,7 @@ export class DefaultDataWriter implements DataWriter {
         this.modelType,
         this.modelId,
         data,
+        { deferred: this.deferred },
       );
     }
 

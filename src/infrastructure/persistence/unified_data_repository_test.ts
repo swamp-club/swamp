@@ -29,6 +29,8 @@ import {
   sortedSubdirectoryNames,
 } from "./unified_data_repository.ts";
 
+
+import { dirname, join } from "@std/path";
 import { hostname } from "node:os";
 import { processHostIdentity } from "../runtime/process.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
@@ -2124,5 +2126,94 @@ Deno.test("collectGarbage: removes a data name whose only version left was a def
     assertEquals(await repo.listVersions(testType, "m1", "out"), []);
     assertEquals(outFlags(catalogStore), []);
     assertEquals(await repo.findByName(testType, "m1", "out"), null);
+  });
+});
+
+Deno.test("allocateVersion: a deferred allocation is pending before its content is written (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const { version } = await repo.allocateVersion(
+      testType,
+      "m1",
+      stepData("s1"),
+      { deferred: true },
+    );
+
+    const row = [...catalogStore.iterate()].find((r) => r.version === version);
+    assertEquals(
+      [row?.is_latest, row?.is_step_latest, row?.is_pending, row?.pending_pid],
+      [0, 0, 1, Deno.pid],
+    );
+  });
+});
+
+Deno.test("delete: a streamed deferred write allocated before the delete is not made readable by it (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    const data = stepData("s1");
+    await repo.save(testType, "m1", data, bytes("a"));
+    const { version, contentPath, priorVersions } = await repo.allocateVersion(
+      testType,
+      "m1",
+      data,
+      { deferred: true },
+    );
+
+    await repo.delete(testType, "m1", "out", 1);
+    await Deno.writeFile(contentPath, bytes("b"));
+    const { receipt } = await repo.finalizeVersionDeferred(
+      testType,
+      "m1",
+      data,
+      version,
+      priorVersions,
+    );
+
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(outFlags(catalogStore), ["2:0:0"]);
+
+    await repo.advanceLatestMarkers([receipt]);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+  });
+});
+
+Deno.test("rollbackVersions: rolling back the only write left after its promoted versions were deleted removes the name (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+    await repo.delete(testType, "m1", "out", 1);
+
+    await repo.rollbackVersions([inFlight]);
+
+    const dataNameDir = dirname(repo.getPath(testType, "m1", "out", 1));
+    assertEquals(
+      await Deno.stat(dataNameDir).then(() => true, () => false),
+      false,
+    );
+    assertEquals(outFlags(catalogStore), []);
+  });
+});
+
+Deno.test("rollbackVersions: rolling back a first deferred write leaves its data name directory as before (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo) => {
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+
+    await repo.rollbackVersions([inFlight]);
+
+    const dataNameDir = dirname(repo.getPath(testType, "m1", "out", 1));
+    assertEquals(
+      await Deno.stat(dataNameDir).then(() => true, () => false),
+      true,
+    );
+    assertEquals(await repo.listVersions(testType, "m1", "out"), []);
   });
 });

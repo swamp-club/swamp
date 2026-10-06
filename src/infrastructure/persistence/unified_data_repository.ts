@@ -25,7 +25,7 @@ import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
-import { isProcessDead, processHostIdentity } from "../runtime/process.ts";
+import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   Data,
@@ -833,6 +833,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
+    const checksum = await this.computeChecksum(content);
     const { version: newVersion } = await this.atomicAllocateVersionDir(
       type,
       modelId,
@@ -842,8 +843,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dataToSave = data.withNewVersion({
       version: newVersion,
       size: content.length,
-      checksum: await this.computeChecksum(content),
+      checksum,
     });
+    // Register the write as pending before any of its files reach disk, so
+    // delete and GC never mistake the new version for a promoted one.
+    this.upsertPendingRow(type, modelId, dataToSave);
 
     const metadataPath = this.getMetadataPath(
       type,
@@ -866,41 +870,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     await assertSafePath(contentPath, boundary);
     await atomicWriteFile(contentPath, content);
-
-    // Catalog row with both latest flags 0 — invisible to latest-based queries
-    this.catalogStore.upsert({
-      namespace: this.namespace,
-      type_normalized: type.normalized,
-      model_id: modelId,
-      data_name: data.name,
-      id: data.id,
-      version: newVersion,
-      is_latest: 0,
-      is_step_latest: 0,
-      model_name: dataToSave.tags["modelName"] ?? "",
-      spec_name: dataToSave.tags["specName"] ?? "",
-      data_type: dataToSave.tags["type"] ?? "",
-      content_type: dataToSave.contentType,
-      lifetime: dataToSave.lifetime,
-      garbage_collection: garbageCollectionToColumn(
-        dataToSave.garbageCollection,
-      ),
-      owner_type: dataToSave.ownerDefinition.ownerType,
-      streaming: dataToSave.streaming ? 1 : 0,
-      size: dataToSave.size ?? 0,
-      created_at: dataToSave.createdAt.toISOString(),
-      tags: JSON.stringify(dataToSave.tags),
-      owner_ref: dataToSave.ownerDefinition.ownerRef,
-      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
-      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
-      job_name: dataToSave.ownerDefinition.jobName ?? "",
-      step_name: dataToSave.ownerDefinition.stepName ?? "",
-      source: dataToSave.ownerDefinition.source ?? "",
-      is_pending: 1,
-      pending_pid: Deno.pid,
-      pending_host: processHostIdentity(),
-    });
-    this.catalogStore.recordLocalWrite();
 
     return { type, modelId, dataName: data.name, version: newVersion };
   }
@@ -1346,6 +1315,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
+    options?: { deferred?: boolean },
   ): Promise<
     { version: number; contentPath: string; priorVersions: number[] }
   > {
@@ -1382,6 +1352,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         data.name,
       );
+
+    // A deferred write is registered as pending before its content is
+    // streamed in; finalizeVersionDeferred completes the row.
+    if (options?.deferred) {
+      this.upsertPendingRow(
+        type,
+        modelId,
+        data.withNewVersion({ version: newVersion, size: 0 }),
+      );
+    }
 
     const contentPath = this.getContentPath(
       type,
@@ -1491,39 +1471,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(metadataPath, metadataContent);
 
-    this.catalogStore.upsert({
-      namespace: this.namespace,
-      type_normalized: type.normalized,
-      model_id: modelId,
-      data_name: data.name,
-      id: data.id,
-      version,
-      is_latest: 0,
-      is_step_latest: 0,
-      model_name: dataToSave.tags["modelName"] ?? "",
-      spec_name: dataToSave.tags["specName"] ?? "",
-      data_type: dataToSave.tags["type"] ?? "",
-      content_type: dataToSave.contentType,
-      lifetime: dataToSave.lifetime,
-      garbage_collection: garbageCollectionToColumn(
-        dataToSave.garbageCollection,
-      ),
-      owner_type: dataToSave.ownerDefinition.ownerType,
-      streaming: dataToSave.streaming ? 1 : 0,
-      size: dataToSave.size ?? 0,
-      created_at: dataToSave.createdAt.toISOString(),
-      tags: JSON.stringify(dataToSave.tags),
-      owner_ref: dataToSave.ownerDefinition.ownerRef,
-      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
-      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
-      job_name: dataToSave.ownerDefinition.jobName ?? "",
-      step_name: dataToSave.ownerDefinition.stepName ?? "",
-      source: dataToSave.ownerDefinition.source ?? "",
-      is_pending: 1,
-      pending_pid: Deno.pid,
-      pending_host: processHostIdentity(),
-    });
-    this.catalogStore.recordLocalWrite();
+    this.upsertPendingRow(type, modelId, dataToSave);
 
     return {
       receipt: { type, modelId, dataName: data.name, version },
@@ -1580,6 +1528,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           computeLatestFlags,
         );
         this.catalogStore.recordLocalWrite();
+        await this.removeNameLeftWithDanglingMarker(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+        );
       } catch (error) {
         logger
           .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
@@ -2327,6 +2280,71 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Removes a data name that has no versions left but still has a latest
+   * marker naming a version that is gone. Deleting the last promoted version
+   * while a deferred write is in flight leaves the marker that way on
+   * purpose; once that write is rolled back too, nothing is left to read. A
+   * name without a marker (a first deferred write rolled back) is left as it
+   * is.
+   */
+  private async removeNameLeftWithDanglingMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    if ((await this.listVersions(type, modelId, dataName)).length > 0) return;
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    try {
+      await Deno.lstat(join(dataNameDir, "latest"));
+    } catch {
+      return;
+    }
+    await this.stage({ kind: "remove", path: dataNameDir });
+    await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+    this.catalogRemove(type, modelId, dataName);
+  }
+
+  /**
+   * Writes the catalog row of a deferred write that is not promoted yet: both
+   * latest flags 0, so latest-based queries do not see it, and marked pending
+   * with this process's pid and host identity, so delete and GC leave it alone
+   * while it is in flight and GC can reclaim it if this process dies.
+   */
+  private upsertPendingRow(type: ModelType, modelId: string, data: Data): void {
+    this.catalogStore.upsert({
+      namespace: this.namespace,
+      type_normalized: type.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version: data.version,
+      is_latest: 0,
+      is_step_latest: 0,
+      model_name: data.tags["modelName"] ?? "",
+      spec_name: data.tags["specName"] ?? "",
+      data_type: data.tags["type"] ?? "",
+      content_type: data.contentType,
+      lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
+      owner_type: data.ownerDefinition.ownerType,
+      streaming: data.streaming ? 1 : 0,
+      size: data.size ?? 0,
+      created_at: data.createdAt.toISOString(),
+      tags: JSON.stringify(data.tags),
+      owner_ref: data.ownerDefinition.ownerRef,
+      workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+      workflow_name: data.ownerDefinition.workflowName ?? "",
+      job_name: data.ownerDefinition.jobName ?? "",
+      step_name: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
+      is_pending: 1,
+      pending_pid: Deno.pid,
+      pending_host: processHostIdentity(),
+    });
+    this.catalogStore.recordLocalWrite();
+  }
+
+  /**
    * The versions on disk, and those of them that are promoted. An in-flight
    * deferred write (a pending catalog row) is on disk before it is promoted,
    * so delete and GC must not make it latest, count it as the latest to keep,
@@ -2368,7 +2386,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       .filter((row) =>
         row.pending_host === host && row.pending_pid !== undefined &&
         row.pending_pid > 0 && row.pending_pid !== Deno.pid &&
-        isProcessDead(row.pending_pid)
+        isProcessGone(row.pending_pid)
       );
     let versionsRemoved = 0;
     let bytesReclaimed = 0;

@@ -60,6 +60,35 @@ export function isProcessDead(pid: number): boolean {
   }
 }
 
+/**
+ * Like {@link isProcessDead}, but never resumes or otherwise disturbs the
+ * process it probes, for pids read from persisted data that may since have
+ * been reused. Linux checks `/proc/<pid>`, which sends nothing and sees the
+ * same pid namespace as this process. Other POSIX hosts send SIGURG, whose
+ * default action is to ignore it; unlike SIGCONT it does not resume a
+ * stopped process. Windows uses `tasklist`. Returns `false` (not dead) on
+ * any unexpected error.
+ */
+export function isProcessGone(pid: number): boolean {
+  if (Deno.build.os === "windows") {
+    return isProcessDeadWindows(pid);
+  }
+  if (Deno.build.os === "linux") {
+    try {
+      Deno.statSync(`/proc/${pid}`);
+      return false;
+    } catch (error) {
+      return error instanceof Deno.errors.NotFound;
+    }
+  }
+  try {
+    Deno.kill(pid, "SIGURG");
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
+  }
+}
+
 const MIN_RECOMMENDED_NOFILE = 8192;
 
 /**

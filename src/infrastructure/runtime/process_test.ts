@@ -23,9 +23,16 @@ import {
   checkOpenFileLimit,
   getOpenFileSoftLimit,
   isProcessDead,
+  isProcessGone,
   processHostIdentity,
   tryRaiseOpenFileLimit,
 } from "./process.ts";
+
+Deno.test("isProcessGone: false for a live process, true for a pid no process can hold", () => {
+  assertEquals(isProcessGone(Deno.pid), false);
+  assertEquals(isProcessGone(Deno.ppid), false);
+  assertEquals(isProcessGone(2147483647), true);
+});
 
 Deno.test("processHostIdentity: is the hostname, plus the pid namespace on Linux", () => {
   const identity = processHostIdentity();

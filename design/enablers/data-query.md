@@ -424,26 +424,28 @@ may return several records for one data name written by different workflow
 steps; an older step's record reports `isLatest: false`. `data.latest()`
 returns the single latest record regardless of step.
 
-Removing versions (`swamp data delete --version`, GC, the version cap,
-rolling back a deferred write, or dropping a row whose version another
-repository deleted) recomputes both flags with `computeLatestFlags` over the
-group's remaining promoted rows, in the same transaction as the removal
+Removing versions (`swamp data delete --version`, GC, the version cap, rolling
+back a deferred write, or dropping a row whose version another repository
+deleted) recomputes both flags with `computeLatestFlags` over the group's
+remaining promoted rows, in the same transaction as the removal
 (`CatalogStore.removeVersion`, `bulkRemoveVersions`). A step whose latest was
 removed falls back to its previous version (swamp-club#2975). A deferred write
-that is not promoted yet is marked `is_pending = 1` and holds neither flag;
-the recompute skips it. Delete and GC choose the new latest from promoted
-versions only, and GC and the write-time version cap never count, keep or
-prune a pending version, so an in-flight deferred write is never promoted
-early. When only pending versions are left, the latest marker keeps naming
-the deleted version, so reads find nothing until the write is promoted. A
-catalog rebuild derives rows from disk and treats an in-flight write as
-promoted; rolling it back afterwards still recomputes the flags. A pending row
-records the pid and host identity (hostname, plus pid namespace on Linux) of
-the process that wrote it. GC (not a dry run) first rolls back each pending
+is registered as pending (`is_pending = 1`, neither flag) as soon as its
+version is allocated, before any of its files reach disk, and stays pending
+until it is promoted or rolled back; the recompute skips it. Delete and GC
+choose the new latest from promoted versions only, and GC and the write-time
+version cap never count, keep or prune a pending version, so an in-flight
+deferred write is never promoted early. When only pending versions are left,
+the latest marker keeps naming the deleted version, so reads find nothing until
+the write is promoted; if the write is rolled back instead, the emptied name is
+removed. A catalog rebuild derives rows from disk and treats an in-flight write
+as promoted; rolling it back afterwards still recomputes the flags. A pending
+row records the pid and host identity (hostname, plus pid namespace on Linux)
+of the process that wrote it. GC (not a dry run) first rolls back each pending
 write of the model whose writer had this process's host identity and is no
-longer alive, since nothing else will promote or roll it back, and
-removes a data name that leaves with no versions. A row from another host or
-container, the current process or a live pid stays in flight.
+longer alive, since nothing else will promote or roll it back, and removes a
+data name that leaves with no versions. A row from another host or container,
+the current process or a live pid stays in flight.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in

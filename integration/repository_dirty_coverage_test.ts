@@ -680,6 +680,23 @@ const unifiedDataRows: Row[] = [
   },
   {
     repo: "UnifiedData",
+    method: "rollbackVersions(after its promoted versions were deleted)",
+    prepare: async (h) => {
+      const modelId = crypto.randomUUID();
+      const repo = h.ctx.unifiedDataRepo;
+      await repo.save(TYPE, modelId, makeData(), bytes("v1"));
+      const receipt = await repo.saveDeferred(
+        TYPE,
+        modelId,
+        makeData(),
+        bytes("v2"),
+      );
+      await repo.delete(TYPE, modelId, "item", 1);
+      return () => repo.rollbackVersions([receipt]);
+    },
+  },
+  {
+    repo: "UnifiedData",
     method: "collectGarbage(numeric)",
     parallelMarks: true,
     prepare: async (h) => {
