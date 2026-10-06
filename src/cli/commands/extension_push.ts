@@ -643,14 +643,18 @@ export const extensionPushCommand = new Command()
     // 6a. Handle review-rule warnings
     if (prepared.reviewRulesResult.warnings.length > 0) {
       renderer.renderReviewRuleWarnings(
-        withAcceptance(prepared.reviewRulesResult.warnings, manifestDir),
+        withAcceptance(
+          prepared.reviewRulesResult.warnings,
+          manifestDir,
+          repoDir,
+        ),
       );
     }
 
     // 6b. Handle safety warnings
     if (prepared.safetyWarnings.length > 0) {
       renderer.renderSafetyWarnings(
-        withAcceptance(prepared.safetyWarnings, manifestDir),
+        withAcceptance(prepared.safetyWarnings, manifestDir, repoDir),
       );
     }
 
@@ -681,11 +685,15 @@ export const extensionPushCommand = new Command()
     // The closing report is built from the gated warnings themselves, not
     // the waiver record, so a dry run, a --json run and an interactive "y"
     // all get the same advice.
-    const report = buildFindingsReport({
-      safetyWarnings: prepared.safetyWarnings,
-      reviewWarnings: prepared.reviewRulesResult.warnings,
-      acceptances: prepared.acceptances,
-    }, manifestDir);
+    const report = buildFindingsReport(
+      {
+        safetyWarnings: prepared.safetyWarnings,
+        reviewWarnings: prepared.reviewRulesResult.warnings,
+        acceptances: prepared.acceptances,
+      },
+      manifestDir,
+      repoDir,
+    );
 
     // 6d. Version-drift check (advisory warning only)
     // Fetch the last-published version from the registry to compare

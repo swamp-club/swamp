@@ -1058,8 +1058,10 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   placeholder the parser rejects). In JSON they are `declaredAcceptances` and
   `forNextTime` beside `acceptedWarnings`, built from the gated warnings, not
   the waiver record, so a `--json` run, a dry run and an interactive "y" all
-  get them. The acceptances travel to the registry in
-  `contentMetadata.acceptances` (stored by swamp-club#3095).
+  get them, with files relative to the manifest's directory (a `../` path for
+  a typed directory beside it). The acceptances travel to the registry in
+  `contentMetadata.acceptances` (stored by swamp-club#3095) with files by
+  their archive path (`models/x.ts`, `vaults/v.ts`), never a local one.
 
 ## Dependencies
 

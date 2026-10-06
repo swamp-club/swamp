@@ -1758,6 +1758,7 @@ Deno.test("extensionPushPrepare: an inline acceptance takes its finding out of t
     assertEquals(result.acceptances.accepted, [{
       ruleId: "credentials-sensitive-field",
       file: "models/a.ts",
+      archivePath: "models/a.ts",
       line: 2,
       reason: "reference to a Secret, not a secret",
       source: "inline",
@@ -1970,4 +1971,48 @@ Deno.test("extensionPushPrepare: a sidecar entry accepts the bare-specifiers fin
     assertEquals(result.acceptances.accepted[0].source, "sidecar");
     assertEquals(result.acceptances.accepted[0].file, undefined);
   });
+});
+
+Deno.test("extensionPushPrepare: an accepted finding in a typed directory beside the manifest is a ../ path in the summary and an archive path for the registry, never a local one", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "acceptances-" });
+  try {
+    const manifestDir = join(dir, "extensions", "models");
+    const vaultsDir = join(dir, "extensions", "vaults");
+    await Deno.mkdir(manifestDir, { recursive: true });
+    await Deno.mkdir(vaultsDir, { recursive: true });
+    const vault = join(vaultsDir, "v.ts");
+    await Deno.writeTextFile(
+      vault,
+      "const S = z.object({\n  apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: vault key name\n});\n",
+    );
+    const deps = makePrepareDeps({
+      checkReviewRules: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [SECRET_FINDING(vault, 2)],
+          passed: true,
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      makePrepareInput({
+        repoDir: dir,
+        manifestDir,
+        modelsDir: manifestDir,
+        vaultsDir,
+        allVaultFiles: [vault],
+        vaultEntryPoints: [vault],
+      }),
+    );
+    assertEquals(result.acceptances.accepted[0].file, "../vaults/v.ts");
+    assertEquals(result.acceptances.accepted[0].archivePath, "vaults/v.ts");
+    assertEquals(
+      result.contentMetadata?.acceptances?.accepted[0].file,
+      "vaults/v.ts",
+    );
+    assertEquals(JSON.stringify(result.contentMetadata).includes(dir), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

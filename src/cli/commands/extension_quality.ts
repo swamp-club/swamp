@@ -189,7 +189,7 @@ export const extensionQualityCommand = new Command()
             packageJsonPath: undefined,
           },
         }),
-        renderer.handlers({ manifestDir }),
+        renderer.handlers({ manifestDir, repoDir }),
       );
 
       cliCtx.logger.debug`Extension quality command completed`;

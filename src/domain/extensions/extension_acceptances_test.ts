@@ -255,6 +255,27 @@ Deno.test("parseAcceptanceDirectives: directive text inside a Markdown fenced bl
   assertEquals(ts.directives[0].target, { kind: "line", file: TS, line: 6 });
 });
 
+Deno.test("parseAcceptanceDirectives: a /* inside a // comment or a regex does not open a block and later directives still parse", () => {
+  const parsed = parseAcceptanceDirectives(
+    [
+      "// loads every file under models/* at startup",
+      "// matches **/*.ts",
+      "const re = /\\/*/g;",
+      "const S = z.object({",
+      "  apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: vault key name",
+      "});",
+    ].join("\n"),
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: TS,
+    line: 5,
+  });
+});
+
 Deno.test("parseAcceptanceDirectives: a standalone directive reaches past one blank line, not two", () => {
   const one = parseAcceptanceDirectives(
     "// swamp-quality-ignore deno-command: vendor CLI\n\nnew Deno.Command('x');\n",

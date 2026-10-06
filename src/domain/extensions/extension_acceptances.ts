@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname, relative, SEPARATOR } from "@std/path";
+import { extname, isAbsolute, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
   isAcceptableRule,
@@ -216,7 +216,8 @@ export function parseAcceptanceDirectives(
       const open = line.indexOf("/*");
       if (
         open !== -1 && !isInsideQuotes(line, open) &&
-        !line.includes("*/", open + 2)
+        !lineCommentBefore(line, open) &&
+        !line.includes("*/", open + 1)
       ) {
         // A block comment spanning lines (a JSDoc example) is documentation.
         // One that closes on its own line is parsed as usual, and a
@@ -447,6 +448,18 @@ function isStandaloneDirectiveLine(
     line.slice(0, found.openerAt).trim().length === 0;
 }
 
+/** True when a `//` line comment (not inside quotes) starts before `index`. */
+function lineCommentBefore(line: string, index: number): boolean {
+  let from = 0;
+  while (from < index) {
+    const at = line.indexOf("//", from);
+    if (at === -1 || at >= index) return false;
+    if (!isInsideQuotes(line, at)) return true;
+    from = at + 2;
+  }
+  return false;
+}
+
 /** True when `index` sits inside a quoted string literal on the line. */
 function isInsideQuotes(line: string, index: number): boolean {
   let quote: string | undefined;
@@ -588,17 +601,29 @@ export interface AcceptanceSnippet {
   placement: string;
 }
 
-/** A finding's file relative to the manifest's directory, with forward slashes. */
+function escapesDir(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
+}
+
+/**
+ * A finding's file relative to the manifest's directory, with forward
+ * slashes, for the summaries. A file elsewhere in the repository (a vault
+ * beside a `extensions/models/manifest.yaml`) is a `../` path when
+ * `repoDir` is given; a file outside the repository (the adversarial-review
+ * report in the review dir) keeps its absolute path.
+ */
 export function fileRelativeToManifest(
   manifestDir: string,
   file: string,
+  repoDir?: string,
 ): string {
   if (file.startsWith("(")) return file;
   const rel = relative(manifestDir, file);
-  // A file outside the manifest's directory (the adversarial-review report
-  // in the review dir) keeps its absolute path rather than a ../ chain.
-  if (rel === ".." || rel.startsWith(".." + SEPARATOR)) return file;
-  return rel.replaceAll("\\", "/");
+  if (!escapesDir(rel)) return rel.replaceAll("\\", "/");
+  if (repoDir !== undefined && !escapesDir(relative(repoDir, file))) {
+    return rel.replaceAll("\\", "/");
+  }
+  return file;
 }
 
 function sidecarEntry(ruleId: string, file?: string): string {
@@ -620,10 +645,11 @@ function sidecarEntry(ruleId: string, file?: string): string {
 export function acceptanceSnippet(
   finding: AcceptableFinding,
   manifestDir: string,
+  repoDir?: string,
 ): AcceptanceSnippet | undefined {
   if (!isAcceptableRule(finding.ruleId)) return undefined;
   const scope = findRule(finding.ruleId)!.scope;
-  const rel = fileRelativeToManifest(manifestDir, finding.file);
+  const rel = fileRelativeToManifest(manifestDir, finding.file, repoDir);
   if (scope === "extension") {
     return {
       text: sidecarEntry(finding.ruleId),

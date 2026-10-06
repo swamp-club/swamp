@@ -614,3 +614,19 @@ Deno.test("analyzeExtensionSafety: a quote inside a regex cannot make a string r
     },
   );
 });
+
+Deno.test("analyzeExtensionSafety: a directive shown inside a fenced Markdown block is scanned as written", async () => {
+  await withTempFiles(
+    {
+      "README.md":
+        "```markdown\n<!-- swamp-quality-ignore ipv4-address-literals: gateway 10.0.0.1 -->\n```\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => [w.ruleId, w.line]), [[
+        "ipv4-address-literals",
+        2,
+      ]]);
+    },
+  );
+});

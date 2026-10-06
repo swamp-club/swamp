@@ -19,7 +19,12 @@
 
 import { stripAnsiCode } from "@std/fmt/colors";
 import { join, resolve } from "@std/path";
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ExtensionQualityEvent } from "../../libswamp/mod.ts";
 import type { RubricScore } from "../../domain/extensions/extension_rubric_scorer.ts";
@@ -309,4 +314,46 @@ Deno.test("createExtensionQualityRenderer: log completed prints the accepted and
     "// swamp-quality-ignore deno-command: <reason>",
   );
   assertStringIncludes(output, "stale-acceptance — models/a.ts:2:");
+});
+
+Deno.test("createExtensionQualityRenderer: a failed run names the invalid acceptance before the error, in log and JSON", () => {
+  const error = {
+    kind: "error" as const,
+    error: {
+      code: "validation_failed",
+      message:
+        "Extension review found issues that must be resolved before pushing.",
+      details: {
+        reviewRuleErrors: [{
+          ruleId: "invalid-acceptance",
+          dimension: "Declared acceptances",
+          severity: "high",
+          file: "/ext/models/a.ts",
+          line: 4,
+          message:
+            'Acceptance "// swamp-quality-ignore dynamic-code: x" is invalid: cannot be accepted.',
+        }],
+      },
+    },
+  } as unknown as Extract<ExtensionQualityEvent, { kind: "error" }>;
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createExtensionQualityRenderer(mode);
+    let thrown: unknown;
+    const logs = capture(() => {
+      try {
+        renderer.handlers({ manifestDir: resolve("/ext") }).error(error);
+      } catch (e) {
+        thrown = e;
+      }
+    });
+    assert(thrown instanceof UserError, mode);
+    const output = logs.join("\n");
+    assertStringIncludes(output, "invalid-acceptance", mode);
+    assertStringIncludes(output, "swamp-quality-ignore dynamic-code", mode);
+    assertStringIncludes(
+      output,
+      mode === "log" ? "/ext/models/a.ts:4" : '"line": 4',
+      mode,
+    );
+  }
 });

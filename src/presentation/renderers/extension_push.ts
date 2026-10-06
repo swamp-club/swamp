@@ -361,12 +361,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   private renderAcceptedWarnings(accepted: WarningsAcceptance): void {
     this.logger.warn(acceptedWarningsHeader(accepted));
     for (const w of accepted.warnings.safety) {
-      this.logger.warn`  ${w.file}: ${w.message}`;
+      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
     }
     for (const w of accepted.warnings.review) {
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
     }
   }
 

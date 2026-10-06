@@ -160,7 +160,7 @@ export interface ExtensionContentMetadata {
 export interface ExtensionAcceptance {
   /** The rule the acceptance names, e.g. `credentials-sensitive-field`. */
   rule: string;
-  /** The file, relative to the manifest's directory with forward slashes; absent for extension-scoped rules. */
+  /** The file's path inside the archive (`models/x.ts`); absent for extension-scoped rules or an unpackaged file. */
   file?: string;
   /** The 1-based line for a site-scoped finding. */
   line?: number;

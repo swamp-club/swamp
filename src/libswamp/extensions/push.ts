@@ -17,7 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, extname, join, relative } from "@std/path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  SEPARATOR,
+} from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import {
@@ -1214,8 +1222,18 @@ function isNotAuthenticatedError(error: unknown): boolean {
 /** One declared acceptance, as the summaries and the registry see it. */
 export interface DeclaredAcceptance {
   ruleId: string;
-  /** The file relative to the manifest's directory (forward slashes); absent for extension-scoped rules. */
+  /**
+   * The file relative to the manifest's directory (forward slashes, a
+   * `../` path for a typed directory beside it); absent for
+   * extension-scoped rules.
+   */
   file?: string;
+  /**
+   * The file's path inside the archive (`models/x.ts`, `vaults/v.ts`,
+   * `files/README.md`), which is what the registry receives; absent when
+   * the file is not packaged under a known directory.
+   */
+  archivePath?: string;
   line?: number;
   reason: string;
   source: AcceptanceSource;
@@ -1370,16 +1388,24 @@ export async function runQualityFindings(
     ...invalid.map(invalidAcceptanceFinding),
   ];
 
-  const accepted: DeclaredAcceptance[] = applied.accepted.map((a) => ({
-    ruleId: a.finding.ruleId,
-    ...(a.finding.file.startsWith("(")
-      ? {}
-      : { file: fileRelativeToManifest(input.manifestDir, a.finding.file) }),
-    ...(a.finding.line !== undefined ? { line: a.finding.line } : {}),
-    reason: a.reason,
-    source: a.source,
-    message: a.finding.message,
-  }));
+  const accepted: DeclaredAcceptance[] = applied.accepted.map((a) => {
+    const archivePath = archivePathFor(input, a.finding.file);
+    return {
+      ruleId: a.finding.ruleId,
+      ...(a.finding.file.startsWith("(") ? {} : {
+        file: fileRelativeToManifest(
+          input.manifestDir,
+          a.finding.file,
+          input.repoDir,
+        ),
+      }),
+      ...(archivePath !== undefined ? { archivePath } : {}),
+      ...(a.finding.line !== undefined ? { line: a.finding.line } : {}),
+      reason: a.reason,
+      source: a.source,
+      message: a.finding.message,
+    };
+  });
 
   return {
     safetyWarnings: remainingSafety,
@@ -1423,7 +1449,7 @@ function collapseTestingCompleteness(
     input.datastoreEntryPoints.length + input.reportEntryPoints.length +
     input.webhookEntryPoints.length;
   const listed = files.slice(0, TESTING_COMPLETENESS_LISTED).map((f) =>
-    fileRelativeToManifest(input.manifestDir, f)
+    fileRelativeToManifest(input.manifestDir, f, input.repoDir)
   );
   const more = files.length - listed.length;
   const first = untested[0];
@@ -1446,13 +1472,47 @@ function collapseTestingCompleteness(
   ];
 }
 
-/** The acceptances as content metadata carries them to the registry. */
+/**
+ * The path a packaged file has inside the archive, mirroring
+ * {@link createArchive}: typed sources under their kind, everything else
+ * under `files/` by its path from the manifest's directory. Undefined for a
+ * file the archive does not carry, so no local path ever leaves the machine.
+ */
+function archivePathFor(
+  input: ExtensionPushPrepareInput,
+  file: string,
+): string | undefined {
+  const under = (dir: string): string | undefined => {
+    const rel = relative(dir, file);
+    return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel)
+      ? undefined
+      : rel.replaceAll("\\", "/");
+  };
+  const typed: Array<[string, string]> = [
+    ["models", input.modelsDir],
+    ["vaults", input.vaultsDir],
+    ["datastores", input.datastoresDir],
+    ["reports", input.reportsDir],
+    ["webhooks", input.webhooksDir],
+  ];
+  for (const [kind, dir] of typed) {
+    const rel = under(dir);
+    if (rel !== undefined) return `${kind}/${rel}`;
+  }
+  const rel = under(input.manifestDir);
+  return rel !== undefined ? `files/${rel}` : undefined;
+}
+
+/**
+ * The acceptances as content metadata carries them to the registry: files
+ * by their archive path, never a local one.
+ */
 function toContentMetadataAcceptances(
   acceptances: DeclaredAcceptances,
 ): ExtensionAcceptances {
   const accepted: ExtensionAcceptance[] = acceptances.accepted.map((a) => ({
     rule: a.ruleId,
-    ...(a.file !== undefined ? { file: a.file } : {}),
+    ...(a.archivePath !== undefined ? { file: a.archivePath } : {}),
     ...(a.line !== undefined ? { line: a.line } : {}),
     reason: a.reason,
     source: a.source,

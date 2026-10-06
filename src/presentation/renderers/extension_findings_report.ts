@@ -71,9 +71,10 @@ export type WithAcceptance<T> = T & { acceptance?: string };
 export function withAcceptance<T extends SafetyIssue | ReviewFinding>(
   findings: T[],
   manifestDir: string,
+  repoDir?: string,
 ): WithAcceptance<T>[] {
   return findings.map((finding) => {
-    const snippet = acceptanceSnippet(finding, manifestDir);
+    const snippet = acceptanceSnippet(finding, manifestDir, repoDir);
     return snippet ? { ...finding, acceptance: snippet.text } : finding;
   });
 }
@@ -81,11 +82,12 @@ export function withAcceptance<T extends SafetyIssue | ReviewFinding>(
 function forNextTimeEntry(
   finding: SafetyIssue | ReviewFinding,
   manifestDir: string,
+  repoDir?: string,
 ): ForNextTimeEntry {
-  const snippet = acceptanceSnippet(finding, manifestDir);
+  const snippet = acceptanceSnippet(finding, manifestDir, repoDir);
   return {
     ruleId: finding.ruleId,
-    file: fileRelativeToManifest(manifestDir, finding.file),
+    file: fileRelativeToManifest(manifestDir, finding.file, repoDir),
     ...(finding.line !== undefined ? { line: finding.line } : {}),
     message: finding.message.split("\n")[0],
     ...(finding.remediation !== undefined
@@ -104,25 +106,30 @@ function forNextTimeEntry(
 export function buildFindingsReport(
   findings: GatedFindings,
   manifestDir: string,
+  repoDir?: string,
 ): FindingsReport {
   const forNextTime: ForNextTimeEntry[] = [];
   for (const w of findings.safetyWarnings) {
-    forNextTime.push(forNextTimeEntry(w, manifestDir));
+    forNextTime.push(forNextTimeEntry(w, manifestDir, repoDir));
   }
   for (const w of findings.reviewWarnings) {
     if (w.files && w.files.length > 0) {
       // One entry per file the collapsed finding stands for, each with the
       // per-file wording so the advice reads per file.
       for (const file of w.files) {
-        forNextTime.push(forNextTimeEntry({
-          ...w,
-          file,
-          message: "No sibling `_test.ts` found — cover both success and " +
-            "failure paths with unit tests before publishing.",
-        }, manifestDir));
+        forNextTime.push(forNextTimeEntry(
+          {
+            ...w,
+            file,
+            message: "No sibling `_test.ts` found — cover both success and " +
+              "failure paths with unit tests before publishing.",
+          },
+          manifestDir,
+          repoDir,
+        ));
       }
     } else {
-      forNextTime.push(forNextTimeEntry(w, manifestDir));
+      forNextTime.push(forNextTimeEntry(w, manifestDir, repoDir));
     }
   }
   const hasAcceptances = findings.acceptances.accepted.length > 0 ||

@@ -383,11 +383,14 @@ export async function analyzeExtensionSafety(
           continue;
         }
         // As for `.ts` lines: a Markdown directive's own text (its reason
-        // may quote an address) must not trigger the rule it accepts.
-        const scanned = content.split("\n").map((l) =>
-          withoutDirective(l, file)
-        )
-          .join("\n");
+        // may quote an address) must not trigger the rule it accepts. Inside
+        // a fenced code block a directive is documentation, not parsed, so
+        // its text is scanned as written.
+        let fenced = false;
+        const scanned = content.split("\n").map((l) => {
+          if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
+          return fenced ? l : withoutDirective(l, file);
+        }).join("\n");
         for (const rule of matchingRules) {
           for (const detected of rule.detect(scanned, file)) {
             const detection: ContentDetection = typeof detected === "string"
