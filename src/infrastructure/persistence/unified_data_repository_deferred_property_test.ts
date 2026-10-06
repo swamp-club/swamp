@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import fc from "fast-check";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
