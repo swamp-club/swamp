@@ -313,9 +313,10 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // Writes that push nothing, in a root with no push, so they stage into it
   // rather than through signalChange's hook fallback (swamp-club#3056): boot
   // and continuous reconciliation, run.doctor's fix, and worker data-plane
-  // writes, which the dispatching run's push carries.
+  // writes and capability deletes, which the dispatching run's push carries.
   "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns",
   "src/serve/boot_reconciliation.ts: sweepStaleRecords",
+  "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",
   "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
   // The token secret migration, one root per token under that token's name

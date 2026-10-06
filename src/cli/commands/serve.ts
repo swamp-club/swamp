@@ -5926,38 +5926,48 @@ export const serveCommand = new Command()
           );
         }
         if (allRuns) {
-          for (const run of workflowRuns) {
-            try {
-              const match = allRuns.find((r) => r.run.id === run.runId);
-              if (
-                match &&
-                (match.run.status === "running" ||
-                  match.run.status === "cancelled")
-              ) {
-                match.run.interrupt("server_shutdown");
-                await repoContext.workflowRunRepo.save(
-                  match.workflowId,
-                  match.run,
-                );
-                if (isJson) {
-                  console.log(JSON.stringify({
-                    status: "interrupted",
-                    runId: run.runId,
-                  }));
+          // The interrupts run in a root unit of work with no push, so their
+          // saves stage into it instead of reaching the hook through
+          // signalChange's fallback (swamp-club#3056). Nothing pushes here,
+          // as before.
+          await runInRootUnitOfWork(
+            repoContext,
+            { flush: undefined },
+            async () => {
+              for (const run of workflowRuns) {
+                try {
+                  const match = allRuns.find((r) => r.run.id === run.runId);
+                  if (
+                    match &&
+                    (match.run.status === "running" ||
+                      match.run.status === "cancelled")
+                  ) {
+                    match.run.interrupt("server_shutdown");
+                    await repoContext.workflowRunRepo.save(
+                      match.workflowId,
+                      match.run,
+                    );
+                    if (isJson) {
+                      console.log(JSON.stringify({
+                        status: "interrupted",
+                        runId: run.runId,
+                      }));
+                    }
+                    logger
+                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
+                  }
+                } catch (err) {
+                  logger.warn(
+                    "Failed to interrupt run {runId}: {error}",
+                    {
+                      runId: run.runId,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                  );
                 }
-                logger
-                  .info`Interrupted workflow run ${run.runId} (server shutdown)`;
               }
-            } catch (err) {
-              logger.warn(
-                "Failed to interrupt run {runId}: {error}",
-                {
-                  runId: run.runId,
-                  error: err instanceof Error ? err.message : String(err),
-                },
-              );
-            }
-          }
+            },
+          );
         }
       }
       if (workerGcService) {

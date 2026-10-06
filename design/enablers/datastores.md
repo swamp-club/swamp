@@ -1293,7 +1293,8 @@ operation inside a unit of work:
     pushes nothing, as before: the device-auth mint, `access.reload` and the
     grant commit (their writes, before the root `stageWritesThenPush` already
     opens for the push), serve boot reconciliation and its continuous tick,
-    `run.doctor`'s fix, worker data-plane writes, and the CLI's
+    serve shutdown's run interrupts, `run.doctor`'s fix, worker data-plane
+    writes and capability deletes, and the CLI's
     `workflow cancel`, `workflow recover`, `model cancel` and `run doctor`.
   - Hand marks never pass through `signalChange` and are not reported; they
     stay pinned in `PINNED_MARK_CALL_SITES`.

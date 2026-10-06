@@ -25,6 +25,11 @@ import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
+import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 
 function stubRepoContext(
   queryResult: unknown[] = [],
@@ -606,4 +611,47 @@ Deno.test("putSecret: rejects oauth-client-secret key", async () => {
     Error,
     "infrastructure secrets",
   );
+});
+
+Deno.test("deleteData: the delete stages into a root unit over the repository context's hook (swamp-club#3056)", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const marks: (string | undefined)[] = [];
+  const markDirty = (path?: string) => {
+    marks.push(path);
+    return Promise.resolve();
+  };
+  const repoContext = stubRepoContext() as unknown as {
+    markDirty: typeof markDirty;
+    unifiedDataRepo: Record<string, unknown>;
+  };
+  repoContext.markDirty = markDirty;
+  // As the data repository signals before it deletes.
+  repoContext.unifiedDataRepo.delete = () =>
+    signalChange(markDirty, { kind: "remove", path: "result" });
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: repoContext as unknown as RepositoryContext,
+    dispatches,
+    createVaultService: () => Promise.reject(new Error("no vault")),
+  });
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  try {
+    assertEquals(
+      await service.deleteData("worker-1", {
+        modelType: "acme/invoices",
+        modelId: "m-1",
+        dataName: "result",
+        dispatchId: "d-1",
+      }),
+      { deleted: true },
+    );
+  } finally {
+    dispose();
+  }
+  assertEquals(reports, []);
+  assertEquals(marks, ["result"]);
 });
