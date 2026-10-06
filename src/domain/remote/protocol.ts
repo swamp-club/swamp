@@ -33,6 +33,7 @@
 
 import {
   LOCK_NONCE_PATTERN,
+  MAX_LOCK_NONCE_LENGTH,
   MAX_REMOTE_LOCK_IDS,
 } from "../datastore/lock_holder_marker.ts";
 import { errorPaths } from "../errors.ts";
@@ -258,7 +259,6 @@ export type DispatchExecution = z.infer<typeof DispatchExecutionSchema>;
 
 /** Bounds on a dispatch's `lockHolder`, which a worker writes to an env. */
 const MAX_LOCK_HOLDER_HOSTNAME_LENGTH = 255;
-const MAX_LOCK_ID_LENGTH = 128;
 
 export const DispatchParamsSchema = z.object({
   /** Unique id for this dispatch; cancel and leases reference it. */
@@ -334,7 +334,7 @@ export const DispatchParamsSchema = z.object({
     pid: z.number().int().positive().safe(),
     hostname: z.string().min(1).max(MAX_LOCK_HOLDER_HOSTNAME_LENGTH),
     lockIds: z.array(
-      z.string().max(MAX_LOCK_ID_LENGTH).regex(LOCK_NONCE_PATTERN),
+      z.string().max(MAX_LOCK_NONCE_LENGTH).regex(LOCK_NONCE_PATTERN),
     ).max(MAX_REMOTE_LOCK_IDS),
   }).optional(),
 });

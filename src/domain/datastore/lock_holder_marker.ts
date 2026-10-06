@@ -59,8 +59,15 @@ export const SWAMP_LOCK_HOLDER_TOKENS = "SWAMP_LOCK_HOLDER_TOKENS";
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
 
-/** What a lock-file nonce may contain; anything else is dropped. */
-export const LOCK_NONCE_PATTERN = /^[A-Za-z0-9-]+$/;
+/** The longest lock-file nonce accepted anywhere; a real one is a UUID. */
+export const MAX_LOCK_NONCE_LENGTH = 128;
+
+/**
+ * What a lock-file nonce may contain; anything else is dropped. Bounded at
+ * {@link MAX_LOCK_NONCE_LENGTH}, the dispatch schema's own limit, so a nonce
+ * that parses here never makes a worker refuse a dispatch.
+ */
+export const LOCK_NONCE_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 
 /**
  * The per-model locks held for a run an orchestrator dispatches to a remote

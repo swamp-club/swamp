@@ -23,6 +23,7 @@ import {
   LockHolderMarker,
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   MAX_LOCK_ANCESTORS,
+  MAX_LOCK_NONCE_LENGTH,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
   SWAMP_LOCK_HOLDER_TOKENS,
@@ -709,8 +710,12 @@ Deno.test("LockHolderMarker.forwardedLockTokens: sends what a child would inheri
 });
 
 Deno.test("LockHolderMarker.forwardedLockTokens: sends a list at the length limit and none over it", () => {
-  const listOf = (length: number) =>
-    `100:${"a".repeat(length - "100:".length)}`;
+  // Distinct nonces, the last padded so the list is exactly `length` long.
+  const listOf = (length: number) => {
+    let list = "100:n0";
+    for (let i = 1; list.length + 16 < length; i++) list += `+n${i}`;
+    return list + "+" + "a".repeat(length - list.length - 1);
+  };
   const forwarded = (value: string) =>
     new LockHolderMarker(
       fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: value }).store,
@@ -755,6 +760,15 @@ Deno.test("LockHolderMarker.runAdopting: opens no scope without a usable lock", 
   assertEquals(await adopted(server, "not a list"), undefined);
   assertEquals(await adopted(server, "300:"), undefined);
   assertEquals(await adopted(server, "100:b@d"), undefined);
+  // Longer than a worker accepts in a dispatch, so never taken up.
+  assertEquals(
+    await adopted(server, `100:${"a".repeat(MAX_LOCK_NONCE_LENGTH + 1)}`),
+    undefined,
+  );
+  assertEquals(
+    await adopted(server, `100:${"a".repeat(MAX_LOCK_NONCE_LENGTH)}`),
+    `300:${"a".repeat(MAX_LOCK_NONCE_LENGTH)}`,
+  );
   assertEquals(
     await adopted(
       server,
