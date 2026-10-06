@@ -40,6 +40,7 @@ import {
   type LockOwner,
   type LockRelation,
   processLockHolderMarker,
+  runAdoptingForwardedLocks,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../src/domain/datastore/lock_holder_marker.ts";
@@ -287,6 +288,126 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
       } finally {
         await lockB.flush();
         await lockA.flush();
+      }
+    });
+  });
+});
+
+// A step of a run hosted by `swamp serve` runs `swamp model method run
+// --server` back into the same serve. The requested run starts in a request
+// handler, outside the step's scope, so the client forwards the lock list it
+// inherited and serve adopts it (swamp-club#2982). The client is a
+// LockHolderMarker over the step's child env, and the request handler is
+// plain code outside the step's scope.
+Deno.test("nested lock holder tokens: a child of a run requested through --server skips the calling step's lock", async () => {
+  await withTempDir(async (repoDir) => {
+    await initRepo(repoDir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      throw new Error("expected a filesystem datastore");
+    }
+    const stepModel = crypto.randomUUID();
+    const requestedModel = crypto.randomUUID();
+    const otherModel = crypto.randomUUID();
+    const models = [stepModel, requestedModel, otherModel];
+
+    await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+      const [stepLock, requestedLock, otherLock] = await Promise.all(
+        models.map((modelId) =>
+          acquireModelLocks(datastoreConfig, [
+            { modelType: "test/nested-lock", modelId },
+          ], repoDir)
+        ),
+      );
+      const childEnv = () => ({
+        [SWAMP_LOCK_ANCESTOR_PIDS]: String(Deno.pid),
+        ...processLockHolderMarker.childLockEnv(),
+      });
+      // The step and an unrelated run stay in their scopes, waiting, while
+      // the request is handled.
+      let finish = () => {};
+      const waiting = new Promise<void>((resolve) => finish = resolve);
+      let clientEnv: Record<string, string> = {};
+      const step = runUnderModelLocks(stepLock, () => {
+        clientEnv = childEnv();
+        return waiting;
+      });
+      const otherRun = runUnderModelLocks(otherLock, () => waiting);
+      /** How a child of the requested run sees each lock. */
+      const requestedRunChild = async (forwarded: string | undefined) =>
+        childRelations(
+          await runAdoptingForwardedLocks(
+            forwarded,
+            () =>
+              runUnderModelLocks(
+                requestedLock,
+                () => Promise.resolve(childEnv()),
+              ),
+          ),
+          locks,
+        );
+      const waitsOnStep = {
+        [stepModel]: "ancestor-other-run",
+        [requestedModel]: "ancestor",
+        [otherModel]: "ancestor-other-run",
+      };
+      let locks = new Map<string, { path: string; owner: LockOwner }>();
+      try {
+        locks = await lockFilesByModel(datastoreConfig.path, models);
+        const clientValues = new Map(Object.entries(clientEnv));
+        const client = new LockHolderMarker({
+          get: (key) => clientValues.get(key),
+          set: (key, value) => {
+            clientValues.set(key, value);
+          },
+        }, 1);
+        client.publish();
+        const forwarded = client.forwardedLockTokens();
+        const stepNonce = locks.get(stepModel)!.owner.nonce!;
+        const otherNonce = locks.get(otherModel)!.owner.nonce!;
+        assertEquals(forwarded, `${Deno.pid}:${stepNonce}`);
+
+        // Without the forwarded list the child waits on the calling step.
+        assertEquals(await requestedRunChild(undefined), waitsOnStep);
+
+        assertEquals(await requestedRunChild(forwarded), {
+          [stepModel]: "ancestor",
+          [requestedModel]: "ancestor",
+          [otherModel]: "ancestor-other-run",
+        });
+
+        // A lock serve does not hold, and a list for another pid, change
+        // nothing. A lock it holds for another run is adopted only when
+        // named: the client is trusted no further than a child's env is.
+        assertEquals(
+          await requestedRunChild(`${Deno.pid}:${crypto.randomUUID()}`),
+          waitsOnStep,
+        );
+        assertEquals(
+          await requestedRunChild(`${Deno.pid + 1}:${stepNonce}`),
+          waitsOnStep,
+        );
+        assertEquals(
+          await requestedRunChild(`${Deno.pid}:${otherNonce}`),
+          {
+            [stepModel]: "ancestor-other-run",
+            [requestedModel]: "ancestor",
+            [otherModel]: "ancestor",
+          },
+        );
+
+        finish();
+        await Promise.all([step, otherRun]);
+        // The step has ended, so its lock is no longer adopted.
+        assertEquals(await requestedRunChild(forwarded), waitsOnStep);
+      } finally {
+        finish();
+        await Promise.all([step, otherRun]);
+        await Promise.all([
+          stepLock.flush(),
+          requestedLock.flush(),
+          otherLock.flush(),
+        ]);
       }
     });
   });

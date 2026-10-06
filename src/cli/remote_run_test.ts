@@ -37,6 +37,7 @@ import {
   resolveServerToken,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  resumeWorkflowOverServer,
   runModelMethodOverServer,
   runWorkflowOverServer,
   serverReloadCommand,
@@ -50,6 +51,10 @@ import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import {
+  MAX_FORWARDED_LOCK_TOKENS_LENGTH,
+  SWAMP_LOCK_HOLDER_TOKENS,
+} from "../domain/datastore/lock_holder_marker.ts";
 
 /**
  * In-process scripted serve endpoint: the script receives each parsed client
@@ -361,6 +366,76 @@ Deno.test({
       assertEquals(sent.type, "workflow.run");
       assertEquals(sent.payload.workflowIdOrName, "wf");
       assertEquals(sent.payload.inputs, { env: "prod" });
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: every run request carries the inherited lock list, and none when there is nothing to send",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({ type: "done", id: request.id });
+    });
+    const options = { server: server.url };
+    /** The lock list each kind of run request sent, by request type. */
+    const sentWith = async (inherited: string | undefined) => {
+      server.received.length = 0;
+      await withMockedEnv(
+        { [SWAMP_LOCK_HOLDER_TOKENS]: inherited },
+        async () => {
+          for (
+            const run of [
+              runWorkflowOverServer({
+                ...options,
+                payload: { workflowIdOrName: "wf" },
+              }),
+              runModelMethodOverServer({
+                ...options,
+                payload: { modelIdOrName: "m", methodName: "run" },
+              }),
+              resumeWorkflowOverServer({
+                ...options,
+                payload: { workflowIdOrName: "wf" },
+              }),
+            ]
+          ) {
+            for await (const _event of run) {
+              // Drained to the done frame.
+            }
+          }
+        },
+      );
+      return Object.fromEntries(
+        (server.received as {
+          type: string;
+          payload: Record<string, unknown>;
+        }[]).map((sent) => [sent.type, sent.payload]),
+      );
+    };
+    try {
+      const forwarded = await sentWith("100:a+b");
+      for (
+        const type of ["workflow.run", "model.method.run", "workflow.resume"]
+      ) {
+        assertEquals(forwarded[type].lockHolderTokens, "100:a+b", type);
+      }
+
+      const overLimit = "100:".padEnd(
+        MAX_FORWARDED_LOCK_TOKENS_LENGTH + 1,
+        "a",
+      );
+      for (const inherited of [undefined, overLimit]) {
+        const sent = await sentWith(inherited);
+        assertEquals(Object.keys(sent).length, 3);
+        for (const payload of Object.values(sent)) {
+          assertEquals("lockHolderTokens" in payload, false);
+        }
+      }
     } finally {
       await server.shutdown();
     }

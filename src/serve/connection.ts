@@ -32,6 +32,10 @@ import {
   isControlPlaneRecordResource,
 } from "../domain/access/control_plane_records.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
+import {
+  MAX_FORWARDED_LOCK_TOKENS_LENGTH,
+  runAdoptingForwardedLocks,
+} from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
@@ -231,6 +235,8 @@ const WorkflowRunRequestSchema = z.object({
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
     noSupersede: z.boolean().optional(),
+    lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
+      .optional(),
   }),
 });
 
@@ -255,6 +261,8 @@ const ModelMethodRunRequestSchema = z.object({
     skipCheckLabels: z.array(z.string()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
+    lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
+      .optional(),
   }),
 });
 
@@ -827,6 +835,8 @@ const WorkflowResumeRequestSchema = z.object({
     inputs: z.record(z.string(), z.unknown()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
+    lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
+      .optional(),
   }),
 });
 
@@ -1798,13 +1808,17 @@ export function handleMessage(
       break;
     case "workflow.run":
       task = audited(
-        handleWorkflowRun(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
+        runAdoptingForwardedLocks(
+          request.payload.lockHolderTokens,
+          () =>
+            handleWorkflowRun(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              controller,
+              principal,
+            ),
         ),
         auditOpts(
           "execution",
@@ -1815,13 +1829,17 @@ export function handleMessage(
       break;
     case "model.method.run":
       task = audited(
-        handleModelMethodRun(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
+        runAdoptingForwardedLocks(
+          request.payload.lockHolderTokens,
+          () =>
+            handleModelMethodRun(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              controller,
+              principal,
+            ),
         ),
         auditOpts(
           "execution",
@@ -2992,13 +3010,17 @@ export function handleMessage(
       break;
     case "workflow.resume":
       task = audited(
-        handleWorkflowResume(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
+        runAdoptingForwardedLocks(
+          request.payload.lockHolderTokens,
+          () =>
+            handleWorkflowResume(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              controller,
+              principal,
+            ),
         ),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );

@@ -282,6 +282,55 @@ Deno.test("dispatch-gated serve handlers must not take the shared sync gate", as
 const WORKER_DEPS_PATTERN =
   /create(?:WorkerTokenCreate|WorkerTokenRevoke|WorkerModelRun)Deps\(/;
 
+Deno.test("serve workflow runs take step locks through createStepLockHook", async () => {
+  const violations: string[] = [];
+  let calls = 0;
+
+  for await (
+    const entry of walk(SERVE_DIR, { exts: [".ts"], skip: [/_test\.ts$/] })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    // An assignment to `stepLockHook`, with or without a type annotation.
+    const assigned = String.raw`\bstepLockHook\s*(?::[^=\n]+)?=`;
+    const hooks = [...content.matchAll(new RegExp(`${assigned}(?![=>])`, "g"))];
+    const built = [
+      ...content.matchAll(
+        new RegExp(`${assigned}\\s*createStepLockHook\\(`, "g"),
+      ),
+    ];
+    if (hooks.length !== built.length) {
+      violations.push(`${rel}: a stepLockHook not built by createStepLockHook`);
+    }
+    for (
+      const call of content.matchAll(
+        /(?<!function )\bcreateWorkflowRunDeps\(([^)]*)\)/g,
+      )
+    ) {
+      calls++;
+      const hook = call[1].split(",")[3]?.trim();
+      if (hook !== "stepLockHook") {
+        violations.push(
+          `${rel}: createWorkflowRunDeps is passed '${hook}' as its step lock hook`,
+        );
+      }
+    }
+  }
+
+  assertGreater(calls, 0, "expected to find createWorkflowRunDeps calls");
+  assertEquals(
+    violations,
+    [],
+    "Serve runs a client's request under the locks the client forwarded " +
+      "(runAdoptingForwardedLocks, swamp-club#2982). A step run in that " +
+      "scope whose lock hook does not name its locks (heldLockIds) has its " +
+      "nested swamp wait on the step's own lock. Build every step lock " +
+      "hook with createStepLockHook, which names them, and pass it to " +
+      "createWorkflowRunDeps as `stepLockHook`.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
+
 Deno.test("serve handlers must pass vaultsDir to createWorker*Deps", async () => {
   const violations: string[] = [];
 

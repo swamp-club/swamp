@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   type LockHolderEnvStore,
   LockHolderMarker,
+  MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   MAX_LOCK_ANCESTORS,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
@@ -587,4 +588,147 @@ Deno.test("withRemoteLockHolder: a full chain still names the orchestrator in th
   assertEquals(chain.length, MAX_LOCK_ANCESTORS);
   assertEquals(chain[0], 500);
   assertEquals(chain.at(-1), full.at(-1));
+});
+
+Deno.test("LockHolderMarker.forwardedLockTokens: sends what a child would inherit, or nothing", async () => {
+  assertEquals(
+    new LockHolderMarker(fakeEnv().store, 300).forwardedLockTokens(),
+    undefined,
+  );
+
+  const marker = new LockHolderMarker(
+    fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: "100:a" }).store,
+    300,
+  );
+  assertEquals(marker.forwardedLockTokens(), "100:a");
+  assertEquals(
+    await marker.runHolding(
+      ["n1"],
+      () => Promise.resolve(marker.forwardedLockTokens()),
+    ),
+    "100:a,300:n1",
+  );
+});
+
+Deno.test("LockHolderMarker.forwardedLockTokens: sends a list at the length limit and none over it", () => {
+  const listOf = (length: number) =>
+    `100:${"a".repeat(length - "100:".length)}`;
+  const forwarded = (value: string) =>
+    new LockHolderMarker(
+      fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: value }).store,
+      300,
+    ).forwardedLockTokens();
+
+  const atLimit = listOf(MAX_FORWARDED_LOCK_TOKENS_LENGTH);
+  assertEquals(forwarded(atLimit), atLimit);
+  assertEquals(
+    forwarded(listOf(MAX_FORWARDED_LOCK_TOKENS_LENGTH + 1)),
+    undefined,
+  );
+});
+
+/** What a child started inside `marker`'s current scope would inherit. */
+const childTokens = (marker: LockHolderMarker): string | undefined =>
+  marker.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS];
+
+Deno.test("LockHolderMarker.runAdopting: a run adopts its own pid's forwarded locks while they are held", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+
+  const tokens = await server.runHolding(["a"], () =>
+    // Run B, requested by a client under run A, holding its own lock.
+    server.runAdopting("300:a", () =>
+      server.runHolding(["b"], () => Promise.resolve(childTokens(server)))));
+
+  assertEquals(tokens, "300:a+b");
+});
+
+/**
+ * What a child of a request handler would inherit when the handler adopts
+ * `forwarded` while another run of `server` holds `held`. The handler is
+ * outside that run's scope, as a serve request is.
+ */
+async function adoptedWhileHolding(
+  server: LockHolderMarker,
+  held: readonly string[],
+  forwarded: string | undefined,
+): Promise<string | undefined> {
+  let release = () => {};
+  const blocked = new Promise<void>((resolve) => release = resolve);
+  const run = server.runHolding(held, () => blocked);
+  try {
+    return await server.runAdopting(
+      forwarded,
+      () => Promise.resolve(childTokens(server)),
+    );
+  } finally {
+    release();
+    await run;
+  }
+}
+
+Deno.test("LockHolderMarker.runAdopting: opens no scope without a usable lock", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+  const handler = (forwarded: string | undefined) =>
+    adoptedWhileHolding(server, ["a"], forwarded);
+
+  assertEquals(await handler(undefined), undefined);
+  assertEquals(await handler(""), undefined);
+  assertEquals(await handler("not a list"), undefined);
+  assertEquals(await handler("300:"), undefined);
+});
+
+Deno.test("LockHolderMarker.runAdopting: ignores locks it does not hold and other pids' entries", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+  const handler = (forwarded: string) =>
+    adoptedWhileHolding(server, ["a"], forwarded);
+
+  assertEquals(await handler("300:a"), "300:a");
+  assertEquals(await handler("300:a+forged"), "300:a");
+  assertEquals(await handler("300:forged"), undefined);
+  assertEquals(await handler("100:a"), undefined);
+  assertEquals(await handler("100:a,300:a,200:a"), "300:a");
+  assertEquals(
+    await handler(`300:${"a+".repeat(MAX_FORWARDED_LOCK_TOKENS_LENGTH)}a`),
+    undefined,
+  );
+});
+
+Deno.test("LockHolderMarker.runHolding: a lock stops being adoptable when its scope ends, even by a throw", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+  const adoptable = () =>
+    server.runAdopting("300:a", () => Promise.resolve(childTokens(server)));
+
+  let failed = false;
+  try {
+    await server.runHolding(["a"], () => Promise.reject(new Error("boom")));
+  } catch {
+    failed = true;
+  }
+
+  assertEquals(failed, true);
+  assertEquals(await adoptable(), undefined);
+});
+
+Deno.test("LockHolderMarker.runHolding: a lock held by two scopes stays adoptable until both end", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => release = resolve);
+  const outer = server.runHolding(["a"], () => held);
+
+  await server.runHolding(["a", "a"], () => Promise.resolve());
+  const whileOuterHeld = await server.runAdopting(
+    "300:a",
+    () => Promise.resolve(childTokens(server)),
+  );
+  release();
+  await outer;
+
+  assertEquals(whileOuterHeld, "300:a");
+  assertEquals(
+    await server.runAdopting(
+      "300:a",
+      () => Promise.resolve(childTokens(server)),
+    ),
+    undefined,
+  );
 });
