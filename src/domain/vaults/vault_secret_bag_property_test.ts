@@ -46,6 +46,7 @@ const arbSeparator = fc.constantFrom(
   "\n",
   "\n# don't log it\n",
   '\n# say "hi\n',
+  "\ncat <<EOF\nit's\nEOF\n",
 );
 
 Deno.test("VaultSecretBag.resolveForShell: a vault.get reference depends only on its own occurrence's quote context", () => {
