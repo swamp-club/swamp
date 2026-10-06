@@ -404,6 +404,7 @@ import { checkDependencyTrust } from "../../domain/extensions/extension_dependen
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
+import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
@@ -987,6 +988,7 @@ export async function extensionPushPrepare(
       message: `Extension uses bare import specifiers (${
         names.map((s) => `"${s}"`).join(", ")
       }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
+      remediation: remediationFor("bare-specifiers"),
     });
   }
 

@@ -134,7 +134,12 @@ Deno.test("extensionPushRenderer: JSON success reports applied visibility", asyn
 });
 
 const accepted: AcceptedWarnings = {
-  safety: [{ file: "models/a.ts", message: "uses Deno.Command" }],
+  safety: [{
+    ruleId: "deno-command",
+    file: "models/a.ts",
+    line: 3,
+    message: "uses Deno.Command",
+  }],
   review: [
     {
       ruleId: "adversarial-review-report",

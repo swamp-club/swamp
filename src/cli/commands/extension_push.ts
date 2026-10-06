@@ -138,21 +138,27 @@ export function resolveWarningsGate(input: {
 
 /**
  * Collects the warnings the gate covers into the record the summary prints
- * when they are accepted. Review findings drop their report skeleton: the
- * `reviewRuleWarnings` document already carries it, and repeating it would
- * bury the summary.
+ * when they are accepted. Findings drop their report skeleton and their
+ * remediation: the `reviewRuleWarnings` and `warnings` documents already
+ * carry them, and repeating them would bury the summary.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];
   reviewRulesResult: { warnings: ReviewFinding[] };
 }): AcceptedWarnings {
   return {
-    safety: prepared.safetyWarnings,
+    safety: prepared.safetyWarnings.map((w) => ({
+      ruleId: w.ruleId,
+      file: w.file,
+      ...(w.line !== undefined ? { line: w.line } : {}),
+      message: w.message,
+    })),
     review: prepared.reviewRulesResult.warnings.map((w) => ({
       ruleId: w.ruleId,
       dimension: w.dimension,
       severity: w.severity,
       file: w.file,
+      ...(w.line !== undefined ? { line: w.line } : {}),
       message: w.message,
     })),
   };

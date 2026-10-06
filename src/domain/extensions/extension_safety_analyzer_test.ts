@@ -70,6 +70,7 @@ Deno.test("analyzeExtensionSafety errors on hidden files", async () => {
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.errors.length, 1);
+      assertEquals(result.errors[0].ruleId, "hidden-file");
       assertEquals(
         result.errors[0].message.includes("Hidden files"),
         true,
@@ -168,6 +169,40 @@ Deno.test("analyzeExtensionSafety warns on Deno.Command()", async () => {
         result.warnings[0].message.includes("Deno.Command()"),
         true,
       );
+      assertEquals(result.warnings[0].ruleId, "deno-command");
+      assertEquals(result.warnings[0].line, 1);
+      assertEquals(typeof result.warnings[0].remediation, "string");
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: one Deno.Command() warning per offending line", async () => {
+  await withTempFiles(
+    {
+      "cmd.ts":
+        'const a = 1;\nnew Deno.Command("ls");\nconst b = 2;\nnew Deno.Command("pwd");\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [2, 4]);
+      assertEquals(
+        result.warnings.every((w) => w.ruleId === "deno-command"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: one long-line warning per offending line, with its rule id", async () => {
+  const long = "x".repeat(501);
+  await withTempFiles(
+    {
+      "asset.ts": `const a = "${long}";\nconst b = 1;\nconst c = "${long}";\n`,
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      const longLines = result.warnings.filter((w) => w.ruleId === "long-line");
+      assertEquals(longLines.map((w) => w.line), [1, 3]);
     },
   );
 });
@@ -472,15 +507,27 @@ Deno.test("analyzeExtensionSafety: clean .md without IPs passes", async () => {
   );
 });
 
-Deno.test("analyzeExtensionSafety: multiple IPs in one .md produce one warning", async () => {
+Deno.test("analyzeExtensionSafety: multiple IPs on one .md line produce one warning naming each", async () => {
   await withTempFiles(
-    { "README.md": "Host: 10.0.1.50\nJump: 172.16.0.1\nSubnet: 192.168.0.0\n" },
+    { "README.md": "Hosts: 10.0.1.50, 172.16.0.1 and 192.168.0.0\n" },
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.warnings.length, 1);
+      assertEquals(result.warnings[0].ruleId, "ipv4-address-literals");
+      assertEquals(result.warnings[0].line, 1);
       assertEquals(result.warnings[0].message.includes("10.0.1.50"), true);
       assertEquals(result.warnings[0].message.includes("172.16.0.1"), true);
       assertEquals(result.warnings[0].message.includes("192.168.0.0"), true);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: IPs on separate .md lines produce one warning per line", async () => {
+  await withTempFiles(
+    { "README.md": "Host: 10.0.1.50\nSafe: 192.0.2.1\nSubnet: 192.168.0.0\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [1, 3]);
     },
   );
 });

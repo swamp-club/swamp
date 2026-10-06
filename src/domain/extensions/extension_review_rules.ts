@@ -19,6 +19,7 @@
 
 import { extname, join } from "@std/path";
 import { z } from "zod";
+import { remediationFor } from "./extension_rule_catalog.ts";
 
 /**
  * Deterministic, push-time static rules for extensions.
@@ -78,14 +79,30 @@ export interface ReviewFinding {
   severity: ReviewSeverity;
   /** Absolute path of the offending file. */
   file: string;
+  /**
+   * The 1-based line the finding fires on. Absent for file-level findings
+   * (testing-completeness) and extension-level ones (bare-specifiers, the
+   * adversarial-review report). Together with `file` and `ruleId` it is the
+   * identity a declared acceptance names.
+   */
+  line?: number;
   /** Actionable description of the issue. */
   message: string;
+  /** How to fix the finding properly, from the rule catalog. */
+  remediation?: string;
   /**
    * Optional fill-in report skeleton (JSON). Set only on the missing-report
    * finding so JSON consumers get it as a discrete field rather than parsing
    * it out of `message`.
    */
   skeleton?: string;
+}
+
+/** A detection a rule reports: its message, and the line when it has one. */
+export interface RuleDetection {
+  message: string;
+  /** 1-based line of the match; omitted for file-level findings. */
+  line?: number;
 }
 
 /**
@@ -102,11 +119,12 @@ export interface ReviewRule {
   /** Content kinds this rule inspects. */
   appliesTo: ExtensionContentKind[];
   /**
-   * Pure detector. Returns one message per issue found in `source`; an
-   * empty array means the file passes this rule. The framework attaches the
-   * rule's id, dimension, and severity.
+   * Pure detector. Returns one entry per issue found in `source` (a bare
+   * message, or a {@link RuleDetection} carrying the line); an empty array
+   * means the file passes this rule. The framework attaches the rule's id,
+   * dimension, severity and remediation.
    */
-  detect: (source: ReviewSource) => string[];
+  detect: (source: ReviewSource) => Array<string | RuleDetection>;
 }
 
 /** Result of running the ruleset over a set of sources. */
@@ -277,18 +295,20 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     severity: "medium",
     appliesTo: ["model"],
     detect: (source) => {
-      const messages: string[] = [];
+      const detections: RuleDetection[] = [];
       const lines = source.content.split("\n");
-      for (const line of lines) {
-        if (EMPTY_OBJECT_PASSTHROUGH.test(stripLineComment(line))) {
-          messages.push(
-            "Uses `z.object({}).passthrough()` with no declared properties — " +
+      for (let i = 0; i < lines.length; i++) {
+        if (EMPTY_OBJECT_PASSTHROUGH.test(stripLineComment(lines[i]))) {
+          detections.push({
+            line: i + 1,
+            message:
+              "Uses `z.object({}).passthrough()` with no declared properties — " +
               "CEL expressions cannot validate against an empty schema. Declare " +
               "the referenced properties explicitly.",
-          );
+          });
         }
       }
-      return messages;
+      return detections;
     },
   },
   {
@@ -312,7 +332,7 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     severity: "medium",
     appliesTo: ["model", "vault"],
     detect: (source) => {
-      const messages: string[] = [];
+      const detections: RuleDetection[] = [];
       const lines = source.content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = stripLineComment(lines[i]);
@@ -334,13 +354,15 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
         }
         if (foundSensitive) continue;
 
-        messages.push(
-          `Field on line "${line.trim()}" looks like a secret but is not ` +
+        detections.push({
+          line: i + 1,
+          message:
+            `Field on line "${line.trim()}" looks like a secret but is not ` +
             "marked `.meta({ sensitive: true })`. Sensitive values must be " +
             "vaulted.",
-        );
+        });
       }
-      return messages;
+      return detections;
     },
   },
 ];
@@ -361,13 +383,19 @@ export function evaluateReviewRules(
   for (const source of sources) {
     for (const rule of rules) {
       if (!rule.appliesTo.includes(source.kind)) continue;
-      for (const message of rule.detect(source)) {
+      for (const detected of rule.detect(source)) {
+        const detection: RuleDetection = typeof detected === "string"
+          ? { message: detected }
+          : detected;
+        const remediation = remediationFor(rule.id);
         const finding: ReviewFinding = {
           ruleId: rule.id,
           dimension: rule.dimension,
           severity: rule.severity,
           file: source.path,
-          message,
+          ...(detection.line !== undefined ? { line: detection.line } : {}),
+          message: detection.message,
+          ...(remediation !== undefined ? { remediation } : {}),
         };
         if (isBlockingSeverity(rule.severity)) {
           errors.push(finding);
@@ -741,7 +769,10 @@ export function evaluateReviewReport(
     }
   }
 
-  return findings;
+  return findings.map((finding) => {
+    const remediation = remediationFor(finding.ruleId);
+    return remediation === undefined ? finding : { ...finding, remediation };
+  });
 }
 
 // ── Async wrapper (reads source from disk) ────────────────────────────

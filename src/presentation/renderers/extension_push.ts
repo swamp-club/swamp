@@ -44,10 +44,19 @@ import type { CompilationError } from "../../libswamp/mod.ts";
 
 /**
  * A review warning as it appears in the accepted-warnings record: the
- * finding without its report skeleton, which the `reviewRuleWarnings`
- * document already carries in full.
+ * finding without its report skeleton or remediation, which the
+ * `reviewRuleWarnings` document already carries in full.
  */
-export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
+export type AcceptedReviewWarning = Omit<
+  ReviewFinding,
+  "skeleton" | "remediation"
+>;
+
+/**
+ * A safety warning as it appears in the accepted-warnings record: the issue
+ * without its remediation, which the `warnings` document already carries.
+ */
+export type AcceptedSafetyWarning = Omit<SafetyIssue, "remediation">;
 
 /**
  * The safety and review warnings the pusher waived with `--yes` or `--force`.
@@ -56,7 +65,7 @@ export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
  * upgrade entries) never gate a push and are not part of the record.
  */
 export interface AcceptedWarnings {
-  safety: SafetyIssue[];
+  safety: AcceptedSafetyWarning[];
   review: AcceptedReviewWarning[];
 }
 

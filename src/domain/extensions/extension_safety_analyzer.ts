@@ -22,11 +22,66 @@ import {
   type DynamicCodeFinding,
   findDynamicCodeExecution,
 } from "./dynamic_code_detector.ts";
+import { remediationFor } from "./extension_rule_catalog.ts";
 
 /** A safety issue found during analysis. */
 export interface SafetyIssue {
+  /** The rule that produced the issue; listed in the rule catalog. */
+  ruleId: string;
   file: string;
+  /**
+   * The 1-based line the issue is on. Absent for file-level issues (a
+   * hidden file, a size cap) and extension-level ones (file count, total
+   * size). Together with `file` and `ruleId` it is the identity a declared
+   * acceptance names.
+   */
+  line?: number;
   message: string;
+  /** How to fix the issue properly, from the rule catalog. */
+  remediation?: string;
+}
+
+/** Rule ids of the warnings the analyzer emits on `.ts` files. */
+export const SAFETY_WARNING_RULE_IDS = [
+  "long-line",
+  "base64-run",
+  "deno-command",
+] as const;
+
+/** Rule ids of the errors the analyzer emits. */
+export const SAFETY_ERROR_RULE_IDS = [
+  "file-count",
+  "hidden-file",
+  "file-type",
+  "unreadable-file",
+  "symlink",
+  "file-size",
+  "total-size",
+  "dynamic-code",
+] as const;
+
+/** Builds an issue, attaching the catalog's remediation when the rule has one. */
+function issue(
+  ruleId: string,
+  file: string,
+  message: string,
+  line?: number,
+): SafetyIssue {
+  const remediation = remediationFor(ruleId);
+  return {
+    ruleId,
+    file,
+    ...(line !== undefined ? { line } : {}),
+    message,
+    ...(remediation !== undefined ? { remediation } : {}),
+  };
+}
+
+/** A detection a content rule reports: its message, and the line when it has one. */
+export interface ContentDetection {
+  message: string;
+  /** 1-based line of the match; omitted for file-level findings. */
+  line?: number;
 }
 
 /** Result of the safety analysis. */
@@ -52,8 +107,12 @@ export interface ContentRule {
   severity: "error" | "warning";
   /** File extensions this rule inspects, e.g. `new Set([".md", ".txt"])`. */
   fileExtensions: Set<string>;
-  /** Returns one message per issue found; empty array means the file passes. */
-  detect: (content: string, file: string) => string[];
+  /**
+   * Returns one entry per issue found (a bare message, or a
+   * {@link ContentDetection} carrying the line); empty array means the file
+   * passes.
+   */
+  detect: (content: string, file: string) => Array<string | ContentDetection>;
 }
 
 // ── IPv4 detection helpers ───────────────────────────────────────────
@@ -83,23 +142,32 @@ export const DEFAULT_CONTENT_RULES: ContentRule[] = [
     id: "ipv4-address-literals",
     severity: "warning",
     fileExtensions: new Set([".md", ".txt"]),
-    detect: (content: string): string[] => {
-      const found: string[] = [];
-      for (const match of content.matchAll(IPV4_PATTERN)) {
-        if (!isDocumentationIp(match[0])) {
-          found.push(match[0]);
+    detect: (content: string): ContentDetection[] => {
+      // One detection per line so an acceptance can name the line; the
+      // addresses on that line are listed in its message.
+      const detections: ContentDetection[] = [];
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const found: string[] = [];
+        for (const match of lines[i].matchAll(IPV4_PATTERN)) {
+          if (!isDocumentationIp(match[0])) {
+            found.push(match[0]);
+          }
         }
+        if (found.length === 0) continue;
+        const unique = [...new Set(found)];
+        const listed = unique.length <= 3
+          ? unique.join(", ")
+          : `${unique.slice(0, 3).join(", ")}, and ${unique.length - 3} more`;
+        detections.push({
+          line: i + 1,
+          message: `Line ${i + 1} contains IPv4 address literals (${listed}) ` +
+            "that may be real infrastructure identifiers. Use RFC 5737 " +
+            "documentation ranges (192.0.2.x, 198.51.100.x, 203.0.113.x) or " +
+            "example.com for examples.",
+        });
       }
-      if (found.length === 0) return [];
-      const unique = [...new Set(found)];
-      const listed = unique.length <= 3
-        ? unique.join(", ")
-        : `${unique.slice(0, 3).join(", ")}, and ${unique.length - 3} more`;
-      return [
-        `Contains IPv4 address literals (${listed}) that may be real ` +
-        "infrastructure identifiers. Use RFC 5737 documentation ranges " +
-        "(192.0.2.x, 198.51.100.x, 203.0.113.x) or example.com for examples.",
-      ];
+      return detections;
     },
   },
 ];
@@ -168,11 +236,11 @@ export async function analyzeExtensionSafety(
 
   // Check file count
   if (files.length > MAX_FILE_COUNT) {
-    errors.push({
-      file: "(total)",
-      message:
-        `Extension contains ${files.length} files, exceeding the maximum of ${MAX_FILE_COUNT}.`,
-    });
+    errors.push(issue(
+      "file-count",
+      "(total)",
+      `Extension contains ${files.length} files, exceeding the maximum of ${MAX_FILE_COUNT}.`,
+    ));
   }
 
   let totalSize = 0;
@@ -182,10 +250,13 @@ export async function analyzeExtensionSafety(
 
     // Check for hidden files
     if (name.startsWith(".")) {
-      errors.push({
-        file,
-        message: "Hidden files are not allowed in extensions.",
-      });
+      errors.push(
+        issue(
+          "hidden-file",
+          file,
+          "Hidden files are not allowed in extensions.",
+        ),
+      );
       continue;
     }
 
@@ -195,12 +266,13 @@ export async function analyzeExtensionSafety(
     if (
       !isExempt && !ALLOWED_EXTENSIONS.has(ext) && !LEGAL_BASENAMES.has(name)
     ) {
-      errors.push({
+      errors.push(issue(
+        "file-type",
         file,
-        message: `File extension "${ext}" is not allowed. Allowed: ${
+        `File extension "${ext}" is not allowed. Allowed: ${
           [...ALLOWED_EXTENSIONS].join(", ")
         }`,
-      });
+      ));
       continue;
     }
 
@@ -209,29 +281,26 @@ export async function analyzeExtensionSafety(
     try {
       stat = await Deno.lstat(file);
     } catch {
-      errors.push({
-        file,
-        message: "File could not be read.",
-      });
+      errors.push(issue("unreadable-file", file, "File could not be read."));
       continue;
     }
 
     if (stat.isSymlink) {
-      errors.push({
-        file,
-        message: "Symlinks are not allowed in extensions.",
-      });
+      errors.push(
+        issue("symlink", file, "Symlinks are not allowed in extensions."),
+      );
       continue;
     }
 
     // Check individual file size
     if (stat.size > MAX_INDIVIDUAL_FILE_SIZE) {
-      errors.push({
+      errors.push(issue(
+        "file-size",
         file,
-        message: `File size ${formatBytes(stat.size)} exceeds maximum of ${
+        `File size ${formatBytes(stat.size)} exceeds maximum of ${
           formatBytes(MAX_INDIVIDUAL_FILE_SIZE)
         }.`,
-      });
+      ));
       continue;
     }
 
@@ -249,42 +318,50 @@ export async function analyzeExtensionSafety(
       // Hard errors: dangerous patterns
       const dynamicCode = findDynamicCodeExecution(content);
       if (dynamicCode.length > 0) {
-        errors.push({
+        errors.push(issue(
+          "dynamic-code",
           file,
-          message:
-            `File contains eval() or new Function() which are not allowed (${
-              describeDynamicCode(dynamicCode)
-            }).`,
-        });
+          `File contains eval() or new Function() which are not allowed (${
+            describeDynamicCode(dynamicCode)
+          }).`,
+          dynamicCode[0].line,
+        ));
       }
 
-      // Warnings: suspicious patterns
+      // Warnings: suspicious patterns. One finding per offending line, so a
+      // declared acceptance can name the line and a new hit elsewhere still
+      // warns.
       const lines = content.split("\n");
-      for (const line of lines) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         const stripped = line.replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
-          warnings.push({
+          warnings.push(issue(
+            "long-line",
             file,
-            message:
-              "File contains lines with more than 500 non-whitespace characters.",
-          });
-          break; // One warning per file
+            `Line ${i + 1} has ${stripped.length} non-whitespace characters ` +
+              `(limit ${LONG_LINE_THRESHOLD}).`,
+            i + 1,
+          ));
         }
-      }
-
-      if (BASE64_PATTERN.test(content)) {
-        warnings.push({
-          file,
-          message:
-            "File contains what appears to be a base64-encoded string (100+ chars).",
-        });
-      }
-
-      if (content.includes("Deno.Command(")) {
-        warnings.push({
-          file,
-          message: "File uses Deno.Command() to spawn subprocesses.",
-        });
+        if (BASE64_PATTERN.test(line)) {
+          warnings.push(issue(
+            "base64-run",
+            file,
+            `Line ${
+              i + 1
+            } contains what appears to be a base64-encoded string (100+ chars).`,
+            i + 1,
+          ));
+        }
+        if (line.includes("Deno.Command(")) {
+          warnings.push(issue(
+            "deno-command",
+            file,
+            `Line ${i + 1} uses Deno.Command() to spawn subprocesses.`,
+            i + 1,
+          ));
+        }
       }
     }
 
@@ -301,12 +378,20 @@ export async function analyzeExtensionSafety(
           continue;
         }
         for (const rule of matchingRules) {
-          for (const message of rule.detect(content, file)) {
-            const issue: SafetyIssue = { file, message };
+          for (const detected of rule.detect(content, file)) {
+            const detection: ContentDetection = typeof detected === "string"
+              ? { message: detected }
+              : detected;
+            const found = issue(
+              rule.id,
+              file,
+              detection.message,
+              detection.line,
+            );
             if (rule.severity === "error") {
-              errors.push(issue);
+              errors.push(found);
             } else {
-              warnings.push(issue);
+              warnings.push(found);
             }
           }
         }
@@ -316,12 +401,13 @@ export async function analyzeExtensionSafety(
 
   // Check total size
   if (totalSize > MAX_TOTAL_SIZE) {
-    errors.push({
-      file: "(total)",
-      message: `Total extension size ${
-        formatBytes(totalSize)
-      } exceeds maximum of ${formatBytes(MAX_TOTAL_SIZE)}.`,
-    });
+    errors.push(issue(
+      "total-size",
+      "(total)",
+      `Total extension size ${formatBytes(totalSize)} exceeds maximum of ${
+        formatBytes(MAX_TOTAL_SIZE)
+      }.`,
+    ));
   }
 
   return { errors, warnings };

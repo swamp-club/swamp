@@ -494,7 +494,11 @@ Deno.test("extensionPushPrepare: safety errors throw SwampError", async () => {
   const deps = makePrepareDeps({
     analyzeExtensionSafety: () =>
       Promise.resolve({
-        errors: [{ file: "evil.ts", message: "contains eval()" }],
+        errors: [{
+          ruleId: "dynamic-code",
+          file: "evil.ts",
+          message: "contains eval()",
+        }],
         warnings: [],
       }),
   });
@@ -537,7 +541,12 @@ Deno.test("extensionPushPrepare: safety warnings are returned in result", async 
     analyzeExtensionSafety: () =>
       Promise.resolve({
         errors: [],
-        warnings: [{ file: "cmd.ts", message: "uses Deno.Command()" }],
+        warnings: [{
+          ruleId: "deno-command",
+          file: "cmd.ts",
+          line: 1,
+          message: "uses Deno.Command()",
+        }],
       }),
   });
   const input = makePrepareInput();
