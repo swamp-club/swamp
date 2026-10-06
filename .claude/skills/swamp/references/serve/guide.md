@@ -91,11 +91,18 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
 | 410         | Expired, or closed before a signal arrived                  |
 | 401 / 429   | No valid token / rate limited (plain-text body)             |
 | 400 / 413   | Body is not `{"payload": ...}` JSON / body too large        |
+| 403 / 503   | `workflow.signal` is admin-only here / audit cannot record  |
 | 501 / 500   | Datastore cannot hold waits / stored record unreadable      |
 
 The reply names the workflow, run and step only for a caller who may also `read`
 the workflow. The receipt's `submittedBy` is the token's principal. A signal
-does not resume the run: resume it afterwards (`swamp workflow resume`).
+does not resume the run: resume it afterwards (`swamp workflow resume`). A 200
+means the wait took the signal, not that the run will use it: a cancel at the
+same moment still ends the run. Many signals at once on one token can be
+answered 429; retry.
+
+Upgrade every host on the datastore before creating a grant that names `signal`:
+an older build drops such a grant whole, including a deny.
 
 ## CLI Grant Management
 

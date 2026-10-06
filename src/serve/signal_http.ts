@@ -49,8 +49,15 @@ import {
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 
-/** The body may wrap the payload in a little JSON; nothing larger is read. */
-export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES + 1024;
+/**
+ * The most of a request body that is read. It only bounds the read: the
+ * payload's own limit is checked on the parsed value, in
+ * {@link deliverSignalForCaller}. A body can be several times its payload,
+ * since a client may write each non-ASCII character as a six-byte escape and
+ * may indent the JSON, so the cap leaves room for a payload at its limit
+ * sent either way.
+ */
+export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES * 6 + 1024;
 
 // Only narrows the path segment; normalizeWaitId decides what a wait ID is.
 const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;

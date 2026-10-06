@@ -689,6 +689,11 @@ the first workflow with a wait is run. It was chosen over keeping the `waiting`
 status, with which the older binary would read these runs and silently discard
 accepted signals.
 
+The `signal` access action (swamp-club#3094) has a mixed-build hazard of its
+own: a build from before it drops any stored grant that names `signal`,
+including a deny. See "Actions" in
+[access-control](../enablers/access-control.md).
+
 A run suspended by that build itself still has the status `waiting`, and that
 binary still acts on it by writing the run record: its `workflow resume` does
 not see a signal accepted as an outcome and past the deadline fails the step

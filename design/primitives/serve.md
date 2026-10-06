@@ -525,8 +525,11 @@ it answers 403 to a caller who is not an admin. Both are decided before the
 wait is looked up, so they say nothing about a wait. The HTTP route also
 answers 401 (no token, or one that does not authenticate),
 429 (rate limited), 400 (the body is not a JSON object with a `payload` field)
-and 413 (the body is over the payload limit plus 1 KiB). The token is checked
-before the body is read. With auth mode `none` the route takes a signal from
+and 413 (the body is over `MAX_SIGNAL_BODY_BYTES`, six times the payload limit
+plus 1 KiB). That cap only bounds the read: a client may escape non-ASCII
+characters or indent its JSON, so a body is allowed to be several times its
+payload, and a payload over 16 KiB is refused 422 whatever the body's size. The
+token is checked before the body is read. With auth mode `none` the route takes a signal from
 anyone who can reach the listener, as the cancel routes take a cancel; that mode
 is only permitted on loopback.
 
@@ -535,8 +538,25 @@ run claim or registry reservation is taken, nothing is pushed, and the request
 is not sync-gated. The run continues only when someone resumes it; serve does
 not resume a signalled run by itself (swamp-club#3108).
 
+**A delivered signal is not a promise that the run will use it.** "Delivered"
+means the wait's outcome is the caller's signal. If the run is cancelled at
+about the same moment, the signal can win the wait's outcome and the cancel
+still ends the run: the caller holds a receipt, the outcome record says
+accepted, and no resume will apply it. A caller that must know what the run
+did has to read the run, which needs `read`.
+
+**Rate limits.** The route shares serve's two limits with WebSocket logins and
+the cancel routes (`src/serve/rate_limiter.ts`): 50 requests per source address
+per minute, counting successful deliveries, and 5 attempts per token name per
+minute, counted before the token is checked and cleared when it authenticates.
+A caller that sends many signals at once on one token, such as one answering
+every wait of a `forEach`, can therefore be answered 429 while earlier requests
+are still authenticating, and should retry. Behind a proxy without
+`--trust-proxy` every caller shares one source address.
+
 `workflow.waits` lists open waits to a caller with `read`, filtered to the
-workflows they may read; a grant for `signal` alone lists nothing. It is the
+workflows they may read. A caller with no `read` grant on any workflow, such as
+one granted `signal` alone, is refused as unauthorized. It is the
 same use case as `swamp workflow waits` and, like it, not read-only: see
 "Listing" under Wait for Signal in [workflows](workflows.md).
 

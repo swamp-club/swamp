@@ -1527,7 +1527,8 @@ export async function handleWorkflowSignal(
 
 /**
  * Lists the waits for a signal nothing has answered, to a caller who may
- * read their workflows. A grant for `signal` alone lists nothing.
+ * read their workflows. A caller with no `read` grant on any workflow, such
+ * as one granted `signal` alone, is refused.
  *
  * The listing is not read-only, here as for the local command: it registers
  * the waits of runs suspended before waits were registered, settles a wait

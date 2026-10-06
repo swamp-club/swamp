@@ -913,3 +913,43 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve signal over HTTP: the body cap bounds the read, and the payload limit is judged on the payload",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const w = await suspendOnWait(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+
+      // Under the body cap, over the payload limit: the payload is refused.
+      const tooBig = await post(ctx, w.waitId, {
+        payload: { verdict: "ship", note: "x".repeat(17_000) },
+      });
+      assertEquals(tooBig.status, 422, JSON.stringify(tooBig).slice(0, 200));
+
+      // A payload under its limit whose body is larger than the limit,
+      // because the client escaped every non-ASCII character and indented.
+      const note = "水".repeat(4000);
+      const raw = JSON.stringify(
+        { payload: { verdict: "ship", note } },
+        null,
+        4,
+      ).replace(
+        /[\u0080-￿]/g,
+        (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+      );
+      assert(raw.length > 17_408, "the body is over the old cap");
+      const escaped = await post(ctx, w.waitId, null, { raw });
+      assertEquals(escaped.status, 200, JSON.stringify(escaped).slice(0, 200));
+
+      await resume(repo, w);
+      const output = (await stepOf(repo, w)).step.output as {
+        payload: { note: string };
+      };
+      assertEquals(output.payload.note, note);
+    });
+  },
+});

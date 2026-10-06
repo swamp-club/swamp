@@ -461,6 +461,17 @@ per process. A deny on `run` always denies `signal`, setting or not, so a
 principal under a deny on `run` cannot signal even with an explicit `signal`
 allow, and turning the setting on can only narrow access.
 
+**Do not store a grant that names `signal` while an older build shares the
+datastore.** A build from before this action cannot parse such a grant, and
+`PolicySnapshotLoader` skips a stored grant it cannot parse without a warning.
+The whole grant is lost to that build, not only its `signal`: an allow for
+`signal, read` no longer grants `read`, and a deny for `run, signal` no longer
+denies `run`, so the older build allows what the grant was written to stop.
+Rolling back to an older build has the same effect on grants made meanwhile. A
+declarative grant file fails closed instead: the older build refuses to start
+on it. Upgrade every host that reads the datastore before the first grant
+naming `signal` is created.
+
 An `AccessDecision` whose grant passed `approve` or `signal` only through `run`
 carries `impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it
 as `[implied by run]`, and `can-i` without an action lists an implied `approve`
