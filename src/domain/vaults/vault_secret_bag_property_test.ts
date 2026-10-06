@@ -80,3 +80,75 @@ Deno.test("VaultSecretBag.resolveForShell: singleQuoted reports a vault.get sent
     }),
   );
 });
+
+/**
+ * A here-document body fragment. `inString` records, per vault.get use in
+ * the fragment, whether the reference must stay bare: the author placed it
+ * inside a double- or single-quoted string.
+ */
+interface BodyFragment {
+  lines: string[];
+  inString: boolean[];
+}
+
+const fragment = (lines: string[], inString: boolean[] = []): BodyFragment => ({
+  lines,
+  inString,
+});
+
+const USE = "@USE@";
+
+const arbBodyFragment = fc.constantFrom<BodyFragment>(
+  fragment(["it's here"]),
+  fragment(["# Don't commit this file"]),
+  fragment([`don't say "it's" twice`]),
+  fragment([`he said "hi" and left`]),
+  fragment([`screen is 5" wide`]),
+  fragment([`tr -d '"' < in > out`]),
+  fragment([`sed 's/"//g' f`]),
+  fragment([`IFS='"'`]),
+  fragment([`grep -c '"' f`]),
+  fragment([`x='a"b'`]),
+  fragment([`echo "it's"`]),
+  fragment([`{"a": "x\\"y"}`]),
+  fragment([`{"k": "${USE}"}`], [true]),
+  fragment([`KEY="${USE}"`], [true]),
+  fragment([`--opt="${USE}"`], [true]),
+  fragment([`raw ${USE}`], [false]),
+  fragment([`set -- ${USE}`], [false]),
+  fragment([`echo "line1`, `${USE}"`], [true]),
+  fragment([`echo "line1`, `it's in the string`, `${USE}"`], [true]),
+  fragment([`msg="first`, `second ${USE} third"`], [true]),
+  fragment([`mysql -u root -p"${USE}" db`], [true]),
+  fragment([`cmd >"${USE}"`], [true]),
+  fragment([`echo 'prefix: '"${USE}"`], [true]),
+  fragment([`echo "a""${USE}"`], [true]),
+  fragment([`echo foo"bar ${USE}"`], [true]),
+  fragment([`PASS='${USE}'`], [true]),
+  fragment([`a 3" gap here`]),
+  fragment([`ENV API_KEY=${USE}`], [false]),
+);
+
+Deno.test("VaultSecretBag.resolveForShell: a vault.get use in a here-document body is bare exactly when the author's text has it in a double-quoted string", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbBodyFragment, { minLength: 1, maxLength: 7 }),
+      (fragments) => {
+        const bag = new VaultSecretBag();
+        const s = bag.addSecret("two  words *");
+        const body = fragments.flatMap((f) => f.lines).join("\n");
+        const inString = fragments.flatMap((f) => f.inString);
+        let use = 0;
+        const expected = body.replaceAll(
+          USE,
+          () => inString[use++] ? "${__SWAMP_VAULT_0}" : '"${__SWAMP_VAULT_0}"',
+        );
+        assertEquals(
+          bag.resolveForShell(`cat <<EOF\n${body.replaceAll(USE, s)}\nEOF`)
+            .command,
+          `cat <<EOF\n${expected}\nEOF`,
+        );
+      },
+    ),
+  );
+});
