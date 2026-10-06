@@ -20,21 +20,59 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   handleDashboardSession,
-  InMemoryDashboardSessionStore,
   resolveDashboardSessionForOrigin,
 } from "./dashboard_session_handler.ts";
+import { ControlPlaneDashboardSessionStore } from "./dashboard_session_store.ts";
 import { DASHBOARD_SESSION_COOKIE } from "./token_auth.ts";
 import type { DeviceAuthDeps } from "./device_auth_handler.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+
+function createSessionStore(): ControlPlaneDashboardSessionStore {
+  const records = new Map<string, Uint8Array>();
+  const store: ControlPlaneStore = {
+    put: (key, data) => {
+      records.set(key, data);
+      return Promise.resolve();
+    },
+    get: (key) => Promise.resolve(records.get(key) ?? null),
+    delete: (key) => {
+      records.delete(key);
+      return Promise.resolve();
+    },
+    list: (prefix) =>
+      Promise.resolve(
+        [...records.keys()].filter((key) => key.startsWith(prefix)),
+      ),
+  };
+  return new ControlPlaneDashboardSessionStore(store);
+}
 
 function createDeps() {
   return {
     secure: true,
-    sessions: new InMemoryDashboardSessionStore(),
-    authenticate: (token: string) =>
+    sessions: createSessionStore(),
+    authenticateToken: (token: string) =>
       Promise.resolve(
         token === "admin.secret" || token === "oauth-operator.secret"
-          ? { ok: true as const }
+          ? {
+            ok: true as const,
+            tokenName: "admin",
+            tokenCreatedAt: "2026-10-06T00:00:00.000Z",
+          }
+          : {
+            ok: false as const,
+            response: new Response("Unauthorized", { status: 401 }),
+          },
+      ),
+    authenticateSession: (session: { tokenName: string }) =>
+      Promise.resolve(
+        session.tokenName === "admin"
+          ? {
+            ok: true as const,
+            tokenName: "admin",
+            tokenCreatedAt: "2026-10-06T00:00:00.000Z",
+          }
           : {
             ok: false as const,
             response: new Response("Unauthorized", { status: 401 }),
@@ -83,27 +121,30 @@ const deviceAuthDeps: DeviceAuthDeps = {
   storeAccessToken: () => Promise.resolve(),
 };
 
-Deno.test("resolveDashboardSessionForOrigin: requires the origin that established the session", () => {
-  const sessions = new InMemoryDashboardSessionStore();
-  const sessionId = sessions.create("admin.secret", "http://localhost:9090");
+Deno.test("resolveDashboardSessionForOrigin: requires the origin that established the session", async () => {
+  const sessions = createSessionStore();
+  const session = await sessions.create({
+    tokenName: "admin",
+    tokenCreatedAt: "2026-10-06T00:00:00.000Z",
+  }, "http://localhost:9090");
   assertEquals(
-    resolveDashboardSessionForOrigin(
-      sessionId,
+    await resolveDashboardSessionForOrigin(
+      session.id,
       "http://localhost:9090",
       sessions,
     ),
-    "admin.secret",
+    session,
   );
   assertEquals(
-    resolveDashboardSessionForOrigin(
-      sessionId,
+    await resolveDashboardSessionForOrigin(
+      session.id,
       "http://localhost:3000",
       sessions,
     ),
     null,
   );
   assertEquals(
-    resolveDashboardSessionForOrigin(sessionId, null, sessions),
+    await resolveDashboardSessionForOrigin(session.id, null, sessions),
     null,
   );
 });
@@ -174,7 +215,10 @@ Deno.test("handleDashboardSession: validates and clears a session", async () => 
 
   const restored = await handleDashboardSession(
     new Request("https://serve.test/auth/dashboard/session", {
-      headers: { cookie },
+      headers: {
+        cookie,
+        "x-swamp-dashboard-origin": "https://serve.test",
+      },
     }),
     deps,
   );
@@ -229,12 +273,40 @@ Deno.test("handleDashboardSession: replaces the prior browser session on reauthe
   );
   const secondSession = await handleDashboardSession(
     new Request("https://serve.test/auth/dashboard/session", {
-      headers: { cookie: secondCookie },
+      headers: {
+        cookie: secondCookie,
+        "x-swamp-dashboard-origin": "https://serve.test",
+      },
     }),
     deps,
   );
   assertEquals(firstSession?.status, 401);
   assertEquals(secondSession?.status, 200);
+});
+
+Deno.test("handleDashboardSession: requires the creating origin to restore a session", async () => {
+  const deps = createDeps();
+  const create = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      method: "POST",
+      headers: { origin: "https://serve.test" },
+      body: JSON.stringify({ token: "admin.secret" }),
+    }),
+    deps,
+  );
+  const cookie = create?.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+
+  const response = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      headers: {
+        cookie,
+        "x-swamp-dashboard-origin": "https://other.test",
+      },
+    }),
+    deps,
+  );
+
+  assertEquals(response?.status, 401);
 });
 
 Deno.test("handleDashboardSession: completes browser OAuth without returning its server token", async () => {

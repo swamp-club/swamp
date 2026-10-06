@@ -25,6 +25,11 @@ export type SessionFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+function dashboardOriginHeader(): HeadersInit | undefined {
+  if (typeof location === "undefined") return undefined;
+  return { "X-Swamp-Dashboard-Origin": location.origin };
+}
+
 function requestSignal(signal?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(DASHBOARD_SESSION_TIMEOUT_MS);
   return signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
@@ -35,6 +40,7 @@ export function createDashboardSessionClient(fetchFn: SessionFetch) {
   return {
     async restore(signal?: AbortSignal): Promise<boolean> {
       const response = await fetchFn(DASHBOARD_SESSION_PATH, {
+        headers: dashboardOriginHeader(),
         signal: requestSignal(signal),
       });
       await response.body?.cancel();

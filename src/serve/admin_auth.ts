@@ -23,9 +23,11 @@ import type {
   PolicySnapshotLoader,
 } from "../domain/access/mod.ts";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
   type ServerTokenAuthResult,
 } from "./token_auth.ts";
+import type { DashboardSession } from "./dashboard_session_store.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import {
   checkIpBurst,
@@ -159,6 +161,71 @@ export async function authenticateToken(
 
   clearRateLimit(rlKey);
 
+  const { tokenName, tokenCreatedAt, ...principal } = authResult;
+  return {
+    ok: true,
+    authResult: principal,
+    token: { name: tokenName, createdAt: tokenCreatedAt },
+    clientAddr,
+  };
+}
+
+/**
+ * Authenticates an already origin-validated dashboard session for the two
+ * dashboard health transports. Callers must never use this for admin routes.
+ */
+export async function authenticateDashboardSessionToken(
+  req: Request,
+  remoteAddr: string,
+  deps: AdminAuthDeps,
+  session: DashboardSession,
+): Promise<TokenAuthResult> {
+  const clientAddr = deps.trustProxy
+    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
+    : remoteAddr;
+  const ipBurst = checkIpBurst(clientAddr);
+  if (!ipBurst.allowed) {
+    return {
+      ok: false,
+      response: new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
+      }),
+    };
+  }
+  const rateKey = rateLimitKey(
+    `${session.tokenName}.${session.id}`,
+    clientAddr,
+  );
+  const rateCheck = checkRateLimit(rateKey);
+  if (!rateCheck.allowed) {
+    return {
+      ok: false,
+      response: new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": String(rateCheck.retryAfterSeconds) },
+      }),
+    };
+  }
+  const authResult = await authenticateDashboardSession(
+    session,
+    deps.repoContext,
+    {
+      emitter: deps.auditEmitter,
+      instanceId: deps.instanceId,
+      sourceIp: clientAddr,
+      ingress: new URL(req.url).pathname,
+    },
+  );
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      response: new Response(`Unauthorized: ${authResult.reason}`, {
+        status: 401,
+      }),
+    };
+  }
+  clearRateLimit(rateKey);
   const { tokenName, tokenCreatedAt, ...principal } = authResult;
   return {
     ok: true,

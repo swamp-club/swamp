@@ -357,10 +357,18 @@ export async function requestTokenProbe(
   signal: AbortSignal,
 ): Promise<ProbeResult> {
   try {
+    const dashboardOrigin = typeof location === "undefined"
+      ? undefined
+      : location.origin;
     const response = await fetchFn(
       "/api/v1/health",
       !token
-        ? { signal }
+        ? {
+          headers: dashboardOrigin === undefined
+            ? undefined
+            : { "X-Swamp-Dashboard-Origin": dashboardOrigin },
+          signal,
+        }
         : { headers: { Authorization: `Bearer ${token}` }, signal },
     );
     await response.body?.cancel();

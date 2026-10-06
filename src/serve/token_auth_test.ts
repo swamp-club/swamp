@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
   classifyRedeemError,
   DASHBOARD_SESSION_COOKIE,
@@ -395,6 +396,41 @@ Deno.test("readServerTokenRecord: a missing record does not exist", async () => 
     ServerTokenNotFoundError,
     "does not exist",
   );
+});
+
+Deno.test("authenticateDashboardSession: accepts the server-token mint that created the session", async () => {
+  const token = activeToken();
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+
+  const result = await authenticateDashboardSession({
+    tokenName: token.name,
+    tokenCreatedAt: token.createdAt,
+  }, repoContext);
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.principalId, "user:test-user");
+});
+
+Deno.test("authenticateDashboardSession: rejects a session for a rotated token mint", async () => {
+  const token = activeToken({ createdAt: "2026-02-01T00:00:00.000Z" });
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+
+  const result = await authenticateDashboardSession({
+    tokenName: token.name,
+    tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+  }, repoContext);
+
+  assertEquals(result, {
+    ok: false,
+    error: "Dashboard session references a rotated token",
+    reason: "revoked",
+  });
 });
 
 Deno.test("authenticateServerToken: applies the shared lifecycle validation", async () => {

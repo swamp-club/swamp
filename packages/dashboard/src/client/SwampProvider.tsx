@@ -93,8 +93,8 @@ function getWsUrl(): string {
 }
 
 const timers = {
-  setTimer: (fn: () => void, ms: number) => window.setTimeout(fn, ms),
-  clearTimer: (id: number) => window.clearTimeout(id),
+  setTimer: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
+  clearTimer: (id: number) => globalThis.clearTimeout(id),
 };
 
 const fetchAuthInfo = (signal: AbortSignal) =>

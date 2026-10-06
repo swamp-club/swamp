@@ -96,10 +96,12 @@ import {
 } from "../../serve/device_auth_handler.ts";
 import {
   handleDashboardSession,
-  InMemoryDashboardSessionStore,
   normalizeDashboardOrigin,
   resolveDashboardSessionForOrigin,
 } from "../../serve/dashboard_session_handler.ts";
+import {
+  ControlPlaneDashboardSessionStore,
+} from "../../serve/dashboard_session_store.ts";
 import { traceHttpRequests } from "../../serve/http_request_span.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -109,6 +111,7 @@ import {
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
   extractDashboardSessionId,
   extractWebSocketToken,
@@ -285,6 +288,7 @@ import {
 import {
   type AdminAuthDeps,
   authenticateAdmin,
+  authenticateDashboardSessionToken,
   authenticateToken,
   createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
@@ -5237,7 +5241,44 @@ export const serveCommand = new Command()
     }
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
-    const dashboardSessions = new InMemoryDashboardSessionStore();
+    const dashboardSessions = new ControlPlaneDashboardSessionStore(
+      controlPlaneStore,
+    );
+    const authenticateDashboardHealth = async (
+      req: Request,
+      remoteAddr: string,
+    ) => {
+      const authHeader = req.headers.get("authorization");
+      if (authHeader?.startsWith("Bearer ")) {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
+      const sessionId = extractDashboardSessionId(req);
+      if (sessionId === null) {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
+      const session = await resolveDashboardSessionForOrigin(
+        sessionId,
+        req.headers.get("origin") ??
+          req.headers.get("x-swamp-dashboard-origin"),
+        dashboardSessions,
+      );
+      if (session === null) {
+        return {
+          ok: false as const,
+          response: new Response("Unauthorized: dashboard session required", {
+            status: 401,
+          }),
+        };
+      }
+      const authenticated = await authenticateDashboardSessionToken(
+        req,
+        remoteAddr,
+        adminAuthDeps,
+        session,
+      );
+      if (!authenticated.ok) await dashboardSessions.delete(session.id);
+      return authenticated;
+    };
     const server = Deno.serve(
       {
         port,
@@ -5312,17 +5353,29 @@ export const serveCommand = new Command()
             const dashboardSessionId = extracted === null
               ? extractDashboardSessionId(req)
               : null;
-            const dashboardSessionToken = dashboardSessionId === null
+            const dashboardSession = dashboardSessionId === null
               ? null
-              : resolveDashboardSessionForOrigin(
+              : await resolveDashboardSessionForOrigin(
                 dashboardSessionId,
                 req.headers.get("origin"),
                 dashboardSessions,
               );
             if (
               !extracted && dashboardSessionId !== null &&
-              dashboardSessionToken === null
+              dashboardSession === null
             ) {
+              const storedSession = await dashboardSessions.get(
+                dashboardSessionId,
+              );
+              if (storedSession === null) {
+                logger.warn(
+                  "WebSocket dashboard session rejected: unknown session from {ip}",
+                  { ip: remoteAddr },
+                );
+                return new Response("Unauthorized: dashboard session expired", {
+                  status: 401,
+                });
+              }
               logger.warn(
                 "WebSocket dashboard session rejected: origin mismatch from {ip}",
                 { ip: remoteAddr },
@@ -5334,7 +5387,7 @@ export const serveCommand = new Command()
                 },
               );
             }
-            if (!extracted && dashboardSessionToken === null) {
+            if (!extracted && dashboardSession === null) {
               logger.warn(
                 "WebSocket auth rejected: no token provided from {ip}",
                 { ip: remoteAddr },
@@ -5344,17 +5397,19 @@ export const serveCommand = new Command()
               });
             }
 
-            let token: string;
+            let rateLimitCredential: string;
             let transport: "bearer" | "subprotocol" | "query" | "cookie";
             if (extracted) {
-              token = extracted.token;
+              rateLimitCredential = extracted.token;
               transport = extracted.transport;
             } else {
-              token = dashboardSessionToken!;
+              rateLimitCredential = `${dashboardSession!.tokenName}.${
+                dashboardSession!.id
+              }`;
               transport = "cookie";
             }
 
-            const rlKey = rateLimitKey(token, remoteAddr);
+            const rlKey = rateLimitKey(rateLimitCredential, remoteAddr);
             const rateCheck = checkRateLimit(rlKey);
             if (!rateCheck.allowed) {
               logger.warn(
@@ -5373,18 +5428,28 @@ export const serveCommand = new Command()
               "WebSocket token received via {transport} from {ip}",
               { transport, ip: remoteAddr },
             );
-            const result = await authenticateServerToken(
-              token,
-              resolvedRepoDir,
-              repoContext,
-              {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp: remoteAddr,
-                ingress: `websocket:${transport}`,
-              },
-            );
+            const auditContext = {
+              emitter: connectionCtx.auditEmitter,
+              instanceId: connectionCtx.instanceId,
+              sourceIp: remoteAddr,
+              ingress: `websocket:${transport}`,
+            };
+            const result = extracted
+              ? await authenticateServerToken(
+                extracted.token,
+                resolvedRepoDir,
+                repoContext,
+                auditContext,
+              )
+              : await authenticateDashboardSession(
+                dashboardSession!,
+                repoContext,
+                auditContext,
+              );
             if (!result.ok) {
+              if (dashboardSession !== null) {
+                await dashboardSessions.delete(dashboardSession.id);
+              }
               logger.warn(
                 "WebSocket auth rejected for {key} from {ip} ({reason}): {error}",
                 {
@@ -5404,7 +5469,7 @@ export const serveCommand = new Command()
             const upgradeOpts = transport === "subprotocol"
               ? {
                 ...wsUpgradeOpts,
-                protocol: `bearer.${token}`,
+                protocol: `bearer.${extracted!.token}`,
               }
               : wsUpgradeOpts;
             const { socket, response } = Deno.upgradeWebSocket(
@@ -5669,15 +5734,9 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
-            const dashboardSessionId = extractDashboardSessionId(req);
-            const dashboardToken = dashboardSessionId === null
-              ? null
-              : dashboardSessions.get(dashboardSessionId)?.serverToken ?? null;
-            const auth = await authenticateToken(
+            const auth = await authenticateDashboardHealth(
               req,
               info.remoteAddr.hostname,
-              adminAuthDeps,
-              dashboardToken,
             );
             if (!auth.ok) return auth.response;
             const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
@@ -5690,15 +5749,9 @@ export const serveCommand = new Command()
           // SSE health stream, bound to its token session so revoking,
           // rotating or expiring the token ends it
           if (url.pathname === "/api/v1/health/stream") {
-            const dashboardSessionId = extractDashboardSessionId(req);
-            const dashboardToken = dashboardSessionId === null
-              ? null
-              : dashboardSessions.get(dashboardSessionId)?.serverToken ?? null;
-            const auth = await authenticateToken(
+            const auth = await authenticateDashboardHealth(
               req,
               info.remoteAddr.hostname,
-              adminAuthDeps,
-              dashboardToken,
             );
             if (!auth.ok) return auth.response;
             const token = auth.token;
@@ -5895,7 +5948,7 @@ export const serveCommand = new Command()
           },
           sessions: dashboardSessions,
           deviceAuthDeps,
-          authenticate: async (token) => {
+          authenticateToken: async (token) => {
             const rlKey = rateLimitKey(token, dashboardRemoteAddr);
             const rateCheck = checkRateLimit(rlKey);
             if (!rateCheck.allowed) {
@@ -5929,7 +5982,36 @@ export const serveCommand = new Command()
               };
             }
             clearRateLimit(rlKey);
-            return { ok: true };
+            return {
+              ok: true,
+              tokenName: result.tokenName,
+              tokenCreatedAt: result.tokenCreatedAt,
+            };
+          },
+          authenticateSession: async (session) => {
+            const result = await authenticateDashboardSession(
+              session,
+              repoContext,
+              {
+                emitter: connectionCtx.auditEmitter,
+                instanceId: connectionCtx.instanceId,
+                sourceIp: dashboardRemoteAddr,
+                ingress: "dashboard-session",
+              },
+            );
+            if (!result.ok) {
+              return {
+                ok: false,
+                response: new Response(`Unauthorized: ${result.reason}`, {
+                  status: 401,
+                }),
+              };
+            }
+            return {
+              ok: true,
+              tokenName: result.tokenName,
+              tokenCreatedAt: result.tokenCreatedAt,
+            };
           },
         });
         if (dashboardSessionResponse !== null) return dashboardSessionResponse;

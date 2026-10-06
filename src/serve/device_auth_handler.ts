@@ -117,7 +117,7 @@ export interface DeviceAuthDeps {
 export interface DeviceAuthRoutes {
   readonly startPath: string;
   readonly tokenPath: string;
-  readonly onAuthenticated?: (token: string) => Response;
+  readonly onAuthenticated?: (token: string) => Promise<Response>;
 }
 
 function emitAuthAuditEvent(
@@ -236,7 +236,7 @@ async function handleStartDeviceGrant(
 async function handleDeviceToken(
   req: Request,
   deps: DeviceAuthDeps,
-  onAuthenticated?: (token: string) => Response,
+  onAuthenticated?: (token: string) => Promise<Response>,
 ): Promise<Response> {
   let body: Record<string, unknown>;
   try {
@@ -357,7 +357,7 @@ async function handleDeviceToken(
       undefined,
       tokenName,
     );
-    if (onAuthenticated) return onAuthenticated(token);
+    if (onAuthenticated) return await onAuthenticated(token);
     return jsonResponse(200, {
       token,
       principal: {

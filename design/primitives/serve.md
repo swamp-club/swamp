@@ -166,7 +166,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
 | HTTP GET | `/internal/runs?limit=&offset=` | admin; 404 unless `--enable-internal-api` | Full run-tracker history |
 | HTTP POST | `/auth/device`, `/auth/device/token` | none (IP burst limit) | OAuth device grant, mode `oauth` only (`src/serve/device_auth_handler.ts`) |
-| HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque per-serve session id; TLS deployments also set `Secure`. |
+| HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
 | HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules and webhook endpoints |
@@ -775,23 +775,32 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   host-only `HttpOnly`, `SameSite=Strict` cookie. Page JavaScript never reads or
   stores a server token, and the cookie never contains one. The session is
   bound to the exact origin that created it, including port, before it can
-  authenticate a WebSocket; this prevents a page on another same-site port from
-  opening an ambient authenticated socket. The cookie has no `Domain` attribute,
-  so it is shared by tabs on the same host but not subdomains.
+  authenticate the dashboard status check or a WebSocket; this prevents a page
+  on another same-site port from using an ambient authenticated session.
+  Cookie-backed status and health fetches send a same-origin-only
+  `X-Swamp-Dashboard-Origin` header because browsers need not attach `Origin`
+  to same-origin GETs; a cross-origin page cannot set it without a CORS
+  preflight, which serve does not authorize. The cookie has no `Domain`
+  attribute, so it is shared by tabs on the same host but not subdomains.
 
   A dashboard opened in another tab, including a deep link, restores the cookie
   session before rendering Login. Existing `sessionStorage` credentials are
   intentionally ignored, so deployment requires one fresh dashboard login;
   already-loaded tabs remain active until their next reload or session end.
-  Sessions are per serve instance and are invalidated on serve restart or
-  logout. Logout clears the server session and broadcasts a credential-free
-  signal that closes live dashboard sockets in other tabs. Successful
-  reauthentication broadcasts the same kind of state change, so other tabs
-  reconnect using the replacement cookie rather than retaining an older live
-  socket. Local HTTP development omits `Secure` only because browsers reject
-  `Secure` cookies over HTTP. Behind a trusted TLS-terminating proxy, serve uses
-  `X-Forwarded-Proto` and `X-Forwarded-Host` to enforce the public origin and set
-  `Secure`; direct TLS deployments do the same from their listener configuration.
+  Sessions are control-plane records shared by every serve replica in a
+  namespace, so a load balancer may route a tab's requests to different
+  instances. A record contains the origin plus the server-token name and mint
+  timestamp, never its bearer secret; it expires after eight hours, is deleted
+  on logout or a failed token check, and the control plane admits at most 10,000
+  active records. Logout clears the server record and broadcasts a
+  credential-free signal that closes live dashboard sockets in cooperating tabs.
+  Successful reauthentication broadcasts the same kind of state change, so
+  other tabs reconnect using the replacement cookie rather than retaining an
+  older live socket. Local HTTP development omits `Secure` only because browsers
+  reject `Secure` cookies over HTTP. Behind a trusted TLS-terminating proxy,
+  serve uses `X-Forwarded-Proto` and `X-Forwarded-Host` to enforce the public
+  origin and set `Secure`; direct TLS deployments do the same from their listener
+  configuration.
 
    After an unexpected close it reconnects with jittered exponential backoff
   (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is

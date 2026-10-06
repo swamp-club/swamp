@@ -25,19 +25,12 @@ import {
   type DeviceAuthDeps,
   handleDeviceAuth,
 } from "./device_auth_handler.ts";
-import { generateOpaqueToken } from "../domain/remote/session_credential.ts";
-
-export interface DashboardSessionStore {
-  create(serverToken: string, origin: string): string;
-  get(sessionId: string): DashboardSession | null;
-  delete(sessionId: string): void;
-}
-
-export interface DashboardSession {
-  readonly serverToken: string;
-  /** Exact origin that established this browser session. */
-  readonly origin: string;
-}
+import {
+  type DashboardSession,
+  DashboardSessionCapacityError,
+  type DashboardSessionIdentity,
+  type DashboardSessionStore,
+} from "./dashboard_session_store.ts";
 
 /** Returns the canonical HTTP(S) origin, or null for malformed input. */
 export function normalizeDashboardOrigin(origin: string): string | null {
@@ -55,12 +48,12 @@ export function normalizeDashboardOrigin(origin: string): string | null {
  * This prevents a same-site page on another port from using the ambient
  * cookie during a WebSocket upgrade.
  */
-export function resolveDashboardSessionForOrigin(
+export async function resolveDashboardSessionForOrigin(
   sessionId: string,
   origin: string | null,
   sessions: DashboardSessionStore,
-): string | null {
-  const session = sessions.get(sessionId);
+): Promise<DashboardSession | null> {
+  const session = await sessions.get(sessionId);
   const normalizedOrigin = origin === null
     ? null
     : normalizeDashboardOrigin(origin);
@@ -70,40 +63,18 @@ export function resolveDashboardSessionForOrigin(
   ) {
     return null;
   }
-  return session.serverToken;
-}
-
-/**
- * Per-serve-instance mapping of opaque browser sessions to server tokens.
- *
- * Browser cookies contain only a random session identifier. A serve restart
- * deliberately drops these sessions; the underlying server token continues to
- * follow its existing expiry and revocation rules.
- */
-export class InMemoryDashboardSessionStore implements DashboardSessionStore {
-  readonly #sessions = new Map<string, DashboardSession>();
-
-  create(serverToken: string, origin: string): string {
-    const sessionId = generateOpaqueToken();
-    this.#sessions.set(sessionId, { serverToken, origin });
-    return sessionId;
-  }
-
-  get(sessionId: string): DashboardSession | null {
-    return this.#sessions.get(sessionId) ?? null;
-  }
-
-  delete(sessionId: string): void {
-    this.#sessions.delete(sessionId);
-  }
+  return session;
 }
 
 export type DashboardSessionAuthentication =
-  | { ok: true }
+  | ({ ok: true } & DashboardSessionIdentity)
   | { ok: false; response: Response };
 
 export interface DashboardSessionDeps {
-  authenticate(token: string): Promise<DashboardSessionAuthentication>;
+  authenticateToken(token: string): Promise<DashboardSessionAuthentication>;
+  authenticateSession(
+    session: DashboardSession,
+  ): Promise<DashboardSessionAuthentication>;
   sessions: DashboardSessionStore;
   secure: boolean;
   /** Browser-origin requests must be same-origin before changing a session. */
@@ -121,18 +92,31 @@ function expiredCookie(secure: boolean): string {
   return `${cookie("", secure)}; Max-Age=0`;
 }
 
-function sessionCreatedResponse(
+async function sessionCreatedResponse(
   token: string,
   origin: string,
   req: Request,
   deps: DashboardSessionDeps,
-): Response {
+): Promise<Response> {
+  const result = await deps.authenticateToken(token);
+  if (!result.ok) return result.response;
+  let session: DashboardSession;
+  try {
+    session = await deps.sessions.create(result, origin);
+  } catch (error) {
+    if (error instanceof DashboardSessionCapacityError) {
+      return new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": "60" },
+      });
+    }
+    throw error;
+  }
   const previousSessionId = extractDashboardSessionId(req);
-  if (previousSessionId !== null) deps.sessions.delete(previousSessionId);
-  const sessionId = deps.sessions.create(token, origin);
+  if (previousSessionId !== null) await deps.sessions.delete(previousSessionId);
   return new Response(null, {
     status: 204,
-    headers: { "set-cookie": cookie(sessionId, deps.secure) },
+    headers: { "set-cookie": cookie(session.id, deps.secure) },
   });
 }
 
@@ -173,7 +157,7 @@ export async function handleDashboardSession(
 
   if (req.method === "DELETE") {
     const sessionId = extractDashboardSessionId(req);
-    if (sessionId !== null) deps.sessions.delete(sessionId);
+    if (sessionId !== null) await deps.sessions.delete(sessionId);
     return new Response(null, {
       status: 204,
       headers: { "set-cookie": expiredCookie(deps.secure) },
@@ -182,10 +166,18 @@ export async function handleDashboardSession(
 
   if (req.method === "GET") {
     const sessionId = extractDashboardSessionId(req);
-    const session = sessionId === null ? null : deps.sessions.get(sessionId);
+    const session = sessionId === null
+      ? null
+      : await resolveDashboardSessionForOrigin(
+        sessionId,
+        req.headers.get("origin") ??
+          req.headers.get("x-swamp-dashboard-origin"),
+        deps.sessions,
+      );
     if (session === null) return new Response(null, { status: 401 });
-    const result = await deps.authenticate(session.serverToken);
+    const result = await deps.authenticateSession(session);
     if (!result.ok) {
+      await deps.sessions.delete(session.id);
       return new Response(null, { status: 401 });
     }
     return Response.json({ authenticated: true });
@@ -203,7 +195,5 @@ export async function handleDashboardSession(
   if (typeof body.token !== "string" || body.token.length === 0) {
     return new Response("Invalid token", { status: 400 });
   }
-  const result = await deps.authenticate(body.token);
-  if (!result.ok) return result.response;
-  return sessionCreatedResponse(body.token, origin!, req, deps);
+  return await sessionCreatedResponse(body.token, origin!, req, deps);
 }

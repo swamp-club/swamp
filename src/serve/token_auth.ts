@@ -236,6 +236,12 @@ export type ServerTokenAuthResult =
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
+/** A browser-session reference to one exact server-token mint. */
+export interface DashboardSessionTokenBinding {
+  readonly tokenName: string;
+  readonly tokenCreatedAt: string;
+}
+
 export function classifyRedeemError(message: string): TokenAuthRejectionReason {
   if (message.includes("has expired")) return "expired";
   if (message.includes("has been revoked")) return "revoked";
@@ -338,6 +344,69 @@ export async function authenticateServerToken(
     logger.warn(
       "Token authentication failed for {name} ({reason}): {error}",
       { name: split.name, reason, error: message },
+    );
+    return { ok: false, error: "Authentication failed", reason };
+  }
+}
+
+/**
+ * Authenticates an opaque dashboard-session reference without reading or
+ * reconstructing a server-token bearer secret. The referenced mint must still
+ * be active, unexpired, and identical to the one that created the session.
+ */
+export async function authenticateDashboardSession(
+  binding: DashboardSessionTokenBinding,
+  repoContext: RepositoryContext,
+  auditContext?: TokenAuthAuditContext,
+): Promise<ServerTokenAuthResult> {
+  try {
+    const token = await readServerTokenRecord(repoContext, binding.tokenName);
+    validateServerToken(
+      token,
+      binding.tokenName,
+      `${binding.tokenName}.dashboard-session`,
+      Date.now(),
+    );
+    if (token.createdAt !== binding.tokenCreatedAt) {
+      return {
+        ok: false,
+        error: "Dashboard session references a rotated token",
+        reason: "revoked",
+      };
+    }
+    let principal: Principal;
+    try {
+      principal = parsePrincipal(token.principalId);
+      assertAuthenticatablePrincipal(principal);
+    } catch (error) {
+      logger.warn(
+        "Dashboard session authentication rejected for {name} (invalid-principal): {error}",
+        {
+          name: binding.tokenName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return {
+        ok: false,
+        error: "Authentication failed",
+        reason: "invalid-principal",
+      };
+    }
+    emitTokenUseAuditEvent(auditContext, binding.tokenName, principal);
+    return {
+      ok: true,
+      principalId: token.principalId,
+      collectives: token.collectives,
+      groups: token.groups,
+      tokenName: binding.tokenName,
+      tokenCreatedAt: token.createdAt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = classifyRedeemError(message);
+    logger.warn(
+      "Dashboard session authentication failed for {name} ({reason}): {error}",
+      { name: binding.tokenName, reason, error: message },
     );
     return { ok: false, error: "Authentication failed", reason };
   }
