@@ -23,9 +23,12 @@ import type {
   PolicySnapshotLoader,
 } from "../domain/access/mod.ts";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
   type ServerTokenAuthResult,
+  shouldInvalidateDashboardSession,
 } from "./token_auth.ts";
+import type { DashboardSession } from "./dashboard_session_store.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import {
   checkIpBurst,
@@ -70,6 +73,40 @@ export type TokenAuthResult =
     clientAddr: string;
   }
   | { ok: false; response: Response };
+
+/** Cookie-session result with explicit invalidation semantics for callers. */
+export type DashboardSessionTokenAuthResult =
+  | Extract<TokenAuthResult, { ok: true }>
+  | { ok: false; response: Response; invalidateSession: boolean };
+
+export type DashboardSessionIpBurstResult =
+  | { ok: true; clientAddr: string }
+  | { ok: false; response: Response };
+
+/**
+ * Applies the IP burst limit before a dashboard cookie causes any control-plane
+ * lookup. Call this before resolving a dashboard session from its opaque ID.
+ */
+export function checkDashboardSessionIpBurst(
+  req: Request,
+  remoteAddr: string,
+  deps: AdminAuthDeps,
+): DashboardSessionIpBurstResult {
+  const clientAddr = deps.trustProxy
+    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
+    : remoteAddr;
+  const ipBurst = checkIpBurst(clientAddr);
+  if (!ipBurst.allowed) {
+    return {
+      ok: false,
+      response: new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
+      }),
+    };
+  }
+  return { ok: true, clientAddr };
+}
 
 /**
  * Authenticates a request's bearer token with the same rate limits as
@@ -156,6 +193,61 @@ export async function authenticateToken(
 
   clearRateLimit(rlKey);
 
+  const { tokenName, tokenCreatedAt, ...principal } = authResult;
+  return {
+    ok: true,
+    authResult: principal,
+    token: { name: tokenName, createdAt: tokenCreatedAt },
+    clientAddr,
+  };
+}
+
+/**
+ * Authenticates an already origin-validated and burst-limited dashboard session
+ * for the two dashboard health transports. Callers must never use this for
+ * admin routes.
+ */
+export async function authenticateDashboardSessionToken(
+  req: Request,
+  clientAddr: string,
+  deps: AdminAuthDeps,
+  session: DashboardSession,
+): Promise<DashboardSessionTokenAuthResult> {
+  const rateKey = rateLimitKey(
+    `${session.tokenName}.${session.id}`,
+    clientAddr,
+  );
+  const rateCheck = checkRateLimit(rateKey);
+  if (!rateCheck.allowed) {
+    return {
+      ok: false,
+      invalidateSession: false,
+      response: new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": String(rateCheck.retryAfterSeconds) },
+      }),
+    };
+  }
+  const authResult = await authenticateDashboardSession(
+    session,
+    deps.repoContext,
+    {
+      emitter: deps.auditEmitter,
+      instanceId: deps.instanceId,
+      sourceIp: clientAddr,
+      ingress: new URL(req.url).pathname,
+    },
+  );
+  if (!authResult.ok) {
+    return {
+      ok: false,
+      invalidateSession: shouldInvalidateDashboardSession(authResult.reason),
+      response: new Response(`Unauthorized: ${authResult.reason}`, {
+        status: 401,
+      }),
+    };
+  }
+  clearRateLimit(rateKey);
   const { tokenName, tokenCreatedAt, ...principal } = authResult;
   return {
     ok: true,

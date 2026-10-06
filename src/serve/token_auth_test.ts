@@ -19,8 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
   classifyRedeemError,
+  DASHBOARD_SESSION_COOKIE,
+  extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
   type ServerTokenAuthDeps,
@@ -113,6 +116,29 @@ Deno.test("extractWebSocketToken: extracts from query parameter", () => {
   const req = makeReq("http://localhost:4000/?token=mytoken.secret123");
   const result = extractWebSocketToken(req);
   assertEquals(result, { token: "mytoken.secret123", transport: "query" });
+});
+
+Deno.test("extractDashboardSessionId: extracts the dashboard session cookie", () => {
+  const req = makeReq("http://localhost:4000/", {
+    cookie: `${DASHBOARD_SESSION_COOKIE}=mytoken.secret123`,
+  });
+  assertEquals(extractDashboardSessionId(req), "mytoken.secret123");
+  assertEquals(extractWebSocketToken(req), null);
+});
+
+Deno.test("extractDashboardSessionId: ignores an invalid dashboard session cookie", () => {
+  const req = makeReq("http://localhost:4000/", {
+    cookie: `${DASHBOARD_SESSION_COOKIE}=%E0%A4%A`,
+  });
+  assertEquals(extractDashboardSessionId(req), null);
+});
+
+Deno.test("extractDashboardSessionId: rejects duplicate dashboard session cookies", () => {
+  const req = makeReq("http://localhost:4000/", {
+    cookie:
+      `${DASHBOARD_SESSION_COOKIE}=first.secret; ${DASHBOARD_SESSION_COOKIE}=second.secret`,
+  });
+  assertEquals(extractDashboardSessionId(req), null);
 });
 
 Deno.test("extractWebSocketToken: returns null when no token present", () => {
@@ -370,6 +396,41 @@ Deno.test("readServerTokenRecord: a missing record does not exist", async () => 
     ServerTokenNotFoundError,
     "does not exist",
   );
+});
+
+Deno.test("authenticateDashboardSession: accepts the server-token mint that created the session", async () => {
+  const token = activeToken();
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+
+  const result = await authenticateDashboardSession({
+    tokenName: token.name,
+    tokenCreatedAt: token.createdAt,
+  }, repoContext);
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.principalId, "user:test-user");
+});
+
+Deno.test("authenticateDashboardSession: rejects a session for a rotated token mint", async () => {
+  const token = activeToken({ createdAt: "2026-02-01T00:00:00.000Z" });
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+
+  const result = await authenticateDashboardSession({
+    tokenName: token.name,
+    tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+  }, repoContext);
+
+  assertEquals(result, {
+    ok: false,
+    error: "Dashboard session references a rotated token",
+    reason: "revoked",
+  });
 });
 
 Deno.test("authenticateServerToken: applies the shared lifecycle validation", async () => {

@@ -94,6 +94,14 @@ import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
+import {
+  handleDashboardSession,
+  normalizeDashboardOrigin,
+  resolveDashboardSessionForOrigin,
+} from "../../serve/dashboard_session_handler.ts";
+import {
+  ControlPlaneDashboardSessionStore,
+} from "../../serve/dashboard_session_store.ts";
 import { traceHttpRequests } from "../../serve/http_request_span.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -103,9 +111,12 @@ import {
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
 import {
+  authenticateDashboardSession,
   authenticateServerToken,
+  extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
+  shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
 import {
   checkIpBurst,
@@ -282,7 +293,9 @@ import {
 import {
   type AdminAuthDeps,
   authenticateAdmin,
+  authenticateDashboardSessionToken,
   authenticateToken,
+  checkDashboardSessionIpBurst,
   createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
 import {
@@ -870,6 +883,94 @@ export function validateWebSocketOrigin(
   }
 
   return { allowed: true };
+}
+
+function forwardedHeaderValue(req: Request, name: string): string | null {
+  const value = req.headers.get(name)?.split(",")[0]?.trim();
+  return value && value.length > 0 ? value : null;
+}
+
+/**
+ * Requires mutation of a dashboard cookie session to come from the exact
+ * public origin serving the request. Trusted proxies provide the public scheme
+ * and authority; configured trusted hosts also support TLS-terminating proxies
+ * that preserve neither forwarding header.
+ */
+export function validateDashboardSessionOrigin(
+  req: Request,
+  tlsEnabled: boolean,
+  trustProxy: boolean,
+  trustedHosts?: readonly string[],
+): { allowed: boolean; origin?: string; secure: boolean; reason?: string } {
+  const origin = req.headers.get("origin");
+  if (origin === null) {
+    return { allowed: false, secure: false, reason: "missing origin" };
+  }
+  const normalizedOrigin = normalizeDashboardOrigin(origin);
+  if (normalizedOrigin === null) {
+    return {
+      allowed: false,
+      secure: false,
+      reason: `malformed origin: ${origin}`,
+    };
+  }
+
+  const forwardedProtocol = trustProxy
+    ? (forwardedHeaderValue(req, "x-forwarded-proto")?.toLowerCase() ?? null)
+    : null;
+  if (
+    forwardedProtocol !== null && forwardedProtocol !== "http" &&
+    forwardedProtocol !== "https"
+  ) {
+    return {
+      allowed: false,
+      secure: false,
+      reason: `invalid forwarded protocol: ${forwardedProtocol}`,
+    };
+  }
+  const protocol = forwardedProtocol ?? (tlsEnabled ? "https" : "http");
+  const host = trustProxy
+    ? (forwardedHeaderValue(req, "x-forwarded-host") ?? req.headers.get("host"))
+    : req.headers.get("host");
+  if (host === null || host.length === 0) {
+    return {
+      allowed: false,
+      secure: protocol === "https",
+      reason: "missing host",
+    };
+  }
+  const expected = normalizeDashboardOrigin(`${protocol}://${host}`);
+  if (expected !== null && normalizedOrigin === expected) {
+    return {
+      allowed: true,
+      origin: normalizedOrigin,
+      secure: protocol === "https",
+    };
+  }
+  if (
+    trustedHosts && isTrustedDashboardOrigin(normalizedOrigin, trustedHosts)
+  ) {
+    return {
+      allowed: true,
+      origin: normalizedOrigin,
+      secure: true,
+    };
+  }
+  return {
+    allowed: false,
+    secure: protocol === "https",
+    reason: `origin does not match request authority: ${origin}`,
+  };
+}
+
+function isTrustedDashboardOrigin(
+  origin: string,
+  trustedHosts: readonly string[],
+): boolean {
+  return trustedHosts.some((trustedHost) => {
+    const trustedOrigin = normalizeDashboardOrigin(`https://${trustedHost}`);
+    return trustedOrigin !== null && trustedOrigin === origin;
+  });
 }
 
 /**
@@ -5203,6 +5304,60 @@ export const serveCommand = new Command()
     }
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
+    const dashboardSessions = new ControlPlaneDashboardSessionStore(
+      controlPlaneStore,
+    );
+    const authenticateDashboardHealth = async (
+      req: Request,
+      remoteAddr: string,
+    ) => {
+      if (adminAuthDeps.authMode === "none") {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
+      const authHeader = req.headers.get("authorization");
+      if (authHeader?.startsWith("Bearer ")) {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
+      const sessionId = extractDashboardSessionId(req);
+      if (sessionId === null) {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
+      const ipBurst = checkDashboardSessionIpBurst(
+        req,
+        remoteAddr,
+        adminAuthDeps,
+      );
+      if (!ipBurst.ok) {
+        return {
+          ok: false as const,
+          response: ipBurst.response,
+        };
+      }
+      const session = await resolveDashboardSessionForOrigin(
+        sessionId,
+        req.headers.get("origin") ??
+          req.headers.get("x-swamp-dashboard-origin"),
+        dashboardSessions,
+      );
+      if (session === null) {
+        return {
+          ok: false as const,
+          response: new Response("Unauthorized: dashboard session required", {
+            status: 401,
+          }),
+        };
+      }
+      const authenticated = await authenticateDashboardSessionToken(
+        req,
+        ipBurst.clientAddr,
+        adminAuthDeps,
+        session,
+      );
+      if (!authenticated.ok && authenticated.invalidateSession) {
+        await dashboardSessions.delete(session.id);
+      }
+      return authenticated;
+    };
     const server = Deno.serve(
       {
         port,
@@ -5274,7 +5429,44 @@ export const serveCommand = new Command()
             }
 
             const extracted = extractWebSocketToken(req);
-            if (!extracted) {
+            const dashboardSessionId = extracted === null
+              ? extractDashboardSessionId(req)
+              : null;
+            const dashboardSession = dashboardSessionId === null
+              ? null
+              : await resolveDashboardSessionForOrigin(
+                dashboardSessionId,
+                req.headers.get("origin"),
+                dashboardSessions,
+              );
+            if (
+              !extracted && dashboardSessionId !== null &&
+              dashboardSession === null
+            ) {
+              const storedSession = await dashboardSessions.get(
+                dashboardSessionId,
+              );
+              if (storedSession === null) {
+                logger.warn(
+                  "WebSocket dashboard session rejected: unknown session from {ip}",
+                  { ip: remoteAddr },
+                );
+                return new Response("Unauthorized: dashboard session expired", {
+                  status: 401,
+                });
+              }
+              logger.warn(
+                "WebSocket dashboard session rejected: origin mismatch from {ip}",
+                { ip: remoteAddr },
+              );
+              return new Response(
+                "Forbidden: dashboard session origin mismatch",
+                {
+                  status: 403,
+                },
+              );
+            }
+            if (!extracted && dashboardSession === null) {
               logger.warn(
                 "WebSocket auth rejected: no token provided from {ip}",
                 { ip: remoteAddr },
@@ -5284,7 +5476,19 @@ export const serveCommand = new Command()
               });
             }
 
-            const rlKey = rateLimitKey(extracted.token, remoteAddr);
+            let rateLimitCredential: string;
+            let transport: "bearer" | "subprotocol" | "query" | "cookie";
+            if (extracted) {
+              rateLimitCredential = extracted.token;
+              transport = extracted.transport;
+            } else {
+              rateLimitCredential = `${dashboardSession!.tokenName}.${
+                dashboardSession!.id
+              }`;
+              transport = "cookie";
+            }
+
+            const rlKey = rateLimitKey(rateLimitCredential, remoteAddr);
             const rateCheck = checkRateLimit(rlKey);
             if (!rateCheck.allowed) {
               logger.warn(
@@ -5301,20 +5505,33 @@ export const serveCommand = new Command()
 
             logger.debug(
               "WebSocket token received via {transport} from {ip}",
-              { transport: extracted.transport, ip: remoteAddr },
+              { transport, ip: remoteAddr },
             );
-            const result = await authenticateServerToken(
-              extracted.token,
-              resolvedRepoDir,
-              repoContext,
-              {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp: remoteAddr,
-                ingress: `websocket:${extracted.transport}`,
-              },
-            );
+            const auditContext = {
+              emitter: connectionCtx.auditEmitter,
+              instanceId: connectionCtx.instanceId,
+              sourceIp: remoteAddr,
+              ingress: `websocket:${transport}`,
+            };
+            const result = extracted
+              ? await authenticateServerToken(
+                extracted.token,
+                resolvedRepoDir,
+                repoContext,
+                auditContext,
+              )
+              : await authenticateDashboardSession(
+                dashboardSession!,
+                repoContext,
+                auditContext,
+              );
             if (!result.ok) {
+              if (
+                dashboardSession !== null &&
+                shouldInvalidateDashboardSession(result.reason)
+              ) {
+                await dashboardSessions.delete(dashboardSession.id);
+              }
               logger.warn(
                 "WebSocket auth rejected for {key} from {ip} ({reason}): {error}",
                 {
@@ -5331,10 +5548,10 @@ export const serveCommand = new Command()
             }
             clearRateLimit(rlKey);
             const principal = parsePrincipal(result.principalId);
-            const upgradeOpts = extracted.transport === "subprotocol"
+            const upgradeOpts = transport === "subprotocol"
               ? {
                 ...wsUpgradeOpts,
-                protocol: `bearer.${extracted.token}`,
+                protocol: `bearer.${extracted!.token}`,
               }
               : wsUpgradeOpts;
             const { socket, response } = Deno.upgradeWebSocket(
@@ -5599,10 +5816,9 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
-            const auth = await authenticateToken(
+            const auth = await authenticateDashboardHealth(
               req,
               info.remoteAddr.hostname,
-              adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
             const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
@@ -5615,10 +5831,9 @@ export const serveCommand = new Command()
           // SSE health stream, bound to its token session so revoking,
           // rotating or expiring the token ends it
           if (url.pathname === "/api/v1/health/stream") {
-            const auth = await authenticateToken(
+            const auth = await authenticateDashboardHealth(
               req,
               info.remoteAddr.hostname,
-              adminAuthDeps,
             );
             if (!auth.ok) return auth.response;
             const token = auth.token;
@@ -5729,18 +5944,38 @@ export const serveCommand = new Command()
           }
         }
 
-        // Device authorization endpoints (OAuth mode only)
+        // Browser dashboard sessions and OAuth device authorization.
+        const authPath = new URL(req.url).pathname;
+        const isDeviceAuthRequest = authPath === "/auth/device" ||
+          authPath === "/auth/device/token";
+        const isDashboardSessionRequest =
+          authPath === "/auth/dashboard/session" ||
+          authPath === "/auth/dashboard/device" ||
+          authPath === "/auth/dashboard/device/token";
+        const dashboardRemoteAddr = clientAddress();
+        if (isDashboardSessionRequest && authConfig.mode !== "none") {
+          const dashboardRateCheck = checkIpBurst(dashboardRemoteAddr);
+          if (!dashboardRateCheck.allowed) {
+            logger.warn("Dashboard session IP burst rate-limited from {ip}", {
+              ip: dashboardRemoteAddr,
+            });
+            return new Response("Too Many Requests", {
+              status: 429,
+              headers: {
+                "Retry-After": String(dashboardRateCheck.retryAfterSeconds),
+              },
+            });
+          }
+        }
+        let deviceAuthDeps: ReturnType<typeof createDeviceAuthDeps> | undefined;
+        let deviceRemoteAddr: string | undefined;
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
-          const deviceRemoteAddr = trustProxy
+          deviceRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
-          const url = new URL(req.url);
-          if (
-            url.pathname === "/auth/device" ||
-            url.pathname === "/auth/device/token"
-          ) {
+          if (isDeviceAuthRequest) {
             const deviceRateCheck = checkIpBurst(deviceRemoteAddr);
             if (!deviceRateCheck.allowed) {
               return new Response(
@@ -5755,12 +5990,8 @@ export const serveCommand = new Command()
               );
             }
           }
-          const oauthConfig = {
-            ...authConfig,
-            oauthClientId: authConfig.oauthClientId!,
-          };
-          const deviceAuthDeps = createDeviceAuthDeps(
-            oauthConfig,
+          deviceAuthDeps = createDeviceAuthDeps(
+            { ...authConfig, oauthClientId: authConfig.oauthClientId },
             oauthClientSecret,
             resolvedRepoDir,
             repoContext,
@@ -5772,6 +6003,111 @@ export const serveCommand = new Command()
             connectionCtx.instanceId,
             deviceRemoteAddr,
           );
+        }
+        if (isDashboardSessionRequest && authConfig.mode !== "none") {
+          const dashboardOrigin = validateDashboardSessionOrigin(
+            req,
+            tlsEnabled,
+            trustProxy,
+            trustedHosts,
+          );
+          const dashboardSessionResponse = await handleDashboardSession(req, {
+            secure: dashboardOrigin.secure,
+            originAllowed: (request) => {
+              const allowed = validateDashboardSessionOrigin(
+                request,
+                tlsEnabled,
+                trustProxy,
+                trustedHosts,
+              );
+              if (!allowed.allowed) {
+                logger.warn(
+                  "Dashboard session request rejected: {reason} from {ip}",
+                  {
+                    reason: allowed.reason,
+                    ip: dashboardRemoteAddr,
+                  },
+                );
+              }
+              return allowed.allowed;
+            },
+            sessions: dashboardSessions,
+            deviceAuthDeps,
+            authenticateToken: async (token) => {
+              const rlKey = rateLimitKey(token, dashboardRemoteAddr);
+              const rateCheck = checkRateLimit(rlKey);
+              if (!rateCheck.allowed) {
+                return {
+                  ok: false,
+                  response: new Response("Too Many Requests", {
+                    status: 429,
+                    headers: {
+                      "Retry-After": String(rateCheck.retryAfterSeconds),
+                    },
+                  }),
+                };
+              }
+              const result = await authenticateServerToken(
+                token,
+                resolvedRepoDir,
+                repoContext,
+                {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp: dashboardRemoteAddr,
+                  ingress: "dashboard-session",
+                },
+              );
+              if (!result.ok) {
+                return {
+                  ok: false,
+                  response: new Response(`Unauthorized: ${result.reason}`, {
+                    status: 401,
+                  }),
+                };
+              }
+              clearRateLimit(rlKey);
+              return {
+                ok: true,
+                tokenName: result.tokenName,
+                tokenCreatedAt: result.tokenCreatedAt,
+              };
+            },
+            authenticateSession: async (session) => {
+              const result = await authenticateDashboardSession(
+                session,
+                repoContext,
+                {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp: dashboardRemoteAddr,
+                  ingress: "dashboard-session",
+                },
+              );
+              if (!result.ok) {
+                return {
+                  ok: false,
+                  invalidateSession: shouldInvalidateDashboardSession(
+                    result.reason,
+                  ),
+                  response: new Response(`Unauthorized: ${result.reason}`, {
+                    status: 401,
+                  }),
+                };
+              }
+              return {
+                ok: true,
+                tokenName: result.tokenName,
+                tokenCreatedAt: result.tokenCreatedAt,
+              };
+            },
+          });
+          if (dashboardSessionResponse !== null) {
+            return dashboardSessionResponse;
+          }
+        }
+
+        if (deviceAuthDeps) {
           const deviceAuthResponse = await handleDeviceAuth(
             req,
             deviceAuthDeps,
