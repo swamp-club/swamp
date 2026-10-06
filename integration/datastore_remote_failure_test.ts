@@ -583,7 +583,7 @@ async function publishFromB(repos: RowRepos): Promise<Definition> {
   }
 }
 
-Deno.test("acquireModelLocks: a failed pull throws, changes nothing locally, and leaves the model entry registered until flushDatastoreSync", async () => {
+Deno.test("acquireModelLocks: a failed pull throws, changes nothing locally, and releases the model lock", async () => {
   await withRepos(SINGLE_PHASE, async (repos) => {
     const model = await publishFromB(repos);
     const before = await snapshotTree(repos.repoA);
@@ -602,12 +602,15 @@ Deno.test("acquireModelLocks: a failed pull throws, changes nothing locally, and
       [],
     );
 
-    // Today the coordinator entry registered before the pull is NOT
-    // unwound: the model lock stays held until flushDatastoreSync runs.
-    // The CLI teardown runs it on error (src/cli/mod.ts), but serve has no
-    // such teardown, so there the model lock stays held (swamp-club#2901).
+    // The entry registered before the pull is unwound without any
+    // flushDatastoreSync: serve has no such teardown, so a lock left here
+    // would stay held until the process exits (swamp-club#2901).
+    assertEquals(getRegisteredLockKeys(), []);
+
+    // The lock really is free: the same model locks again straight away.
+    const retried = await lockOnA(repos, model);
     assertEquals(getRegisteredLockKeys().length, 1);
-    await flushDatastoreSync();
+    await retried.flush();
     assertEquals(getRegisteredLockKeys(), []);
   });
 });
@@ -630,7 +633,7 @@ Deno.test("requireInitializedRepo: a failed pull throws, unwinds the global entr
       `${typeName(repos)} pull failed: injected pull failure`,
     );
     assertEquals(thrown.cause, injected);
-    // Unlike acquireModelLocks, the coordinator unwinds its own entry.
+    // The coordinator unwinds its own entry.
     assertEquals(getRegisteredLockKeys(), []);
     assertEquals(await snapshotTree(repos.repoA), before);
     assertEquals(

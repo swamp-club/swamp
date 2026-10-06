@@ -60,7 +60,10 @@ import {
   SWAMP_LOCK_HOLDER_PID,
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../domain/datastore/lock_holder_marker.ts";
-import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import {
+  flushDatastoreSync,
+  getRegisteredLockKeys,
+} from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
   assertPathEquals,
@@ -2837,6 +2840,187 @@ Deno.test("acquireModelLocks - synced survives the global-lock retry after an ea
   } finally {
     datastoreTypeRegistry.invalidateType(typeName);
   }
+});
+
+// ── Unwind on a failed acquisition (swamp-club#2901) ─────────────────────────
+
+/** Where the fake datastore of {@link withFailingAcquisition} fails. */
+interface AcquisitionFailure {
+  /** Rejects this pull (1-based). */
+  pullAt?: number;
+  /** Rejects this per-model lock acquire (1-based). */
+  acquireAt?: number;
+  /** Rejects the global lock inspect made after the first model lock. */
+  postAcquireInspect?: boolean;
+  /** Rejects every per-model lock release. */
+  release?: boolean;
+}
+
+/**
+ * Locks models `a` and `b` on a fake sync-capable datastore that fails as
+ * `failure` says, and returns the error with the per-model lock keys
+ * acquired and the keys whose release was attempted, in order.
+ */
+async function withFailingAcquisition(
+  failure: AcquisitionFailure,
+): Promise<{ error: Error; acquired: string[]; released: string[] }> {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  const typeName = `test-unwind-${crypto.randomUUID().slice(0, 8)}`;
+  const acquired: string[] = [];
+  const released: string[] = [];
+  let acquireCount = 0;
+  let pullCount = 0;
+  let globalInspectCount = 0;
+
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test unwind",
+    description: "Test extension for unwinding a failed lock acquisition",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: (_path: string, options?: { lockKey?: string }) => {
+        // Without a namespace the global lock carries no lockKey;
+        // per-model locks always do.
+        const lockKey = options?.lockKey;
+        return {
+          acquire: () => {
+            if (lockKey === undefined) return Promise.resolve();
+            acquireCount++;
+            if (acquireCount === failure.acquireAt) {
+              return Promise.reject(new Error("injected acquire failure"));
+            }
+            acquired.push(lockKey);
+            return Promise.resolve();
+          },
+          release: () => {
+            if (lockKey === undefined) return Promise.resolve();
+            released.push(lockKey);
+            return failure.release
+              ? Promise.reject(new Error("injected release failure"))
+              : Promise.resolve();
+          },
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => {
+            if (lockKey !== undefined) return Promise.resolve(null);
+            globalInspectCount++;
+            // The first inspect is the wait before any model lock.
+            return failure.postAcquireInspect && globalInspectCount === 2
+              ? Promise.reject(new Error("injected inspect failure"))
+              : Promise.resolve(null);
+          },
+          forceRelease: () => Promise.resolve(true),
+        };
+      },
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => {
+          pullCount++;
+          return pullCount === failure.pullAt
+            ? Promise.reject(new Error("injected pull failure"))
+            : Promise.resolve(0);
+        },
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        capabilities: () => ({ scopedSync: true }),
+      }),
+    }),
+  });
+
+  try {
+    let error: Error | undefined;
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+
+      const markerPath = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(markerPath);
+      await Deno.writeTextFile(
+        markerPath,
+        existing.trimEnd() + "\n" + [
+          "datastore:",
+          `  type: '${typeName}'`,
+          "  config:",
+          "    bucket: test-bucket",
+        ].join("\n") + "\n",
+      );
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      error = await assertRejects(
+        () =>
+          acquireModelLocks(
+            datastoreConfig,
+            [
+              { modelType: "aws-ec2", modelId: "a" },
+              { modelType: "aws-ec2", modelId: "b" },
+            ],
+            dir,
+            undefined,
+            undefined,
+            () => {},
+          ),
+        Error,
+      );
+      assertEquals(getRegisteredLockKeys(), []);
+    });
+    return { error: error!, acquired, released };
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+}
+
+Deno.test("acquireModelLocks: a failed pull on a later model releases every lock taken so far", async () => {
+  const { error, acquired, released } = await withFailingAcquisition({
+    pullAt: 2,
+  });
+  assertEquals(
+    error.message,
+    "Datastore sync failed: could not pull data for aws-ec2/b: injected pull failure",
+  );
+  assertEquals(acquired.length, 2);
+  assertEquals(released, acquired);
+});
+
+Deno.test("acquireModelLocks: a failed lock acquire on a later model releases the locks taken before it", async () => {
+  const { error, acquired, released } = await withFailingAcquisition({
+    acquireAt: 2,
+  });
+  assertEquals(error.message, "injected acquire failure");
+  assertEquals(acquired.length, 1);
+  assertEquals(released, acquired);
+});
+
+Deno.test("acquireModelLocks: a failed global lock re-check releases the lock just taken", async () => {
+  const { error, acquired, released } = await withFailingAcquisition({
+    postAcquireInspect: true,
+  });
+  assertEquals(error.message, "injected inspect failure");
+  assertEquals(acquired.length, 1);
+  assertEquals(released, acquired);
+});
+
+Deno.test("acquireModelLocks: a lock release failing during the unwind does not replace the pull error", async () => {
+  const { error, acquired, released } = await withFailingAcquisition({
+    pullAt: 2,
+    release: true,
+  });
+  assertEquals(
+    error.message,
+    "Datastore sync failed: could not pull data for aws-ec2/b: injected pull failure",
+  );
+  assertEquals(acquired.length, 2);
+  assertEquals(released, acquired);
 });
 
 // ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
