@@ -17,11 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
-import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
+import {
+  type AuditSink,
+  UnconfirmedEventsError,
+} from "../../domain/serve_audit/audit_sink.ts";
+import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
+import { StoreSink } from "./store_sink.ts";
 import { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { WalSink } from "./wal_sink.ts";
 
@@ -113,10 +120,10 @@ Deno.test(
     const sink = new WalSink({ wal, downstream });
 
     await sink.write([makeEvent("test")]);
-    assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 1);
 
     await sink.flush();
+    assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 0);
   }),
 );
@@ -249,9 +256,12 @@ Deno.test(
     await sink.write([makeEvent("c")]);
 
     assertEquals(wal.segmentCount, 3);
-    assertEquals(downstream.written.length, 3);
 
     await sink.flush();
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["a", "b", "c"],
+    );
     assertEquals(wal.segmentCount, 0);
   }),
 );
@@ -275,5 +285,483 @@ Deno.test(
     assertEquals(count, 1);
     assertEquals(downstream.written.length, 1);
     assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+/** A downstream sink whose writes hang until released. */
+function createHangingSink(): AuditSink & {
+  written: AuditEvent[][];
+  outstanding: number;
+  maxOutstanding: number;
+  release(): void;
+} {
+  const pending: (() => void)[] = [];
+  const sink = {
+    name: "hanging-downstream",
+    durable: true,
+    written: [] as AuditEvent[][],
+    outstanding: 0,
+    maxOutstanding: 0,
+    write(events: readonly AuditEvent[]): Promise<void> {
+      sink.outstanding++;
+      sink.maxOutstanding = Math.max(sink.maxOutstanding, sink.outstanding);
+      return new Promise<void>((resolve) => {
+        pending.push(() => {
+          sink.outstanding--;
+          sink.written.push([...events]);
+          resolve();
+        });
+      });
+    },
+    release(): void {
+      for (const done of pending.splice(0)) done();
+    },
+    flush: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
+  return sink;
+}
+
+Deno.test(
+  "WalSink: write resolves once the WAL has the events, while downstream hangs",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream });
+
+    await sink.write([makeEvent("first")]);
+    await sink.write([makeEvent("second")]);
+    assertEquals(wal.segmentCount, 2);
+
+    // Deliveries go one at a time, in order, each segment once.
+    for (let i = 0; i < 2; i++) {
+      await waitFor(() => downstream.outstanding === 1, "a delivery to start");
+      downstream.release();
+      await waitFor(
+        () => downstream.written.length === i + 1,
+        "the delivery to land",
+      );
+    }
+    await sink.flush();
+    assertEquals(downstream.maxOutstanding, 1);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["first", "second"],
+    );
+    assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+Deno.test(
+  "WalSink: flush stops waiting for a hung downstream and keeps its segments in the WAL",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
+
+    await sink.write([makeEvent("stuck")]);
+    await sink.flush();
+    await sink.flush();
+    assertEquals(downstream.written.length, 0);
+    assertEquals(wal.segmentCount, 1);
+
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "late delivery");
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+Deno.test(
+  "WalSink: a segment the WAL size limit dropped before delivery is skipped",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir, maxWalBytes: 1 });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream });
+
+    await sink.write([makeEvent("one")]);
+    // "one" is read back and being delivered before the limit drops it.
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
+    await sink.write([makeEvent("two")]);
+    await sink.write([makeEvent("three")]);
+    // Only the newest segment is kept.
+    assertEquals(wal.segmentCount, 1);
+
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "first delivered");
+    await waitFor(() => downstream.outstanding === 1, "next delivery");
+    downstream.release();
+    await waitFor(
+      () => downstream.written.length === 2,
+      "delivery of the kept segment",
+    );
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["one", "three"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: behind an AuditEmitter, a hung store does not stall the durable path or duplicate events",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    const walSink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
+    const emitter = new AuditEmitter({
+      sinks: [walSink],
+      sinkTimeoutMs: 20,
+      durableRetryMs: 1,
+    });
+
+    for (const action of ["a", "b", "c"]) {
+      emitter.emit(makeEvent(action));
+      await emitter.flush();
+    }
+    assertEquals(emitter.durableStalled, false);
+    assertEquals(wal.segmentCount >= 1, true);
+
+    await waitFor(async () => {
+      downstream.release();
+      await emitter.flush();
+      return wal.segmentCount === 0;
+    }, "every segment delivered");
+    const sequences = downstream.written.flat().map((e) =>
+      (e as unknown as { sequence: number }).sequence
+    );
+    assertEquals(sequences, [1, 2, 3]);
+    assert(downstream.maxOutstanding <= 1);
+    await emitter.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: delivered segments are removed while running, without a flush",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 10 });
+
+    await sink.write([makeEvent("a")]);
+    await sink.write([makeEvent("b")]);
+    await waitFor(
+      () => wal.segmentCount === 0 && downstream.flushed > 0,
+      "the checkpoint to remove delivered segments",
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: a segment the store did not confirm is delivered again at the next checkpoint",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    let failNextFlush = true;
+    downstream.flush = () => {
+      if (failNextFlush) {
+        failNextFlush = false;
+        return Promise.reject(new Error("batch did not reach the store"));
+      }
+      return Promise.resolve();
+    };
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([makeEvent("unconfirmed")]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+
+    await sink.write([makeEvent("confirmed")]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["unconfirmed", "confirmed", "unconfirmed"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: a segment whose delivery failed is delivered again at the next checkpoint",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createFailingSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([makeEvent("retry-me")]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+
+    downstream.failWrites = false;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
+  }),
+);
+
+function chained(action: string, sequence: number): AuditEvent {
+  return { ...makeEvent(action), sequence } as AuditEvent;
+}
+
+Deno.test(
+  "WalSink: only the segments whose events the store reports unconfirmed are delivered again",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    let report: ReadonlySet<number> | null | undefined = new Set([2]);
+    downstream.flush = () => {
+      if (report === undefined) return Promise.resolve();
+      const sequences = report;
+      report = undefined;
+      return Promise.reject(new UnconfirmedEventsError("unstored", sequences));
+    };
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([chained("stored", 1)]);
+    await sink.write([chained("unstored", 2)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    const kept = await wal.readSegment(wal.listSegments()[0]);
+    assertEquals(kept.map((e) => e.action), ["unstored"]);
+
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["stored", "unstored", "unstored"],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink with a StoreSink: a store outage mid-window stores every sequence exactly once",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    let down = false;
+    const stored: AuditEvent[] = [];
+    const store: AuditStore = {
+      put(_key: string, data: Uint8Array): Promise<void> {
+        if (down) return Promise.reject(new Error("store down"));
+        for (const line of new TextDecoder().decode(data).split("\n")) {
+          if (line.trim()) stored.push(JSON.parse(line) as AuditEvent);
+        }
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    };
+    const storeSink = new StoreSink({
+      stores: [store],
+      batchSize: 1,
+      flushIntervalMs: 60_000,
+    });
+    const sink = new WalSink({
+      wal,
+      downstream: storeSink,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([chained("before-outage", 1)]);
+    await sink.flush();
+    await sink.write([chained("stored-in-window", 2)]);
+    await waitFor(() => stored.length === 2, "the batch-size put");
+    down = true;
+    await sink.write([chained("during-outage", 3)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+
+    down = false;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(
+      stored.map((e) => (e as unknown as { sequence: number }).sequence),
+      [1, 2, 3],
+    );
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: once close has given up, a checkpoint still queued deletes nothing",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    let flushes = 0;
+    downstream.flush = () => {
+      flushes++;
+      return Promise.resolve();
+    };
+    const sink = new WalSink({
+      wal,
+      downstream,
+      deliveryWaitMs: 20,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([makeEvent("delivered")]);
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "first delivered");
+    await sink.write([makeEvent("hung")]);
+    await waitFor(() => downstream.outstanding === 1, "hung delivery");
+
+    await sink.close();
+    downstream.release();
+    await waitFor(() => flushes === 1, "the queued checkpoint to run");
+    assertEquals(wal.segmentCount, 2);
+  }),
+);
+
+Deno.test(
+  "WalSink with a StoreSink: a segment whose second date no store took is kept, not resent, until the retry lands",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    let failDate: string | null = "2026-10-07";
+    const stored: number[] = [];
+    const store: AuditStore = {
+      put(key: string, data: Uint8Array): Promise<void> {
+        if (failDate !== null && key.includes(failDate)) {
+          return Promise.reject(new Error("store down"));
+        }
+        for (const line of new TextDecoder().decode(data).split("\n")) {
+          if (line.trim()) {
+            stored.push((JSON.parse(line) as { sequence: number }).sequence);
+          }
+        }
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    };
+    const storeSink = new StoreSink({
+      stores: [store],
+      batchSize: 100,
+      flushIntervalMs: 60_000,
+    });
+    const sink = new WalSink({
+      wal,
+      downstream: storeSink,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([
+      {
+        ...chained("before-midnight", 1),
+        timestamp: "2026-10-06T23:59:59.000Z",
+      },
+      {
+        ...chained("after-midnight", 2),
+        timestamp: "2026-10-07T00:00:01.000Z",
+      },
+    ]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 1);
+    assertEquals(stored, [1]);
+
+    failDate = null;
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+    assertEquals(stored, [1, 2]);
+    await sink.close();
+  }),
+);
+
+function withDigest(action: string, sequence: number): AuditEvent {
+  return { ...chained(action, sequence), digest: `d${sequence}` } as AuditEvent;
+}
+
+Deno.test(
+  "WalSink: a checkpoint records the chain position before deleting, so a crash restart resumes from it",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const sink = new WalSink({
+      wal,
+      downstream: createMockSink(),
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([withDigest("a", 1), withDigest("b", 2)]);
+    await sink.write([withDigest("c", 3)]);
+    await sink.flush();
+    assertEquals(wal.segmentCount, 0);
+
+    // A process killed now never runs the shutdown save; a restart reads the
+    // directory afresh.
+    const restarted = new AuditWal({ dir });
+    await restarted.initialize();
+    assertEquals(restarted.segmentCount, 0);
+    assertEquals(await restarted.loadChainState(), {
+      sequence: 3,
+      previousDigest: "d3",
+    });
+  }),
+);
+
+Deno.test(
+  "WalSink: a checkpoint never moves the saved chain position backwards",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.saveChainState({ sequence: 10, previousDigest: "d10" });
+    const sink = new WalSink({
+      wal,
+      downstream: createMockSink(),
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([withDigest("old", 3)]);
+    await sink.flush();
+    assertEquals(await wal.loadChainState(), {
+      sequence: 10,
+      previousDigest: "d10",
+    });
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: an unexpected flush error does not resend a segment the store said it is still retrying",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    const downstream = createMockSink();
+    const flushes: (() => Promise<void>)[] = [
+      () =>
+        Promise.reject(
+          new UnconfirmedEventsError("pending", new Set(), new Set([1])),
+        ),
+      () => Promise.reject(new TypeError("store client blew up")),
+      () => Promise.resolve(),
+    ];
+    downstream.flush = () => flushes.shift()!();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.write([chained("retried-by-store", 1)]);
+    await sink.flush();
+    await sink.flush();
+    assertEquals(downstream.written.length, 1);
+    assertEquals(wal.segmentCount, 1);
+
+    await sink.flush();
+    assertEquals(downstream.written.length, 1);
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
   }),
 );

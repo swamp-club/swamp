@@ -1725,7 +1725,8 @@ export function handleMessage(
   if (
     ctx.auditEmitter && ctx.auditFailOpen === false &&
     (ctx.auditWal?.isFull === true ||
-      ctx.auditWal?.hasDroppedEvents === true)
+      ctx.auditWal?.hasDroppedEvents === true ||
+      ctx.auditEmitter.durableStalled)
   ) {
     sendError(
       socket,

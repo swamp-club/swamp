@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -27,6 +32,7 @@ import type { AuditStore } from "../../domain/serve_audit/audit_store.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import { withCapturedSpans } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { StoreSink } from "./store_sink.ts";
+import { UnconfirmedEventsError } from "../../domain/serve_audit/audit_sink.ts";
 
 await initializeLogging({});
 
@@ -180,10 +186,115 @@ Deno.test("StoreSink: store failure does not crash", async () => {
   });
 
   await sink.write([makeEvent("test")]);
+  // The good store has the batch, so flush does not report it.
   await sink.flush();
   await sink.close();
 
   assertEquals(goodStore.written.size, 1);
+});
+
+Deno.test("StoreSink: a batch one store missed is retried there under the same key", async () => {
+  const keys: string[] = [];
+  let down = true;
+  const flakyStore: AuditStore = {
+    put(key: string): Promise<void> {
+      keys.push(key);
+      return down ? Promise.reject(new Error("store down")) : Promise.resolve();
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const goodStore = createMockStore();
+  const sink = new StoreSink({
+    stores: [goodStore, flakyStore],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await sink.flush();
+  await sink.flush();
+  down = false;
+  await sink.flush();
+  await sink.flush();
+
+  // First put, two failed retries, one that landed, then nothing more.
+  assertEquals(keys.length, 4);
+  assertEquals(new Set(keys).size, 1);
+  assertEquals([...goodStore.written.keys()], [keys[0]]);
+  await sink.close();
+});
+
+Deno.test("StoreSink: flush rejects when a batch reached no store", async () => {
+  const failingStore: AuditStore = {
+    put: () => Promise.reject(new Error("store down")),
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const sink = new StoreSink({
+    stores: [failingStore],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await assertRejects(() => sink.flush(), Error, "not yet in any store");
+  // Reported once; the WAL holds the batch, so it is not retried here.
+  await sink.flush();
+  await sink.close();
+});
+
+Deno.test("StoreSink: flush reports a batch the interval timer failed to store", async () => {
+  let puts = 0;
+  const failingStore: AuditStore = {
+    put(): Promise<void> {
+      puts++;
+      return Promise.reject(new Error("store down"));
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const sink = new StoreSink({
+    stores: [failingStore],
+    batchSize: 100,
+    flushIntervalMs: 10,
+  });
+
+  await sink.write([makeEvent("test")]);
+  await waitFor(() => puts === 1, "timer flush");
+  await assertRejects(() => sink.flush(), Error, "not yet in any store");
+  await sink.close();
+});
+
+Deno.test("StoreSink: flush waits for a batch write already running", async () => {
+  let finishPut: (() => void) | null = null;
+  const slowStore = createMockStore();
+  const put = slowStore.put.bind(slowStore);
+  slowStore.put = (key: string, data: Uint8Array) =>
+    new Promise<void>((resolve) => {
+      finishPut = () => put(key, data).then(resolve);
+    });
+  const sink = new StoreSink({
+    stores: [slowStore],
+    batchSize: 1,
+    flushIntervalMs: 60_000,
+  });
+
+  const writing = sink.write([makeEvent("slow")]);
+  let flushed = false;
+  const flushing = sink.flush().then(() => {
+    flushed = true;
+  });
+  await waitFor(() => finishPut !== null, "put started");
+  assertEquals(flushed, false);
+  finishPut!();
+  await writing;
+  await flushing;
+  assertEquals(slowStore.written.size, 1);
+  await sink.close();
 });
 
 Deno.test("StoreSink: flush is no-op when batch is empty", async () => {
@@ -364,4 +475,164 @@ Deno.test("StoreSink: a tick runs with no active span when started under one", a
       assertEquals(span, undefined);
     }
   });
+});
+
+Deno.test("StoreSink: a date object no store took is retried under its key and reported pending until it lands", async () => {
+  let failDate: string | null = "2026-10-07";
+  const keys: string[] = [];
+  const store = createMockStore();
+  const put = store.put.bind(store);
+  store.put = (key: string, data: Uint8Array) => {
+    keys.push(key);
+    if (failDate !== null && key.includes(failDate)) {
+      return Promise.reject(new Error("store down"));
+    }
+    return put(key, data);
+  };
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([
+    {
+      ...makeEvent("before"),
+      timestamp: "2026-10-06T23:59:59.000Z",
+      sequence: 1,
+    } as AuditEvent,
+    {
+      ...makeEvent("after"),
+      timestamp: "2026-10-07T00:00:01.000Z",
+      sequence: 2,
+    } as AuditEvent,
+  ]);
+  // The landed date is not sent again; the missed one is reported pending,
+  // so the caller keeps it until the retry lands.
+  const error = await assertRejects(
+    () => sink.flush(),
+    UnconfirmedEventsError,
+  );
+  assertEquals([...error.sequences ?? []], []);
+  assertEquals([...error.pending ?? []], [2]);
+  failDate = null;
+  await sink.flush();
+
+  // The first put, a retry in the same flush, and the one that landed.
+  const lateKeys = keys.filter((k) => k.includes("2026-10-07"));
+  assertEquals(lateKeys.length, 3);
+  assertEquals(new Set(lateKeys).size, 1);
+  assertEquals(store.written.size, 2);
+  await sink.close();
+});
+
+Deno.test("StoreSink: a retried date object no store has is handed back when the retry queue evicts it", async () => {
+  const store = createMockStore();
+  const put = store.put.bind(store);
+  store.put = (key: string, data: Uint8Array) =>
+    key.includes("2026-10-07")
+      ? Promise.reject(new Error("store down"))
+      : put(key, data);
+  const sink = new StoreSink({
+    stores: [store],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+    maxRetryBytes: 1,
+  });
+  const event = (sequence: number, timestamp: string) =>
+    ({ ...makeEvent(`e${sequence}`), timestamp, sequence }) as AuditEvent;
+
+  await sink.write([
+    event(1, "2026-10-06T23:59:58.000Z"),
+    event(2, "2026-10-07T00:00:01.000Z"),
+  ]);
+  await assertRejects(() => sink.flush(), UnconfirmedEventsError);
+  await sink.write([
+    event(3, "2026-10-06T23:59:59.000Z"),
+    event(4, "2026-10-07T00:00:02.000Z"),
+  ]);
+  const error = await assertRejects(
+    () => sink.flush(),
+    UnconfirmedEventsError,
+  );
+  // Event 2's object was evicted to make room and is now to be sent again;
+  // event 4's is still being retried.
+  assertEquals([...error.sequences ?? []], [2]);
+  assertEquals([...error.pending ?? []], [4]);
+  await sink.close().catch(() => {});
+});
+
+Deno.test("StoreSink: close reports unconfirmed events instead of rejecting", async () => {
+  const sink = new StoreSink({
+    stores: [{
+      put: () => Promise.reject(new Error("store down")),
+      get: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      delete: () => Promise.resolve(),
+    }],
+    batchSize: 100,
+    flushIntervalMs: 60_000,
+  });
+
+  await sink.write([makeEvent("unstored")]);
+  await sink.close();
+});
+
+Deno.test("StoreSink: evicting one store's retry does not report an object lost while another store's retry of it is in flight", async () => {
+  let lateKey: string | null = null;
+  let lateAttempts = 0;
+  let landLate: () => void = () => {};
+  const storeA: AuditStore = {
+    put: (key: string) =>
+      key.includes("2026-10-07")
+        ? Promise.reject(new Error("A down"))
+        : Promise.resolve(),
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const storeB: AuditStore = {
+    put(key: string): Promise<void> {
+      if (!key.includes("2026-10-07")) return Promise.resolve();
+      lateKey ??= key;
+      if (key !== lateKey) return Promise.resolve();
+      lateAttempts++;
+      if (lateAttempts === 1) return Promise.reject(new Error("B down"));
+      return new Promise((resolve) => {
+        landLate = resolve;
+      });
+    },
+    get: () => Promise.resolve(null),
+    list: () => Promise.resolve([]),
+    delete: () => Promise.resolve(),
+  };
+  const event = (sequence: number, timestamp: string) =>
+    ({ ...makeEvent(`e${sequence}`), timestamp, sequence }) as AuditEvent;
+  // Room for two one-event objects: both stores' retries of event 2 fit,
+  // and a later two-event object evicts the older of them.
+  const oneEvent = new TextEncoder().encode(
+    JSON.stringify(event(2, "2026-10-07T00:00:01.000Z")) + "\n",
+  ).byteLength;
+  const sink = new StoreSink({
+    stores: [storeA, storeB],
+    batchSize: 2,
+    flushIntervalMs: 60_000,
+    maxRetryBytes: 2 * oneEvent,
+  });
+
+  // Neither store takes event 2's object; the other date lands.
+  await sink.write([
+    event(1, "2026-10-06T23:59:58.000Z"),
+    event(2, "2026-10-07T00:00:01.000Z"),
+  ]);
+  const flushing = sink.flush();
+  await waitFor(() => lateAttempts === 2, "store B's retry in flight");
+  // A new batch queues a retry, which evicts store A's retry of event 2.
+  await sink.write([
+    event(3, "2026-10-07T00:00:02.000Z"),
+    event(4, "2026-10-07T00:00:03.000Z"),
+  ]);
+  landLate();
+  await flushing;
+  await sink.close();
 });

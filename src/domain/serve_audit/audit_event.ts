@@ -17,18 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export type AuditCategory =
-  | "auth"
-  | "access"
-  | "execution"
-  | "secrets"
-  | "admin"
-  | "data"
-  | "system";
+export const AUDIT_CATEGORIES = [
+  "auth",
+  "access",
+  "execution",
+  "secrets",
+  "admin",
+  "data",
+  "system",
+] as const;
+
+export type AuditCategory = typeof AUDIT_CATEGORIES[number];
 
 export type AuditStage = "request" | "response";
 
-export type AuditOutcome = "success" | "failure" | "denied";
+export const AUDIT_OUTCOMES = ["success", "failure", "denied"] as const;
+
+export type AuditOutcome = typeof AUDIT_OUTCOMES[number];
 
 export interface AuditDecision {
   readonly action: string;

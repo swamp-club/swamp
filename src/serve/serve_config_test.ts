@@ -19,6 +19,7 @@
 
 import {
   assertEquals,
+  assertExists,
   assertNotEquals,
   assertStringIncludes,
   assertThrows,
@@ -2555,4 +2556,75 @@ Deno.test("loadServeConfig: token-secrets is a known key and warns about unknown
   } finally {
     await initializeLogging({ _reset: true });
   }
+});
+
+async function auditSinkFilterWarnings(
+  sink: Record<string, unknown>,
+): Promise<{ entry: unknown; problem: unknown }[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["serve", "config"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    withTempDir((dir) => {
+      writeConfig(dir, {
+        audit: {
+          sinks: [
+            { type: "syslog", host: "collector", port: 514 },
+            sink,
+          ],
+        },
+      });
+      assertExists(loadServeConfig(undefined, dir));
+    });
+    return captured
+      .filter((r) => r.properties.entry !== undefined)
+      .map((r) => ({
+        entry: r.properties.entry,
+        problem: r.properties.problem,
+      }));
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+}
+
+Deno.test("loadServeConfig: a misspelt audit sink filter warns, naming the sink entry, and still loads", async () => {
+  const warnings = await auditSinkFilterWarnings({
+    type: "webhook",
+    url: "https://siem.example.com/hook",
+    filter: { tier: "managment", categories: "auth", outcome: ["denied"] },
+  });
+  assertEquals(warnings.map((w) => w.entry), [
+    "audit.sinks[1]",
+    "audit.sinks[1]",
+    "audit.sinks[1]",
+  ]);
+  const problems = warnings.map((w) => String(w.problem));
+  assertStringIncludes(problems[0], "filter has unknown key outcome");
+  assertStringIncludes(problems[1], "filter.categories must be a list");
+  assertStringIncludes(
+    problems[2],
+    'filter.tier has unknown value "managment"',
+  );
+});
+
+Deno.test("loadServeConfig: a valid audit sink filter does not warn", async () => {
+  const warnings = await auditSinkFilterWarnings({
+    type: "webhook",
+    url: "https://siem.example.com/hook",
+    filter: {
+      tier: "all",
+      categories: ["auth", "secrets"],
+      outcomes: ["denied"],
+    },
+  });
+  assertEquals(warnings, []);
 });

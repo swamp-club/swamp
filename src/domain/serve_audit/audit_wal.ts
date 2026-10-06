@@ -184,7 +184,16 @@ export class AuditWal {
   ): Promise<void> {
     const path = join(this.#dir, "chain-state.json");
     const data = this.#encoder.encode(JSON.stringify(state, null, 2));
-    await Deno.writeFile(path, data);
+    // Written while serve runs, so a crash must never leave it half written:
+    // write a temporary file, then rename it over the old one.
+    const tmp = join(this.#dir, `.chain-state-${crypto.randomUUID()}.tmp`);
+    try {
+      await Deno.writeFile(tmp, data);
+      await Deno.rename(tmp, path);
+    } catch (error: unknown) {
+      await Deno.remove(tmp).catch(() => {});
+      throw error;
+    }
   }
 
   async loadChainState(): Promise<

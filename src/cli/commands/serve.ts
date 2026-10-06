@@ -4023,6 +4023,7 @@ export const serveCommand = new Command()
         const walSink = new WalSink({
           wal,
           downstream: storeSink,
+          checkpointIntervalMs: auditConfig.flushIntervalMs,
         });
 
         const policyRules = auditConfig.policyRules.map((r) => ({

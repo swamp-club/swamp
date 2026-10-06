@@ -34,8 +34,41 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
 4. **AuditPolicy** matches ordered rules to pick each event's detail level:
    none, metadata, request or requestResponse. Management-tier events
    (audit.query, audit.verify) default to metadata.
-5. **WalSink** spills events to local disk while the remote backend is down and
-   replays them on reconnect. Max size is configurable (default 100MB).
+5. **WalSink** appends each batch to a segment file on local disk, and its
+   write returns once the append lands. It then delivers segments to
+   StoreSink in the background, one at a time and in order, reading each back
+   from disk. A slow or hung remote store therefore never holds the audit
+   pipeline: later batches keep reaching the WAL and queue behind it. Every
+   `flush-interval` (and on flush) a checkpoint on the same queue flushes
+   StoreSink and then deletes the segments delivered before it, so the WAL
+   holds only events the store has not confirmed. StoreSink's flush waits for
+   batch writes already running. A batch that reached some stores but not
+   others is retried on each flush for the stores that missed it, under the
+   same key so a landed retry never stores it twice; up to 32MB of these are
+   held, the oldest dropped for that one store past that. A batch is written
+   as one object per date. A date object that no store took, in a batch
+   another date of which landed, is retried the same way, and until it lands
+   the flush rejects with its sequences as `pending`: the caller keeps those
+   segments without sending them again, so the landed date is not stored
+   twice and the missed one is not lost. If the retry queue evicts such an
+   object, its sequences move to the lost set and the whole segment is sent
+   again, which stores its landed date a second time; this needs both a
+   batch spanning midnight and a full retry queue. A batch none of which reached
+   any store makes the flush reject with its sequences as lost
+   (`UnconfirmedEventsError`). Each WAL segment goes into exactly one
+   StoreSink batch, so the checkpoint deletes the segments whose sequences
+   were confirmed and delivers only the others again at the next checkpoint,
+   as it does for a segment whose delivery failed; nothing is stored twice
+   and nothing waits for a restart. Before deleting confirmed segments a
+   checkpoint records the highest confirmed chain position in
+   `chain-state.json` (never moving it backwards, and by writing a temporary
+   file and renaming it, so a crash never leaves it half written), because
+   startup recovers
+   the chain position from the segments on disk or that file; without it a
+   crash would restart the chain from an older sequence. The delivery queue holds segment names
+   only, and names the WAL size limit has evicted are pruned from it. `flush` waits up to 30s for
+   queued work before leaving it in the WAL, where it is replayed on the next
+   start. Max size is configurable (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention; old
@@ -59,13 +92,37 @@ other sink:
   the buffer, `swamp audit verify` reports the gap as a broken chain.
 - **One sink's lag is its own.** Each sink has its own cursor. A sink more than
   the buffer's capacity behind is moved up to the oldest event still held; the
-  events it missed are counted and logged against that sink only.
-- **One write at a time.** A non-durable sink has at most one `write` in
-  flight. A write that outlives the 30s timeout counts as a failure, but the
-  sink is not written to again until that call settles. While it is
+  events it missed are counted and logged against that sink only. Cursors and
+  drop counts are kept per sink, under its name; when several sinks share a
+  name (two webhooks on one host), the later ones are told apart as `name#2`,
+  `name#3` by their order in the config, and a warning names the collision.
+  A sink whose own name looks like a generated key (`x#2`) gets a key of its
+  own. Hot-reload hands each cursor to the sink in the same position, so swapping
+  two same-named sinks in `serve.yaml` swaps their delivery state, and
+  removing one moves the state of those after it up a place.
+- **One write at a time.** Every sink, durable or not, has at most one `write`
+  in flight. A write that outlives the 30s timeout is not sent again until that
+  call settles, so the same events are never written twice. While it is
   outstanding the emitter warns once a minute and keeps counting what the sink
   misses; when it settles, delivery resumes, and a late success counts as
-  delivered.
+  delivered. A non-durable sink counts the timeout as a failure and backs off;
+  a durable sink retries a late failure as soon as it settles.
+- **Stalled durable writes and fail-secure.** Because WalSink returns once
+  the WAL append lands, a slow remote store does not stall the durable path;
+  only a WAL append that hangs (a stuck disk) can. While a durable write is
+  outstanding past the timeout, new events are held only in memory. With
+  `fail-open: false`, serve rejects requests with `audit_unavailable` until
+  the write settles, as it does when the WAL is full; one that never returns
+  rejects them until restart. With `fail-open: true` nothing is rejected. At
+  shutdown a stalled write — including one that stalls during shutdown's own
+  flush — gets up to the sink timeout to settle; if it does not, the events
+  after it are written on their own and a warning names the sequence the
+  stalled write ends at. With a hung store, shutdown can take the WalSink
+  delivery wait (30s) plus up to two sink timeouts. Once WalSink's close has
+  stopped waiting, a checkpoint still queued behind the hung store deletes
+  nothing, so those segments are replayed on the next start. That
+  last write is the one time a sink has two writes open; WalSink appends each
+  write to its own segment file, so they do not collide.
 - **Backoff.** A failed non-durable write is retried after 1s, doubling per
   failure up to 60s, and reset on success or when hot-reload replaces the
   sink. `flush` and `close` respect it, so events still pending for a sink
@@ -112,6 +169,13 @@ config in `.swamp.yaml` (see
 A store entry without `type` + `config` uses the repo's existing control-plane
 store (the shared datastore). That works for development but logs a startup
 warning; production should use a dedicated store.
+
+An external sink (`audit.sinks`, webhook or syslog) may take a `filter` block
+with `categories`, `tier` (`management`, `data` or `all`) and `outcomes`.
+Startup and hot-reload warn about each bad value: a filter that is not a
+mapping, an unknown key, a list given as a single value, or an unknown
+category, tier or outcome. The config still loads, and the sink filters by the
+value as written, so a misspelt `tier` still means the sink receives nothing.
 
 ## What is audited
 

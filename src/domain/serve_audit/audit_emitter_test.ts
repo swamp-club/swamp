@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { AuditEmitter } from "./audit_emitter.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -109,6 +110,7 @@ function createFlakySink(
 
 function createHangingSink(
   name: string,
+  durable = false,
 ): AuditSink & {
   writes: number;
   batches: AuditEvent[][];
@@ -119,7 +121,7 @@ function createHangingSink(
   const failing: ((error: Error) => void)[] = [];
   const sink = {
     name,
-    durable: false,
+    durable,
     writes: 0,
     batches: [] as AuditEvent[][],
     write(events: readonly AuditEvent[]): Promise<void> {
@@ -380,6 +382,170 @@ Deno.test("AuditEmitter: a timed-out write that later fails backs off from when 
   assertEquals(hanging.writes, 2);
   hanging.release();
   await emitter.close();
+});
+
+Deno.test("AuditEmitter: a timed-out durable write is not written again while it is pending", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+    durableRetryMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assert(emitter.durableStalled);
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  durableSink.release();
+  await waitFor(() => durableSink.writes === 2, "delivery to resume by itself");
+  // The late success counted as delivered, so only the newer event is sent.
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
+  durableSink.release();
+  await waitFor(() => !emitter.durableStalled, "the stall to clear");
+  await emitter.close();
+  assertEquals(durableSink.writes, 2);
+});
+
+Deno.test("AuditEmitter: a timed-out durable write that later fails is retried once it settles", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+    durableRetryMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  durableSink.fail();
+  await waitFor(
+    () => durableSink.writes === 2,
+    "the failed batch to be retried",
+  );
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["first"]);
+  durableSink.release();
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: sinks with the same name each receive every event when one fails", async () => {
+  const first = createFlakySink("webhook:siem.example.com", false);
+  const second = createFlakySink("webhook:siem.example.com", false);
+  second.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [createMockSink("durable"), first, second],
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("one"));
+  emitter.emit(makeEvent("two"));
+  await emitter.flush();
+  assertEquals(first.received.length, 2);
+
+  second.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return second.received.length === 2;
+  }, "the failed sink to catch up");
+  assertEquals(second.received.map((e) => e.action), ["one", "two"]);
+  assertEquals(emitter.droppedEvents("webhook:siem.example.com#2"), 0);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: replaceSinks keeps the cursor of each same-named sink", async () => {
+  const durableSink = createMockSink("durable");
+  const first = createFlakySink("syslog:collector:514", false);
+  const second = createFlakySink("syslog:collector:514", false);
+  second.failing = true;
+  const emitter = new AuditEmitter({ sinks: [durableSink, first, second] });
+
+  emitter.emit(makeEvent("before"));
+  await emitter.flush();
+
+  const newFirst = createFlakySink("syslog:collector:514", false);
+  const newSecond = createFlakySink("syslog:collector:514", false);
+  emitter.replaceSinks([durableSink, newFirst, newSecond]);
+  emitter.emit(makeEvent("after"));
+  await emitter.flush();
+
+  assertEquals(newFirst.received.map((e) => e.action), ["after"]);
+  assertEquals(newSecond.received.map((e) => e.action), ["before", "after"]);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: a replaced sink's late success does not move its replacement's cursor", async () => {
+  const durableSink = createMockSink("durable");
+  const hanging = createHangingSink("external");
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, hanging],
+    sinkTimeoutMs: 20,
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  assertEquals(hanging.writes, 1);
+
+  const replacement = createFlakySink("external", false);
+  replacement.failing = true;
+  emitter.replaceSinks([durableSink, replacement]);
+  hanging.release();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+
+  replacement.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return replacement.received.length === 2;
+  }, "the replacement to receive both events");
+  assertEquals(replacement.received.map((e) => e.action), ["first", "second"]);
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: close during a durable stall writes the later events once, without the stalled batch", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  assertEquals(durableSink.writes, 1);
+
+  await emitter.close();
+  assertEquals(durableSink.writes, 2);
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
+});
+
+Deno.test("AuditEmitter: close delivers what a stalled durable sink missed once its write settles", async () => {
+  const durableSink = createHangingSink("wal", true);
+  const emitter = new AuditEmitter({
+    sinks: [durableSink],
+    sinkTimeoutMs: 20,
+  });
+
+  emitter.emit(makeEvent("first"));
+  await emitter.flush();
+  emitter.emit(makeEvent("second"));
+  await emitter.flush();
+  // The stalled write settles while close flushes the sinks.
+  let flushes = 0;
+  durableSink.flush = () => {
+    if (flushes++ === 0) durableSink.release();
+    return Promise.resolve();
+  };
+  const closing = emitter.close();
+  await waitFor(() => durableSink.writes === 2, "the missed event at close");
+  durableSink.release();
+  await closing;
+
+  assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
 });
 
 Deno.test("AuditEmitter: close does not retry a failed durable write while sinks flush", async () => {
@@ -867,4 +1033,118 @@ Deno.test("AuditEmitter: sink timeout prevents drain loop blocking", async () =>
   emitter.emit(makeEvent("test"));
   await emitter.flush();
   await emitter.close();
+});
+
+Deno.test("AuditEmitter: the shared-name warning is logged once per set of shared names", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const shared = () =>
+      captured.filter((r) => r.properties.later !== undefined).length;
+    const durableSink = createMockSink("durable");
+    const pair = () => [
+      createMockSink("webhook:siem.example.com", false),
+      createMockSink("webhook:siem.example.com", false),
+    ];
+    const emitter = new AuditEmitter([durableSink, ...pair()]);
+    assertEquals(shared(), 1);
+    emitter.replaceSinks([durableSink, ...pair()]);
+    assertEquals(shared(), 1);
+    emitter.replaceSinks([durableSink, createMockSink("syslog:a:514", false)]);
+    emitter.replaceSinks([durableSink, ...pair()]);
+    assertEquals(shared(), 2);
+    await emitter.close();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+});
+
+Deno.test("AuditEmitter: a durable write that first stalls during close is reported", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  const durableSink = createHangingSink("wal", true);
+  try {
+    const emitter = new AuditEmitter({
+      sinks: [durableSink],
+      sinkTimeoutMs: 20,
+    });
+    emitter.emit(makeEvent("only"));
+    await emitter.close();
+
+    const unconfirmed = captured.filter((r) =>
+      r.message.join("").includes("not confirmed stored")
+    );
+    assertEquals(unconfirmed.length, 1);
+    assertEquals(unconfirmed[0].properties.seq, 1);
+  } finally {
+    durableSink.release();
+    await initializeLogging({ _reset: true });
+  }
+});
+
+Deno.test("AuditEmitter: a sink named like a generated key keeps its own delivery state", async () => {
+  const durableSink = createMockSink("durable");
+  const first = createFlakySink("x", false);
+  const literal = createFlakySink("x#2", false);
+  const second = createFlakySink("x", false);
+  literal.failing = true;
+  const emitter = new AuditEmitter({
+    sinks: [durableSink, first, literal, second],
+    sinkBackoffBaseMs: 1,
+  });
+
+  emitter.emit(makeEvent("one"));
+  await emitter.flush();
+  assertEquals(second.received.length, 1);
+
+  literal.failing = false;
+  await waitFor(async () => {
+    await emitter.flush();
+    return literal.received.length === 1;
+  }, "the literally named sink to catch up");
+  await emitter.close();
+});
+
+Deno.test("AuditEmitter: a sink named like a generated key is not counted as a shared name", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [{
+      category: ["serve", "audit", "emitter"],
+      lowestLevel: "warning",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const emitter = new AuditEmitter([
+      createMockSink("durable"),
+      createMockSink("x", false),
+      createMockSink("x", false),
+      createMockSink("x#2", false),
+    ]);
+    const shared = captured
+      .filter((r) => r.properties.later !== undefined)
+      .map((r) => [r.properties.sink, r.properties.count]);
+    assertEquals(shared, [["x", 2]]);
+    await emitter.close();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
 });
