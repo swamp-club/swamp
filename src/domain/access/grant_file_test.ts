@@ -816,3 +816,305 @@ Deno.test("resolveExternalGrantsFile: keeps an absolute grants-file unchanged", 
 
   assertEquals(resolveExternalGrantsFile(REPO_DIR, file), file);
 });
+
+Deno.test("parseGrantFile: subjects array expands to one entry per subject", () => {
+  const content = `
+grants:
+  - subjects:
+      - "user:alice"
+      - "user:bob"
+      - "group:ops"
+    effect: allow
+    actions: [read, write, run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("team.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(result.entries.map((e) => e.subject), [
+    { kind: "user", name: "alice" },
+    { kind: "user", name: "bob" },
+    { kind: "group", name: "ops" },
+  ]);
+  for (const entry of result.entries) {
+    assertEquals(entry.effect, "allow");
+    assertEquals(entry.actions, ["read", "write", "run"]);
+    assertEquals(entry.resource, { kind: "workflow", pattern: "*" });
+  }
+});
+
+Deno.test("parseGrantFile: subjects and resources expand to every pair", () => {
+  const content = `
+grants:
+  - subjects: ["user:alice", "user:bob"]
+    effect: allow
+    actions: [run]
+    resources: ["workflow:*", "model:*"]
+    condition: 'resource.tags.env == "staging"'
+    methods: [read]
+`;
+  const result = parseGrantFile("pairs.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(
+    result.entries.map((e) =>
+      `${e.subject.name} ${e.resource.kind}:${e.resource.pattern}`
+    ),
+    [
+      "alice workflow:*",
+      "bob workflow:*",
+      "alice model:*",
+      "bob model:*",
+    ],
+  );
+  for (const entry of result.entries) {
+    assertEquals(entry.condition, 'resource.tags.env == "staging"');
+    assertEquals(entry.methods, ["read"]);
+  }
+});
+
+Deno.test("parseGrantFile: single-element subjects array equals the subject form", () => {
+  const withSubject = parseGrantFile(
+    "a.yaml",
+    `
+grants:
+  - subject: "user:alice"
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`,
+  );
+  const withSubjects = parseGrantFile(
+    "a.yaml",
+    `
+grants:
+  - subjects: ["user:alice"]
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`,
+  );
+  assertEquals(withSubjects, withSubject);
+});
+
+Deno.test("parseGrantFile: rejects both subject and subjects specified", () => {
+  const content = `
+grants:
+  - subject: "user:alice"
+    subjects: ["user:bob"]
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("both.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "Cannot specify both 'subject' and 'subjects'",
+  );
+});
+
+Deno.test("parseGrantFile: rejects neither subject nor subjects specified", () => {
+  const content = `
+grants:
+  - effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("neither.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "Must specify either 'subject' (single) or 'subjects' (array)",
+  );
+});
+
+Deno.test("parseGrantFile: reports a missing subject and a missing resource together", () => {
+  const content = `
+grants:
+  - effect: allow
+    actions: [run]
+`;
+  const result = parseGrantFile("bare.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 2);
+  assertStringIncludes(result.errors[0].message, "'subject' (single)");
+  assertStringIncludes(result.errors[1].message, "'resource' (single)");
+});
+
+Deno.test("parseGrantFile: rejects empty subjects array", () => {
+  const content = `
+grants:
+  - subjects: []
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("empty.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "grants.0.subjects");
+});
+
+Deno.test("parseGrantFile: accepts 100 subjects and rejects 101", () => {
+  const fileWith = (count: number) => {
+    const subjects = Array.from(
+      { length: count },
+      (_, n) => `      - "user:u${n}"`,
+    ).join("\n");
+    return `
+grants:
+  - subjects:
+${subjects}
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  };
+
+  const atCap = parseGrantFile("cap.yaml", fileWith(100));
+  assertEquals(atCap.errors, []);
+  assertEquals(atCap.entries.length, 100);
+
+  const overCap = parseGrantFile("cap.yaml", fileWith(101));
+  assertEquals(overCap.entries.length, 0);
+  assertEquals(overCap.errors.length, 1);
+  assertStringIncludes(overCap.errors[0].message, "grants.0.subjects");
+});
+
+Deno.test("parseGrantFile: rejects duplicate subject strings within subjects array", () => {
+  const content = `
+grants:
+  - subjects: ["user:alice", "user:bob", "user:alice"]
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("dup.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors, [{
+    filename: "dup.yaml",
+    entryIndex: 0,
+    message: 'Duplicate subject in subjects array: "user:alice"',
+  }]);
+});
+
+Deno.test("parseGrantFile: subjects array with invalid subjects continues others", () => {
+  const content = `
+grants:
+  - subjects:
+      - "user:alice"
+      - "badkind:bob"
+      - "nocolon"
+      - "service:not-a-real-service"
+      - "group:ops"
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("partial.yaml", content);
+  assertEquals(result.entries.map((e) => e.subject), [
+    { kind: "user", name: "alice" },
+    { kind: "group", name: "ops" },
+  ]);
+  assertEquals(result.errors.length, 3);
+  assertStringIncludes(result.errors[0].message, '"badkind"');
+  assertStringIncludes(result.errors[1].message, '"nocolon"');
+  assertStringIncludes(
+    result.errors[2].message,
+    '"service:not-a-real-service"',
+  );
+  for (const error of result.errors) assertEquals(error.entryIndex, 0);
+});
+
+Deno.test("parseGrantFile: invalid singular subject skips the entry's resource errors", () => {
+  const content = `
+grants:
+  - subject: "badkind:alice"
+    effect: allow
+    actions: [run]
+    resources: ["badkind:x", "workflow:*"]
+`;
+  const result = parseGrantFile("skip.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, '"badkind"');
+});
+
+Deno.test("parseGrantFile: subjects array with no valid subject skips the entry's resource errors", () => {
+  const content = `
+grants:
+  - subjects: ["badkind:alice", "nocolon"]
+    effect: allow
+    actions: [run]
+    resources: ["badkind:x", "workflow:*"]
+`;
+  const result = parseGrantFile("skip.yaml", content);
+  assertEquals(result.entries.length, 0);
+  assertEquals(result.errors.length, 2);
+  assertStringIncludes(result.errors[0].message, '"badkind"');
+  assertStringIncludes(result.errors[1].message, '"nocolon"');
+});
+
+Deno.test("parseGrantFile: subject errors come first and a bad resource is reported once", () => {
+  const content = `
+grants:
+  - subjects: ["user:alice", "badkind:bob", "user:carol"]
+    effect: allow
+    actions: [run]
+    resources: ["workflow:*", "badkind:x"]
+`;
+  const result = parseGrantFile("order.yaml", content);
+  assertEquals(result.entries.map((e) => e.subject.name), ["alice", "carol"]);
+  assertEquals(result.errors.length, 2);
+  assertStringIncludes(result.errors[0].message, '"badkind"');
+  assertStringIncludes(result.errors[0].message, "subject kind");
+  assertStringIncludes(result.errors[1].message, "resource kind");
+});
+
+Deno.test("parseGrantFile: invalid condition is reported once per resource, not per subject", () => {
+  const validForWorkflow = (
+    _condition: string,
+    kind: string,
+  ): { valid: boolean; error?: string } => {
+    if (kind === "workflow") return { valid: true };
+    return { valid: false, error: `condition not valid for ${kind}` };
+  };
+
+  const content = `
+grants:
+  - subjects: ["user:alice", "user:bob", "user:carol"]
+    effect: allow
+    actions: [run]
+    resources: ["workflow:@acme/deploy", "model:@acme/build"]
+    condition: 'tags.env == "prod"'
+`;
+  const result = parseGrantFile("cond.yaml", content, validForWorkflow);
+  assertEquals(result.entries.length, 3);
+  for (const entry of result.entries) {
+    assertEquals(entry.resource.kind, "workflow");
+  }
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(result.errors[0].message, "model:@acme/build");
+});
+
+Deno.test("parseGrantFile: subjects array detects cross-entry duplicates", () => {
+  const content = `
+grants:
+  - subject: "user:alice"
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+  - subjects: ["user:alice", "user:bob"]
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+  const result = parseGrantFile("cross-dup.yaml", content);
+  assertEquals(result.entries.map((e) => e.subject.name), ["alice", "bob"]);
+  assertEquals(result.errors, [{
+    filename: "cross-dup.yaml",
+    entryIndex: 1,
+    message: "Duplicate grant entry (same as entry 1)",
+  }]);
+});

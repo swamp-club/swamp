@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { Grant } from "../models/access/grant_model.ts";
-import type { GrantFileEntry } from "./grant_file.ts";
+import { type GrantFileEntry, parseGrantFile } from "./grant_file.ts";
 import {
   type FileGrantStore,
   reconcileAllFileGrants,
@@ -858,4 +858,56 @@ Deno.test("reconcileAllFileGrants: replaces a legacy absolute-path source with i
   assertEquals(again.totalRevoked, 0);
   assertEquals(again.totalUnchanged, 1);
   assertEquals([...again.perFile.keys()], ["grants-dir/deny.yaml"]);
+});
+
+Deno.test("reconcileAllFileGrants: rewriting repeated entries as one subjects entry changes no grants", async () => {
+  const repeated = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subject: "user:alice"
+    effect: allow
+    actions: [read, write, run]
+    resources: ["workflow:*", "model:*"]
+  - subject: "user:bob"
+    effect: allow
+    actions: [read, write, run]
+    resources: ["workflow:*", "model:*"]
+  - subject: "user:carol"
+    effect: allow
+    actions: [read, write, run]
+    resources: ["workflow:*", "model:*"]
+`,
+  );
+  const combined = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subjects: ["user:alice", "user:bob", "user:carol"]
+    effect: allow
+    actions: [read, write, run]
+    resources: ["workflow:*", "model:*"]
+`,
+  );
+  assertEquals(repeated.errors, []);
+  assertEquals(combined.errors, []);
+
+  const store = createMockStore();
+  const first = await reconcileAllFileGrants(
+    new Map([["team.yaml", repeated.entries]]),
+    store,
+  );
+  assertEquals(first.totalCreated, 6);
+  store.written.clear();
+
+  const second = await reconcileAllFileGrants(
+    new Map([["team.yaml", combined.entries]]),
+    store,
+  );
+  assertEquals(second.totalCreated, 0);
+  assertEquals(second.totalRevoked, 0);
+  assertEquals(second.totalReactivated, 0);
+  assertEquals(second.totalUpdated, 0);
+  assertEquals(second.totalUnchanged, 6);
+  assertEquals(store.written.size, 0);
 });

@@ -32,9 +32,12 @@ import {
 } from "./resource_selector.ts";
 
 const MAX_RESOURCES_PER_ENTRY = 100;
+const MAX_SUBJECTS_PER_ENTRY = 100;
 
 const GrantFileEntryRawSchema = z.object({
-  subject: z.string().min(1),
+  subject: z.string().min(1).optional(),
+  subjects: z.array(z.string().min(1)).min(1).max(MAX_SUBJECTS_PER_ENTRY)
+    .optional(),
   effect: EffectSchema,
   actions: z.array(ActionSchema).min(1),
   resource: z.string().min(1).optional(),
@@ -43,6 +46,20 @@ const GrantFileEntryRawSchema = z.object({
   condition: z.string().optional(),
   methods: z.array(z.string().min(1)).optional(),
 }).superRefine((data, ctx) => {
+  if (data.subject !== undefined && data.subjects !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Cannot specify both 'subject' and 'subjects' — use one or the other",
+      path: ["subjects"],
+    });
+  } else if (data.subject === undefined && data.subjects === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Must specify either 'subject' (single) or 'subjects' (array)",
+      path: ["subject"],
+    });
+  }
   if (data.resource !== undefined && data.resources !== undefined) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -131,17 +148,41 @@ export function parseGrantFile(
   for (let i = 0; i < result.data.grants.length; i++) {
     const raw = result.data.grants[i];
 
-    let subject: Subject;
-    try {
-      subject = parseSubject(raw.subject);
-    } catch (e) {
-      errors.push({
-        filename,
-        entryIndex: i,
-        message: (e as Error).message,
-      });
-      continue;
+    const subjectStrings: string[] = raw.subject
+      ? [raw.subject]
+      : raw.subjects!;
+
+    if (raw.subjects) {
+      const seen = new Set<string>();
+      let hasDuplicate = false;
+      for (const s of raw.subjects) {
+        if (seen.has(s)) {
+          errors.push({
+            filename,
+            entryIndex: i,
+            message: `Duplicate subject in subjects array: "${s}"`,
+          });
+          hasDuplicate = true;
+          break;
+        }
+        seen.add(s);
+      }
+      if (hasDuplicate) continue;
     }
+
+    const subjects: Subject[] = [];
+    for (const subjectStr of subjectStrings) {
+      try {
+        subjects.push(parseSubject(subjectStr));
+      } catch (e) {
+        errors.push({
+          filename,
+          entryIndex: i,
+          message: (e as Error).message,
+        });
+      }
+    }
+    if (subjects.length === 0) continue;
 
     const resourceStrings: string[] = raw.resource
       ? [raw.resource]
@@ -191,28 +232,35 @@ export function parseGrantFile(
         }
       }
 
-      const entry: GrantFileEntry = {
-        subject,
-        effect: raw.effect,
-        actions: raw.actions,
-        resource,
-        condition: raw.condition,
-        methods: raw.methods,
-      };
+      // The resource is parsed and its condition validated once, before the
+      // subjects loop, so a bad resource reports one error however many
+      // subjects the entry lists.
+      for (const subject of subjects) {
+        const entry: GrantFileEntry = {
+          subject,
+          effect: raw.effect,
+          actions: raw.actions,
+          resource,
+          condition: raw.condition,
+          methods: raw.methods,
+        };
 
-      const key = entryIdentityKey(entry);
-      const existingIndex = seenKeys.get(key);
-      if (existingIndex !== undefined) {
-        errors.push({
-          filename,
-          entryIndex: i,
-          message: `Duplicate grant entry (same as entry ${existingIndex + 1})`,
-        });
-        continue;
+        const key = entryIdentityKey(entry);
+        const existingIndex = seenKeys.get(key);
+        if (existingIndex !== undefined) {
+          errors.push({
+            filename,
+            entryIndex: i,
+            message: `Duplicate grant entry (same as entry ${
+              existingIndex + 1
+            })`,
+          });
+          continue;
+        }
+
+        seenKeys.set(key, i);
+        entries.push(entry);
       }
-
-      seenKeys.set(key, i);
-      entries.push(entry);
     }
   }
 

@@ -199,6 +199,33 @@ the domain model, reconciler and evaluation engine only see single-resource
 grants. Setting both `resource` and `resources` is an error. `resources` takes
 up to 100 entries.
 
+In the same way, each entry sets exactly one of `subject` (a string) or
+`subjects` (an array of strings). `subjects` expands into one grant per subject,
+so a team that shares access needs one entry instead of a copy per person:
+
+```yaml
+grants:
+  - subjects:
+      - "user:alice"
+      - "user:bob"
+      - "user:carol"
+    effect: allow
+    actions: [read, write, run]
+    resources: ["workflow:*", "model:*"]
+```
+
+An entry with both arrays expands into one grant per subject and resource pair,
+six here. Setting both `subject` and `subjects` is an error, a subject listed
+twice rejects the entry, and `subjects` takes up to 100 entries. Each invalid
+subject is reported, and each invalid resource or condition once, not once per
+subject. As with any grant file error, the whole file is rejected: serve refuses
+to start, `swamp access reload` rejects the reload, and the directory poller
+keeps the file's stored grants. No valid subject from a partly invalid list is
+applied. Because the expanded grants are identical, rewriting repeated
+single-subject entries as one `subjects` entry changes no grants on reload. A
+`subjects` list keeps membership in the reviewed file; a `group:` subject keeps
+it in the datastore, managed with `swamp access group`.
+
 The `GrantFileReconciler` syncs file grants into model data, creating, updating
 or revoking them as files change. The `file:<filename>` source separates them
 from method-created grants during reconciliation.
