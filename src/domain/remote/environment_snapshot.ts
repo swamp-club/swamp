@@ -191,10 +191,11 @@ export function isSwampEnvVar(name: string): boolean {
  * - SWAMP_LOCK_HOLDER_PID: the pid of the nearest swamp that has taken a
  *   per-model lock (this one once it has, else the value it inherited), for
  *   older nested swamps that read only this name.
- * - SWAMP_LOCK_HOLDER_TOKENS: which of those swamps' locks each holds for
- *   the run that started the child, so it still waits on their other runs'
- *   locks. Inherited here; the shell model adds this run's own entry per
- *   spawn.
+ * - SWAMP_LOCK_HOLDER_TOKENS: the locks held for the run that started the
+ *   child, by those swamps or handed to them over a worker dispatch or a
+ *   `--server` request. The child skips exactly these, so it still waits on
+ *   those swamps' other runs' locks. Inherited here; the shell model adds
+ *   this run's own entry per spawn.
  *
  *   All three: design/enablers/datastores.md, "Parent-Process Lock
  *   Awareness". A fitness test pins the list.

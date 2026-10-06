@@ -2026,9 +2026,12 @@ clears the first two from its own env:
   holder.
 - `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never written to a swamp's
   own process env (a dispatch runner is started with one, below):
-  comma-separated `<pid>:<nonce>+<nonce>` entries naming, for each swamp
-  above the child, the per-model locks it holds for the run that started the
-  child. A nonce is the one each lock file already records. The shell model
+  comma-separated `<pid>:<nonce>+<nonce>` entries naming the per-model locks
+  held for the run that started the child. A nonce is the one each lock file
+  already records, and a listed nonce is what the child skips on. The pid
+  says which swamp above the child an entry speaks for; a lock handed over a
+  worker dispatch or a `--server` request (below) is listed under the pid
+  that handed it on, which need not be its holder. The shell model
   adds `LockHolderMarker.childLockEnv()` to the child's env: the inherited
   entries plus one for its own pid. That entry lists the locks held by the
   `runHolding` scope (an `AsyncLocalStorage` scope) the spawn runs in, and is
@@ -2042,29 +2045,46 @@ clears the first two from its own env:
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
 A run requested through `--server` crosses no process boundary to inherit
-through. When a step of a run hosted by `swamp serve` runs
-`swamp model method run --server` (or `workflow run` / `workflow resume`) back
-into the same serve, the requested run starts in a request handler, outside
-the step's scope, so on its own it would tell its children only about its own
-locks and they would wait on the step's (swamp-club#2982). Instead the client
-sends the list it would hand a child (`forwardedLockTokens()`) as
-`lockHolderTokens` in the `workflow.run`, `model.method.run` and
-`workflow.resume` payloads (`src/cli/remote_run.ts`), and serve runs each of
-those requests inside `runAdoptingForwardedLocks` at its dispatch site in
-`src/serve/connection.ts`, under which the run's and its steps' own scopes
-nest.
+through. When a step runs `swamp model method run --server` (or
+`workflow run` / `workflow resume`), the requested run starts in a request
+handler, outside the step's scope, so on its own it would tell its children
+only about its own locks and they would wait on the step's (swamp-club#2982).
+Instead the client sends the list it would hand a child
+(`forwardedLockTokens()`) as `lockHolderTokens` in the `workflow.run`,
+`model.method.run` and `workflow.resume` payloads (`src/cli/remote_run.ts`),
+and serve runs each of those requests inside `runAdoptingForwardedLocks` at
+its dispatch site in `src/serve/connection.ts`, under which the run's and its
+steps' own scopes nest.
 
-The forwarded list is untrusted. `LockHolderMarker.runAdopting` uses only the
-entry for its own pid, and of its nonces only those a `runHolding` scope is
-open for at that moment, so a client can name no lock serve does not hold and
-a list stops working once the calling step ends. Nothing else is adopted; with
-no usable nonce the request runs as before. This gives a client no more than
-it has: a shell method's explicit env already overrides
-`SWAMP_LOCK_HOLDER_TOKENS` for its child. The client cannot tell a loopback
-from a remote server, so the pids and lock nonces above it reach any server it
-runs against. A list longer than `MAX_FORWARDED_LOCK_TOKENS_LENGTH`
-(16,384 characters, also the schema's limit) is not sent, and that request runs
-as before. Older clients send nothing and older servers drop the field.
+`LockHolderMarker.runAdopting` adopts every well-formed nonce in the list,
+whichever pid its entry names (swamp-club#3096). The step holding the lock may
+be a step of this serve, of a local `swamp workflow run` between serve and
+the client, or of a swamp on another host sharing the datastore, so serve has
+no way to check that the client holds what it names. With no usable nonce the
+request runs as before. A list longer than `MAX_FORWARDED_LOCK_TOKENS_LENGTH`
+(16,384 characters, also the schema's limit) is not sent, and that request
+runs as before. Older clients send nothing and older servers drop the field.
+
+That makes a lock nonce a bearer capability for as long as its lock is held:
+whoever knows it can have a nested structural swamp skip that lock.
+
+- A nonce is readable in its lock file, by anyone who can read the datastore,
+  and in the env of every shell step command below the lock.
+- A client cannot tell a loopback from a remote server, so the pids and
+  nonces above it reach any server it runs against, and a dispatch carries
+  them to the worker it lands on.
+- Serve adopts a list from any client it lets request a run. It does not ask
+  who the client is beyond that. A serve started with `--auth-mode none`
+  authenticates nobody, so there anyone who can reach the port and knows a
+  live nonce can have a nested structural swamp under a run they request skip
+  that lock, and work on the datastore while the lock's run is still writing.
+- A nonce stops working when its lock is released: every acquisition writes a
+  new one.
+
+Locally this gives a client no more than it has, since a shell method's
+explicit env already overrides `SWAMP_LOCK_HOLDER_TOKENS` for its child. What
+it adds is serve doing so on a client's behalf, which is accepted in exchange
+for the cases ancestry cannot connect.
 
 A process that adopts must name the locks of every step it runs inside the
 adopted scope: a step whose hook leaves out `heldLockIds` would run in the
@@ -2075,19 +2095,28 @@ through `createStepLockHook`, which names them
 (`integration/serve_deps_rules_test.ts`, `src/serve/deps_test.ts`).
 
 Before publishing, the marker captures what the process inherited.
-`waitForPerModelLocks` skips a lock file when its `pid` is one of those
-ancestors and its `hostname` is this host, and, if that ancestor has an entry
-in `SWAMP_LOCK_HOLDER_TOKENS`, its `nonce` is listed there. A lock whose
-ancestor has no entry (it was started outside any scope, e.g. by an extension
-using `Deno.Command`, or through an older swamp), or a lock file without a
-nonce, is matched on the pid alone, as before. A process on another host sharing
-the datastore (e.g. over NFS) can carry the same pid, so its lock is still
-waited on. A lock file with no `hostname` is matched on pid alone. The
-hostname is read when the drain runs. If the host is renamed after an ancestor
-took its lock (macOS can rename on a network change), that lock no longer
-matches and the child waits on it until `SWAMP_LOCK_TIMEOUT_MS`. The drain
-never skips its own pid, so a structural command still waits on in-flight
-writes by other runs in its own process.
+`waitForPerModelLocks` skips a lock file whose `nonce` is listed in
+`SWAMP_LOCK_HOLDER_TOKENS`, whatever its `pid` and `hostname`
+(swamp-club#3096): a nonce is written only to its lock file and to the
+hand-down, and a lock that is released and taken again gets a new one, so a
+listed nonce names one acquisition, held for this run. That is the only rule
+that holds across a worker dispatch or a `--server` request, where the holder
+is not above the child and may be on another host.
+
+A lock whose nonce is not listed falls back to process ancestry. It is an
+ancestor's when its `pid` is one of the inherited ancestors and its `hostname`
+is this host. If that ancestor has an entry in `SWAMP_LOCK_HOLDER_TOKENS`, the
+lock is held for another of its runs and is waited on. If it has none (it
+started the child outside any scope, e.g. an extension using `Deno.Command`,
+or is an older swamp), or the lock file has no nonce, the lock is skipped on
+the pid alone, as before. A process on another host sharing the datastore
+(e.g. over NFS) can carry the same pid, so its lock is waited on. A lock file
+with no `hostname` is matched on pid alone. The hostname is read when the
+drain runs. If the host is renamed after an ancestor took its lock (macOS can
+rename on a network change), a lock matched on the pid no longer matches and
+the child waits on it until `SWAMP_LOCK_TIMEOUT_MS`; a listed nonce is
+unaffected. The drain never skips its own pid on the fallback, so a structural
+command still waits on in-flight writes by other runs in its own process.
 
 The skip is what avoids the deadlock: the run that started the child holds
 its lock until the child exits. The nonce list narrows it from the process to
@@ -2099,25 +2128,37 @@ ancestor's other runs and says why.
 
 A step dispatched to a remote worker runs while the orchestrator holds its
 lock, and a worker is not a descendant of the orchestrator, so ancestry alone
-would leave a nested structural swamp on a same-host worker waiting on its own
-step's lock (swamp-club#2983). The dispatch carries the lock holder instead.
-When the orchestrator builds the request for a remote step
-(`method_execution_service.ts`), `LockHolderMarker.remoteLockHolder()` reads
-the `runHolding` scope and returns the orchestrator's pid, its hostname and
-the nonces of the locks held for that run. Nothing is sent when the run holds
-no lock. It travels as the optional `lockHolder` field of `DispatchParams`.
-The worker passes it to `withRemoteLockHolder` when it builds the dispatch
-runner's env (`buildRunnerEnvironment`, `src/worker/dispatch_handler.ts`).
-If the hostname is the worker's own, the orchestrator's pid goes at the front
-of the runner's `SWAMP_LOCK_ANCESTOR_PIDS` and its nonces into
-`SWAMP_LOCK_HOLDER_TOKENS`. The runner and the shell model then hand both
-down as they would an inherited chain. The pid is never added without its
-tokens entry, so the nested swamp skips the dispatched step's locks and waits
-on every other lock the orchestrator holds. The field arrives over the
-network: the dispatch schema bounds it and `withRemoteLockHolder` checks the
-pid and nonces again, dropping anything malformed. If the orchestrator
-releases the step's lock while the runner's child is still running, the nonce
-matches no lock file and nothing is skipped.
+would leave a nested structural swamp on the worker waiting on its own step's
+lock (swamp-club#2983). The dispatch carries the lock holder instead. When the
+orchestrator builds the request for a remote step
+(`method_execution_service.ts`), `LockHolderMarker.remoteLockHolder()` returns
+the orchestrator's pid, its hostname and the nonces of every lock held for the
+run: those of the `runHolding` scope the dispatch is made from, which includes
+any a `--server` request adopted, and those the orchestrator itself inherited
+(swamp-club#3096). A swamp started from a shell step therefore hands on what
+it inherited with every dispatch it makes for as long as it runs, which is
+what its own drain already assumes: the run that started it holds those locks
+until it exits. Nothing is sent when there are none. It travels as the
+optional `lockHolder` field of `DispatchParams`, which carries at most 256
+nonces (`MAX_REMOTE_LOCK_IDS`). A worker refuses a dispatch naming more, so
+for a longer list the orchestrator sends no holder and logs a warning; a
+nested structural swamp under that step waits, as it did before the hand-off.
+
+The worker passes the field to `withRemoteLockHolder` when it builds the
+dispatch runner's env (`buildRunnerEnvironment`,
+`src/worker/dispatch_handler.ts`). The nonces go into the runner's
+`SWAMP_LOCK_HOLDER_TOKENS` under the orchestrator's pid, on any host. If the
+hostname is the worker's own, the pid also goes at the front of the runner's
+`SWAMP_LOCK_ANCESTOR_PIDS`, which is what an older swamp under the runner
+matches on; a pid from another host means nothing there and is left out. The
+runner and the shell model then hand both down as they would an inherited
+chain. The pid is never added without its tokens entry, so the nested swamp
+skips the locks held for the dispatched step's run and waits on every other
+lock the orchestrator holds. The field arrives over the network: the dispatch
+schema bounds it and `withRemoteLockHolder` checks the pid and nonces again,
+dropping anything malformed. If the orchestrator releases the step's lock
+while the runner's child is still running, the nonce matches no lock file and
+nothing is skipped.
 
 Known limits of the run-level match:
 
@@ -2126,24 +2167,25 @@ Known limits of the run-level match:
   its child exits. One of them fails within a few seconds instead of both
   failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
   run such commands one at a time or in a step of their own.
-- A `--server` call adopts only the locks of the serve it calls. A nested
-  structural swamp under the requested run still waits on the lock of a swamp
-  that is not above it: a local `swamp workflow run` between the calling step
-  and the `--server` client, or the caller itself when `--server` names a
-  different swamp process sharing the datastore. Skipping those would mean
-  trusting pids a client supplied.
-- A step dispatched to a remote worker on another host that shares the
-  datastore (e.g. over NFS) runs while serve holds its lock. The hand-off
-  above is for a worker on serve's own host, so a nested structural swamp
-  there waits on its own step's lock.
-- The dispatch hand-off names only the locks the orchestrator itself holds
-  for the step. Locks held by a swamp above the orchestrator (a
-  `swamp workflow run` whose shell step started the orchestrating swamp) are
-  not passed on, so a nested structural swamp on the worker still waits on
-  those.
+- A nested swamp that outlives the hop that started it keeps its nonce list.
+  The skip assumes the holder waits on the nested swamp, which stops being true
+  when a `--server` client is killed without cancelling the run it requested,
+  when a dispatch is cancelled (the orchestrator does not wait for the worker
+  to confirm the runner is dead), or when a worker is lost and its step is
+  dispatched again under the same lock. Until the holder releases that lock, a
+  structural swamp still running under the abandoned run skips it while the
+  holder may be writing (swamp-club#3111). The same holds for a run requested
+  over `--server` that the client stops waiting on while the calling step still
+  holds its lock.
+- A lock held for another run of a swamp that is not above the child (the
+  orchestrator of a worker on another host, the caller of a `--server` run)
+  is waited on like any unrelated lock. When that wait times out the error
+  does not say whose lock it is; only locks of same-host ancestors are named.
+- A run whose lineage holds more than 256 locks hands none of them to a
+  worker (see above).
 - A child left running in the background after its ancestors exit can skip a
   lock taken by an unrelated process that reused an ancestor's pid on this
-  host.
+  host, when that ancestor named no locks. A listed nonce cannot be reused.
 
 Keeping either value for the rest of the process's life is equivalent to
 keeping it while holding locks, because a lock file carrying a pid exists only
@@ -2174,6 +2216,14 @@ it that holds locks, as before this change:
 - A worker that predates `lockHolder` ignores the field, and an orchestrator
   that predates it never sends it. A nested swamp on that worker waits on its
   step's lock, as before.
+- The nonce-only skip (swamp-club#3096) takes effect only when the nested
+  swamp itself has it. An older nested swamp still requires the lock's pid to
+  be an ancestor's on its host, so it waits on a lock handed over from
+  another host or from a swamp that is not above it, as before. An older
+  worker applies a `lockHolder` only from its own host, and attributes any
+  inherited nonces in it to the orchestrator's pid, which match nothing. An
+  older serve adopts only the nonces it holds itself. No case waits where it
+  did not before.
 
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
@@ -2193,10 +2243,11 @@ marker at `{namespace}/drain-waits/{id}.json` under the datastore root
 directory is outside `data/`, so the lock scan never sees it. The marker
 (`DrainWait`, `src/domain/datastore/drain_wait.ts`) lists, by lock-file nonce:
 
-- `skipping`: the live locks the drain skips because an ancestor named them
-  in `SWAMP_LOCK_HOLDER_TOKENS`, which are held until this drain's process
-  exits. A lock skipped on the pid alone is left out: it may be held for
-  another run and released first, so it proves no cycle;
+- `skipping`: the live locks the drain skips because they are named in
+  `SWAMP_LOCK_HOLDER_TOKENS`, whichever process holds them, which are held
+  until this drain's process exits. A lock skipped on the pid alone is left
+  out: it may be held for another run and released first, so it proves no
+  cycle;
 - `waitingOn`: the live locks it waits on.
 
 It also carries the drain's pid, hostname, start time, last refresh and a

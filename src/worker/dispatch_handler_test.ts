@@ -237,7 +237,7 @@ Deno.test("buildRunnerEnvironment: declares a same-host orchestrator's step lock
   assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], "500:nonce-a");
 });
 
-Deno.test("buildRunnerEnvironment: ignores a lock holder on another host", () => {
+Deno.test("buildRunnerEnvironment: hands down the locks of a holder on another host without declaring it an ancestor (swamp-club#3096)", () => {
   const env = buildRunnerEnvironment(
     { SWAMP_LOCK_ANCESTOR_PIDS: "700" },
     {},
@@ -246,7 +246,7 @@ Deno.test("buildRunnerEnvironment: ignores a lock holder on another host", () =>
     "host-a",
   );
   assertEquals(env["SWAMP_LOCK_ANCESTOR_PIDS"], "700");
-  assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], undefined);
+  assertEquals(env["SWAMP_LOCK_HOLDER_TOKENS"], "500:nonce-a");
 });
 
 Deno.test("buildRunnerEnvironment: lock variables shipped in the snapshot never reach the runner", () => {
