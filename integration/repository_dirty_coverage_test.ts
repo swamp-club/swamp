@@ -93,6 +93,7 @@ import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
+import type { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 
 await initializeLogging({});
 
@@ -181,6 +182,18 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 /** The repositories one context exposes, plus the hand-built one. */
+/**
+ * Points every pending catalog row of `modelId` at a pid no process can hold,
+ * as if the deferred write's process had died before promoting it.
+ */
+function orphanPendingRows(catalogStore: CatalogStore, modelId: string): void {
+  for (const row of [...catalogStore.iterate()]) {
+    if (row.model_id === modelId && row.is_pending === 1) {
+      catalogStore.upsert({ ...row, pending_pid: 2147483647 });
+    }
+  }
+}
+
 interface Repos {
   ctx: RepositoryContext;
   evaluatedWorkflowRepo: YamlEvaluatedWorkflowRepository;
@@ -717,6 +730,35 @@ const unifiedDataRows: Row[] = [
           dryRun: true,
         });
         assertEquals(result.versionsRemoved, 2);
+      };
+    },
+  },
+  {
+    repo: "UnifiedData",
+    method: "collectGarbage(orphaned deferred write)",
+    prepare: async (h) => {
+      const modelId = crypto.randomUUID();
+      const repo = h.ctx.unifiedDataRepo;
+      await repo.save(TYPE, modelId, makeData(), bytes("v1"));
+      await repo.saveDeferred(TYPE, modelId, makeData(), bytes("v2"));
+      orphanPendingRows(h.ctx.catalogStore, modelId);
+      return async () => {
+        const result = await repo.collectGarbage(TYPE, modelId);
+        assertEquals(result.versionsRemoved, 1);
+      };
+    },
+  },
+  {
+    repo: "UnifiedData",
+    method: "collectGarbage(orphaned deferred write, name emptied)",
+    prepare: async (h) => {
+      const modelId = crypto.randomUUID();
+      const repo = h.ctx.unifiedDataRepo;
+      await repo.saveDeferred(TYPE, modelId, makeData(), bytes("v1"));
+      orphanPendingRows(h.ctx.catalogStore, modelId);
+      return async () => {
+        const result = await repo.collectGarbage(TYPE, modelId);
+        assertEquals(result.versionsRemoved, 1);
       };
     },
   },

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { existsSync } from "@std/fs";
+import { hostname } from "node:os";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { signalChange } from "./unit_of_work_scope.ts";
@@ -25,6 +26,7 @@ import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { isProcessDead } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   Data,
@@ -896,6 +898,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
       is_pending: 1,
+      pending_pid: Deno.pid,
+      pending_host: hostname(),
     });
     this.catalogStore.recordLocalWrite();
 
@@ -1517,6 +1521,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       step_name: dataToSave.ownerDefinition.stepName ?? "",
       source: dataToSave.ownerDefinition.source ?? "",
       is_pending: 1,
+      pending_pid: Deno.pid,
+      pending_host: hostname(),
     });
     this.catalogStore.recordLocalWrite();
 
@@ -1960,6 +1966,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 
+    if (!dryRun) {
+      const reclaimed = await this.reclaimOrphanedDeferredWrites(
+        type,
+        modelId,
+      );
+      versionsRemoved += reclaimed.versionsRemoved;
+      bytesReclaimed += reclaimed.bytesReclaimed;
+    }
+
     const allData = await this.findAllForModel(type, modelId);
 
     for (const data of allData) {
@@ -2332,6 +2347,73 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
     );
     return { onDisk, promoted: onDisk.filter((v) => !pending.has(v)) };
+  }
+
+  /**
+   * Rolls back deferred writes whose process died before promoting or
+   * rolling them back. Their pending rows would otherwise keep the versions
+   * out of GC and the version cap until a catalog rebuild. A row counts as
+   * orphaned only when this host wrote it and its pid is dead; a row from
+   * another host, this process, or a live pid is left in flight. A data name
+   * left with no versions is removed, as GC removes an emptied name.
+   */
+  private async reclaimOrphanedDeferredWrites(
+    type: ModelType,
+    modelId: string,
+  ): Promise<GarbageCollectionResult> {
+    const host = hostname();
+    const orphans = this.catalogStore
+      .pendingRows(this.namespace, type.normalized, modelId)
+      .filter((row) =>
+        row.pending_host === host && row.pending_pid !== undefined &&
+        row.pending_pid > 0 && row.pending_pid !== Deno.pid &&
+        isProcessDead(row.pending_pid)
+      );
+    let versionsRemoved = 0;
+    let bytesReclaimed = 0;
+    const names = new Set<string>();
+    for (const row of orphans) {
+      const versionDir = this.getPath(
+        type,
+        modelId,
+        row.data_name,
+        row.version,
+      );
+      await this.stage({ kind: "remove", path: versionDir });
+      try {
+        bytesReclaimed += (await Deno.stat(
+          this.getContentPath(type, modelId, row.data_name, row.version),
+        )).size;
+      } catch {
+        // Ignore stat errors
+      }
+      try {
+        await Deno.remove(versionDir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      this.catalogStore.removeVersion(
+        this.namespace,
+        type.normalized,
+        modelId,
+        row.data_name,
+        row.version,
+        computeLatestFlags,
+      );
+      this.catalogStore.recordLocalWrite();
+      versionsRemoved++;
+      names.add(row.data_name);
+      logger
+        .debug`Reclaimed orphaned deferred write ${row.data_name} v${row.version} (pid ${row.pending_pid} is gone)`;
+    }
+    for (const name of names) {
+      if ((await this.listVersions(type, modelId, name)).length > 0) continue;
+      const dataNameDir = this.getDataNameDir(type, modelId, name);
+      await this.stage({ kind: "remove", path: dataNameDir });
+      await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+      this.catalogRemove(type, modelId, name);
+    }
+    return { versionsRemoved, bytesReclaimed };
   }
 
   private async updateLatestMarker(

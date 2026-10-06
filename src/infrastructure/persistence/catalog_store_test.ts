@@ -839,12 +839,33 @@ Deno.test("CatalogStore: bulkRemoveVersions recomputes both flags for the group'
 
 Deno.test("CatalogStore: upsertNewVersion clears the pending mark of the version it promotes", () => {
   const store = new CatalogStore(makeTempDbPath());
-  store.upsert(makeRow({ version: 1, is_latest: 0, is_pending: 1 }));
+  store.upsert(
+    makeRow({
+      version: 1,
+      is_latest: 0,
+      is_pending: 1,
+      pending_pid: 4242,
+      pending_host: "host-a",
+    }),
+  );
+  assertEquals(
+    [...store.iterate()].map((r) => [r.pending_pid, r.pending_host]),
+    [[4242, "host-a"]],
+  );
 
   store.upsertNewVersion(makeRow({ version: 1 }));
 
   const [row] = [...store.iterate()];
-  assertEquals([row.is_latest, row.is_step_latest, row.is_pending], [1, 1, 0]);
+  assertEquals(
+    [
+      row.is_latest,
+      row.is_step_latest,
+      row.is_pending,
+      row.pending_pid,
+      row.pending_host,
+    ],
+    [1, 1, 0, 0, ""],
+  );
   store.close();
 });
 

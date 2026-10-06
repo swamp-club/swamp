@@ -437,7 +437,12 @@ prune a pending version, so an in-flight deferred write is never promoted
 early. When only pending versions are left, the latest marker keeps naming
 the deleted version, so reads find nothing until the write is promoted. A
 catalog rebuild derives rows from disk and treats an in-flight write as
-promoted; rolling it back afterwards still recomputes the flags.
+promoted; rolling it back afterwards still recomputes the flags. A pending row
+records the pid and hostname of the process that wrote it. GC (not a dry run)
+first rolls back each pending write of the model whose writer ran on this host
+and is no longer alive, since nothing else will promote or roll it back, and
+removes a data name that leaves with no versions. A row from another host,
+the current process or a live pid stays in flight.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
@@ -583,6 +588,8 @@ CREATE TABLE catalog (
   step_name       TEXT NOT NULL DEFAULT '',
   source          TEXT NOT NULL DEFAULT '',
   is_pending      INTEGER NOT NULL DEFAULT 0,
+  pending_pid     INTEGER NOT NULL DEFAULT 0,
+  pending_host    TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
 );
 

@@ -66,6 +66,13 @@ export interface CatalogRow {
    * Absent means 0.
    */
   is_pending?: number;
+  /**
+   * The pid and hostname of the process that wrote a pending row, so GC can
+   * tell a write whose process died (never to be promoted or rolled back)
+   * from one still in flight. 0 and "" when the row is not pending.
+   */
+  pending_pid?: number;
+  pending_host?: string;
 }
 
 /**
@@ -144,6 +151,8 @@ export const CATALOG_COLUMNS: readonly (keyof CatalogRow)[] = [
   "step_name",
   "source",
   "is_pending",
+  "pending_pid",
+  "pending_host",
 ];
 
 /**
@@ -267,6 +276,8 @@ export class CatalogStore {
         step_name       TEXT NOT NULL DEFAULT '',
         source          TEXT NOT NULL DEFAULT '',
         is_pending      INTEGER NOT NULL DEFAULT 0,
+        pending_pid     INTEGER NOT NULL DEFAULT 0,
+        pending_host    TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
       );
 
@@ -386,8 +397,8 @@ export class CatalogStore {
         spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
         streaming, size, created_at, tags,
         owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
-        is_pending
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_pending, pending_pid, pending_host
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.namespace,
@@ -416,6 +427,8 @@ export class CatalogStore {
       row.step_name,
       row.source,
       row.is_pending ?? 0,
+      row.pending_pid ?? 0,
+      row.pending_host ?? "",
     );
   }
 
@@ -499,6 +512,8 @@ export class CatalogStore {
         is_latest: isLatest,
         is_step_latest: isStepLatest,
         is_pending: 0,
+        pending_pid: 0,
+        pending_host: "",
       });
       this.db.exec("COMMIT");
     } catch (error) {
@@ -523,8 +538,8 @@ export class CatalogStore {
           spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
-          is_pending
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          is_pending, pending_pid, pending_host
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -554,6 +569,8 @@ export class CatalogStore {
           row.step_name,
           row.source,
           row.is_pending ?? 0,
+          row.pending_pid ?? 0,
+          row.pending_host ?? "",
         );
       }
       this.db.exec("COMMIT");
@@ -581,8 +598,8 @@ export class CatalogStore {
           spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
-          is_pending
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          is_pending, pending_pid, pending_host
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -612,6 +629,8 @@ export class CatalogStore {
           row.step_name,
           row.source,
           row.is_pending ?? 0,
+          row.pending_pid ?? 0,
+          row.pending_host ?? "",
         );
       }
       const meta = this.db.prepare(
@@ -783,6 +802,23 @@ export class CatalogStore {
       version: number;
     }[];
     return new Set(rows.map((r) => r.version));
+  }
+
+  /**
+   * Every pending row (an in-flight deferred write) of one model, across its
+   * data names.
+   */
+  pendingRows(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+  ): CatalogRow[] {
+    return [
+      ...this.iterateFiltered(
+        "namespace = ? AND type_normalized = ? AND model_id = ? AND is_pending = 1",
+        [namespace, typeNormalized, modelId],
+      ),
+    ];
   }
 
   /**

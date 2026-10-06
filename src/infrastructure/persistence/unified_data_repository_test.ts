@@ -28,6 +28,9 @@ import {
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
 } from "./unified_data_repository.ts";
+
+import { hostname } from "node:os";
+import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
@@ -2024,4 +2027,93 @@ Deno.test("save: the write-time version cap neither counts nor prunes an in-flig
     assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2, 3]);
     assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:0", "3:1:1"]);
   }, true);
+});
+
+/** A pid no process can hold, so isProcessDead reports it gone. */
+const DEAD_PID = 2147483647;
+
+/** Rewrites the writer identity of a pending catalog row. */
+function setPendingWriter(
+  catalogStore: CatalogStore,
+  modelId: string,
+  version: number,
+  pid: number,
+  host = hostname(),
+): void {
+  const row = [...catalogStore.iterate()].find((r) =>
+    r.model_id === modelId && r.version === version
+  );
+  assertExists(row);
+  assertEquals(row.is_pending, 1);
+  catalogStore.upsert({ ...row, pending_pid: pid, pending_host: host });
+}
+
+Deno.test("collectGarbage: rolls back a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  });
+});
+
+Deno.test("collectGarbage: leaves a deferred write from a live process, this process or another host in flight (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    for (const modelId of ["live", "self", "remote"]) {
+      await repo.save(testType, modelId, stepData("s1"), bytes("a"));
+      await repo.saveDeferred(testType, modelId, stepData("s1"), bytes("b"));
+    }
+    const self = [...catalogStore.iterate()].find((r) =>
+      r.model_id === "self" && r.version === 2
+    );
+    assertEquals([self?.pending_pid, self?.pending_host], [
+      Deno.pid,
+      hostname(),
+    ]);
+    setPendingWriter(catalogStore, "live", 2, Deno.ppid);
+    setPendingWriter(catalogStore, "remote", 2, DEAD_PID, "another-host");
+
+    for (const modelId of ["live", "self", "remote"]) {
+      const result = await repo.collectGarbage(testType, modelId);
+      assertEquals(result.versionsRemoved, 0, modelId);
+      assertEquals(
+        await repo.listVersions(testType, modelId, "out"),
+        [1, 2],
+        modelId,
+      );
+    }
+  });
+});
+
+Deno.test("collectGarbage: a dry run does not roll back a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    await repo.collectGarbage(testType, "m1", { dryRun: true });
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2]);
+  });
+});
+
+Deno.test("collectGarbage: removes a data name whose only version left was a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    await repo.delete(testType, "m1", "out", 1);
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), []);
+    assertEquals(outFlags(catalogStore), []);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+  });
 });
