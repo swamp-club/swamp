@@ -58,7 +58,7 @@ async function loadCachedVaultBundles(repoDir: string): Promise<void> {
         try {
           const bundlePath = join(bundlesDir, fpDir.name, file.name);
           let js = await Deno.readTextFile(bundlePath);
-          const fixed = fixCjsEsmInterop(rewriteZodImports(js));
+          const fixed = fixCjsEsmInterop(rewriteZodImports(js, bundlePath));
           if (fixed !== js) {
             js = fixed;
             await Deno.writeTextFile(bundlePath, js);

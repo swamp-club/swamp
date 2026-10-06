@@ -1950,3 +1950,50 @@ Deno.test("serve id-deny conformance: data.query by a renamed item's old name st
     ]);
   });
 });
+
+Deno.test("serve id-deny conformance: a direct run is authorized on the definition definitionName names (swamp-club#2672)", async () => {
+  for (const grants of [GRANTS, TAG_GRANTS]) {
+    for (const detached of [false, true]) {
+      await withFixtures(async (f) => {
+        const ctx = createServeCtx(f.repo, grants, { detached });
+        const type = f.repo.modelType.normalized;
+        const stored = (d: Definition) =>
+          JSON.stringify([d.version, d.tags, d.globalArguments]);
+        const before = stored(f.prodModel);
+        for (const definitionName of ["prod-db", f.prodModel.id]) {
+          // Authorized as dev-db, acting on prod-db.
+          assertDenied(
+            await sendRequest(
+              ctx,
+              request("model.method.run", {
+                modelIdOrName: "dev-db",
+                typeArg: type,
+                definitionName,
+                methodName: "noop",
+              }),
+            ),
+            "model:prod-db",
+          );
+        }
+        const kept = await f.repo.repoContext.definitionRepo.findByNameGlobal(
+          "prod-db",
+        );
+        assertEquals(kept && stored(kept.definition), before);
+
+        // The honest form, both names the same, still runs.
+        assertAllowed(
+          await sendRequest(
+            ctx,
+            request("model.method.run", {
+              modelIdOrName: "dev-db",
+              typeArg: type,
+              definitionName: "dev-db",
+              methodName: "noop",
+            }),
+          ),
+          "model.method.run",
+        );
+      }, grants);
+    }
+  }
+});

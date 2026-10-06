@@ -44,6 +44,11 @@ export interface WorkflowRunPayload {
   traceparent?: string;
   tracestate?: string;
   noSupersede?: boolean;
+  /**
+   * The client's inherited held-lock list (`SWAMP_LOCK_HOLDER_TOKENS`), so a
+   * run requested by a step of this server's own run skips that step's lock.
+   */
+  lockHolderTokens?: string;
 }
 
 export interface ModelMethodRunPayload {
@@ -64,6 +69,11 @@ export interface ModelMethodRunPayload {
   skipCheckLabels?: string[];
   traceparent?: string;
   tracestate?: string;
+  /**
+   * The client's inherited held-lock list (`SWAMP_LOCK_HOLDER_TOKENS`), so a
+   * run requested by a step of this server's own run skips that step's lock.
+   */
+  lockHolderTokens?: string;
 }
 
 // ── Data operations ──────────────────────────────────────────────────────
@@ -269,6 +279,8 @@ export interface WorkflowResumePayload {
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
+  /** As on {@link WorkflowRunPayload}. */
+  lockHolderTokens?: string;
 }
 
 // ── Vault operations ─────────────────────────────────────────────────────

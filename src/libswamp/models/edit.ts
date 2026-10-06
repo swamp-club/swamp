@@ -129,6 +129,16 @@ export interface ModelEditInput {
     before: ModelEditTarget,
     after: ModelEditTarget,
   ) => Promise<boolean> | boolean;
+  /**
+   * Called before every stdin update is saved, after `authorizeUpdate`, with
+   * the stored and the edited definition. Returning false leaves the file
+   * untouched. Serve uses it to authorize the expressions the edit adds
+   * against the writer (swamp-club#2755).
+   */
+  authorizeContent?: (
+    before: Definition,
+    after: Definition,
+  ) => Promise<boolean> | boolean;
 }
 
 /** Dependencies for the model edit operation. */
@@ -256,12 +266,14 @@ export async function* modelEdit(
           try {
             const type = modelType;
             const before = editTarget(definition, type);
-            const authorizeUpdate = input.authorizeUpdate;
-            const beforeSave = authorizeUpdate
-              ? (candidate: Definition) =>
-                Promise.resolve(
-                  authorizeUpdate(before, editTarget(candidate, type)),
-                )
+            const stored = definition;
+            const { authorizeUpdate, authorizeContent } = input;
+            const beforeSave = authorizeUpdate || authorizeContent
+              ? async (candidate: Definition) =>
+                (!authorizeUpdate ||
+                  await authorizeUpdate(before, editTarget(candidate, type))) &&
+                (!authorizeContent ||
+                  await authorizeContent(stored, candidate))
               : undefined;
             const updated = await deps.updateFromStdin(
               definition,

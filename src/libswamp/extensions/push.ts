@@ -62,13 +62,18 @@ import { notAuthenticated, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { validateExtensionSkills } from "../../domain/extensions/extension_skill_validator.ts";
 import {
+  type CollectiveEntitlement,
+  collectiveOf,
   evaluateCollectiveMembership,
+  evaluatePrivateEntitlement,
   evaluateVersionExists,
+  explainPrivatePublishRefusal,
   type PublishedVersion,
   registryCheckNotRun,
   type RegistryCheckResult,
   type RegistryChecksMode,
 } from "../../domain/extensions/extension_publish_checks.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -246,6 +251,14 @@ export interface ExtensionPushPrepared {
   registryChecks: RegistryCheckResult[];
   /** The content hash the review report is keyed by, when the caller computed one. */
   contentHash: string | undefined;
+  /**
+   * What the registry reported the extension's collective entitles the
+   * caller to, from the sign-in whoami call. Undefined when the registry sent
+   * no entitlement or the checks were skipped. Held in memory for the push
+   * that follows and never written to disk: entitlement is the registry's to
+   * decide, and a cached plan would make a confidently wrong message.
+   */
+  collectiveEntitlement: CollectiveEntitlement | undefined;
 }
 
 /** Content counts for the extension. */
@@ -270,6 +283,11 @@ export interface ExtensionPushExecuteInput {
   counts: ExtensionPushCounts;
   releaseNotes?: string;
   channel?: string;
+  /**
+   * The collective's entitlement as the prepare phase resolved it, so a
+   * refused private publication can say what the registry had reported.
+   */
+  collectiveEntitlement?: CollectiveEntitlement;
 }
 
 export type ExtensionPushEvent =
@@ -279,6 +297,17 @@ export type ExtensionPushEvent =
 
 // ── Dependencies ──────────────────────────────────────────────────────
 
+/**
+ * The caller's collectives and what each entitles them to, from one whoami
+ * call. `collectives` is undefined when the registry sent no organizations;
+ * `entitlements` when it sent no entitlement (an older server), which the
+ * private-entitlement check reports as undecided.
+ */
+export interface CollectiveLookup {
+  collectives: string[] | undefined;
+  entitlements: CollectiveEntitlement[] | undefined;
+}
+
 /** Dependencies for the extension push prepare phase. */
 export interface ExtensionPushPrepareDeps {
   loadCredentials: () => Promise<
@@ -287,7 +316,7 @@ export interface ExtensionPushPrepareDeps {
   fetchCollectives: (
     serverUrl: string,
     apiKey: string,
-  ) => Promise<string[] | undefined>;
+  ) => Promise<CollectiveLookup>;
   extractContentMetadata: (
     modelFiles: string[],
     modelsDir: string,
@@ -403,9 +432,11 @@ import {
   getCollectives,
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
+import { entitlementsOf } from "../auth/whoami.ts";
 import {
   ExtensionApiClient,
   type LatestVersionDetail,
+  REGISTRY_FORBIDDEN_CODE,
 } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -503,7 +534,13 @@ export function createExtensionPushPrepareDeps(
       if (whoami.authenticated === false) {
         throw notAuthenticated();
       }
-      return getCollectives(whoami);
+      // Membership and entitlement come from the same answer, read from
+      // their own fields: organizations authorizes the namespace,
+      // collectiveEntitlements only ever explains a refusal.
+      return {
+        collectives: getCollectives(whoami),
+        entitlements: entitlementsOf(whoami),
+      };
     },
     extractContentMetadata,
     analyzeExtensionSafety,
@@ -663,13 +700,17 @@ export async function extensionPushPrepare(
   deps: ExtensionPushPrepareDeps,
   input: ExtensionPushPrepareInput,
 ): Promise<ExtensionPushPrepared> {
+  let requestedVisibility: PublishVisibility | undefined;
   try {
-    resolvePublishVisibility(input.manifest.visibility);
+    requestedVisibility = resolvePublishVisibility(input.manifest.visibility);
   } catch (error) {
     throw validationFailed(
       error instanceof Error ? error.message : String(error),
     );
   }
+  // A private publication adds the private-entitlement check; public or
+  // default intent leaves the registry to apply its defaults.
+  const privateIntent = requestedVisibility === "private";
   // 1. Registry checks: authentication and collective membership. A real
   // push (`enforce`) stops at the first failure; a dry run (`collect`)
   // records every verdict so the summary reports what the push would say;
@@ -679,6 +720,7 @@ export async function extensionPushPrepare(
   let credentials:
     | { serverUrl: string; apiKey: string; username: string }
     | undefined;
+  let collectiveEntitlement: CollectiveEntitlement | undefined;
   // Why the credentialed checks could not run, when they could not.
   let credentialsUnavailable: string | undefined;
   if (mode !== "skip") {
@@ -705,16 +747,28 @@ export async function extensionPushPrepare(
           credentialsUnavailable,
         ),
       );
+      if (privateIntent) {
+        registryChecks.push(
+          registryCheckNotRun(
+            "private-entitlement",
+            "no-credentials",
+            credentialsUnavailable,
+          ),
+        );
+      }
     } else {
       // 2. Validate collective matches user's collectives
       let collectives: string[] | undefined;
+      let entitlements: CollectiveEntitlement[] | undefined;
       let signedOut = false;
       let lookupFailure: string | undefined;
       try {
-        collectives = await deps.fetchCollectives(
+        const lookup = await deps.fetchCollectives(
           creds.serverUrl,
           creds.apiKey,
         );
+        collectives = lookup.collectives;
+        entitlements = lookup.entitlements;
       } catch (error) {
         if (isNotAuthenticatedError(error)) {
           signedOut = true;
@@ -749,8 +803,20 @@ export async function extensionPushPrepare(
             credentialsUnavailable,
           ),
         );
+        if (privateIntent) {
+          registryChecks.push(
+            registryCheckNotRun(
+              "private-entitlement",
+              "authentication-failed",
+              credentialsUnavailable,
+            ),
+          );
+        }
       } else {
         credentials = creds;
+        collectiveEntitlement = entitlements?.find((e) =>
+          e.slug === collectiveOf(input.manifest.name)
+        );
         registryChecks.push(
           lookupFailure !== undefined
             ? registryCheckNotRun(
@@ -776,6 +842,34 @@ export async function extensionPushPrepare(
           }
         }
         registryChecks.push(reserved, membership);
+        // 2b. Private entitlement, from the same whoami answer. Only a
+        // collective the caller belongs to has an entitlement to report, so
+        // the check is omitted when membership did not pass. A whoami that
+        // did not answer leaves it unasked, like authentication; an answer
+        // that does not settle it (no entitlement reported, or a free plan
+        // the registry may start a trial for) is undecided, and the push
+        // lets the registry decide.
+        if (privateIntent) {
+          if (lookupFailure !== undefined) {
+            registryChecks.push(
+              registryCheckNotRun(
+                "private-entitlement",
+                "registry-unavailable",
+                `registry did not answer: ${lookupFailure}`,
+              ),
+            );
+          } else if (membership.status === "passed") {
+            const entitlement = evaluatePrivateEntitlement({
+              extensionName: input.manifest.name,
+              entitlements,
+              serverUrl: creds.serverUrl,
+            });
+            if (entitlement.status === "failed" && mode === "enforce") {
+              throw validationFailed(entitlement.message);
+            }
+            registryChecks.push(entitlement);
+          }
+        }
       }
     }
   }
@@ -1102,6 +1196,7 @@ export async function extensionPushPrepare(
     isDryRun: input.dryRun,
     registryChecks,
     contentHash: input.contentHash,
+    collectiveEntitlement,
   };
 }
 
@@ -1368,6 +1463,11 @@ function toContentMetadataAcceptances(
   };
 }
 
+/** A 403 from the registry that is not a missing token scope. */
+function isRegistryForbidden(error: unknown): boolean {
+  return error instanceof UserError && error.code === REGISTRY_FORBIDDEN_CODE;
+}
+
 // ── Push generator ────────────────────────────────────────────────────
 
 /**
@@ -1402,6 +1502,20 @@ export async function* extensionPush(
         yield { kind: "error" as const, error: notAuthenticated() };
         return;
       }
+      // The registry's refusal of a private publication is passed on as it
+      // came, followed by what the registry had reported for the collective
+      // at sign-in, so the message names the plan that stood behind it.
+      const refusalMessage = (error: unknown): string => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (requestedVisibility === "private" && isRegistryForbidden(error)) {
+          return explainPrivatePublishRefusal(message, {
+            extensionName: input.manifest.name,
+            entitlement: input.collectiveEntitlement,
+            serverUrl: credentials.serverUrl,
+          });
+        }
+        return message;
+      };
 
       if (!input.manifest.repository) {
         ctx.logger.warn(
@@ -1444,9 +1558,7 @@ export async function* extensionPush(
       } catch (error) {
         yield {
           kind: "error" as const,
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+          error: validationFailed(refusalMessage(error)),
         };
         return;
       }
@@ -1484,9 +1596,7 @@ export async function* extensionPush(
       } catch (error) {
         yield {
           kind: "error" as const,
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
+          error: validationFailed(refusalMessage(error)),
         };
         return;
       }

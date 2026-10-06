@@ -130,7 +130,12 @@ export function splitServerToken(
   return { name: presented.slice(0, dot), secret: presented.slice(dot + 1) };
 }
 
-export type WebSocketTokenTransport = "bearer" | "subprotocol" | "query";
+export type WebSocketTokenTransport =
+  | "bearer"
+  | "subprotocol"
+  | "query";
+
+export const DASHBOARD_SESSION_COOKIE = "swamp-dashboard-session";
 
 export interface ExtractedWebSocketToken {
   token: string;
@@ -139,6 +144,34 @@ export interface ExtractedWebSocketToken {
 
 const BEARER_PREFIX_LEN = "Bearer ".length;
 const SUBPROTOCOL_PREFIX = "bearer.";
+
+/**
+ * Reads the one dashboard session credential from a request cookie header.
+ * Duplicate and malformed cookies are rejected instead of selecting an
+ * attacker-controlled value by position.
+ */
+export function extractDashboardSessionId(req: Request): string | null {
+  const cookie = req.headers.get("cookie");
+  if (cookie === null) return null;
+
+  let sessionId: string | null = null;
+  for (const entry of cookie.split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    const name = entry.slice(0, separator).trim();
+    if (name !== DASHBOARD_SESSION_COOKIE) continue;
+    if (sessionId !== null) return null;
+
+    try {
+      const candidate = decodeURIComponent(entry.slice(separator + 1));
+      if (candidate.length === 0) return null;
+      sessionId = candidate;
+    } catch {
+      return null;
+    }
+  }
+  return sessionId;
+}
 
 export function extractWebSocketToken(
   req: Request,
@@ -203,6 +236,12 @@ export type ServerTokenAuthResult =
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
+/** A browser-session reference to one exact server-token mint. */
+export interface DashboardSessionTokenBinding {
+  readonly tokenName: string;
+  readonly tokenCreatedAt: string;
+}
+
 export function classifyRedeemError(message: string): TokenAuthRejectionReason {
   if (message.includes("has expired")) return "expired";
   if (message.includes("has been revoked")) return "revoked";
@@ -217,6 +256,14 @@ export function classifyRedeemError(message: string): TokenAuthRejectionReason {
     return "vault-error";
   }
   return "unknown";
+}
+
+/** Whether a rejected session's backing token can never authenticate again. */
+export function shouldInvalidateDashboardSession(
+  reason: TokenAuthRejectionReason,
+): boolean {
+  return reason === "expired" || reason === "revoked" ||
+    reason === "invalid-principal" || reason === "no-definition";
 }
 
 /**
@@ -305,6 +352,69 @@ export async function authenticateServerToken(
     logger.warn(
       "Token authentication failed for {name} ({reason}): {error}",
       { name: split.name, reason, error: message },
+    );
+    return { ok: false, error: "Authentication failed", reason };
+  }
+}
+
+/**
+ * Authenticates an opaque dashboard-session reference without reading or
+ * reconstructing a server-token bearer secret. The referenced mint must still
+ * be active, unexpired, and identical to the one that created the session.
+ */
+export async function authenticateDashboardSession(
+  binding: DashboardSessionTokenBinding,
+  repoContext: RepositoryContext,
+  auditContext?: TokenAuthAuditContext,
+): Promise<ServerTokenAuthResult> {
+  try {
+    const token = await readServerTokenRecord(repoContext, binding.tokenName);
+    validateServerToken(
+      token,
+      binding.tokenName,
+      `${binding.tokenName}.dashboard-session`,
+      Date.now(),
+    );
+    if (token.createdAt !== binding.tokenCreatedAt) {
+      return {
+        ok: false,
+        error: "Dashboard session references a rotated token",
+        reason: "revoked",
+      };
+    }
+    let principal: Principal;
+    try {
+      principal = parsePrincipal(token.principalId);
+      assertAuthenticatablePrincipal(principal);
+    } catch (error) {
+      logger.warn(
+        "Dashboard session authentication rejected for {name} (invalid-principal): {error}",
+        {
+          name: binding.tokenName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return {
+        ok: false,
+        error: "Authentication failed",
+        reason: "invalid-principal",
+      };
+    }
+    emitTokenUseAuditEvent(auditContext, binding.tokenName, principal);
+    return {
+      ok: true,
+      principalId: token.principalId,
+      collectives: token.collectives,
+      groups: token.groups,
+      tokenName: binding.tokenName,
+      tokenCreatedAt: token.createdAt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = classifyRedeemError(message);
+    logger.warn(
+      "Dashboard session authentication failed for {name} ({reason}): {error}",
+      { name: binding.tokenName, reason, error: message },
     );
     return { ok: false, error: "Authentication failed", reason };
   }

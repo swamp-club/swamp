@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertGreater, assertStringIncludes } from "@std/assert";
 import {
   createConnectionTeardown,
   exceptionTypeForClient,
@@ -32,7 +32,16 @@ import { closeSession } from "./handlers/shared.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
-import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
+import {
+  LockTimeoutError,
+  LockWaitCycleError,
+} from "../domain/datastore/distributed_lock.ts";
+import {
+  MAX_FORWARDED_LOCK_TOKENS_LENGTH,
+  processLockHolderMarker,
+  SWAMP_LOCK_HOLDER_TOKENS,
+} from "../domain/datastore/lock_holder_marker.ts";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
@@ -111,6 +120,32 @@ Deno.test("validateServerRequest accepts a valid model.method.run request", () =
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
 });
+
+for (
+  const [type, payload] of [
+    ["workflow.run", { workflowIdOrName: "wf" }],
+    ["model.method.run", { modelIdOrName: "my-model", methodName: "start" }],
+    ["workflow.resume", { workflowIdOrName: "wf" }],
+  ] as const
+) {
+  Deno.test(`validateServerRequest keeps a forwarded lock list on ${type} up to the length limit`, () => {
+    const request = (lockHolderTokens: string) =>
+      validateServerRequest({
+        type,
+        id: "req-locks",
+        payload: { ...payload, lockHolderTokens },
+      });
+
+    const atLimit = "1:".padEnd(MAX_FORWARDED_LOCK_TOKENS_LENGTH, "a");
+    const accepted: unknown = request(atLimit);
+    assertEquals(accepted, {
+      type,
+      id: "req-locks",
+      payload: { ...payload, lockHolderTokens: atLimit },
+    });
+    assertEquals(typeof request(`${atLimit}a`), "string");
+  });
+}
 
 Deno.test("validateServerRequest accepts a valid cancel request", () => {
   const input = { type: "cancel", id: "req-3" };
@@ -3489,6 +3524,17 @@ Deno.test("exceptionTypeForClient: returns UserError name", () => {
   assertEquals(exceptionTypeForClient(new UserError("oops")), "UserError");
 });
 
+Deno.test("exceptionTypeForClient: a lock wait cycle is named, and is not a retryable lock timeout", () => {
+  const err = new LockWaitCycleError({
+    opponentPid: 4242,
+    waitedMs: 2000,
+    waitingOnLockPaths: [],
+  });
+  assertEquals(exceptionTypeForClient(err), "LockWaitCycleError");
+  // Handlers send `retryable` only for a LockTimeoutError.
+  assertEquals(err instanceof LockTimeoutError, false);
+});
+
 Deno.test("exceptionTypeForClient: returns undefined for non-Error values", () => {
   assertEquals(exceptionTypeForClient("a string"), undefined);
   assertEquals(exceptionTypeForClient(42), undefined);
@@ -3898,6 +3944,81 @@ Deno.test("handleMessage: workflow.resume without from uses the suspended-run re
   assertEquals(error.code, "workflow_resume_failed");
   assertStringIncludes(String(error.message), "is not suspended");
 });
+
+// A step of a run this serve hosts calls back in with --server. The run it
+// requests must start as also holding the step's lock, which the client
+// forwards (swamp-club#2982).
+for (
+  const [type, payload] of [
+    ["workflow.run", { workflowIdOrName: "deploy" }],
+    ["model.method.run", { modelIdOrName: "my-model", methodName: "start" }],
+    ["workflow.resume", { workflowIdOrName: "deploy" }],
+  ] as const
+) {
+  Deno.test(`handleMessage: ${type} runs under the held locks the client forwarded`, async () => {
+    // What a swamp started by the handler would be told this process holds.
+    const seen: (string | undefined)[] = [];
+    const lookup = () => {
+      seen.push(
+        processLockHolderMarker.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS],
+      );
+      return Promise.resolve(null);
+    };
+    const ctx: ConnectionContext = {
+      ...makeCtx(modeNoneConfig),
+      repoContext: {
+        definitionRepo: {
+          findByNameGlobal: lookup,
+          findById: lookup,
+          listTypes: () => Promise.resolve([]),
+          listByType: () => Promise.resolve([]),
+        },
+        workflowRepo: { findByName: lookup, findById: lookup },
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    const handled = async (lockHolderTokens: string | undefined) => {
+      seen.length = 0;
+      const mock = createMockSocket();
+      handleMessage(
+        mock as unknown as WebSocket,
+        ctx,
+        new Map<string, AbortController>(),
+        makeEvent(JSON.stringify({
+          type,
+          id: "forwarded-locks",
+          payload: { ...payload, lockHolderTokens },
+        })),
+        null,
+      );
+      await waitFor(() => mock.sent.length >= 1, `${type} reply sent`);
+      assertGreater(seen.length, 0);
+      return [...new Set(seen)];
+    };
+
+    await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+      const stepLock = crypto.randomUUID();
+      let finish = () => {};
+      const waiting = new Promise<void>((resolve) => finish = resolve);
+      // The calling step, holding its lock while it waits on the client.
+      const step = processLockHolderMarker.runHolding(
+        [stepLock],
+        () => waiting,
+      );
+      try {
+        assertEquals(await handled(`${Deno.pid}:${stepLock}`), [
+          `${Deno.pid}:${stepLock}`,
+        ]);
+        assertEquals(await handled(undefined), [undefined]);
+        assertEquals(await handled(`${Deno.pid}:${crypto.randomUUID()}`), [
+          undefined,
+        ]);
+      } finally {
+        finish();
+        await step;
+      }
+    });
+  });
+}
 
 // ── validateServerRequest: new command types (issue #1531) ─────────────
 

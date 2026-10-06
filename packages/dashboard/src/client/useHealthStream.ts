@@ -109,6 +109,8 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
         const headers: Record<string, string> = {};
         if (token) {
           headers["Authorization"] = `Bearer ${token}`;
+        } else {
+          headers["X-Swamp-Dashboard-Origin"] = globalThis.location.origin;
         }
 
         const url = `/api/v1/health/stream?interval=${intervalMs}`;

@@ -22,6 +22,15 @@ export interface CapturedCommandCall {
   command: string;
   args: string[];
   timestamp: number;
+  /**
+   * The `env` option passed to `Deno.Command`, recorded verbatim (including
+   * any secrets). Present only when the caller passed it.
+   */
+  env?: Record<string, string>;
+  /** The `cwd` option passed to `Deno.Command`. Present only when passed. */
+  cwd?: string | URL;
+  /** The `clearEnv` option passed to `Deno.Command`. Present only when passed. */
+  clearEnv?: boolean;
 }
 
 /** Result from withMockedCommand — includes the callback result and captured calls. */
@@ -53,7 +62,8 @@ export type CommandHandler = (
  * - A **CommandOutput array** — outputs are returned sequentially, one per command
  * - A **handler function** — receives the command and args, returns output
  *
- * All command executions are recorded and returned for inspection.
+ * All command executions are recorded and returned for inspection, including
+ * the `env`, `cwd` and `clearEnv` options when the caller passed them.
  * The original `Deno.Command` is always restored, even if the callback throws.
  *
  * **Simple mode** — sequential responses:
@@ -69,6 +79,8 @@ export type CommandHandler = (
  *
  * assertEquals(result, "sk-test-123");
  * assertEquals(calls[0].command, "op");
+ * // For a provider that passes its token to `op` via the env option:
+ * assertEquals(calls[0].env?.OP_SERVICE_ACCOUNT_TOKEN, "test-token");
  * ```
  *
  * **Handler mode** — dynamic responses:
@@ -107,21 +119,31 @@ export async function withMockedCommand<T>(
     value: class MockCommand {
       #command: string;
       #args: string[];
+      #env: Record<string, string> | undefined;
+      #cwd: string | URL | undefined;
+      #clearEnv: boolean | undefined;
 
-      constructor(
-        command: string | URL,
-        options?: { args?: string[]; [key: string]: unknown },
-      ) {
+      constructor(command: string | URL, options?: Deno.CommandOptions) {
         this.#command = command.toString();
-        this.#args = (options?.args as string[]) ?? [];
+        this.#args = options?.args ?? [];
+        // Snapshot env so later mutation by the caller can't alter the record.
+        this.#env = options?.env !== undefined ? { ...options.env } : undefined;
+        this.#cwd = options?.cwd;
+        this.#clearEnv = options?.clearEnv;
       }
 
       output(): Promise<Deno.CommandOutput> {
-        calls.push({
+        // Only add option keys the caller passed: deep equality treats an
+        // undefined-valued key as different from a missing one.
+        const call: CapturedCommandCall = {
           command: this.#command,
           args: this.#args,
           timestamp: Date.now(),
-        });
+        };
+        if (this.#env !== undefined) call.env = { ...this.#env };
+        if (this.#cwd !== undefined) call.cwd = this.#cwd;
+        if (this.#clearEnv !== undefined) call.clearEnv = this.#clearEnv;
+        calls.push(call);
 
         const getOutput = async (): Promise<CommandOutput> => {
           if (outputs) {

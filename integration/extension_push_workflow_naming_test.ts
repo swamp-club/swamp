@@ -45,7 +45,8 @@ const stubRepoContext = {
 
 const prepareDeps: ExtensionPushPrepareDeps = {
   loadCredentials: () => Promise.resolve(null),
-  fetchCollectives: () => Promise.resolve(["test"]),
+  fetchCollectives: () =>
+    Promise.resolve({ collectives: ["test"], entitlements: undefined }),
   extractContentMetadata: () =>
     Promise.resolve({
       models: [],

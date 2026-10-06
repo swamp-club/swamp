@@ -37,6 +37,7 @@ import {
   createWorkflowRunClaims,
   createWorkflowRunLock,
   datastoreGlobalLockOptions,
+  type DrainWaits,
   ensureManagedConfigBase,
   flushSinglePhasePush,
   flushTwoPhasePush,
@@ -54,6 +55,14 @@ import {
   runUnderModelLocks,
   waitForPerModelLocks,
 } from "./repo_context.ts";
+import {
+  DRAIN_WAIT_TTL_MS,
+  type DrainWait,
+} from "../domain/datastore/drain_wait.ts";
+import {
+  DRAIN_WAITS_DIR,
+  DrainWaitStore,
+} from "../infrastructure/persistence/drain_wait_store.ts";
 import {
   processLockHolderMarker,
   SWAMP_LOCK_ANCESTOR_PIDS,
@@ -96,6 +105,7 @@ import { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 import {
   type LockInfo,
   LockTimeoutError,
+  LockWaitCycleError,
 } from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
@@ -1385,6 +1395,8 @@ Deno.test(
 const heldCount = (held: number): PerModelLockScan => ({
   held,
   heldForOtherRuns: [],
+  skippedLockIds: [],
+  waitedLocks: [],
 });
 
 Deno.test(
@@ -1397,7 +1409,9 @@ Deno.test(
     };
 
     const start = Date.now();
-    await waitForPerModelLocks("/unused/datastore/path", undefined, scanner);
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanner,
+    });
     const elapsed = Date.now() - start;
 
     // No polling loop entered — single scan call, no setTimeout delay.
@@ -1426,7 +1440,9 @@ Deno.test(
     };
 
     const start = Date.now();
-    await waitForPerModelLocks("/unused/datastore/path", undefined, scanner);
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanner,
+    });
     const elapsed = Date.now() - start;
 
     // 3 calls: initial check + 2 polls (the second poll observes 0 and
@@ -1456,7 +1472,7 @@ Deno.test(
             waitForPerModelLocks(
               "/unused/datastore/path",
               undefined,
-              scanner,
+              { findModelLocks: scanner },
             ),
         );
       },
@@ -1484,8 +1500,7 @@ Deno.test(
     await waitForPerModelLocks(
       "/unused/datastore/path",
       undefined,
-      scanner,
-      writer,
+      { findModelLocks: scanner, progressWriter: writer },
     );
 
     assertEquals(messages.length, 2);
@@ -1733,8 +1748,7 @@ Deno.test(
           await waitForPerModelLocks(
             dir,
             undefined,
-            undefined,
-            (msg) => messages.push(msg),
+            { progressWriter: (msg) => messages.push(msg) },
           );
         },
       );
@@ -1801,8 +1815,7 @@ Deno.test(
           await waitForPerModelLocks(
             dir,
             undefined,
-            undefined,
-            (msg) => messages.push(msg),
+            { progressWriter: (msg) => messages.push(msg) },
           );
         },
       );
@@ -1846,8 +1859,7 @@ Deno.test(
           await waitForPerModelLocks(
             dir,
             undefined,
-            undefined,
-            (msg) => messages.push(msg),
+            { progressWriter: (msg) => messages.push(msg) },
           );
         },
       );
@@ -1881,7 +1893,10 @@ Deno.test(
         },
         () =>
           assertRejects(
-            () => waitForPerModelLocks(dir, undefined, undefined, () => {}),
+            () =>
+              waitForPerModelLocks(dir, undefined, {
+                progressWriter: () => {},
+              }),
             LockTimeoutError,
           ),
       );
@@ -1909,8 +1924,10 @@ Deno.test(
             waitForPerModelLocks(
               "/unused/datastore/path",
               undefined,
-              () => Promise.resolve(heldCount(1)),
-              () => {},
+              {
+                findModelLocks: () => Promise.resolve(heldCount(1)),
+                progressWriter: () => {},
+              },
             ),
           LockTimeoutError,
         ),
@@ -1918,6 +1935,393 @@ Deno.test(
 
     assertStringIncludes(error.message, `Lock "per-model locks"`);
     assertEquals(error.message.includes("one at a time"), false);
+  },
+);
+
+// ============================================================================
+// waitForPerModelLocks — drain-wait cycle detection (swamp-club#2981)
+// ============================================================================
+
+/** A scan of a drain that skips "mine" and waits on "theirs". */
+const nestedScan = (): PerModelLockScan => ({
+  held: 1,
+  heldForOtherRuns: [],
+  skippedLockIds: ["mine"],
+  waitedLocks: [{
+    lockId: "theirs",
+    lockPath: join("data", "command-shell", "their-model", ".lock"),
+  }],
+});
+
+/** The other side of {@link nestedScan}: skips "theirs", waits on "mine". */
+function opponentWait(overrides: Partial<DrainWait> = {}): DrainWait {
+  return {
+    id: "opponent",
+    pid: 4242,
+    hostname: "host",
+    startedAtMs: 0,
+    updatedAtMs: Date.now(),
+    ttlMs: DRAIN_WAIT_TTL_MS,
+    skipping: ["theirs"],
+    waitingOn: ["mine"],
+    ...overrides,
+  };
+}
+
+/** In-memory drain-wait markers: this drain's own, plus `others()`. */
+function fakeDrainWaits(others: () => DrainWait[]): {
+  waits: DrainWaits;
+  published: DrainWait[];
+  own: () => string[];
+} {
+  const own = new Map<string, DrainWait>();
+  const published: DrainWait[] = [];
+  return {
+    waits: {
+      publish: (wait) => {
+        published.push(wait);
+        own.set(wait.id, wait);
+        return Promise.resolve();
+      },
+      list: () => Promise.resolve([...own.values(), ...others()]),
+      remove: (id) => {
+        own.delete(id);
+        return Promise.resolve();
+      },
+    },
+    published,
+    own: () => [...own.keys()],
+  };
+}
+
+/** A scanner that reports `scan` `times` times, then no held locks. */
+function scanTimes(
+  scan: PerModelLockScan,
+  times: number,
+): () => Promise<PerModelLockScan> {
+  let calls = 0;
+  return () => Promise.resolve(calls++ < times ? scan : heldCount(0));
+}
+
+Deno.test(
+  "waitForPerModelLocks - gives way to an earlier drain it waits on and that waits on it",
+  async () => {
+    // The opponent refreshes its marker between this drain's polls.
+    let refreshes = 0;
+    const base = Date.now() - 1_000;
+    const markers = fakeDrainWaits(
+      () => [opponentWait({ updatedAtMs: base + refreshes++ })],
+    );
+
+    const error = await assertRejects(
+      () =>
+        waitForPerModelLocks("/unused/datastore/path", undefined, {
+          findModelLocks: () => Promise.resolve(nestedScan()),
+          progressWriter: () => {},
+          drainWaits: markers.waits,
+          pollIntervalMs: 0,
+        }),
+      LockWaitCycleError,
+    );
+
+    assertEquals(error.code, "lock_wait_cycle");
+    assertEquals(error.opponentPid, 4242);
+    assertStringIncludes(error.message, "swamp pid 4242");
+    assertStringIncludes(
+      error.message,
+      join("data", "command-shell", "their-model", ".lock"),
+    );
+    assertStringIncludes(error.message, "one at a time");
+    // One sighting is not enough: it published once, saw the opponent,
+    // and gave way only after seeing it again with a newer marker.
+    assertEquals(markers.published.length, 2);
+    assertEquals(markers.published[0].skipping, ["mine"]);
+    assertEquals(markers.published[0].waitingOn, ["theirs"]);
+    assertEquals(markers.own(), []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - does not give way to a marker that is never refreshed",
+  async () => {
+    // A drain that was killed, or has moved on, stops refreshing.
+    const stale = opponentWait();
+    const markers = fakeDrainWaits(() => [stale]);
+
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanTimes(nestedScan(), 5),
+      progressWriter: () => {},
+      drainWaits: markers.waits,
+      pollIntervalMs: 0,
+    });
+
+    assertEquals(markers.published.length, 5);
+    assertEquals(markers.own(), []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - keeps waiting when it started before the drain it waits on",
+  async () => {
+    let refreshes = 0;
+    const later = Date.now() + 60_000;
+    const markers = fakeDrainWaits(
+      () => [
+        opponentWait({ startedAtMs: later, updatedAtMs: refreshes++ + later }),
+      ],
+    );
+
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanTimes(nestedScan(), 5),
+      progressWriter: () => {},
+      drainWaits: markers.waits,
+      pollIntervalMs: 0,
+    });
+
+    assertEquals(markers.own(), []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - does not give way to a drain that waits on none of its locks",
+  async () => {
+    let refreshes = 0;
+    const base = Date.now() - 1_000;
+    const markers = fakeDrainWaits(
+      () => [
+        opponentWait({ waitingOn: ["other"], updatedAtMs: base + refreshes++ }),
+      ],
+    );
+
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanTimes(nestedScan(), 5),
+      progressWriter: () => {},
+      drainWaits: markers.waits,
+      pollIntervalMs: 0,
+    });
+
+    assertEquals(markers.published.length, 5);
+    assertEquals(markers.own(), []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - publishes no marker when it skips no lock",
+  async () => {
+    const markers = fakeDrainWaits(() => [opponentWait()]);
+
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: scanTimes({ ...nestedScan(), skippedLockIds: [] }, 3),
+      progressWriter: () => {},
+      drainWaits: markers.waits,
+      pollIntervalMs: 0,
+    });
+
+    assertEquals(markers.published, []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - withdraws its marker once it no longer skips a lock",
+  async () => {
+    const markers = fakeDrainWaits(() => []);
+    const scans = [
+      nestedScan(),
+      { ...nestedScan(), skippedLockIds: [] },
+      { ...nestedScan(), skippedLockIds: [] },
+    ];
+    let calls = 0;
+    const ownAfterEachScan: number[] = [];
+
+    await waitForPerModelLocks("/unused/datastore/path", undefined, {
+      findModelLocks: () => {
+        ownAfterEachScan.push(markers.own().length);
+        return Promise.resolve(scans[calls++] ?? heldCount(0));
+      },
+      progressWriter: () => {},
+      drainWaits: markers.waits,
+      pollIntervalMs: 0,
+    });
+
+    // Published after the first scan, withdrawn after the second.
+    assertEquals(ownAfterEachScan, [0, 1, 0, 0]);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - removes its marker when the wait times out",
+  async () => {
+    const markers = fakeDrainWaits(() => []);
+
+    await withMockedEnv(
+      { SWAMP_LOCK_TIMEOUT_MS: "20" },
+      () =>
+        assertRejects(
+          () =>
+            waitForPerModelLocks("/unused/datastore/path", undefined, {
+              findModelLocks: () => Promise.resolve(nestedScan()),
+              progressWriter: () => {},
+              drainWaits: markers.waits,
+              pollIntervalMs: 1,
+            }),
+          LockTimeoutError,
+        ),
+    );
+
+    assertEquals(markers.published.length > 0, true);
+    assertEquals(markers.own(), []);
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - keeps waiting when the markers cannot be written or read",
+  async () => {
+    // An opponent this drain would give way to, if it could use markers.
+    let refreshes = 0;
+    const base = Date.now() - 1_000;
+    const opponent = () => [opponentWait({ updatedAtMs: base + refreshes++ })];
+    const cases: Array<
+      { broken: Partial<DrainWaits>; others: () => DrainWait[] }
+    > = [
+      {
+        broken: { publish: () => Promise.reject(new Error("read-only")) },
+        others: opponent,
+      },
+      {
+        broken: { list: () => Promise.reject(new Error("unreadable")) },
+        others: opponent,
+      },
+      {
+        broken: { remove: () => Promise.reject(new Error("busy")) },
+        others: () => [],
+      },
+    ];
+    for (const { broken, others } of cases) {
+      const markers = fakeDrainWaits(others);
+
+      await waitForPerModelLocks("/unused/datastore/path", undefined, {
+        findModelLocks: scanTimes(nestedScan(), 3),
+        progressWriter: () => {},
+        drainWaits: { ...markers.waits, ...broken },
+        pollIntervalMs: 0,
+      });
+    }
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - a nested drain publishes the locks it skips and waits on, and removes the marker",
+  async () => {
+    await withTempDir(async (dir) => {
+      await writeModelLock(dir, "step-a-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-a",
+      });
+      await writeModelLock(dir, "step-b-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-b",
+      });
+      const siblingLock = join(
+        dir,
+        "data",
+        "command-shell",
+        "step-b-model",
+        ".lock",
+      );
+      const store = new DrainWaitStore(dir);
+      const onDisk: DrainWait[] = [];
+
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: "22222:run-a",
+        },
+        () =>
+          waitForPerModelLocks(dir, undefined, {
+            pollIntervalMs: 0,
+            progressWriter: () => {},
+            drainWaits: {
+              publish: (wait) => store.publish(wait),
+              // The sibling step ends once the marker has been read back.
+              list: async (nowMs) => {
+                const waits = await store.list(nowMs);
+                onDisk.push(...waits);
+                await Deno.remove(siblingLock);
+                return waits;
+              },
+              remove: (id) => store.remove(id),
+            },
+          }),
+      );
+
+      assertEquals(onDisk.length, 1);
+      assertEquals(onDisk[0].skipping, ["run-a"]);
+      assertEquals(onDisk[0].waitingOn, ["run-b"]);
+      assertEquals(onDisk[0].pid, Deno.pid);
+      const left: string[] = [];
+      for await (const entry of Deno.readDir(join(dir, DRAIN_WAITS_DIR))) {
+        left.push(entry.name);
+      }
+      assertEquals(left, []);
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - a lock skipped on the pid alone is not published as held for this drain",
+  async () => {
+    await withTempDir(async (dir) => {
+      // The parent handed down no lock list, so its lock is skipped on the
+      // pid. It may be held for another run and released first, so it must
+      // not let another drain conclude the two wait on each other.
+      await writeModelLock(dir, "parent-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-a",
+      });
+      await writeModelLock(dir, "unrelated-model", {
+        pid: 33333,
+        ttlMs: 30_000,
+        nonce: "other",
+      });
+      const markers = fakeDrainWaits(() => [
+        opponentWait({ skipping: ["other"], waitingOn: ["run-a"] }),
+      ]);
+      const messages: string[] = [];
+
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: undefined,
+        },
+        () =>
+          waitForPerModelLocks(dir, undefined, {
+            pollIntervalMs: 0,
+            drainWaits: markers.waits,
+            // The unrelated run ends once this drain has begun to wait.
+            progressWriter: (message) => {
+              if (messages.push(message) === 1) {
+                Deno.removeSync(
+                  join(
+                    dir,
+                    "data",
+                    "command-shell",
+                    "unrelated-model",
+                    ".lock",
+                  ),
+                );
+              }
+            },
+          }),
+      );
+
+      assertEquals(messages.length, 2);
+      assertEquals(markers.published, []);
+    });
   },
 );
 

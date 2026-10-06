@@ -158,7 +158,11 @@ for (
       let bundles = 0;
       const prepareDeps: ExtensionPushPrepareDeps = {
         loadCredentials: () => Promise.resolve(null),
-        fetchCollectives: () => Promise.resolve(["public-collective"]),
+        fetchCollectives: () =>
+          Promise.resolve({
+            collectives: ["public-collective"],
+            entitlements: undefined,
+          }),
         extractContentMetadata: () =>
           Promise.resolve({
             models: [],

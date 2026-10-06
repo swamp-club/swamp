@@ -64,10 +64,19 @@ key. Private intent is sent on both initiation and confirmation. Public or
 default intent omits the wire field, since the registry accepts only explicit
 private. Preview and dry-run show the requested `visibility` as `public`,
 `private` or `default` (registry decides); public is labelled as registry-default
-behavior. Dry-run does not establish entitlement or the applied visibility.
-Successful output reports the actual `public`/`private` visibility from the
-confirmation response. Explicit private requests require a private confirmation
-and never fall back to a best-effort lookup.
+behavior. Dry-run does not establish the applied visibility; private intent adds
+the private-entitlement registry check described below. Successful output
+reports the actual `public`/`private` visibility from the confirmation response.
+Explicit private requests require a private confirmation and never fall back to
+a best-effort lookup.
+
+A private publication the registry refuses on entitlement (its 403) is reported
+as the registry's own sentence followed by what the registry had reported for
+the collective at sign-in: its plan, as the registry labels it, and its trial
+standing. The note is a report, not a diagnosis, and it names no plan the
+registry did not send; when the registry reported no entitlement, it says so.
+Nothing about plan or trial is written to disk: entitlement is read from the
+push's own whoami call and held for that push only.
 
 The upgraded registry creates explicit-private extensions as private from the
 start, even inside public collectives, and enforces namespace permissions and
@@ -110,22 +119,41 @@ the archive bytes and checksum stay the same.
 `swamp extension push manifest.yaml --channel beta` to beta. With no
 `--channel` flag, push goes to stable.
 
-Before uploading, push runs four registry checks: authentication, collective
+Before uploading, push runs the registry checks: authentication, collective
 membership, reserved collective (`@swamp`, `@si` need the registry's own word
-on membership) and version exists. The version check asks the versions
-endpoint for every channel, because a version is unique across them. A
-rejected key fails authentication; it never falls back to the username.
+on membership), private entitlement when the intent is private, and version
+exists. The version check asks the versions endpoint for every channel, because
+a version is unique across them. A rejected key fails authentication; it never
+falls back to the username.
+
+Private entitlement is decided from the `collectiveEntitlements` the same
+whoami call returns (Lab #1544), never from a cached plan. A paid plan passes,
+naming the plan; a free plan with an active trial passes, naming the trial. A
+free plan whose trial has ended fails with the message the push throws:
+`Collective "@acme" is on the Free plan and its trial ended on 2026-08-19.
+Private publication requires a paid plan; upgrade at <registry>/o/acme/billing.`
+Everything else is `not-run` with cause `entitlement-undecided` and leaves the
+push to the registry's decision: a free plan with no trial, because the
+registry's own gate may start the collective's trial at publish, and a registry
+that reports no entitlement at all (an older server). Collective tokens have no
+trial door on the registry, so a token's private push into a free collective
+with no trial reads undecided here and is refused at publish, where the refusal
+explains itself. The check is omitted for a collective that is not the caller's
+(membership is the message that matters) and never runs for public or default
+intent.
 
 ### Dry run
 
-A green dry run means a green push. `--dry-run` runs the same four registry
-checks read-only when credentials are present and reports each verdict with
-the wording the real push fails with; a failed check exits non-zero, after the
+A green dry run means a green push. `--dry-run` runs the same registry checks
+read-only when credentials are present and reports each verdict with the
+wording the real push fails with; a failed check exits non-zero, after the
 summary. Without credentials the summary lists each check it could not run and
 why, and the run stays green: the registry was never asked. A check the
 registry was asked about but did not answer also exits non-zero: the dry run
-cannot confirm what the push needs, so it does not claim green. A dry run
-never prompts and never writes to the registry.
+cannot confirm what the push needs, so it does not claim green. An undecided
+private-entitlement check leaves the run green too: the registry answered, and
+the push lets it decide. A dry run never prompts and never writes to the
+registry.
 
 The dry-run summary lists every HTTP call the run made (the registry for
 whoami, the versions list and the drift lookup; OSV and npm for the
@@ -613,6 +641,14 @@ After bundling, `rewriteZodImports` rewrites each externalized zod import to
 `globalThis.__swamp_zod`, which `installZodGlobal()` sets at runtime. The
 rewrite matches `npm:zod@4.x` and bare `"zod"` but excludes zod 3.x, to avoid
 silent runtime breakage.
+
+The rewrite applies to import declarations only. The bundle is parsed to find
+them, so the same text inside a string, template literal, comment or regex
+literal — the output of an extension that generates TypeScript, say — is left
+byte-identical. A bundle that holds zod import text but cannot be parsed is
+rejected with a `bundle_parse_failed` error naming the extension, rather than
+rewritten by guesswork — the cause is either a damaged cached bundle or syntax
+the parser does not support. The zod 3.x check is scoped the same way.
 
 #### Runtime bundle caching
 

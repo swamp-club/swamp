@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { parse, type ParserPlugin } from "@babel/parser";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve } from "@std/path";
@@ -46,15 +47,6 @@ export function installZodGlobal(): void {
   }
 }
 
-/**
- * Rewrites externalized Zod imports in a bundle to reference `globalThis.__swamp_zod`.
- *
- * Handles:
- * - Named imports: `import { z } from "npm:zod@4"` → `const { z } = globalThis.__swamp_zod;`
- * - Aliased imports: `import { z as z2 } from "npm:zod"` → `const { z: z2 } = globalThis.__swamp_zod;`
- * - Star imports: `import * as zod from "npm:zod@4"` → `const zod = globalThis.__swamp_zod;`
- * - Already-rewritten lines are left untouched (idempotent).
- */
 /**
  * Converts a Uint8Array to a base64 string without blowing the call stack.
  *
@@ -110,58 +102,188 @@ export function sanitizeDataUrlError(error: unknown): string {
   );
 }
 
+// Syntax esbuild can leave in a bundle that Babel does not parse by default.
+const BUNDLE_PARSER_PLUGINS: ParserPlugin[] = [
+  "importAttributes",
+  "explicitResourceManagement",
+  "decorators",
+  "decoratorAutoAccessors",
+  "sourcePhaseImports",
+  "deferredImportEvaluation",
+];
+
+/** One import declaration in a bundle: its text span and its specifier. */
+interface ImportDeclarationSpan {
+  start: number;
+  end: number;
+  specifier: string;
+}
+
+/**
+ * Finds the import declarations of a bundle by parsing it, so import text
+ * inside a string, template literal, comment or regex literal is never
+ * reported (swamp-club#3072 — an extension that generates TypeScript carries
+ * such text as data). Import declarations are only legal at the top level of
+ * a module, so `program.body` is the whole search space.
+ *
+ * Throws when the bundle does not parse. Callers reach this only after a text
+ * match, and without a parse there is no telling a real import from generated
+ * text — guessing either way silently breaks the extension.
+ *
+ * @param origin - The bundle or source path, named in the error when known.
+ *   The error says "the extension at", so either kind of path reads right.
+ */
+function findImportDeclarations(
+  js: string,
+  origin?: string,
+): ImportDeclarationSpan[] {
+  let body;
+  try {
+    body = parse(js, {
+      sourceType: "module",
+      plugins: BUNDLE_PARSER_PLUGINS,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      allowUndeclaredExports: true,
+      allowNewTargetOutsideFunction: true,
+      allowSuperOutsideMethod: true,
+      errorRecovery: true,
+    }).program.body;
+  } catch (error) {
+    // Syntax errors, and stack overflow on extreme nesting.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw markErrorPaths(
+      new UserError(
+        `Cannot load the extension${origin ? ` at ${origin}` : ""}: its ` +
+          `bundle holds text that looks like a zod import, and swamp could ` +
+          `not parse the bundle to tell a real import from generated text ` +
+          `(${reason}). A cached bundle may be damaged — delete it so swamp ` +
+          `rebuilds it from the extension source, or pull the extension ` +
+          `again. If the error remains, the extension uses syntax swamp's ` +
+          `bundle parser does not support: report it with ` +
+          `\`swamp issue bug\` and include this message.`,
+        "bundle_parse_failed",
+      ),
+      [origin],
+    );
+  }
+
+  const spans: ImportDeclarationSpan[] = [];
+  for (const node of body) {
+    if (node.type !== "ImportDeclaration") continue;
+    if (typeof node.start !== "number" || typeof node.end !== "number") {
+      continue;
+    }
+    spans.push({
+      start: node.start,
+      end: node.end,
+      specifier: node.source.value,
+    });
+  }
+  return spans;
+}
+
+const ZOD_V3_IMPORT_RE =
+  /import\s+(?:\{[^}]+\}|\*\s+as\s+\w+)\s+from\s*["'](?:npm:)?zod@3[^"']*["']/;
+
 /**
  * Detects Zod v3 imports in bundled JS and throws with upgrade guidance.
  * Swamp ships Zod v4 — extensions using v3 will have broken schema
- * introspection and should upgrade.
+ * introspection and should upgrade. Only import declarations count: zod v3
+ * import text inside a string or template literal is the extension's data.
  */
-export function rejectZodV3Imports(js: string): void {
-  const v3Pattern =
-    /import\s+(?:\{[^}]+\}|\*\s+as\s+\w+)\s+from\s*["'](?:npm:)?zod@3[^"']*["']/;
-  const match = v3Pattern.exec(js);
-  if (match) {
-    throw new UserError(
-      `Extension imports Zod v3 (${match[0].trim()}). ` +
-        `Swamp requires Zod v4 — update your zod dependency to v4 and ` +
-        `rebuild. See https://zod.dev/v4 for migration guidance.`,
-    );
+export function rejectZodV3Imports(js: string, origin?: string): void {
+  if (!ZOD_V3_IMPORT_RE.test(js)) return;
+  for (const { start, end } of findImportDeclarations(js, origin)) {
+    const match = ZOD_V3_IMPORT_RE.exec(js.slice(start, end));
+    if (match) {
+      throw new UserError(
+        `Extension imports Zod v3 (${match[0].trim()}). ` +
+          `Swamp requires Zod v4 — update your zod dependency to v4 and ` +
+          `rebuild. See https://zod.dev/v4 for migration guidance.`,
+      );
+    }
   }
 }
 
-export function rewriteZodImports(js: string): string {
-  // Match: import { ... } from "npm:zod...", "zod", or 'zod'
-  // Handles both npm: prefixed specifiers (existing extensions) and
-  // bare "zod" specifiers (when externalized via deno.json import map).
-  // Only matches zod 4.x or unversioned — zod 3.x is detected separately
-  // at bundle-creation time via rejectZodV3Imports (not here, because
-  // rewriteZodImports is also called at runtime on cached bundles).
-  const namedImportPattern =
-    /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
-  js = js.replace(namedImportPattern, (_match, imports: string) => {
-    // Convert `z as z2` to `z: z2` for destructuring syntax
-    const destructured = imports
-      .split(",")
-      .map((s: string) => {
-        const parts = s.trim().split(/\s+as\s+/);
-        if (parts.length === 2) {
-          return `${parts[0].trim()}: ${parts[1].trim()}`;
-        }
-        return parts[0].trim();
-      })
-      .filter((s: string) => s.length > 0)
-      .join(", ");
-    return `const { ${destructured} } = globalThis.__swamp_zod;`;
-  });
+// Match: import { ... } from "npm:zod...", "zod", or 'zod'
+// Handles both npm: prefixed specifiers (existing extensions) and
+// bare "zod" specifiers (when externalized via deno.json import map).
+// Only matches zod 4.x or unversioned — zod 3.x is detected separately
+// at bundle-creation time via rejectZodV3Imports (not here, because
+// rewriteZodImports is also called at runtime on cached bundles).
+const ZOD_NAMED_IMPORT_RE =
+  /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
 
-  // Match: import * as <name> from "npm:zod..." or "zod"
-  // Only matches zod 4.x or unversioned.
-  const starImportPattern =
-    /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
-  js = js.replace(starImportPattern, (_match, name: string) => {
-    return `const ${name} = globalThis.__swamp_zod;`;
-  });
+// Match: import * as <name> from "npm:zod..." or "zod"
+// Only matches zod 4.x or unversioned.
+const ZOD_STAR_IMPORT_RE =
+  /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
 
-  return js;
+const ZOD_SPECIFIER_RE = /^(?:npm:)?zod(?:@4.*)?$/;
+
+/** Rewrites the text of one zod import declaration. */
+function rewriteZodImportDeclaration(declaration: string): string {
+  return declaration
+    .replace(ZOD_NAMED_IMPORT_RE, (_match, imports: string) => {
+      // Convert `z as z2` to `z: z2` for destructuring syntax
+      const destructured = imports
+        .split(",")
+        .map((s: string) => {
+          const parts = s.trim().split(/\s+as\s+/);
+          if (parts.length === 2) {
+            return `${parts[0].trim()}: ${parts[1].trim()}`;
+          }
+          return parts[0].trim();
+        })
+        .filter((s: string) => s.length > 0)
+        .join(", ");
+      return `const { ${destructured} } = globalThis.__swamp_zod;`;
+    })
+    .replace(ZOD_STAR_IMPORT_RE, (_match, name: string) => {
+      return `const ${name} = globalThis.__swamp_zod;`;
+    });
+}
+
+/**
+ * Rewrites externalized Zod imports in a bundle to reference `globalThis.__swamp_zod`.
+ *
+ * Handles:
+ * - Named imports: `import { z } from "npm:zod@4"` → `const { z } = globalThis.__swamp_zod;`
+ * - Aliased imports: `import { z as z2 } from "npm:zod"` → `const { z: z2 } = globalThis.__swamp_zod;`
+ * - Star imports: `import * as zod from "npm:zod@4"` → `const zod = globalThis.__swamp_zod;`
+ * - Already-rewritten lines are left untouched (idempotent).
+ *
+ * Only import declarations are rewritten. The same text inside a string,
+ * template literal, comment or regex literal is left byte-identical.
+ *
+ * Throws when the bundle holds zod import text but does not parse.
+ *
+ * @param origin - The bundle or source path, named in that error when known
+ */
+export function rewriteZodImports(js: string, origin?: string): string {
+  // Loaders call this on every cached bundle, nearly all of them already
+  // rewritten — skip the parse unless there is something that could match.
+  if (
+    js.search(ZOD_NAMED_IMPORT_RE) === -1 &&
+    js.search(ZOD_STAR_IMPORT_RE) === -1
+  ) {
+    return js;
+  }
+
+  const parts: string[] = [];
+  let cursor = 0;
+  for (
+    const { start, end, specifier } of findImportDeclarations(js, origin)
+  ) {
+    if (!ZOD_SPECIFIER_RE.test(specifier)) continue;
+    parts.push(js.slice(cursor, start));
+    parts.push(rewriteZodImportDeclaration(js.slice(start, end)));
+    cursor = end;
+  }
+  if (cursor === 0) return js;
+  parts.push(js.slice(cursor));
+  return parts.join("");
 }
 
 /** Options for controlling bundle output. */
@@ -710,8 +832,8 @@ export async function bundleExtension(
     // Rewrite externalized zod imports to use globalThis.__swamp_zod
     // so extensions share swamp's Zod instance in the compiled binary.
     if (!options?.selfContained) {
-      rejectZodV3Imports(js);
-      js = rewriteZodImports(js);
+      rejectZodV3Imports(js, absolutePath);
+      js = rewriteZodImports(js, absolutePath);
     }
 
     logger.debug`Bundled ${absolutePath} (${js.length} bytes)`;

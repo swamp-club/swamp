@@ -373,8 +373,18 @@ sent identifier only when the event audits the same kind of resource: a
 resolved resource.
 
 Direct type execution (`model.method.run` with a type and a definition name)
-and the name vaults are authorized under authorize differently today;
-swamp-club#2672 and #2676 track them.
+acts on the definition `definitionName` names, which a request may set apart
+from `modelIdOrName`. That definition is authorized too, by its canonical name
+and fields (or, before it exists, by the name to be created with the named
+type), after the requested model and the type; it is the one locked, recorded
+for cancel and attach, and audited. The run is handed that definition's id and
+fails if the name resolves to anything else by then (renamed in, or deleted).
+The exception is a name no definition had at the check: if a concurrent run
+created it since, the run adopts it when the caller may run that definition,
+judged the same way (swamp-club#2672). Because
+a direct run can rewrite an existing definition's global arguments, it takes
+that definition's model lock whatever the method's kind. The
+name vaults are authorized under is tracked by swamp-club#2676.
 
 Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
 `integration/serve_id_deny_conformance_test.ts`, which covers every request
@@ -669,6 +679,100 @@ overly broad grants.
 **Direct model method calls through serve** (`model.method.run`) are authorized
 on their own against `model:<name>`. The workflow exemption covers only model
 calls the workflow engine makes internally.
+
+Because a run delegates to whoever wrote the workflow, the writer is held to
+what the workflow runs. A served `workflow.edit` that adds a step needs `run`
+on the step's model (with the type, and `admin` for a restricted or
+control-plane type, as a direct run needs) or on its nested workflow. A guard
+or assert that calls `model.method("<model>", "<method>")` runs that method, so
+it is held to the same check; `model` used any other way (aliased with
+`cel.bind`, wrapped in `dyn()`) may run any model and needs `admin`. A model target computed by an expression can
+resolve to any model, restricted and control-plane ones included, which the
+engine does not gate, so it needs `admin`; a computed nested workflow needs
+`run` on every workflow. Steps already stored are not re-checked, and neither
+is a run, so users running a workflow an admin wrote are unaffected. An edit
+that changes the workflow's inputs or a step's `forEach` re-checks stored
+computed targets that read `inputs` or `self`, since those are what can
+retarget them; a retag or any other edit does not. Such a target placed in a
+step that did not hold it is checked there, since that step's `forEach` may
+differ.
+
+## Expression references
+
+Expressions can read beyond the model they belong to: other models' data
+(`data.*`, `model.<name>.resource`, `file.contents`), other models'
+definitions (`model.<name>.input`), and the process environment (`env`). Over
+serve they are evaluated in the server process, so serve authorizes expression
+text against the principal who supplies it, when they supply it
+(swamp-club#2755, swamp-club#2786). Implementation:
+`src/domain/expressions/expression_references.ts` (what an expression reads,
+from the AST evaluation parses) and
+`src/serve/handlers/expression_reference_authorization.ts`.
+
+| Supplied by                        | Checked                                                      |
+| ---------------------------------- | ------------------------------------------------------------ |
+| `model.create`                     | every expression in its global arguments                     |
+| `model.edit`, `workflow.edit`      | each expression it puts somewhere new (see below)            |
+| `model.method.run` inputs          | every expression in the inputs                               |
+| runs, evaluate, validate           | nothing: stored content is the author's                      |
+
+- **Data.** A reference to a named model needs `read` on the data it can
+  return: every current owner of records stored under that name, and every
+  definition with that name or id; deny wins. A name nothing owns yet needs
+  `read` on all data, since it will read whatever is stored under it later.
+- **What an edit puts somewhere new.** An edit is checked for every
+  expression whose text is new, every stored expression it moves or copies to
+  a path where it was not, and every expression in a workflow step whose
+  target it changed, since where an expression sits decides where its value
+  goes. An expression left in place, under an unchanged step, is not
+  re-checked. Steps are identified by job and step name, so adding, removing
+  or reordering other steps does not count as moving them. A reference whose model
+  is computed, a cross-model accessor (`data.query`, `data.findByTag`), the
+  `model` map used whole or with a computed key, a `ns:` or `*:` prefix, more
+  than 32 named models, or text the analyzer cannot parse needs `read` on all
+  data, so any data deny refuses it. A target computed from `self` counts too:
+  `data.latest(self.name, ...)` is judged as reading any data. A definition
+  lookup that fails refuses the reference.
+- **Definitions.** `model.<name>.input` and `.definition` need `read` on the
+  model.
+- **env.** Reading the server's environment is an author's capability: a
+  writer holds `write` on the model, so env is allowed on the write paths. In
+  run inputs it needs `write` on the model run; a run-only caller is refused
+  and told to reference env in the definition. `evaluate` and `validate` never
+  resolve env, which is resolved only when a method runs.
+- **Retargeting.** A stored expression that reads data through a target
+  computed from `self` or `inputs` is re-checked when an edit could point it
+  elsewhere: a model edit that changes its name, version, tags, global
+  arguments or inputs (expression text included, since global-argument
+  expressions are evaluated before `self.globalArguments` is read), a workflow
+  edit that changes its inputs or a step's `forEach`, or an edit that places
+  the same text somewhere it was not, where `self` may differ. So an edit
+  that changes `target: ${{ "dev-db" }}` to `${{ "prod-db" }}` under
+  `data.latest(self.globalArguments.target, ...)` is refused. This covers
+  edits only: a run can still override global arguments (see below).
+- **Refusals** name the expression as sent, with the same wording whether the
+  target exists or is denied, and are audited like other denials. Auth mode
+  `none` and admins are not checked, as everywhere else.
+
+What this does not cover, by design:
+
+- An author's computed target lets runners choose the model:
+  `data.latest(inputs.target, ...)` in a stored definition reads whatever model
+  a run passes as a plain input, and a target taken from another model's data
+  (or from `steps.*` or `run.*`) follows whoever writes that data. That is the
+  author's choice; avoid caller-controlled targets where the runner should not
+  pick the model.
+- Global arguments a run can override are the runner's choice. A workflow
+  step's `globalArgs`, and a direct-type run's inputs, replace a model's
+  global arguments for that run, and a direct run also saves them to the
+  definition. Both need only `run`. A stored reference computed from
+  `self.globalArguments` therefore reads whatever model the runner names, like
+  one computed from `inputs`. Don't compute a data target from a global
+  argument when runners shouldn't choose the model.
+- The check runs when text is saved. Expressions stored before this check
+  existed are not re-checked.
+- `vault.get` in run inputs is masked in output but its value reaches the
+  method; vault authorization is swamp-club#2676.
 
 ## The can-i request
 

@@ -28,6 +28,7 @@
  */
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { RemoteLockHolder } from "../datastore/lock_holder_marker.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
@@ -78,6 +79,11 @@ export interface RemoteStepRequest {
   unresolvedMethodArgs?: Record<string, unknown>;
   /** The step's vault secret bag entries. */
   secretBag?: SecretBagEntry[];
+  /**
+   * The per-model locks this process holds for the step, so a swamp the
+   * step starts on a same-host worker skips them.
+   */
+  lockHolder?: RemoteLockHolder;
   /**
    * Bypass the scheduler and dispatch directly to the targeted worker.
    * Only used by the fleet verification probe, which must reach workers

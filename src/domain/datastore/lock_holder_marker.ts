@@ -54,6 +54,30 @@ export const SWAMP_LOCK_HOLDER_TOKENS = "SWAMP_LOCK_HOLDER_TOKENS";
 /** The most ancestors kept in the chain; the newest are kept. */
 export const MAX_LOCK_ANCESTORS = 64;
 
+/** What a lock-file nonce may contain; anything else is dropped. */
+export const LOCK_NONCE_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * The per-model locks an orchestrator holds for a run it dispatches to a
+ * remote worker: its pid, its hostname, and those locks' lock-file nonces.
+ * A worker on the same host is not a descendant of the orchestrator, so it
+ * declares the orchestrator an ancestor of the dispatch runner from this
+ * (see {@link withRemoteLockHolder}).
+ */
+export interface RemoteLockHolder {
+  readonly pid: number;
+  readonly hostname: string;
+  readonly lockIds: readonly string[];
+}
+
+/**
+ * The longest {@link SWAMP_LOCK_HOLDER_TOKENS} value a swamp forwards to a
+ * server, and the longest a server accepts (see
+ * {@link LockHolderMarker.forwardedLockTokens}). The format caps the pids
+ * but not the nonces listed for each; this leaves room for several hundred.
+ */
+export const MAX_FORWARDED_LOCK_TOKENS_LENGTH = 16_384;
+
 /** The slice of `Deno.env` that {@link LockHolderMarker} reads and writes. */
 export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
 
@@ -93,12 +117,17 @@ interface Inherited {
  * concurrent lock holders in one process (parallel workflow steps,
  * `swamp serve` runs) cannot clear it under each other. Which locks belong
  * to which run is per execution instead: {@link runHolding} scopes it, and
- * {@link childLockEnv} hands it to one spawned swamp.
+ * {@link childLockEnv} hands it to one spawned swamp. A run requested from
+ * a server crosses no process boundary to inherit through, so the client
+ * sends {@link forwardedLockTokens} and the server runs it under
+ * {@link runAdopting}.
  */
 export class LockHolderMarker {
   #inherited: Inherited | undefined;
   #holding = false;
   readonly #held = new AsyncLocalStorage<readonly string[]>();
+  /** Each lock nonce a {@link runHolding} scope is open for, with a count. */
+  readonly #live = new Map<string, number>();
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -162,9 +191,79 @@ export class LockHolderMarker {
    * Pass an empty list for work that holds no lock, so its children still
    * wait on every lock this process holds.
    */
-  runHolding<T>(lockIds: readonly string[], fn: () => Promise<T>): Promise<T> {
+  async runHolding<T>(
+    lockIds: readonly string[],
+    fn: () => Promise<T>,
+  ): Promise<T> {
     const outer = this.#held.getStore() ?? [];
-    return this.#held.run([...new Set([...outer, ...lockIds])], fn);
+    const own = [...new Set(lockIds)];
+    for (const id of own) {
+      this.#live.set(id, (this.#live.get(id) ?? 0) + 1);
+    }
+    try {
+      return await this.#held.run([...new Set([...outer, ...own])], fn);
+    } finally {
+      for (const id of own) {
+        const count = (this.#live.get(id) ?? 1) - 1;
+        if (count > 0) {
+          this.#live.set(id, count);
+        } else {
+          this.#live.delete(id);
+        }
+      }
+    }
+  }
+
+  /**
+   * The lock list to send with a run requested from a server: what
+   * {@link childLockEnv} would hand a child. When the server is a swamp
+   * above this process, it can then tell the run's own children about the
+   * locks it holds for the run that started this process, which they cannot
+   * inherit through the request (see {@link runAdopting}). Undefined when
+   * there is nothing to send, or when the list is longer than
+   * {@link MAX_FORWARDED_LOCK_TOKENS_LENGTH}: the server would refuse the
+   * request, so the run goes without it.
+   */
+  forwardedLockTokens(): string | undefined {
+    const value = this.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS];
+    if (
+      value === undefined || value.length > MAX_FORWARDED_LOCK_TOKENS_LENGTH
+    ) {
+      return undefined;
+    }
+    return value;
+  }
+
+  /**
+   * Runs `fn`, a run a client requested, as also holding the locks named in
+   * the lock list the client forwarded (see {@link forwardedLockTokens}).
+   * The list is untrusted: only the entry for this process's own pid counts,
+   * and of its nonces only those a {@link runHolding} scope is open for now,
+   * so a client can name no lock this process does not hold. Such a client is
+   * below the run holding them, which is waiting on it. With no such nonce
+   * `fn` runs as called, in no new scope.
+   *
+   * A run that outlives the request (a detached one) keeps the nonces after
+   * the calling step releases its lock. That is harmless: every acquisition
+   * writes a new nonce, so a stale one matches no lock file.
+   */
+  runAdopting<T>(
+    forwarded: string | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (
+      forwarded === undefined ||
+      forwarded.length > MAX_FORWARDED_LOCK_TOKENS_LENGTH
+    ) {
+      return fn();
+    }
+    const adopted = [...(parseTokens(forwarded).get(this.pid) ?? [])]
+      .filter((nonce) => this.#live.has(nonce));
+    if (adopted.length === 0) {
+      return fn();
+    }
+    const outer = this.#held.getStore() ?? [];
+    return this.#held.run([...new Set([...outer, ...adopted])], fn);
   }
 
   /**
@@ -187,6 +286,19 @@ export class LockHolderMarker {
       return {};
     }
     return { [SWAMP_LOCK_HOLDER_TOKENS]: formatTokens(entries) };
+  }
+
+  /**
+   * The locks held by the {@link runHolding} scope this is called from, for
+   * a run about to be dispatched to a remote worker. Undefined outside any
+   * scope and when the scope holds no lock, so nothing is handed over.
+   */
+  remoteLockHolder(): RemoteLockHolder | undefined {
+    const held = this.#held.getStore();
+    if (held === undefined || held.length === 0) {
+      return undefined;
+    }
+    return { pid: this.pid, hostname: this.host(), lockIds: [...held] };
   }
 
   /**
@@ -225,6 +337,23 @@ export class LockHolderMarker {
   }
 
   /**
+   * The nonces of the locks the swamps above this process named as held for
+   * the run that started it. A lock skipped on the pid alone is not among
+   * them: nothing says its holder keeps it until this process exits.
+   */
+  inheritedLockIds(): ReadonlySet<string> {
+    const inherited = this.#inheritedOrLive();
+    const pids = new Set(inheritedChain(inherited, this.pid));
+    const lockIds = new Set<string>();
+    for (const [pid, nonces] of parseTokens(inherited.tokens)) {
+      if (pids.has(pid)) {
+        for (const nonce of nonces) lockIds.add(nonce);
+      }
+    }
+    return lockIds;
+  }
+
+  /**
    * What this process inherited. Before {@link publish} (an embedder or a
    * unit test) this reads the live env.
    */
@@ -239,6 +368,53 @@ export class LockHolderMarker {
       tokens: this.env.get(SWAMP_LOCK_HOLDER_TOKENS),
     };
   }
+}
+
+/**
+ * The env for a dispatch runner on `host`, with the orchestrator that holds
+ * `holder`'s locks declared an ancestor: its pid goes at the front of
+ * {@link SWAMP_LOCK_ANCESTOR_PIDS} and its locks into
+ * {@link SWAMP_LOCK_HOLDER_TOKENS}, so a swamp the dispatched step starts
+ * skips those locks and no other lock the orchestrator holds.
+ *
+ * Returns `env` unchanged when the orchestrator is on another host, or when
+ * the holder carries no usable pid or nonce. `holder` arrives over the
+ * network, so it is checked here as well as by the dispatch schema; the pid
+ * is never added without its tokens entry, which would match every lock the
+ * orchestrator holds.
+ */
+export function withRemoteLockHolder(
+  env: Record<string, string>,
+  holder: RemoteLockHolder | undefined,
+  host: string,
+): Record<string, string> {
+  if (holder === undefined || holder.hostname !== host) {
+    return env;
+  }
+  const pid = parsePid(String(holder.pid));
+  const nonces = holder.lockIds.filter((id) => LOCK_NONCE_PATTERN.test(id));
+  if (pid === undefined || nonces.length === 0) {
+    return env;
+  }
+  const chain = (env[SWAMP_LOCK_ANCESTOR_PIDS] ?? "").split(",")
+    .map(parsePid)
+    .filter((entry): entry is number => entry !== undefined && entry !== pid);
+  const tokens = parseTokens(env[SWAMP_LOCK_HOLDER_TOKENS]);
+  const listed = tokens.get(pid) ?? new Set<string>();
+  for (const nonce of nonces) {
+    listed.add(nonce);
+  }
+  // Re-inserted last, so the cap leaves it in the env built here. The
+  // runner's own entry goes after it; past the cap the chain drops this pid
+  // no later than the tokens do, and the lock is then waited on.
+  tokens.delete(pid);
+  tokens.set(pid, listed);
+  return {
+    ...env,
+    [SWAMP_LOCK_ANCESTOR_PIDS]: [pid, ...chain.slice(-(MAX_LOCK_ANCESTORS - 1))]
+      .join(","),
+    [SWAMP_LOCK_HOLDER_TOKENS]: formatTokens(tokens),
+  };
 }
 
 /**
@@ -280,7 +456,7 @@ function parseTokens(value: string | undefined): Map<number, Set<string>> {
     }
     const nonces = entries.get(pid) ?? new Set<string>();
     for (const nonce of entry.slice(separator + 1).split("+")) {
-      if (/^[A-Za-z0-9-]+$/.test(nonce)) {
+      if (LOCK_NONCE_PATTERN.test(nonce)) {
         nonces.add(nonce);
       }
     }
@@ -308,3 +484,18 @@ function parsePid(value: string): number | undefined {
 
 /** The process-wide instance, published once by the CLI at startup. */
 export const processLockHolderMarker: LockHolderMarker = new LockHolderMarker();
+
+/**
+ * Runs `fn`, a run a `--server` client requested, as also holding the locks
+ * in the lock list the client forwarded, so a swamp the run starts skips the
+ * lock of the step that called in (design/enablers/datastores.md,
+ * "Parent-Process Lock Awareness"). Wrap the whole request, so the run's own
+ * scope and any detached launch nest under it. A step run inside it must
+ * name its locks: `createStepLockHook` does.
+ */
+export function runAdoptingForwardedLocks<T>(
+  lockHolderTokens: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return processLockHolderMarker.runAdopting(lockHolderTokens, fn);
+}

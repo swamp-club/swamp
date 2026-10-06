@@ -107,3 +107,41 @@ Deno.test("method runs under per-model locks are scoped with runUnderModelLocks"
       "the consumption of its events",
   );
 });
+
+/**
+ * Files that run a client's request as also holding the locks the client
+ * forwarded. Each must name the locks of every step it runs inside that
+ * scope: a step whose lock hook leaves them out runs in the adopted scope
+ * instead of outside any, so its nested swamp waits on the step's own lock.
+ * `createStepLockHook` names them (src/serve/deps_test.ts pins that), and
+ * serve_deps_rules_test.ts pins that serve's workflow runs use it.
+ */
+const ADOPTERS = ["src/serve/connection.ts"];
+
+Deno.test("only serve's request dispatch adopts a client's forwarded lock list", async () => {
+  const wrapperCallers: string[] = [];
+  const markerCallers: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    const site = repoRelative(filePath);
+    if (callCount(source, "runAdoptingForwardedLocks") > 0) {
+      wrapperCallers.push(site);
+    }
+    if (callCount(source, "runAdopting") > 0) markerCallers.push(site);
+  }
+
+  assertPinnedSet(
+    wrapperCallers.sort(),
+    ADOPTERS,
+    "files that run a request under a forwarded lock list",
+    "A new adopter must name the locks of every step it runs inside the " +
+      "adopted scope (swamp-club#2982), then be added to ADOPTERS.",
+  );
+  assertPinnedSet(
+    markerCallers.sort(),
+    ["src/domain/datastore/lock_holder_marker.ts"],
+    "files that call LockHolderMarker.runAdopting directly",
+    "Adopt through runAdoptingForwardedLocks, in the same file, so the " +
+      "adopters stay pinned.",
+  );
+});

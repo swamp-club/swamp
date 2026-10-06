@@ -176,6 +176,64 @@ Deno.test("DispatchParamsSchema: a schema without the bag fields keeps the resol
   assertEquals(parsed.execution.methodArgs, { run: "echo s3cret" });
 });
 
+const minimalDispatch = {
+  dispatchId: "d-1",
+  leaseId: "l-1",
+  execution: {
+    protocolVersion: 1,
+    modelType: "@acme/widget",
+    modelId: "m-1",
+    methodName: "create",
+    globalArgs: {},
+    methodArgs: {},
+    definitionMeta: { id: "m-1", name: "widget", version: 2, tags: {} },
+  },
+  bundleFingerprint: "fp-abc",
+  environmentSnapshot: {},
+};
+
+Deno.test("DispatchParamsSchema: lockHolder is optional and round-trips", () => {
+  assertEquals(
+    DispatchParamsSchema.parse(minimalDispatch).lockHolder,
+    undefined,
+  );
+
+  const lockHolder = {
+    pid: 4242,
+    hostname: "host-a",
+    lockIds: ["9cf79ed4-d94e-4a4c-b309-b38348ced5a5"],
+  };
+  const parsed = DispatchParamsSchema.parse(
+    JSON.parse(JSON.stringify({ ...minimalDispatch, lockHolder })),
+  );
+  assertEquals(parsed.lockHolder, lockHolder);
+});
+
+Deno.test("DispatchParamsSchema: rejects a lockHolder that could forge env entries", () => {
+  const valid = { pid: 4242, hostname: "host-a", lockIds: ["nonce-a"] };
+  for (
+    const lockHolder of [
+      { ...valid, pid: 0 },
+      { ...valid, pid: -1 },
+      { ...valid, pid: 1.5 },
+      { ...valid, pid: "4242" },
+      { ...valid, hostname: "" },
+      { ...valid, hostname: "h".repeat(256) },
+      { ...valid, lockIds: ["a,1:b"] },
+      { ...valid, lockIds: ["a+b"] },
+      { ...valid, lockIds: [""] },
+      { ...valid, lockIds: ["n".repeat(129)] },
+      { ...valid, lockIds: Array.from({ length: 257 }, () => "nonce-a") },
+    ]
+  ) {
+    assertEquals(
+      DispatchParamsSchema.safeParse({ ...minimalDispatch, lockHolder })
+        .success,
+      false,
+    );
+  }
+});
+
 Deno.test("DispatchResultSchema: accepts success with persisted outputs", () => {
   const parsed = DispatchResultSchema.parse({
     status: "success",

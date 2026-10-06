@@ -21,6 +21,7 @@ import type { DeferredExpression } from "../../domain/expressions/deferred_expre
 import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import { selectLookup } from "../lookup_by_id.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
@@ -284,6 +285,20 @@ export interface ModelMethodRunInput {
   typeArg?: string;
   /** Definition name for direct type execution (separate from modelIdOrName). */
   definitionName?: string;
+  /**
+   * With `definitionName`, the id of the definition the caller authorized,
+   * or null when it authorized a name no definition had.
+   */
+  expectedDefinitionId?: string | null;
+  /**
+   * Called when `expectedDefinitionId` is null (no definition had the name)
+   * and a concurrent run has since created one. The run proceeds on it only
+   * if this allows it, so the caller authorizes what actually runs
+   * (swamp-club#2672).
+   */
+  authorizeResolvedDefinition?: (
+    found: { definition: Definition; type: ModelType },
+  ) => boolean;
   runtimeTags?: Record<string, string>;
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
@@ -395,7 +410,31 @@ export async function* modelMethodRun(
 
             const result = await resolveOrCreateDefinition(
               {
-                lookupDefinition: deps.lookupDefinition,
+                lookupDefinition: input.expectedDefinitionId === undefined
+                  ? deps.lookupDefinition
+                  : async (name) => {
+                    const found = await deps.lookupDefinition(name);
+                    // Only a definition created since a check that found
+                    // none (a concurrent run) may be adopted, if the caller
+                    // may run it: creation is serialized by the
+                    // auto-definition lock. One renamed in or deleted since
+                    // is refused, since the lock held is not its lock and
+                    // what would be created was never authorized.
+                    const adoptable = input.expectedDefinitionId === null &&
+                      found !== null &&
+                      input.authorizeResolvedDefinition?.(found) === true;
+                    if (
+                      (found?.definition.id ?? null) !==
+                        input.expectedDefinitionId &&
+                      !adoptable
+                    ) {
+                      throw new UserError(
+                        `Model ${name} changed while the request was being ` +
+                          `authorized; run it again`,
+                      );
+                    }
+                    return found;
+                  },
                 getModelDef: deps.getModelDef,
                 saveDefinition: deps.createAndSaveDefinition,
                 getDefinitionPath: deps.getDefinitionPath,

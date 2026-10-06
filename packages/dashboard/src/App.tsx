@@ -60,13 +60,13 @@ export function App() {
 }
 
 function AppShell() {
-  const { connected, token, authMode, logout } = useSwamp();
+  const { connected, token, authMode, sessionReady, logout } = useSwamp();
 
-  if (authMode === null) {
+  if (authMode === null || !sessionReady) {
     return <div className="loading">Connecting...</div>;
   }
 
-  if (authMode !== "none" && !token) {
+  if (authMode !== "none" && token === null) {
     return <Login />;
   }
 

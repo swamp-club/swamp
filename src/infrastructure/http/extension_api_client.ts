@@ -38,6 +38,15 @@ import {
 
 export type { ClientIdentity };
 
+/**
+ * Error codes a 403 from the registry carries, so callers can tell a refusal
+ * apart from other failures without matching the server's prose. A token
+ * missing a scope is `token_scope`; any other refusal (namespace, explicit
+ * private publication the collective is not entitled to) is `forbidden`.
+ */
+export const REGISTRY_FORBIDDEN_CODE = "forbidden";
+export const REGISTRY_TOKEN_SCOPE_CODE = "token_scope";
+
 /** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
   name: string;
@@ -813,9 +822,10 @@ export class ExtensionApiClient {
           `Token lacks required scope '${
             scopeMatch[1]
           }'. Create a new token with this scope in your collective settings.`,
+          REGISTRY_TOKEN_SCOPE_CODE,
         );
       }
-      throw new UserError(serverMessage);
+      throw new UserError(serverMessage, REGISTRY_FORBIDDEN_CODE);
     }
 
     if (res.status === 409) {

@@ -113,6 +113,13 @@ export interface DeviceAuthDeps {
   readonly sourceIp?: string;
 }
 
+/** Route and response customizations for a browser-specific device flow. */
+export interface DeviceAuthRoutes {
+  readonly startPath: string;
+  readonly tokenPath: string;
+  readonly onAuthenticated?: (token: string) => Promise<Response>;
+}
+
 function emitAuthAuditEvent(
   deps: DeviceAuthDeps,
   action: string,
@@ -165,21 +172,25 @@ function jsonResponse(
 export async function handleDeviceAuth(
   req: Request,
   deps: DeviceAuthDeps,
+  routes: DeviceAuthRoutes = {
+    startPath: "/auth/device",
+    tokenPath: "/auth/device/token",
+  },
 ): Promise<Response | null> {
   const url = new URL(req.url);
 
-  if (url.pathname === "/auth/device") {
+  if (url.pathname === routes.startPath) {
     if (req.method !== "POST") {
       return jsonResponse(405, { error: "Method not allowed" });
     }
     return await handleStartDeviceGrant(deps);
   }
 
-  if (url.pathname === "/auth/device/token") {
+  if (url.pathname === routes.tokenPath) {
     if (req.method !== "POST") {
       return jsonResponse(405, { error: "Method not allowed" });
     }
-    return await handleDeviceToken(req, deps);
+    return await handleDeviceToken(req, deps, routes.onAuthenticated);
   }
 
   return null;
@@ -225,6 +236,7 @@ async function handleStartDeviceGrant(
 async function handleDeviceToken(
   req: Request,
   deps: DeviceAuthDeps,
+  onAuthenticated?: (token: string) => Promise<Response>,
 ): Promise<Response> {
   let body: Record<string, unknown>;
   try {
@@ -345,6 +357,7 @@ async function handleDeviceToken(
       undefined,
       tokenName,
     );
+    if (onAuthenticated) return await onAuthenticated(token);
     return jsonResponse(200, {
       token,
       principal: {

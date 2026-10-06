@@ -2017,7 +2017,8 @@ clears the first two from its own env:
   Until then it keeps the value it inherited, so through a swamp that takes
   no locks (e.g. a read-only `model method run`) it still names the real lock
   holder.
-- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never in the process env:
+- `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never written to a swamp's
+  own process env (a dispatch runner is started with one, below):
   comma-separated `<pid>:<nonce>+<nonce>` entries naming, for each swamp
   above the child, the per-model locks it holds for the run that started the
   child. A nonce is the one each lock file already records. The shell model
@@ -2032,6 +2033,39 @@ clears the first two from its own env:
   (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
   `runModel()` and other in-process nesting carry the outer run's locks.
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
+
+A run requested through `--server` crosses no process boundary to inherit
+through. When a step of a run hosted by `swamp serve` runs
+`swamp model method run --server` (or `workflow run` / `workflow resume`) back
+into the same serve, the requested run starts in a request handler, outside
+the step's scope, so on its own it would tell its children only about its own
+locks and they would wait on the step's (swamp-club#2982). Instead the client
+sends the list it would hand a child (`forwardedLockTokens()`) as
+`lockHolderTokens` in the `workflow.run`, `model.method.run` and
+`workflow.resume` payloads (`src/cli/remote_run.ts`), and serve runs each of
+those requests inside `runAdoptingForwardedLocks` at its dispatch site in
+`src/serve/connection.ts`, under which the run's and its steps' own scopes
+nest.
+
+The forwarded list is untrusted. `LockHolderMarker.runAdopting` uses only the
+entry for its own pid, and of its nonces only those a `runHolding` scope is
+open for at that moment, so a client can name no lock serve does not hold and
+a list stops working once the calling step ends. Nothing else is adopted; with
+no usable nonce the request runs as before. This gives a client no more than
+it has: a shell method's explicit env already overrides
+`SWAMP_LOCK_HOLDER_TOKENS` for its child. The client cannot tell a loopback
+from a remote server, so the pids and lock nonces above it reach any server it
+runs against. A list longer than `MAX_FORWARDED_LOCK_TOKENS_LENGTH`
+(16,384 characters, also the schema's limit) is not sent, and that request runs
+as before. Older clients send nothing and older servers drop the field.
+
+A process that adopts must name the locks of every step it runs inside the
+adopted scope: a step whose hook leaves out `heldLockIds` would run in the
+adopted scope rather than outside any, and its nested swamp would wait on the
+step's own lock. Serve is the only adopter
+(`integration/model_lock_scope_rules_test.ts`) and takes every step lock
+through `createStepLockHook`, which names them
+(`integration/serve_deps_rules_test.ts`, `src/serve/deps_test.ts`).
 
 Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file when its `pid` is one of those
@@ -2056,20 +2090,50 @@ process holds for its other runs instead of racing their in-flight writes.
 When that wait times out, the `LockTimeoutError` names the locks held for an
 ancestor's other runs and says why.
 
+A step dispatched to a remote worker runs while the orchestrator holds its
+lock, and a worker is not a descendant of the orchestrator, so ancestry alone
+would leave a nested structural swamp on a same-host worker waiting on its own
+step's lock (swamp-club#2983). The dispatch carries the lock holder instead.
+When the orchestrator builds the request for a remote step
+(`method_execution_service.ts`), `LockHolderMarker.remoteLockHolder()` reads
+the `runHolding` scope and returns the orchestrator's pid, its hostname and
+the nonces of the locks held for that run. Nothing is sent when the run holds
+no lock. It travels as the optional `lockHolder` field of `DispatchParams`.
+The worker passes it to `withRemoteLockHolder` when it builds the dispatch
+runner's env (`buildRunnerEnvironment`, `src/worker/dispatch_handler.ts`).
+If the hostname is the worker's own, the orchestrator's pid goes at the front
+of the runner's `SWAMP_LOCK_ANCESTOR_PIDS` and its nonces into
+`SWAMP_LOCK_HOLDER_TOKENS`. The runner and the shell model then hand both
+down as they would an inherited chain. The pid is never added without its
+tokens entry, so the nested swamp skips the dispatched step's locks and waits
+on every other lock the orchestrator holds. The field arrives over the
+network: the dispatch schema bounds it and `withRemoteLockHolder` checks the
+pid and nonces again, dropping anything malformed. If the orchestrator
+releases the step's lock while the runner's child is still running, the nonce
+matches no lock file and nothing is skipped.
+
 Known limits of the run-level match:
 
 - Two parallel steps or runs that each start a nested structural command
   (e.g. `swamp data gc`) wait on each other: each holds its step lock until
-  its child exits. Both fail at `SWAMP_LOCK_TIMEOUT_MS`. Run such commands
-  one at a time or in a step of their own (fail-fast detection:
-  swamp-club#2981).
-- A step that calls back into the same `swamp serve` with `--server` starts
-  a server-side run in a new scope. A nested structural swamp under that run
-  waits on the calling step's lock, which process ancestry cannot connect
-  across the WebSocket (swamp-club#2982).
-- A step dispatched to a remote worker on the same host runs while serve
-  holds its lock, and the worker is not a descendant of serve, so a nested
-  structural swamp there waits on its own step's lock (swamp-club#2983).
+  its child exits. One of them fails within a few seconds instead of both
+  failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
+  run such commands one at a time or in a step of their own.
+- A `--server` call adopts only the locks of the serve it calls. A nested
+  structural swamp under the requested run still waits on the lock of a swamp
+  that is not above it: a local `swamp workflow run` between the calling step
+  and the `--server` client, or the caller itself when `--server` names a
+  different swamp process sharing the datastore. Skipping those would mean
+  trusting pids a client supplied.
+- A step dispatched to a remote worker on another host that shares the
+  datastore (e.g. over NFS) runs while serve holds its lock. The hand-off
+  above is for a worker on serve's own host, so a nested structural swamp
+  there waits on its own step's lock.
+- The dispatch hand-off names only the locks the orchestrator itself holds
+  for the step. Locks held by a swamp above the orchestrator (a
+  `swamp workflow run` whose shell step started the orchestrating swamp) are
+  not passed on, so a nested structural swamp on the worker still waits on
+  those.
 - A child left running in the background after its ancestors exit can skip a
   lock taken by an unrelated process that reused an ancestor's pid on this
   host.
@@ -2100,9 +2164,84 @@ it that holds locks, as before this change:
   matches every ancestor on the pid alone. Neither waits on a lock it skipped
   before.
 
+- A worker that predates `lockHolder` ignores the field, and an orchestrator
+  that predates it never sends it. A nested swamp on that worker waits on its
+  step's lock, as before.
+
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
 default).
+
+#### Drain-Wait Markers
+
+Nested structural commands can wait on each other with no way out. Each skips
+the lock its own run holds and waits on the other run's lock, and each run
+keeps its lock until its nested command exits. The same happens between two
+separate top-level runs. Left alone, both fail at `SWAMP_LOCK_TIMEOUT_MS`.
+
+A drain that has to wait therefore says so (swamp-club#2981). While
+`waitForPerModelLocks` waits, it keeps a **drain wait** on disk: a small JSON
+marker at `{namespace}/drain-waits/{id}.json` under the datastore root
+(`DrainWaitStore`, `src/infrastructure/persistence/drain_wait_store.ts`). The
+directory is outside `data/`, so the lock scan never sees it. The marker
+(`DrainWait`, `src/domain/datastore/drain_wait.ts`) lists, by lock-file nonce:
+
+- `skipping`: the live locks the drain skips because an ancestor named them
+  in `SWAMP_LOCK_HOLDER_TOKENS`, which are held until this drain's process
+  exits. A lock skipped on the pid alone is left out: it may be held for
+  another run and released first, so it proves no cycle;
+- `waitingOn`: the live locks it waits on.
+
+It also carries the drain's pid, hostname, start time, last refresh and a
+10-second ttl. The drain rewrites it on every poll and removes it when the
+wait ends, however it ends. A drain that skips no lock, or waits on none with
+a nonce, cannot be part of a cycle and publishes nothing, so a structural
+command run on its own does no marker I/O.
+
+Two drains are **mutually waiting** when each waits on a lock the other
+skips. On every poll a drain reads the other markers and asks
+`drainToYieldTo`:
+
+- Unexpired waits are ordered by start time, then id, and taken in order. A
+  drain **yields** when it is mutually waiting with an earlier drain that is
+  not itself yielding. Every drain that sees the same markers reaches the same
+  answer, so of a group that all wait on each other exactly one keeps
+  waiting.
+- A drain that skips every lock the other skips, because it runs deeper inside
+  the same run, is not waited on by the other and is never failed for it.
+- A drain yields only after it has seen the same opponent on two polls in a
+  row with the opponent's marker refreshed in between. A marker can be a poll
+  old, and a killed drain never refreshes, so neither can fail a drain that
+  was about to proceed.
+
+The yielding drain throws `LockWaitCycleError` (`distributed_lock.ts`), a
+`UserError` with code `lock_wait_cycle`. It is not a `LockTimeoutError`: it
+exits 1, not 75, and `swamp serve` does not mark it retryable. Retrying while
+the run that started the command still holds its lock meets the same wait and
+yields again. The error names the other process and the locks waited on.
+
+The drain that stays keeps waiting, and proceeds when the yielding command's
+run ends and releases its lock. Limits:
+
+- If the yielding command's step ignores the failure and keeps running, its
+  lock stays held and the other drain still times out.
+- A drain running an older swamp publishes no marker, so a cycle that includes
+  one ends at the timeout, as before.
+- A drain whose ancestors handed down no lock list (a step lock hook that
+  names no locks, a spawn outside any scope) skips on the pid alone, lists
+  nothing in `skipping` and publishes no marker.
+- A scan that takes close to the 10-second ttl, on a very large datastore,
+  lets markers expire between refreshes, so no cycle is confirmed.
+- Custom datastore locks are not scanned by the drain and are not covered.
+- Reading or writing a marker can fail (a read-only directory, a file held
+  open on Windows). The failure is logged at debug and the drain waits as if
+  markers did not exist.
+
+Markers are read from a directory other processes write, so `parseDrainWait`
+rejects anything malformed or oversized, a marker must be named after its own
+id, and a listing reads at most 256 entries. A listing also deletes files that
+are not live markers and have not been written for a full ttl, which clears
+what a killed drain left behind.
 
 ### Lock Breakglass
 

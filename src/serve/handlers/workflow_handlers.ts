@@ -199,6 +199,18 @@ import {
   unresolvedAccessResource,
   workflowAccessResource,
 } from "./resource_resolution.ts";
+import { expressionsAddedByEdit } from "../../domain/expressions/expression_references.ts";
+import {
+  analyzeWorkflowExpressions,
+  isComputedStepTarget,
+  readsSelfOrInputs,
+  stepRetargetSourcesChanged,
+  type StepTarget,
+  stepTargetKey,
+  workflowStepTargets,
+} from "../../domain/workflows/step_targets.ts";
+import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
+import { authorizeStepTargets } from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -233,6 +245,78 @@ function resolveWorkflowRequest(
     ctx.repoContext.workflowRepo,
     idOrName,
     workflowsDirFor(ctx.repoDir),
+  );
+}
+
+/**
+ * The refusal for a workflow edit, or undefined when the writer may add
+ * everything it adds: expressions that read only what they may read, and
+ * steps that run only what they may run. A change to the workflow's inputs
+ * or a step's forEach re-checks computed targets that read `inputs` or
+ * `self`, since those are what can retarget them.
+ */
+async function authorizeWorkflowEdit(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+  before: Workflow,
+  after: Workflow,
+): Promise<string | undefined> {
+  // A workflow's inputs.* and self.* come from its input defaults and its
+  // steps' forEach, so only a change there can retarget what is stored.
+  const retargetable = stepRetargetSourcesChanged(before, after);
+  // A step now running a different target sends its inputs somewhere new,
+  // so every expression in it is checked again.
+  const storedAt = new Map(
+    workflowStepTargets(before).map((t) => [t.location, stepTargetKey(t)]),
+  );
+  const retargetedSteps = workflowStepTargets(after)
+    .filter((t) => storedAt.get(t.location) !== stepTargetKey(t))
+    .flatMap((t) => (t.location ? [t.location] : []));
+  const added = expressionsAddedByEdit(
+    analyzeWorkflowExpressions(before),
+    analyzeWorkflowExpressions(after),
+    retargetable,
+    retargetedSteps,
+  );
+  const refusal = await authorizeExpressionReferences(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    added,
+    "allowed",
+  );
+  if (refusal) return refusal.message;
+  const stored = new Set(workflowStepTargets(before).map(stepTargetKey));
+  // A guard or assert that calls model.method runs that method as a step
+  // does, so it is held to the same check.
+  const expressionRuns: StepTarget[] = added.flatMap(({ references }) =>
+    references.runTargets.map(({ model, method }) => ({
+      kind: "model" as const,
+      modelIdOrName: model,
+      methodName: method,
+    }))
+  );
+  return await authorizeStepTargets(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    [
+      ...workflowStepTargets(after).filter((target) =>
+        !stored.has(stepTargetKey(target)) ||
+        (retargetable && isComputedStepTarget(target) &&
+          readsSelfOrInputs(target))
+      ),
+      ...expressionRuns,
+    ],
+    ((computed) =>
+      computed && {
+        raw: computed.raw,
+        unanalyzable: computed.references.unanalyzable,
+      })(added.find(({ references }) => references.runsComputed)),
   );
 }
 
@@ -2190,6 +2274,21 @@ export async function handleWorkflowEdit(
                 name: after.name,
                 fields: workflowAccessFields(after),
               }, ctx).allowed,
+            // The expressions and steps the edit adds are authorized against
+            // this writer; those already stored are not (swamp-club#2755).
+            authorizeContent: async (before, after) => {
+              const refusal = await authorizeWorkflowEdit(
+                socket,
+                requestId,
+                principal,
+                ctx,
+                before,
+                after,
+              );
+              if (refusal === undefined) return true;
+              sendError(socket, requestId, "unauthorized", refusal);
+              return false;
+            },
           }),
           {
             resolving: () => {},

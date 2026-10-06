@@ -46,6 +46,43 @@ export interface ShellSecretResolution {
    * because no environment reference can expand where it sits.
    */
   dataInCommandLine: boolean;
+  /**
+   * vault.get() sentinels with an occurrence inside single quotes, where
+   * the reference stays a literal; each sentinel listed once.
+   */
+  singleQuoted: string[];
+}
+
+/**
+ * The quote context a vault.get() reference is chosen by, read from the
+ * POSIX shell context of its occurrence. In a here-document body, quotes
+ * are text, so only the quote characters earlier on the same line count,
+ * and a reference there is never reported as single-quoted.
+ */
+function posixVaultQuote(
+  command: string,
+  position: number,
+  context: ShellContext,
+): QuoteContext {
+  switch (context) {
+    case "double":
+      return "double";
+    case "single":
+    case "ansi-c":
+      return "single";
+    case "heredoc":
+    case "heredoc-literal": {
+      const line = command.slice(
+        command.lastIndexOf("\n", position - 1) + 1,
+        position,
+      );
+      return getQuoteContext(line, line.length) === "double"
+        ? "double"
+        : "unquoted";
+    }
+    default:
+      return "unquoted";
+  }
 }
 
 /**
@@ -287,26 +324,6 @@ export class VaultSecretBag {
   }
 
   /**
-   * Returns sentinel tokens that appear inside single quotes in the given
-   * command string. Single quotes prevent shell variable expansion, so an
-   * env-var reference injected inside single quotes will be treated as a
-   * literal string instead of being expanded to the secret value.
-   */
-  findSingleQuotedSentinels(command: string): string[] {
-    const found: string[] = [];
-    for (const sentinel of this.secrets.keys()) {
-      // Data-origin sentinels are placed per occurrence and never land
-      // unexpanded inside single quotes.
-      if (this.dataOrigin.has(sentinel)) continue;
-      const pos = command.indexOf(sentinel);
-      if (pos !== -1 && getQuoteContext(command, pos) === "single") {
-        found.push(sentinel);
-      }
-    }
-    return found;
-  }
-
-  /**
    * Replaces all sentinel tokens in a string with their raw secret values.
    * Use this for non-shell contexts where the value should be literal.
    */
@@ -350,11 +367,14 @@ export class VaultSecretBag {
    * Shell variable expansion happens after command parsing, so metacharacters
    * in the secret value are never interpreted as shell syntax.
    *
-   * The replacement is quoting-context-aware:
+   * The replacement is quoting-context-aware, chosen per occurrence from
+   * the shell context scanner (which skips comments and here-documents):
    * - If the sentinel is inside existing double quotes, uses bare `${VAR}`
    *   (the user's quotes already protect against word splitting)
    * - If the sentinel is outside quotes, uses `"${VAR}"` (adds quotes to
    *   prevent word splitting and glob expansion)
+   * - Inside single quotes the reference stays a literal and the sentinel
+   *   is listed in `singleQuoted`
    */
   resolveForShell(
     command: string,
@@ -377,16 +397,17 @@ export class VaultSecretBag {
             return `"\${${envName}}"`;
         }
       },
+      (position, context) => posixVaultQuote(command, position, context),
       (envName, quote) =>
         quote === "double" ? `\${${envName}}` : `"\${${envName}}"`,
     );
   }
 
   /**
-   * Replaces sentinels in a command with references built by the callers:
-   * a vault.get sentinel's reference form is chosen once from its first
-   * occurrence (unchanged behavior); a data-origin sentinel's per
-   * occurrence from its POSIX shell context. A `dataRef` of undefined means
+   * Replaces sentinels in a command with references built by the callers,
+   * per occurrence from the context `classify` gives it: a data-origin
+   * sentinel's by `dataRef`, a vault.get sentinel's by `vaultRef` from the
+   * quote context `vaultQuote` reads there. A `dataRef` of undefined means
    * no reference can expand there, so the raw value is substituted and the
    * result reports that a data value is in the command line.
    */
@@ -394,6 +415,7 @@ export class VaultSecretBag {
     command: string,
     classify: (command: string, positions: number[]) => C[],
     dataRef: (envName: string, context: C) => string | undefined,
+    vaultQuote: (position: number, context: C) => QuoteContext,
     vaultRef: (envName: string, quote: QuoteContext) => string,
   ): ShellSecretResolution {
     const env: Record<string, string> = {};
@@ -406,44 +428,28 @@ export class VaultSecretBag {
         env[envName] = value;
       }
     }
-    if (envNames.size === 0) return { command, env, dataInCommandLine: false };
+    if (envNames.size === 0) {
+      return { command, env, dataInCommandLine: false, singleQuoted: [] };
+    }
 
     const occurrences = [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)]
       .filter((match) => envNames.has(match[0]));
-    const dataOccurrences = occurrences.filter((match) =>
-      this.dataOrigin.has(match[0])
-    );
-    const dataContexts = classify(
+    const contexts = classify(
       command,
-      dataOccurrences.map((match) => match.index ?? 0),
+      occurrences.map((match) => match.index ?? 0),
     );
-    const contextAt = new Map<number, C>();
-    dataOccurrences.forEach((match, i) =>
-      contextAt.set(match.index ?? 0, dataContexts[i])
-    );
-    const vaultRefs = new Map<string, string>();
-    for (const match of occurrences) {
-      const sentinel = match[0];
-      if (this.dataOrigin.has(sentinel) || vaultRefs.has(sentinel)) continue;
-      vaultRefs.set(
-        sentinel,
-        vaultRef(
-          envNames.get(sentinel)!,
-          getQuoteContext(command, match.index ?? 0),
-        ),
-      );
-    }
 
     let dataInCommandLine = false;
+    const singleQuoted = new Set<string>();
     const referenced = new Set<string>();
     let result = "";
     let last = 0;
-    for (const match of occurrences) {
+    occurrences.forEach((match, i) => {
       const sentinel = match[0];
       const start = match.index ?? 0;
       result += command.slice(last, start);
       if (this.dataOrigin.has(sentinel)) {
-        const ref = dataRef(envNames.get(sentinel)!, contextAt.get(start)!);
+        const ref = dataRef(envNames.get(sentinel)!, contexts[i]);
         if (ref === undefined) {
           dataInCommandLine = true;
           result += this.secrets.get(sentinel)!;
@@ -452,17 +458,24 @@ export class VaultSecretBag {
           referenced.add(sentinel);
         }
       } else {
-        result += vaultRefs.get(sentinel)!;
+        const quote = vaultQuote(start, contexts[i]);
+        if (quote === "single") singleQuoted.add(sentinel);
+        result += vaultRef(envNames.get(sentinel)!, quote);
         referenced.add(sentinel);
       }
       last = start + sentinel.length;
-    }
+    });
     result += command.slice(last);
     // A data value substituted raw everywhere needs no environment entry.
     for (const [sentinel, envName] of envNames) {
       if (!referenced.has(sentinel)) delete env[envName];
     }
-    return { command: result, env, dataInCommandLine };
+    return {
+      command: result,
+      env,
+      dataInCommandLine,
+      singleQuoted: [...singleQuoted],
+    };
   }
 
   /**
@@ -474,7 +487,7 @@ export class VaultSecretBag {
    * process environment rather than substituted into the command
    * string, so metacharacters in the value can't be parsed as syntax.
    *
-   * The replacement is quoting-context-aware:
+   * The replacement is quoting-context-aware, chosen per occurrence:
    * - If the sentinel is inside existing double quotes, uses bare
    *   `$env:VAR` — PowerShell interpolates env vars inside double
    *   quotes natively, no extra wrapping needed.
@@ -503,6 +516,7 @@ export class VaultSecretBag {
         // PowerShell has no break-out from a single-quoted string that is
         // safe in every command position, so the value stays in place.
         context === "single" ? undefined : psRef(envName, context),
+      (_position, context) => context,
       psRef,
     );
   }

@@ -49,6 +49,7 @@ import {
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
+import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   gutterLine,
@@ -303,12 +304,27 @@ export function toWebSocketUrl(server: string): string {
   return parsed.href;
 }
 
+/**
+ * Adds the held-lock list this process inherited to a run request. When the
+ * server is the swamp whose step started this process, a nested swamp under
+ * the requested run then skips that step's lock instead of waiting on it
+ * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
+ */
+function withForwardedLocks<P extends { lockHolderTokens?: string }>(
+  payload: P,
+): P {
+  const lockHolderTokens = processLockHolderMarker.forwardedLockTokens();
+  return lockHolderTokens === undefined
+    ? payload
+    : { ...payload, lockHolderTokens };
+}
+
 export function runWorkflowOverServer(
   options: ServerRunOptions & { payload: WorkflowRunPayload },
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   return streamServerRun(options, {
     type: "workflow.run",
-    payload: options.payload,
+    payload: withForwardedLocks(options.payload),
   });
 }
 
@@ -317,7 +333,7 @@ export function runModelMethodOverServer(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   return streamServerRun(options, {
     type: "model.method.run",
-    payload: options.payload,
+    payload: withForwardedLocks(options.payload),
   });
 }
 
@@ -326,7 +342,7 @@ export function resumeWorkflowOverServer(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   return streamServerRun(options, {
     type: "workflow.resume",
-    payload: options.payload,
+    payload: withForwardedLocks(options.payload),
   });
 }
 

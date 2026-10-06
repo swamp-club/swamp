@@ -785,6 +785,7 @@ export const extensionPushCommand = new Command()
         counts: prepared.counts,
         releaseNotes: options.releaseNotes,
         channel: options.channel,
+        collectiveEntitlement: prepared.collectiveEntitlement,
       }),
       renderer.handlers({ accepted, report }),
     );

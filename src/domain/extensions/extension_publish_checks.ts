@@ -20,12 +20,18 @@
 /**
  * Registry-side publish checks.
  *
- * A push is refused by the registry for four reasons the client can know in
+ * A push is refused by the registry for reasons the client can know in
  * advance: the caller is not signed in, the extension's collective is not one
  * of the caller's, the collective is reserved and membership could not be
- * verified, or the version is already published. These rules decide each
- * check's verdict and carry the exact wording a real push fails with, so a
- * dry run reports the same outcome the push would.
+ * verified, the version is already published, or (for a private publication)
+ * the collective's plan does not allow private extensions. These rules decide
+ * each check's verdict and carry the exact wording a real push fails with, so
+ * a dry run reports the same outcome the push would.
+ *
+ * Entitlement is the registry's to decide. The private-entitlement rule only
+ * repeats what the registry reported at sign-in and fails on the one standing
+ * the registry always refuses (a free plan whose trial has ended); every other
+ * standing is reported as the registry's data, never as a prediction.
  */
 
 import { ModelType } from "../models/model_type.ts";
@@ -35,7 +41,8 @@ export type RegistryCheckName =
   | "authentication"
   | "collective-membership"
   | "reserved-collective"
-  | "version-exists";
+  | "version-exists"
+  | "private-entitlement";
 
 /**
  * How a check ended. `not-run` means a prerequisite was missing (no
@@ -45,15 +52,19 @@ export type RegistryCheckName =
 export type RegistryCheckStatus = "passed" | "failed" | "not-run";
 
 /**
- * Why a check could not run. `no-credentials` is the only cause a dry run
- * tolerates: the registry was never asked. The others mean the registry was
- * asked and did not confirm, which a real push would have failed on.
+ * Why a check could not run. `no-credentials` leaves a dry run green: the
+ * registry was never asked. `entitlement-undecided` does too: the registry
+ * answered, but what it reported does not settle private entitlement (it sent
+ * none, or a free plan with no trial, where its own gate may start one), so
+ * the registry decides at publish. The others mean the registry was asked and
+ * did not confirm, which a real push would have failed on.
  */
 export type RegistryCheckNotRunCause =
   | "no-credentials"
   | "authentication-failed"
   | "registry-unavailable"
-  | "membership-unverified";
+  | "membership-unverified"
+  | "entitlement-undecided";
 
 /** One registry check's verdict, in the wording a real push uses. */
 export interface RegistryCheckResult {
@@ -80,6 +91,7 @@ export const REGISTRY_CHECK_LABELS: Record<RegistryCheckName, string> = {
   "collective-membership": "collective membership",
   "reserved-collective": "reserved collective",
   "version-exists": "version exists",
+  "private-entitlement": "private entitlement",
 };
 
 /** The external services a push may call before uploading. */
@@ -212,6 +224,178 @@ export function evaluateCollectiveMembership(
   };
 }
 
+/** A collective's trial clock as the registry reports it. */
+export interface CollectiveTrial {
+  state: "none" | "active" | "expired";
+  /** ISO timestamp, or null when the registry sent none. */
+  endsAt: string | null;
+  daysRemaining: number;
+}
+
+/**
+ * What one collective entitles the caller to, as the registry reported it at
+ * sign-in. Structurally the libswamp whoami entitlement, so the push can hand
+ * it over without the domain importing from the application layer. `plan` is
+ * absent when the registry did not report entitlement for the collective.
+ */
+export interface CollectiveEntitlement {
+  slug: string;
+  plan?: string;
+  planName?: string;
+  trial?: CollectiveTrial | null;
+}
+
+/** Inputs for the private-entitlement check. */
+export interface PrivateEntitlementInput {
+  extensionName: string;
+  /**
+   * Per-collective entitlement as the registry reported it, or `undefined`
+   * when the server sent none (an older or self-hosted swamp-club).
+   */
+  entitlements: CollectiveEntitlement[] | undefined;
+  /** The registry's URL, for the upgrade pointer. */
+  serverUrl: string;
+}
+
+/** The billing page of a collective on the registry at `serverUrl`. */
+export function collectiveBillingUrl(serverUrl: string, slug: string): string {
+  return `${serverUrl.replace(/\/+$/, "")}/o/${slug}/billing`;
+}
+
+const PAID_PLAN_REQUIRED = "Private publication requires a paid plan";
+
+/** The plan as the registry labels it, falling back to its id. */
+function planLabel(entitlement: CollectiveEntitlement): string {
+  return entitlement.planName ?? entitlement.plan ?? "";
+}
+
+/**
+ * The date part of an ISO timestamp, as the registry sent it. Never
+ * recomputed in local time: the registry's trial dates are elapsed-based.
+ */
+function isoDate(timestamp: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.test(timestamp)
+    ? timestamp.slice(0, 10)
+    : timestamp;
+}
+
+function activeTrial(trial: CollectiveTrial): string {
+  const days = trial.daysRemaining === 1
+    ? "1 day left"
+    : `${trial.daysRemaining} days left`;
+  return trial.endsAt
+    ? `an active trial (${days}, ends ${isoDate(trial.endsAt)})`
+    : `an active trial (${days})`;
+}
+
+function endedTrial(trial: CollectiveTrial): string {
+  return trial.endsAt
+    ? `its trial ended on ${isoDate(trial.endsAt)}`
+    : "its trial has ended";
+}
+
+/**
+ * Decides the private-entitlement check from what the registry reported.
+ *
+ * A paid plan passes, as does a free plan with an active trial, each named.
+ * A free plan whose trial has ended fails with the message a real push
+ * throws, naming the collective, its plan and the upgrade page. A free plan
+ * with no trial is undecided: the registry may start the collective's trial
+ * at publish, so the check says the registry decides. No entitlement for the
+ * collective is undecided too, and says the registry did not report it.
+ */
+export function evaluatePrivateEntitlement(
+  input: PrivateEntitlementInput,
+): RegistryCheckResult {
+  const collective = collectiveOf(input.extensionName);
+  const entitlement = input.entitlements?.find((e) => e.slug === collective);
+  const name = "private-entitlement";
+  if (!entitlement || entitlement.plan === undefined) {
+    return registryCheckNotRun(
+      name,
+      "entitlement-undecided",
+      `the registry did not report entitlement for "@${collective}"; private publication is decided at publish`,
+    );
+  }
+  const plan = planLabel(entitlement);
+  if (entitlement.plan !== "free") {
+    return {
+      name,
+      status: "passed",
+      message:
+        `Collective "@${collective}" is on the ${plan} plan, which allows private extensions.`,
+    };
+  }
+  const trial = entitlement.trial ?? undefined;
+  if (trial?.state === "active") {
+    return {
+      name,
+      status: "passed",
+      message: `Collective "@${collective}" is on the ${plan} plan with ${
+        activeTrial(trial)
+      }, which allows private extensions.`,
+    };
+  }
+  if (trial?.state === "expired") {
+    return {
+      name,
+      status: "failed",
+      message: `Collective "@${collective}" is on the ${plan} plan and ${
+        endedTrial(trial)
+      }. ${PAID_PLAN_REQUIRED}; upgrade at ${
+        collectiveBillingUrl(input.serverUrl, collective)
+      }.`,
+    };
+  }
+  return registryCheckNotRun(
+    name,
+    "entitlement-undecided",
+    `Collective "@${collective}" is on the ${plan} plan with no trial reported; the registry decides private publication at publish.`,
+  );
+}
+
+/**
+ * The registry's own refusal of a private publication, followed by what it
+ * reported for the collective at sign-in. The report is stated as a report,
+ * never as the cause: the registry decided, and this says what it had said
+ * about the collective. The upgrade pointer is added only when the registry
+ * reported a free plan without an active trial. Nothing here names a plan the
+ * registry did not send.
+ */
+export function explainPrivatePublishRefusal(
+  serverMessage: string,
+  input: {
+    extensionName: string;
+    entitlement: CollectiveEntitlement | undefined;
+    serverUrl: string;
+  },
+): string {
+  const collective = collectiveOf(input.extensionName);
+  const refusal = /[.!?]$/.test(serverMessage.trim())
+    ? serverMessage.trim()
+    : `${serverMessage.trim()}.`;
+  const entitlement = input.entitlement;
+  if (!entitlement || entitlement.plan === undefined) {
+    return `${refusal} At sign-in the registry did not report entitlement for "@${collective}".`;
+  }
+  const plan = planLabel(entitlement);
+  const trial = entitlement.trial ?? undefined;
+  if (entitlement.plan !== "free") {
+    return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan.`;
+  }
+  if (trial?.state === "active") {
+    return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan with ${
+      activeTrial(trial)
+    }.`;
+  }
+  const standing = trial?.state === "expired"
+    ? `; ${endedTrial(trial)}`
+    : " with no trial reported";
+  return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan${standing}. ${PAID_PLAN_REQUIRED}; upgrade at ${
+    collectiveBillingUrl(input.serverUrl, collective)
+  }.`;
+}
+
 /** A published version as the registry lists it. */
 export interface PublishedVersion {
   version: string;
@@ -257,8 +441,9 @@ export function registryCheckNotRun(
  * Whether a dry run's collected checks let it end green. A failed check
  * ends it with that check's message, the one the push would fail with. A
  * check the registry was asked about but did not answer ends it too, since
- * the push would have stopped there; only checks never asked (no
- * credentials) leave the run green, and the summary says they did not run.
+ * the push would have stopped there; checks never asked (no credentials) and
+ * ones the registry's answer left undecided leave the run green, and the
+ * summary says they did not run.
  */
 export function registryChecksVerdict(
   checks: RegistryCheckResult[],
