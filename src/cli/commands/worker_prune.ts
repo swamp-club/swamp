@@ -27,6 +27,7 @@ import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
@@ -276,7 +277,7 @@ export const workerPruneCommand = withRemoteOptions(
     {
       push: syncService
         ? async () => {
-          if (marked) await syncService.pushChanged({ namespace });
+          if (marked) await pushNamespace(syncService, namespace);
         }
         : undefined,
       pushWhen: "completed",

@@ -75,6 +75,7 @@ import type { AuditPolicy } from "../../domain/serve_audit/audit_policy.ts";
 import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
@@ -120,7 +121,7 @@ export async function pushChangedToRemote(
     ? ctx.datastoreConfig.namespace
     : undefined;
   try {
-    await syncService.pushChanged({ namespace });
+    await pushNamespace(syncService, namespace);
   } catch (pushError) {
     const error = pushError instanceof Error
       ? pushError.message

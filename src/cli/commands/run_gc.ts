@@ -43,6 +43,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
   requestServerResponse,
@@ -119,47 +120,51 @@ export const runGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-  const deps = createRunGcDeps(
-    repoDir,
-    datastoreResolver,
-    repoContext.markDirty,
-  );
-
-  const gcInput = runGcInputFromPolicy(
-    !!options.dryRun,
-    marker?.garbageCollection,
-    retentionDays,
-  );
-
-  if (
-    cliCtx.outputMode === "log" && !options.yes && !options.force &&
-    !options.dryRun
-  ) {
-    const preview = await runGcPreview(ctx, deps, gcInput);
-    if (
-      preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0 &&
-      preview.evaluatedSnapshotsToDelete === 0
-    ) {
-      cliCtx.logger.info("Nothing to clean up.");
-      return;
-    }
-
-    renderRunGcPreview(preview, cliCtx.outputMode);
-    const confirmed = await promptConfirmation(
-      "Proceed with run garbage collection?",
+  // Pushes and releases the global lock when the command ends, as the
+  // teardown flush did (swamp-club#3055).
+  await runInCoordinatorRoot(repoContext, async () => {
+    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
+    const deps = createRunGcDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.markDirty,
     );
-    if (!confirmed) {
-      renderRunGcCancelled(cliCtx.outputMode);
-      return;
-    }
-  }
 
-  const renderer = createRunGcRenderer(cliCtx.outputMode);
-  await consumeStream(
-    runGc(ctx, deps, gcInput),
-    renderer.handlers(),
-  );
+    const gcInput = runGcInputFromPolicy(
+      !!options.dryRun,
+      marker?.garbageCollection,
+      retentionDays,
+    );
+
+    if (
+      cliCtx.outputMode === "log" && !options.yes && !options.force &&
+      !options.dryRun
+    ) {
+      const preview = await runGcPreview(ctx, deps, gcInput);
+      if (
+        preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0 &&
+        preview.evaluatedSnapshotsToDelete === 0
+      ) {
+        cliCtx.logger.info("Nothing to clean up.");
+        return;
+      }
+
+      renderRunGcPreview(preview, cliCtx.outputMode);
+      const confirmed = await promptConfirmation(
+        "Proceed with run garbage collection?",
+      );
+      if (!confirmed) {
+        renderRunGcCancelled(cliCtx.outputMode);
+        return;
+      }
+    }
+
+    const renderer = createRunGcRenderer(cliCtx.outputMode);
+    await consumeStream(
+      runGc(ctx, deps, gcInput),
+      renderer.handlers(),
+    );
+  });
 });
 
 /**

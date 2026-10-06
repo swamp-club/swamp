@@ -98,6 +98,7 @@ import {
   runWithParentTrace,
 } from "../infrastructure/tracing/mod.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
+import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 
 const logger = getSwampLogger(["serve", "deps"]);
 
@@ -572,7 +573,7 @@ export async function executeWorkflowWithLocks(
           try {
             await withSharedSyncGate(
               options.syncGate,
-              () => syncService.pushChanged({ namespace }),
+              () => pushNamespace(syncService, namespace),
             );
           } catch (pushErr) {
             logger.warn(

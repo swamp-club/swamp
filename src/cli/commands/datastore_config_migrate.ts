@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
 import { createContext, resolveRepoDir } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { migrateConfigToDatastore } from "../../domain/datastore/managed_config_migration.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
@@ -127,7 +128,7 @@ export const datastoreConfigMigrateCommand = new Command()
       {
         push: syncService
           ? async () => {
-            if (pushed) await syncService.pushChanged({ namespace });
+            if (pushed) await pushNamespace(syncService, namespace);
           }
           : undefined,
         pushWhen: "completed",

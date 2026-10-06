@@ -31,6 +31,7 @@
 
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -38,6 +39,7 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { getRegisteredLockKeys } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import {
   runInRootUnitOfWork,
@@ -47,6 +49,7 @@ import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { handleMessage } from "../src/serve/connection.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import { RunCancelRegistry } from "../src/serve/run_cancel_registry.ts";
 import { handleWorkflowEdit } from "../src/serve/handlers/workflow_handlers.ts";
 import { startDetachedResume } from "../src/serve/resume_launcher.ts";
 import type { BufferTerminal } from "../src/serve/run_event_buffer.ts";
@@ -802,6 +805,283 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
       "commit[8]",
     ]);
     assertEquals(rootFlushes, [0]);
+  });
+});
+
+/**
+ * Sends one model.method.run and returns what happened, in order: each
+ * reply frame's type (a run of event frames as one `event`), instance A's
+ * pull, push, prepare and commit ops, `release` where a lock release or gate
+ * exit came between them, and `deregister` where the run left the cancel
+ * registry (inline) or the active run registry (detached). Pins where the
+ * model lock's push sits relative to the reply and the run's cleanup
+ * (swamp-club#3055). With `failFirstEvent`, the socket throws on the first
+ * event frame, so the run throws out of the root as a lost connection does.
+ */
+async function methodRunTimeline(
+  repos: Repos,
+  options: {
+    detached: boolean;
+    payload: Record<string, unknown>;
+    failFirstEvent?: boolean;
+  },
+): Promise<string[]> {
+  const cancelRegistry = new RunCancelRegistry();
+  const base = serveCtx(repos);
+  const ctx = {
+    ...base,
+    cancelRegistry,
+    activeRunRegistry: options.detached ? base.activeRunRegistry : undefined,
+  };
+  const timeline: string[] = [];
+  let opsSeen = repos.remote.ops().length;
+  let releasesSeen = repos.releases.length;
+  const note = (entry: string) => {
+    if (entry === "release" && timeline.at(-1) === "release") return;
+    if (entry === "event" && timeline.at(-1) === "event") return;
+    timeline.push(entry);
+  };
+  const catchUp = () => {
+    const ops = repos.remote.ops();
+    for (; opsSeen <= ops.length; opsSeen++) {
+      while (
+        releasesSeen < repos.releases.length &&
+        repos.releases[releasesSeen] <= opsSeen
+      ) {
+        note("release");
+        releasesSeen++;
+      }
+      if (opsSeen === ops.length) break;
+      const op = ops[opsSeen];
+      if (op.instance === "A" && op.op !== "markDirty") note(op.op);
+    }
+  };
+  const deregisterCancel = cancelRegistry.deregister.bind(cancelRegistry);
+  cancelRegistry.deregister = (type, id) => {
+    catchUp();
+    note("deregister");
+    deregisterCancel(type, id);
+  };
+  const runs = ctx.activeRunRegistry;
+  if (runs) {
+    const deregisterRun = runs.deregister.bind(runs);
+    runs.deregister = (runId) => {
+      catchUp();
+      note("deregister");
+      return deregisterRun(runId);
+    };
+  }
+  let failNext = options.failFirstEvent === true;
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send(data: string) {
+      catchUp();
+      const type = JSON.parse(data).type as string;
+      if (type === "event" && failNext) {
+        failNext = false;
+        note("event (send failed)");
+        throw new Error("socket send failed");
+      }
+      note(type);
+    },
+    close() {},
+  };
+  const id = crypto.randomUUID();
+  const active = new Map<string, AbortController>();
+  handleMessage(
+    socket as unknown as WebSocket,
+    ctx,
+    active,
+    new MessageEvent("message", {
+      data: JSON.stringify({
+        id,
+        type: "model.method.run",
+        payload: options.payload,
+      }),
+    }),
+    CALLER,
+  );
+  await waitFor(
+    () =>
+      !active.has(id) && (ctx.activeRunRegistry?.size ?? 0) === 0 &&
+      cancelRegistry.size === 0,
+    "model.method.run finished",
+  );
+  catchUp();
+  return timeline;
+}
+
+const LOCKED_RUN = { modelIdOrName: "m1", methodName: "touch" };
+
+function unlockedRun(repos: Repos) {
+  return {
+    modelIdOrName: "fresh",
+    typeArg: repos.modelType.normalized,
+    definitionName: "fresh",
+    methodName: "noop",
+  };
+}
+
+Deno.test("serve root units: an inline model.method.run with a model lock replies and deregisters before the lock pushes and releases", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, { detached: false, payload: LOCKED_RUN }),
+      [
+        "pull",
+        "release",
+        "event",
+        "done",
+        "deregister",
+        "prepare",
+        "commit",
+        "release",
+      ],
+    );
+  });
+});
+
+Deno.test("serve root units: an inline model.method.run with a model lock that throws replies with its error, then the lock pushes and releases", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, {
+        detached: false,
+        payload: LOCKED_RUN,
+        failFirstEvent: true,
+      }),
+      [
+        "pull",
+        "release",
+        "event (send failed)",
+        "error",
+        "deregister",
+        "prepare",
+        "commit",
+        "release",
+      ],
+    );
+  });
+});
+
+/** Every warning logged under any category while `fn` runs, rendered. */
+async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return captured.map((record) =>
+    record.message.map((part) => String(part)).join("")
+  );
+}
+
+Deno.test("serve root units: an inline model.method.run whose lock push fails has already replied, warns once, and still releases the lock", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    repos.remote.failNext("commit", new Error("injected commit failure"), {
+      instance: "A",
+    });
+    let timeline: string[] = [];
+    const warnings = await captureWarnings(async () => {
+      timeline = await methodRunTimeline(repos, {
+        detached: false,
+        payload: LOCKED_RUN,
+      });
+    });
+    assertEquals(timeline, [
+      "pull",
+      "release",
+      "event",
+      "done",
+      "deregister",
+      "prepare",
+      "release",
+    ]);
+    assertEquals(
+      warnings.filter((warning) =>
+        warning.startsWith("Failed to release locks: ")
+      ).length,
+      1,
+    );
+    assertEquals(
+      warnings.some((warning) => warning.includes("injected commit failure")),
+      true,
+    );
+    assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
+  });
+});
+
+Deno.test("serve root units: an inline model.method.run without a lock replies, pushes, then deregisters", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, {
+        detached: false,
+        payload: unlockedRun(repos),
+      }),
+      ["event", "done", "push", "release", "deregister"],
+    );
+  });
+});
+
+Deno.test("serve root units: an inline model.method.run without a lock that throws replies with its error and pushes nothing", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, {
+        detached: false,
+        payload: unlockedRun(repos),
+        failFirstEvent: true,
+      }),
+      ["event (send failed)", "error", "deregister"],
+    );
+  });
+});
+
+Deno.test("serve root units: a detached model.method.run with a model lock ends its stream before the lock pushes and releases", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, { detached: true, payload: LOCKED_RUN }),
+      [
+        "event",
+        "pull",
+        "release",
+        "event",
+        "done",
+        "prepare",
+        "commit",
+        "release",
+        "deregister",
+      ],
+    );
+  });
+});
+
+Deno.test("serve root units: a detached model.method.run without a lock pushes before it ends its stream", async () => {
+  await withRowRepos({}, async (repos) => {
+    await settle(repos);
+    assertEquals(
+      await methodRunTimeline(repos, {
+        detached: true,
+        payload: unlockedRun(repos),
+      }),
+      ["event", "push", "release", "done", "deregister"],
+    );
   });
 });
 

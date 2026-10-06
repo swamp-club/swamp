@@ -30,25 +30,24 @@ import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_
  * order, never as a bare mark, which would turn the push into a walk of the
  * whole cache (swamp-club#2408, swamp-club#2415).
  *
- * The push runs only once every path was staged. A legacy root also flushes
- * when it is abandoned, but a mark that failed skipped the push before. The
- * mark's error is thrown; so is the push's, and the caller handles both as it
- * did. With no paths it still pushes once.
+ * The push runs only once every path was staged (`pushWhen: "completed"`). A
+ * legacy root also flushes when it is abandoned, but a mark that failed
+ * skipped the push before. The mark's error is thrown; so is the push's, and
+ * the caller handles both as it did. With no paths it still pushes once.
  */
 export async function stageWritesThenPush(
   repoContext: Pick<RepositoryContext, "markDirty">,
   paths: readonly string[],
   options: { flush: () => Promise<unknown> },
 ): Promise<void> {
-  let staged = false;
   await runInRootUnitOfWork(repoContext, {
     flush: async () => {
-      if (staged) await options.flush();
+      await options.flush();
     },
+    pushWhen: "completed",
   }, async (root) => {
     for (const path of paths) {
       await root.stage({ kind: "write", path });
     }
-    staged = true;
   });
 }

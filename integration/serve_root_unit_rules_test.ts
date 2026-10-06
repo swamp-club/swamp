@@ -241,11 +241,20 @@ function rootEntryPoints(sources: ServeSource[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Calls to `pushChangedToRemote`, with any argument, that are not a root's
- * flush. Empty: every serve handler that pushes through it does so as its
- * root's flush.
+ * A call to a serve push path: `pushChangedToRemote`, or the `pushNamespace`
+ * push from `src/infrastructure/persistence/push_paths.ts` (swamp-club#3055).
  */
-const PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS: readonly string[] = [];
+const PUSH_PATH_CALL =
+  /(?<!function )\b(?:pushChangedToRemote|pushNamespace)\(/g;
+
+/**
+ * Push-path calls, with any argument, that are not a root's flush. Every
+ * serve handler pushes as its root's flush; `pushChangedToRemote` is itself
+ * the push path the handlers' flushes call.
+ */
+const PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS: readonly string[] = [
+  "src/serve/handlers/shared.ts: pushChangedToRemote",
+];
 
 /** Serve functions that open a root unit of work. */
 const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
@@ -299,29 +308,17 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/token_secret_migration.ts: createTokenMigrationLockDeps",
 ];
 
-/**
- * `syncService.pushChanged` calls in serve that are not a root's flush, each
- * with the reason it is not one yet.
- */
-const PINNED_SERVE_RAW_PUSHES: readonly string[] = [
-  // The push the converted handlers flush through.
-  "src/serve/handlers/shared.ts: pushChangedToRemote",
-  // Background garbage collection, outside any request.
-  "src/serve/bookkeeping_gc.ts: reapBatch",
-  "src/serve/worker_gc_service.ts: pruneWorkersAndPush",
-];
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 const sources = await serveSources();
 
-Deno.test("serve root units: pushChangedToRemote runs only as a root's flush (swamp-club#3034)", () => {
+Deno.test("serve root units: serve push paths run only as a root's flush (swamp-club#3034, swamp-club#3055)", () => {
   assertPinnedSet(
-    pushesOutsideRoots(sources, /(?<!function )\bpushChangedToRemote\(/g),
+    pushesOutsideRoots(sources, PUSH_PATH_CALL),
     PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS,
-    "Direct pushChangedToRemote calls in serve",
+    "Serve push-path calls outside a root's flush",
     "A serve handler pushes through its request's root unit of work: wrap the\n" +
       "handler's work in runInRootUnitOfWork(ctx.repoContext, { flush: () =>\n" +
       "pushChangedToRemote(ctx) }, ...) instead of calling it directly.",
@@ -336,17 +333,6 @@ Deno.test("serve root units: serve entry points opening a root are pinned (swamp
     "A root opened inside another root for the same hook with its own push\n" +
       "throws. Check the new entry point never runs inside another root, then\n" +
       "add it here.",
-  );
-});
-
-Deno.test("serve root units: raw pushes outside a root are pinned (swamp-club#3034)", () => {
-  assertPinnedSet(
-    pushesOutsideRoots(sources, /\bsyncService[?.]*\.pushChanged\(/g),
-    PINNED_SERVE_RAW_PUSHES,
-    "syncService.pushChanged calls in serve that are not a root's flush",
-    "New serve code pushes as a root unit's flush (runInRootUnitOfWork), not\n" +
-      "by calling pushChanged directly. If it cannot yet, add it here with the\n" +
-      "reason.",
   );
 });
 
@@ -369,8 +355,9 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     "async function stageWritesThenPush(context, paths, options) {}",
     "async function caller() {",
     "  await stageWritesThenPush(ctx.repoContext, [], {",
-    "    flush: () => pushChangedToRemote(ctx),",
+    "    flush: () => pushNamespace(syncService, namespace),",
     "  });",
+    "  await pushNamespace(syncService, namespace);",
     "}",
   ].join("\n");
   const lines = code.split("\n");
@@ -379,10 +366,10 @@ Deno.test("serve root units: the scan tells a root's flush from a push in its bo
     code: maskNonCode(code),
     owners: topLevelOwners(lines),
   };
-  assertEquals(
-    pushesOutsideRoots([probe], /(?<!function )\bpushChangedToRemote\(/g),
-    ["probe.ts: handler"],
-  );
+  assertEquals(pushesOutsideRoots([probe], PUSH_PATH_CALL), [
+    "probe.ts: caller",
+    "probe.ts: handler",
+  ]);
   assertEquals(rootEntryPoints([probe]), [
     "probe.ts: caller",
     "probe.ts: handler",

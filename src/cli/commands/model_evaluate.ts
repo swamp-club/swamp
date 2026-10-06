@@ -29,6 +29,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -102,19 +103,24 @@ export const modelEvaluateCommand = withRemoteOptions(
 
     // If --all flag or no argument, evaluate all definitions (global lock)
     if (options.all || !modelIdOrName) {
-      const { repoDir, datastoreResolver } = await requireInitializedRepo({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
+      const { repoDir, repoContext, datastoreResolver } =
+        await requireInitializedRepo({
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        });
+
+      // Pushes and releases the global lock when the command ends, as the
+      // teardown flush did (swamp-club#3055).
+      await runInCoordinatorRoot(repoContext, async () => {
+        const ctx = createLibSwampContext({ logger: cliCtx.logger });
+        const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
+        const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
+
+        await consumeStream(
+          modelEvaluate(ctx, deps, {}),
+          renderer.handlers(),
+        );
       });
-
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
-      const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
-
-      await consumeStream(
-        modelEvaluate(ctx, deps, {}),
-        renderer.handlers(),
-      );
       return;
     }
 

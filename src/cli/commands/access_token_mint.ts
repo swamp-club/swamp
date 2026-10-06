@@ -29,6 +29,7 @@ import {
   type ModelLockResult,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
@@ -221,7 +222,7 @@ export const accessTokenMintCommand = withRemoteOptions(
         push: modelLocks?.push,
         checkpoint: syncService
           ? async () => {
-            await syncService.pushChanged({ namespace });
+            await pushNamespace(syncService, namespace);
           }
           : undefined,
         release: modelLocks?.release,

@@ -448,7 +448,11 @@ Deno.test("useUnitOfWorkFactoryForTesting: receives the flush, parent and role p
     dispose();
   }
   assertEquals(seen.map((o) => o.role), ["root", "use-case"]);
-  assertStrictEquals(seen[0].flush, push.flush);
+  // The root wraps the caller's push to hand it the outcome; the factory's
+  // flush is that push.
+  assertEquals(push.calls(), 1);
+  await seen[0].flush?.();
+  assertEquals(push.calls(), 2);
   assertStrictEquals(seen[0].parent, undefined);
   assertStrictEquals(seen[1].flush, undefined);
   assertStrictEquals(seen[1].parent, root);
@@ -727,4 +731,113 @@ Deno.test("runInRootUnitOfWork: a failing checkpoint rejects inside fn, the root
   assertStrictEquals(caughtInFn, checkpointError);
   assertStrictEquals(rejected, checkpointError);
   assertEquals(push.calls(), 1);
+});
+
+Deno.test("runInRootUnitOfWork: the flush receives whether fn completed", async () => {
+  const { hook } = recordingHook();
+  const outcomes: boolean[] = [];
+  const flush = (outcome: { completed: boolean }) => {
+    outcomes.push(outcome.completed);
+    return Promise.resolve();
+  };
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush },
+    () => Promise.resolve(),
+  );
+  await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush },
+      () => Promise.reject(new Error("command failed")),
+    )
+  );
+  assertEquals(outcomes, [true, false]);
+});
+
+Deno.test("runInRootUnitOfWork: pushWhen completed flushes once when fn resolves", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: push.flush, pushWhen: "completed" },
+    () => Promise.resolve(),
+  );
+  assertEquals(push.calls(), 1);
+});
+
+Deno.test("runInRootUnitOfWork: pushWhen completed skips the flush when fn throws, and rethrows fn's error", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  const error = new Error("command failed");
+  const rejected = await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush: push.flush, pushWhen: "completed" },
+      () => Promise.reject(error),
+    )
+  );
+  assertStrictEquals(rejected, error);
+  assertEquals(push.calls(), 0);
+});
+
+Deno.test("runInRootUnitOfWork: pushWhen completed skips the flush when fn throws after staging, and the staged marks still reached the hook", async () => {
+  const { hook, calls } = recordingHook();
+  const push = countingFlush();
+  await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush: push.flush, pushWhen: "completed" },
+      async (root) => {
+        await root.stage({ kind: "bulk", reason: "partial" });
+        throw new Error("command failed after a write");
+      },
+    )
+  );
+  assertEquals(push.calls(), 0);
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("runInRootUnitOfWork: pushWhen always flushes on both outcomes", async () => {
+  const { hook } = recordingHook();
+  const push = countingFlush();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: push.flush, pushWhen: "always" },
+    () => Promise.resolve(),
+  );
+  await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush: push.flush, pushWhen: "always" },
+      () => Promise.reject(new Error("command failed")),
+    )
+  );
+  assertEquals(push.calls(), 2);
+});
+
+Deno.test("runInRootUnitOfWork: pushWhen completed leaves checkpoint unaffected", async () => {
+  const { hook } = recordingHook();
+  const pushes: string[] = [];
+  await assertRejects(() =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      {
+        flush: () => {
+          pushes.push("flush");
+          return Promise.resolve();
+        },
+        checkpoint: () => {
+          pushes.push("checkpoint");
+          return Promise.resolve();
+        },
+        pushWhen: "completed",
+      },
+      async (root) => {
+        await root.checkpoint();
+        throw new Error("command failed after its checkpoint");
+      },
+    )
+  );
+  assertEquals(pushes, ["checkpoint"]);
 });

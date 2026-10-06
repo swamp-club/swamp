@@ -258,6 +258,30 @@ async function resolveMethodRunTarget(
 }
 
 /**
+ * Releases a method run's model locks after its root pushed them, warning
+ * once if the push or the release failed. A release error replaces the push
+ * error, as the combined push-then-release in a `finally` did.
+ */
+async function releaseModelLocks(
+  modelLocks: ModelLockResult,
+  pushFailure: { error: unknown } | undefined,
+): Promise<void> {
+  let failure = pushFailure;
+  try {
+    await modelLocks.release();
+  } catch (error) {
+    failure = { error };
+  }
+  if (failure !== undefined) {
+    logger.warn("Failed to release locks: {error}", {
+      error: failure.error instanceof Error
+        ? failure.error.message
+        : String(failure.error),
+    });
+  }
+}
+
+/**
  * Authorizes a method run: admin for a restricted model type, otherwise run
  * on the target model and, for a direct type execution, on the type.
  */
@@ -322,9 +346,13 @@ export async function handleModelMethodRun(
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     // Assigned in the root below, which control flow analysis cannot see.
-    let flushLocks = null as (() => Promise<void>) | null;
-    let modelLocks: ModelLockResult | undefined;
+    let modelLocks = undefined as ModelLockResult | undefined;
     let mutating = true;
+    let lockPushFailure: { error: unknown } | undefined;
+    // The run's error, once it was answered inside the root.
+    let answered = false;
+    let answeredError: unknown;
+    let deregistered = false;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
     const telemetry = createCommandTelemetry(
       {
@@ -333,131 +361,14 @@ export async function handleModelMethodRun(
       },
       initiatedBy,
     );
-    try {
-      const target = await resolveMethodRunTarget(ctx, payload);
-      if (
-        !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
-      ) return;
-      const preResult = target.definition;
-
-      // The root pushes once the run completed, unless a model lock's
-      // flush owns the push; that flush stays outside the root
-      // (swamp-club#3035).
-      let ran = false;
-      await runInRootUnitOfWork(
-        ctx.repoContext,
-        {
-          flush: () =>
-            ran && !flushLocks && mutating
-              ? withSharedSyncGate(
-                ctx.syncGate,
-                () =>
-                  pushChangedToRemote(ctx, {
-                    onError: (error) =>
-                      logger.warn(
-                        "Failed to push changes to remote datastore: {error}",
-                        { error },
-                      ),
-                  }),
-              )
-              : Promise.resolve(),
-        },
-        async () => {
-          if (preResult) {
-            mutating = await isMethodMutating(
-              preResult.type.normalized,
-              payload.methodName,
-            );
-            if (mutating) {
-              const lockResult = await acquireModelLocks(
-                ctx.datastoreConfig,
-                [{
-                  modelType: preResult.type.normalized,
-                  modelId: preResult.definition.id,
-                }],
-                ctx.repoDir,
-                ctx.syncService,
-                ctx.repoContext.catalogStore,
-                undefined,
-                { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
-              );
-              if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-              flushLocks = lockResult.flush;
-              modelLocks = lockResult;
-            }
-          }
-
-          const isDirectExecution = payload.typeArg !== undefined;
-          const deps = await createModelMethodRunDeps(
-            ctx.repoDir,
-            ctx.repoContext,
-            {
-              directExecution: isDirectExecution,
-              runTracker: ctx.runTracker,
-              defaultVault: ctx.defaultVault,
-            },
-          );
-          const libCtx = handlerLibSwampContext(ctx, {
-            signal: controller.signal,
-          });
-
-          if (ctx.cancelRegistry) {
-            ctx.cancelRegistry.register("method-run", requestId, controller);
-          }
-
-          const runMethod = async () => {
-            for await (
-              const event of modelMethodRun(libCtx, deps, {
-                modelIdOrName: target.modelIdOrName,
-                byId: target.byId,
-                expectedName: target.expectedName,
-                methodName: payload.methodName,
-                inputs: payload.inputs ?? {},
-                lastEvaluated: payload.lastEvaluated ?? false,
-                runtimeTags: payload.runtimeTags,
-                typeArg: payload.typeArg,
-                definitionName: payload.definitionName,
-                skipAllReports: payload.skipAllReports || isDirectExecution,
-                skipReportNames: payload.skipReportNames,
-                skipReportLabels: payload.skipReportLabels,
-                reportNames: payload.reportNames,
-                reportLabels: payload.reportLabels,
-                skipAllChecks: payload.skipAllChecks,
-                skipCheckNames: payload.skipCheckNames,
-                skipCheckLabels: payload.skipCheckLabels,
-                traceparent: payload.traceparent,
-                tracestate: payload.tracestate,
-                initiatedBy,
-                instanceId: ctx.instanceId,
-              })
-            ) {
-              if (socket.readyState !== WebSocket.OPEN) break;
-              const serialized = serializeEvent(
-                event as { kind: string; [key: string]: unknown },
-              );
-              send(socket, { type: "event", id: requestId, event: serialized });
-            }
-            send(socket, { type: "done", id: requestId });
-          };
-
-          if (payload.traceparent) {
-            const headers: Record<string, string> = {
-              traceparent: payload.traceparent,
-            };
-            if (payload.tracestate) headers.tracestate = payload.tracestate;
-            const traceCtx = extractTraceContext(headers);
-            await runUnderModelLocks(
-              modelLocks,
-              () => runWithParentTrace(traceCtx, runMethod),
-            );
-          } else {
-            await runUnderModelLocks(modelLocks, runMethod);
-          }
-          ran = true;
-        },
-      );
-      await telemetry?.finish(null);
-    } catch (error) {
+    const deregister = () => {
+      if (deregistered) return;
+      deregistered = true;
+      if (ctx.cancelRegistry) {
+        ctx.cancelRegistry.deregister("method-run", requestId);
+      }
+    };
+    const answer = async (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
       } else if (error instanceof LockTimeoutError) {
@@ -477,20 +388,170 @@ export async function handleModelMethodRun(
       await telemetry?.finish(
         error instanceof Error ? error : new Error(String(error)),
       );
-    } finally {
-      if (ctx.cancelRegistry) {
-        ctx.cancelRegistry.deregister("method-run", requestId);
+    };
+    try {
+      const target = await resolveMethodRunTarget(ctx, payload);
+      if (
+        !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
+      ) return;
+      const preResult = target.definition;
+
+      // The root's flush is the model lock's push when the run took one, on
+      // every outcome; otherwise the run's push once it completed. The
+      // reply, telemetry and cancel deregistration keep their place: before
+      // a lock's push, and around the no-lock push as before
+      // (swamp-club#3055).
+      await runInRootUnitOfWork(
+        ctx.repoContext,
+        {
+          flush: async ({ completed }) => {
+            if (modelLocks) {
+              try {
+                await modelLocks.push();
+              } catch (error) {
+                lockPushFailure = { error };
+              }
+              return;
+            }
+            if (completed && mutating) {
+              await withSharedSyncGate(
+                ctx.syncGate,
+                () =>
+                  pushChangedToRemote(ctx, {
+                    onError: (error) =>
+                      logger.warn(
+                        "Failed to push changes to remote datastore: {error}",
+                        { error },
+                      ),
+                  }),
+              );
+            }
+          },
+        },
+        async () => {
+          try {
+            if (preResult) {
+              mutating = await isMethodMutating(
+                preResult.type.normalized,
+                payload.methodName,
+              );
+              if (mutating) {
+                const lockResult = await acquireModelLocks(
+                  ctx.datastoreConfig,
+                  [{
+                    modelType: preResult.type.normalized,
+                    modelId: preResult.definition.id,
+                  }],
+                  ctx.repoDir,
+                  ctx.syncService,
+                  ctx.repoContext.catalogStore,
+                  undefined,
+                  { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+                );
+                if (lockResult.synced) {
+                  ctx.repoContext.catalogStore.invalidate();
+                }
+                modelLocks = lockResult;
+              }
+            }
+
+            const isDirectExecution = payload.typeArg !== undefined;
+            const deps = await createModelMethodRunDeps(
+              ctx.repoDir,
+              ctx.repoContext,
+              {
+                directExecution: isDirectExecution,
+                runTracker: ctx.runTracker,
+                defaultVault: ctx.defaultVault,
+              },
+            );
+            const libCtx = handlerLibSwampContext(ctx, {
+              signal: controller.signal,
+            });
+
+            if (ctx.cancelRegistry) {
+              ctx.cancelRegistry.register("method-run", requestId, controller);
+            }
+
+            const runMethod = async () => {
+              for await (
+                const event of modelMethodRun(libCtx, deps, {
+                  modelIdOrName: target.modelIdOrName,
+                  byId: target.byId,
+                  expectedName: target.expectedName,
+                  methodName: payload.methodName,
+                  inputs: payload.inputs ?? {},
+                  lastEvaluated: payload.lastEvaluated ?? false,
+                  runtimeTags: payload.runtimeTags,
+                  typeArg: payload.typeArg,
+                  definitionName: payload.definitionName,
+                  skipAllReports: payload.skipAllReports || isDirectExecution,
+                  skipReportNames: payload.skipReportNames,
+                  skipReportLabels: payload.skipReportLabels,
+                  reportNames: payload.reportNames,
+                  reportLabels: payload.reportLabels,
+                  skipAllChecks: payload.skipAllChecks,
+                  skipCheckNames: payload.skipCheckNames,
+                  skipCheckLabels: payload.skipCheckLabels,
+                  traceparent: payload.traceparent,
+                  tracestate: payload.tracestate,
+                  initiatedBy,
+                  instanceId: ctx.instanceId,
+                })
+              ) {
+                if (socket.readyState !== WebSocket.OPEN) break;
+                const serialized = serializeEvent(
+                  event as { kind: string; [key: string]: unknown },
+                );
+                send(socket, {
+                  type: "event",
+                  id: requestId,
+                  event: serialized,
+                });
+              }
+              send(socket, { type: "done", id: requestId });
+            };
+
+            if (payload.traceparent) {
+              const headers: Record<string, string> = {
+                traceparent: payload.traceparent,
+              };
+              if (payload.tracestate) headers.tracestate = payload.tracestate;
+              const traceCtx = extractTraceContext(headers);
+              await runUnderModelLocks(
+                modelLocks,
+                () => runWithParentTrace(traceCtx, runMethod),
+              );
+            } else {
+              await runUnderModelLocks(modelLocks, runMethod);
+            }
+            if (modelLocks) await telemetry?.finish(null);
+          } catch (error) {
+            if (modelLocks) {
+              answered = true;
+              answeredError = error;
+              try {
+                await answer(error);
+              } finally {
+                deregister();
+              }
+            }
+            throw error;
+          }
+          if (modelLocks) deregister();
+        },
+      );
+      if (!modelLocks) await telemetry?.finish(null);
+    } catch (error) {
+      if (!answered) {
+        await answer(error);
+      } else if (error !== answeredError) {
+        throw error;
       }
-      if (flushLocks) {
-        try {
-          await flushLocks();
-        } catch (releaseError) {
-          logger.warn("Failed to release locks: {error}", {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          });
-        }
+    } finally {
+      deregister();
+      if (modelLocks) {
+        await releaseModelLocks(modelLocks, lockPushFailure);
       }
     }
     return;
@@ -573,116 +634,12 @@ export async function handleModelMethodRun(
 
   (async () => {
     // Assigned in the root below, which control flow analysis cannot see.
-    let flushLocks = null as (() => Promise<void>) | null;
-    let modelLocks: ModelLockResult | undefined;
-    try {
-      // The root pushes once the run completed, unless a model lock's
-      // flush owns the push; that flush stays outside the root
-      // (swamp-club#3035).
-      let ran = false;
-      await runInRootUnitOfWork(
-        ctx.repoContext,
-        {
-          flush: () =>
-            ran && !flushLocks && detachedMutating
-              ? withSharedSyncGate(
-                ctx.syncGate,
-                () =>
-                  pushChangedToRemote(ctx, {
-                    onError: (error) =>
-                      logger.warn(
-                        "Failed to push changes to remote datastore: {error}",
-                        { error },
-                      ),
-                  }),
-              )
-              : Promise.resolve(),
-        },
-        async () => {
-          if (preResult && detachedMutating) {
-            const lockResult = await acquireModelLocks(
-              ctx.datastoreConfig,
-              [{
-                modelType: preResult.type.normalized,
-                modelId: preResult.definition.id,
-              }],
-              ctx.repoDir,
-              ctx.syncService,
-              ctx.repoContext.catalogStore,
-              undefined,
-              { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
-            );
-            if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
-            flushLocks = lockResult.flush;
-            modelLocks = lockResult;
-          }
-
-          const isDirectExecution = payload.typeArg !== undefined;
-          const deps = await createModelMethodRunDeps(
-            ctx.repoDir,
-            ctx.repoContext,
-            {
-              directExecution: isDirectExecution,
-              runTracker: ctx.runTracker,
-              defaultVault: ctx.defaultVault,
-            },
-          );
-          const libCtx = handlerLibSwampContext(ctx, {
-            signal: runController.signal,
-          });
-
-          const doRun = async () => {
-            for await (
-              const event of modelMethodRun(libCtx, deps, {
-                modelIdOrName: target.modelIdOrName,
-                byId: target.byId,
-                expectedName: target.expectedName,
-                methodName: payload.methodName,
-                inputs: payload.inputs ?? {},
-                lastEvaluated: payload.lastEvaluated ?? false,
-                runtimeTags: payload.runtimeTags,
-                typeArg: payload.typeArg,
-                definitionName: payload.definitionName,
-                skipAllReports: payload.skipAllReports || isDirectExecution,
-                skipReportNames: payload.skipReportNames,
-                skipReportLabels: payload.skipReportLabels,
-                reportNames: payload.reportNames,
-                reportLabels: payload.reportLabels,
-                skipAllChecks: payload.skipAllChecks,
-                skipCheckNames: payload.skipCheckNames,
-                skipCheckLabels: payload.skipCheckLabels,
-                traceparent: payload.traceparent,
-                tracestate: payload.tracestate,
-                initiatedBy,
-                instanceId: ctx.instanceId,
-              })
-            ) {
-              const serialized = serializeEvent(
-                event as { kind: string; [key: string]: unknown },
-              );
-              buffer.push(serialized);
-            }
-          };
-
-          if (payload.traceparent) {
-            const headers: Record<string, string> = {
-              traceparent: payload.traceparent,
-            };
-            if (payload.tracestate) headers.tracestate = payload.tracestate;
-            const traceCtx = extractTraceContext(headers);
-            await runUnderModelLocks(
-              modelLocks,
-              () => runWithParentTrace(traceCtx, doRun),
-            );
-          } else {
-            await runUnderModelLocks(modelLocks, doRun);
-          }
-          ran = true;
-        },
-      );
-      buffer.finish({ kind: "done" });
-      await detachedTelemetry?.finish(null);
-    } catch (error) {
+    let modelLocks = undefined as ModelLockResult | undefined;
+    let lockPushFailure: { error: unknown } | undefined;
+    // The run's error, once it was answered inside the root.
+    let answered = false;
+    let answeredError: unknown;
+    const finishWithError = async (error: unknown) => {
       await detachedTelemetry?.finish(
         error instanceof Error ? error : new Error(String(error)),
       );
@@ -711,17 +668,144 @@ export async function handleModelMethodRun(
           }),
         });
       }
+    };
+    try {
+      // The root's flush is the model lock's push when the run took one, on
+      // every outcome, after the stream's terminal; otherwise the run's push
+      // once it completed, before the terminal (swamp-club#3055).
+      await runInRootUnitOfWork(
+        ctx.repoContext,
+        {
+          flush: async ({ completed }) => {
+            if (modelLocks) {
+              try {
+                await modelLocks.push();
+              } catch (error) {
+                lockPushFailure = { error };
+              }
+              return;
+            }
+            if (completed && detachedMutating) {
+              await withSharedSyncGate(
+                ctx.syncGate,
+                () =>
+                  pushChangedToRemote(ctx, {
+                    onError: (error) =>
+                      logger.warn(
+                        "Failed to push changes to remote datastore: {error}",
+                        { error },
+                      ),
+                  }),
+              );
+            }
+          },
+        },
+        async () => {
+          try {
+            if (preResult && detachedMutating) {
+              const lockResult = await acquireModelLocks(
+                ctx.datastoreConfig,
+                [{
+                  modelType: preResult.type.normalized,
+                  modelId: preResult.definition.id,
+                }],
+                ctx.repoDir,
+                ctx.syncService,
+                ctx.repoContext.catalogStore,
+                undefined,
+                { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+              );
+              if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
+              modelLocks = lockResult;
+            }
+
+            const isDirectExecution = payload.typeArg !== undefined;
+            const deps = await createModelMethodRunDeps(
+              ctx.repoDir,
+              ctx.repoContext,
+              {
+                directExecution: isDirectExecution,
+                runTracker: ctx.runTracker,
+                defaultVault: ctx.defaultVault,
+              },
+            );
+            const libCtx = handlerLibSwampContext(ctx, {
+              signal: runController.signal,
+            });
+
+            const doRun = async () => {
+              for await (
+                const event of modelMethodRun(libCtx, deps, {
+                  modelIdOrName: target.modelIdOrName,
+                  byId: target.byId,
+                  expectedName: target.expectedName,
+                  methodName: payload.methodName,
+                  inputs: payload.inputs ?? {},
+                  lastEvaluated: payload.lastEvaluated ?? false,
+                  runtimeTags: payload.runtimeTags,
+                  typeArg: payload.typeArg,
+                  definitionName: payload.definitionName,
+                  skipAllReports: payload.skipAllReports || isDirectExecution,
+                  skipReportNames: payload.skipReportNames,
+                  skipReportLabels: payload.skipReportLabels,
+                  reportNames: payload.reportNames,
+                  reportLabels: payload.reportLabels,
+                  skipAllChecks: payload.skipAllChecks,
+                  skipCheckNames: payload.skipCheckNames,
+                  skipCheckLabels: payload.skipCheckLabels,
+                  traceparent: payload.traceparent,
+                  tracestate: payload.tracestate,
+                  initiatedBy,
+                  instanceId: ctx.instanceId,
+                })
+              ) {
+                const serialized = serializeEvent(
+                  event as { kind: string; [key: string]: unknown },
+                );
+                buffer.push(serialized);
+              }
+            };
+
+            if (payload.traceparent) {
+              const headers: Record<string, string> = {
+                traceparent: payload.traceparent,
+              };
+              if (payload.tracestate) headers.tracestate = payload.tracestate;
+              const traceCtx = extractTraceContext(headers);
+              await runUnderModelLocks(
+                modelLocks,
+                () => runWithParentTrace(traceCtx, doRun),
+              );
+            } else {
+              await runUnderModelLocks(modelLocks, doRun);
+            }
+            if (modelLocks) {
+              buffer.finish({ kind: "done" });
+              await detachedTelemetry?.finish(null);
+            }
+          } catch (error) {
+            if (modelLocks) {
+              answered = true;
+              answeredError = error;
+              await finishWithError(error);
+            }
+            throw error;
+          }
+        },
+      );
+      if (!modelLocks) {
+        buffer.finish({ kind: "done" });
+        await detachedTelemetry?.finish(null);
+      }
+    } catch (error) {
+      if (!answered) {
+        await finishWithError(error);
+      } else if (error !== answeredError) {
+        throw error;
+      }
     } finally {
-      if (flushLocks) {
-        try {
-          await flushLocks();
-        } catch (releaseError) {
-          logger.warn("Failed to release locks: {error}", {
-            error: releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          });
-        }
+      if (modelLocks) {
+        await releaseModelLocks(modelLocks, lockPushFailure);
       }
       registry.deregister(runId);
       try {

@@ -38,6 +38,7 @@ import {
   libSwampContextForRepo,
   requireInitializedRepo,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { UserError } from "../../domain/errors.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
@@ -100,49 +101,55 @@ export const workflowDeleteCommand = withRemoteOptions(
         outputMode: cliCtx.outputMode,
       });
 
-    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-    const deps = createWorkflowDeleteDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.markDirty,
-    );
-
-    // Phase 1: Preview
-    let preview;
-    try {
-      preview = await workflowDeletePreview(ctx, deps, {
-        workflowIdOrName,
+    // Pushes and releases the global lock when the command ends, as the
+    // teardown flush did (swamp-club#3055).
+    await runInCoordinatorRoot(repoContext, async () => {
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
       });
-    } catch (error) {
-      if ("code" in (error as Record<string, unknown>)) {
-        throw new UserError((error as { message: string }).message);
-      }
-      throw error;
-    }
-
-    // Phase 2: Prompt
-    if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
-      const runWarning = preview.runCount > 0
-        ? ` This will also delete ${preview.runCount} run${
-          preview.runCount === 1 ? "" : "s"
-        }.`
-        : "";
-      const confirmed = await promptConfirmation(
-        `Delete workflow '${preview.name}' (${preview.id})?${runWarning}`,
+      const deps = createWorkflowDeleteDeps(
+        repoDir,
+        datastoreResolver,
+        repoContext.markDirty,
       );
-      if (!confirmed) {
-        renderWorkflowDeleteCancelled(cliCtx.outputMode);
-        return;
+
+      // Phase 1: Preview
+      let preview;
+      try {
+        preview = await workflowDeletePreview(ctx, deps, {
+          workflowIdOrName,
+        });
+      } catch (error) {
+        if ("code" in (error as Record<string, unknown>)) {
+          throw new UserError((error as { message: string }).message);
+        }
+        throw error;
       }
-    }
 
-    // Phase 3: Execute mutation
-    const renderer = createWorkflowDeleteRenderer(cliCtx.outputMode);
-    await consumeStream(
-      workflowDelete(ctx, deps, { workflowIdOrName }),
-      renderer.handlers(),
-    );
+      // Phase 2: Prompt
+      if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
+        const runWarning = preview.runCount > 0
+          ? ` This will also delete ${preview.runCount} run${
+            preview.runCount === 1 ? "" : "s"
+          }.`
+          : "";
+        const confirmed = await promptConfirmation(
+          `Delete workflow '${preview.name}' (${preview.id})?${runWarning}`,
+        );
+        if (!confirmed) {
+          renderWorkflowDeleteCancelled(cliCtx.outputMode);
+          return;
+        }
+      }
 
-    cliCtx.logger.debug("Workflow delete command completed");
+      // Phase 3: Execute mutation
+      const renderer = createWorkflowDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        workflowDelete(ctx, deps, { workflowIdOrName }),
+        renderer.handlers(),
+      );
+
+      cliCtx.logger.debug("Workflow delete command completed");
+    });
   },
 );

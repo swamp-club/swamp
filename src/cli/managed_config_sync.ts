@@ -51,6 +51,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
 import { runCommandInRootUnit } from "./command_root_unit.ts";
+import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
@@ -111,7 +112,7 @@ export async function pushManagedConfigChanges(
     : undefined;
   try {
     await syncService.markDirty();
-    await syncService.pushChanged({ namespace });
+    await pushNamespace(syncService, namespace);
   } catch (error) {
     throw toUnpublishedError(error);
   }
@@ -147,7 +148,7 @@ export async function publishManagedConfigChanges(
     ? datastoreConfig.namespace
     : undefined;
   try {
-    await syncService.pushChanged({ namespace });
+    await pushNamespace(syncService, namespace);
   } catch (error) {
     throw toUnpublishedError(error);
   }

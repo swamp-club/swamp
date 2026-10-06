@@ -40,6 +40,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
+import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
   requestServerResponse,
@@ -101,40 +102,44 @@ export const dataGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-  const deps = createDataGcDeps(
-    repoDir,
-    datastoreResolver,
-    repoContext.markDirty,
-  );
-
-  // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
-  if (
-    cliCtx.outputMode === "log" && !options.yes && !options.force &&
-    !options.dryRun
-  ) {
-    const preview = await dataGcPreview(ctx, deps);
-    if (
-      preview.items.length === 0 && preview.versionGcItems.length === 0
-    ) {
-      console.log("Nothing to clean up.");
-      return;
-    }
-
-    renderDataGcPreview(preview, cliCtx.outputMode);
-    const confirmed = await promptConfirmation(
-      "Proceed with garbage collection?",
+  // Pushes and releases the global lock when the command ends, as the
+  // teardown flush did (swamp-club#3055).
+  await runInCoordinatorRoot(repoContext, async () => {
+    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
+    const deps = createDataGcDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.markDirty,
     );
-    if (!confirmed) {
-      renderDataGcCancelled(cliCtx.outputMode);
-      return;
-    }
-  }
 
-  // Phase 2: Execute GC
-  const renderer = createDataGcRenderer(cliCtx.outputMode);
-  await consumeStream(
-    dataGc(ctx, deps, { dryRun: !!options.dryRun }),
-    renderer.handlers(),
-  );
+    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+    if (
+      cliCtx.outputMode === "log" && !options.yes && !options.force &&
+      !options.dryRun
+    ) {
+      const preview = await dataGcPreview(ctx, deps);
+      if (
+        preview.items.length === 0 && preview.versionGcItems.length === 0
+      ) {
+        console.log("Nothing to clean up.");
+        return;
+      }
+
+      renderDataGcPreview(preview, cliCtx.outputMode);
+      const confirmed = await promptConfirmation(
+        "Proceed with garbage collection?",
+      );
+      if (!confirmed) {
+        renderDataGcCancelled(cliCtx.outputMode);
+        return;
+      }
+    }
+
+    // Phase 2: Execute GC
+    const renderer = createDataGcRenderer(cliCtx.outputMode);
+    await consumeStream(
+      dataGc(ctx, deps, { dryRun: !!options.dryRun }),
+      renderer.handlers(),
+    );
+  });
 });
