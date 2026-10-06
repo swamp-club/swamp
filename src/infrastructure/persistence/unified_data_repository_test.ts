@@ -23,17 +23,13 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { hostname } from "node:os";
+import { processHostIdentity } from "../runtime/process.ts";
 import {
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
 } from "./unified_data_repository.ts";
-
-
-import { dirname, join } from "@std/path";
-import { hostname } from "node:os";
-import { processHostIdentity } from "../runtime/process.ts";
-import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
