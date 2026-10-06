@@ -103,6 +103,46 @@ export function analyzeWorkflowExpressions(
   return analyzeContentExpressions(workflow.toData(), asserts);
 }
 
+/**
+ * Whether an edit changes what a computed step target can resolve to: the
+ * workflow's inputs (their defaults feed `inputs.*`) or any step's `forEach`
+ * (its items feed `self.*`), expression text included. Other edits, such as
+ * a retag, cannot retarget a stored computed step, so they leave it alone.
+ */
+export function stepRetargetSourcesChanged(
+  before: Workflow,
+  after: Workflow,
+): boolean {
+  return canonical(retargetSources(before)) !==
+    canonical(retargetSources(after));
+}
+
+function retargetSources(workflow: Workflow): unknown {
+  const data = workflow.toData() as {
+    inputs?: unknown;
+    jobs?: { steps?: { forEach?: unknown }[] }[];
+  };
+  return {
+    inputs: data.inputs ?? null,
+    forEach: (data.jobs ?? []).map((job) =>
+      (job.steps ?? []).map((step) => step.forEach ?? null)
+    ),
+  };
+}
+
+/** JSON with object keys sorted, so key order is not a change. */
+function canonical(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, v) =>
+      v !== null && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(
+          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+        : v,
+  );
+}
+
 /** A stable key for comparing targets across two versions of a workflow. */
 export function stepTargetKey(target: StepTarget): string {
   return JSON.stringify(target);

@@ -199,14 +199,13 @@ import {
   unresolvedAccessResource,
   workflowAccessResource,
 } from "./resource_resolution.ts";
-import {
-  expressionsAddedByEdit,
-  plainContentChanged,
-} from "../../domain/expressions/expression_references.ts";
+import { expressionsAddedByEdit } from "../../domain/expressions/expression_references.ts";
 import {
   analyzeWorkflowExpressions,
   isComputedStepTarget,
   readsSelfOrInputs,
+  stepRetargetSourcesChanged,
+  type StepTarget,
   stepTargetKey,
   workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
@@ -252,9 +251,9 @@ function resolveWorkflowRequest(
 /**
  * The refusal for a workflow edit, or undefined when the writer may add
  * everything it adds: expressions that read only what they may read, and
- * steps that run only what they may run. A plain-value change re-checks
- * computed targets that read `self` or `inputs`, since an input default can
- * retarget them.
+ * steps that run only what they may run. A change to the workflow's inputs
+ * or a step's forEach re-checks computed targets that read `inputs` or
+ * `self`, since those are what can retarget them.
  */
 async function authorizeWorkflowEdit(
   socket: WebSocket,
@@ -264,32 +263,47 @@ async function authorizeWorkflowEdit(
   before: Workflow,
   after: Workflow,
 ): Promise<string | undefined> {
-  const beforeData = before.toData();
-  const afterData = after.toData();
+  // A workflow's inputs.* and self.* come from its input defaults and its
+  // steps' forEach, so only a change there can retarget what is stored.
+  const retargetable = stepRetargetSourcesChanged(before, after);
+  const added = expressionsAddedByEdit(
+    analyzeWorkflowExpressions(before),
+    analyzeWorkflowExpressions(after),
+    retargetable,
+  );
   const refusal = await authorizeExpressionReferences(
     socket,
     requestId,
     principal,
     ctx,
-    expressionsAddedByEdit(
-      { data: beforeData, expressions: analyzeWorkflowExpressions(before) },
-      { data: afterData, expressions: analyzeWorkflowExpressions(after) },
-    ),
+    added,
     "allowed",
   );
   if (refusal) return refusal.message;
   const stored = new Set(workflowStepTargets(before).map(stepTargetKey));
-  const plainChanged = plainContentChanged(beforeData, afterData);
+  // A guard or assert that calls model.method runs that method as a step
+  // does, so it is held to the same check.
+  const expressionRuns: StepTarget[] = added.flatMap(({ references }) =>
+    references.runTargets.map(({ model, method }) => ({
+      kind: "model" as const,
+      modelIdOrName: model,
+      methodName: method,
+    }))
+  );
   return await authorizeStepTargets(
     socket,
     requestId,
     principal,
     ctx,
-    workflowStepTargets(after).filter((target) =>
-      !stored.has(stepTargetKey(target)) ||
-      (plainChanged && isComputedStepTarget(target) &&
-        readsSelfOrInputs(target))
-    ),
+    [
+      ...workflowStepTargets(after).filter((target) =>
+        !stored.has(stepTargetKey(target)) ||
+        (retargetable && isComputedStepTarget(target) &&
+          readsSelfOrInputs(target))
+      ),
+      ...expressionRuns,
+    ],
+    added.some(({ references }) => references.runsComputed),
   );
 }
 

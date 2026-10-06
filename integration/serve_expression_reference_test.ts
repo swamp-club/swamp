@@ -307,7 +307,7 @@ Deno.test("serve expressions: a reference by definition id is judged on that def
   });
 });
 
-Deno.test("serve expressions: workflow.edit refuses an added reference and an added step", async () => {
+Deno.test("serve expressions: workflow.edit refuses an added reference", async () => {
   await withFixtures(async (f) => {
     const workflow = await saveWorkflow(f.repo, "dev-flow", f.dev);
     const data = JSON.parse(JSON.stringify(workflow.toData()));
@@ -573,6 +573,283 @@ Deno.test("serve expressions: workflow.run inputs are values, never evaluated as
         // The step ran and got the text it was given, unevaluated.
         assertEquals(notes, [supplied]);
       });
+    });
+  });
+});
+
+/** Grants for workflow-step tests: run denied on prod-* and locked-*. */
+const STEP_GRANTS: Grant[] = [
+  grant({ resource: { kind: "model", pattern: "*" } }),
+  grant({ resource: { kind: "workflow", pattern: "*" } }),
+  grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+  grant({
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "data", pattern: "prod-*" },
+  }),
+  ...["prod-*", "locked-*"].map((pattern) =>
+    grant({
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "model", pattern },
+    })
+  ),
+  grant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "prod-*" },
+  }),
+];
+
+type WorkflowJson = {
+  inputs?: unknown;
+  tags?: Record<string, string>;
+  jobs: { name: string; steps: Record<string, unknown>[] }[];
+};
+
+function workflowJson(workflow: Workflow): WorkflowJson {
+  return JSON.parse(JSON.stringify(workflow.toData()));
+}
+
+function editWorkflow(
+  ctx: ConnectionContext,
+  workflow: Workflow,
+  change: (data: WorkflowJson) => void,
+): Promise<Frame[]> {
+  const data = workflowJson(workflow);
+  change(data);
+  return sendRequest(
+    ctx,
+    request("workflow.edit", {
+      workflowIdOrName: workflow.id,
+      content: stringifyYaml(data),
+    }),
+  );
+}
+
+function addStep(task: Record<string, unknown>) {
+  return (data: WorkflowJson) => {
+    data.jobs[0].steps.push({
+      name: `added-${data.jobs[0].steps.length}`,
+      task,
+    });
+  };
+}
+
+async function withStepFixtures(
+  fn: (f: Fixtures & { flow: Workflow }) => Promise<void>,
+): Promise<void> {
+  await withServeRepo(async (repo) => {
+    const prod = await saveModel(repo, "prod-db", { env: "prod" });
+    const dev = await saveModel(repo, "dev-db");
+    await saveModel(repo, "locked-db");
+    await saveData(repo, prod, "state");
+    await saveData(repo, dev, "state");
+    await saveWorkflow(repo, "prod-flow", dev);
+    await saveWorkflow(repo, "dev-flow", dev);
+    const flow = await saveWorkflow(repo, "editable", dev);
+    await fn({ repo, ctx: createServeCtx(repo, STEP_GRANTS), prod, dev, flow });
+  });
+}
+
+Deno.test("serve expressions: workflow.edit checks each kind of step it adds", async () => {
+  await withStepFixtures(async (f) => {
+    const type = f.repo.modelType.normalized;
+    const cases: [string, Record<string, unknown>][] = [
+      ["nested workflow", { type: "workflow", workflowIdOrName: "prod-flow" }],
+      ["direct step on a denied name", {
+        type: "model_method",
+        modelType: type,
+        modelName: "prod-new",
+        methodName: "noop",
+      }],
+      ["computed model", {
+        type: "model_method",
+        modelIdOrName: "${{ inputs.m }}",
+        methodName: "noop",
+      }],
+    ];
+    for (const [label, task] of cases) {
+      assertRefused(await editWorkflow(f.ctx, f.flow, addStep(task)), label);
+    }
+    // Even with no model denies at all, a computed target can name a
+    // restricted or control-plane model, so a non-admin may not add one.
+    const noDenies = createServeCtx(f.repo, [
+      grant({ resource: { kind: "model", pattern: "*" } }),
+      grant({ resource: { kind: "workflow", pattern: "*" } }),
+    ]);
+    assertRefused(
+      await editWorkflow(noDenies, f.flow, addStep(cases[2][1])),
+      "computed model with no model denies",
+    );
+    // An admin may add a computed target.
+    assertAllowed(
+      await editWorkflow(
+        createServeCtx(f.repo),
+        f.flow,
+        addStep(cases[2][1]),
+      ),
+      "computed model, auth none",
+    );
+    assertAllowed(
+      await editWorkflow(
+        f.ctx,
+        f.flow,
+        addStep({ type: "workflow", workflowIdOrName: "dev-flow" }),
+      ),
+      "readable nested workflow",
+    );
+  });
+});
+
+Deno.test("serve expressions: a direct step needs run on its type, and admin for a restricted type", async () => {
+  await withStepFixtures(async (f) => {
+    const type = f.repo.modelType.normalized;
+    const typeDenied = createServeCtx(f.repo, [
+      ...STEP_GRANTS,
+      grant({
+        effect: "deny",
+        actions: ["run"],
+        resource: { kind: "model", pattern: type },
+      }),
+    ]);
+    assertRefused(
+      await editWorkflow(
+        typeDenied,
+        f.flow,
+        addStep({
+          type: "model_method",
+          modelType: type,
+          modelName: "fresh",
+          methodName: "noop",
+        }),
+      ),
+      "denied type",
+    );
+    await saveModel(f.repo, "other-db");
+    const restricted = createServeCtx(f.repo, STEP_GRANTS);
+    restricted.authConfig.restrictedModelTypes = [type];
+    assertRefused(
+      await editWorkflow(
+        restricted,
+        f.flow,
+        addStep({
+          type: "model_method",
+          modelIdOrName: "other-db",
+          methodName: "noop",
+        }),
+      ),
+      "restricted type without admin",
+    );
+  });
+});
+
+Deno.test("serve expressions: workflow.edit checks assert predicates and the methods they run", async () => {
+  await withStepFixtures(async (f) => {
+    const assertStep = (expr: string) =>
+      addStep({ type: "assert", expr, message: "m" });
+    assertRefused(
+      await editWorkflow(
+        f.ctx,
+        f.flow,
+        assertStep('data.latest("prod-db", "state") != null'),
+      ),
+      "assert reading unreadable data",
+    );
+    // locked-db's data is readable, but running it is denied.
+    assertRefused(
+      await editWorkflow(
+        f.ctx,
+        f.flow,
+        assertStep('model.method("locked-db", "noop") != null'),
+      ),
+      "assert running a model the writer may not run",
+    );
+    assertRefused(
+      await editWorkflow(
+        f.ctx,
+        f.flow,
+        assertStep('model.method(inputs.m, "noop") != null'),
+      ),
+      "assert running a computed model",
+    );
+    assertAllowed(
+      await editWorkflow(
+        f.ctx,
+        f.flow,
+        assertStep('model.method("dev-db", "noop") != null'),
+      ),
+      "assert running a runnable model",
+    );
+  });
+});
+
+Deno.test("serve expressions: an input default can't retarget a stored computed step or expression, a retag is fine", async () => {
+  await withStepFixtures(async (f) => {
+    const flow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "computed-flow",
+        version: 1,
+        inputs: {
+          type: "object",
+          properties: { m: { type: "string", default: "dev-db" } },
+        },
+        jobs: [{
+          name: "main",
+          steps: [{
+            name: "s",
+            task: {
+              type: "model_method",
+              modelIdOrName: "${{ inputs.m }}",
+              methodName: "noop",
+              inputs: { x: '${{ data.latest(inputs.m, "state") }}' },
+            },
+          }],
+        }],
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+    await f.repo.repoContext.workflowRepo.save(flow);
+    assertRefused(
+      await editWorkflow(f.ctx, flow, (data) => {
+        data.inputs = {
+          type: "object",
+          properties: { m: { type: "string", default: "prod-db" } },
+        };
+      }),
+      "retarget through the input default",
+    );
+    assertAllowed(
+      await editWorkflow(f.ctx, flow, (data) => {
+        data.tags = { team: "a" };
+      }),
+      "retag of an admin workflow with computed targets",
+    );
+  });
+});
+
+Deno.test("serve expressions: every definition sharing a name is judged", async () => {
+  await withEchoType(async (echoType) => {
+    await withServeRepo(async (repo) => {
+      await saveModel(repo, "twin");
+      const prodTwin = Definition.create({
+        name: "twin",
+        globalArguments: {},
+        tags: { env: "prod" },
+      });
+      await repo.repoContext.definitionRepo.save(echoType, prodTwin);
+      const ctx = createServeCtx(repo, TAG_GRANTS);
+      assertRefused(
+        await sendRequest(
+          ctx,
+          request("model.create", {
+            typeArg: repo.modelType.normalized,
+            name: "reader",
+            globalArguments: { x: '${{ data.latest("twin", "state") }}' },
+          }),
+        ),
+        "a name one tag-denied definition shares",
+      );
     });
   });
 });

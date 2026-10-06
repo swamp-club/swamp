@@ -58,10 +58,26 @@ export async function authorizeStepTargets(
   principal: Principal | null,
   ctx: ConnectionContext,
   targets: readonly StepTarget[],
+  runsComputedModel = false,
 ): Promise<string | undefined> {
+  // An expression that runs a model it computes (`model.method(inputs.m,
+  // ...)`) can run any model, as a computed step target can.
+  if (
+    runsComputedModel &&
+    !isAuthorized(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) {
+    return "Access denied: an expression added here runs a model method " +
+      "it computes, which needs admin";
+  }
   for (const target of targets) {
     if (!await stepAllowed(socket, requestId, principal, ctx, target)) {
-      return `Not allowed to add a workflow step that runs ${describe(target)}`;
+      return `Access denied: a workflow step added here runs ${
+        describe(target)
+      }`;
     }
   }
   return undefined;
@@ -70,9 +86,9 @@ export async function authorizeStepTargets(
 function describe(target: StepTarget): string {
   switch (target.kind) {
     case "model":
-      return `${target.modelIdOrName} ${target.methodName}`;
+      return `model ${target.modelIdOrName} method ${target.methodName}`;
     case "direct":
-      return `${target.modelType} ${target.modelName} ${target.methodName}`;
+      return `model ${target.modelName} (${target.modelType}) method ${target.methodName}`;
     case "workflow":
       return `workflow ${target.workflowIdOrName}`;
   }
@@ -90,15 +106,19 @@ async function stepAllowed(
   const restricted = ctx.authConfig.restrictedModelTypes;
 
   if (isComputedStepTarget(target)) {
-    // The run decides the target, so the writer must be allowed to run any.
-    return isAuthorizedForAll(
-      socket,
-      requestId,
-      principal,
-      "run",
-      target.kind === "workflow" ? "workflow" : "model",
-      ctx,
-    );
+    // The run decides the target. A nested workflow needs run on every
+    // workflow; a model can be any model, a restricted or control-plane one
+    // included, which the engine does not gate, so it needs admin.
+    return target.kind === "workflow"
+      ? isAuthorizedForAll(
+        socket,
+        requestId,
+        principal,
+        "run",
+        "workflow",
+        ctx,
+      )
+      : allowed("admin", { kind: "access", name: "*", fields: {} });
   }
 
   if (target.kind === "workflow") {
@@ -109,7 +129,8 @@ async function stepAllowed(
         target.workflowIdOrName,
       );
     } catch {
-      // Judged on the name as written, like a workflow that is not found.
+      // A target whose fields cannot be read cannot be judged; refuse.
+      return false;
     }
     return allowed(
       "run",
@@ -129,7 +150,8 @@ async function stepAllowed(
       name,
     );
   } catch {
-    // Judged on the name as written.
+    // A target whose fields cannot be read cannot be judged; refuse.
+    return false;
   }
   const typeArg = target.kind === "direct" ? target.modelType : undefined;
   const base = definition

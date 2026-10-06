@@ -21,6 +21,8 @@ import { assertEquals } from "@std/assert";
 import {
   analyzeContentExpressions,
   analyzeExpression,
+  expressionsAddedByEdit,
+  plainContentChanged,
 } from "./expression_references.ts";
 
 function targets(cel: string) {
@@ -149,8 +151,25 @@ Deno.test("analyzeExpression: file.contents names its model", () => {
   );
 });
 
-Deno.test("analyzeExpression: model.method runs a model and reads any data", () => {
-  assertEquals(analyzeExpression('model.method("prod", "get")').dataWide, true);
+Deno.test("analyzeExpression: model.method with literals names the method it runs", () => {
+  const r = analyzeExpression('model.method("prod", "destroy", {"a": 1})');
+  assertEquals(r.runTargets, [{ model: "prod", method: "destroy" }]);
+  assertEquals(r.runsComputed, false);
+  assertEquals([...r.dataTargets], ["prod"]);
+});
+
+Deno.test("analyzeExpression: model.method with a computed model or method runs any model", () => {
+  for (
+    const cel of [
+      'model.method(inputs.m, "destroy")',
+      'model.method("prod", inputs.method)',
+      'model.other("prod", "x")',
+    ]
+  ) {
+    const r = analyzeExpression(cel);
+    assertEquals(r.runsComputed, true, cel);
+    assertEquals(r.dataWide, true, cel);
+  }
 });
 
 Deno.test("analyzeExpression: env reads are reported", () => {
@@ -202,4 +221,51 @@ Deno.test("analyzeContentExpressions: keys each expression by its raw text", () 
     "${{ env.HOME }}",
     "1 == 1",
   ]);
+});
+
+const contentOf = analyzeContentExpressions;
+
+Deno.test("expressionsAddedByEdit: only expressions the stored content lacks", () => {
+  const prod = '${{ data.latest("prod", "s") }}';
+  const dev = '${{ data.latest("dev", "s") }}';
+  const added = expressionsAddedByEdit(
+    contentOf({ a: prod, note: "v1" }),
+    contentOf({ a: prod, b: dev, note: "v1" }),
+    false,
+  );
+  assertEquals(added.map((e) => e.raw), [dev]);
+});
+
+Deno.test("expressionsAddedByEdit: a rewritten expression is new even if its targets match", () => {
+  const added = expressionsAddedByEdit(
+    contentOf({ q: '${{ data.query("modelName == \\"dev\\"") }}' }),
+    contentOf({ q: '${{ data.query("modelName == \\"prod\\"") }}' }),
+    false,
+  );
+  assertEquals(added.length, 1);
+});
+
+Deno.test("expressionsAddedByEdit: a retarget re-checks only self- or inputs-computed data-wide expressions", () => {
+  const computed = '${{ data.latest(self.globalArguments.t, "s") }}';
+  const literal = '${{ data.latest("prod", "s") }}';
+  const before = contentOf({ t: "dev", c: computed, l: literal });
+  const after = contentOf({ t: "prod", c: computed, l: literal });
+  assertEquals(
+    expressionsAddedByEdit(before, after, true).map((e) => e.raw),
+    [computed],
+  );
+  assertEquals(expressionsAddedByEdit(before, after, false), []);
+});
+
+Deno.test("plainContentChanged: ignores expression text and key order, sees plain values", () => {
+  assertEquals(
+    plainContentChanged({ a: "1", b: "2" }, { b: "2", a: "1" }),
+    false,
+  );
+  assertEquals(
+    plainContentChanged({ a: "x ${{ env.A }}" }, { a: "x ${{ env.B }}" }),
+    false,
+  );
+  assertEquals(plainContentChanged({ a: "x" }, { a: "y" }), true);
+  assertEquals(plainContentChanged({ a: ["x"] }, { a: ["x", "y"] }), true);
 });

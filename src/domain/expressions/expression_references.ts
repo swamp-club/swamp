@@ -92,6 +92,13 @@ export interface ExpressionReferences {
   readonly usesEnv: boolean;
   /** The expression reads `self` or `inputs`, so its targets can follow them. */
   readonly readsSelfOrInputs: boolean;
+  /**
+   * Model methods the expression runs: `model.method("<model>", "<method>")`
+   * in a workflow guard or assert executes the method, as a step does.
+   */
+  readonly runTargets: readonly { model: string; method: string }[];
+  /** The expression runs a model method whose model or method is computed. */
+  readonly runsComputed: boolean;
 }
 
 /** An expression found in content, with what it reads. */
@@ -112,6 +119,8 @@ interface Accumulator {
   dataWide: boolean;
   usesEnv: boolean;
   readsSelfOrInputs: boolean;
+  runTargets: { model: string; method: string }[];
+  runsComputed: boolean;
 }
 
 /** Analyzes one CEL expression (the text inside `${{ }}`). */
@@ -122,6 +131,8 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     dataWide: false,
     usesEnv: false,
     readsSelfOrInputs: false,
+    runTargets: [],
+    runsComputed: false,
   };
   let ast: ASTNode;
   try {
@@ -130,6 +141,7 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     // Text that does not parse here is not evaluated as this parses it;
     // fail closed rather than guess what it reads.
     acc.dataWide = true;
+    acc.runsComputed = true;
     return acc;
   }
   visit(ast, new Set(), acc);
@@ -160,22 +172,22 @@ export function analyzeContentExpressions(
 
 /**
  * The expressions an edit must be authorized for: every expression whose raw
- * text the stored content does not already hold, and, when the edit changes
- * a plain (non-expression) value, every stored expression that reads any
- * data through `self` or `inputs`, since that value can retarget it
- * (swamp-club#2755). An expression with a literal target is never re-checked,
- * so an edit to an unrelated field of a model that already reads other data
- * is unaffected.
+ * text the stored content does not already hold, and, when `retargeted` (the
+ * edit changed a value that `self` or `inputs` reads), every stored
+ * expression that reads data through `self` or `inputs`, since that value can
+ * point it elsewhere (swamp-club#2755). An expression with a literal target is
+ * never re-checked, so an edit to an unrelated field of a model that already
+ * reads other data is unaffected.
  */
 export function expressionsAddedByEdit(
-  before: { data: unknown; expressions: readonly AnalyzedExpression[] },
-  after: { data: unknown; expressions: readonly AnalyzedExpression[] },
+  before: readonly AnalyzedExpression[],
+  after: readonly AnalyzedExpression[],
+  retargeted: boolean,
 ): AnalyzedExpression[] {
-  const stored = new Set(before.expressions.map((e) => e.raw));
-  const plainChanged = plainContentChanged(before.data, after.data);
-  return after.expressions.filter((e) =>
+  const stored = new Set(before.map((e) => e.raw));
+  return after.filter((e) =>
     !stored.has(e.raw) ||
-    (plainChanged && e.references.dataWide && e.references.readsSelfOrInputs)
+    (retargeted && e.references.dataWide && e.references.readsSelfOrInputs)
   );
 }
 
@@ -185,7 +197,7 @@ export function plainContentChanged(before: unknown, after: unknown): boolean {
     JSON.stringify(withoutExpressions(after));
 }
 
-/** `data` with every `${{ }}` span removed from its strings. */
+/** `data` with every `${{ }}` span removed from its strings, keys sorted. */
 function withoutExpressions(data: unknown): unknown {
   if (typeof data === "string") {
     let out = "";
@@ -198,8 +210,11 @@ function withoutExpressions(data: unknown): unknown {
   }
   if (Array.isArray(data)) return data.map(withoutExpressions);
   if (data !== null && typeof data === "object") {
+    // Keys sorted, so reordering a mapping is not a change of value.
     return Object.fromEntries(
-      Object.entries(data).map(([k, v]) => [k, withoutExpressions(v)]),
+      Object.entries(data)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, withoutExpressions(v)]),
     );
   }
   return data;
@@ -347,8 +362,17 @@ function visit(
         return;
       }
       if (isFree(receiver, "model", bound)) {
-        // model.method(...) in workflow guards runs a model method.
-        acc.dataWide = true;
+        // model.method("<model>", "<method>", ...) in a workflow guard or
+        // assert runs the method and returns its output.
+        const model = stringLiteral(args[0]);
+        const method = stringLiteral(args[1]);
+        if (name === "method" && model !== undefined && method !== undefined) {
+          acc.runTargets.push({ model, method });
+          acc.dataTargets.add(model);
+        } else {
+          acc.runsComputed = true;
+          acc.dataWide = true;
+        }
         for (const a of args) visit(a, bound, acc);
         return;
       }

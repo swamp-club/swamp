@@ -32,10 +32,7 @@ import { celString } from "../../domain/data/data_query_command.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import type { AnalyzedExpression } from "../../domain/expressions/expression_references.ts";
 import { CONTROL_PLANE_STORED_TYPES } from "../../domain/models/control_plane_types.ts";
-import {
-  type DefinitionLookupResult,
-  findDefinitionByIdOrName,
-} from "../../domain/models/model_lookup.ts";
+import type { DefinitionLookupResult } from "../../domain/models/model_lookup.ts";
 import {
   type CanonicalResources,
   canonicalResources,
@@ -83,6 +80,7 @@ export async function authorizeExpressionReferences(
 ): Promise<ExpressionRefusal | undefined> {
   if (expressions.length === 0) return undefined;
   const owners = canonicalResources(ctx);
+  const definitions = definitionIndex(ctx);
   const checked = new Map<string, Promise<boolean>>();
   let allDataReadable: boolean | undefined;
   const readsAllData = () =>
@@ -104,7 +102,8 @@ export async function authorizeExpressionReferences(
   for (const { raw, references } of expressions) {
     if (references.usesEnv && env !== "allowed") {
       return {
-        message: `Expression ${raw} reads env: env is only available in ` +
+        message: `Access denied: expression ${shown(raw)} reads env, which ` +
+          `is only available in ` +
           `run inputs to principals with write on ${env.refusedFor}; ` +
           `reference it in the model definition instead`,
       };
@@ -124,7 +123,16 @@ export async function authorizeExpressionReferences(
       allowed = await memo(
         checked,
         `data:${target}`,
-        () => dataReadable(socket, requestId, principal, ctx, owners, target),
+        () =>
+          dataReadable(
+            socket,
+            requestId,
+            principal,
+            ctx,
+            owners,
+            definitions,
+            target,
+          ),
       );
     }
     for (const target of references.modelTargets) {
@@ -132,17 +140,27 @@ export async function authorizeExpressionReferences(
       allowed = await memo(
         checked,
         `model:${target}`,
-        () => modelReadable(socket, requestId, principal, ctx, target),
+        () =>
+          modelReadable(socket, requestId, principal, ctx, definitions, target),
       );
     }
     if (!allowed) {
       return {
-        message: `Not allowed to use expression ${raw}: ` +
-          `it reads data that is not readable here`,
+        message: `Access denied: expression ${shown(raw)} reads data ` +
+          `that is not readable here`,
       };
     }
   }
   return undefined;
+}
+
+/** Longest expression text quoted in a refusal. */
+const MAX_SHOWN = 120;
+
+/** `raw` for an error message, shortened past {@link MAX_SHOWN}. */
+function shown(raw: string): string {
+  const flat = raw.replace(/\s+/g, " ");
+  return flat.length > MAX_SHOWN ? `${flat.slice(0, MAX_SHOWN)}…` : flat;
 }
 
 function memo(
@@ -172,12 +190,16 @@ async function dataReadable(
   principal: Principal | null,
   ctx: ConnectionContext,
   owners: CanonicalResources,
+  definitions: DefinitionIndex,
   target: string,
 ): Promise<boolean> {
   const resources: AccessResource[] = [];
   const ns = ctx.repoContext.unifiedDataRepo.namespace;
   // Every version of a data item has the item's owner, so the latest
-  // versions name every owner without reading the whole history.
+  // versions name every owner without reading the whole history. Records
+  // of control-plane types are left out as the data.* accessors leave them
+  // out; a control-plane definition with the name is still judged below,
+  // as its access record.
   const records = await ctx.repoContext.dataQueryService.query(
     `modelName == ${celString(target)} && ns == ${celString(ns)}`,
     { excludeModelTypes: CONTROL_PLANE_STORED_TYPES },
@@ -198,9 +220,11 @@ async function dataReadable(
     });
     for (const owner of recordOwners) resources.push(owner);
   }
-  const definition = await lookUp(ctx, target);
-  if (definition === "failed") return false;
-  if (definition) resources.push(modelAccessResource(definition, "data"));
+  const named = await definitions(target);
+  if (named === "failed") return false;
+  for (const definition of named) {
+    resources.push(modelAccessResource(definition, "data"));
+  }
   if (resources.length === 0) {
     resources.push(unresolvedAccessResource("data", target));
   }
@@ -215,31 +239,39 @@ async function modelReadable(
   requestId: string,
   principal: Principal | null,
   ctx: ConnectionContext,
+  definitions: DefinitionIndex,
   target: string,
 ): Promise<boolean> {
-  const definition = await lookUp(ctx, target);
-  if (definition === "failed") return false;
-  const resource = definition
-    ? modelAccessResource(definition, "model")
-    : unresolvedAccessResource("model", target);
-  return isAuthorized(socket, requestId, principal, "read", resource, ctx);
+  const named = await definitions(target);
+  if (named === "failed") return false;
+  const resources = named.length > 0
+    ? named.map((definition) => modelAccessResource(definition, "model"))
+    : [unresolvedAccessResource("model", target)];
+  return resources.every((resource) =>
+    isAuthorized(socket, requestId, principal, "read", resource, ctx)
+  );
 }
 
 /**
- * The definition `target` names, or "failed" when the lookup throws (a
- * definition file that does not load): a reference whose target cannot be
- * judged is refused.
+ * Every definition `target` names, by name or by id, or "failed" when the
+ * definitions cannot be listed. Evaluation reads every definition sharing a
+ * name, so each one is judged, not only the first a lookup returns.
  */
-async function lookUp(
-  ctx: ConnectionContext,
+type DefinitionIndex = (
   target: string,
-): Promise<DefinitionLookupResult | null | "failed"> {
-  try {
-    return await findDefinitionByIdOrName(
-      ctx.repoContext.definitionRepo,
-      target,
+) => Promise<DefinitionLookupResult[] | "failed">;
+
+/** A {@link DefinitionIndex} that lists the definitions once per request. */
+function definitionIndex(ctx: ConnectionContext): DefinitionIndex {
+  let all: Promise<DefinitionLookupResult[] | "failed"> | undefined;
+  return async (target) => {
+    all ??= ctx.repoContext.definitionRepo.findAllGlobal().catch(() =>
+      "failed" as const
     );
-  } catch {
-    return "failed";
-  }
+    const listed = await all;
+    if (listed === "failed") return "failed";
+    return listed.filter(({ definition }) =>
+      definition.name === target || definition.id === target
+    );
+  };
 }

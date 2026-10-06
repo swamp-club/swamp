@@ -157,6 +157,7 @@ import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_
 import {
   analyzeContentExpressions,
   expressionsAddedByEdit,
+  plainContentChanged,
 } from "../../domain/expressions/expression_references.ts";
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
 
@@ -2386,20 +2387,17 @@ export async function handleModelEdit(
             authorizeContent: async (before, after) => {
               const beforeData = before.toData();
               const afterData = after.toData();
+              // A model's self is its own content, so any plain change can
+              // retarget a reference computed from it.
               const refusal = await authorizeExpressionReferences(
                 socket,
                 requestId,
                 principal,
                 ctx,
                 expressionsAddedByEdit(
-                  {
-                    data: beforeData,
-                    expressions: analyzeContentExpressions(beforeData),
-                  },
-                  {
-                    data: afterData,
-                    expressions: analyzeContentExpressions(afterData),
-                  },
+                  analyzeContentExpressions(beforeData),
+                  analyzeContentExpressions(afterData),
+                  plainContentChanged(beforeData, afterData),
                 ),
                 "allowed",
               );

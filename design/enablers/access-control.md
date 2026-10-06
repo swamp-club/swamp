@@ -378,7 +378,9 @@ from `modelIdOrName`. That definition is authorized too, by its canonical name
 and fields (or, before it exists, by the name to be created with the named
 type), after the requested model and the type; it is the one locked, recorded
 for cancel and attach, and audited. The run is handed that definition's id and
-fails if the name resolves to anything else by then (swamp-club#2672). The
+fails if the name resolves to anything else by then (swamp-club#2672). Because
+a direct run can rewrite an existing definition's global arguments, it takes
+that definition's model lock whatever the method's kind. The
 name vaults are authorized under is tracked by swamp-club#2676.
 
 Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
@@ -678,12 +680,16 @@ calls the workflow engine makes internally.
 Because a run delegates to whoever wrote the workflow, the writer is held to
 what the workflow runs. A served `workflow.edit` that adds a step needs `run`
 on the step's model (with the type, and `admin` for a restricted or
-control-plane type, as a direct run needs) or on its nested workflow. A target
-computed by an expression needs `run` on every model (or workflow): any deny
-for the kind refuses it. Steps already stored are not re-checked, and neither
+control-plane type, as a direct run needs) or on its nested workflow. A guard
+or assert that calls `model.method("<model>", "<method>")` runs that method, so
+it is held to the same check. A model target computed by an expression can
+resolve to any model, restricted and control-plane ones included, which the
+engine does not gate, so it needs `admin`; a computed nested workflow needs
+`run` on every workflow. Steps already stored are not re-checked, and neither
 is a run, so users running a workflow an admin wrote are unaffected. An edit
-that changes a plain value re-checks computed targets that read `inputs` or
-`self`, since an input default can retarget them.
+that changes the workflow's inputs or a step's `forEach` re-checks stored
+computed targets that read `inputs` or `self`, since those are what can
+retarget them; a retag or any other edit does not.
 
 ## Expression references
 
@@ -705,12 +711,14 @@ from the AST evaluation parses) and
 | runs, evaluate, validate           | nothing: stored content is the author's                      |
 
 - **Data.** A reference to a named model needs `read` on the data it can
-  return: every current owner of records stored under that name, and the
-  definition the name (or id) resolves to; deny wins. A reference whose model
+  return: every current owner of records stored under that name, and every
+  definition with that name or id; deny wins. A reference whose model
   is computed, a cross-model accessor (`data.query`, `data.findByTag`), the
   `model` map used whole or with a computed key, a `ns:` or `*:` prefix, more
   than 32 named models, or text the analyzer cannot parse needs `read` on all
-  data, so any data deny refuses it.
+  data, so any data deny refuses it. A target computed from `self` counts too:
+  `data.latest(self.name, ...)` is judged as reading any data. A definition
+  lookup that fails refuses the reference.
 - **Definitions.** `model.<name>.input` and `.definition` need `read` on the
   model.
 - **env.** Reading the server's environment is an author's capability: a
@@ -718,10 +726,11 @@ from the AST evaluation parses) and
   run inputs it needs `write` on the model run; a run-only caller is refused
   and told to reference env in the definition. `evaluate` and `validate` never
   resolve env, which is resolved only when a method runs.
-- **Retargeting.** An edit that changes a plain (non-expression) value
+- **Retargeting.** A model edit that changes a plain (non-expression) value
   re-checks stored expressions that read data through a target computed from
   `self` or `inputs`, so changing `target: dev-db` to `prod-db` under
-  `data.latest(self.globalArguments.target, ...)` is refused.
+  `data.latest(self.globalArguments.target, ...)` is refused. A workflow edit
+  re-checks them only when its inputs or a step's `forEach` change.
 - **Refusals** name the expression as sent, with the same wording whether the
   target exists or is denied, and are audited like other denials. Auth mode
   `none` and admins are not checked, as everywhere else.
