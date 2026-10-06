@@ -323,35 +323,42 @@ export class WalSink implements AuditSink {
     }
   }
 
+  /**
+   * Queues the segments a previous session left in the WAL for delivery,
+   * ahead of anything written after, and returns how many events they hold.
+   * Like live segments they are deleted only once a checkpoint confirms the
+   * store has them; this does not wait for that, so a store that is down
+   * does not hold startup.
+   */
   async replay(): Promise<number> {
-    const segments = this.#wal.listSegments();
-    let replayedCount = 0;
+    let queuedCount = 0;
 
-    for (const segmentName of segments) {
+    for (const segmentName of [...this.#wal.listSegments()]) {
+      let events: AuditEvent[];
       try {
-        const events = await this.#wal.readSegment(segmentName);
+        events = await this.#wal.readSegment(segmentName);
         if (events.length === 0) {
           await this.#wal.deleteSegment(segmentName);
           continue;
         }
-
-        await this.#downstream.write(events);
-        await this.#wal.deleteSegment(segmentName);
-        replayedCount += events.length;
       } catch (error: unknown) {
         logger.warn(
-          "Failed to replay WAL segment {segment}, will retry later: {error}",
+          "Failed to read WAL segment {segment} from the previous session, leaving it in the WAL: {error}",
           {
             segment: segmentName,
             error: error instanceof Error ? error.message : String(error),
           },
         );
-        break;
+        continue;
       }
+      queuedCount += events.length;
+      this.#enqueue(segmentName);
     }
 
-    return replayedCount;
+    if (queuedCount > 0) this.#queueCheckpoint();
+    return queuedCount;
   }
+
   async close(): Promise<void> {
     if (this.#checkpointTimer !== null) {
       clearInterval(this.#checkpointTimer);
