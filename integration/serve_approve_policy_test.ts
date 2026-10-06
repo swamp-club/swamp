@@ -195,6 +195,7 @@ async function suspendAtGate(
     restrictedModelTypes: [],
     restrictedCommands: [],
     approveRequiresExplicitGrant,
+    signalRequiresExplicitGrant: false,
   };
   const ctx = {
     repoDir: resolved,

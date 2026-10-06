@@ -603,6 +603,8 @@ export interface AccessCheckResponse {
   decisions: Record<string, unknown>[];
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
+  /** The server's signal policy; absent from servers that predate it. */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessCanIDecision {
@@ -612,7 +614,7 @@ export interface AccessCanIDecision {
   grantId: string;
   via: string;
   condition?: string;
-  /** Set when the grant covers `approve` only because it grants `run`. */
+  /** Set when the grant covers `approve` or `signal` only because it grants `run`. */
   impliedBy?: "run";
 }
 
@@ -622,6 +624,8 @@ export interface AccessCanIResponse {
   decisions: AccessCanIDecision[];
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
+  /** The server's signal policy; absent from servers that predate it. */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessReloadFileResult {

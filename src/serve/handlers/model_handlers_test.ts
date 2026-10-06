@@ -270,6 +270,7 @@ function createEditCtx(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
 }

@@ -171,6 +171,7 @@ const searchAuthBase: Omit<ServeAuthConfig, "mode"> = {
   restrictedModelTypes: [],
   restrictedCommands: [],
   approveRequiresExplicitGrant: false,
+  signalRequiresExplicitGrant: false,
 };
 
 const searchPrincipal: Principal = { kind: "user", id: "reader" };

@@ -23,6 +23,8 @@ import {
   approvalPolicyNote,
   impliedApproveListingNote,
   impliedMarker,
+  impliedSignalListingNote,
+  signalPolicyNote,
 } from "./access_check.ts";
 
 export interface CanIDecision {
@@ -32,7 +34,7 @@ export interface CanIDecision {
   grantId: string;
   via: string;
   condition?: string;
-  /** Set when the grant covers approve only because it grants run. */
+  /** Set when the grant covers approve or signal only because it grants run. */
   impliedBy?: "run";
 }
 
@@ -43,6 +45,8 @@ export interface AccessCanIResult {
   query?: { action: string; resource: string; method?: string };
   /** The server's approval policy; undefined for servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
+  /** The server's signal policy; undefined for servers that predate it. */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessCanIRenderer {
@@ -63,6 +67,10 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       result.query!.action,
       result.decisions,
       result.approveRequiresExplicitGrant,
+    ) ?? signalPolicyNote(
+      result.query!.action,
+      result.decisions,
+      result.signalRequiresExplicitGrant,
     );
 
     if (result.decisions.length === 0) {
@@ -123,23 +131,35 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       );
     }
 
-    const note = impliedApproveListingNote(
-      result.decisions,
-      result.approveRequiresExplicitGrant,
-    );
-    if (note) {
-      writeOutput("");
-      writeOutput(note);
-    }
+    const notes = [
+      impliedApproveListingNote(
+        result.decisions,
+        result.approveRequiresExplicitGrant,
+      ),
+      impliedSignalListingNote(
+        result.decisions,
+        result.signalRequiresExplicitGrant,
+      ),
+    ].filter((note) => note !== null);
+    if (notes.length > 0) writeOutput("");
+    for (const note of notes) writeOutput(note);
   }
 }
 
 function policyField(
   result: AccessCanIResult,
-): { approveRequiresExplicitGrant?: boolean } {
-  return result.approveRequiresExplicitGrant !== undefined
-    ? { approveRequiresExplicitGrant: result.approveRequiresExplicitGrant }
-    : {};
+): {
+  approveRequiresExplicitGrant?: boolean;
+  signalRequiresExplicitGrant?: boolean;
+} {
+  return {
+    ...(result.approveRequiresExplicitGrant !== undefined
+      ? { approveRequiresExplicitGrant: result.approveRequiresExplicitGrant }
+      : {}),
+    ...(result.signalRequiresExplicitGrant !== undefined
+      ? { signalRequiresExplicitGrant: result.signalRequiresExplicitGrant }
+      : {}),
+  };
 }
 
 class JsonAccessCanIRenderer implements AccessCanIRenderer {

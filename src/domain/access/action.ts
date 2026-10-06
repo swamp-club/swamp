@@ -24,6 +24,7 @@ export const ActionSchema = z.enum([
   "read",
   "write",
   "approve",
+  "signal",
   "admin",
 ]);
 

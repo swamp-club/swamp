@@ -31,6 +31,7 @@ import {
   formatCommandTarget,
   probeServerHealth,
   readTokenFile,
+  requestNewerServerResponse,
   requestServerResponse,
   resetMarkerServerAddress,
   resolveCaCertPath,
@@ -2565,6 +2566,80 @@ Deno.test({
       assertEquals(attachedRunIds(server), ["run-parent"]);
     } finally {
       await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestNewerServerResponse: a server that rejects the request type is reported as needing an upgrade",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: { code: "invalid_request", message: "Invalid request" },
+      });
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          requestNewerServerResponse(
+            "signals",
+            { server: server.url },
+            { type: "workflow.signal", payload: {} },
+          ),
+        UserError,
+        "does not support signals",
+      );
+      assertEquals(error.code, "unsupported_by_server");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestNewerServerResponse: any other refusal and a reply pass through unchanged",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const refusing = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: { code: "not_found", message: "Signal wait not found" },
+      });
+    });
+    const answering = scriptedServer((request, reply) => {
+      reply({ type: "workflow.waits", id: request.id, payload: { data: 1 } });
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          requestNewerServerResponse(
+            "signals",
+            { server: refusing.url },
+            { type: "workflow.signal", payload: {} },
+          ),
+        UserError,
+        "Signal wait not found",
+      );
+      assertEquals(error.code, "not_found");
+      assertEquals(
+        await requestNewerServerResponse<{ data: number }>(
+          "listing signal waits",
+          { server: answering.url },
+          { type: "workflow.waits" },
+        ),
+        { data: 1 },
+      );
+    } finally {
+      await refusing.shutdown();
+      await answering.shutdown();
     }
   },
 });

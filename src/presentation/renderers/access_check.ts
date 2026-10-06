@@ -32,24 +32,77 @@ export interface AccessCheckResult {
    * that predates the setting.
    */
   approveRequiresExplicitGrant?: boolean;
+  /**
+   * The server's signal policy. Undefined for a local check, or a server
+   * that predates the setting.
+   */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 interface ApprovalDecision {
   readonly effect: string;
   readonly impliedBy?: "run";
+  /** The action of a listing row; absent on a check of one action. */
+  readonly action?: string;
 }
 
-/** Marks a decision that covers approve only through a run grant. */
+/** Marks a decision that covers its action only through a run grant. */
 export function impliedMarker(decision: ApprovalDecision): string {
   return decision.impliedBy === "run" ? " [implied by run]" : "";
 }
 
+/** An action a run grant implies unless the server requires an explicit grant. */
+type RunImpliedAction = "approve" | "signal";
+
+const POLICY_LABEL: Record<RunImpliedAction, string> = {
+  approve: "Approval policy",
+  signal: "Signal policy",
+};
+
 function explicitGrantHint(
-  approveRequiresExplicitGrant: boolean | undefined,
+  requiresExplicitGrant: boolean | undefined,
+  action: RunImpliedAction,
 ): string {
-  return approveRequiresExplicitGrant === false
-    ? "Set auth.approve-requires-explicit-grant on the server to require a grant that names approve."
-    : "A server started with --approve-requires-explicit-grant requires a grant that names approve.";
+  return requiresExplicitGrant === false
+    ? `Set auth.${action}-requires-explicit-grant on the server to require a grant that names ${action}.`
+    : `A server started with --${action}-requires-explicit-grant requires a grant that names ${action}.`;
+}
+
+function runImpliedPolicyNote(
+  target: RunImpliedAction,
+  action: string,
+  decisions: readonly ApprovalDecision[],
+  requiresExplicitGrant: boolean | undefined,
+): string | null {
+  if (action !== target) return null;
+  if (requiresExplicitGrant === true) {
+    return `${
+      POLICY_LABEL[target]
+    }: this server requires a grant that names ${target}; run grants do not count.`;
+  }
+  const allowedOnlyThroughRun = decisions.length > 0 &&
+    decisions[0].effect === "allow" &&
+    decisions.every((d) => d.impliedBy === "run");
+  if (!allowedOnlyThroughRun) return null;
+  return `Note: ${target} is allowed only through a run grant. ${
+    explicitGrantHint(requiresExplicitGrant, target)
+  }`;
+}
+
+/** A row with no action is a row of an approve listing, as before signal. */
+function impliedListingNote(
+  target: RunImpliedAction,
+  decisions: readonly ApprovalDecision[],
+  requiresExplicitGrant: boolean | undefined,
+): string | null {
+  const hasImpliedAllow = decisions.some((d) =>
+    d.effect === "allow" && d.impliedBy === "run" &&
+    (d.action === undefined ? target === "approve" : d.action === target)
+  );
+  if (!hasImpliedAllow) return null;
+  return `Note: ${target} rows marked [implied by run] come from run grants. ${
+    explicitGrantHint(requiresExplicitGrant, target)
+  }`;
 }
 
 /**
@@ -62,17 +115,29 @@ export function approvalPolicyNote(
   decisions: readonly ApprovalDecision[],
   approveRequiresExplicitGrant: boolean | undefined,
 ): string | null {
-  if (action !== "approve") return null;
-  if (approveRequiresExplicitGrant === true) {
-    return "Approval policy: this server requires a grant that names approve; run grants do not count.";
-  }
-  const allowedOnlyThroughRun = decisions.length > 0 &&
-    decisions[0].effect === "allow" &&
-    decisions.every((d) => d.impliedBy === "run");
-  if (!allowedOnlyThroughRun) return null;
-  return `Note: approve is allowed only through a run grant. ${
-    explicitGrantHint(approveRequiresExplicitGrant)
-  }`;
+  return runImpliedPolicyNote(
+    "approve",
+    action,
+    decisions,
+    approveRequiresExplicitGrant,
+  );
+}
+
+/**
+ * Explains how a signal check was decided, as {@link approvalPolicyNote}
+ * does for approve.
+ */
+export function signalPolicyNote(
+  action: string,
+  decisions: readonly ApprovalDecision[],
+  signalRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  return runImpliedPolicyNote(
+    "signal",
+    action,
+    decisions,
+    signalRequiresExplicitGrant,
+  );
 }
 
 /**
@@ -83,13 +148,18 @@ export function impliedApproveListingNote(
   decisions: readonly ApprovalDecision[],
   approveRequiresExplicitGrant: boolean | undefined,
 ): string | null {
-  const hasImpliedAllow = decisions.some((d) =>
-    d.effect === "allow" && d.impliedBy === "run"
-  );
-  if (!hasImpliedAllow) return null;
-  return `Note: approve rows marked [implied by run] come from run grants. ${
-    explicitGrantHint(approveRequiresExplicitGrant)
-  }`;
+  return impliedListingNote("approve", decisions, approveRequiresExplicitGrant);
+}
+
+/**
+ * Explains implied signal rows in a permission listing, or returns null when
+ * the listing has none that allow.
+ */
+export function impliedSignalListingNote(
+  decisions: readonly ApprovalDecision[],
+  signalRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  return impliedListingNote("signal", decisions, signalRequiresExplicitGrant);
 }
 
 export interface AccessCheckRenderer {
@@ -106,6 +176,10 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
       result.action,
       result.decisions,
       result.approveRequiresExplicitGrant,
+    ) ?? signalPolicyNote(
+      result.action,
+      result.decisions,
+      result.signalRequiresExplicitGrant,
     );
 
     if (result.decisions.length === 0) {
@@ -162,6 +236,11 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
           ...(result.approveRequiresExplicitGrant !== undefined
             ? {
               approveRequiresExplicitGrant: result.approveRequiresExplicitGrant,
+            }
+            : {}),
+          ...(result.signalRequiresExplicitGrant !== undefined
+            ? {
+              signalRequiresExplicitGrant: result.signalRequiresExplicitGrant,
             }
             : {}),
         },

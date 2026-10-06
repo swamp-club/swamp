@@ -100,10 +100,12 @@ import {
   handleWorkflowRunSearch,
   handleWorkflowSchema,
   handleWorkflowSearch,
+  handleWorkflowSignal,
   handleWorkflowTriggerGet,
   handleWorkflowTriggerRemove,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
+  handleWorkflowWaits,
 } from "./handlers/workflow_handlers.ts";
 import {
   authorizeResolved,
@@ -817,6 +819,22 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
+// The wait ID is the only address of a signal. Only a UUID is accepted, so
+// no other client text reaches a store key or the audit log through it.
+const WorkflowSignalRequestSchema = z.object({
+  type: z.literal("workflow.signal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    waitId: z.string().uuid(),
+    payload: z.unknown(),
+  }),
+});
+
+const WorkflowWaitsRequestSchema = z.object({
+  type: z.literal("workflow.waits"),
+  id: z.string().min(1).max(256),
+});
+
 const WorkflowCancelRequestSchema = z.object({
   type: z.literal("workflow.cancel"),
   id: z.string().min(1).max(256),
@@ -1395,6 +1413,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
   WorkflowRejectRequestSchema,
+  WorkflowSignalRequestSchema,
+  WorkflowWaitsRequestSchema,
   WorkflowCancelRequestSchema,
   WorkflowResumeRequestSchema,
   VaultDescribeRequestSchema,
@@ -2994,6 +3014,37 @@ export function handleMessage(
             principal,
           )),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
+      );
+      break;
+    case "workflow.signal":
+      // Not gated: a signal writes one control-plane record and pushes
+      // nothing. Audited under the wait ID until the handler has authorized
+      // the caller on the wait's workflow.
+      task = audited(
+        handleWorkflowSignal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts(
+          "execution",
+          "workflow",
+          request.payload.waitId.trim().toLowerCase(),
+        ),
+      );
+      break;
+    case "workflow.waits":
+      task = audited(
+        handleWorkflowWaits(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.cancel":

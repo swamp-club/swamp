@@ -21,9 +21,12 @@ import { collect } from "../testing.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  signalRefusalKind,
+  type SignalWaitSubject,
   workflowSignal,
   type WorkflowSignalDeps,
   type WorkflowSignalEvent,
+  type WorkflowSignalInput,
 } from "./signal.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import {
@@ -850,4 +853,267 @@ Deno.test("workflowSignal: names read from a wait record are printed without con
   assertStringIncludes(error.message, 'workflow "release?"');
   // deno-lint-ignore no-control-regex
   assertEquals(/[\u0000-\u001f]/.test(error.message), false);
+});
+
+// --- refusal kinds, the authorization hook and the run-record scan ---
+
+/** Sends a signal with an `authorize` hook that records what it was asked. */
+async function sendAuthorized(
+  fixture: Pick<Fixture, "deps">,
+  waitId: string,
+  payload: unknown,
+  allow: boolean,
+): Promise<{ event: WorkflowSignalEvent; asked: SignalWaitSubject[] }> {
+  const asked: SignalWaitSubject[] = [];
+  const authorize: WorkflowSignalInput["authorize"] = (wait) => {
+    asked.push(wait);
+    return Promise.resolve(allow);
+  };
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      waitId,
+      payload,
+      submittedBy: "tux",
+      authorize,
+    }),
+  );
+  return { event: events.at(-1)!, asked };
+}
+
+function kindOf(event: WorkflowSignalEvent): string | undefined {
+  assert(event.kind === "error", `expected a refusal, got ${event.kind}`);
+  return signalRefusalKind(event.error);
+}
+
+const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
+
+Deno.test("workflowSignal: every refusal carries its kind", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+
+  const open = await fixtureOf([run]);
+  assertEquals(kindOf(await send(open, UNKNOWN_ID, {})), "unknown");
+  assertEquals(kindOf(await send(open, "not-a-uuid", {})), "unknown");
+  assertEquals(
+    kindOf(await send(open, waitId, { verdict: "maybe" })),
+    "invalid_payload",
+  );
+  assertEquals(
+    (await send(open, waitId, { verdict: "ship" })).kind,
+    "completed",
+  );
+  assertEquals(
+    kindOf(await send(open, waitId, { verdict: "fix" })),
+    "already_settled",
+  );
+
+  const late = await fixtureOf([run], { now: TOO_LATE });
+  assertEquals(
+    kindOf(await send(late, waitId, { verdict: "ship" })),
+    "expired",
+  );
+
+  const closed = await fixtureOf([run]);
+  await closed.waits.settle(
+    cancelledOutcome(
+      waitRefOf(run, run.getJob("main")!.getStep("review")!)!,
+      IN_TIME,
+    ),
+  );
+  assertEquals(
+    kindOf(await send(closed, waitId, { verdict: "ship" })),
+    "closed",
+  );
+
+  const unsupported = await fixtureOf([run]);
+  unsupported.deps.signalWaits = { supported: false, reason: "no store" };
+  assertEquals(
+    kindOf(await send(unsupported, waitId, { verdict: "ship" })),
+    "unsupported",
+  );
+});
+
+Deno.test("workflowSignal: authorize is asked with the wait's place and the run's recorded workflow", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+
+  const { event, asked } = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "ship" },
+    true,
+  );
+
+  assertEquals(event.kind, "completed");
+  assertEquals(asked, [{
+    waitId,
+    workflowId: run.workflowId,
+    workflowName: run.workflowName,
+    runId: run.id,
+    runWorkflow: {
+      workflowId: run.workflowId,
+      workflowName: run.workflowName,
+    },
+  }]);
+});
+
+Deno.test("workflowSignal: authorize gets no run workflow when this host has no run record", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  fixture.stored.clear();
+
+  const { event, asked } = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "ship" },
+    true,
+  );
+
+  assertEquals(event.kind, "completed");
+  assertEquals(asked.length, 1);
+  assertEquals(asked[0].runWorkflow, undefined);
+});
+
+Deno.test("workflowSignal: a refused caller gets the unknown answer and nothing is stored", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  const unknown = errorOf(await send(fixture, UNKNOWN_ID, { verdict: "ship" }));
+
+  for (
+    const payload of [
+      { verdict: "ship" },
+      { verdict: "maybe" },
+      "not an object",
+    ]
+  ) {
+    const { event } = await sendAuthorized(fixture, waitId, payload, false);
+    const refusal = errorOf(event);
+    assertEquals(refusal.code, unknown.code);
+    assertEquals(
+      refusal.message,
+      unknown.message.replace(UNKNOWN_ID, waitId),
+    );
+    assertEquals(kindOf(event), "unknown");
+  }
+  assertEquals((await fixture.waits.findOutcome(waitId)).kind, "absent");
+});
+
+Deno.test("workflowSignal: a refused caller learns nothing of a settled, expired or closed wait", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+
+  const settled = await fixtureOf([run]);
+  await send(settled, waitId, { verdict: "ship" });
+  const late = await fixtureOf([run], { now: TOO_LATE });
+  const closed = await fixtureOf([run]);
+  await closed.waits.settle(
+    cancelledOutcome(
+      waitRefOf(run, run.getJob("main")!.getStep("review")!)!,
+      IN_TIME,
+    ),
+  );
+
+  for (const fixture of [settled, late, closed]) {
+    const { event } = await sendAuthorized(
+      fixture,
+      waitId,
+      { verdict: "ship" },
+      false,
+    );
+    assertEquals(kindOf(event), "unknown");
+    const { message } = errorOf(event);
+    assertEquals(message.includes(run.id), false);
+    assertEquals(message.includes(workflow.name), false);
+    assertEquals(message.includes("review"), false);
+  }
+  // The refused attempt on the expired wait did not settle it either.
+  assertEquals((await late.waits.findOutcome(waitId)).kind, "absent");
+});
+
+Deno.test("workflowSignal: authorize is asked before an unregistered wait is registered", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run], { registered: false });
+
+  const refused = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "ship" },
+    false,
+  );
+  assertEquals(kindOf(refused.event), "unknown");
+  assertEquals(refused.asked.length, 1);
+  assertEquals(refused.asked[0].runWorkflow?.workflowName, workflow.name);
+  assertEquals((await fixture.waits.findRegistration(waitId)).kind, "absent");
+
+  const allowed = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "ship" },
+    true,
+  );
+  assertEquals(allowed.event.kind, "completed");
+  // Asked once: the run record placed the wait and was the run it named.
+  assertEquals(allowed.asked.length, 1);
+  assertEquals((await fixture.waits.findRegistration(waitId)).kind, "found");
+});
+
+Deno.test("workflowSignal: with only an outcome left, authorize is asked by workflow id", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  await send(fixture, waitId, { verdict: "ship" });
+  // The run ended and its registration was removed; this host lost the run.
+  await fixture.waits.removeRegistration(waitId);
+  fixture.stored.clear();
+
+  const refused = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "fix" },
+    false,
+  );
+  assertEquals(kindOf(refused.event), "unknown");
+  assertEquals(refused.asked, [{
+    waitId,
+    workflowId: run.workflowId,
+    runId: run.id,
+  }]);
+
+  const allowed = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "fix" },
+    true,
+  );
+  assertEquals(kindOf(allowed.event), "already_settled");
+});
+
+Deno.test("workflowSignal: with the scan off an unregistered wait is unknown and no run is read", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run], { registered: false });
+  fixture.deps.scanRunRecords = false;
+
+  const event = await send(fixture, waitId, { verdict: "ship" });
+
+  assertEquals(kindOf(event), "unknown");
+  assertEquals(fixture.calls, []);
+  assertEquals((await fixture.waits.findRegistration(waitId)).kind, "absent");
+});
+
+Deno.test("workflowSignal: with the scan off a registered wait is delivered as before", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  fixture.deps.scanRunRecords = false;
+
+  const event = await send(fixture, waitId, { verdict: "ship" });
+
+  assertEquals(event.kind, "completed");
+  assertEquals(fixture.calls.includes("findAllGlobal"), false);
+  assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
 });

@@ -410,6 +410,12 @@ export interface WorkflowApprovePayload {
   decidedBy?: string;
 }
 
+/** A signal for a wait. The payload is untrusted and checked by the wait. */
+export interface WorkflowSignalPayload {
+  waitId: string;
+  payload: unknown;
+}
+
 export interface WorkflowRejectPayload {
   workflowIdOrName: string;
   stepName: string;
@@ -830,6 +836,8 @@ export type ServerRequest =
   | { type: "workflow.approvals"; id: string }
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
+  | { type: "workflow.signal"; id: string; payload: WorkflowSignalPayload }
+  | { type: "workflow.waits"; id: string }
   | { type: "workflow.resume"; id: string; payload: WorkflowResumePayload }
   | { type: "workflow.cancel"; id: string; payload: WorkflowCancelPayload }
   | { type: "vault.get"; id: string; payload: VaultGetPayload }
@@ -1067,6 +1075,8 @@ export interface AccessCheckResponse {
   decisions: Record<string, unknown>[];
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
+  /** The server's signal policy; absent from servers that predate it. */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessCanIDecision {
@@ -1076,7 +1086,7 @@ export interface AccessCanIDecision {
   grantId: string;
   via: string;
   condition?: string;
-  /** Set when the grant covers `approve` only because it grants `run`. */
+  /** Set when the grant covers `approve` or `signal` only because it grants `run`. */
   impliedBy?: "run";
 }
 
@@ -1086,6 +1096,8 @@ export interface AccessCanIResponse {
   decisions: AccessCanIDecision[];
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
+  /** The server's signal policy; absent from servers that predate it. */
+  signalRequiresExplicitGrant?: boolean;
 }
 
 export interface AccessReloadFileResult {
@@ -1240,6 +1252,37 @@ export interface WorkflowApproveResponse {
 }
 
 export interface WorkflowRejectResponse {
+  data: Record<string, unknown>;
+}
+
+/**
+ * A delivered signal. The fields after `signal` are present only for a
+ * caller who may also read the wait's workflow.
+ */
+export interface WorkflowSignalResponseData {
+  waitId: string;
+  /** What swamp recorded about the signal. */
+  signal: {
+    id: string;
+    waitId: string;
+    receivedAt: string;
+    submittedBy: string;
+  };
+  workflowId?: string;
+  workflowName?: string;
+  runId?: string;
+  jobName?: string;
+  stepName?: string;
+  awaitingResume?: boolean;
+  runRecordAvailable?: boolean;
+  resumeCommand?: string;
+}
+
+export interface WorkflowSignalResponse {
+  data: WorkflowSignalResponseData;
+}
+
+export interface WorkflowWaitsResponse {
   data: Record<string, unknown>;
 }
 
@@ -1692,6 +1735,8 @@ export type ServerMessage =
   }
   | { type: "workflow.approve"; id: string; payload: WorkflowApproveResponse }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectResponse }
+  | { type: "workflow.signal"; id: string; payload: WorkflowSignalResponse }
+  | { type: "workflow.waits"; id: string; payload: WorkflowWaitsResponse }
   | { type: "workflow.cancel"; id: string; payload: WorkflowCancelResponse }
   | { type: "vault.get"; id: string; payload: VaultGetResponse }
   | { type: "vault.put"; id: string; payload: VaultPutResponse }

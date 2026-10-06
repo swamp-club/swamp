@@ -185,6 +185,7 @@ export function createServeCtx(
     restrictedModelTypes: [],
     restrictedCommands: [],
     approveRequiresExplicitGrant: false,
+    signalRequiresExplicitGrant: false,
   };
   return {
     repoDir: repo.repoDir,

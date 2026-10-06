@@ -34,6 +34,7 @@ import {
   createWorkflowHistoryLogsDeps,
   createWorkflowRejectDeps,
   createWorkflowValidateDeps,
+  createWorkflowWaitsDeps,
   type DetachedNestedRunData,
   mapWorkflowExecutionEvent,
   resolveRunReference,
@@ -61,6 +62,9 @@ import {
   workflowSearch,
   type WorkflowSearchDeps,
   workflowValidate,
+  workflowWaits,
+  type WorkflowWaitsData,
+  type WorkflowWaitsEvent,
 } from "../../libswamp/mod.ts";
 import {
   createStepLockHook,
@@ -86,6 +90,7 @@ import type {
   WorkflowRunSearchPayload,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
+  WorkflowSignalPayload,
   WorkflowTriggerGetPayload,
   WorkflowTriggerRemovePayload,
   WorkflowTriggerSetPayload,
@@ -144,6 +149,7 @@ import {
   writeActiveRun,
 } from "../active_run_tracker.ts";
 import {
+  accessCallerOf,
   authorizeAnyOrReject,
   authorizeOrReject,
   cancelActor,
@@ -159,6 +165,7 @@ import {
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
+  recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
   sanitizeErrorForClient,
@@ -210,6 +217,8 @@ import {
   workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
+import { deliverSignalForCaller } from "../signal_delivery.ts";
+import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
 import { authorizeStepTargets } from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -1459,6 +1468,146 @@ export async function handleWorkflowApprove(
     id: requestId,
     payload: { data: { ...result, autoResumed } },
   });
+}
+
+/**
+ * Delivers a signal to the wait it names. The caller is authorized on the
+ * wait's workflow inside {@link deliverSignalForCaller}, which the HTTP
+ * signal route shares: a wait the caller may not signal is answered as one
+ * that does not exist. Nothing here reserves or saves a run.
+ */
+export async function handleWorkflowSignal(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowSignalPayload,
+  principal: Principal | null,
+): Promise<void> {
+  const result = await deliverSignalForCaller(
+    ctx,
+    accessCallerOf(socket, principal),
+    { requestId, waitId: payload.waitId, payload: payload.payload },
+  );
+  switch (result.status) {
+    case "delivered":
+      if (result.data.workflowName !== undefined) {
+        recordAuditedResource(
+          socket,
+          requestId,
+          "workflow",
+          result.data.workflowName,
+          ctx,
+        );
+      }
+      send(socket, {
+        type: "workflow.signal",
+        id: requestId,
+        payload: { data: result.data },
+      });
+      return;
+    case "not_found":
+      sendError(socket, requestId, "not_found", result.message);
+      return;
+    case "failed":
+      sendError(socket, requestId, "workflow_signal_failed", result.message);
+      return;
+    case "invalid_payload":
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+        errors: result.errors,
+      });
+      return;
+    default:
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+        ...(result.receipt ? { receipt: result.receipt } : {}),
+      });
+  }
+}
+
+/**
+ * Lists the waits for a signal nothing has answered, to a caller who may
+ * read their workflows. A grant for `signal` alone lists nothing.
+ *
+ * The listing is not read-only, here as for the local command: it registers
+ * the waits of runs suspended before waits were registered, settles a wait
+ * past its deadline as timed out, and sweeps wait records, for every
+ * workflow. Each of those writes depends only on stored state, never on the
+ * request.
+ */
+export async function handleWorkflowWaits(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
+  ) return;
+
+  try {
+    const deps = createWorkflowWaitsDeps(
+      ctx.repoContext.workflowRunRepo,
+      ctx.repoContext.signalWaits ?? SIGNAL_WAITS_NOT_CONFIGURED,
+    );
+    let listed: WorkflowWaitsData | undefined;
+    await consumeStream<WorkflowWaitsEvent>(
+      workflowWaits(handlerLibSwampContext(ctx), deps),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          listed = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    const data: WorkflowWaitsData = listed ??
+      { waits: [], unreadableWaits: [] };
+    const canonical = canonicalResources(ctx);
+    const ownersOf = (item: { workflowId: string; workflowName: string }) =>
+      canonical.workflowOwners(item.workflowId, item.workflowName);
+    const waits = await filterByResources(
+      data.waits,
+      ownersOf,
+      socket,
+      principal,
+      "read",
+      ctx,
+    );
+    const unreadableWaits = await filterByResources(
+      data.unreadableWaits,
+      ownersOf,
+      socket,
+      principal,
+      "read",
+      ctx,
+    );
+
+    send(socket, {
+      type: "workflow.waits",
+      id: requestId,
+      payload: { data: { waits, unreadableWaits } },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_waits_failed", message);
+  }
 }
 
 export async function handleWorkflowReject(

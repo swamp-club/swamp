@@ -106,6 +106,9 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.reject": "resource",
   "workflow.resume": "resource",
   "workflow.cancel": "resource",
+  // Names a wait, not a workflow, so serve_id_deny_conformance has no field
+  // to drive; its tags deny is exercised in serve_signal_test.
+  "workflow.signal": "resource",
   "run.attach": "resource",
   "cancel": "resource",
 
@@ -117,6 +120,8 @@ const CATEGORIES: Record<string, Category> = {
   "data.query": "collection",
   "workflow.search": "collection",
   "workflow.approvals": "collection",
+  // Exercised under a tags deny in serve_signal_test.
+  "workflow.waits": "collection",
   "workflow.history.search": "collection",
   "workflow.run.search": "collection",
   "report.search": "collection",

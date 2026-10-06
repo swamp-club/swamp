@@ -631,6 +631,7 @@ const modeNone: ServeAuthConfig = {
   restrictedModelTypes: [],
   restrictedCommands: [],
   approveRequiresExplicitGrant: false,
+  signalRequiresExplicitGrant: false,
 };
 
 /** A step that passes, then a shell step that exits with `inputs.code`. */

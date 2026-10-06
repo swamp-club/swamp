@@ -454,6 +454,7 @@ export async function handleAccessCheck(
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
         approveRequiresExplicitGrant: !service.runImpliesApprove,
+        signalRequiresExplicitGrant: !service.runImpliesSignal,
       },
     });
     return;
@@ -538,6 +539,7 @@ export async function handleAccessCanI(
             ...(d.impliedBy ? { impliedBy: d.impliedBy } : {}),
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
         },
       });
     } else {
@@ -558,6 +560,7 @@ export async function handleAccessCanI(
         payload: {
           principal: principalStr,
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
           decisions: grants.flatMap((g) =>
             service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
               action: a,

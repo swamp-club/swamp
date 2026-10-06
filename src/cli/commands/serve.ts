@@ -129,6 +129,10 @@ import {
   rateLimitKey,
 } from "../../serve/rate_limiter.ts";
 import {
+  handleSignalHttpRequest,
+  matchSignalRoute,
+} from "../../serve/signal_http.ts";
+import {
   parsePrincipal,
   type Principal,
 } from "../../domain/access/principal.ts";
@@ -1073,6 +1077,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.approveRequiresExplicitGrant) {
     args.push("--approve-requires-explicit-grant");
   }
+  if (options.signalRequiresExplicitGrant) {
+    args.push("--signal-requires-explicit-grant");
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -1450,6 +1457,7 @@ export function resolveServeStartupSettings(
     restrictedModelTypes: merged.restrictedModelTypes,
     restrictedCommands: merged.restrictedCommands,
     approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+    signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
   });
 
   assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);
@@ -1588,6 +1596,13 @@ const daemonEnableCommand = new Command()
       "a run grant alone no longer implies approve. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--signal-requires-explicit-grant",
+    "Require a grant that names signal to deliver a signal to a workflow's wait; " +
+      "a run grant alone no longer implies signal. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2012,6 +2027,7 @@ const checkConfigCommand = new Command()
       restrictedModelTypes: merged.restrictedModelTypes,
       restrictedCommands: merged.restrictedCommands,
       approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+      signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
     });
 
     const tokenSecretsKey = await checkTokenSecretsKey(
@@ -2228,6 +2244,13 @@ export const serveCommand = new Command()
       "a run grant alone no longer implies approve. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--signal-requires-explicit-grant",
+    "Require a grant that names signal to deliver a signal to a workflow's wait; " +
+      "a run grant alone no longer implies signal. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2501,6 +2524,15 @@ export const serveCommand = new Command()
     ) {
       logger.warn(
         "--approve-requires-explicit-grant is set but --auth-mode is {mode} — approval policy will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" && authConfig.signalRequiresExplicitGrant
+    ) {
+      logger.warn(
+        "--signal-requires-explicit-grant is set but --auth-mode is {mode} — signal policy will have no effect",
         { mode: authConfig.mode },
       );
     }
@@ -3773,7 +3805,10 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
       grantReloadMode as PolicyReloadMode,
-      { runImpliesApprove: !authConfig.approveRequiresExplicitGrant },
+      {
+        runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
+        runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
+      },
     );
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
@@ -3783,6 +3818,11 @@ export const serveCommand = new Command()
       authConfig.approveRequiresExplicitGrant
         ? "Approval policy: deciding an approval gate requires a grant that names approve"
         : "Approval policy: a run grant also permits deciding approval gates",
+    );
+    logger.info(
+      authConfig.signalRequiresExplicitGrant
+        ? "Signal policy: delivering a signal requires a grant that names signal"
+        : "Signal policy: a run grant also permits delivering signals",
     );
 
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
@@ -5642,6 +5682,30 @@ export const serveCommand = new Command()
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
+          // Signal endpoint (authenticated; authorized on the wait's workflow)
+          const signalWaitId = matchSignalRoute(url.pathname);
+          if (signalWaitId !== undefined) {
+            return await handleSignalHttpRequest(
+              req,
+              signalWaitId,
+              cancelRemoteAddr,
+              {
+                ctx: connectionCtx,
+                authenticate: (token, sourceIp) =>
+                  authenticateServerToken(
+                    token,
+                    resolvedRepoDir,
+                    repoContext,
+                    {
+                      emitter: connectionCtx.auditEmitter,
+                      instanceId: connectionCtx.instanceId,
+                      sourceIp,
+                      ingress: "http-signal",
+                    },
+                  ),
+              },
+            );
+          }
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
               const cancelIpBurst = checkIpBurst(cancelRemoteAddr);

@@ -38,6 +38,11 @@ export interface ServeAuthConfig {
    * `approve`; a `run` grant alone no longer implies it. Off by default.
    */
   approveRequiresExplicitGrant: boolean;
+  /**
+   * When true, delivering a signal to a workflow's wait needs a grant that
+   * names `signal`; a `run` grant alone no longer implies it. Off by default.
+   */
+  signalRequiresExplicitGrant: boolean;
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -59,6 +64,7 @@ export interface ServeAuthConfigInput {
   restrictedModelTypes?: string;
   restrictedCommands?: string;
   approveRequiresExplicitGrant?: boolean;
+  signalRequiresExplicitGrant?: boolean;
 }
 
 function parseCommaSeparated(value: string | undefined): string[] {
@@ -167,5 +173,6 @@ export function buildServeAuthConfig(
     restrictedModelTypes,
     restrictedCommands,
     approveRequiresExplicitGrant: input.approveRequiresExplicitGrant ?? false,
+    signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
   };
 }

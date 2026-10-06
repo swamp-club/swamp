@@ -115,6 +115,7 @@ function makeCtx(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
   };
 }

@@ -633,6 +633,20 @@ waits. On a host that has no copy of the run it cannot be known: it is reported
 `false` with `runRecordAvailable: false`, and the log output says so instead of
 claiming the run still waits on something else.
 
+**Through `swamp serve`.** A signal can also be delivered to a server, with
+`swamp workflow signal --server`, the WebSocket request `workflow.signal`, or
+`POST /api/v1/signal/<waitId>` (swamp-club#3094). It is the same use case behind
+an authorization boundary: the caller needs the `signal` action on the wait's
+workflow, an unknown wait and a wait the caller may not signal are answered
+alike, and the workflow, run and step are named only to a caller who may also
+read the workflow. The use case takes an `authorize` callback for this, asked
+once the wait is placed and before anything is stored or said, and each refusal
+carries a machine-readable kind so the server maps it without reading the
+message. Serve turns off the run-record fallback described below
+(`scanRunRecords: false`). The routes, the answers and their status codes are in
+[serve](serve.md) under "Signal"; the action is in
+[access-control](../enablers/access-control.md).
+
 A signal does not change what the run record says. Until the run is resumed its
 step still shows `waiting`, the record's derived `awaitingResume` is unset, and
 `workflow run` keeps the run instead of superseding it. `workflow waits` and the
@@ -780,6 +794,15 @@ that fails it. The printed commands carry `--repo-dir` when the command was
 given one. The command also registers waits of runs suspended before waits were
 registered, and sweeps (see below), so it is not read-only.
 
+Through serve, `workflow.waits` and `swamp workflow waits --server` run the same
+listing for a caller with `read` and show the waits of the workflows that caller
+may read. It writes as the local listing does, for every workflow and not only
+those shown: it registers unregistered waits, settles overdue ones as timed out
+and sweeps. That is a write behind a read grant, accepted because each write
+depends only on stored state, never on the request, and because the listing is
+what makes a wait of an older run reachable by a signal through serve, which
+does not scan run records.
+
 **Cancel and reject** settle a waiting step as they settle a waiting gate: it
 fails with error `cancelled`. See "Settling a cancelled run" below.
 
@@ -851,13 +874,17 @@ to start while any of them is still open.
 
 **Limits of this version:**
 
-- Only the CLI can signal. An outside system cannot call in by itself;
-  something must run `swamp workflow signal` on a machine with a repository on
-  the datastore.
-- Resume is manual, including for runs that `swamp serve` started: serve does
-  not auto-resume a run that still has a step waiting for a signal, signalled,
-  open or past its deadline. The local command does no authorization, as local
-  `approve` does none.
+- Resume is manual, including for runs that `swamp serve` started and signals
+  delivered through it: serve does not auto-resume a run that still has a step
+  waiting for a signal, signalled, open or past its deadline (swamp-club#3108).
+  The local command does no authorization, as local `approve` does none.
+- A retried signal is answered "already settled". Through serve, the earlier
+  receipt is shown only to a caller who may read the workflow, so a caller with
+  `signal` alone cannot tell its own delivery from another's. There is no
+  idempotency key.
+- Through serve, a wait with no readable registration (a run suspended by the
+  swamp-club#3068 build, or a damaged registration file) is answered as unknown
+  until a waits listing registers it.
 - Deadlines are noticed only when something looks. An expired wait stays
   suspended until the next resume.
 - A signal does not show in the run record until the run is resumed, so
