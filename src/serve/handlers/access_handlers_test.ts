@@ -333,6 +333,24 @@ Deno.test("handleAccessReload: pushes reconciled grants to remote datastore befo
   assertEquals(response.payload.success, true);
 });
 
+Deno.test("handleAccessReload: a failed push still pulls, loads the snapshot and replies success", async () => {
+  const { service: syncService, pushCalls, pullCalls } =
+    createMockSyncService();
+  syncService.pushChanged = (options?: DatastoreSyncOptions) => {
+    pushCalls.push(options ?? {});
+    return Promise.reject(new Error("datastore unreachable"));
+  };
+  const ctx = createReloadCtx(syncService);
+  const socket = createMockSocket();
+
+  await handleAccessReload(socket, ctx, "req-reload", null);
+
+  assertEquals(pushCalls.length, 1);
+  assertEquals(pullCalls.length, 1);
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.payload.success, true);
+});
+
 Deno.test("handleAccessReload: works without syncService (local-only mode)", async () => {
   const ctx = createReloadCtx(undefined);
   const socket = createMockSocket();

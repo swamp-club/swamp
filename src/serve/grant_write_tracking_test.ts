@@ -206,3 +206,32 @@ Deno.test("createGrantWriteCommit: pushes the unit's writes inside the exclusive
   ]);
   assertEquals(gate.exclusiveHeld, false);
 });
+
+Deno.test("createGrantWriteCommit: a unit that throws pushes nothing, rethrows, and leaves its paths for the next unit", async () => {
+  const gate = createSyncGate();
+  const { events, deps } = recordingDeps(gate);
+  let pending: string[] = [];
+  const tracking = {
+    takeWrittenPaths() {
+      const paths = pending;
+      pending = [];
+      return paths;
+    },
+  };
+  const commit = createGrantWriteCommit(gate, tracking, deps);
+
+  let caught: unknown;
+  try {
+    await commit(() => {
+      pending.push("half-written-grant");
+      return Promise.reject(new Error("reconcile failed"));
+    });
+  } catch (error) {
+    caught = error;
+  }
+
+  assertEquals((caught as Error).message, "reconcile failed");
+  assertEquals(events, []);
+  assertEquals(pending, ["half-written-grant"]);
+  assertEquals(gate.exclusiveHeld, false);
+});
