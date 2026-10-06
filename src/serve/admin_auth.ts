@@ -46,6 +46,7 @@ export interface AdminAuthDeps {
   readonly trustProxy: boolean;
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
+  readonly resolvedUserNames?: Readonly<Record<string, string>>;
 }
 
 type AuthenticatedPrincipal = Omit<
@@ -178,6 +179,7 @@ export async function authenticateToken(
       instanceId: deps.instanceId,
       sourceIp: clientAddr,
       ingress: new URL(req.url).pathname,
+      resolvedUserNames: deps.resolvedUserNames,
     },
   );
 
@@ -236,6 +238,7 @@ export async function authenticateDashboardSessionToken(
       instanceId: deps.instanceId,
       sourceIp: clientAddr,
       ingress: new URL(req.url).pathname,
+      resolvedUserNames: deps.resolvedUserNames,
     },
   );
   if (!authResult.ok) {

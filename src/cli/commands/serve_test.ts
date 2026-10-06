@@ -1335,6 +1335,18 @@ Deno.test("authorizeCancelRequest: refuses without a policy snapshot and audits 
   assertEquals(events[0].initiatedBy, "user:alice");
 });
 
+Deno.test("authorizeCancelRequest: the refusal records the caller's login identity (swamp-club#3076)", () => {
+  const events: AuditEvent[] = [];
+
+  authorizeCancelRequest(cancelAuthCtx(events), undefined, {
+    ...cancelAuthRequest,
+    loginIdentity: { email: "alice@example.com", username: "alice-login" },
+  });
+
+  assertEquals(events[0].principalUsername, "alice-login");
+  assertEquals(events[0].principalEmail, "alice@example.com");
+});
+
 for (const effect of ["deny", null] as const) {
   Deno.test(`authorizeCancelRequest: refuses a caller without admin (decision ${effect}) and audits the refusal`, async () => {
     const h = cancelAuthHarness(effect);

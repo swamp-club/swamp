@@ -185,8 +185,10 @@ import {
   cancelActor,
   cancelReasonFor,
   closeSession,
+  connectionActorIdentity,
   type ConnectionContext,
   emitRunCancelAudit,
+  getConnectionLoginIdentity,
   getConnectionSourceIp,
   isAuthorized,
   isRestrictedCommand,
@@ -1788,6 +1790,7 @@ export function handleMessage(
       requestId: request.id,
       methodName,
       resolvedUserNames: ctx.resolvedUserNames,
+      actor: connectionActorIdentity(socket, principal, ctx),
       socket,
     };
   }
@@ -3888,6 +3891,7 @@ async function handleCancelRun(
       resourceKind,
       resourceName: requestId,
       principal,
+      loginIdentity: getConnectionLoginIdentity(socket),
       sourceIp: getConnectionSourceIp(socket),
       requestId,
       outcome: cancelled ? "success" : "failure",

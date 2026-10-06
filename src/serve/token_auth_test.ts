@@ -645,3 +645,80 @@ Deno.test("authenticateServerToken: a wrong secret is a secret mismatch even whe
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.reason, "secret-mismatch");
 });
+
+const oauthIdentity = { email: "alice@example.com", username: "alice" };
+
+Deno.test("authenticateServerToken: carries the OAuth login identity into the result and its audit event (swamp-club#3076)", async () => {
+  const events: AuditEvent[] = [];
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(
+          activeToken({ principalId: "user:sub-collective", oauthIdentity }),
+        ),
+    }),
+    events,
+  );
+
+  assertEquals(result.ok && result.oauthIdentity, oauthIdentity);
+  assertEquals(events[0].principalId, "sub-collective");
+  assertEquals(events[0].principalUsername, "alice");
+  assertEquals(events[0].principalEmail, "alice@example.com");
+});
+
+Deno.test("authenticateServerToken: a manually minted token's principalEmail never becomes the audit email (swamp-club#3076)", async () => {
+  for (const principalId of ["user:test-user", "worker:runner-1"]) {
+    const events: AuditEvent[] = [];
+    const result = await authenticateWithDeps(
+      "test-token.secret-value",
+      makeAuthDeps({
+        readToken: () =>
+          Promise.resolve(
+            activeToken({ principalId, principalEmail: "typed@example.com" }),
+          ),
+      }),
+      events,
+    );
+
+    assertEquals(result.ok && "oauthIdentity" in result, false);
+    assertEquals("principalEmail" in events[0], false, principalId);
+    assertEquals("principalUsername" in events[0], false, principalId);
+  }
+});
+
+Deno.test("authenticateServerToken: the token-use event falls back to the configured user name (swamp-club#3076)", async () => {
+  const events: AuditEvent[] = [];
+  await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    {
+      emitter: { emit: (event) => events.push(event) },
+      resolvedUserNames: { "test-user": "configured-admin" },
+    },
+    makeAuthDeps(),
+  );
+
+  assertEquals(events[0].principalUsername, "configured-admin");
+  assertEquals("principalEmail" in events[0], false);
+});
+
+Deno.test("authenticateDashboardSession: carries the OAuth login identity like a bearer token (swamp-club#3076)", async () => {
+  const token = activeToken({ oauthIdentity });
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+  const events: AuditEvent[] = [];
+
+  const result = await authenticateDashboardSession(
+    { tokenName: token.name, tokenCreatedAt: token.createdAt },
+    repoContext,
+    { emitter: { emit: (event) => events.push(event) } },
+  );
+
+  assertEquals(result.ok && result.oauthIdentity, oauthIdentity);
+  assertEquals(events[0].principalEmail, "alice@example.com");
+  assertEquals(events[0].principalUsername, "alice");
+});

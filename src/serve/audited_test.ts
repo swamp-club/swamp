@@ -360,3 +360,32 @@ Deno.test("audited: a name recorded for another kind leaves the audited identifi
   assertEquals(sink.events[0].resourceName, "run-123");
   assertEquals(takeAuditedResource(socket, "req-1", "model"), undefined);
 });
+
+Deno.test("audited: records the actor's username and email on success and failure (swamp-club#3076)", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+  const actor = { username: "alice", email: "alice@example.com" };
+
+  await audited(Promise.resolve(), { ...baseOptions, emitter, actor });
+  await assertRejects(() =>
+    audited(Promise.reject(new Error("boom")), {
+      ...baseOptions,
+      emitter,
+      actor,
+    })
+  );
+  await audited(Promise.resolve(), { ...baseOptions, emitter });
+  await emitter.flush();
+
+  assertEquals(sink.events.map((e) => e.outcome), [
+    "success",
+    "failure",
+    "success",
+  ]);
+  for (const event of sink.events.slice(0, 2)) {
+    assertEquals(event.principalUsername, "alice");
+    assertEquals(event.principalEmail, "alice@example.com");
+  }
+  assertEquals("principalEmail" in sink.events[2], false);
+  assertEquals("principalUsername" in sink.events[2], false);
+});

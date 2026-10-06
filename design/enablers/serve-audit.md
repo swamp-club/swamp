@@ -199,6 +199,37 @@ value as written, so a misspelt `tier` still means the sink receives nothing.
 - **Access decisions**: every allow or deny, with the matched grant rule, its
   effect, and the principal's groups at decision time.
 
+## Actor identity
+
+`principalId` holds a user's stable OAuth `sub`. It stays the key that query
+filters, alert rules and compliance reports match on. Events caused by a user
+can also carry `principalUsername` and `principalEmail` (swamp-club#3076), so
+an operator can tell who acted without looking up the sub:
+
+- `principalEmail` and `principalUsername` come from the identity the OAuth
+  provider returned at device login (`email` and the optional
+  `preferred_username` claim). The login stores them on the server token as
+  `oauthIdentity`, which is set only by OAuth login and kept across rotation.
+  A token's `principalEmail` is never used: `swamp access token mint` sets it
+  to anything the operator types, or to the principal itself.
+- When the login gave no username, `principalUsername` falls back to the name
+  configured for the sub in `admins` or `allowed-users`.
+- Each field is present only when known. Worker, service, system and anonymous
+  events, events from manually minted tokens, and events written before this
+  change have neither. An OAuth token minted before the change has no
+  `oauthIdentity`, so its user's events get the email only after they log in
+  again.
+- The values are what was true at login. A later rename on the provider
+  appears after the user's next login.
+- Like `principalId` and `initiatedBy`, they are stored in clear and are not
+  covered by HMAC mode. Anyone granted `admin` on `access:audit` can read them.
+
+The fields are added only when set, so the chain digest of an event without
+them is unchanged. JSON outputs (`swamp audit log --json`, JSON export,
+webhook, store and WebSocket sinks) carry them. Syslog, CEF, CSV export and the
+`swamp audit log` table keep their fixed fields. The dashboard's Activity view
+names the actor by username, email, or both, falling back to `initiatedBy`.
+
 ## Query API
 
 Every `audit.*` request needs `admin` on `access:audit`, except
