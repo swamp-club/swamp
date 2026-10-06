@@ -67,7 +67,8 @@ const SIDECAR = [
 function fakeDeps(): ExtensionPushPrepareDeps {
   return {
     loadCredentials: () => Promise.resolve(null),
-    fetchCollectives: () => Promise.resolve(["acme"]),
+    fetchCollectives: () =>
+      Promise.resolve({ collectives: ["acme"], entitlements: undefined }),
     extractContentMetadata: () =>
       Promise.resolve({
         models: [],
