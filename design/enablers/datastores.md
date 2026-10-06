@@ -2060,9 +2060,9 @@ Known limits of the run-level match:
 
 - Two parallel steps or runs that each start a nested structural command
   (e.g. `swamp data gc`) wait on each other: each holds its step lock until
-  its child exits. Both fail at `SWAMP_LOCK_TIMEOUT_MS`. Run such commands
-  one at a time or in a step of their own (fail-fast detection:
-  swamp-club#2981).
+  its child exits. One of them fails within a few seconds instead of both
+  failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
+  run such commands one at a time or in a step of their own.
 - A step that calls back into the same `swamp serve` with `--server` starts
   a server-side run in a new scope. A nested structural swamp under that run
   waits on the calling step's lock, which process ancestry cannot connect
@@ -2103,6 +2103,77 @@ it that holds locks, as before this change:
 A SIGINT handler makes a best effort to release locks on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
 default).
+
+#### Drain-Wait Markers
+
+Nested structural commands can wait on each other with no way out. Each skips
+the lock its own run holds and waits on the other run's lock, and each run
+keeps its lock until its nested command exits. The same happens between two
+separate top-level runs. Left alone, both fail at `SWAMP_LOCK_TIMEOUT_MS`.
+
+A drain that has to wait therefore says so (swamp-club#2981). While
+`waitForPerModelLocks` waits, it keeps a **drain wait** on disk: a small JSON
+marker at `{namespace}/drain-waits/{id}.json` under the datastore root
+(`DrainWaitStore`, `src/infrastructure/persistence/drain_wait_store.ts`). The
+directory is outside `data/`, so the lock scan never sees it. The marker
+(`DrainWait`, `src/domain/datastore/drain_wait.ts`) lists, by lock-file nonce:
+
+- `skipping`: the live locks the drain skips because an ancestor named them
+  in `SWAMP_LOCK_HOLDER_TOKENS`, which are held until this drain's process
+  exits. A lock skipped on the pid alone is left out: it may be held for
+  another run and released first, so it proves no cycle;
+- `waitingOn`: the live locks it waits on.
+
+It also carries the drain's pid, hostname, start time, last refresh and a
+10-second ttl. The drain rewrites it on every poll and removes it when the
+wait ends, however it ends. A drain that skips no lock, or waits on none with
+a nonce, cannot be part of a cycle and publishes nothing, so a structural
+command run on its own does no marker I/O.
+
+Two drains are **mutually waiting** when each waits on a lock the other
+skips. On every poll a drain reads the other markers and asks
+`drainToYieldTo`:
+
+- Unexpired waits are ordered by start time, then id, and taken in order. A
+  drain **yields** when it is mutually waiting with an earlier drain that is
+  not itself yielding. Every drain that sees the same markers reaches the same
+  answer, so of a group that all wait on each other exactly one keeps
+  waiting.
+- A drain that skips every lock the other skips, because it runs deeper inside
+  the same run, is not waited on by the other and is never failed for it.
+- A drain yields only after it has seen the same opponent on two polls in a
+  row with the opponent's marker refreshed in between. A marker can be a poll
+  old, and a killed drain never refreshes, so neither can fail a drain that
+  was about to proceed.
+
+The yielding drain throws `LockWaitCycleError` (`distributed_lock.ts`), a
+`UserError` with code `lock_wait_cycle`. It is not a `LockTimeoutError`: it
+exits 1, not 75, and `swamp serve` does not mark it retryable. Retrying while
+the run that started the command still holds its lock meets the same wait and
+yields again. The error names the other process and the locks waited on.
+
+The drain that stays keeps waiting, and proceeds when the yielding command's
+run ends and releases its lock. Limits:
+
+- If the yielding command's step ignores the failure and keeps running, its
+  lock stays held and the other drain still times out.
+- A drain running an older swamp publishes no marker, so a cycle that includes
+  one ends at the timeout, as before.
+- A drain whose ancestors handed down no lock list (a step lock hook that
+  names no locks, a spawn outside any scope) skips on the pid alone, lists
+  nothing in `skipping` and publishes no marker.
+- A scan that takes close to the 10-second ttl, on a very large datastore,
+  lets markers expire between refreshes, so no cycle is confirmed.
+- Custom datastore locks are not scanned by the drain and are not covered.
+- Reading or writing a marker can fail (a read-only directory, a file held
+  open on Windows). The failure is logged at debug and the drain waits as if
+  markers did not exist.
+
+Markers are read from a directory other processes write, so `parseDrainWait`
+rejects anything malformed or oversized, a marker must be named after its own
+id, and a listing reads at most 256 entries. A listing also deletes files that
+are not live markers and have not been written for a full ttl, which clears
+what a killed drain left behind.
 
 ### Lock Breakglass
 

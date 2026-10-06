@@ -225,6 +225,23 @@ export class LockHolderMarker {
   }
 
   /**
+   * The nonces of the locks the swamps above this process named as held for
+   * the run that started it. A lock skipped on the pid alone is not among
+   * them: nothing says its holder keeps it until this process exits.
+   */
+  inheritedLockIds(): ReadonlySet<string> {
+    const inherited = this.#inheritedOrLive();
+    const pids = new Set(inheritedChain(inherited, this.pid));
+    const lockIds = new Set<string>();
+    for (const [pid, nonces] of parseTokens(inherited.tokens)) {
+      if (pids.has(pid)) {
+        for (const nonce of nonces) lockIds.add(nonce);
+      }
+    }
+    return lockIds;
+  }
+
+  /**
    * What this process inherited. Before {@link publish} (an embedder or a
    * unit test) this reads the live env.
    */

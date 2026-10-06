@@ -29,7 +29,10 @@ import {
 } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
-import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  LockTimeoutError,
+  LockWaitCycleError,
+} from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import {
   flushAuthGateWarning,
@@ -625,6 +628,17 @@ Deno.test("buildErrorJson: reports an extension LOCK_TIMEOUT code as lock_timeou
     code: "LOCK_TIMEOUT",
   });
   assertEquals(buildErrorJson(err).code, "lock_timeout");
+});
+
+Deno.test("exitCodeForError: returns 1 for LockWaitCycleError, which a retry cannot clear", () => {
+  const err = new LockWaitCycleError({
+    opponentPid: 4242,
+    waitedMs: 2000,
+    waitingOnLockPaths: ["data/mytype/my-model/.lock"],
+  });
+  assertEquals(exitCodeForError(err), 1);
+  assertEquals(buildErrorJson(err).code, "lock_wait_cycle");
+  assertEquals(buildErrorJson(err).stack, undefined);
 });
 
 Deno.test("exitCodeForError: returns 1 for UserError without code", () => {
