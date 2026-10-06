@@ -134,7 +134,7 @@ export {
   type TriggerOverride,
   type WorkflowExecutor,
 } from "./workflows/scheduled_execution.ts";
-export { workflowsDir, WorkflowWatcher } from "./workflows/watcher.ts";
+export { WorkflowWatcher } from "./workflows/watcher.ts";
 export {
   type ScheduleEntry,
   type ScheduleFireCallback,

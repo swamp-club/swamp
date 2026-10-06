@@ -17,9 +17,53 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { workflowsDir } from "./watcher.ts";
-import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { WorkflowWatcher } from "./watcher.ts";
 
-Deno.test("workflowsDir: returns correct path", () => {
-  assertPathEquals(workflowsDir("/repo"), "/repo/workflows");
+function repoWith(workflows: Workflow[]): WorkflowRepository {
+  return {
+    findAll: () => Promise.resolve(workflows),
+    getPath: (id: WorkflowId) => join("workflows", `workflow-${id}.yaml`),
+  } as unknown as WorkflowRepository;
+}
+
+Deno.test("WorkflowWatcher.scanExisting: reports only workflows with a schedule", async () => {
+  const scheduled = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "nightly",
+    schedule: "0 0 * * *",
+  } as unknown as Workflow;
+  const unscheduled = {
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    name: "manual",
+  } as unknown as Workflow;
+  const changes: Array<[string, string | null, string]> = [];
+
+  const watcher = new WorkflowWatcher(
+    "workflows",
+    repoWith([scheduled, unscheduled]),
+    (id, schedule, name) => changes.push([id, schedule, name]),
+  );
+  await watcher.scanExisting();
+
+  assertEquals(changes, [[scheduled.id, "0 0 * * *", "nightly"]]);
+});
+
+Deno.test("WorkflowWatcher.start: skips watching when the directory does not exist", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_watcher_" });
+  try {
+    const watcher = new WorkflowWatcher(
+      join(dir, "missing"),
+      repoWith([]),
+      () => {},
+    );
+    await watcher.start();
+    await watcher.stop();
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

@@ -21,11 +21,20 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createWorkflowEditDeps,
   workflowEdit,
   type WorkflowEditDeps,
   type WorkflowEditEvent,
 } from "./edit.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import { ensureDir } from "@std/fs";
+import { dirname, join } from "@std/path";
+import {
+  registerManagedConfig,
+  resetManagedConfigRegistry,
+} from "../../infrastructure/persistence/paths.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 function prepareEditor(editor: string) {
   return (path: string) =>
@@ -559,4 +568,69 @@ Deno.test("workflowEdit: with byId a broken workflow file is matched by id only"
   const last = events.at(-1) as Extract<WorkflowEditEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  // realPath: resolveSymlink returns a real path, and the macOS temp dir is
+  // itself a symlink.
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp_workflow_edit_" }),
+  );
+  try {
+    await fn(dir);
+  } finally {
+    resetManagedConfigRegistry();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function writeLegacyWorkflow(
+  workflowsDir: string,
+  name: string,
+): Promise<string> {
+  const path = join(workflowsDir, name, "workflow.yaml");
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(path, `name: ${name}\n`);
+  return path;
+}
+
+const unusedRepo = {} as unknown as WorkflowRepository;
+
+Deno.test("createWorkflowEditDeps: resolveSymlink looks in the repo workflows dir without managed config", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const expected = await writeLegacyWorkflow(
+      join(repoDir, "workflows"),
+      "legacy-wf",
+    );
+
+    const deps = createWorkflowEditDeps(repoDir, unusedRepo);
+
+    assertPathEquals(await deps.resolveSymlink("legacy-wf") ?? "", expected);
+    assertEquals(await deps.resolveSymlink("missing-wf"), null);
+  });
+});
+
+Deno.test("createWorkflowEditDeps: resolveSymlink looks in the managed config workflows dir", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const configBase = join(dir, "datastore", "config");
+    registerManagedConfig(repoDir, true, configBase);
+    const expected = await writeLegacyWorkflow(
+      join(configBase, "workflows"),
+      "legacy-wf",
+    );
+    // Stale repo-local copies are not what the loader reads.
+    await writeLegacyWorkflow(join(repoDir, "workflows"), "legacy-wf");
+    await writeLegacyWorkflow(join(repoDir, "workflows"), "repo-only-wf");
+
+    const deps = createWorkflowEditDeps(repoDir, unusedRepo);
+
+    assertPathEquals(await deps.resolveSymlink("legacy-wf") ?? "", expected);
+    assertEquals(await deps.resolveSymlink("repo-only-wf"), null);
+  });
 });
