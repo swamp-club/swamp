@@ -207,32 +207,17 @@ export function runHasDeadOwner(
 }
 
 /**
- * Whether a run saved `suspended` was abandoned by its owner before the
- * level it suspended in had drained: its tracker row still says `running`
- * (an owner that finishes the level marks the row `suspended`) and that
- * owner is gone. Its steps still recorded `running` will never finish. A
- * run with no tracker row is never judged, as for {@link runHasDeadOwner}.
+ * Whether the process that suspended a run is still running the level it
+ * suspended in: its tracker row is owned on this host, still says `running`
+ * (an owner that finishes the level marks the row `suspended` only after
+ * its last save) and its pid is alive. Until the level drains that owner
+ * keeps saving the record from memory, without the run's claim, so a resume
+ * that took the run over now would be saved over.
+ *
+ * A row owned on another host, or no row, is never judged: that owner
+ * cannot be checked from here.
  */
-export function suspendedRunHasDeadOwner(
-  run: WorkflowRun,
-  runTracker: RunTrackerRepository,
-  liveness: OwnerLiveness,
-): boolean {
-  if (run.status !== "suspended") return false;
-  const tracked = runTracker.findById(run.id);
-  if (!tracked || !trackerShowsDeadOwner(tracked, liveness)) return false;
-  return run.pid === undefined || run.pid === tracked.pid;
-}
-
-/**
- * Whether the owner of a run saved `suspended` is still running the level it
- * suspended in: its tracker row says `running` and nothing shows that owner
- * gone. Until the level drains the owner keeps saving the record from
- * memory, whatever the step statuses in it say, and marks the row
- * `suspended` only after its last save. A row owned on another host counts
- * as running, as its owner cannot be checked from here.
- */
-export function suspendedRunOwnerIsRunning(
+export function suspendedRunOwnerStillRuns(
   run: WorkflowRun,
   runTracker: RunTrackerRepository,
   liveness: OwnerLiveness,
@@ -240,7 +225,8 @@ export function suspendedRunOwnerIsRunning(
   if (run.status !== "suspended") return false;
   const tracked = runTracker.findById(run.id);
   if (!tracked || tracked.status !== "running") return false;
-  return !trackerShowsDeadOwner(tracked, liveness);
+  if (!tracked.isLocalTo(liveness.hostname, liveness.instanceId)) return false;
+  return !liveness.isDead(tracked.pid);
 }
 
 /**

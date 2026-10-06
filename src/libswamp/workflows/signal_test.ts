@@ -34,15 +34,25 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
+import {
+  cancelledOutcome,
+  registrationOf,
+  type StoredWaitRecord,
+  type WaitOutcome,
+} from "../../domain/workflows/signal_wait_records.ts";
+import {
+  acceptedOutcomeFor,
+  InMemorySignalWaitStore,
+} from "../../domain/workflows/signal_wait_store_test_helpers.ts";
+import {
+  closeRunWaits,
+  waitRefOf,
+} from "../../domain/workflows/signal_wait_cleanup.ts";
 import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
 import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
-import {
-  unclaimedRuns,
-  type WorkflowRunClaims,
-} from "../../domain/workflows/run_claim.ts";
 
 const OPENED = new Date("2026-01-01T00:00:00.000Z");
 const IN_TIME = new Date("2026-01-01T00:00:30.000Z");
@@ -94,50 +104,66 @@ function suspendedAtWait(workflow: Workflow): {
   return { run, waitId: wait.id };
 }
 
-interface Store {
+interface Fixture {
   deps: WorkflowSignalDeps;
-  saved: WorkflowRun[];
-  /** Calls made to the repository and the claim, in order. */
+  waits: InMemorySignalWaitStore;
+  /** The run records as stored. A signal has no way to change them. */
+  stored: Map<string, WorkflowRunData>;
+  /** Reads made of the run repository, in order. */
   calls: string[];
 }
 
 /**
- * A repository holding `runs` as stored records: each read returns a fresh
- * copy, so only a save changes what the next read sees.
+ * A repository holding `runs` as stored records, with no way to save, and a
+ * wait store holding the registration of every wait those runs hold, as
+ * the executor leaves it. `registered: false` leaves the store empty, as a
+ * run suspended before waits were registered.
  */
-function storeOf(
+async function fixtureOf(
   runs: WorkflowRun[],
-  now: Date = IN_TIME,
-  runClaims?: WorkflowRunClaims,
-  ownerIsDead?: (run: WorkflowRun) => boolean,
-): Store {
+  options: {
+    now?: Date;
+    registered?: boolean;
+    waits?: InMemorySignalWaitStore;
+  } = {},
+): Promise<Fixture> {
   const stored = new Map<string, WorkflowRunData>(
     runs.map((run) => [run.id, run.toData()]),
   );
-  const saved: WorkflowRun[] = [];
+  const waits = options.waits ?? new InMemorySignalWaitStore();
+  if (options.registered !== false) {
+    for (const run of runs) {
+      for (const ref of run.findSignalWaits()) {
+        if (!ref.wait) continue;
+        await waits.register(
+          registrationOf(
+            {
+              workflowId: run.workflowId,
+              workflowName: run.workflowName,
+              runId: run.id,
+              jobName: ref.jobName,
+              stepName: ref.stepName,
+            },
+            ref.wait,
+            OPENED,
+          ),
+        );
+      }
+    }
+  }
   const calls: string[] = [];
   const all = () =>
     [...stored.values()].map((data) => ({
       run: WorkflowRun.fromData(data),
       workflowId: createWorkflowId(data.workflowId),
     }));
-  const claims: WorkflowRunClaims = runClaims ?? {
-    withClaim: async (runId, fn) => {
-      calls.push(`claim:${runId}`);
-      try {
-        return await fn();
-      } finally {
-        calls.push(`release:${runId}`);
-      }
-    },
-  };
   return {
-    saved,
+    waits,
+    stored,
     calls,
     deps: {
-      now: () => now,
-      ownerIsDead,
-      runClaims: claims,
+      now: () => options.now ?? IN_TIME,
+      signalWaits: { supported: true, store: waits },
       runRepo: {
         findById: (_workflowId: WorkflowId, runId: string) => {
           calls.push(`findById:${runId}`);
@@ -155,24 +181,18 @@ function storeOf(
           calls.push("findAllGlobal");
           return Promise.resolve(all());
         },
-        save: (_workflowId: WorkflowId, run: WorkflowRun) => {
-          calls.push(`save:${run.id}`);
-          stored.set(run.id, run.toData());
-          saved.push(run);
-          return Promise.resolve();
-        },
       } as unknown as WorkflowSignalDeps["runRepo"],
     },
   };
 }
 
 async function send(
-  store: Store,
+  fixture: Pick<Fixture, "deps">,
   waitId: string,
   payload: unknown,
 ): Promise<WorkflowSignalEvent> {
   const events = await collect<WorkflowSignalEvent>(
-    workflowSignal(createLibSwampContext(), store.deps, {
+    workflowSignal(createLibSwampContext(), fixture.deps, {
       waitId,
       payload,
       // No letter of it is a hex digit, so no UUID in a message holds it.
@@ -190,14 +210,23 @@ function errorOf(
   return event.error;
 }
 
-Deno.test("workflowSignal: a valid payload settles the wait, saves the run once and reports the receipt", async () => {
+async function outcomeOf(
+  fixture: Fixture,
+  waitId: string,
+): Promise<WaitOutcome | undefined> {
+  const stored = await fixture.waits.findOutcome(waitId);
+  return stored.kind === "found" ? stored.record : undefined;
+}
+
+Deno.test("workflowSignal: a valid payload creates the wait's outcome, reports the receipt and leaves the run record alone", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run]);
+  const before = structuredClone(fixture.stored.get(run.id));
 
-  const event = await send(store, waitId, { verdict: "ship" });
+  const event = await send(fixture, waitId, { verdict: "ship" });
 
-  assert(event.kind === "completed");
+  assert(event.kind === "completed", JSON.stringify(event));
   assertEquals(event.data.waitId, waitId);
   assertEquals(event.data.workflowId, workflow.id);
   assertEquals(event.data.workflowName, "release");
@@ -208,235 +237,432 @@ Deno.test("workflowSignal: a valid payload settles the wait, saves the run once 
   assertEquals(event.data.signal.submittedBy, "tux");
   assertEquals(event.data.signal.receivedAt, IN_TIME.toISOString());
   assertEquals(event.data.awaitingResume, true);
+  assertEquals(event.data.runRecordAvailable, true);
   assertEquals(
     event.data.resumeCommand,
     `swamp workflow resume release --run ${run.id}`,
   );
 
-  assertEquals(store.saved.length, 1);
-  const review = store.saved[0].getJob("main")!.getStep("review")!;
-  assertEquals(review.status, "succeeded");
-  assertEquals(review.output, {
-    type: "wait_for_signal",
-    payload: { verdict: "ship" },
-    signal: event.data.signal,
-  });
+  const outcome = await outcomeOf(fixture, waitId);
+  assert(outcome?.kind === "accepted");
+  assertEquals(outcome.receipt, event.data.signal);
+  assertEquals(outcome.payload, { verdict: "ship" });
+  assertEquals(outcome.runId, run.id);
+  // The step still waits in the record: only a resume applies the outcome.
+  assertEquals(fixture.stored.get(run.id), before);
 });
 
-Deno.test("workflowSignal: the run is re-read and saved inside its claim", async () => {
+Deno.test("workflowSignal: a registered wait is delivered without reading a run record for the decision", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run]);
+  // The run is not on this host at all, as on a second host of a shared
+  // datastore that has not synced it yet.
+  fixture.stored.clear();
 
-  await send(store, waitId, { verdict: "ship" });
+  const event = await send(fixture, waitId, { verdict: "ship" });
 
-  const claimed = store.calls.indexOf(`claim:${run.id}`);
-  const released = store.calls.indexOf(`release:${run.id}`);
-  const reread = store.calls.indexOf(`findById:${run.id}`);
-  const saved = store.calls.indexOf(`save:${run.id}`);
-  assert(claimed >= 0 && released > claimed);
-  assert(reread > claimed && reread < released, store.calls.join(" "));
-  assert(saved > reread && saved < released, store.calls.join(" "));
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.workflowName, "release");
+  assertEquals(event.data.stepName, "review");
+  // Whether the run can resume is not known here, and the result says so.
+  assertEquals(event.data.awaitingResume, false);
+  assertEquals(event.data.runRecordAvailable, false);
+  assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
+  assertEquals(fixture.calls.includes("findAllGlobal"), false);
+  assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
 });
 
-Deno.test("workflowSignal: acts on the run as stored under the claim, not as first listed", async () => {
-  const workflow = makeWorkflow();
-  const { run, waitId } = suspendedAtWait(workflow);
-  const held: { store?: Store } = {};
-  // Another command cancels the run between the listing and the claim.
-  const claims: WorkflowRunClaims = {
-    withClaim: async (_runId, fn) => {
-      const current = await held.store!.deps.runRepo.findById(
-        createWorkflowId(run.workflowId),
-        run.id,
-      );
-      cancelAndSettle(current!, workflow, "operator");
-      await held.store!.deps.runRepo.save(
-        createWorkflowId(run.workflowId),
-        current!,
-      );
-      held.store!.saved.length = 0;
-      return await fn();
-    },
-  };
-  const store = storeOf([run], IN_TIME, claims);
-  held.store = store;
+Deno.test("workflowSignal: a signal is accepted while the owner still runs the level, whatever the run record says", async () => {
+  for (const status of ["running", "suspended"] as const) {
+    const { run, waitId } = suspendedAtWait(makeWorkflow());
+    const data = run.toData();
+    data.status = status;
+    const sibling = data.jobs[0].steps.find((s) => s.stepName === "sibling")!;
+    sibling.status = "running";
+    sibling.completedAt = undefined;
+    const fixture = await fixtureOf([WorkflowRun.fromData(data)]);
 
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
+    const event = await send(fixture, waitId, { verdict: "ship" });
 
-  assertStringIncludes(error.message, "is closed");
-  assertEquals(store.saved, []);
-});
-
-Deno.test("workflowSignal: an unknown wait id is not found, and nothing is claimed or saved", async () => {
-  const { run } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
-
-  for (const waitId of [crypto.randomUUID(), "not-a-wait", "", "   "]) {
-    const error = errorOf(await send(store, waitId, { verdict: "ship" }));
-    assertEquals(error.code, "not_found");
+    assert(event.kind === "completed", JSON.stringify(event));
+    assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
   }
-  assertEquals(store.saved, []);
-  assertEquals(store.calls.filter((c) => c.startsWith("claim:")), []);
+});
+
+Deno.test("workflowSignal: an id nothing issued is not found, and one that is not a UUID never reaches a store", async () => {
+  const { run } = suspendedAtWait(makeWorkflow());
+  const fixture = await fixtureOf([run]);
+
+  const unknown = errorOf(
+    await send(fixture, crypto.randomUUID(), { verdict: "ship" }),
+  );
+  assertEquals(unknown.code, "not_found");
+
+  fixture.calls.length = 0;
+  for (
+    const typed of ["", "   ", "../../etc/passwd", "waits/x", "not-a-uuid"]
+  ) {
+    assertEquals(
+      errorOf(await send(fixture, typed, { verdict: "ship" })).code,
+      "not_found",
+    );
+  }
+  assertEquals(fixture.calls, []);
+  assertEquals(fixture.waits.outcomes.size, 0);
 });
 
 Deno.test("workflowSignal: the wait id matches whatever its letter case", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run]);
 
-  const event = await send(store, ` ${waitId.toUpperCase()} `, {
+  const event = await send(fixture, ` ${waitId.toUpperCase()} `, {
     verdict: "ship",
   });
 
-  assertEquals(event.kind, "completed");
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.waitId, waitId);
 });
 
 Deno.test("workflowSignal: an invalid payload is refused with its errors and the wait stays open", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run]);
 
-  const error = errorOf(await send(store, waitId, { verdict: "maybe" }));
+  const refused = await send(fixture, waitId, { verdict: "maybe" });
 
+  const error = errorOf(refused);
   assertEquals(error.code, "validation_failed");
-  assertStringIncludes(error.message, "Payload refused");
   assertStringIncludes(error.message, "the wait stays open");
   assertStringIncludes(error.message, "verdict");
-  assertEquals(store.saved, []);
-  // The same wait accepts a valid payload afterwards.
+  assertEquals(await outcomeOf(fixture, waitId), undefined);
+  // The same wait still takes a valid payload.
   assertEquals(
-    (await send(store, waitId, { verdict: "fix" })).kind,
+    (await send(fixture, waitId, { verdict: "fix" })).kind,
     "completed",
   );
 });
 
-Deno.test("workflowSignal: a wait past its deadline is refused and names the resume", async () => {
+Deno.test("workflowSignal: a wait past its deadline is refused, settled as timed out and names the resume", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run], TOO_LATE);
+  const fixture = await fixtureOf([run], { now: TOO_LATE });
 
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
 
-  assertStringIncludes(error.message, "expired");
+  assertStringIncludes(error.message, "expired at");
+  assertStringIncludes(error.message, "wait_timeout");
   assertStringIncludes(
     error.message,
     `swamp workflow resume release --run ${run.id}`,
   );
-  assertEquals(store.saved, []);
+  // The deadline is decided by the create, so every later reader agrees.
+  assertEquals((await outcomeOf(fixture, waitId))?.kind, "timed_out");
 });
 
-Deno.test("workflowSignal: a settled wait refuses a second signal with the stored receipt, even after the run finished", async () => {
+Deno.test("workflowSignal: a settled wait refuses a second signal with the stored receipt", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
-  const first = await send(store, waitId, { verdict: "ship" });
+  const fixture = await fixtureOf([run]);
+  const first = await send(fixture, waitId, { verdict: "ship" });
   assert(first.kind === "completed");
 
-  const again = errorOf(await send(store, waitId, { verdict: "fix" }));
-  assertStringIncludes(again.message, "already settled");
-  assertStringIncludes(again.message, first.data.signal.id);
-  assertEquals(store.saved.length, 1);
+  const again = await send(fixture, waitId, { verdict: "fix" });
 
-  // Once the run has finished it is no longer among the suspended runs.
-  const finished = store.saved[0];
-  finished.getJob("main")!.succeed();
-  finished.complete();
-  const later = storeOf([finished]);
-  const afterFinish = errorOf(await send(later, waitId, { verdict: "fix" }));
-  assertStringIncludes(afterFinish.message, "already settled");
-  assertEquals(later.calls.includes("findAllGlobal"), true);
-  assertEquals(later.saved, []);
+  const error = errorOf(again);
+  assertStringIncludes(error.message, "already settled");
+  assertStringIncludes(error.message, first.data.signal.id);
+  const stored = await outcomeOf(fixture, waitId);
+  assert(stored?.kind === "accepted");
+  assertEquals(stored.payload, { verdict: "ship" });
 });
 
-Deno.test("workflowSignal: a run stored as suspended while a sibling step still runs is not ready", async () => {
+Deno.test("workflowSignal: after the run ended the kept outcome still answers, with or without the run record", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
-  const data = run.toData();
-  data.jobs[0].steps[1].status = "running";
-  data.jobs[0].steps[1].completedAt = undefined;
-  const store = storeOf([WorkflowRun.fromData(data)]);
+  const fixture = await fixtureOf([run]);
+  const first = await send(fixture, waitId, { verdict: "ship" });
+  assert(first.kind === "completed");
+  // The run ends: its registration is removed and its outcome kept.
+  await closeRunWaits(fixture.waits, run, IN_TIME);
+  assertEquals(fixture.waits.registrations.size, 0);
 
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
+  const withRun = errorOf(await send(fixture, waitId, { verdict: "fix" }));
+  assertStringIncludes(withRun.message, "already settled");
+  assertStringIncludes(withRun.message, 'step "review"');
 
-  assertStringIncludes(error.message, "has not suspended yet");
-  assertStringIncludes(error.message, "again");
-  assertEquals(store.saved, []);
+  fixture.stored.clear();
+  const withoutRun = errorOf(await send(fixture, waitId, { verdict: "fix" }));
+  assertStringIncludes(withoutRun.message, "already settled");
+  assertStringIncludes(withoutRun.message, first.data.signal.id);
 });
 
-Deno.test("workflowSignal: a run still stored as running is not ready, and is found outside the suspended runs", async () => {
+Deno.test("workflowSignal: the wait of a cancelled run is closed", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  // A cancel closes the run's waits before it saves the run.
+  await closeRunWaits(fixture.waits, run, IN_TIME);
+  cancelAndSettle(run, workflow, "operator");
+  fixture.stored.set(run.id, run.toData());
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+  assertStringIncludes(error.message, "closed before a signal arrived");
+  assertEquals((await outcomeOf(fixture, waitId))?.kind, "cancelled");
+});
+
+/** A store in which something else settles the wait just before a signal. */
+class RacedStore extends InMemorySignalWaitStore {
+  constructor(private readonly winner: (outcome: WaitOutcome) => WaitOutcome) {
+    super();
+  }
+
+  override async settle(
+    outcome: WaitOutcome,
+  ): Promise<StoredWaitRecord<WaitOutcome>> {
+    await super.settle(this.winner(outcome));
+    return await super.settle(outcome);
+  }
+}
+
+Deno.test("workflowSignal: a signal that loses the create to a cancel, a timeout or another signal is answered from what is stored", async () => {
+  const cases: Array<[(outcome: WaitOutcome) => WaitOutcome, string]> = [
+    [(o) => cancelledOutcome(o, IN_TIME), "closed before a signal arrived"],
+    [
+      (o) => ({ ...cancelledOutcome(o, IN_TIME), kind: "timed_out" }),
+      "expired",
+    ],
+    [
+      (o) =>
+        acceptedOutcomeFor(
+          { id: o.waitId, deadline: new Date(o.deadline) },
+          { verdict: "fix" },
+          { runId: o.runId, submittedBy: "zzz" },
+        ),
+      "already settled",
+    ],
+  ];
+  for (const [winner, expected] of cases) {
+    const { run, waitId } = suspendedAtWait(makeWorkflow());
+    const waits = new RacedStore(winner);
+    const fixture = await fixtureOf([run], { waits });
+
+    const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+    assertStringIncludes(error.message, expected);
+    // Exactly one outcome, and it is the winner's.
+    assertEquals(waits.outcomes.size, 1);
+    const stored = await outcomeOf(fixture, waitId);
+    assert(stored);
+    if (stored.kind === "accepted") {
+      assertEquals(stored.payload, { verdict: "fix" });
+    }
+  }
+});
+
+Deno.test("workflowSignal: a wait of a run suspended before waits were registered is registered from its record and takes the signal", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
+  // As swamp-club#3068 stored it: status `waiting`, no registration.
   const data = run.toData();
-  data.status = "running";
-  const store = storeOf([WorkflowRun.fromData(data)]);
+  data.jobs[0].steps.find((s) => s.stepName === "review")!.status = "waiting";
+  const fixture = await fixtureOf([WorkflowRun.fromData(data)], {
+    registered: false,
+  });
+  const before = structuredClone(fixture.stored.get(run.id));
 
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
+  const event = await send(fixture, waitId, { verdict: "ship" });
 
-  assertStringIncludes(error.message, "has not suspended yet");
-  assertEquals(store.calls.includes("findAllGlobal"), true);
-  assertEquals(store.saved, []);
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.stepName, "review");
+  const registration = await fixture.waits.findRegistration(waitId);
+  assert(registration.kind === "found");
+  assertEquals(registration.record.runId, run.id);
+  assertEquals(registration.record.schema, SCHEMA);
+  assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
+  assertEquals(fixture.stored.get(run.id), before);
+
+  assertStringIncludes(
+    errorOf(await send(fixture, waitId, { verdict: "fix" })).message,
+    "already settled",
+  );
 });
 
-Deno.test("workflowSignal: a cancelled wait is closed", async () => {
+Deno.test("workflowSignal: a wait an earlier build settled in the run record is answered from that record", async () => {
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const review = run.getJob("main")!.getStep("review")!;
+  const settled = acceptedOutcomeFor(review.signalWait!, { verdict: "ship" });
+  review.applyWaitOutcome(settled);
+  const fixture = await fixtureOf([run], { registered: false });
+
+  const again = await send(fixture, waitId, { verdict: "fix" });
+
+  assert(again.kind === "error");
+  assertStringIncludes(again.error.message, "already settled");
+  assertEquals(
+    (again.error.details as { receipt: unknown }).receipt,
+    settled.receipt,
+  );
+  // Nothing was registered or settled for a wait that is over.
+  assertEquals(fixture.waits.registrations.size, 0);
+  assertEquals(fixture.waits.outcomes.size, 0);
+});
+
+Deno.test("workflowSignal: a step that no longer waits, with no outcome, is closed", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
   cancelAndSettle(run, workflow, "operator");
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run], { registered: false });
 
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
 
   assertStringIncludes(error.message, "is closed");
-  assertStringIncludes(error.message, "failed");
-  assertEquals(store.saved, []);
+  assertStringIncludes(error.message, "cancelled");
+  assertEquals(fixture.waits.registrations.size, 0);
+});
+
+Deno.test("workflowSignal: a registration that cannot be read is rebuilt from the run record, and the signal is delivered", async () => {
+  for (const damaged of [new Uint8Array(), new TextEncoder().encode("{no")]) {
+    const { run, waitId } = suspendedAtWait(makeWorkflow());
+    const fixture = await fixtureOf([run]);
+    fixture.waits.registrations.set(waitId, damaged);
+
+    const event = await send(fixture, waitId, { verdict: "ship" });
+
+    assert(event.kind === "completed", JSON.stringify(event));
+    const registration = await fixture.waits.findRegistration(waitId);
+    assert(registration.kind === "found");
+    assertEquals(registration.record.stepName, "review");
+    assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
+  }
+});
+
+Deno.test("workflowSignal: a record that cannot be read, with nothing to rebuild it from, is refused and never treated as an open wait", async () => {
+  const garbage = new TextEncoder().encode("{not json");
+
+  // The run record is not on this host, so the wait cannot be rebuilt.
+  const first = suspendedAtWait(makeWorkflow());
+  const badRegistration = await fixtureOf([first.run]);
+  badRegistration.waits.registrations.set(first.waitId, garbage);
+  badRegistration.stored.clear();
+  assertStringIncludes(
+    errorOf(await send(badRegistration, first.waitId, { verdict: "ship" }))
+      .message,
+    "cannot be read",
+  );
+  assertEquals(badRegistration.waits.outcomes.size, 0);
+  assertEquals(badRegistration.waits.registrations.get(first.waitId), garbage);
+
+  const second = suspendedAtWait(makeWorkflow());
+  const badOutcome = await fixtureOf([second.run]);
+  badOutcome.waits.outcomes.set(second.waitId, garbage);
+  assertStringIncludes(
+    errorOf(await send(badOutcome, second.waitId, { verdict: "ship" })).message,
+    "cannot be read",
+  );
+  assertEquals(badOutcome.waits.outcomes.get(second.waitId), garbage);
+});
+
+Deno.test("workflowSignal: a registered wait whose step the run record shows already past it is answered from the record, not accepted", async () => {
+  const workflow = makeWorkflow();
+
+  // Settled in the run record by a build that writes it directly.
+  const settled = suspendedAtWait(workflow);
+  const settledFixture = await fixtureOf([settled.run]);
+  const review = settled.run.getJob("main")!.getStep("review")!;
+  const earlier = acceptedOutcomeFor(review.signalWait!, { verdict: "ship" });
+  review.applyWaitOutcome(earlier);
+  settledFixture.stored.set(settled.run.id, settled.run.toData());
+
+  const again = await send(settledFixture, settled.waitId, { verdict: "fix" });
+  assert(again.kind === "error");
+  assertStringIncludes(again.error.message, "already settled");
+  assertEquals(
+    (again.error.details as { receipt: unknown }).receipt,
+    earlier.receipt,
+  );
+  assertEquals(settledFixture.waits.outcomes.size, 0);
+
+  // Cancelled by a writer that did not close the wait.
+  const cancelled = suspendedAtWait(workflow);
+  const cancelledFixture = await fixtureOf([cancelled.run]);
+  cancelAndSettle(cancelled.run, workflow, "operator");
+  cancelledFixture.stored.set(cancelled.run.id, cancelled.run.toData());
+
+  const closed = errorOf(
+    await send(cancelledFixture, cancelled.waitId, { verdict: "ship" }),
+  );
+  assertStringIncludes(closed.message, "is closed");
+  assertEquals(cancelledFixture.waits.outcomes.size, 0);
+});
+
+Deno.test("workflowSignal: a datastore that cannot hold wait records refuses with the reason", async () => {
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const fixture = await fixtureOf([run]);
+  fixture.deps.signalWaits = {
+    supported: false,
+    reason: "the store is local to this machine",
+  };
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+  assertStringIncludes(error.message, "the store is local to this machine");
+  assertEquals(fixture.waits.outcomes.size, 0);
 });
 
 Deno.test("workflowSignal: the refusals are distinct messages", async () => {
   const workflow = makeWorkflow();
-  const messages = new Set<string>();
-  const kinds = [
-    async () => {
-      const { run } = suspendedAtWait(workflow);
-      return await send(storeOf([run]), crypto.randomUUID(), {});
-    },
-    async () => {
-      const { run, waitId } = suspendedAtWait(workflow);
-      return await send(storeOf([run]), waitId, { verdict: "no" });
-    },
-    async () => {
-      const { run, waitId } = suspendedAtWait(workflow);
-      return await send(storeOf([run], TOO_LATE), waitId, { verdict: "ship" });
-    },
-    async () => {
-      const { run, waitId } = suspendedAtWait(workflow);
-      const store = storeOf([run]);
-      await send(store, waitId, { verdict: "ship" });
-      return await send(store, waitId, { verdict: "ship" });
-    },
-  ];
-  for (const kind of kinds) {
-    // The first few words say which refusal it is.
-    messages.add(
-      errorOf(await kind()).message.replace(/[0-9a-f-]{36}/g, "ID").slice(
-        0,
-        24,
-      ),
-    );
-  }
-  assertEquals(messages.size, kinds.length, [...messages].join(" | "));
-});
+  const messages: string[] = [];
 
-Deno.test("workflowSignal: with unclaimed runs it still delivers", async () => {
-  const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run], IN_TIME, unclaimedRuns);
-
-  assertEquals(
-    (await send(store, waitId, { verdict: "ship" })).kind,
-    "completed",
+  const open = suspendedAtWait(workflow);
+  messages.push(
+    errorOf(await send(await fixtureOf([open.run]), open.waitId, {})).message
+      .split("\n")[0],
   );
+  const late = suspendedAtWait(workflow);
+  messages.push(
+    errorOf(
+      await send(
+        await fixtureOf([late.run], { now: TOO_LATE }),
+        late.waitId,
+        { verdict: "ship" },
+      ),
+    ).message,
+  );
+  const twice = suspendedAtWait(workflow);
+  const twiceFixture = await fixtureOf([twice.run]);
+  await send(twiceFixture, twice.waitId, { verdict: "ship" });
+  messages.push(
+    errorOf(await send(twiceFixture, twice.waitId, { verdict: "ship" }))
+      .message,
+  );
+  const closed = suspendedAtWait(workflow);
+  const closedFixture = await fixtureOf([closed.run]);
+  await closeRunWaits(closedFixture.waits, closed.run, IN_TIME);
+  messages.push(
+    errorOf(await send(closedFixture, closed.waitId, { verdict: "ship" }))
+      .message,
+  );
+  messages.push(
+    errorOf(
+      await send(await fixtureOf([]), crypto.randomUUID(), { verdict: "ship" }),
+    ).message,
+  );
+
+  const kinds = messages.map((message) =>
+    message.replace(/[0-9a-f-]{36}/g, "<id>").split(":")[0]
+  );
+  assertEquals(new Set(kinds).size, kinds.length, kinds.join(" | "));
 });
 
-Deno.test("workflowSignal: a run with a second open wait is not yet awaiting resume", async () => {
+/** A workflow with two waits in one job, and a run suspended on both. */
+function suspendedAtTwoWaits(): {
+  run: WorkflowRun;
+  first: string;
+  second: string;
+} {
   const workflow = Workflow.create({
-    name: "two-waits",
+    name: "two",
     jobs: [
       Job.create({
         name: "main",
-        steps: ["first", "second"].map((name) =>
+        steps: ["a", "b"].map((name) =>
           Step.create({ name, task: StepTask.waitForSignal(60, SCHEMA) })
         ),
       }),
@@ -446,131 +672,55 @@ Deno.test("workflowSignal: a run with a second open wait is not yet awaiting res
   run.start();
   const job = run.getJob("main")!;
   job.start();
-  const ids: string[] = [];
-  for (const name of ["first", "second"]) {
+  const ids = ["a", "b"].map((name) => {
+    const step = job.getStep(name)!;
+    step.start();
     const wait = SignalWait.open(SCHEMA, 60, OPENED);
-    job.getStep(name)!.waitForSignal(wait);
-    ids.push(wait.id);
-  }
+    step.waitForSignal(wait);
+    return wait.id;
+  });
   run.suspend();
-  const store = storeOf([run]);
-
-  const first = await send(store, ids[0], { verdict: "ship" });
-  const second = await send(store, ids[1], { verdict: "fix" });
-
-  assert(first.kind === "completed" && second.kind === "completed");
-  assertEquals(first.data.stepName, "first");
-  assertEquals(first.data.awaitingResume, false);
-  assertEquals(second.data.stepName, "second");
-  assertEquals(second.data.awaitingResume, true);
-});
-
-/** The run as a process killed mid-level leaves it: suspended, a step running. */
-function abandonedMidLevel(workflow: Workflow): {
-  run: WorkflowRun;
-  waitId: string;
-} {
-  const { run, waitId } = suspendedAtWait(workflow);
-  const data = run.toData();
-  data.jobs[0].steps[1].status = "running";
-  data.jobs[0].steps[1].completedAt = undefined;
-  return { run: WorkflowRun.fromData(data), waitId };
+  return { run, first: ids[0], second: ids[1] };
 }
 
-Deno.test("workflowSignal: a run its dead owner left suspended with a step running accepts the signal", async () => {
-  const { run, waitId } = abandonedMidLevel(makeWorkflow());
-  const asked: string[] = [];
-  const store = storeOf([run], IN_TIME, undefined, (candidate) => {
-    asked.push(candidate.id);
-    return true;
-  });
+Deno.test("workflowSignal: a run with a second open wait is awaiting resume only once that wait has an outcome too", async () => {
+  const { run, first, second } = suspendedAtTwoWaits();
+  const fixture = await fixtureOf([run]);
 
-  const event = await send(store, waitId, { verdict: "ship" });
+  const one = await send(fixture, first, { verdict: "ship" });
+  assert(one.kind === "completed", JSON.stringify(one));
+  assertEquals(one.data.awaitingResume, false);
+
+  const two = await send(fixture, second, { verdict: "fix" });
+  assert(two.kind === "completed", JSON.stringify(two));
+  assertEquals(two.data.awaitingResume, true);
+});
+
+Deno.test("workflowSignal: a run whose other wait timed out is awaiting resume, as the resume fails that step", async () => {
+  const { run, first, second } = suspendedAtTwoWaits();
+  const fixture = await fixtureOf([run]);
+  const other = run.getJob("main")!.getStep("b")!;
+  await fixture.waits.settle({
+    ...cancelledOutcome(waitRefOf(run, other)!, IN_TIME),
+    kind: "timed_out",
+  });
+  assertEquals((await outcomeOf(fixture, second))?.kind, "timed_out");
+
+  const event = await send(fixture, first, { verdict: "ship" });
 
   assert(event.kind === "completed", JSON.stringify(event));
-  assertEquals(asked, [run.id]);
-  assertEquals(store.saved.length, 1);
-  const saved = store.saved[0].getJob("main")!;
-  assertEquals(saved.getStep("review")!.status, "succeeded");
-  // The abandoned step is left for the resume to run again.
-  assertEquals(saved.getStep("sibling")!.status, "running");
+  assertEquals(event.data.awaitingResume, true);
 });
 
-Deno.test("workflowSignal: the same run is refused while its owner is alive, and names the cancel", async () => {
-  const { run, waitId } = abandonedMidLevel(makeWorkflow());
-  const store = storeOf([run], IN_TIME, undefined, () => false);
-
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
-
-  assertStringIncludes(error.message, "has not suspended yet");
-  assertStringIncludes(
-    error.message,
-    `swamp workflow cancel release --run ${run.id}`,
-  );
-  assertEquals(store.saved, []);
-});
-
-Deno.test("workflowSignal: a run stored as running is refused even when its owner is dead", async () => {
+Deno.test("workflowSignal: an empty sender falls back, so the receipt names one", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const data = run.toData();
-  data.status = "running";
-  const store = storeOf(
-    [WorkflowRun.fromData(data)],
-    IN_TIME,
-    undefined,
-    () => true,
-  );
-
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
-
-  assertStringIncludes(error.message, "has not suspended yet");
-  assertEquals(store.saved, []);
-});
-
-Deno.test("workflowSignal: a drained suspended run never asks whether its owner is dead", async () => {
-  const { run, waitId } = suspendedAtWait(makeWorkflow());
-  let asked = 0;
-  const store = storeOf([run], IN_TIME, undefined, () => {
-    asked++;
-    return false;
-  });
-
-  assertEquals(
-    (await send(store, waitId, { verdict: "ship" })).kind,
-    "completed",
-  );
-  assertEquals(asked, 0);
-});
-
-Deno.test("workflowSignal: a suspended run with no step running is not ready while its owner still runs the level", async () => {
-  // The owner saved the record mid-level: the wait is open and a sibling
-  // queued behind it is still pending, so no step is recorded running.
-  const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
-  store.deps.ownerIsRunning = () => true;
-
-  const error = errorOf(await send(store, waitId, { verdict: "ship" }));
-
-  assertStringIncludes(error.message, "has not suspended yet");
-  assertEquals(store.saved, []);
-
-  // Once the owner has drained the level the same signal is delivered.
-  store.deps.ownerIsRunning = () => false;
-  assertEquals(
-    (await send(store, waitId, { verdict: "ship" })).kind,
-    "completed",
-  );
-});
-
-Deno.test("workflowSignal: an empty sender falls back, so the receipt can be read back", async () => {
-  const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
+  const fixture = await fixtureOf([run]);
 
   const events = await withMockedEnv(
     { USER: "", USERNAME: undefined },
     () =>
       collect<WorkflowSignalEvent>(
-        workflowSignal(createLibSwampContext(), store.deps, {
+        workflowSignal(createLibSwampContext(), fixture.deps, {
           waitId,
           payload: { verdict: "ship" },
         }),
@@ -580,13 +730,10 @@ Deno.test("workflowSignal: an empty sender falls back, so the receipt can be rea
   const event = events.at(-1)!;
   assert(event.kind === "completed", JSON.stringify(event));
   assertEquals(event.data.signal.submittedBy, "unknown");
-  // The saved record reads back with its wait and receipt intact.
-  const reloaded = WorkflowRun.fromData(store.saved[0].toData());
-  assertEquals(
-    reloaded.getJob("main")!.getStep("review")!.signalWait?.receipt
-      ?.submittedBy,
-    "unknown",
-  );
+  // The stored outcome reads back with its receipt intact.
+  const stored = await outcomeOf(fixture, waitId);
+  assert(stored?.kind === "accepted");
+  assertEquals(stored.receipt.submittedBy, "unknown");
 });
 
 Deno.test("workflowSignal: every refusal names the wait id exactly as typed", async () => {
@@ -595,42 +742,58 @@ Deno.test("workflowSignal: every refusal names the wait id exactly as typed", as
   const refusals: Array<() => Promise<{ message: string; typedId: string }>> = [
     async () => {
       const { run, waitId } = suspendedAtWait(workflow);
-      const event = await send(storeOf([run]), typed(waitId), { verdict: 1 });
-      return { message: errorOf(event).message, typedId: typed(waitId) };
-    },
-    async () => {
-      const { run, waitId } = suspendedAtWait(workflow);
-      const event = await send(storeOf([run], TOO_LATE), typed(waitId), {
-        verdict: "ship",
+      const event = await send(await fixtureOf([run]), typed(waitId), {
+        verdict: 1,
       });
       return { message: errorOf(event).message, typedId: typed(waitId) };
     },
     async () => {
       const { run, waitId } = suspendedAtWait(workflow);
-      const store = storeOf([run]);
-      await send(store, waitId, { verdict: "ship" });
-      const event = await send(store, typed(waitId), { verdict: "ship" });
+      const event = await send(
+        await fixtureOf([run], { now: TOO_LATE }),
+        typed(waitId),
+        { verdict: "ship" },
+      );
       return { message: errorOf(event).message, typedId: typed(waitId) };
     },
     async () => {
-      const { run, waitId } = abandonedMidLevel(workflow);
-      const event = await send(storeOf([run]), typed(waitId), {
-        verdict: "ship",
-      });
+      const { run, waitId } = suspendedAtWait(workflow);
+      const fixture = await fixtureOf([run]);
+      await send(fixture, waitId, { verdict: "ship" });
+      const event = await send(fixture, typed(waitId), { verdict: "ship" });
+      return { message: errorOf(event).message, typedId: typed(waitId) };
+    },
+    async () => {
+      const { run, waitId } = suspendedAtWait(workflow);
+      const fixture = await fixtureOf([run]);
+      await closeRunWaits(fixture.waits, run, IN_TIME);
+      const event = await send(fixture, typed(waitId), { verdict: "ship" });
       return { message: errorOf(event).message, typedId: typed(waitId) };
     },
     async () => {
       const { run, waitId } = suspendedAtWait(workflow);
       cancelAndSettle(run, workflow, "operator");
-      const event = await send(storeOf([run]), typed(waitId), {
-        verdict: "ship",
-      });
+      const event = await send(
+        await fixtureOf([run], { registered: false }),
+        typed(waitId),
+        { verdict: "ship" },
+      );
+      return { message: errorOf(event).message, typedId: typed(waitId) };
+    },
+    async () => {
+      const { run, waitId } = suspendedAtWait(workflow);
+      const fixture = await fixtureOf([run]);
+      fixture.waits.registrations.set(waitId, new Uint8Array([1]));
+      fixture.stored.clear();
+      const event = await send(fixture, typed(waitId), { verdict: "ship" });
       return { message: errorOf(event).message, typedId: typed(waitId) };
     },
     async () => {
       const { run } = suspendedAtWait(workflow);
       const unknown = typed(crypto.randomUUID());
-      const event = await send(storeOf([run]), unknown, { verdict: "ship" });
+      const event = await send(await fixtureOf([run]), unknown, {
+        verdict: "ship",
+      });
       return { message: errorOf(event).message, typedId: unknown };
     },
   ];
@@ -649,11 +812,11 @@ Deno.test("workflowSignal: every refusal names the wait id exactly as typed", as
 
 Deno.test("workflowSignal: the already-settled message names no person; the receipt stays in the details", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const store = storeOf([run]);
-  const first = await send(store, waitId, { verdict: "ship" });
+  const fixture = await fixtureOf([run]);
+  const first = await send(fixture, waitId, { verdict: "ship" });
   assert(first.kind === "completed");
 
-  const again = await send(store, waitId, { verdict: "fix" });
+  const again = await send(fixture, waitId, { verdict: "fix" });
 
   assert(again.kind === "error");
   assertEquals(again.error.message.includes("tux"), false);
@@ -665,4 +828,26 @@ Deno.test("workflowSignal: the already-settled message names no person; the rece
     (again.error.details as { receipt: unknown }).receipt,
     first.data.signal,
   );
+});
+
+Deno.test("workflowSignal: names read from a wait record are printed without control characters", async () => {
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const fixture = await fixtureOf([run], { now: TOO_LATE });
+  const stored = await fixture.waits.findRegistration(waitId);
+  assert(stored.kind === "found");
+  await fixture.waits.removeRegistration(waitId);
+  // As a writer of the datastore could leave it.
+  await fixture.waits.register({
+    ...stored.record,
+    stepName: "review\u001b[2J",
+    workflowName: "release\u0007",
+  });
+  fixture.stored.clear();
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+  assertStringIncludes(error.message, 'step "review?[2J"');
+  assertStringIncludes(error.message, 'workflow "release?"');
+  // deno-lint-ignore no-control-regex
+  assertEquals(/[\u0000-\u001f]/.test(error.message), false);
 });

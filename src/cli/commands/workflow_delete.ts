@@ -111,6 +111,8 @@ export const workflowDeleteCommand = withRemoteOptions(
         repoDir,
         datastoreResolver,
         repoContext.markDirty,
+        undefined,
+        repoContext.signalWaits,
       );
 
       // Phase 1: Preview

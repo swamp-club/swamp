@@ -24,9 +24,12 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  attachSignalWaits,
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
+  resolveSignalWaitSupport,
+  runsLiveInDatastore,
 } from "../repo_context.ts";
 import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -3083,6 +3086,18 @@ export const serveCommand = new Command()
       );
       logger.info("Control-plane store: local filesystem fallback");
     }
+
+    // The namespace is bound by now, so wait records use the datastore's
+    // store as it is instead of binding it again on first use.
+    attachSignalWaits(
+      repoContext,
+      resolveSignalWaitSupport(datastoreConfig, syncService, {
+        namespaceBound: true,
+        runsInDatastore: runsLiveInDatastore(
+          new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
+        ),
+      }),
+    );
 
     // Initialize the encrypted control-plane vault provider for serve-internal
     // secrets (OAuth credentials, per-login token secrets). This replaces

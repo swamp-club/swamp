@@ -46,6 +46,34 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
   async putIfAbsent(key: string, data: Uint8Array): Promise<boolean> {
     const path = this.#keyToPath(key);
     await Deno.mkdir(dirname(path), { recursive: true });
+    // Written in full beside the key, then linked into place: a hard link
+    // fails when the key exists, and a reader never sees a record half
+    // written. `list` skips the `.tmp` name.
+    const staged = `${path}.${crypto.randomUUID()}.tmp`;
+    try {
+      await Deno.writeFile(staged, data, { createNew: true });
+    } catch (error) {
+      // A concurrent delete removed the emptied parent directory between
+      // the mkdir above and this write. Made again, once.
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeFile(staged, data, { createNew: true });
+    }
+    try {
+      await Deno.link(staged, path);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.AlreadyExists) return false;
+      // A filesystem without hard links: create the key itself.
+      return await this.#createNew(path, data);
+    } finally {
+      try {
+        await Deno.remove(staged);
+      } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  async #createNew(path: string, data: Uint8Array): Promise<boolean> {
     try {
       const file = await Deno.open(path, { createNew: true, write: true });
       try {

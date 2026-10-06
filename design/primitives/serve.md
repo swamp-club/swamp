@@ -41,8 +41,10 @@ cron fire is claimed) is a slash-keyed record under the datastore's `_control/`
 prefix (`src/domain/datastore/control_plane_store.ts`). Every instance already
 has credentials for this durable, shared store, so reusing it avoids a second
 network surface, service discovery and leader election. The one atomic
-operation, `putIfAbsent`, is optional on the interface, and every consumer
-degrades gracefully without it.
+operation, `putIfAbsent`, is optional on the interface, and every serve consumer
+degrades gracefully without it. Workflow signal waits do not: a workflow that
+contains one is refused on a datastore whose store lacks it (see
+[workflows §Wait for Signal](workflows.md#wait-for-signal-wait_for_signal)).
 
 **Workers connect out.** Workers open their control socket and data-plane
 connection outbound; serve never connects to a worker
@@ -145,11 +147,12 @@ registration.
 
 "Remote control plane" means the datastore extension advertises
 `capabilities().controlPlane` and exposes `controlPlaneStore()`. Otherwise serve
-uses `FileSystemControlPlaneStore` under `<datastore path>/_control/`
-(`.swamp/_control/` for the default datastore,
-`src/infrastructure/persistence/fs_control_plane_store.ts`). It keeps the same
-key layout and `putIfAbsent` (via `createNew`) but is visible to one machine
-only.
+uses `FileSystemControlPlaneStore` under the repository's `.swamp/_control/`
+(`src/infrastructure/persistence/fs_control_plane_store.ts`), whatever the
+datastore. It keeps the same key layout and `putIfAbsent` (the record is written
+in full and hard-linked into place, so a reader never sees half of one) but is
+visible to one machine only. The two wait key families below are the exception:
+they always live with the datastore, never in this fallback.
 
 ## Surface
 
@@ -569,6 +572,8 @@ as its instance id. The coordination records:
 | `pending-runs/<id>`                         | Cron and webhook triggers, dual-written with the SQLite tracker | `replayPendingRuns` at boot                                                |
 | `fire-records/<workflowId>/<time>`          | `putIfAbsent` by whichever instance wins the cron fire          | Reaper (4 h TTL)                                                           |
 | `claims/reconcile-instance/<instanceId>`    | `putIfAbsent` by the instance that will reap a dead peer        | `cleanupExpiredClaims` (5 min TTL)                                         |
+| `waits/<waitId>`                            | The executor, when a `wait_for_signal` step starts waiting      | `workflow signal`, `workflow waits`; removed when the run ends            |
+| `wait-outcomes/<waitId>`                    | `putIfAbsent` by whichever of a signal, a timeout or a cancel settles the wait first | The resume that applies it; removed with the run record |
 | `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance

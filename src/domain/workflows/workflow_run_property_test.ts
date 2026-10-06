@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  acceptedOutcomeFor,
+  unsignalledOutcomeFor,
+} from "./signal_wait_store_test_helpers.ts";
+import type { WaitOutcome } from "./signal_wait_records.ts";
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { Job } from "./job.ts";
@@ -440,30 +445,50 @@ const WAIT_SCHEMA = {
   properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
 };
 const WAIT_OPENED = new Date("2026-01-01T00:00:00.000Z");
-const BEFORE_DEADLINE = new Date("2026-01-01T00:00:30.000Z");
-const AFTER_DEADLINE = new Date("2026-01-01T00:02:00.000Z");
+
+/** The outcome a signal with `payload` leaves for the wait `step` holds. */
+function accepted(step: StepRun, payload: Record<string, unknown>) {
+  const wait = step.signalWait;
+  return wait ? acceptedOutcomeFor(wait, payload) : undefined;
+}
+
+function unsignalled(step: StepRun, kind: "timed_out" | "cancelled") {
+  const wait = step.signalWait;
+  return wait ? unsignalledOutcomeFor(wait, kind) : undefined;
+}
+
+function apply(step: StepRun, outcome: WaitOutcome | undefined): boolean {
+  return outcome !== undefined && step.applyWaitOutcome(outcome);
+}
 
 /** Every transition a step holding a wait can go through, in any order. */
 const WAIT_TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
   ...TRANSITIONS,
   (s) => s.waitForSignal(SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED)),
-  (s) => s.acceptSignal({ verdict: "ship" }, "ada", BEFORE_DEADLINE),
-  (s) => s.acceptSignal({ verdict: "nope" }, "ada", BEFORE_DEADLINE),
-  (s) => s.acceptSignal({ verdict: "ship" }, "ada", AFTER_DEADLINE),
-  (s) => s.timeOutWait(BEFORE_DEADLINE),
-  (s) => s.timeOutWait(AFTER_DEADLINE),
+  (s) => apply(s, accepted(s, { verdict: "ship" })),
+  (s) => apply(s, accepted(s, { verdict: "nope" })),
+  (s) => apply(s, unsignalled(s, "timed_out")),
+  (s) => apply(s, unsignalled(s, "cancelled")),
   (s) => s.cancelOpenWait(),
   (s) => s.cancelUndecidedApproval(),
   (s) => s.failUnreadableWait(),
+  (s) => s.failUnusableOutcome(),
 ];
 
-Deno.test("StepRun signal wait: only an open, unexpired wait accepts a signal, and a refusal changes nothing (property)", () => {
+const WAITING = ["waiting_signal", "waiting"];
+
+Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one its wait accepts, and a refusal changes nothing (property)", () => {
   fc.assert(
     fc.property(
       fc.array(fc.nat(WAIT_TRANSITIONS.length - 1), { maxLength: 12 }),
-      fc.constantFrom(BEFORE_DEADLINE, AFTER_DEADLINE),
-      fc.constantFrom({ verdict: "ship" }, { verdict: "nope" }, "ship"),
-      (ops, now, payload) => {
+      fc.constantFrom<Record<string, unknown>>(
+        { verdict: "ship" },
+        { verdict: "nope" },
+        { verdict: "ship", extra: 1 },
+      ),
+      fc.boolean(),
+      fc.boolean(),
+      (ops, payload, wrongOutcome, wrongReceipt) => {
         const run = createFailedRun();
         const step = run.jobs[0].steps[0];
         step.resetToPending();
@@ -471,14 +496,26 @@ Deno.test("StepRun signal wait: only an open, unexpired wait accepts a signal, a
 
         const before = step.toData();
         const wait = step.signalWait;
-        const open = step.status === "waiting" && wait !== undefined &&
-          !wait.isSettled && !wait.isExpired(now);
-        const outcome = step.acceptSignal(payload, "ada", now);
+        const waiting = WAITING.includes(step.status) && wait !== undefined;
+        // Built for the wait the step holds or, with none, for another.
+        const outcome = acceptedOutcomeFor(
+          wait ?? SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED),
+          payload,
+        );
+        if (wrongOutcome) outcome.waitId = crypto.randomUUID();
+        if (wrongReceipt) outcome.receipt.waitId = crypto.randomUUID();
+        const canApply = step.canApplyWaitOutcome(outcome);
+        assertEquals(step.toData(), before);
+        const applied = step.applyWaitOutcome(outcome);
+        assertEquals(applied, canApply);
 
-        const valid = typeof payload === "object" &&
-          payload.verdict === "ship";
-        assertEquals(outcome.accepted, open && valid);
-        if (outcome.accepted) {
+        const valid = payload.verdict === "ship" &&
+          Object.keys(payload).length === 1;
+        assertEquals(
+          applied,
+          waiting && valid && !wrongOutcome && !wrongReceipt,
+        );
+        if (applied) {
           assertEquals(step.status, "succeeded");
           assertEquals(step.signalWait?.receipt, outcome.receipt);
           assertEquals(step.output, {
@@ -509,10 +546,8 @@ Deno.test("StepRun signal wait: a settled wait never reopens, and resetToPending
           if (settledId !== undefined && wait?.id === settledId) {
             // Once a wait holds a receipt, that wait keeps it.
             assert(wait.isSettled);
-            assert(
-              !step.acceptSignal({ verdict: "ship" }, "ada", BEFORE_DEADLINE)
-                .accepted,
-            );
+            assert(!apply(step, accepted(step, { verdict: "fix" })));
+            assert(!apply(step, unsignalled(step, "timed_out")));
           }
           if (wait?.isSettled) settledId = wait.id;
         }
@@ -536,16 +571,20 @@ Deno.test("StepRun signal wait: timing out and cancelling only ever act on a wai
   fc.assert(
     fc.property(
       fc.array(fc.nat(WAIT_TRANSITIONS.length - 1), { maxLength: 12 }),
-      fc.boolean(),
-      (ops, cancel) => {
+      fc.constantFrom<"cancel" | "cancelled" | "timed_out">(
+        "cancel",
+        "cancelled",
+        "timed_out",
+      ),
+      (ops, how) => {
         const run = createFailedRun();
         const step = run.jobs[0].steps[0];
         step.resetToPending();
         for (const op of ops) WAIT_TRANSITIONS[op](step);
 
         const before = step.toData();
-        const wasWaiting = step.status === "waiting";
-        if (cancel) {
+        const wasWaiting = WAITING.includes(step.status);
+        if (how === "cancel") {
           step.cancelOpenWait();
           if (wasWaiting) {
             assertEquals(step.status, "failed");
@@ -553,15 +592,21 @@ Deno.test("StepRun signal wait: timing out and cancelling only ever act on a wai
           } else {
             assertEquals(step.toData(), before);
           }
+          return;
+        }
+        // An outcome settles only a waiting step whose wait can be read.
+        const settles = wasWaiting && step.signalWait !== undefined;
+        assertEquals(apply(step, unsignalled(step, how)), settles);
+        if (settles) {
+          assertEquals(step.status, "failed");
+          assertEquals(
+            step.error,
+            how === "timed_out"
+              ? WAIT_TIMEOUT_STEP_ERROR
+              : CANCELLED_STEP_ERROR,
+          );
         } else {
-          const timedOut = step.timeOutWait(AFTER_DEADLINE);
-          assertEquals(timedOut, wasWaiting);
-          if (wasWaiting) {
-            assertEquals(step.status, "failed");
-            assertEquals(step.error, WAIT_TIMEOUT_STEP_ERROR);
-          } else {
-            assertEquals(step.toData(), before);
-          }
+          assertEquals(step.toData(), before);
         }
       },
     ),

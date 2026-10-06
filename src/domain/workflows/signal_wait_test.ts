@@ -252,23 +252,35 @@ Deno.test("SignalWait.validatePayload: a schema with no properties does not read
   assertEquals(result.payload, { type: "anything", required: 3 });
 });
 
-Deno.test("SignalWait.settle: records the receipt and leaves the open wait unchanged", () => {
+Deno.test("SignalWait.settledWith: records the receipt and leaves the open wait unchanged", () => {
   const wait = SignalWait.open(VERDICT, 60, NOW);
   const at = new Date("2026-01-01T00:00:30.000Z");
+  const receipt = {
+    id: crypto.randomUUID(),
+    waitId: wait.id,
+    receivedAt: at.toISOString(),
+    submittedBy: "ada",
+  };
 
-  const settled = wait.settle("ada", at);
+  const settled = wait.settledWith(receipt);
 
   assertEquals(wait.isSettled, false);
   assertEquals(settled.isSettled, true);
   assertEquals(settled.id, wait.id);
-  assertEquals(settled.receipt?.waitId, wait.id);
+  assertEquals(settled.receipt, receipt);
+  // The wait keeps its own copy.
+  receipt.submittedBy = "eve";
   assertEquals(settled.receipt?.submittedBy, "ada");
-  assertEquals(settled.receipt?.receivedAt, at.toISOString());
-  assert(settled.receipt!.id !== wait.id);
 });
 
 Deno.test("SignalWait: round-trips through its data and compares by value", () => {
-  const wait = SignalWait.open(VERDICT, 60, NOW).settle("ada", NOW);
+  const open = SignalWait.open(VERDICT, 60, NOW);
+  const wait = open.settledWith({
+    id: crypto.randomUUID(),
+    waitId: open.id,
+    receivedAt: NOW.toISOString(),
+    submittedBy: "ada",
+  });
 
   const copy = SignalWait.fromData(wait.toData());
 

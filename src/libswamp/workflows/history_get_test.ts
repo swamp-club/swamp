@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -344,12 +345,11 @@ Deno.test("workflowHistoryGet: a step waiting for a signal shows its wait", asyn
 Deno.test("workflowHistoryGet: a signalled step shows the receipt", async () => {
   const opened = new Date("2026-01-01T00:00:00.000Z");
   const run = runWaitingForSignal(opened);
-  const outcome = run.getJob("main")!.getStep("review")!.acceptSignal(
-    { ok: true },
-    "ada",
-    opened,
-  );
-  if (!outcome.accepted) throw new Error("refused");
+  const review = run.getJob("main")!.getStep("review")!;
+  const outcome = acceptedOutcomeFor(review.signalWait!, { ok: true }, {
+    at: opened,
+  });
+  assertEquals(review.applyWaitOutcome(outcome), true);
   const events = await collect<WorkflowHistoryGetEvent>(
     workflowHistoryGet(
       createLibSwampContext(),
@@ -425,6 +425,6 @@ Deno.test("nestedWaitView: a run with a finished nested run is not awaiting resu
   assertEquals(waiting.nestedWaits?.length, 1);
   assertEquals(waiting.awaitingResume, undefined);
 
-  review.acceptSignal({}, "ada", new Date());
+  review.applyWaitOutcome(acceptedOutcomeFor(review.signalWait!, {}));
   assertEquals((await nestedWaitView(deps, parent)).awaitingResume, true);
 });

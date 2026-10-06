@@ -30,6 +30,7 @@ import {
   createLockProgressWriter,
   createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
+  signalWaitsOf,
 } from "../repo_context.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -39,6 +40,7 @@ import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolv
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { openSignalWaitMessage } from "../../domain/workflows/signal_wait.ts";
+import { findUnsettledWait } from "../../domain/workflows/signal_wait_cleanup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
@@ -309,6 +311,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
+    const signalWaits = signalWaitsOf(unlocked.repoContext);
     const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     const liveness = localOwnerLiveness();
     const { run, workflow, workflowName } = await resolveResumableRun(
@@ -331,8 +334,17 @@ export const workflowResumeCommand = withRemoteOptions(
             `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
         );
       }
-      const openWait = run.findOpenSignalWait(new Date());
-      if (openWait) throw new UserError(openSignalWaitMessage(openWait));
+      // Asked of the wait's outcome, not the run record: a signal settles
+      // a wait without writing the run. The resume asks again under the
+      // run's claim.
+      if (signalWaits.supported) {
+        const openWait = await findUnsettledWait(
+          signalWaits.store,
+          run,
+          new Date(),
+        );
+        if (openWait) throw new UserError(openSignalWaitMessage(openWait));
+      }
     }
 
     const stepLockHook: StepLockHook = async (modelType, modelId) => {
@@ -464,6 +476,8 @@ export const workflowResumeCommand = withRemoteOptions(
     );
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
+    service.signalWaits = signalWaits;
+    service.ownerLiveness = liveness;
 
     const abort = new AbortController();
     const timeoutMs = options.timeout

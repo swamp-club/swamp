@@ -241,3 +241,69 @@ Deno.test("workflowDelete: with byId deletes the workflow with that id, never a 
 
   assertEquals(deleted, [testWorkflow.id]);
 });
+
+Deno.test("workflowDelete: removes the signal wait records of the deleted runs, after the runs", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    listRunIds: () => Promise.resolve(["run-a", "run-b"]),
+    deleteRuns: () => {
+      calls.push("runs");
+      return Promise.resolve(2);
+    },
+    deleteWaitRecords: (runIds) => {
+      calls.push(`waits:${runIds.join(",")}`);
+      return Promise.resolve();
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+    }),
+  );
+
+  assertEquals(calls, ["runs", "waits:run-a,run-b"]);
+});
+
+Deno.test("workflowDelete: a failed run delete leaves the signal wait records in place", async () => {
+  let removed = false;
+  const deps = makeDeps({
+    deleteRuns: () => Promise.reject(new Error("disk full")),
+    deleteWaitRecords: () => {
+      removed = true;
+      return Promise.resolve();
+    },
+  });
+
+  await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+    }),
+  ).catch(() => {});
+
+  assertEquals(removed, false);
+});
+
+Deno.test("workflowDelete: an unreachable wait store does not leave the workflow half deleted", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    deleteWaitRecords: () => Promise.reject(new Error("bucket unreachable")),
+    deleteEvaluated: () => {
+      calls.push("evaluated");
+      return Promise.resolve();
+    },
+    deleteWorkflow: () => {
+      calls.push("workflow");
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<WorkflowDeleteEvent>(
+    workflowDelete(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+    }),
+  );
+
+  assertEquals(calls, ["evaluated", "workflow"]);
+  assertEquals(events.at(-1)?.kind, "completed");
+});

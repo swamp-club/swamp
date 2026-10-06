@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertExists,
   assertRejects,
@@ -31,6 +32,7 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
   assertManagedConfigWritable,
+  attachSignalWaits,
   buildMarkDirtyHook,
   createLockProgressWriter,
   createModelLock,
@@ -52,9 +54,26 @@ import {
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
+  resolveSignalWaitSupport,
+  runsLiveInDatastore,
   runUnderModelLocks,
+  signalWaitsOf,
   waitForPerModelLocks,
 } from "./repo_context.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import { InMemorySignalWaitStore } from "../domain/workflows/signal_wait_store_test_helpers.ts";
+import { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { SignalWait } from "../domain/workflows/signal_wait.ts";
+import {
+  registrationOf,
+  type WaitRegistration,
+} from "../domain/workflows/signal_wait_records.ts";
+import { Workflow } from "../domain/workflows/workflow.ts";
+import { Job } from "../domain/workflows/job.ts";
+import { Step } from "../domain/workflows/step.ts";
+import { StepTask } from "../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import {
   DRAIN_WAIT_TTL_MS,
   type DrainWait,
@@ -4696,4 +4715,438 @@ Deno.test("requireInitializedRepoUnlocked: returns a mark hook exactly when it r
   } finally {
     datastoreTypeRegistry.invalidateType(typeName);
   }
+});
+
+function waitRegistrationFor(runId: string): WaitRegistration {
+  return registrationOf(
+    {
+      workflowId: "wf-1",
+      workflowName: "release",
+      runId,
+      jobName: "main",
+      stepName: "review",
+    },
+    SignalWait.open({ type: "object" }, 60, new Date()),
+    new Date(),
+  );
+}
+
+/** A control-plane store in memory that records each call it receives. */
+function recordingControlPlane(calls: string[]): ControlPlaneStore {
+  const data = new Map<string, Uint8Array>();
+  return {
+    put: (key, bytes) => {
+      calls.push(`put:${key}`);
+      data.set(key, bytes);
+      return Promise.resolve();
+    },
+    putIfAbsent: (key, bytes) => {
+      calls.push(`putIfAbsent:${key}`);
+      if (data.has(key)) return Promise.resolve(false);
+      data.set(key, bytes);
+      return Promise.resolve(true);
+    },
+    get: (key) => {
+      calls.push(`get:${key}`);
+      return Promise.resolve(data.get(key) ?? null);
+    },
+    delete: (key) => {
+      calls.push(`delete:${key}`);
+      data.delete(key);
+      return Promise.resolve();
+    },
+    list: (prefix) => {
+      calls.push(`list:${prefix}`);
+      return Promise.resolve(
+        [...data.keys()].filter((key) => key.startsWith(prefix)),
+      );
+    },
+  };
+}
+
+function customConfig(namespace?: string): DatastoreConfig {
+  return {
+    type: "@acme/bucket",
+    config: {},
+    datastorePath: "bucket://x",
+    cachePath: "/nonexistent/cache",
+    namespace,
+  };
+}
+
+Deno.test("resolveSignalWaitSupport: a filesystem datastore keeps wait records under its own path, shared by every repository on it", async () => {
+  await withTempDir(async (datastore) => {
+    // Two repositories that share one datastore directory.
+    const config: DatastoreConfig = { type: "filesystem", path: datastore };
+    const one = resolveSignalWaitSupport(config, undefined, {
+      runsInDatastore: true,
+    });
+    const two = resolveSignalWaitSupport(config);
+    assert(one.supported && two.supported);
+    // Run records are the datastore's own only where they are stored in
+    // it; a repository that keeps its runs to itself is not told so.
+    assertEquals(one.localRunAbsenceIsAuthoritative, true);
+    assertEquals(two.localRunAbsenceIsAuthoritative, false);
+    const registration = waitRegistrationFor(crypto.randomUUID());
+
+    await one.store.register(registration);
+
+    assertEquals(await two.store.listRegistrations(), [registration]);
+    assertEquals(
+      (await Deno.stat(
+        join(datastore, "_control", "waits", registration.waitId),
+      )).isFile,
+      true,
+    );
+  });
+});
+
+Deno.test("resolveSignalWaitSupport: a namespaced filesystem datastore keeps each namespace's wait records apart", async () => {
+  await withTempDir(async (datastore) => {
+    const team = resolveSignalWaitSupport({
+      type: "filesystem",
+      path: datastore,
+      namespace: "team-a",
+    });
+    const other = resolveSignalWaitSupport({
+      type: "filesystem",
+      path: datastore,
+      namespace: "team-b",
+    });
+    assert(team.supported && other.supported);
+    const registration = waitRegistrationFor(crypto.randomUUID());
+
+    await team.store.register(registration);
+
+    assertEquals(await other.store.listRegistrations(), []);
+    assertEquals(
+      (await Deno.stat(
+        join(datastore, "team-a", "_control", "waits", registration.waitId),
+      )).isFile,
+      true,
+    );
+  });
+});
+
+Deno.test("resolveSignalWaitSupport: a custom datastore without a shared control-plane store does not support waits", () => {
+  const { service: plain } = createRecordingSyncService();
+  const noSync = resolveSignalWaitSupport(customConfig());
+  const noCapability = resolveSignalWaitSupport(customConfig(), plain);
+  // Advertised without a store to hand out.
+  const noStore = resolveSignalWaitSupport(customConfig(), {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+  });
+
+  for (const support of [noSync, noCapability, noStore]) {
+    assert(!support.supported);
+    assertStringIncludes(support.reason, '"@acme/bucket"');
+    assertStringIncludes(support.reason, "update the");
+  }
+});
+
+Deno.test("resolveSignalWaitSupport: a store that cannot create a record atomically is found out when the store is opened, with the reason", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
+  const support = resolveSignalWaitSupport(customConfig(), {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => withoutCreate,
+  });
+  assert(support.supported);
+
+  // What a workflow with a wait asks before it starts.
+  const refused = await assertRejects(() => support.ready!(), Error);
+  assertStringIncludes(refused.message, "putIfAbsent");
+  assertStringIncludes(refused.message, '"@acme/bucket"');
+  // And no record is written through such a store.
+  await assertRejects(
+    () => support.store.register(waitRegistrationFor(crypto.randomUUID())),
+    Error,
+    "putIfAbsent",
+  );
+});
+
+Deno.test("resolveSignalWaitSupport: the extension's store is not created until a wait is used, and then only after the namespace is bound", async () => {
+  // As the S3 and GCS extensions behave: the store's list prefix is fixed
+  // by the namespace bound when the store is created.
+  const order: string[] = [];
+  let bound: string | undefined;
+  const records = new Map<string, Uint8Array>();
+  const { service: plain } = createRecordingSyncService();
+  const sync = {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: (options?: { namespace?: string }) => {
+      order.push(`pull:${options?.namespace}`);
+      bound = options?.namespace;
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: (): ControlPlaneStore => {
+      order.push(`store:${bound}`);
+      const prefix = bound ? `${bound}/_control/` : "_control/";
+      return {
+        put: (key, data) => {
+          records.set(`${bound}/_control/${key}`, data);
+          return Promise.resolve();
+        },
+        putIfAbsent: (key, data) => {
+          const full = `${bound}/_control/${key}`;
+          if (records.has(full)) return Promise.resolve(false);
+          records.set(full, data);
+          return Promise.resolve(true);
+        },
+        get: (key) =>
+          Promise.resolve(records.get(`${bound}/_control/${key}`) ?? null),
+        delete: (key) => {
+          records.delete(`${bound}/_control/${key}`);
+          return Promise.resolve();
+        },
+        // The prefix captured at creation, not the one bound now.
+        list: (keyPrefix) =>
+          Promise.resolve(
+            [...records.keys()].filter((key) =>
+              key.startsWith(prefix + keyPrefix)
+            ).map((key) => key.slice(prefix.length)),
+          ),
+      };
+    },
+  };
+
+  const support = resolveSignalWaitSupport(customConfig("team-a"), sync);
+  assert(support.supported);
+  // Building a repository context creates nothing and binds nothing.
+  assertEquals(order, []);
+
+  const registration = waitRegistrationFor(crypto.randomUUID());
+  await support.store.register(registration);
+
+  assertEquals(order, ["pull:team-a", "store:team-a"]);
+  // Written and listed under the same, namespaced prefix.
+  assertEquals(await support.store.listRegistrations(), [registration]);
+  assertEquals(order, ["pull:team-a", "store:team-a"]);
+});
+
+Deno.test("resolveSignalWaitSupport: a failed open is tried again by the next call, not kept", async () => {
+  const { service: plain } = createRecordingSyncService();
+  let pulls = 0;
+  const support = resolveSignalWaitSupport(customConfig("team-a"), {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: () => {
+      pulls++;
+      return pulls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(0);
+    },
+    controlPlaneStore: () => recordingControlPlane([]),
+  });
+  assert(support.supported);
+
+  await assertRejects(() => support.ready!(), Error, "network down");
+  await support.ready!();
+  await support.store.listRegistrations();
+
+  assertEquals(pulls, 2);
+});
+
+Deno.test("resolveSignalWaitSupport: a custom datastore's store is bound to the namespace by one pull before its first use", async () => {
+  const { service, events } = createRecordingSyncService();
+  const calls: string[] = [];
+  const remote = recordingControlPlane(calls);
+  const support = resolveSignalWaitSupport(customConfig("team-a"), {
+    ...service,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => remote,
+  });
+  assert(support.supported);
+  assertEquals(support.localRunAbsenceIsAuthoritative, undefined);
+  // Resolving touches neither the store nor the remote.
+  assertEquals(events, []);
+  assertEquals(calls, []);
+  const registration = waitRegistrationFor(crypto.randomUUID());
+
+  await support.store.register(registration);
+  await support.store.listRegistrations();
+  await support.store.findOutcome(registration.waitId);
+
+  assertEquals(events, [{ kind: "pull", options: { namespace: "team-a" } }]);
+  assertEquals(calls[0], `putIfAbsent:waits/${registration.waitId}`);
+});
+
+Deno.test("resolveSignalWaitSupport: no pull is made without a namespace, or when the caller has bound it already", async () => {
+  for (
+    const [namespace, options] of [
+      [undefined, undefined],
+      ["team-a", { namespaceBound: true }],
+    ] as const
+  ) {
+    const { service, events } = createRecordingSyncService();
+    const support = resolveSignalWaitSupport(
+      customConfig(namespace),
+      {
+        ...service,
+        capabilities: () => ({ controlPlane: true }),
+        controlPlaneStore: () => recordingControlPlane([]),
+      },
+      options,
+    );
+    assert(support.supported);
+
+    assertEquals(support.localRunAbsenceIsAuthoritative, undefined);
+    await support.store.register(waitRegistrationFor(crypto.randomUUID()));
+
+    assertEquals(events, []);
+  }
+});
+
+Deno.test("requireInitializedRepoUnlocked: gives the context wait support, and its run repository closes the waits of a run saved as ended", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: dir,
+      outputMode: "json",
+    });
+    const support = signalWaitsOf(repoContext);
+    assert(support.supported);
+
+    const workflow = Workflow.create({
+      name: "release",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(60, { type: "object" }),
+            }),
+          ],
+        }),
+      ],
+    });
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.getJob("main")!.start();
+    const step = run.getJob("main")!.getStep("review")!;
+    step.start();
+    const wait = SignalWait.open({ type: "object" }, 60, new Date());
+    step.waitForSignal(wait);
+    await support.store.register({
+      ...waitRegistrationFor(run.id),
+      waitId: wait.id,
+    });
+    run.suspend();
+
+    // A suspended run keeps its wait open.
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    assertEquals((await support.store.findRegistration(wait.id)).kind, "found");
+    assertEquals((await support.store.findOutcome(wait.id)).kind, "absent");
+
+    // Any writer that ends the run closes it, with nothing to remember.
+    run.endAsCancelled("operator");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    assertEquals(
+      (await support.store.findRegistration(wait.id)).kind,
+      "absent",
+    );
+    const outcome = await support.store.findOutcome(wait.id);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "cancelled");
+    await flushDatastoreSync();
+  });
+});
+
+Deno.test("signalWaitsOf: a context that was given no store does not support waits", () => {
+  const support = signalWaitsOf({});
+  assert(!support.supported);
+});
+
+Deno.test("attachSignalWaits: a wait store that cannot be reached does not stop a run from being saved as ended", async () => {
+  await withTempDir(async (dir) => {
+    class Unreachable extends InMemorySignalWaitStore {
+      override removeRegistration(): Promise<void> {
+        return Promise.reject(new Error("bucket unreachable"));
+      }
+    }
+    const store = new Unreachable();
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    attachSignalWaits({ workflowRunRepo: runRepo }, { supported: true, store });
+
+    const workflow = Workflow.create({
+      name: "release",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(60, { type: "object" }),
+            }),
+          ],
+        }),
+      ],
+    });
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.getJob("main")!.start();
+    const step = run.getJob("main")!.getStep("review")!;
+    step.start();
+    step.waitForSignal(SignalWait.open({ type: "object" }, 60, new Date()));
+    run.endAsCancelled("operator");
+
+    await runRepo.save(workflow.id, run);
+
+    assertEquals(
+      (await runRepo.findById(workflow.id, run.id))?.status,
+      "cancelled",
+    );
+
+    // Without support the hook is cleared, not left from an earlier call.
+    attachSignalWaits({ workflowRunRepo: runRepo }, {
+      supported: false,
+      reason: "none",
+    });
+    assertEquals(runRepo.beforeSave, undefined);
+  });
+});
+
+Deno.test("runsLiveInDatastore: true only when run records are stored in the datastore, not kept in the repository", () => {
+  const dir = join("some", "repo");
+  const path = join("some", "shared");
+  const resolverFor = (config: DatastoreConfig) =>
+    new DefaultDatastorePathResolver(dir, config);
+
+  // The default layout keeps runs in the datastore.
+  assertEquals(
+    runsLiveInDatastore(resolverFor({ type: "filesystem", path })),
+    true,
+  );
+  // A datastore told to hold other directories only.
+  assertEquals(
+    runsLiveInDatastore(
+      resolverFor({ type: "filesystem", path, directories: ["data"] }),
+    ),
+    false,
+  );
+  // Or told to leave the runs out.
+  assertEquals(
+    runsLiveInDatastore(
+      resolverFor({ type: "filesystem", path, exclude: ["workflow-runs"] }),
+    ),
+    false,
+  );
+});
+
+Deno.test("requireInitializedRepoUnlocked: the default datastore lets the sweep judge a wait by its run record", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: dir,
+      outputMode: "json",
+    });
+    const support = signalWaitsOf(repoContext);
+    assert(support.supported);
+    assertEquals(support.localRunAbsenceIsAuthoritative, true);
+    await flushDatastoreSync();
+  });
 });

@@ -248,6 +248,27 @@ breaks the contract; call them from your own `Deno.test`.
 | `assertVerifierConformance`             | The health check result shape                            |
 | `assertSyncServiceConformance`          | The sync service's methods and `capabilities()` shape    |
 | `assertSyncServiceRoundTripConformance` | Sync behaviour between two caches on one backend         |
+| `assertControlPlaneStoreConformance`    | A `controlPlaneStore()`: round-trip, list, atomic create |
+
+### `assertControlPlaneStoreConformance`
+
+For a sync service that advertises `controlPlane`. Pass a function that opens
+the store; it is called several times and each handle must reach the same
+records, as two swamp processes on one datastore do.
+
+```typescript
+Deno.test("control-plane store conformance", async () => {
+  await assertControlPlaneStoreConformance(() =>
+    createSyncService().controlPlaneStore()
+  );
+});
+```
+
+`putIfAbsent` is optional on the interface but required here by default: swamp
+refuses to start a workflow with a `wait_for_signal` step on a datastore whose
+store lacks it, or whose create is not atomic. Pass
+`{ requirePutIfAbsent: false }` to check a store without it.
+`createInMemoryControlPlaneStore()` is a conforming store for tests of your own.
 
 ### `assertSyncServiceRoundTripConformance`
 

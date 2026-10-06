@@ -84,6 +84,7 @@ export type RunStatus =
   | "running"
   | "waiting_approval"
   | "waiting"
+  | "waiting_signal"
   | "succeeded"
   | "failed"
   | "skipped"
@@ -92,12 +93,14 @@ export type RunStatus =
 /**
  * True for a step status that has not reached an outcome: the step has yet
  * to run, is running, or is paused on an approval gate, a nested run
- * (`waiting_approval`) or a wait (`waiting`). Takes a plain string so a
+ * (`waiting_approval`) or a wait for a signal (`waiting_signal`, or
+ * `waiting` in a run suspended before swamp-club#3093). Takes a plain string so a
  * stored record can be asked before it is parsed.
  */
 export function isUnfinishedStatus(status: unknown): boolean {
   return status === "pending" || status === "running" ||
-    status === "waiting_approval" || status === "waiting";
+    status === "waiting_approval" || status === "waiting" ||
+    status === "waiting_signal";
 }
 
 /**

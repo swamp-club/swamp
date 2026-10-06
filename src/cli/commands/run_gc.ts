@@ -128,6 +128,7 @@ export const runGcCommand = withRemoteOptions(
       repoDir,
       datastoreResolver,
       repoContext.markDirty,
+      repoContext.signalWaits,
     );
 
     const gcInput = runGcInputFromPolicy(

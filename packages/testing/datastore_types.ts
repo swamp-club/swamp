@@ -136,6 +136,39 @@ export interface DatastoreSyncService {
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<boolean>;
+  /**
+   * Return a store for small control-plane records, read and written in
+   * the datastore directly. Required when `capabilities().controlPlane` is
+   * true.
+   */
+  controlPlaneStore?(): ControlPlaneStore;
+}
+
+/**
+ * Direct read and write of small records in the datastore, bypassing the
+ * cache and sync. Keys are slash-delimited paths such as `heartbeats/<id>`,
+ * kept under `_control/` in the backend, below the namespace when one is
+ * bound.
+ *
+ * `putIfAbsent` is optional on the interface, but a store without it cannot
+ * hold the records of workflow signal waits: swamp refuses to start a
+ * workflow that contains a `wait_for_signal` step on such a datastore.
+ */
+export interface ControlPlaneStore {
+  /** Writes the record, replacing any that exists. */
+  put(key: string, data: Uint8Array): Promise<void>;
+  /**
+   * Creates the record only if the key holds none, atomically: of any
+   * number of concurrent creates of one key, exactly one returns true. A
+   * record that exists is left unchanged.
+   */
+  putIfAbsent?(key: string, data: Uint8Array): Promise<boolean>;
+  /** The record, or null when the key holds none. */
+  get(key: string): Promise<Uint8Array | null>;
+  /** Removes the record. Removing a key that holds none is not an error. */
+  delete(key: string): Promise<void>;
+  /** The keys under `prefix`, each in full, as passed to `put`. */
+  list(prefix: string): Promise<string[]>;
 }
 
 /**

@@ -76,6 +76,17 @@ import {
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
+import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
+import {
+  type AtomicControlPlaneStore,
+  ControlPlaneSignalWaitStore,
+  isAtomicControlPlaneStore,
+} from "../infrastructure/persistence/control_plane_signal_wait_store.ts";
+import { closeWaitsOfEndedRun } from "../domain/workflows/signal_wait_cleanup.ts";
+import {
+  SIGNAL_WAITS_NOT_CONFIGURED,
+  type SignalWaitSupport,
+} from "../domain/workflows/signal_wait_store.ts";
 import {
   createDatastoreLock,
   datastoreGlobalLockOptions,
@@ -86,6 +97,7 @@ import {
   isManagedConfigBaseResolved,
   managedConfigLockfilePath,
   registerManagedConfig,
+  SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import {
@@ -1168,6 +1180,12 @@ export function requireInitializedRepo(
       filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
       ...factoryConfig,
     });
+    attachSignalWaits(
+      repoContext,
+      resolveSignalWaitSupport(datastoreConfig, syncService, {
+        runsInDatastore: runsLiveInDatastore(datastoreResolver),
+      }),
+    );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
     // next query backfills from the freshly-pulled local cache.
@@ -1340,6 +1358,12 @@ export async function requireInitializedRepoUnlocked(
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
     ...factoryConfig,
   });
+  attachSignalWaits(
+    repoContext,
+    resolveSignalWaitSupport(datastoreConfig, syncService, {
+      runsInDatastore: runsLiveInDatastore(datastoreResolver),
+    }),
+  );
 
   return {
     repoDir: repoPath.value,
@@ -1438,6 +1462,176 @@ export function createWorkflowRunClaims(
     withClaim: async (runId, fn) => {
       const lock = await createWorkflowRunLock(config, runId);
       return await lock.withLock(fn);
+    },
+  };
+}
+
+/**
+ * Whether signal waits can be used on this datastore, with the store for
+ * their records (swamp-club#3093). The records must be visible to every
+ * process that can settle a wait, so they live with the datastore, never
+ * under the repository:
+ *
+ * - A filesystem datastore keeps them under its own path, below the
+ *   namespace when one is set, so every repository on that datastore sees
+ *   them.
+ * - A custom datastore keeps them in its extension's control-plane store,
+ *   which must create a record atomically (`putIfAbsent`).
+ * - Any other datastore does not support waits: a store local to this
+ *   machine would accept a signal the run's own host never sees.
+ */
+export function resolveSignalWaitSupport(
+  config: DatastoreConfig,
+  syncService?: DatastoreSyncService,
+  options?: {
+    /**
+     * The sync service is already bound to the datastore's namespace, as in
+     * `swamp serve` after boot, so the store is used as it is.
+     */
+    namespaceBound?: boolean;
+    /**
+     * Run records are stored in the datastore itself, beside the wait
+     * records (see {@link runsLiveInDatastore}). Only a filesystem
+     * datastore of which this is true lets the sweep judge a wait by its
+     * run record.
+     */
+    runsInDatastore?: boolean;
+  },
+): SignalWaitSupport {
+  if (!isCustomDatastoreConfig(config)) {
+    return {
+      supported: true,
+      localRunAbsenceIsAuthoritative: options?.runsInDatastore === true,
+      store: new ControlPlaneSignalWaitStore(
+        new FileSystemControlPlaneStore(
+          config.namespace ? join(config.path, config.namespace) : config.path,
+        ),
+      ),
+    };
+  }
+  const update =
+    `update the "${config.type}" datastore extension, or use a filesystem datastore`;
+  if (
+    !syncService?.capabilities?.().controlPlane ||
+    !syncService.controlPlaneStore
+  ) {
+    return {
+      supported: false,
+      reason:
+        `the "${config.type}" datastore has no control-plane store shared between hosts; ${update}`,
+    };
+  }
+  // The extension's store is not created here. The S3 and GCS extensions
+  // bind their namespace for good on the first sync or control-plane call,
+  // and older versions fix the store's list prefix when it is created, so
+  // a store made before a namespaced pull would look under the wrong
+  // prefix. Every command builds a repository context; only one that uses
+  // a wait opens the store.
+  const remote = lazyRemoteStore(
+    syncService,
+    config.namespace && !options?.namespaceBound ? config.namespace : undefined,
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent); ${update}`,
+  );
+  return {
+    supported: true,
+    store: new ControlPlaneSignalWaitStore(remote.store),
+    ready: remote.open,
+  };
+}
+
+/**
+ * Whether workflow run records are stored in the datastore, where wait
+ * records are, and not kept in the repository by the datastore's
+ * `directories` or `exclude` settings. Repositories that share a datastore
+ * but keep their runs to themselves cannot see each other's runs, so none
+ * of them can tell a deleted run from another repository's.
+ */
+export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
+  return resolver.isDatastoreSubdir(SWAMP_SUBDIRS.workflowRuns) &&
+    !resolver.isExcluded(SWAMP_SUBDIRS.workflowRuns);
+}
+
+/**
+ * Gives a repository context its wait support. With a store, every run its
+ * repository saves as ended closes its waits first, so no path that ends a
+ * run leaves a wait accepting signals.
+ */
+export function attachSignalWaits(
+  repoContext: Pick<RepositoryContext, "signalWaits" | "workflowRunRepo">,
+  support: SignalWaitSupport,
+): void {
+  repoContext.signalWaits = support;
+  if (!support.supported) {
+    repoContext.workflowRunRepo.beforeSave = undefined;
+    return;
+  }
+  const closeWaits = closeWaitsOfEndedRun(support.store);
+  repoContext.workflowRunRepo.beforeSave = async (run) => {
+    // A run's outcome is never lost to its wait records: when they cannot
+    // be reached the run is saved all the same, and the sweep closes its
+    // waits later.
+    try {
+      await closeWaits(run);
+    } catch (error) {
+      getSwampLogger(["workflow", "signal-wait"]).warn(
+        "Could not close the signal waits of run {runId}; they are closed by the next sweep: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  };
+}
+
+/** The wait support a repository context carries, or none configured. */
+export function signalWaitsOf(
+  repoContext: Pick<RepositoryContext, "signalWaits">,
+): SignalWaitSupport {
+  return repoContext.signalWaits ?? SIGNAL_WAITS_NOT_CONFIGURED;
+}
+
+/**
+ * The control-plane store of a custom datastore, opened on first use: the
+ * sync service is bound to `namespace` by a pull when one is given (the
+ * only call that binds, as in `initializeControlPlaneVaultForCli`), and
+ * only then is the store created. `open` rejects with `notAtomic` when the
+ * store lacks `putIfAbsent`. A failed open is tried again by the next call.
+ *
+ * The pull can therefore happen partway through a command, as the pulls of
+ * `acquireModelLocks` do. It brings remote changes into the cache and does
+ * not discard this command's own unpushed writes, and a run being resumed
+ * or saved is held in memory and written after.
+ */
+function lazyRemoteStore(
+  syncService: DatastoreSyncService,
+  namespace: string | undefined,
+  notAtomic: string,
+): { store: AtomicControlPlaneStore; open: () => Promise<void> } {
+  let opened: Promise<AtomicControlPlaneStore> | undefined;
+  const open = (): Promise<AtomicControlPlaneStore> => {
+    opened ??= (async () => {
+      if (namespace) await syncService.pullChanged({ namespace });
+      const store = syncService.controlPlaneStore!();
+      if (!isAtomicControlPlaneStore(store)) throw new UserError(notAtomic);
+      return store;
+    })().catch((error) => {
+      opened = undefined;
+      throw error;
+    });
+    return opened;
+  };
+  return {
+    open: async () => {
+      await open();
+    },
+    store: {
+      put: async (key, data) => await (await open()).put(key, data),
+      putIfAbsent: async (key, data) =>
+        await (await open()).putIfAbsent(key, data),
+      get: async (key) => await (await open()).get(key),
+      delete: async (key) => await (await open()).delete(key),
+      list: async (prefix) => await (await open()).list(prefix),
     },
   };
 }

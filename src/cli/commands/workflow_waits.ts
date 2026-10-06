@@ -32,7 +32,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  requireInitializedRepoUnlocked,
+  signalWaitsOf,
+} from "../repo_context.ts";
 import { formatCommandTarget } from "../remote_run.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -122,7 +125,10 @@ export const workflowWaitsCommand = new Command()
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowWaitsDeps(repoContext.workflowRunRepo);
+    const deps = createWorkflowWaitsDeps(
+      repoContext.workflowRunRepo,
+      signalWaitsOf(repoContext),
+    );
 
     let data: WorkflowWaitsData = { waits: [], unreadableWaits: [] };
     await consumeStream<WorkflowWaitsEvent>(

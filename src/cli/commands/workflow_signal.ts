@@ -31,20 +31,11 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
-  createWorkflowRunClaims,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
+  signalWaitsOf,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  suspendedRunHasDeadOwner,
-  suspendedRunOwnerIsRunning,
-} from "../../domain/workflows/orphaned_run_reaper.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import {
-  localOwnerLiveness,
-  RunTrackerStore,
-} from "../../infrastructure/persistence/run_tracker_store.ts";
 import { formatCommandTarget } from "../remote_run.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -90,9 +81,13 @@ export function renderSignalResult(
   cliCtx.logger
     .info`Signalled step ${data.stepName} in workflow ${data.workflowName}`;
   if (cliCtx.verbosity === "quiet") return;
+  // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
       ? `After the signal: ${data.resumeCommand}`
+      : !data.runRecordAvailable
+      ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
+        `Check with "swamp workflow waits", then resume where the run is: ${data.resumeCommand}`
       : `The run still waits on something else. Once that settles: ${data.resumeCommand}`,
   );
 }
@@ -123,41 +118,32 @@ export const workflowSignalCommand = new Command()
     ]);
     const payload = parseSignalPayload(options.payload as string);
 
-    const { repoDir, repoContext, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-    // The tracker says whether the run's owner is still running the level
-    // the wait is in, or abandoned it with a step recorded running.
-    const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-    const liveness = localOwnerLiveness();
+    // A signal creates the wait's outcome record and never writes the run,
+    // so it takes no claim and asks nothing of the run's owner.
     const deps = createWorkflowSignalDeps(
       repoContext.workflowRunRepo,
-      createWorkflowRunClaims(datastoreConfig),
-      (run) => suspendedRunHasDeadOwner(run, tracker, liveness),
-      (run) => suspendedRunOwnerIsRunning(run, tracker, liveness),
+      signalWaitsOf(repoContext),
     );
     const commandTarget = formatCommandTarget({
       repoDir: options.repoDir as string | undefined,
     });
 
-    try {
-      await consumeStream(
-        workflowSignal(ctx, deps, { waitId, payload }),
-        {
-          resolving: () => {},
-          completed: (e) => {
-            renderSignalResult(cliCtx, e.data, commandTarget);
-          },
-          error: (e) => {
-            throw userErrorFromSwampError(e.error);
-          },
+    await consumeStream(
+      workflowSignal(ctx, deps, { waitId, payload }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          renderSignalResult(cliCtx, e.data, commandTarget);
         },
-      );
-    } finally {
-      tracker.close();
-    }
+        error: (e) => {
+          throw userErrorFromSwampError(e.error);
+        },
+      },
+    );
   });

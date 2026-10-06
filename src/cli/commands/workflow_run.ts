@@ -35,6 +35,7 @@ import {
   createWorkflowRunClaims,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
+  signalWaitsOf,
 } from "../repo_context.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -482,7 +483,7 @@ export const workflowRunCommand = new Command()
                 };
 
                 const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
-                return new WorkflowExecutionService(
+                const service = new WorkflowExecutionService(
                   wfRepo,
                   rnRepo,
                   dir,
@@ -501,6 +502,8 @@ export const workflowRunCommand = new Command()
                   unlocked.vaultsDir,
                   unlocked.datastoreResolver,
                 );
+                service.signalWaits = signalWaitsOf(repoContext);
+                return service;
               },
               catalogStore: repoContext.catalogStore,
               dataRepo: repoContext.unifiedDataRepo,

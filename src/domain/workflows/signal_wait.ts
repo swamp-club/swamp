@@ -99,18 +99,6 @@ export type PayloadValidation =
   | { readonly valid: true; readonly payload: Record<string, unknown> }
   | { readonly valid: false; readonly errors: string[] };
 
-/** Why a step refused a signal. */
-export type SignalRefusal =
-  | { readonly kind: "not_waiting" }
-  | { readonly kind: "already_settled"; readonly receipt: SignalReceipt }
-  | { readonly kind: "expired"; readonly deadline: Date }
-  | { readonly kind: "invalid_payload"; readonly errors: string[] };
-
-/** The outcome of delivering a signal to a step. */
-export type SignalOutcome =
-  | { readonly accepted: true; readonly receipt: SignalReceipt }
-  | { readonly accepted: false; readonly refusal: SignalRefusal };
-
 /**
  * A wait as read from a run record. A malformed wait is kept as `broken`
  * with its raw value, so the run stays loadable and a save writes the value
@@ -442,15 +430,10 @@ export class SignalWait {
   }
 
   /**
-   * The wait settled by a signal received at `now` from `submittedBy`.
+   * The wait settled by the signal `receipt` records.
    */
-  settle(submittedBy: string, now: Date): SignalWait {
-    return new SignalWait(this.id, this.schema, this.deadline, {
-      id: crypto.randomUUID(),
-      waitId: this.id,
-      receivedAt: now.toISOString(),
-      submittedBy,
-    });
+  settledWith(receipt: SignalReceipt): SignalWait {
+    return new SignalWait(this.id, this.schema, this.deadline, { ...receipt });
   }
 
   /**

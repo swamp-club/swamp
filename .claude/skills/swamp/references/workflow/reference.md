@@ -925,14 +925,30 @@ swamp workflow resume release --run <run-id>
 - Resume is always manual, also under `swamp serve`: serve never auto-resumes a
   run with a step waiting for a signal, and there is no `--server` form of
   `workflow signal`.
-- A new `workflow run` does not supersede a run that waits for a signal; it
-  reports it as kept.
-- Send a signal from the host that ran the workflow. From another host on a
-  shared datastore it can be accepted and then overwritten while sibling steps
-  finish; the step shows `waiting` again and the signal must be re-sent.
-- "not ready ... has not suspended yet" means sibling steps are still finishing:
-  send the signal again. If the process running them was killed, the signal is
-  accepted and the resume runs those steps again.
+- A new `workflow run` does not supersede a run that waits for a signal,
+  signalled or not; it reports it as kept.
+- A signal is stored beside the run, not in it, and takes effect at the next
+  `resume`. Until then `workflow get`/`history` still show the step `waiting`;
+  use the signal's own output (`awaitingResume`; unknown, with
+  `runRecordAvailable: false`, on a host without the run) or `workflow waits`,
+  which lists only unanswered waits, to tell what is left.
+- A signal can be sent from any host or repository on the same datastore, and
+  while sibling steps of the wait are still running. A `resume` sent while they
+  run is refused with "has not finished suspending": wait for the first process
+  to finish, then check the run. An approval or rejection made while it was
+  still running may not have been kept and must be given again.
+- A wait's outcome is one of signalled, timed out or cancelled, whichever
+  happens first; a later signal is told which, with the stored receipt if it was
+  signalled. The answer stays available for as long as the run record.
+- Waits need a datastore every host shares records through: the default or any
+  filesystem datastore, or a remote one whose extension has a control-plane
+  store (current `@swamp/s3-datastore` and `@swamp/gcs-datastore`). On any
+  other, `workflow run` refuses a workflow with a `wait_for_signal` step and
+  names the extension to update.
+- Upgrade every host before running a workflow with a wait. While a run waits
+  for a signal, an older swamp fails with a schema error on that run and on
+  `workflow approvals`, `workflow cancel --all`, `workflow waits` and
+  `workflow signal` for every workflow in the repository.
 - A step that fails with `wait_unreadable` held a wait record that could not be
   read (a hand-edited run file); `workflow waits` lists it under
   `unreadableWaits`.
