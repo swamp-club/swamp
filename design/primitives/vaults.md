@@ -582,11 +582,14 @@ run: |
   PASSWORD='${{ vault.get(my-vault, DB_PASS) }}'
 ```
 
-Each occurrence takes the form for the quote context it sits in: bare inside
-double quotes, wrapped in double quotes elsewhere. A secret used more than once
-in different quote contexts is therefore one quoted word at every double-quoted
-use. swamp warns at execution time when any occurrence of a vault sentinel sits
-inside single quotes.
+Each occurrence takes the form for the quote context it sits in, read by the
+same shell context scanner as sensitive field values (so quotes inside comments
+do not count): bare inside double quotes, wrapped in double quotes when
+unquoted. Inside single quotes the reference stays a literal, and swamp warns at
+execution time when any occurrence sits there. A secret used more than once in
+different quote contexts is therefore one quoted word at every double-quoted
+use. In a here-document body only the quotes earlier on the same line count.
+PowerShell reads the context from quote characters alone.
 
 ### Vault Resolution Order
 

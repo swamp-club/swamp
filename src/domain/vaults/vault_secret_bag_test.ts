@@ -343,66 +343,66 @@ Deno.test("VaultSecretBag", async (t) => {
   );
 
   await t.step(
-    "findSingleQuotedSentinels: detects sentinel inside single quotes",
+    "resolveForShell singleQuoted: detects sentinel inside single quotes",
     () => {
       const bag = new VaultSecretBag();
       const sentinel = bag.addSecret("secret");
       const cmd = `S='${sentinel}'`;
-      const found = bag.findSingleQuotedSentinels(cmd);
+      const found = bag.resolveForShell(cmd).singleQuoted;
       assertEquals(found, [sentinel]);
     },
   );
 
   await t.step(
-    "findSingleQuotedSentinels: does not flag sentinel in double quotes",
+    "resolveForShell singleQuoted: does not flag sentinel in double quotes",
     () => {
       const bag = new VaultSecretBag();
       const sentinel = bag.addSecret("secret");
       const cmd = `D="${sentinel}"`;
-      const found = bag.findSingleQuotedSentinels(cmd);
+      const found = bag.resolveForShell(cmd).singleQuoted;
       assertEquals(found, []);
     },
   );
 
   await t.step(
-    "findSingleQuotedSentinels: does not flag unquoted sentinel",
+    "resolveForShell singleQuoted: does not flag unquoted sentinel",
     () => {
       const bag = new VaultSecretBag();
       const sentinel = bag.addSecret("secret");
       const cmd = `echo ${sentinel}`;
-      const found = bag.findSingleQuotedSentinels(cmd);
+      const found = bag.resolveForShell(cmd).singleQuoted;
       assertEquals(found, []);
     },
   );
 
   await t.step(
-    "findSingleQuotedSentinels: detects only the single-quoted one among mixed",
+    "resolveForShell singleQuoted: detects only the single-quoted one among mixed",
     () => {
       const bag = new VaultSecretBag();
       const s1 = bag.addSecret("good");
       const s2 = bag.addSecret("bad");
       const cmd = `D="${s1}"\nS='${s2}'`;
-      const found = bag.findSingleQuotedSentinels(cmd);
+      const found = bag.resolveForShell(cmd).singleQuoted;
       assertEquals(found, [s2]);
     },
   );
 
   await t.step(
-    "findSingleQuotedSentinels: returns empty when no secrets exist",
+    "resolveForShell singleQuoted: returns empty when no secrets exist",
     () => {
       const bag = new VaultSecretBag();
-      const found = bag.findSingleQuotedSentinels("echo 'hello'");
+      const found = bag.resolveForShell("echo 'hello'").singleQuoted;
       assertEquals(found, []);
     },
   );
 
   await t.step(
-    "findSingleQuotedSentinels: handles multi-line scripts",
+    "resolveForShell singleQuoted: handles multi-line scripts",
     () => {
       const bag = new VaultSecretBag();
       const sentinel = bag.addSecret("secret");
       const cmd = `#!/bin/sh\necho "safe"\nBROKEN='${sentinel}'\necho done`;
-      const found = bag.findSingleQuotedSentinels(cmd);
+      const found = bag.resolveForShell(cmd).singleQuoted;
       assertEquals(found, [sentinel]);
     },
   );
@@ -525,12 +525,65 @@ Deno.test("VaultSecretBag.resolveForPowerShell: places vault.get references per 
   );
 });
 
-Deno.test("VaultSecretBag.findSingleQuotedSentinels: finds a single-quoted use after a double-quoted one", () => {
+Deno.test("VaultSecretBag.resolveForShell: an apostrophe in a comment does not change a later vault.get placement", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("two  words *");
+  const resolved = bag.resolveForShell(
+    `printf '[%s]\\n' "A=${s}"\n# don't log it\nprintf '[%s]\\n' "B=${s}"`,
+  );
+  assertEquals(
+    resolved.command,
+    `printf '[%s]\\n' "A=\${__SWAMP_VAULT_0}"\n# don't log it\n` +
+      `printf '[%s]\\n' "B=\${__SWAMP_VAULT_0}"`,
+  );
+  assertEquals(resolved.singleQuoted, []);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: vault.get in a here-document body follows the quotes on its own line", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const resolved = bag.resolveForShell(
+    `cat <<EOF\nit's here\n{"k": "${s}"}\nraw ${s}\nEOF\ncat <<'END'\n${s}\nEND`,
+  );
+  assertEquals(
+    resolved.command,
+    `cat <<EOF\nit's here\n{"k": "\${__SWAMP_VAULT_0}"}\nraw "\${__SWAMP_VAULT_0}"\nEOF\n` +
+      `cat <<'END'\n"\${__SWAMP_VAULT_0}"\nEND`,
+  );
+  assertEquals(resolved.singleQuoted, []);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
+  const bag = new VaultSecretBag();
+  const data = bag.addDataSecret("from-data");
+  const vault = bag.addSecret("from-vault");
+  assertEquals(
+    bag.resolveForShell(`echo '${data}' '${vault}'`).singleQuoted,
+    [vault],
+  );
+});
+
+Deno.test("VaultSecretBag.resolveForPowerShell: singleQuoted lists a single-quoted vault.get use", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("from-vault");
-  assertEquals(bag.findSingleQuotedSentinels(`a="${s}"; b='${s}'`), [s]);
-  assertEquals(bag.findSingleQuotedSentinels(`echo ${s} '${s}' '${s}'`), [s]);
-  assertEquals(bag.findSingleQuotedSentinels(`echo ${s} "${s}"`), []);
+  assertEquals(
+    bag.resolveForPowerShell(`Write-Output "${s}" '${s}'`).singleQuoted,
+    [s],
+  );
+  assertEquals(
+    bag.resolveForPowerShell(`Write-Output "${s}"`).singleQuoted,
+    [],
+  );
+});
+
+Deno.test("VaultSecretBag.resolveForShell: singleQuoted finds a single-quoted use after a double-quoted one", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("from-vault");
+  assertEquals(bag.resolveForShell(`a="${s}"; b='${s}'`).singleQuoted, [s]);
+  assertEquals(bag.resolveForShell(`echo ${s} '${s}' '${s}'`).singleQuoted, [
+    s,
+  ]);
+  assertEquals(bag.resolveForShell(`echo ${s} "${s}"`).singleQuoted, []);
 });
 
 Deno.test("VaultSecretBag.resolveForPowerShell: single-quoted data values stay in place", () => {
@@ -583,10 +636,6 @@ Deno.test("VaultSecretBag.fromEntries: a rebuilt bag resolves exactly like the o
   assertEquals(
     rebuilt.resolveForPowerShell(command),
     original.resolveForPowerShell(command),
-  );
-  assertEquals(
-    rebuilt.findSingleQuotedSentinels(command),
-    original.findSingleQuotedSentinels(command),
   );
   assertEquals(
     rebuilt.resolveDeep({ run: command, list: [dataSentinel] }),

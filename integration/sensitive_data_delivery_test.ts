@@ -773,6 +773,20 @@ Deno.test(
         doubleFirst.errors.join("\n"),
       );
       assertEquals(warnedSingleQuote(doubleFirst.events), true);
+
+      // An apostrophe in a comment between two double-quoted uses changes
+      // neither placement and raises no warning.
+      const commented = await runWorkflow(
+        repoDir,
+        reader(
+          "commented",
+          `echo STEP=commented; set -- "${expr}"\n# don't log it\n` +
+            `set -- "$@" "${expr}"; echo "ARGC=$#"`,
+        ),
+      );
+      assertEquals(commented.status, "succeeded", commented.errors.join("\n"));
+      assertStringIncludes(await shellStdout(repoDir, "commented"), "ARGC=2");
+      assertEquals(warnedSingleQuote(commented.events), false);
     });
   },
 );

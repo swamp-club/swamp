@@ -40,15 +40,23 @@ const arbQuotes = fc.array(
   { minLength: 1, maxLength: 6 },
 );
 
+/** Separators between uses, some with comments holding stray quotes. */
+const arbSeparator = fc.constantFrom(
+  "; ",
+  "\n",
+  "\n# don't log it\n",
+  '\n# say "hi\n',
+);
+
 Deno.test("VaultSecretBag.resolveForShell: a vault.get reference depends only on its own occurrence's quote context", () => {
   fc.assert(
-    fc.property(arbQuotes, (quotes) => {
+    fc.property(arbQuotes, arbSeparator, (quotes, separator) => {
       const bag = new VaultSecretBag();
       const s = bag.addSecret("two  words *");
       const uses = quotes.map((quote) => use(s, quote));
       assertEquals(
-        bag.resolveForShell(uses.join("; ")).command,
-        uses.map((u) => bag.resolveForShell(u).command).join("; "),
+        bag.resolveForShell(uses.join(separator)).command,
+        uses.map((u) => bag.resolveForShell(u).command).join(separator),
       );
       assertEquals(
         bag.resolveForPowerShell(uses.join("; ")).command,
@@ -58,14 +66,14 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get reference depends only on
   );
 });
 
-Deno.test("VaultSecretBag.findSingleQuotedSentinels: reports a vault.get sentinel when any occurrence is single-quoted", () => {
+Deno.test("VaultSecretBag.resolveForShell: singleQuoted reports a vault.get sentinel when any occurrence is single-quoted", () => {
   fc.assert(
-    fc.property(arbQuotes, (quotes) => {
+    fc.property(arbQuotes, arbSeparator, (quotes, separator) => {
       const bag = new VaultSecretBag();
       const s = bag.addSecret("from-vault");
-      const command = quotes.map((quote) => use(s, quote)).join("; ");
+      const command = quotes.map((quote) => use(s, quote)).join(separator);
       assertEquals(
-        bag.findSingleQuotedSentinels(command),
+        bag.resolveForShell(command).singleQuoted,
         quotes.includes("single") ? [s] : [],
       );
     }),
