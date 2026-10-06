@@ -1432,3 +1432,120 @@ Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run (sw
     console.log = originalLog;
   }
 });
+
+Deno.test("ConsoleWorkflowRunRenderer: a step name carrying an escape sequence never reaches the terminal raw from the approval block (swamp-club#3027)", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const stepId = "apply\u001b]0;pwned\u0007";
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "deploy",
+      stepId,
+      prompt: "Review the plan",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "deploy",
+      stepId,
+      prompt: "Review the plan",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("\u001b]0;pwned"), false);
+  assertStringIncludes(
+    output,
+    "swamp workflow approve test-pipeline $'apply\\x1b]0;pwned\\x07' --run run-1",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow reject test-pipeline $'apply\\x1b]0;pwned\\x07' --run run-1",
+  );
+  assertStringIncludes(
+    output,
+    "awaiting approval on step apply\\x1b]0;pwned\\x07",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a plain ESC in a step name is escaped in the approval block", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "deploy",
+      stepId: "ap\u001bply",
+      prompt: "Review the plan",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("\u001b"), false);
+  assertStringIncludes(
+    output,
+    "swamp workflow approve test-pipeline $'ap\\x1bply' --run run-1",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: the approval block shell-quotes a step name with a space, as the other hints do", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "deploy", stepCount: 1, dependsOn: [] }],
+    },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "deploy",
+      stepId: "verify build",
+      prompt: "Review the plan",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "deploy",
+      stepId: "verify build",
+      prompt: "Review the plan",
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    "swamp workflow approve test-pipeline 'verify build' --run run-1",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow reject test-pipeline 'verify build' --run run-1",
+  );
+  assertStringIncludes(output, "awaiting approval on step verify build");
+});

@@ -28,6 +28,7 @@ import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
+import { nodeName } from "./node_name.ts";
 import {
   type PlacementFields,
   PlacementFieldsSchema,
@@ -64,7 +65,7 @@ export type ForEachData = z.infer<typeof ForEachSchema>;
 const StepDependencyFieldSchema = z.array(StepDependencySchema).default([]);
 
 export const StepObjectSchema = z.object({
-  name: z.string().min(1),
+  name: nodeName("Step"),
   description: z.string().optional(),
   task: StepTaskSchema,
   forEach: ForEachSchema.optional(),

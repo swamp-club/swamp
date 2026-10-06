@@ -19,6 +19,7 @@
 
 import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
 import { forEachNameWithoutSecrets } from "./persisted_workflow.ts";
+import { escapeControlCharacters } from "../control_characters.ts";
 import {
   type AuthoredExpressions,
   partitionAuthored,
@@ -103,7 +104,10 @@ export function resolveForEachStepName(
 /**
  * The expanded name with any sensitive value the run recorded replaced by a
  * stable placeholder, so a secret iterated over never becomes a step name in
- * memory, logs, events or the run record.
+ * memory, logs, events or the run record, and with any control character an
+ * item value carried written as a visible escape, so an expanded name obeys
+ * the same rule as an authored one and never drives the terminal
+ * (swamp-club#3027).
  */
 function nameWithoutSecrets(
   name: string,
@@ -111,7 +115,9 @@ function nameWithoutSecrets(
   context: ExpressionContext,
 ): string {
   const values = sensitiveValuesOf(context);
-  return values ? forEachNameWithoutSecrets(name, index, values) : name;
+  return escapeControlCharacters(
+    values ? forEachNameWithoutSecrets(name, index, values) : name,
+  );
 }
 
 /**

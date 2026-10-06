@@ -20,6 +20,7 @@
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
+import { escapeControlCharacters } from "../control_characters.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
@@ -5744,7 +5745,11 @@ export class WorkflowExecutionService {
         methodName: string,
         inputs?: Record<string, unknown>,
       ) => {
-        const syntheticName = `${prefix}${stepName}`;
+        // A forEach-expanded name carries whatever its item value held, and
+        // Step.create applies the authored-name rule, so a control character
+        // from data is escaped rather than failing the guard or assert
+        // (swamp-club#3027).
+        const syntheticName = escapeControlCharacters(`${prefix}${stepName}`);
         const syntheticStep = Step.create({
           name: syntheticName,
           task: StepTask.model(modelName, methodName, inputs),

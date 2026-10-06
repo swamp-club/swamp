@@ -26,6 +26,7 @@ import {
 import { Step, type StepData, StepSchema } from "./step.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
+import { nodeName } from "./node_name.ts";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
 
 /**
@@ -44,7 +45,7 @@ export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
 
 export const JobObjectSchema = z.object({
-  name: z.string().min(1),
+  name: nodeName("Job"),
   description: z.string().optional(),
   steps: z.array(StepSchema).min(1),
   dependsOn: JobDependencyFieldSchema,

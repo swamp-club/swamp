@@ -1087,3 +1087,40 @@ Deno.test("forEach: resolves self._index in object iteration (swamp-club#2348)",
     ["device-0", "device-1"],
   );
 });
+
+Deno.test("forEach: a control character in an item value is escaped in the evaluated step name instead of failing the schema (swamp-club#3027)", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000027",
+    name: "foreach-control-char",
+    inputs: {},
+    jobs: [{
+      name: "deploy",
+      steps: [{
+        name: "deploy-${{ self.host }}",
+        forEach: { item: "host", in: "${{ items }}" },
+        task: {
+          type: "model_method",
+          modelIdOrName: "infra",
+          methodName: "create",
+        },
+      }],
+    }],
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: ["a\nb", "ok"],
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  assertEquals(data.forEachExpanded, true);
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.map((s) => s.name), ["deploy-a\\x0ab", "deploy-ok"]);
+});

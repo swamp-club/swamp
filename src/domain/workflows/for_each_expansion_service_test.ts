@@ -390,3 +390,25 @@ Deno.test("ForEachExpansionService.expand: an item named _index shadows the iter
     ["scan-dev", "scan-prod"],
   );
 });
+
+Deno.test("ForEachExpansionService.expand: a control character in an item value is escaped in the expanded name (swamp-club#3027)", async () => {
+  const service = new ForEachExpansionService(new CelEvaluator());
+  const step = Step.create({
+    name: "deploy-${{ self.host }}",
+    forEach: { item: "host", in: "${{ ['a\\nb', 'c\\u001b]0;x\\u0007'] }}" },
+    task: StepTask.model("infra", "create"),
+  });
+  const result = await service.expand(
+    makeJobWithSteps([step]),
+    makeExpressionContext(),
+    "unrestricted",
+  );
+
+  const expanded = result.get("deploy-${{ self.host }}");
+  assertEquals(expanded?.map((e) => e.expandedName), [
+    "deploy-a\\x0ab",
+    "deploy-c\\x1b]0;x\\x07",
+  ]);
+  // The item value itself is untouched; only the name is made printable.
+  assertEquals(expanded?.[0].forEachVar, { name: "host", value: "a\nb" });
+});

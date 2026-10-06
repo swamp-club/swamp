@@ -144,3 +144,16 @@ Deno.test("renderApproveResult: through serve, names the real server in the pare
     "Once it finishes, resume the parent run unless serve resumes it automatically: swamp workflow resume parent-wf --run 0a5c1e8e-7f4b-4c55-9a3e-2b1c0d9e8f7a --server ws://localhost:9090",
   ]);
 });
+
+Deno.test("renderApproveResult: a workflow name carrying an escape sequence never reaches stdout raw (swamp-club#3027)", () => {
+  const lines = captureStdout(() =>
+    renderApproveResult(
+      hintTestContext(),
+      approval({ workflowName: "wipe\u001b]0;pwned\u0007drive" }),
+    )
+  );
+  assertEquals(lines, [
+    `After approval: swamp workflow resume $'wipe\\x1b]0;pwned\\x07drive' --run ${RUN_ID}`,
+  ]);
+  assertEquals(lines.join("\n").includes("\u001b"), false);
+});

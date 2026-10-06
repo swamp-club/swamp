@@ -455,3 +455,39 @@ Deno.test("Job: writes field is undefined when absent", () => {
   const job = Job.create({ name: "main", steps: [step] });
   assertEquals(job.writes, undefined);
 });
+
+Deno.test("Job.create: rejects a name holding a control character, tab or newline", () => {
+  const step = createTestStep("step1");
+  for (
+    const name of ["build\u001b]0;pwned\u0007", "a\tb", "a\nb", "a\u009bb"]
+  ) {
+    const error = assertThrows(() => Job.create({ name, steps: [step] }));
+    assertStringIncludes(
+      String(error),
+      "Job name must not contain control characters, tab or newline; space is the only whitespace allowed",
+      JSON.stringify(name),
+    );
+  }
+});
+
+Deno.test("Job.create: accepts spaces and Unicode in a name", () => {
+  const step = createTestStep("step1");
+  for (const name of ["build and test", "construção"]) {
+    assertEquals(Job.create({ name, steps: [step] }).name, name);
+  }
+});
+
+Deno.test("Job.fromData: rejects a persisted job whose name holds a control character", () => {
+  const data: JobInput = {
+    name: "build\u001b",
+    steps: [{
+      name: "s",
+      task: { type: "model_method", modelIdOrName: "m", methodName: "run" },
+    }],
+  };
+  const error = assertThrows(() => Job.fromData(data));
+  assertStringIncludes(
+    String(error),
+    "Job name must not contain control characters",
+  );
+});

@@ -42,3 +42,30 @@ Deno.test("quoteShellWord: escapes an embedded single quote", () => {
 Deno.test("quoteShellWord: quotes the empty string", () => {
   assertEquals(quoteShellWord(""), "''");
 });
+
+Deno.test("quoteShellWord: writes a name with an OSC title sequence in escaped ANSI-C form", () => {
+  assertEquals(
+    quoteShellWord("deploy\u001b]0;pwned\u0007"),
+    "$'deploy\\x1b]0;pwned\\x07'",
+  );
+});
+
+Deno.test("quoteShellWord: escapes every control class — ESC, BEL, NUL, tab, newline, DEL, C1", () => {
+  assertEquals(quoteShellWord("a\u001bb"), "$'a\\x1bb'");
+  assertEquals(quoteShellWord("a\u0007b"), "$'a\\x07b'");
+  assertEquals(quoteShellWord("a\u0000b"), "$'a\\x00b'");
+  assertEquals(quoteShellWord("a\tb"), "$'a\\x09b'");
+  assertEquals(quoteShellWord("a\nb"), "$'a\\x0ab'");
+  assertEquals(quoteShellWord("a\u007fb"), "$'a\\x7fb'");
+  assertEquals(quoteShellWord("a\u009bb"), "$'a\\u009bb'");
+});
+
+Deno.test("quoteShellWord: in ANSI-C form, escapes backslashes and single quotes too", () => {
+  assertEquals(quoteShellWord("it's\u001b"), "$'it\\'s\\x1b'");
+  assertEquals(quoteShellWord("a\\b\u001b"), "$'a\\\\b\\x1b'");
+});
+
+Deno.test("quoteShellWord: a name without control characters never takes the ANSI-C form", () => {
+  assertEquals(quoteShellWord("verify build"), "'verify build'");
+  assertEquals(quoteShellWord("a\\x1b"), "'a\\x1b'");
+});

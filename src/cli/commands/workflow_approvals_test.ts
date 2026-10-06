@@ -134,3 +134,28 @@ Deno.test("renderApprovals: carries an explicit --server into every command", ()
     `  Nested run of parent-wf: once this run finishes, swamp workflow resume parent-wf --run ${PARENT_RUN_ID} --server ws://localhost:9090`,
   ]);
 });
+
+Deno.test("renderApprovals: a step name carrying an escape sequence never reaches stdout raw (swamp-club#3027)", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ stepName: "gate\u001b]0;pwned\u0007" }),
+    ])
+  );
+  assertEquals(lines, [
+    `  swamp workflow approve wipe-drive $'gate\\x1b]0;pwned\\x07' --run ${RUN_ID}`,
+    `  swamp workflow reject  wipe-drive $'gate\\x1b]0;pwned\\x07' --run ${RUN_ID}`,
+    `  After approval: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+  ]);
+  assertEquals(lines.join("\n").includes("\u001b"), false);
+});
+
+Deno.test("renderApprovals: a plain ESC in a step name is escaped too", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [pending({ stepName: "g\u001bate" })])
+  );
+  assertEquals(
+    lines[0],
+    `  swamp workflow approve wipe-drive $'g\\x1bate' --run ${RUN_ID}`,
+  );
+  assertEquals(lines.join("\n").includes("\u001b"), false);
+});
