@@ -732,9 +732,10 @@ from the AST evaluation parses) and
   arguments or inputs (expression text included, since global-argument
   expressions are evaluated before `self.globalArguments` is read), a workflow
   edit that changes its inputs or a step's `forEach`, or an edit that places
-  the same text somewhere it was not, where `self` may differ. So changing
-  `target: ${{ "dev-db" }}` to `${{ "prod-db" }}` under
-  `data.latest(self.globalArguments.target, ...)` is refused.
+  the same text somewhere it was not, where `self` may differ. So an edit
+  that changes `target: ${{ "dev-db" }}` to `${{ "prod-db" }}` under
+  `data.latest(self.globalArguments.target, ...)` is refused. This covers
+  edits only: a run can still override global arguments (see below).
 - **Refusals** name the expression as sent, with the same wording whether the
   target exists or is denied, and are audited like other denials. Auth mode
   `none` and admins are not checked, as everywhere else.
@@ -744,8 +745,16 @@ What this does not cover, by design:
 - An author's computed target lets runners choose the model:
   `data.latest(inputs.target, ...)` in a stored definition reads whatever model
   a run passes as a plain input, and a target taken from another model's data
-  follows whoever writes that data. That is the author's choice; avoid
-  caller-controlled targets where the runner should not pick the model.
+  (or from `steps.*` or `run.*`) follows whoever writes that data. That is the
+  author's choice; avoid caller-controlled targets where the runner should not
+  pick the model.
+- Global arguments a run can override are the runner's choice. A workflow
+  step's `globalArgs`, and a direct-type run's inputs, replace a model's
+  global arguments for that run, and a direct run also saves them to the
+  definition. Both need only `run`. A stored reference computed from
+  `self.globalArguments` therefore reads whatever model the runner names, like
+  one computed from `inputs`. Don't compute a data target from a global
+  argument when runners shouldn't choose the model.
 - The check runs when text is saved. A reference to a name that nothing owns
   today reads data later stored under that name, and expressions stored before
   this check existed are not re-checked.

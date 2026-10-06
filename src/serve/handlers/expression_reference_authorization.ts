@@ -161,9 +161,9 @@ export async function authorizeExpressionReferences(
     }
     if (!allowed) {
       return {
-        message: `Access denied: expression ${shown(raw)} reads data ` +
-          `that is not readable here; ask an admin for read on the data ` +
-          `it references`,
+        message: `Access denied: expression ${shown(raw)} reads data or ` +
+          `models that are not readable here; ask an admin for read on ` +
+          `what it references`,
       };
     }
   }
@@ -216,10 +216,17 @@ async function dataReadable(
   // of control-plane types are left out as the data.* accessors leave them
   // out; a control-plane definition with the name is still judged below,
   // as its access record.
-  const records = await ctx.repoContext.dataQueryService.query(
-    `modelName == ${celString(target)} && ns == ${celString(ns)}`,
-    { excludeModelTypes: CONTROL_PLANE_STORED_TYPES },
-  ) as DataRecord[];
+  let records: DataRecord[];
+  try {
+    records = await ctx.repoContext.dataQueryService.query(
+      `modelName == ${celString(target)} && ns == ${celString(ns)}`,
+      { excludeModelTypes: CONTROL_PLANE_STORED_TYPES },
+    ) as DataRecord[];
+  } catch {
+    // Owners that cannot be listed cannot be judged; refuse, as a failed
+    // definition listing does.
+    return false;
+  }
   const seen = new Set<string>();
   for (const record of records) {
     const key = JSON.stringify([
