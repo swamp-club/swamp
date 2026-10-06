@@ -1787,6 +1787,12 @@ export async function acquireModelLocks(
   const lockKeys: string[] = [];
   const heldLocks: DistributedLock[] = [];
 
+  const release = async () => {
+    for (const key of lockKeys) {
+      await flushDatastoreSyncNamed(key);
+    }
+  };
+
   let caps: SyncCapabilities | undefined;
   if (customSyncService) {
     try {
@@ -1796,131 +1802,139 @@ export async function acquireModelLocks(
     }
   }
 
-  for (const { modelType, modelId } of unique) {
-    const lockFileKey = modelLockKey(config.namespace, modelType, modelId);
-    // Use cached provider for custom types to avoid repeated registry lookups
-    const lock = customProvider && isCustomDatastoreConfig(config)
-      ? customProvider.createLock(config.datastorePath, {
-        lockKey: lockFileKey,
-        maxWaitMs: resolveLockTimeoutMs(),
-      })
-      : await createModelLock(config, modelType, modelId);
-    // Unique coordinator key so parallel steps on the same model get
-    // separate entries — prevents the second registration from
-    // overwriting the first (which would orphan the first lock).
-    const coordinatorKey = `${lockFileKey}#${crypto.randomUUID().slice(0, 8)}`;
-    await registerDatastoreSyncNamed(coordinatorKey, {
-      lock,
-      namespace: config.namespace,
-      slowLockScope: {
-        scope: { kind: "model", modelType, modelId },
-        shareable: isCustomDatastoreConfig(config),
-      },
-    });
-    lockKeys.push(coordinatorKey);
-    heldLocks.push(lock);
+  // All or nothing: a call that returns no lock result holds no locks.
+  // Without this unwind a throw below leaves every lock taken so far held
+  // until the process exits (swamp-club#2901).
+  try {
+    for (const { modelType, modelId } of unique) {
+      const lockFileKey = modelLockKey(config.namespace, modelType, modelId);
+      // Use cached provider for custom types to avoid repeated registry lookups
+      const lock = customProvider && isCustomDatastoreConfig(config)
+        ? customProvider.createLock(config.datastorePath, {
+          lockKey: lockFileKey,
+          maxWaitMs: resolveLockTimeoutMs(),
+        })
+        : await createModelLock(config, modelType, modelId);
+      // Unique coordinator key so parallel steps on the same model get
+      // separate entries — prevents the second registration from
+      // overwriting the first (which would orphan the first lock).
+      const coordinatorKey = `${lockFileKey}#${
+        crypto.randomUUID().slice(0, 8)
+      }`;
+      await registerDatastoreSyncNamed(coordinatorKey, {
+        lock,
+        namespace: config.namespace,
+        slowLockScope: {
+          scope: { kind: "model", modelType, modelId },
+          shareable: isCustomDatastoreConfig(config),
+        },
+      });
+      lockKeys.push(coordinatorKey);
+      heldLocks.push(lock);
 
-    // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
-    // If a structural command acquired the global lock between our initial check
-    // and this per-model acquisition, release everything and wait.
-    const postAcquireGlobalInfo = await globalLock.inspect();
-    if (postAcquireGlobalInfo) {
-      write(
-        dim(
-          `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
-        ),
-      );
-      // Release all per-model locks acquired so far
-      for (const acquiredKey of lockKeys) {
-        await flushDatastoreSyncNamed(acquiredKey);
-      }
-      lockKeys.length = 0;
-      heldLocks.length = 0;
-
-      // Wait for global lock to be released (with timeout)
-      const retryWaitStart = Date.now();
-      const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
-      while (true) {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        const info = await globalLock.inspect();
-        if (!info) break;
-        const acquiredAt = new Date(info.acquiredAt).getTime();
-        if (Date.now() - acquiredAt > info.ttlMs) {
-          write(
-            dim(
-              `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-            ),
-          );
-          await tryForceReleaseStaleLock(globalLock, info);
-          break;
-        }
-        const retryElapsed = Date.now() - retryWaitStart;
-        if (retryElapsed >= retryMaxWaitMs) {
-          const retryLockOpts = datastoreGlobalLockOptions(config);
-          const retryDisplayKey = retryLockOpts?.namespace
-            ? `${retryLockOpts.namespace}/.datastore.lock`
-            : ".datastore.lock";
-          throw new LockTimeoutError(
-            retryDisplayKey,
-            info,
-            retryElapsed,
-          );
-        }
-      }
-
-      // Restart the entire per-model lock acquisition from scratch —
-      // propagate the shared sync service so the retry keeps single-instance
-      // semantics. Pulls made before the restart already wrote to the local
-      // cache, and the retry's pulls of the same models report 0, so carry
-      // `synced` forward or the caller would skip catalog invalidation.
-      const retried = await acquireModelLocks(
-        config,
-        models,
-        repoDir,
-        customSyncService,
-        catalogStore,
-        progressWriter,
-        options,
-      );
-      return { ...retried, synced: synced || retried.synced };
-    }
-
-    // For custom sync-capable datastores: pull after acquiring per-model lock
-    if (customSyncService) {
-      try {
+      // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
+      // If a structural command acquired the global lock between our initial check
+      // and this per-model acquisition, release everything and wait.
+      const postAcquireGlobalInfo = await globalLock.inspect();
+      if (postAcquireGlobalInfo) {
         write(
-          dim(`Syncing model ${modelType}/${modelId} from datastore...`),
+          dim(
+            `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
+          ),
         );
+        // Release all per-model locks acquired so far
+        await release();
+        lockKeys.length = 0;
+        heldLocks.length = 0;
 
-        const ns = isCustomDatastoreConfig(config)
-          ? config.namespace
-          : undefined;
-        const syncService = customSyncService;
-        const pulled = await wrapSync(() => {
-          if (caps?.scopedSync) {
-            const context: SyncContext = {
-              models: [{ modelType, modelId }],
-            };
-            return syncService.pullChanged({
-              context,
-              ...(ns ? { namespace: ns } : {}),
-            });
+        // Wait for global lock to be released (with timeout)
+        const retryWaitStart = Date.now();
+        const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          const info = await globalLock.inspect();
+          if (!info) break;
+          const acquiredAt = new Date(info.acquiredAt).getTime();
+          if (Date.now() - acquiredAt > info.ttlMs) {
+            write(
+              dim(
+                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+              ),
+            );
+            await tryForceReleaseStaleLock(globalLock, info);
+            break;
           }
-          if (ns) return syncService.pullChanged({ namespace: ns });
-          return syncService.pullChanged();
-        });
-        // 0 means the local cache is unchanged; void means unknown.
-        if (pulled !== 0) synced = true;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        write(
-          dim(`Failed to pull model data from datastore: ${msg}`),
+          const retryElapsed = Date.now() - retryWaitStart;
+          if (retryElapsed >= retryMaxWaitMs) {
+            const retryLockOpts = datastoreGlobalLockOptions(config);
+            const retryDisplayKey = retryLockOpts?.namespace
+              ? `${retryLockOpts.namespace}/.datastore.lock`
+              : ".datastore.lock";
+            throw new LockTimeoutError(
+              retryDisplayKey,
+              info,
+              retryElapsed,
+            );
+          }
+        }
+
+        // Restart the entire per-model lock acquisition from scratch —
+        // propagate the shared sync service so the retry keeps single-instance
+        // semantics. Pulls made before the restart already wrote to the local
+        // cache, and the retry's pulls of the same models report 0, so carry
+        // `synced` forward or the caller would skip catalog invalidation.
+        const retried = await acquireModelLocks(
+          config,
+          models,
+          repoDir,
+          customSyncService,
+          catalogStore,
+          progressWriter,
+          options,
         );
-        throw new Error(
-          `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
-        );
+        return { ...retried, synced: synced || retried.synced };
+      }
+
+      // For custom sync-capable datastores: pull after acquiring per-model lock
+      if (customSyncService) {
+        try {
+          write(
+            dim(`Syncing model ${modelType}/${modelId} from datastore...`),
+          );
+
+          const ns = isCustomDatastoreConfig(config)
+            ? config.namespace
+            : undefined;
+          const syncService = customSyncService;
+          const pulled = await wrapSync(() => {
+            if (caps?.scopedSync) {
+              const context: SyncContext = {
+                models: [{ modelType, modelId }],
+              };
+              return syncService.pullChanged({
+                context,
+                ...(ns ? { namespace: ns } : {}),
+              });
+            }
+            if (ns) return syncService.pullChanged({ namespace: ns });
+            return syncService.pullChanged();
+          });
+          // 0 means the local cache is unchanged; void means unknown.
+          if (pulled !== 0) synced = true;
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          write(
+            dim(`Failed to pull model data from datastore: ${msg}`),
+          );
+          throw new Error(
+            `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
+          );
+        }
       }
     }
+  } catch (error) {
+    await release();
+    throw error;
   }
 
   // Older nested swamps read only the holder; set once, never cleared, so
@@ -1972,12 +1986,6 @@ export async function acquireModelLocks(
           )
         );
       }
-    }
-  };
-
-  const release = async () => {
-    for (const key of lockKeys) {
-      await flushDatastoreSyncNamed(key);
     }
   };
 
