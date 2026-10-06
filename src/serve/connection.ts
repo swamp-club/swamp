@@ -37,6 +37,7 @@ import {
   runAdoptingForwardedLocks,
 } from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
 import {
@@ -820,12 +821,17 @@ const WorkflowRejectRequestSchema = z.object({
 });
 
 // The wait ID is the only address of a signal. Only a UUID is accepted, so
-// no other client text reaches a store key or the audit log through it.
+// no other client text reaches a store key or the audit log through it. It
+// is judged by normalizeWaitId, as the HTTP route and the CLI judge it, so
+// all three accept the same IDs.
 const WorkflowSignalRequestSchema = z.object({
   type: z.literal("workflow.signal"),
   id: z.string().min(1).max(256),
   payload: z.object({
-    waitId: z.string().uuid(),
+    waitId: z.string().max(64).refine(
+      (value) => normalizeWaitId(value) !== undefined,
+      "must be a UUID",
+    ),
     payload: z.unknown(),
   }),
 });
@@ -3031,7 +3037,7 @@ export function handleMessage(
         auditOpts(
           "execution",
           "workflow",
-          request.payload.waitId.trim().toLowerCase(),
+          normalizeWaitId(request.payload.waitId) ?? "invalid",
         ),
       );
       break;

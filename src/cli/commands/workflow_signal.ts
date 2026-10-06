@@ -142,6 +142,11 @@ export function renderRemoteSignalResult(
   }
   cliCtx.logger
     .info`Signal ${data.signal.id} delivered to wait ${data.waitId}`;
+  if (cliCtx.verbosity === "quiet") return;
+  // The server does not say which run this was; it still has to be resumed.
+  writeOutput(
+    "The signal takes effect when the run is next resumed, by someone who may resume it.",
+  );
 }
 
 export const workflowSignalCommand = withRemoteOptions(
@@ -153,6 +158,10 @@ export const workflowSignalCommand = withRemoteOptions(
     .example(
       "Answer a wait",
       `swamp workflow signal 6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90 --payload '{"verdict":"ship"}'`,
+    )
+    .example(
+      "Answer a wait a server holds",
+      `swamp workflow signal 6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90 --payload '{"verdict":"ship"}' --server wss://swamp.example.com`,
     )
     .arguments("<wait_id:string>")
     .option(

@@ -89,7 +89,9 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
 | 422         | Payload refused; `errors` lists why and the wait stays open |
 | 409         | Already settled                                             |
 | 410         | Expired, or closed before a signal arrived                  |
-| 401 / 429   | No valid token / rate limited                               |
+| 401 / 429   | No valid token / rate limited (plain-text body)             |
+| 400 / 413   | Body is not `{"payload": ...}` JSON / body too large        |
+| 501 / 500   | Datastore cannot hold waits / stored record unreadable      |
 
 The reply names the workflow, run and step only for a caller who may also `read`
 the workflow. The receipt's `submittedBy` is the token's principal. A signal

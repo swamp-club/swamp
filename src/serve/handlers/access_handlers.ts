@@ -71,7 +71,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { ActionSchema } from "../../domain/access/action.ts";
+import { ACTION_LIST, ActionSchema } from "../../domain/access/action.ts";
 import {
   parseResourceSelector,
   type ResourceKind,
@@ -425,7 +425,7 @@ export async function handleAccessCheck(
         socket,
         requestId,
         "invalid_action",
-        `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+        `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
       );
       return;
     }
@@ -506,7 +506,7 @@ export async function handleAccessCanI(
           socket,
           requestId,
           "invalid_action",
-          `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+          `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
         );
         return;
       }

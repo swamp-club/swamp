@@ -28,6 +28,7 @@ import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { SIGNAL_PAYLOAD_MAX_BYTES } from "../domain/workflows/signal_wait.ts";
+import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import {
   type AccessCaller,
   type ConnectionContext,
@@ -49,8 +50,7 @@ import { readBodyWithLimit } from "./webhook.ts";
 /** The body may wrap the payload in a little JSON; nothing larger is read. */
 export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES + 1024;
 
-const SIGNAL_ROUTE =
-  /^\/api\/v1\/signal\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;
 
 /**
  * The wait ID a request path names, lower-cased, or undefined when the path
@@ -58,7 +58,9 @@ const SIGNAL_ROUTE =
  * reaches a store key or the audit log through the path.
  */
 export function matchSignalRoute(pathname: string): string | undefined {
-  return SIGNAL_ROUTE.exec(pathname)?.[1].toLowerCase();
+  const segment = SIGNAL_ROUTE.exec(pathname)?.[1];
+  // Judged as the WebSocket request and the CLI judge a wait ID.
+  return segment === undefined ? undefined : normalizeWaitId(segment);
 }
 
 export interface SignalHttpDeps {
@@ -82,7 +84,7 @@ const STATUS: Record<SignalDeliveryResult["status"], number> = {
   failed: 500,
 };
 
-function tooManyRequests(retryAfterSeconds: number | undefined): Response {
+function tooManyRequests(retryAfterSeconds: number): Response {
   return new Response("Too Many Requests", {
     status: 429,
     headers: { "Retry-After": String(retryAfterSeconds) },

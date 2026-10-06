@@ -121,6 +121,16 @@ export type SignalRefusalKind =
   | "unreadable"
   | "unsupported";
 
+const SIGNAL_REFUSAL_KINDS: ReadonlySet<string> = new Set<SignalRefusalKind>([
+  "unknown",
+  "expired",
+  "invalid_payload",
+  "already_settled",
+  "closed",
+  "unreadable",
+  "unsupported",
+]);
+
 /** The refusal an error from {@link workflowSignal} carries, if it is one. */
 export function signalRefusalKind(
   error: SwampError,
@@ -128,7 +138,9 @@ export function signalRefusalKind(
   const details = error.details;
   if (typeof details !== "object" || details === null) return undefined;
   const refusal = (details as { refusal?: unknown }).refusal;
-  return typeof refusal === "string" ? refusal as SignalRefusalKind : undefined;
+  return typeof refusal === "string" && SIGNAL_REFUSAL_KINDS.has(refusal)
+    ? refusal as SignalRefusalKind
+    : undefined;
 }
 
 export interface WorkflowSignalDeps {

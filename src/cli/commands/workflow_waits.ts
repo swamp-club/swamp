@@ -117,6 +117,10 @@ export const workflowWaitsCommand = withRemoteOptions(
     .name("waits")
     .description("List all workflow steps waiting for a signal")
     .example("List open waits", "swamp workflow waits")
+    .example(
+      "List the open waits a server holds",
+      "swamp workflow waits --server wss://swamp.example.com",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",

@@ -485,6 +485,17 @@ Deno.test({
       const frames = await signal(ctx, "../../etc/passwd", { verdict: "ship" });
       assertEquals(refusalOf(frames).code, "invalid_request");
       assertEquals(JSON.stringify(audit).includes("passwd"), false);
+
+      // Any UUID is a well-formed wait ID, whatever its version digits: it
+      // is answered as an unknown wait, as the HTTP route answers it.
+      assertEquals(
+        refusalOf(
+          await signal(ctx, "00000000-0000-0000-0000-000000000001", {
+            verdict: "ship",
+          }),
+        ).code,
+        "not_found",
+      );
     });
   },
 });
@@ -629,8 +640,7 @@ async function post(
       body: options.raw ?? JSON.stringify(body),
     }),
     matched,
-    // A fresh address per request keeps the rate limiter out of the way.
-    `198.51.100.${Math.floor(Math.random() * 250) + 1}`,
+    "198.51.100.7",
     httpDeps(ctx),
   );
   const text = await response.text();
@@ -640,24 +650,6 @@ async function post(
     return { status: response.status, body: text };
   }
 }
-
-Deno.test("matchSignalRoute: matches only the signal path with a UUID, lower-cased", () => {
-  assertEquals(
-    matchSignalRoute("/api/v1/signal/6F1C0A52-3F0E-4C4B-9D53-2F6A7C1E8B90"),
-    "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
-  );
-  for (
-    const path of [
-      "/api/v1/signal/",
-      "/api/v1/signal/not-a-uuid",
-      "/api/v1/signal/6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90/extra",
-      "/api/v1/signal/../cancel",
-      "/api/v1/cancel/workflow-run/6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
-    ]
-  ) {
-    assertEquals(matchSignalRoute(path), undefined, path);
-  }
-});
 
 Deno.test({
   name:

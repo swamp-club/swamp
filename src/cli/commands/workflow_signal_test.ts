@@ -139,12 +139,24 @@ Deno.test("renderSignalResult: the resume command carries the repository target,
   assertEquals(JSON.parse(json[0]).resumeCommand, resume);
 });
 
-Deno.test("renderRemoteSignalResult: a reply with only the receipt prints no command and names no run", () => {
+Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume is still needed and names no run", () => {
   const data = { waitId: WAIT_ID, signal: signalled().signal };
   const lines = captureStdout(() =>
     renderRemoteSignalResult(hintTestContext(), data, "http://swamp.test")
   );
-  assertEquals(lines, []);
+  assertEquals(lines, [
+    "The signal takes effect when the run is next resumed, by someone who may resume it.",
+  ]);
+  assertEquals(
+    captureStdout(() =>
+      renderRemoteSignalResult(
+        hintTestContext({ verbosity: "quiet" }),
+        data,
+        "http://swamp.test",
+      )
+    ),
+    [],
+  );
 
   const json = captureStdout(() =>
     renderRemoteSignalResult(

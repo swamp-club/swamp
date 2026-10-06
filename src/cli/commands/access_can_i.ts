@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { ACTION_LIST } from "../../domain/access/action.ts";
 import {
   CA_CERT_DESCRIPTION,
   CA_CERT_FLAG,
@@ -64,7 +65,7 @@ export const accessCanICommand = new Command()
   .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
   .option(
     "--action <action:string>",
-    "Action to check (run, read, write, approve, admin)",
+    `Action to check (${ACTION_LIST})`,
   )
   .option(
     "--on <resource:string>",

@@ -27,7 +27,11 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
-import { type Action, ActionSchema } from "../../domain/access/action.ts";
+import {
+  type Action,
+  ACTION_LIST,
+  ActionSchema,
+} from "../../domain/access/action.ts";
 import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
@@ -78,7 +82,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--action <action:string>",
-    "Action to check (run, read, write, approve, admin)",
+    `Action to check (${ACTION_LIST})`,
     { required: true },
   )
   .option(
@@ -184,7 +188,7 @@ export const accessCheckCommand = new Command()
     const actionResult = ActionSchema.safeParse(options.action);
     if (!actionResult.success) {
       throw new UserError(
-        `Invalid action "${options.action}": must be one of run, read, write, approve, admin`,
+        `Invalid action "${options.action}": must be one of ${ACTION_LIST}`,
       );
     }
     const action: Action = actionResult.data;

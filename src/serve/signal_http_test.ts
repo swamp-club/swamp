@@ -76,11 +76,18 @@ Deno.test("matchSignalRoute: matches only the signal path with a UUID, lower-cas
     matchSignalRoute(`/api/v1/signal/${WAIT_ID.toUpperCase()}`),
     WAIT_ID,
   );
+  // Any UUID, whatever its version digits, as the WebSocket request accepts.
+  assertEquals(
+    matchSignalRoute("/api/v1/signal/00000000-0000-0000-0000-000000000001"),
+    "00000000-0000-0000-0000-000000000001",
+  );
   for (
     const path of [
       "/api/v1/signal",
       "/api/v1/signal/",
       "/api/v1/signal/not-a-uuid",
+      "/api/v1/signal/------------------------------------",
+      "/api/v1/signal/6f1c0a523f0e4c4b9d532f6a7c1e8b90aaaa",
       `/api/v1/signal/${WAIT_ID}/extra`,
       `/api/v1/signal/${WAIT_ID}%2F..`,
       `/api/v1/signals/${WAIT_ID}`,

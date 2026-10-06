@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
+import { ActionSchema } from "../../domain/access/action.ts";
 import {
   parseActionsFlag,
   parseFieldFlags,
@@ -218,4 +220,12 @@ Deno.test("parseFieldFlags: does not pollute Object.prototype", () => {
     Object.getOwnPropertyNames(Object.prototype).length,
     before,
   );
+});
+
+Deno.test("parseActionsFlag: accepts signal, and an invalid action's error lists every action", () => {
+  assertEquals(parseActionsFlag("signal"), ["signal"]);
+  const error = assertThrows(() => parseActionsFlag("sginal"), UserError);
+  for (const action of ActionSchema.options) {
+    assertStringIncludes(error.message, action);
+  }
 });
