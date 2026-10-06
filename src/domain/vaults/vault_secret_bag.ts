@@ -54,11 +54,32 @@ export interface ShellSecretResolution {
 }
 
 /**
+ * Start of the here-document body holding `position`: the earliest line
+ * start of the unbroken run of here-document lines that ends at the
+ * occurrence's own line.
+ */
+function heredocBodyStart(command: string, position: number): number {
+  // Line starts from the occurrence's own line back to the first.
+  const lineStarts: number[] = [];
+  for (let i = position - 1; i >= 0; i--) {
+    if (command[i] === "\n") lineStarts.push(i + 1);
+  }
+  lineStarts.push(0);
+  const contexts = classifyShellPositions(command, lineStarts);
+  let bodyStart = lineStarts[0];
+  for (let i = 0; i < lineStarts.length; i++) {
+    if (contexts[i] !== "heredoc" && contexts[i] !== "heredoc-literal") break;
+    bodyStart = lineStarts[i];
+  }
+  return bodyStart;
+}
+
+/**
  * The quote context a vault.get() reference is chosen by, read from the
  * POSIX shell context of its occurrence. In a here-document body the
  * scanner has no quote context, so the quote characters counted from the
- * start of the command decide, as before per-occurrence placement; a
- * reference there is never reported as single-quoted.
+ * start of that body decide, which spans a quoted string over several body
+ * lines; a reference there is never reported as single-quoted.
  */
 function posixVaultQuote(
   command: string,
@@ -72,10 +93,13 @@ function posixVaultQuote(
     case "ansi-c":
       return "single";
     case "heredoc":
-    case "heredoc-literal":
-      return getQuoteContext(command, position) === "double"
+    case "heredoc-literal": {
+      const bodyStart = heredocBodyStart(command, position);
+      return getQuoteContext(command.slice(bodyStart), position - bodyStart) ===
+          "double"
         ? "double"
         : "unquoted";
+    }
     default:
       return "unquoted";
   }

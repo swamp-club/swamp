@@ -588,8 +588,10 @@ do not count): bare inside double quotes, wrapped in double quotes when
 unquoted. Inside single quotes the reference stays a literal, and swamp warns at
 execution time when any occurrence sits there. A secret used more than once in
 different quote contexts is therefore one quoted word at every double-quoted
-use. In a here-document body the quote characters from the start of the
-command decide. PowerShell reads the context from quote characters alone.
+use. In a here-document body the quote characters from the start of that body
+decide, so a quoted string may span body lines; an apostrophe earlier in the
+same body still reads as an open quote. PowerShell reads the context from quote
+characters alone.
 
 ### Vault Resolution Order
 

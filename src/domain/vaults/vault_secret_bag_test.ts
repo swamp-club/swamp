@@ -566,6 +566,42 @@ Deno.test("VaultSecretBag.resolveForShell: vault.get on a continuation line of a
   assertEquals(resolved.singleQuoted, []);
 });
 
+Deno.test("VaultSecretBag.resolveForShell: quotes before a here-document do not change placement in its body", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const ref = "${__SWAMP_VAULT_0}";
+  const cases: [string, string][] = [
+    [
+      `# don't log this\ncat <<EOF > cfg.json\n{"k": "${s}"}\nEOF`,
+      `# don't log this\ncat <<EOF > cfg.json\n{"k": "${ref}"}\nEOF`,
+    ],
+    [
+      `cat <<A\nit's\nA\ncat <<B\n{"k": "${s}"}\nB`,
+      `cat <<A\nit's\nA\ncat <<B\n{"k": "${ref}"}\nB`,
+    ],
+    [
+      `\ncat <<EOF\necho "a\n${s}"\nEOF`,
+      `\ncat <<EOF\necho "a\n${ref}"\nEOF`,
+    ],
+  ];
+  for (const [command, expected] of cases) {
+    const resolved = bag.resolveForShell(command);
+    assertEquals(resolved.command, expected);
+    assertEquals(resolved.singleQuoted, []);
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForShell: an apostrophe earlier in the same here-document body still counts as a quote", () => {
+  // Known limitation, as before swamp-club#2881: here-document text has no
+  // quoting, so an earlier apostrophe in the body reads as an open quote.
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  assertEquals(
+    bag.resolveForShell(`cat <<EOF\nit's here\n{"k": "${s}"}\nEOF`).command,
+    `cat <<EOF\nit's here\n{"k": ""\${__SWAMP_VAULT_0}""}\nEOF`,
+  );
+});
+
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
   const bag = new VaultSecretBag();
   const data = bag.addDataSecret("from-data");
