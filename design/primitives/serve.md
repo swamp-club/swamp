@@ -518,7 +518,12 @@ transports to that. What it does, in order:
 | datastore cannot hold wait records | `workflow_signal_refused`, `refusal: unsupported` | 501 |
 | stored record unreadable, or an internal failure | `workflow_signal_refused` / `workflow_signal_failed` | 500 |
 
-The HTTP route also answers 401 (no token, or one that does not authenticate),
+The HTTP route passes the two gates every WebSocket request passes before
+dispatch: with audit in fail-secure mode and the log unable to record durably
+it answers 503, and when `workflow.signal` is named in `--restricted-commands`
+it answers 403 to a caller who is not an admin. Both are decided before the
+wait is looked up, so they say nothing about a wait. The HTTP route also
+answers 401 (no token, or one that does not authenticate),
 429 (rate limited), 400 (the body is not a JSON object with a `payload` field)
 and 413 (the body is over the payload limit plus 1 KiB). The token is checked
 before the body is read. With auth mode `none` the route takes a signal from

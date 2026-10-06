@@ -32,6 +32,8 @@ import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import {
   type AccessCaller,
   type ConnectionContext,
+  isCallerAuthorized,
+  isRestrictedCommand,
   resolveDisplayPrincipal,
 } from "./handlers/shared.ts";
 import {
@@ -50,7 +52,11 @@ import { readBodyWithLimit } from "./webhook.ts";
 /** The body may wrap the payload in a little JSON; nothing larger is read. */
 export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES + 1024;
 
+// Only narrows the path segment; normalizeWaitId decides what a wait ID is.
 const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;
+
+/** The request type this route is the HTTP form of. */
+const SIGNAL_REQUEST_TYPE = "workflow.signal";
 
 /**
  * The wait ID a request path names, lower-cased, or undefined when the path
@@ -98,7 +104,8 @@ function badRequest(message: string, status = 400): Response {
 /**
  * Answers a request `matchSignalRoute` matched. Everything before the token
  * is checked costs the same for every caller: a rate-limit lookup and
- * nothing else. The body is read only for an authenticated caller.
+ * nothing else. The body is read only for an authenticated caller, and only
+ * once the server's audit and restricted-command gates let the request in.
  */
 export async function handleSignalHttpRequest(
   req: Request,
@@ -140,6 +147,39 @@ export async function handleSignalHttpRequest(
     };
   }
 
+  // The two gates every WebSocket request passes before it is dispatched
+  // (`handleMessage`), so this route cannot be a way around either.
+  if (
+    ctx.auditEmitter && ctx.auditFailOpen === false &&
+    (ctx.auditWal?.isFull === true ||
+      ctx.auditWal?.hasDroppedEvents === true ||
+      ctx.auditEmitter.durableStalled)
+  ) {
+    return badRequest(
+      "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
+      503,
+    );
+  }
+  const requestId = crypto.randomUUID();
+  if (
+    isRestrictedCommand(
+      SIGNAL_REQUEST_TYPE,
+      ctx.authConfig.restrictedCommands,
+    ) &&
+    !isCallerAuthorized(
+      caller,
+      requestId,
+      "admin",
+      { kind: "access", name: SIGNAL_REQUEST_TYPE, fields: {} },
+      ctx,
+    )
+  ) {
+    return badRequest(
+      `Access denied: ${SIGNAL_REQUEST_TYPE} is restricted to admins on this server`,
+      403,
+    );
+  }
+
   const bytes = await readBodyWithLimit(req, MAX_SIGNAL_BODY_BYTES);
   if (bytes === null) {
     return badRequest(
@@ -162,7 +202,6 @@ export async function handleSignalHttpRequest(
     );
   }
 
-  const requestId = crypto.randomUUID();
   const result = await deliverSignalForCaller(ctx, caller, {
     requestId,
     waitId,

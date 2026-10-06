@@ -864,3 +864,52 @@ Deno.test({
     });
   },
 });
+
+// --- `--restricted-commands workflow.signal` holds on both transports. ---
+
+Deno.test({
+  name:
+    "serve signal: a restricted workflow.signal refuses a non-admin over WebSocket and over HTTP alike",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const w = await suspendOnWait(repo);
+      const restrict = (grants: Grant[]): ConnectionContext => {
+        const ctx = ctxWith(repo, grants);
+        return {
+          ...ctx,
+          authConfig: {
+            ...ctx.authConfig,
+            restrictedCommands: ["workflow.signal"],
+          },
+        };
+      };
+      const nonAdmin = restrict([workflowGrant(["signal", "run", "read"])]);
+
+      assertEquals(
+        refusalOf(await signal(nonAdmin, w.waitId, { verdict: "ship" })).code,
+        "unauthorized",
+      );
+      const overHttp = await post(nonAdmin, w.waitId, {
+        payload: { verdict: "ship" },
+      });
+      assertEquals(overHttp.status, 403, JSON.stringify(overHttp));
+      assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+      const waits = repo.repoContext.signalWaits;
+      assert(waits?.supported, "the test repository holds wait records");
+      assertEquals((await waits.store.findOutcome(w.waitId)).kind, "absent");
+
+      const admin = restrict([
+        grant({
+          actions: ["admin"],
+          resource: { kind: "access", pattern: "*" },
+        }),
+      ]);
+      const delivered = await post(admin, w.waitId, {
+        payload: { verdict: "ship" },
+      });
+      assertEquals(delivered.status, 200, JSON.stringify(delivered));
+    });
+  },
+});

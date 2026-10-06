@@ -26,6 +26,9 @@ import {
 } from "./signal_http.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
 import { resetRateLimitState } from "./rate_limiter.ts";
+import type { Grant } from "../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
 
@@ -38,7 +41,9 @@ function deps(
   calls: string[] = [],
 ): SignalHttpDeps {
   return {
-    ctx: { authConfig: { mode } } as unknown as ConnectionContext,
+    ctx: {
+      authConfig: { mode, restrictedCommands: [] },
+    } as unknown as ConnectionContext,
     authenticate: (token) => {
       calls.push(token);
       return Promise.resolve(
@@ -169,4 +174,91 @@ Deno.test("handleSignalHttpRequest: a malformed or oversized body is refused bef
     assertEquals(response.status, expected, body.slice(0, 40));
     await response.body?.cancel();
   }
+});
+
+/** A context with a policy, and `workflow.signal` restricted to admins. */
+function restrictedDeps(grants: Grant[]): SignalHttpDeps {
+  const base = deps();
+  return {
+    ...base,
+    ctx: {
+      authConfig: { mode: "token", restrictedCommands: ["workflow.signal"] },
+      policySnapshotLoader: {
+        decisionService: new GrantBasedAccessDecisionService(
+          new PolicySnapshot(grants, []),
+        ),
+      },
+    } as unknown as ConnectionContext,
+  };
+}
+
+function callerGrant(
+  actions: Grant["actions"],
+  resource: Grant["resource"],
+): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "caller" },
+    effect: "allow",
+    actions,
+    resource,
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+Deno.test("handleSignalHttpRequest: a restricted workflow.signal refuses a non-admin before the body is read", async () => {
+  resetRateLimitState();
+  const response = await handleSignalHttpRequest(
+    request({ token: "good.secret", body: "{not json" }),
+    WAIT_ID,
+    "203.0.113.5",
+    restrictedDeps([
+      callerGrant(["signal", "run", "read"], {
+        kind: "workflow",
+        pattern: "*",
+      }),
+    ]),
+  );
+  assertEquals(response.status, 403);
+  const body = await response.json();
+  assertEquals(body.status, "error");
+  assertEquals(body.message.includes(WAIT_ID), false);
+});
+
+Deno.test("handleSignalHttpRequest: a restricted workflow.signal lets an admin through to the body", async () => {
+  resetRateLimitState();
+  const response = await handleSignalHttpRequest(
+    request({ token: "good.secret", body: "{not json" }),
+    WAIT_ID,
+    "203.0.113.6",
+    restrictedDeps([
+      callerGrant(["admin"], { kind: "access", pattern: "*" }),
+    ]),
+  );
+  // Past the gate, the malformed body is what refuses the request.
+  assertEquals(response.status, 400);
+  await response.body?.cancel();
+});
+
+Deno.test("handleSignalHttpRequest: in audit fail-secure mode a signal is refused while audit cannot record", async () => {
+  resetRateLimitState();
+  const base = deps();
+  const response = await handleSignalHttpRequest(
+    request({ token: "good.secret" }),
+    WAIT_ID,
+    "203.0.113.8",
+    {
+      ...base,
+      ctx: {
+        authConfig: { mode: "token", restrictedCommands: [] },
+        auditFailOpen: false,
+        auditEmitter: { durableStalled: true },
+      } as unknown as ConnectionContext,
+    },
+  );
+  assertEquals(response.status, 503);
+  await response.body?.cancel();
 });
