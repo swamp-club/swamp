@@ -354,7 +354,7 @@ export class VaultSecretBag {
    * Shell variable expansion happens after command parsing, so metacharacters
    * in the secret value are never interpreted as shell syntax.
    *
-   * The replacement is quoting-context-aware:
+   * The replacement is quoting-context-aware, chosen per occurrence:
    * - If the sentinel is inside existing double quotes, uses bare `${VAR}`
    *   (the user's quotes already protect against word splitting)
    * - If the sentinel is outside quotes, uses `"${VAR}"` (adds quotes to
@@ -469,7 +469,7 @@ export class VaultSecretBag {
    * process environment rather than substituted into the command
    * string, so metacharacters in the value can't be parsed as syntax.
    *
-   * The replacement is quoting-context-aware:
+   * The replacement is quoting-context-aware, chosen per occurrence:
    * - If the sentinel is inside existing double quotes, uses bare
    *   `$env:VAR` — PowerShell interpolates env vars inside double
    *   quotes natively, no extra wrapping needed.
