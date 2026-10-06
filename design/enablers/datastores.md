@@ -2034,6 +2034,39 @@ clears the first two from its own env:
   `runModel()` and other in-process nesting carry the outer run's locks.
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
+A run requested through `--server` crosses no process boundary to inherit
+through. When a step of a run hosted by `swamp serve` runs
+`swamp model method run --server` (or `workflow run` / `workflow resume`) back
+into the same serve, the requested run starts in a request handler, outside
+the step's scope, so on its own it would tell its children only about its own
+locks and they would wait on the step's (swamp-club#2982). Instead the client
+sends the list it would hand a child (`forwardedLockTokens()`) as
+`lockHolderTokens` in the `workflow.run`, `model.method.run` and
+`workflow.resume` payloads (`src/cli/remote_run.ts`), and serve runs each of
+those requests inside `runAdoptingForwardedLocks` at its dispatch site in
+`src/serve/connection.ts`, under which the run's and its steps' own scopes
+nest.
+
+The forwarded list is untrusted. `LockHolderMarker.runAdopting` uses only the
+entry for its own pid, and of its nonces only those a `runHolding` scope is
+open for at that moment, so a client can name no lock serve does not hold and
+a list stops working once the calling step ends. Nothing else is adopted; with
+no usable nonce the request runs as before. This gives a client no more than
+it has: a shell method's explicit env already overrides
+`SWAMP_LOCK_HOLDER_TOKENS` for its child. The client cannot tell a loopback
+from a remote server, so the pids and lock nonces above it reach any server it
+runs against. A list longer than `MAX_FORWARDED_LOCK_TOKENS_LENGTH`
+(16,384 characters, also the schema's limit) is not sent, and that request runs
+as before. Older clients send nothing and older servers drop the field.
+
+A process that adopts must name the locks of every step it runs inside the
+adopted scope: a step whose hook leaves out `heldLockIds` would run in the
+adopted scope rather than outside any, and its nested swamp would wait on the
+step's own lock. Serve is the only adopter
+(`integration/model_lock_scope_rules_test.ts`) and takes every step lock
+through `createStepLockHook`, which names them
+(`integration/serve_deps_rules_test.ts`, `src/serve/deps_test.ts`).
+
 Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file when its `pid` is one of those
 ancestors and its `hostname` is this host, and, if that ancestor has an entry
@@ -2086,10 +2119,12 @@ Known limits of the run-level match:
   its child exits. One of them fails within a few seconds instead of both
   failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
   run such commands one at a time or in a step of their own.
-- A step that calls back into the same `swamp serve` with `--server` starts
-  a server-side run in a new scope. A nested structural swamp under that run
-  waits on the calling step's lock, which process ancestry cannot connect
-  across the WebSocket (swamp-club#2982).
+- A `--server` call adopts only the locks of the serve it calls. A nested
+  structural swamp under the requested run still waits on the lock of a swamp
+  that is not above it: a local `swamp workflow run` between the calling step
+  and the `--server` client, or the caller itself when `--server` names a
+  different swamp process sharing the datastore. Skipping those would mean
+  trusting pids a client supplied.
 - A step dispatched to a remote worker on another host that shares the
   datastore (e.g. over NFS) runs while serve holds its lock. The hand-off
   above is for a worker on serve's own host, so a nested structural swamp

@@ -70,6 +70,14 @@ export interface RemoteLockHolder {
   readonly lockIds: readonly string[];
 }
 
+/**
+ * The longest {@link SWAMP_LOCK_HOLDER_TOKENS} value a swamp forwards to a
+ * server, and the longest a server accepts (see
+ * {@link LockHolderMarker.forwardedLockTokens}). The format caps the pids
+ * but not the nonces listed for each; this leaves room for several hundred.
+ */
+export const MAX_FORWARDED_LOCK_TOKENS_LENGTH = 16_384;
+
 /** The slice of `Deno.env` that {@link LockHolderMarker} reads and writes. */
 export type LockHolderEnvStore = Pick<typeof Deno.env, "get" | "set">;
 
@@ -109,12 +117,17 @@ interface Inherited {
  * concurrent lock holders in one process (parallel workflow steps,
  * `swamp serve` runs) cannot clear it under each other. Which locks belong
  * to which run is per execution instead: {@link runHolding} scopes it, and
- * {@link childLockEnv} hands it to one spawned swamp.
+ * {@link childLockEnv} hands it to one spawned swamp. A run requested from
+ * a server crosses no process boundary to inherit through, so the client
+ * sends {@link forwardedLockTokens} and the server runs it under
+ * {@link runAdopting}.
  */
 export class LockHolderMarker {
   #inherited: Inherited | undefined;
   #holding = false;
   readonly #held = new AsyncLocalStorage<readonly string[]>();
+  /** Each lock nonce a {@link runHolding} scope is open for, with a count. */
+  readonly #live = new Map<string, number>();
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -178,9 +191,79 @@ export class LockHolderMarker {
    * Pass an empty list for work that holds no lock, so its children still
    * wait on every lock this process holds.
    */
-  runHolding<T>(lockIds: readonly string[], fn: () => Promise<T>): Promise<T> {
+  async runHolding<T>(
+    lockIds: readonly string[],
+    fn: () => Promise<T>,
+  ): Promise<T> {
     const outer = this.#held.getStore() ?? [];
-    return this.#held.run([...new Set([...outer, ...lockIds])], fn);
+    const own = [...new Set(lockIds)];
+    for (const id of own) {
+      this.#live.set(id, (this.#live.get(id) ?? 0) + 1);
+    }
+    try {
+      return await this.#held.run([...new Set([...outer, ...own])], fn);
+    } finally {
+      for (const id of own) {
+        const count = (this.#live.get(id) ?? 1) - 1;
+        if (count > 0) {
+          this.#live.set(id, count);
+        } else {
+          this.#live.delete(id);
+        }
+      }
+    }
+  }
+
+  /**
+   * The lock list to send with a run requested from a server: what
+   * {@link childLockEnv} would hand a child. When the server is a swamp
+   * above this process, it can then tell the run's own children about the
+   * locks it holds for the run that started this process, which they cannot
+   * inherit through the request (see {@link runAdopting}). Undefined when
+   * there is nothing to send, or when the list is longer than
+   * {@link MAX_FORWARDED_LOCK_TOKENS_LENGTH}: the server would refuse the
+   * request, so the run goes without it.
+   */
+  forwardedLockTokens(): string | undefined {
+    const value = this.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS];
+    if (
+      value === undefined || value.length > MAX_FORWARDED_LOCK_TOKENS_LENGTH
+    ) {
+      return undefined;
+    }
+    return value;
+  }
+
+  /**
+   * Runs `fn`, a run a client requested, as also holding the locks named in
+   * the lock list the client forwarded (see {@link forwardedLockTokens}).
+   * The list is untrusted: only the entry for this process's own pid counts,
+   * and of its nonces only those a {@link runHolding} scope is open for now,
+   * so a client can name no lock this process does not hold. Such a client is
+   * below the run holding them, which is waiting on it. With no such nonce
+   * `fn` runs as called, in no new scope.
+   *
+   * A run that outlives the request (a detached one) keeps the nonces after
+   * the calling step releases its lock. That is harmless: every acquisition
+   * writes a new nonce, so a stale one matches no lock file.
+   */
+  runAdopting<T>(
+    forwarded: string | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (
+      forwarded === undefined ||
+      forwarded.length > MAX_FORWARDED_LOCK_TOKENS_LENGTH
+    ) {
+      return fn();
+    }
+    const adopted = [...(parseTokens(forwarded).get(this.pid) ?? [])]
+      .filter((nonce) => this.#live.has(nonce));
+    if (adopted.length === 0) {
+      return fn();
+    }
+    const outer = this.#held.getStore() ?? [];
+    return this.#held.run([...new Set([...outer, ...adopted])], fn);
   }
 
   /**
@@ -401,3 +484,18 @@ function parsePid(value: string): number | undefined {
 
 /** The process-wide instance, published once by the CLI at startup. */
 export const processLockHolderMarker: LockHolderMarker = new LockHolderMarker();
+
+/**
+ * Runs `fn`, a run a `--server` client requested, as also holding the locks
+ * in the lock list the client forwarded, so a swamp the run starts skips the
+ * lock of the step that called in (design/enablers/datastores.md,
+ * "Parent-Process Lock Awareness"). Wrap the whole request, so the run's own
+ * scope and any detached launch nest under it. A step run inside it must
+ * name its locks: `createStepLockHook` does.
+ */
+export function runAdoptingForwardedLocks<T>(
+  lockHolderTokens: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return processLockHolderMarker.runAdopting(lockHolderTokens, fn);
+}

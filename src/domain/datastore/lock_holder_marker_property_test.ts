@@ -17,11 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   type LockHolderEnvStore,
   LockHolderMarker,
+  MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_TOKENS,
   withRemoteLockHolder,
@@ -98,6 +99,123 @@ Deno.test("withRemoteLockHolder property: the holder pid never joins the chain w
         } else {
           assertEquals(env, {});
         }
+      },
+    ),
+  );
+});
+
+const OWN_PID = 300;
+
+function envWith(tokens?: string): LockHolderEnvStore {
+  return {
+    get: (key: string) => key === SWAMP_LOCK_HOLDER_TOKENS ? tokens : undefined,
+    set: () => {},
+  };
+}
+
+const forwardedPidArb = fc.oneof(fc.constant(OWN_PID), pidArb);
+/** A well-formed list, biased to name this process and the locks it holds. */
+const listArb = (held: readonly string[]) =>
+  fc.array(
+    fc.tuple(
+      forwardedPidArb,
+      fc.array(
+        held.length > 0
+          ? fc.oneof(nonceArb, fc.constantFrom(...held))
+          : nonceArb,
+        { maxLength: 6 },
+      ),
+    ),
+    { maxLength: 6 },
+  ).map((entries) =>
+    entries.map(([pid, nonces]) => `${pid}:${nonces.join("+")}`).join(",")
+  );
+
+/**
+ * The nonces a request handler's child would be told this process holds for
+ * it, when the handler adopts `forwarded` while another run holds `held`.
+ */
+async function adopted(
+  held: readonly string[],
+  forwarded: string,
+): Promise<string[]> {
+  const server = new LockHolderMarker(envWith(), OWN_PID);
+  let release = () => {};
+  const blocked = new Promise<void>((resolve) => release = resolve);
+  const run = server.runHolding(held, () => blocked);
+  try {
+    const tokens = await server.runAdopting(
+      forwarded,
+      () => Promise.resolve(server.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS]),
+    );
+    if (tokens === undefined) return [];
+    assert(tokens.startsWith(`${OWN_PID}:`), tokens);
+    return tokens.slice(`${OWN_PID}:`.length).split("+");
+  } finally {
+    release();
+    await run;
+  }
+}
+
+/** The nonces `list` names for this process, as written. */
+function namedForOwnPid(list: string): Set<string> {
+  const named = new Set<string>();
+  for (const entry of list.split(",")) {
+    const [pid, nonces] = entry.split(":");
+    if (pid === String(OWN_PID)) {
+      for (const nonce of (nonces ?? "").split("+")) named.add(nonce);
+    }
+  }
+  return named;
+}
+
+Deno.test("LockHolderMarker.runAdopting: adopts exactly the held locks a list names for its own pid", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uniqueArray(nonceArb, { maxLength: 5 }).chain((held) =>
+        fc.tuple(fc.constant(held), listArb(held))
+      ),
+      async ([held, list]) => {
+        const named = namedForOwnPid(list);
+        assertEquals(
+          (await adopted(held, list)).sort(),
+          held.filter((nonce) => named.has(nonce)).sort(),
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("LockHolderMarker.runAdopting: arbitrary input never throws or adopts a lock that is not held", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uniqueArray(nonceArb, { maxLength: 5 }),
+      fc.string(),
+      async (held, forwarded) => {
+        for (const nonce of await adopted(held, forwarded)) {
+          assert(held.includes(nonce), nonce);
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("LockHolderMarker.forwardedLockTokens: never returns a list over the length limit", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(
+        fc.string(),
+        listArb([]),
+        fc.integer({ min: 1, max: MAX_FORWARDED_LOCK_TOKENS_LENGTH + 64 })
+          .map((length) => `100:${"a".repeat(length)}`),
+      ),
+      (inherited) => {
+        const forwarded = new LockHolderMarker(envWith(inherited), OWN_PID)
+          .forwardedLockTokens();
+        assert(
+          forwarded === undefined ||
+            forwarded.length <= MAX_FORWARDED_LOCK_TOKENS_LENGTH,
+        );
       },
     ),
   );
