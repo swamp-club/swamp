@@ -350,8 +350,6 @@ export const DispatchResultSchema = z.object({
   outputs: z.array(DispatchOutputSchema),
   logs: z.array(z.string()),
   durationMs: z.number(),
-  /** Serialized follow-up actions; the orchestrator performs them. */
-  followUpActions: z.array(z.unknown()).optional(),
 });
 
 export type DispatchResult = z.infer<typeof DispatchResultSchema>;

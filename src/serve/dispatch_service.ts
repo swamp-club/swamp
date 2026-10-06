@@ -560,7 +560,6 @@ export class DispatchService {
         outputs: result.outputs,
         logs: result.logs,
         durationMs: result.durationMs,
-        followUpActions: result.followUpActions,
         workerName,
         dispatchId,
       };

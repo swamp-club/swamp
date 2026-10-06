@@ -20,7 +20,6 @@
 import type { z } from "zod";
 import {
   type DataHandle,
-  type FollowUpAction,
   inferMethodKind,
   isMutatingKind,
   type MethodContext,
@@ -65,12 +64,6 @@ import type { RpcStreamEvent } from "../remote/protocol.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
-
-/**
- * Maximum depth for recursive follow-up action processing.
- * Prevents infinite loops in misconfigured workflows.
- */
-const DEFAULT_MAX_FOLLOW_UP_DEPTH = 100;
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -140,13 +133,13 @@ export interface MethodExecutionService {
   ): Promise<MethodResult>;
 
   /**
-   * Executes a method with follow-up actions (workflow execution).
+   * Executes a method through the full pipeline (workflow execution).
    *
    * @param definition - The definition containing attributes
    * @param modelDef - The complete model definition (for accessing other methods)
    * @param methodName - Name of the method to execute
    * @param context - Execution context
-   * @returns The final method result after all follow-up actions
+   * @returns The final method result
    */
   executeWorkflow(
     definition: Definition,
@@ -890,7 +883,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       let currentHandles: DataHandle[];
       let result: MethodResult;
-      let executionContext: MethodContext = context;
 
       if (method.rollbackOnFailure && isRemotePlacement) {
         throw new Error(
@@ -903,7 +895,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       try {
         if (isRemotePlacement) {
           // Remote placement: the method body runs on a matching worker; the
-          // surrounding pipeline (output records and follow-up actions below)
+          // surrounding pipeline (output records below)
           // stays at the orchestrator. Pre-flight checks are skipped (they
           // cannot access worker-local state). See design/enablers/remote-execution.md.
           const remoteResult = await this.#executeRemotely(
@@ -924,8 +916,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
           result = {
             dataHandles: currentHandles,
-            followUpActions: remoteResult
-              .followUpActions as FollowUpAction[] | undefined,
             executor: remoteResult.workerName,
           };
         } else if (
@@ -980,12 +970,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
           result = {
             dataHandles: currentHandles,
-            followUpActions: executionResult
-              .followUpActions as FollowUpAction[] | undefined,
             executor: "loopback",
           };
-          // Use the executor's context with writers for follow-up actions
-          executionContext = inProcessExecutor.contextWithWriters ?? context;
         }
       } catch (error) {
         if (output && context.outputRepository) {
@@ -1094,111 +1080,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // Process follow-up actions
-      if (result.followUpActions && currentHandles.length > 0) {
-        const finalResult = await this.processFollowUpActions(
-          currentDefinition,
-          modelDef,
-          executionContext,
-          result.followUpActions,
-          currentHandles,
-          0,
-        );
-        currentHandles = finalResult.dataHandles;
-      }
-
       return {
         ...result,
         dataHandles: currentHandles,
       };
     }); // end withSpan
-  }
-
-  /**
-   * Process follow-up actions using the data handles pattern.
-   */
-  private async processFollowUpActions(
-    definition: Definition,
-    modelDef: ModelDefinition,
-    context: MethodContext,
-    followUpActions: FollowUpAction[],
-    currentHandles: DataHandle[],
-    depth: number = 0,
-  ): Promise<{ dataHandles: DataHandle[] }> {
-    if (depth >= DEFAULT_MAX_FOLLOW_UP_DEPTH) {
-      throw new Error(
-        `Maximum follow-up action depth (${DEFAULT_MAX_FOLLOW_UP_DEPTH}) exceeded. ` +
-          `This may indicate an infinite loop in the workflow.`,
-      );
-    }
-
-    for (const action of followUpActions) {
-      let retries = 0;
-      const maxRetries = action.maxRetries ?? 0;
-
-      while (retries <= maxRetries) {
-        // Add delay if specified
-        if (action.delayMs) {
-          await this.delay(action.delayMs);
-        }
-
-        // Check continue condition
-        if (action.continueCondition) {
-          const conditionResult = action.continueCondition(currentHandles);
-          if (!conditionResult) {
-            break;
-          }
-        }
-
-        try {
-          const followUpMethod = modelDef.methods[action.methodName];
-          if (!followUpMethod) {
-            throw new Error(
-              `Follow-up method '${action.methodName}' not found`,
-            );
-          }
-
-          // Execute with the same definition
-          const result = await this.execute(
-            definition,
-            followUpMethod,
-            context,
-          );
-
-          // Update current handles
-          if (result.dataHandles && result.dataHandles.length > 0) {
-            currentHandles = result.dataHandles;
-          }
-
-          // If this follow-up method has its own follow-up actions, process them recursively
-          if (result.followUpActions && result.followUpActions.length > 0) {
-            const recursiveResult = await this.processFollowUpActions(
-              definition,
-              modelDef,
-              context,
-              result.followUpActions,
-              currentHandles,
-              depth + 1,
-            );
-            currentHandles = recursiveResult.dataHandles;
-          }
-
-          break; // Success, exit retry loop
-        } catch (error) {
-          retries++;
-          if (retries > maxRetries) {
-            throw new Error(
-              `Follow-up action '${action.methodName}' failed after ${maxRetries} retries: ${error}`,
-            );
-          }
-        }
-      }
-    }
-
-    return { dataHandles: currentHandles };
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

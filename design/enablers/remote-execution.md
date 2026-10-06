@@ -762,14 +762,6 @@ The remaining context members do not proxy:
   speaks verbs, never providers. Report providers do not ship either: checks
   are skipped for remote steps and reports run at the orchestrator (see
   [Checks and reports](#pre-flight-checks-are-skipped-for-remote-steps-reports-run-at-the-orchestrator)).
-- **`followUpActions`** returned by a method are serialized on the dispatch
-  result, and the orchestrator performs them. Only
-  `methodName`/`delayMs`/`maxRetries` are sent (`serializeFollowUpActions` in
-  `src/worker/exec_dispatch.ts`). **Known divergence:** the `continueCondition`
-  function cannot cross the wire and is **dropped**, so the orchestrator's
-  follow-up loop (`src/domain/models/method_execution_service.ts`) never sees
-  it. A remote step's follow-ups always run, where the same method run locally
-  would stop once its condition returned false.
 
 ## The execution environment
 
@@ -971,10 +963,9 @@ Post-run **reports** keep their place in the pipeline: **after the execution
 seam, at the orchestrator**. That is where they have always run for
 out-of-process execution, and report-provider bundles never need to ship. (The
 dispatch protocol reserves `reportBundleFingerprints` should that change.)
-Output records, deletion markers and follow-up actions also still run at the
-orchestrator with local repositories. Control-plane bookkeeping runs (worker,
-token and lease transitions) skip per-run report artifacts so pool churn stays
-bounded.
+Output records and deletion markers also still run at the orchestrator with
+local repositories. Control-plane bookkeeping runs (worker, token and lease
+transitions) skip per-run report artifacts so pool churn stays bounded.
 
 ## Data semantics
 
@@ -1366,7 +1357,7 @@ credentials and extensions onto workers:
 | Concern                           | Status                                                                                                                                       |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Control protocol + multiplexing   | **Reuse** `src/serve/protocol.ts`, `connection.ts`, `serializer.ts`                                                                          |
-| Serializable execution envelope   | **Reuse** `ExecutionRequest` / `ExecutionResult` (serialize `followUpActions`; the envelope never carried driver fields)                     |
+| Serializable execution envelope   | **Reuse** `ExecutionRequest` / `ExecutionResult` (the envelope never carried driver fields)                                                  |
 | Extension bundle + fingerprint    | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on a miss; co-located assets ship the same way (see below) |
 | Checks and reports pipeline       | **Reuse** at the orchestrator: checks skipped for remote steps; reports run after the execution seam                                        |
 | Pure injectable operations        | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                                                                                  |

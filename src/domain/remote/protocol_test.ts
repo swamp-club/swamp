@@ -133,10 +133,21 @@ Deno.test("DispatchResultSchema: accepts success with persisted outputs", () => 
     }],
     logs: ["hello"],
     durationMs: 12,
-    followUpActions: [{ kind: "noop" }],
   });
   assertEquals(parsed.outputs.length, 1);
   assertEquals(parsed.outputs[0].type, "resource");
+});
+
+Deno.test("DispatchResultSchema: strips followUpActions sent by an older worker (swamp-club#3078)", () => {
+  const parsed = DispatchResultSchema.parse({
+    status: "success",
+    outputs: [],
+    logs: [],
+    durationMs: 12,
+    followUpActions: [{ methodName: "poll", delayMs: 1000 }],
+  });
+  assertEquals(parsed.status, "success");
+  assertEquals("followUpActions" in parsed, false);
 });
 
 Deno.test("DispatchResultSchema: rejects unknown output types", () => {
