@@ -1,6 +1,6 @@
 ---
 audience: operator, maintainer
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-06 @ d51b133b
 ---
 
 # Serve
@@ -157,15 +157,17 @@ Everything below shares the one listener, dispatched in table order
 
 | Transport | Route(s) | Auth | Purpose |
 | --- | --- | --- | --- |
-| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, or `?token=`) unless mode `none` | Serve protocol: 117 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
+| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or the dashboard session cookie) unless mode `none` | Serve protocol: 117 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
-| HTTP GET | `/api/v1/health` | any valid token (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and models they may `read`, decided on each resource's resolved name, tags and model type (entries that do not resolve are hidden), without run principals, workers or component detail |
+| HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and models they may `read`, decided on each resource's resolved name, tags and model type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid token; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
 | HTTP GET | `/internal/runs?limit=&offset=` | admin; 404 unless `--enable-internal-api` | Full run-tracker history |
 | HTTP POST | `/auth/device`, `/auth/device/token` | none (IP burst limit) | OAuth device grant, mode `oauth` only (`src/serve/device_auth_handler.ts`) |
+| HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie; TLS deployments also set `Secure`. |
+| HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
 | HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules and webhook endpoints |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
@@ -767,8 +769,26 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   (overview, models, workflows, executions, approvals, data, vaults, extensions,
   schedules, webhooks and system views) from `packages/dashboard/dist`.
   `scripts/compile.ts` embeds it only if pre-built before compile. The SPA uses
-  the same WebSocket protocol and logs in through `/auth/info` + device auth.
-  After an unexpected close it reconnects with jittered exponential backoff
+   the same WebSocket protocol and logs in through `/auth/info` plus the
+   browser session routes. In token and OAuth modes, manual-token exchange or
+   browser device-flow completion sets a host-only `HttpOnly`, `SameSite=Strict`
+   cookie (`Secure` when serve has TLS). Page JavaScript never reads or stores
+   the server token; WebSocket upgrades and health probes authenticate from the
+   cookie. The cookie has no `Domain` attribute, so it is shared by all tabs on
+   the same host but not subdomains.
+
+   A dashboard opened in another tab, including a deep link, restores the
+   cookie session before rendering Login. Existing `sessionStorage` credentials
+   are intentionally ignored, so deployment requires one fresh dashboard login;
+   already-loaded tabs remain active until their next reload or session end.
+   Logout clears the cookie and broadcasts a credential-free signal that closes
+   live dashboard sockets in other tabs. Successful reauthentication broadcasts
+   the same kind of state change, so other tabs reconnect using the replacement
+   cookie rather than retaining an older live socket. Local HTTP development
+   omits `Secure` only because browsers reject `Secure` cookies over HTTP;
+   TLS deployments never weaken that attribute.
+
+   After an unexpected close it reconnects with jittered exponential backoff
   (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is
   unreachable. It returns to login on close `4003`, when a failed reconnect's
   token probe of `/api/v1/health` answers 401 (a browser hides the upgrade's
