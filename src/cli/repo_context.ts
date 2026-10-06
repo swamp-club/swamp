@@ -26,6 +26,7 @@
  */
 
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
+import { hostname } from "node:os";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -96,6 +97,7 @@ import {
   type DistributedLock,
   type LockInfo,
   LockTimeoutError,
+  LockWaitCycleError,
 } from "../domain/datastore/distributed_lock.ts";
 import {
   type CustomDatastoreConfig,
@@ -119,7 +121,17 @@ import type {
 } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
-import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
+import {
+  type LockHolderMarker,
+  processLockHolderMarker,
+} from "../domain/datastore/lock_holder_marker.ts";
+import {
+  DRAIN_WAIT_TTL_MS,
+  drainToYieldTo,
+  type DrainWait,
+  MAX_DRAIN_WAIT_LOCKS,
+} from "../domain/datastore/drain_wait.ts";
+import { DrainWaitStore } from "../infrastructure/persistence/drain_wait_store.ts";
 import {
   getSwampLogger,
   getSystemPipeWidth,
@@ -1443,7 +1455,36 @@ export interface PerModelLockScan {
    * "Parent-Process Lock Awareness").
    */
   heldForOtherRuns: ReadonlyArray<{ pid: number; lockPath: string }>;
+  /**
+   * The nonces of the live locks the scan skipped because a swamp above
+   * this one holds them for the run that started it.
+   */
+  skippedLockIds: readonly string[];
+  /** Those of `held` whose lock file records a nonce. */
+  waitedLocks: ReadonlyArray<{ lockId: string; lockPath: string }>;
 }
+
+/**
+ * The drain-wait markers a drain publishes and reads; `DrainWaitStore` in
+ * production.
+ */
+export type DrainWaits = Pick<DrainWaitStore, "publish" | "list" | "remove">;
+
+/** Optional behaviour for {@link waitForPerModelLocks}. */
+export interface WaitForPerModelLocksOptions {
+  /** Where progress lines go. Defaults to the system-labelled stderr line. */
+  progressWriter?: LockProgressWriter;
+  /** Test seam: replaces the scan of the datastore's lock files. */
+  findModelLocks?: () => Promise<PerModelLockScan>;
+  /** Test seam: the marker that says which locks this process inherited. */
+  lockHolderMarker?: LockHolderMarker;
+  /** Test seam: the drain-wait markers of the datastore. */
+  drainWaits?: DrainWaits;
+  /** Test seam: how long to pause between scans. */
+  pollIntervalMs?: number;
+}
+
+const DRAIN_POLL_INTERVAL_MS = 1_000;
 
 /**
  * Waits for any held per-model locks to be released.
@@ -1456,23 +1497,31 @@ export interface PerModelLockScan {
  * Only works for filesystem datastores — S3 datastores use distributed
  * locks that cannot be scanned locally.
  *
- * Test seam: `findModelLocksOverride` is for unit tests only — production
- * callers must omit it. Not exported from any barrel; used solely by
- * `repo_context_test.ts`.
+ * While it waits, the drain publishes a drain-wait marker and reads the
+ * other drains' markers. Two drains that each wait on a lock held until the
+ * other exits would both run into the lock timeout, so the later one throws
+ * a `LockWaitCycleError` instead (design/enablers/datastores.md,
+ * "Parent-Process Lock Awareness").
+ *
+ * The test seams in `options` are for tests only — production callers pass
+ * at most `progressWriter`. Not exported from any barrel.
  */
 export async function waitForPerModelLocks(
   datastorePath: string,
   namespace?: string,
-  findModelLocksOverride?: () => Promise<PerModelLockScan>,
-  progressWriter?: LockProgressWriter,
+  options: WaitForPerModelLocksOptions = {},
 ): Promise<void> {
-  const write = progressWriter ?? defaultLockWriter;
-  const relationTo = processLockHolderMarker.lockRelation();
+  const write = options.progressWriter ?? defaultLockWriter;
+  const relationTo = (options.lockHolderMarker ?? processLockHolderMarker)
+    .lockRelation();
+  const pollIntervalMs = options.pollIntervalMs ?? DRAIN_POLL_INTERVAL_MS;
 
-  const findModelLocks = findModelLocksOverride ??
+  const findModelLocks = options.findModelLocks ??
     (async (): Promise<PerModelLockScan> => {
       let held = 0;
       const heldForOtherRuns: Array<{ pid: number; lockPath: string }> = [];
+      const skippedLockIds: string[] = [];
+      const waitedLocks: Array<{ lockId: string; lockPath: string }> = [];
       try {
         for await (
           const entry of walk(datastorePath, {
@@ -1497,11 +1546,20 @@ export async function waitForPerModelLocks(
             // that started this one (prevents deadlock when a workflow
             // shell step spawns a nested swamp command).
             const relation = relationTo(info);
-            if (relation === "ancestor") continue;
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
-            if (Date.now() - acquiredAt <= info.ttlMs) {
+            const live = Date.now() - acquiredAt <= info.ttlMs;
+            if (relation === "ancestor") {
+              if (live && info.nonce !== undefined) {
+                skippedLockIds.push(info.nonce);
+              }
+              continue;
+            }
+            if (live) {
               held++;
+              if (info.nonce !== undefined) {
+                waitedLocks.push({ lockId: info.nonce, lockPath: rel });
+              }
               if (
                 relation === "ancestor-other-run" && info.pid !== undefined
               ) {
@@ -1515,7 +1573,7 @@ export async function waitForPerModelLocks(
       } catch {
         // Datastore directory may not exist yet
       }
-      return { held, heldForOtherRuns };
+      return { held, heldForOtherRuns, skippedLockIds, waitedLocks };
     });
 
   const maxWaitMs = resolveLockTimeoutMs();
@@ -1525,23 +1583,125 @@ export async function waitForPerModelLocks(
       yellow(`Waiting for ${first.held} per-model lock(s) to be released...`),
     );
     const waitStart = Date.now();
-    while (true) {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-      const remaining = await findModelLocks();
-      if (remaining.held === 0) break;
-      const elapsed = Date.now() - waitStart;
-      if (elapsed >= maxWaitMs) {
-        throw new LockTimeoutError(
-          "per-model locks",
-          null,
-          elapsed,
-          remaining.heldForOtherRuns.length > 0
-            ? { message: heldForOtherRunsMessage(remaining, elapsed) }
-            : undefined,
-        );
+    const drainWait = new PublishedDrainWait(
+      options.drainWaits ?? new DrainWaitStore(datastorePath, namespace),
+      waitStart,
+    );
+    try {
+      await drainWait.check(first);
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        const remaining = await findModelLocks();
+        if (remaining.held === 0) break;
+        const elapsed = Date.now() - waitStart;
+        if (elapsed >= maxWaitMs) {
+          throw new LockTimeoutError(
+            "per-model locks",
+            null,
+            elapsed,
+            remaining.heldForOtherRuns.length > 0
+              ? { message: heldForOtherRunsMessage(remaining, elapsed) }
+              : undefined,
+          );
+        }
+        await drainWait.check(remaining);
       }
+    } finally {
+      await drainWait.withdraw();
     }
     write(dim("Per-model locks released"));
+  }
+}
+
+/**
+ * One drain's own drain-wait marker, and its watch for a drain it must give
+ * way to. Marker I/O that fails is logged and otherwise ignored: the drain
+ * then just waits, as it did before markers existed.
+ */
+class PublishedDrainWait {
+  readonly #id = crypto.randomUUID();
+  readonly #host = hostname();
+  #published = false;
+  /** The drain to yield to as of the last check, and its marker's age. */
+  #suspect: { id: string; updatedAtMs: number } | undefined;
+
+  constructor(
+    private readonly waits: DrainWaits,
+    private readonly startedAtMs: number,
+  ) {}
+
+  /**
+   * Publishes this drain's wait for `scan`, then throws
+   * `LockWaitCycleError` once another drain it must give way to has been
+   * seen on two checks in a row and has refreshed its marker in between.
+   * One sighting is not enough: a marker can be up to a poll old, and its
+   * drain may already be moving on.
+   */
+  async check(scan: PerModelLockScan): Promise<void> {
+    // A drain that skips nothing, or waits on nothing it can name, is in no
+    // other drain's way and publishes nothing.
+    if (scan.skippedLockIds.length === 0 || scan.waitedLocks.length === 0) {
+      this.#suspect = undefined;
+      await this.withdraw();
+      return;
+    }
+    const now = Date.now();
+    const self: DrainWait = {
+      id: this.#id,
+      pid: Deno.pid,
+      hostname: this.#host,
+      startedAtMs: this.startedAtMs,
+      updatedAtMs: now,
+      ttlMs: DRAIN_WAIT_TTL_MS,
+      skipping: scan.skippedLockIds.slice(0, MAX_DRAIN_WAIT_LOCKS),
+      waitingOn: scan.waitedLocks.slice(0, MAX_DRAIN_WAIT_LOCKS)
+        .map((lock) => lock.lockId),
+    };
+    let opponent: DrainWait | undefined;
+    try {
+      this.#published = true;
+      await this.waits.publish(self);
+      opponent = drainToYieldTo(self, await this.waits.list(now), now);
+    } catch (error) {
+      getSwampLogger(["datastore", "lock"])
+        .debug`Drain-wait marker unavailable: ${error}`;
+      this.#suspect = undefined;
+      return;
+    }
+    if (opponent === undefined) {
+      this.#suspect = undefined;
+      return;
+    }
+    const confirmed = this.#suspect?.id === opponent.id &&
+      opponent.updatedAtMs > this.#suspect.updatedAtMs;
+    if (!confirmed) {
+      if (this.#suspect?.id !== opponent.id) {
+        this.#suspect = { id: opponent.id, updatedAtMs: opponent.updatedAtMs };
+      }
+      return;
+    }
+    const skippedByOpponent = new Set(opponent.skipping);
+    throw new LockWaitCycleError({
+      opponentPid: opponent.pid,
+      waitedMs: now - this.startedAtMs,
+      waitingOnLockPaths: scan.waitedLocks
+        .filter((lock) => skippedByOpponent.has(lock.lockId))
+        .map((lock) => lock.lockPath),
+    });
+  }
+
+  /** Removes this drain's marker, if it published one. */
+  async withdraw(): Promise<void> {
+    if (!this.#published) {
+      return;
+    }
+    this.#published = false;
+    try {
+      await this.waits.remove(this.#id);
+    } catch (error) {
+      getSwampLogger(["datastore", "lock"])
+        .debug`Could not remove drain-wait marker: ${error}`;
+    }
   }
 }
 

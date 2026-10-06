@@ -33,8 +33,9 @@ before execution and releases it after the step completes. This means:
   still waits on locks the same swamp holds for other runs (parallel steps,
   other `swamp serve` runs)
 - Don't run nested structural commands (e.g. `swamp data gc`) from parallel
-  steps: each waits on the other's step lock until `SWAMP_LOCK_TIMEOUT_MS`. Run
-  them one at a time or in a step of their own
+  steps: each waits on the other's step lock, so one of them fails within
+  seconds with `lock_wait_cycle` (exit 1, not retryable from inside the step).
+  Run them one at a time or in a step of their own
 
 ## Global Datastore Lock
 

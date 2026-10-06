@@ -148,6 +148,50 @@ export class LockTimeoutError extends UserError {
   }
 }
 
+/** What a {@link LockWaitCycleError} reports about the wait it ended. */
+export interface LockWaitCycleDetails {
+  /** The swamp process this command was waiting on, and it on this one. */
+  opponentPid: number;
+  /** How long this command had waited, in ms. */
+  waitedMs: number;
+  /** Lock files this command waited on that the other command skips. */
+  waitingOnLockPaths: readonly string[];
+}
+
+/**
+ * Thrown when a structural command and another one are each waiting on a
+ * per-model lock that is held until the other exits, and this command is
+ * the one that gives way (design/enablers/datastores.md, "Parent-Process
+ * Lock Awareness").
+ *
+ * Not a {@link LockTimeoutError}, and it exits 1 rather than 75: retrying
+ * while the run that started this command still holds its lock meets the
+ * same wait and gives way again.
+ */
+export class LockWaitCycleError extends UserError {
+  override readonly name = "LockWaitCycleError";
+  readonly opponentPid: number;
+  readonly waitedMs: number;
+
+  constructor(details: LockWaitCycleDetails) {
+    const paths = details.waitingOnLockPaths.join(", ");
+    super(
+      `Lock "per-model locks" — stopped after ${details.waitedMs}ms: this ` +
+        `command and swamp pid ${details.opponentPid} are each waiting on ` +
+        `a per-model lock that is held until the other one exits` +
+        `${paths ? ` (this command waits on ${paths})` : ""}. Parallel ` +
+        `runs that each start a nested structural command (for example ` +
+        `swamp data gc) wait on each other. Run those commands one at a ` +
+        `time, or in a workflow step of their own. The other command ` +
+        `continues once the run that started this one finishes and ` +
+        `releases its lock.`,
+      "lock_wait_cycle",
+    );
+    this.opponentPid = details.opponentPid;
+    this.waitedMs = details.waitedMs;
+  }
+}
+
 /** Optional construction details for {@link LockTimeoutError}. */
 export interface LockTimeoutErrorOptions {
   /** Message to use instead of the one built from the lock fields. */

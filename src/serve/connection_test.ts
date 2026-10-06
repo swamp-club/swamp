@@ -32,7 +32,10 @@ import { closeSession } from "./handlers/shared.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
-import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
+import {
+  LockTimeoutError,
+  LockWaitCycleError,
+} from "../domain/datastore/distributed_lock.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
@@ -3487,6 +3490,17 @@ Deno.test("exceptionTypeForClient: returns undefined for plain Error", () => {
 
 Deno.test("exceptionTypeForClient: returns UserError name", () => {
   assertEquals(exceptionTypeForClient(new UserError("oops")), "UserError");
+});
+
+Deno.test("exceptionTypeForClient: a lock wait cycle is named, and is not a retryable lock timeout", () => {
+  const err = new LockWaitCycleError({
+    opponentPid: 4242,
+    waitedMs: 2000,
+    waitingOnLockPaths: [],
+  });
+  assertEquals(exceptionTypeForClient(err), "LockWaitCycleError");
+  // Handlers send `retryable` only for a LockTimeoutError.
+  assertEquals(err instanceof LockTimeoutError, false);
 });
 
 Deno.test("exceptionTypeForClient: returns undefined for non-Error values", () => {
