@@ -933,8 +933,9 @@ swamp workflow resume release --run <run-id>
   lists only unanswered waits, to tell what is left.
 - A signal can be sent from any host or repository on the same datastore, and
   while sibling steps of the wait are still running. A `resume` sent while they
-  run is refused with "has not finished suspending": resume again once they
-  finish.
+  run is refused with "has not finished suspending": wait for the first process
+  to finish, then check the run. An approval or rejection made while it was
+  still running may not have been kept and must be given again.
 - A wait's outcome is one of signalled, timed out or cancelled, whichever
   happens first; a later signal is told which, with the stored receipt if it was
   signalled. The answer stays available for as long as the run record.
@@ -943,13 +944,10 @@ swamp workflow resume release --run <run-id>
   store (current `@swamp/s3-datastore` and `@swamp/gcs-datastore`). On any
   other, `workflow run` refuses a workflow with a `wait_for_signal` step and
   names the extension to update.
-- Upgrade every host before signalling. An older swamp that knows
-  `wait_for_signal` reads these runs but not the stored signal: its `resume`
-  refuses the run as still waiting, and past the deadline fails the step with
-  `wait_timeout`.
-- `resume` refused with "has not finished suspending": wait for the first
-  process to finish, then check the run. An approval or rejection made while it
-  was still running may not have been kept and must be given again.
+- Upgrade every host before running a workflow with a wait. While a run waits
+  for a signal, an older swamp fails with a schema error on that run and on
+  `workflow approvals`, `workflow cancel --all`, `workflow waits` and
+  `workflow signal` for every workflow in the repository.
 - A step that fails with `wait_unreadable` held a wait record that could not be
   read (a hand-edited run file); `workflow waits` lists it under
   `unreadableWaits`.

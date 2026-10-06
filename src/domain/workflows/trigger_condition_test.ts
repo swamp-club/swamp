@@ -261,6 +261,7 @@ Deno.test("isUnfinishedStatus: true for every status short of an outcome, false 
     running: true,
     waiting_approval: true,
     waiting: true,
+    waiting_signal: true,
     succeeded: false,
     failed: false,
     skipped: false,

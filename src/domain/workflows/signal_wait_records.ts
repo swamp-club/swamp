@@ -94,12 +94,22 @@ export function waitIdFromKey(key: string): string | undefined {
  * What the executor records when a step starts waiting: where the wait
  * lives and what it accepts. `kind` leaves room for other kinds of wait.
  */
+/**
+ * A workflow id as a record may name it: one path segment. The id is used
+ * to find the run, and a record is read from a store other writers can
+ * reach, so it must not be able to name a path outside the runs directory.
+ */
+const WorkflowIdInRecord = z.string().min(1).refine(
+  (id) => !/[\\/]/.test(id) && id !== "." && id !== "..",
+  "must be a single path segment",
+);
+
 export const WaitRegistrationSchema = z.object({
   kind: z.literal("signal"),
   waitId: z.string().uuid(),
-  workflowId: z.string().min(1),
+  workflowId: WorkflowIdInRecord,
   workflowName: z.string().min(1),
-  runId: z.string().min(1),
+  runId: z.string().uuid(),
   jobName: z.string().min(1),
   stepName: z.string().min(1),
   deadline: z.string().datetime(),
@@ -113,8 +123,8 @@ export type WaitRegistration = z.infer<typeof WaitRegistrationSchema>;
 // registration.
 const outcomeBase = {
   waitId: z.string().uuid(),
-  workflowId: z.string().min(1),
-  runId: z.string().min(1),
+  workflowId: WorkflowIdInRecord,
+  runId: z.string().uuid(),
   deadline: z.string().datetime(),
   settledAt: z.string().datetime(),
 };

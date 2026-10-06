@@ -528,7 +528,7 @@ every registration written fits the read limit.
 
 The transitions live on `StepRun` (`src/domain/workflows/workflow_run.ts`):
 
-- `waitForSignal(wait)` parks the step in the `waiting` status.
+- `waitForSignal(wait)` parks the step in the `waiting_signal` status.
 - `applyWaitOutcome(outcome)` is the only way a wait ends: an accepted signal
   succeeds the step with the payload and receipt, `timed_out` fails it with
   error `wait_timeout`, `cancelled` fails it with error `cancelled`. The payload
@@ -552,21 +552,24 @@ The transitions live on `StepRun` (`src/domain/workflows/workflow_run.ts`):
 What a wait accepts is decided by `decideSignal`, a pure function over the
 registration, so the rule is in one place and needs no run record.
 
-**The `waiting` status.** A waiting step does not reuse `waiting_approval`. An
-older binary would list the wait as an approval gate, and approving it would
-succeed the step with no payload. A status the older binary does not know makes
-it refuse the run instead. The kind of wait is recorded beside the status
-(`wait.kind: signal`), which leaves room for other kinds of wait.
-`isUnfinishedStatus` (`src/domain/workflows/trigger_condition.ts`) is the one
-predicate for "this step has not reached an outcome"; code that only needs to
-know that uses it rather than naming the statuses.
+**The `waiting_signal` status.** A waiting step does not reuse
+`waiting_approval`. An older binary would list the wait as an approval gate, and
+approving it would succeed the step with no payload. A status the older binary
+does not know makes it refuse the run instead. swamp-club#3068 stored such a
+step as `waiting`. A binary of that build writes the run record directly and
+never reads an outcome record, so it would time out a wait whose signal had been
+accepted, or settle one without closing it. Waits opened since therefore use
+`waiting_signal`, which that build cannot parse. `isSignalWait` is true for
+both statuses, a run suspended by the earlier build is handled by the same code,
+and every view shows the step as `waiting`, so command output is unchanged. The
+kind of wait is recorded beside the status (`wait.kind: signal`), which leaves
+room for other kinds of wait. `isUnfinishedStatus`
+(`src/domain/workflows/trigger_condition.ts`) is the one predicate for "this
+step has not reached an outcome"; code that only needs to know that uses it
+rather than naming the statuses.
 
-The status and the wait stored on the step are unchanged from swamp-club#3068,
-so a binary of that build still reads every run. That was chosen over a new
-status, which would have made one waiting run break that build's repo-wide
-commands (`workflow approvals`, `workflow cancel --all`) for every workflow. The
-cost is that such a binary does not know about outcome records; see "Mixing
-builds" below.
+The cost of the new status is accepted and is wider than the one run: see
+"Mixing builds" below.
 
 **Which datastores support a wait.** Wait records must be visible to every
 process that can settle the wait, so `resolveSignalWaitSupport`
@@ -586,24 +589,21 @@ host never sees, which is worse than a refusal. A wait inside a nested workflow
 is refused when the child run starts. `swamp serve` keeps its other
 control-plane records where they were; only wait records follow this rule.
 
-The S3 and GCS extensions bind their namespace on the first sync or
-control-plane call, so the store binds it with one pull before its first use
-(`namespaceBoundStore`), as `initializeControlPlaneVaultForCli` does. Serve has
-bound it at boot and uses the store as it is.
+The extension's store is opened on first use, not when a command starts
+(`lazyRemoteStore`). The S3 and GCS extensions bind their namespace for good on
+the first sync or control-plane call, and older versions fix the store's list
+prefix when it is created, so a store made before a namespaced pull would list
+under the wrong prefix. Every command builds a repository context; only one
+that uses a wait binds the namespace with a pull, as
+`initializeControlPlaneVaultForCli` does, and then creates the store. Whether
+the store has `putIfAbsent` is known only then, so a workflow with a wait opens
+it before it starts and is refused if it has not. Serve has bound the namespace
+at boot and skips the pull. A failed open is tried again by the next call.
 
-**Suspending.** Reaching the step suspends the run the way an approval gate
-does: sibling steps in flight finish, the record is saved, and the command
-exits. `workflow run` prints the wait ID in log mode. In JSON mode the suspended
-document carries `signalRequired` (workflow, run, job, step, `waitId`,
-`deadline`) in place of `approvalRequired` when the run suspended on a wait, and
-`signalWaits`, which lists every step of the run still waiting for a signal
-(`stepId`, `jobId`, `waitId`, `deadline`). `signalWaits` is present beside
-`approvalRequired` too, when a gate and a wait suspend the run together.
-
-A run on `swamp serve` does not send the `signal_wait_requested` event to its
-client (`isWireEvent` in `src/serve/serializer.ts`): a client dispatches events
-by kind and a released client has no handler for a new one. The `suspended`
-event's `wait` field carries the same facts.
+A run already waiting on a datastore that cannot hold wait records, suspended
+there by swamp-club#3068, cannot be signalled. Its resume is refused, saying so,
+while the wait is open, and past the deadline fails the step with
+`wait_timeout` so `failed` handlers run; cancel also ends it.
 
 **Signalling.** `swamp workflow signal <waitId> --payload '<json>'`
 (`src/libswamp/workflows/signal.ts`) reads the wait's registration, decides the
@@ -652,22 +652,32 @@ instead of opening another (`adoptableWait` in
 by the next resume. A wait that passed its deadline unsignalled is closed
 instead and the step opens a new one, as a retry does.
 
-**Mixing builds.** A binary from swamp-club#3068 reads these runs but writes
-the run record directly and never reads an outcome record. On a repository or
-datastore that such a binary still uses:
+**Mixing builds.** A binary from swamp-club#3068 cannot parse a run that holds
+a `waiting_signal` step. While one such run exists in a repository or on a
+shared datastore, that binary fails with a schema error, not a message naming
+the cause, on:
 
-- Its `workflow resume` does not see a signal accepted as an outcome: it refuses
-  the run as still waiting, and past the deadline fails the step with
-  `wait_timeout`, discarding the signal. This is the known cost of keeping the
-  status.
-- Its `workflow signal` and `workflow cancel` settle the step in the run record
-  and leave the registration open. A later signal from this build finds the
-  step already past its wait in the run record and is answered from that record
-  ("already settled" with its receipt, or "closed") instead of being accepted.
-  That check reads the run record on this host, so it does not help on a second
-  host that has not synced the run.
+- every command for that run and its workflow (`history`, `resume`, `cancel`,
+  and `run` unless `--no-supersede` is given);
+- the commands that read every run: `workflow approvals`,
+  `workflow cancel --all`, `workflow waits` and `workflow signal`, for every
+  workflow, also through an older `swamp serve`.
 
-Upgrade every host before signalling.
+Its commands for other workflows by name, and its serve, keep working, and it
+changes nothing in the run. This reaches people who do not use waits when they
+share a repository with someone who does, so every host must be upgraded before
+the first workflow with a wait is run. It was chosen over keeping the `waiting`
+status, with which the older binary would read these runs and silently discard
+accepted signals.
+
+A run suspended by that build itself still has the status `waiting`, and that
+binary still acts on it by writing the run record: its `workflow resume` does
+not see a signal accepted as an outcome and past the deadline fails the step
+with `wait_timeout`, and its `workflow signal` and `workflow cancel` settle the
+step and leave the registration open. A later signal from this build finds the
+step already past its wait in the run record on this host and is answered from
+that record ("already settled" with its receipt, or "closed") instead of being
+accepted.
 
 Every refusal names the wait ID exactly as it was typed, and none names the
 person who sent an earlier signal. Telemetry records the first line of an error
@@ -771,7 +781,8 @@ fails with error `cancelled`. See "Settling a cancelled run" below.
 **When a run ends.** A run saved as `succeeded`, `failed` or `cancelled` first
 closes its waits (`closeRunWaits`): a wait nothing settled gets a `cancelled`
 outcome, so a later signal is answered closed, and every registration of the run
-is removed. This runs from the run repository's `beforeSave` hook
+is removed. A wait with no registration is skipped, so later saves of an ended
+run cost one read per wait. This runs from the run repository's `beforeSave` hook
 (`YamlWorkflowRunRepository`, set by `attachSignalWaits` in
 `src/cli/repo_context.ts`), so cancel, reject, supersede, an abort and the
 executor all do it without each having to. A store that cannot be reached does
@@ -827,9 +838,9 @@ to start while any of them is still open.
 - A signal does not show in the run record until the run is resumed, so
   `workflow history` and the dashboard cannot tell a signalled wait from an open
   one. `workflow waits` can.
-- A binary from swamp-club#3068 can discard an accepted signal (see "Mixing
-  builds"), and older binaries treat a workflow file containing the task as
-  broken.
+- A binary from swamp-club#3068 cannot read a run that waits for a signal, and
+  its repo-wide commands fail while one exists (see "Mixing builds"). Older
+  binaries treat a workflow file containing the task as broken.
 - A resume from another host while the run's owner still runs the level it
   suspended in is not refused: the run tracker is local to a host.
 - A run tracker row whose pid was reused by another live process keeps the

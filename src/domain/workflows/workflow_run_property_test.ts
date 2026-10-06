@@ -475,7 +475,7 @@ const WAIT_TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
   (s) => s.failUnusableOutcome(),
 ];
 
-const WAITING = ["waiting"];
+const WAITING = ["waiting_signal", "waiting"];
 
 Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one its wait accepts, and a refusal changes nothing (property)", () => {
   fc.assert(

@@ -402,7 +402,7 @@ Deno.test("workflowSignal: the wait of a cancelled run is closed", async () => {
 
   const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
 
-  assertStringIncludes(error.message, "is closed");
+  assertStringIncludes(error.message, "closed before a signal arrived");
   assertEquals((await outcomeOf(fixture, waitId))?.kind, "cancelled");
 });
 
@@ -422,7 +422,7 @@ class RacedStore extends InMemorySignalWaitStore {
 
 Deno.test("workflowSignal: a signal that loses the create to a cancel, a timeout or another signal is answered from what is stored", async () => {
   const cases: Array<[(outcome: WaitOutcome) => WaitOutcome, string]> = [
-    [(o) => cancelledOutcome(o, IN_TIME), "is closed"],
+    [(o) => cancelledOutcome(o, IN_TIME), "closed before a signal arrived"],
     [
       (o) => ({ ...cancelledOutcome(o, IN_TIME), kind: "timed_out" }),
       "expired",

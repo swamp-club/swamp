@@ -247,7 +247,16 @@ export async function* workflowDelete(
         // behind are swept later, and no run is left without its records.
         if (deps.deleteWaitRecords) {
           ctx.logger.debug`Deleting signal wait records`;
-          await deps.deleteWaitRecords(runIds);
+          // The runs are gone by now. A store that cannot be reached must
+          // not leave the workflow half deleted, so the delete goes on.
+          try {
+            await deps.deleteWaitRecords(runIds);
+          } catch (error) {
+            ctx.logger
+              .warn`Could not remove the signal wait records of the deleted runs: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
         }
 
         // Delete evaluated workflow

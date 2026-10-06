@@ -91,7 +91,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * Runs before a run is written, whoever saves it. Used for what must
    * hold of every saved run but lives outside its record: a run saved as
    * ended first closes its signal waits (swamp-club#3093). A failure stops
-   * the save.
+   * the save, so a hook that must never block one catches its own errors,
+   * as the wait hook does (`attachSignalWaits`).
    */
   beforeSave?: (run: WorkflowRun) => Promise<void>;
 

@@ -46,7 +46,10 @@ const SCHEMA = {
 
 const name = fc.string({ minLength: 1, maxLength: 12 });
 const registrationArb: fc.Arbitrary<WaitRegistration> = fc.record({
-  workflowId: name,
+  // One path segment, as a record must name its workflow.
+  workflowId: name.filter((id) =>
+    !/[\\/]/.test(id) && id !== "." && id !== ".."
+  ),
   workflowName: name,
   runId: fc.uuid(),
   jobName: name,

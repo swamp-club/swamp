@@ -211,7 +211,8 @@ function refusalFor(
       );
     case "cancelled":
       return validationFailed(
-        `Wait ${typedId} is closed: the run of ${where} ended before a signal arrived.`,
+        `Wait ${typedId} was closed before a signal arrived: the run of ${where} ended, or the step moved on to a new wait. ` +
+          `Run "swamp workflow waits" for the waits still open.`,
       );
   }
 }
@@ -324,7 +325,8 @@ async function resolveRegistration(
         : outcome.kind === "unreadable"
         ? unreadableRecord(typedId)
         : validationFailed(
-          `Wait ${typedId} is closed: its run ended before a signal arrived.`,
+          `Wait ${typedId} was closed before a signal arrived: its run ended, or its step moved on to a new wait. ` +
+            `Run "swamp workflow waits" for the waits still open.`,
         ),
     };
   }

@@ -50,7 +50,15 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
     // fails when the key exists, and a reader never sees a record half
     // written. `list` skips the `.tmp` name.
     const staged = `${path}.${crypto.randomUUID()}.tmp`;
-    await Deno.writeFile(staged, data, { createNew: true });
+    try {
+      await Deno.writeFile(staged, data, { createNew: true });
+    } catch (error) {
+      // A concurrent delete removed the emptied parent directory between
+      // the mkdir above and this write. Made again, once.
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeFile(staged, data, { createNew: true });
+    }
     try {
       await Deno.link(staged, path);
       return true;

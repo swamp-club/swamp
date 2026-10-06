@@ -228,7 +228,7 @@ Deno.test("workflowWaits: a wait a signal settled is not listed, though its step
   );
 
   assertEquals(await list(depsOf([run], T1, waits)), []);
-  assertEquals(step.status, "waiting");
+  assertEquals(step.status, "waiting_signal");
 });
 
 Deno.test("workflowWaits: registers a wait a run holds without a registration, and settles an expired one as timed out", async () => {

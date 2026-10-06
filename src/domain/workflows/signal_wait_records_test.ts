@@ -150,6 +150,11 @@ Deno.test("wait records: absent reads absent, and anything that is not the wait'
     encode({ ...reg, kind: "until" }),
     encode({ ...reg, deadline: "tomorrow" }),
     encode({ ...reg, schema: "any" }),
+    // A workflow or run id that could name a path outside the runs.
+    encode({ ...reg, workflowId: "../../etc" }),
+    encode({ ...reg, workflowId: "a/b" }),
+    encode({ ...reg, workflowId: ".." }),
+    encode({ ...reg, runId: "../x" }),
     // A valid record stored under another wait's key.
     encodeWaitRecord(other),
     new Uint8Array(WAIT_RECORD_MAX_BYTES + 1).fill(32),

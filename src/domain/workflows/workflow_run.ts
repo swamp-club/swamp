@@ -162,6 +162,10 @@ export const StepRunSchema = z.object({
     "running",
     "waiting_approval",
     "waiting",
+    // A wait whose registration and outcome live in the control-plane store
+    // (swamp-club#3093). A binary that predates it cannot parse the status,
+    // so it refuses the run instead of settling the wait from the record.
+    "waiting_signal",
     "succeeded",
     "failed",
     "skipped",
@@ -188,7 +192,8 @@ export const StepRunSchema = z.object({
   // Set when the run ended while this step still waited on its child run,
   // leaving the child suspended on its own.
   detachedNestedRun: z.boolean().optional(),
-  // The wait a `waiting` step holds, or held before it settled. Kept as read
+  // The wait a `waiting_signal` step holds (`waiting` in a run suspended
+  // before swamp-club#3093), or held before it settled. Kept as read
   // and validated in the domain (see parseStoredWait), as nestedRun is.
   wait: z.unknown().optional(),
 });
@@ -208,6 +213,7 @@ export const JobRunSchema = z.object({
     "running",
     "waiting_approval",
     "waiting",
+    "waiting_signal",
     "succeeded",
     "failed",
     "skipped",
@@ -525,7 +531,7 @@ export class StepRun {
    * True while the step is paused on a wait for a signal.
    */
   get isSignalWait(): boolean {
-    return this._status === "waiting";
+    return this._status === "waiting_signal" || this._status === "waiting";
   }
 
   /**
@@ -643,7 +649,7 @@ export class StepRun {
    * Marks the step as waiting for a signal on `wait`.
    */
   waitForSignal(wait: SignalWait): void {
-    this._status = "waiting";
+    this._status = "waiting_signal";
     this._resetByResume = false;
     this._wait = { kind: "valid", wait };
   }

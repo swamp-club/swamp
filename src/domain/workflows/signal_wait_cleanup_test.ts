@@ -178,14 +178,14 @@ Deno.test("applyAcceptedSignals: applies each accepted signal and reports the fi
     stepName: "a",
     wait: { id: stepOf(run, "a").signalWait!.id },
   });
-  assertEquals(stepOf(run, "a").status, "waiting");
+  assertEquals(stepOf(run, "a").status, "waiting_signal");
   assertEquals(stepOf(run, "b").status, "succeeded");
   assertEquals(stepOf(run, "b").output, {
     type: "wait_for_signal",
     payload: { verdict: "fix" },
     signal: accepted.receipt,
   });
-  assertEquals(stepOf(run, "c").status, "waiting");
+  assertEquals(stepOf(run, "c").status, "waiting_signal");
 });
 
 Deno.test("applyAcceptedSignals: a wait that timed out, was cancelled or cannot be read is not open, and is left for the walk to fail", async () => {
@@ -236,10 +236,10 @@ Deno.test("settleReenteredWait: fails the step by what settled its wait, and lea
     settleReenteredWait(store, run, stepOf(run, name), IN_TIME);
 
   assertEquals(await settle("open"), "open");
-  assertEquals(stepOf(run, "open").status, "waiting");
+  assertEquals(stepOf(run, "open").status, "waiting_signal");
   // A signal is applied by the resume's takeover, not here.
   assertEquals(await settle("signalled"), "open");
-  assertEquals(stepOf(run, "signalled").status, "waiting");
+  assertEquals(stepOf(run, "signalled").status, "waiting_signal");
 
   assertEquals(await settle("late"), "failed");
   assertEquals(stepOf(run, "late").error, WAIT_TIMEOUT_STEP_ERROR);
@@ -436,7 +436,7 @@ Deno.test("settleReenteredWait: an accepted outcome with another wait's identity
       Promise.resolve({ kind: "found", record: outcome });
     const before = structuredClone(outcome);
     assertEquals(await applyAcceptedSignals(store, run, IN_TIME), undefined);
-    assertEquals(step.status, "waiting");
+    assertEquals(step.status, "waiting_signal");
     assertEquals(
       await settleReenteredWait(store, run, step, IN_TIME),
       "failed",
@@ -462,7 +462,7 @@ Deno.test("outcomeAt: an outcome that names another run is not this wait's outco
   });
   // The resume fails the step instead of applying another run's signal.
   assertEquals(await applyAcceptedSignals(store, run, IN_TIME), undefined);
-  assertEquals(step.status, "waiting");
+  assertEquals(step.status, "waiting_signal");
   assertEquals(await settleReenteredWait(store, run, step, IN_TIME), "failed");
   assertEquals(step.error, WAIT_UNREADABLE_STEP_ERROR);
 });

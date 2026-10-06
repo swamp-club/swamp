@@ -4420,30 +4420,126 @@ Deno.test("resolveSignalWaitSupport: a namespaced filesystem datastore keeps eac
   });
 });
 
-Deno.test("resolveSignalWaitSupport: a custom datastore without a shared, atomic control-plane store does not support waits", () => {
+Deno.test("resolveSignalWaitSupport: a custom datastore without a shared control-plane store does not support waits", () => {
   const { service: plain } = createRecordingSyncService();
   const noSync = resolveSignalWaitSupport(customConfig());
   const noCapability = resolveSignalWaitSupport(customConfig(), plain);
-  // Advertised, but the store cannot create a record atomically.
-  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
-  const notAtomic = resolveSignalWaitSupport(customConfig(), {
-    ...plain,
-    capabilities: () => ({ controlPlane: true }),
-    controlPlaneStore: () => withoutCreate,
-  });
   // Advertised without a store to hand out.
   const noStore = resolveSignalWaitSupport(customConfig(), {
     ...plain,
     capabilities: () => ({ controlPlane: true }),
   });
 
-  for (const support of [noSync, noCapability, notAtomic, noStore]) {
+  for (const support of [noSync, noCapability, noStore]) {
     assert(!support.supported);
     assertStringIncludes(support.reason, '"@acme/bucket"');
     assertStringIncludes(support.reason, "update the");
   }
-  assert(!notAtomic.supported);
-  assertStringIncludes(notAtomic.reason, "putIfAbsent");
+});
+
+Deno.test("resolveSignalWaitSupport: a store that cannot create a record atomically is found out when the store is opened, with the reason", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
+  const support = resolveSignalWaitSupport(customConfig(), {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => withoutCreate,
+  });
+  assert(support.supported);
+
+  // What a workflow with a wait asks before it starts.
+  const refused = await assertRejects(() => support.ready!(), Error);
+  assertStringIncludes(refused.message, "putIfAbsent");
+  assertStringIncludes(refused.message, '"@acme/bucket"');
+  // And no record is written through such a store.
+  await assertRejects(
+    () => support.store.register(waitRegistrationFor(crypto.randomUUID())),
+    Error,
+    "putIfAbsent",
+  );
+});
+
+Deno.test("resolveSignalWaitSupport: the extension's store is not created until a wait is used, and then only after the namespace is bound", async () => {
+  // As the S3 and GCS extensions behave: the store's list prefix is fixed
+  // by the namespace bound when the store is created.
+  const order: string[] = [];
+  let bound: string | undefined;
+  const records = new Map<string, Uint8Array>();
+  const { service: plain } = createRecordingSyncService();
+  const sync = {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: (options?: { namespace?: string }) => {
+      order.push(`pull:${options?.namespace}`);
+      bound = options?.namespace;
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: (): ControlPlaneStore => {
+      order.push(`store:${bound}`);
+      const prefix = bound ? `${bound}/_control/` : "_control/";
+      return {
+        put: (key, data) => {
+          records.set(`${bound}/_control/${key}`, data);
+          return Promise.resolve();
+        },
+        putIfAbsent: (key, data) => {
+          const full = `${bound}/_control/${key}`;
+          if (records.has(full)) return Promise.resolve(false);
+          records.set(full, data);
+          return Promise.resolve(true);
+        },
+        get: (key) =>
+          Promise.resolve(records.get(`${bound}/_control/${key}`) ?? null),
+        delete: (key) => {
+          records.delete(`${bound}/_control/${key}`);
+          return Promise.resolve();
+        },
+        // The prefix captured at creation, not the one bound now.
+        list: (keyPrefix) =>
+          Promise.resolve(
+            [...records.keys()].filter((key) =>
+              key.startsWith(prefix + keyPrefix)
+            ).map((key) => key.slice(prefix.length)),
+          ),
+      };
+    },
+  };
+
+  const support = resolveSignalWaitSupport(customConfig("team-a"), sync);
+  assert(support.supported);
+  // Building a repository context creates nothing and binds nothing.
+  assertEquals(order, []);
+
+  const registration = waitRegistrationFor(crypto.randomUUID());
+  await support.store.register(registration);
+
+  assertEquals(order, ["pull:team-a", "store:team-a"]);
+  // Written and listed under the same, namespaced prefix.
+  assertEquals(await support.store.listRegistrations(), [registration]);
+  assertEquals(order, ["pull:team-a", "store:team-a"]);
+});
+
+Deno.test("resolveSignalWaitSupport: a failed open is tried again by the next call, not kept", async () => {
+  const { service: plain } = createRecordingSyncService();
+  let pulls = 0;
+  const support = resolveSignalWaitSupport(customConfig("team-a"), {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: () => {
+      pulls++;
+      return pulls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(0);
+    },
+    controlPlaneStore: () => recordingControlPlane([]),
+  });
+  assert(support.supported);
+
+  await assertRejects(() => support.ready!(), Error, "network down");
+  await support.ready!();
+  await support.store.listRegistrations();
+
+  assertEquals(pulls, 2);
 });
 
 Deno.test("resolveSignalWaitSupport: a custom datastore's store is bound to the namespace by one pull before its first use", async () => {

@@ -70,6 +70,13 @@ export type SignalWaitSupport =
     readonly store: SignalWaitStore;
     /** Missing local runs are absent from the datastore, not merely unsynced. */
     readonly localRunAbsenceIsAuthoritative?: boolean;
+    /**
+     * Opens the store, and rejects with the reason when it turns out not to
+     * be usable. Asked before a workflow with a wait starts, so that is
+     * refused up front instead of failing at its first wait. Absent for a
+     * store that needs no opening.
+     */
+    readonly ready?: () => Promise<void>;
   }
   | { readonly supported: false; readonly reason: string };
 
@@ -79,7 +86,12 @@ export const SIGNAL_WAITS_NOT_CONFIGURED: SignalWaitSupport = {
   reason: "no store for wait records was configured",
 };
 
-/** True when `outcome` is the one stored: this caller settled the wait. */
+/**
+ * True when `outcome` is the one stored. For an accepted signal that means
+ * this caller settled the wait: receipts are unique. A timeout or a cancel
+ * is matched by its time alone, so two settlers in the same millisecond
+ * both match; nothing depends on which of them it was.
+ */
 export function settledBy(
   stored: StoredWaitRecord<WaitOutcome>,
   outcome: WaitOutcome,
@@ -92,3 +104,22 @@ export function settledBy(
   }
   return stored.record.settledAt === outcome.settledAt;
 }
+
+/**
+ * A store that keeps nothing, for settling the waits of a run on a
+ * datastore that cannot hold wait records: a run suspended there by a build
+ * from before those records existed. No wait has an outcome, so one past its
+ * deadline settles as timed out for this caller alone, and one still open
+ * stays open. Nothing can signal such a wait; it ends by its deadline or by
+ * a cancel.
+ */
+export const UNSHARED_SIGNAL_WAITS: SignalWaitStore = {
+  register: () => Promise.resolve(),
+  findRegistration: () => Promise.resolve({ kind: "absent" }),
+  listRegistrations: () => Promise.resolve([]),
+  findOutcome: () => Promise.resolve({ kind: "absent" }),
+  listOutcomes: () => Promise.resolve([]),
+  settle: (outcome) => Promise.resolve({ kind: "found", record: outcome }),
+  removeRegistration: () => Promise.resolve(),
+  removeOutcome: () => Promise.resolve(),
+};

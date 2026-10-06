@@ -1497,21 +1497,21 @@ export function resolveSignalWaitSupport(
         `the "${config.type}" datastore has no control-plane store shared between hosts; ${update}`,
     };
   }
-  const remote = syncService.controlPlaneStore();
-  if (!isAtomicControlPlaneStore(remote)) {
-    return {
-      supported: false,
-      reason:
-        `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent); ${update}`,
-    };
-  }
+  // The extension's store is not created here. The S3 and GCS extensions
+  // bind their namespace for good on the first sync or control-plane call,
+  // and older versions fix the store's list prefix when it is created, so
+  // a store made before a namespaced pull would look under the wrong
+  // prefix. Every command builds a repository context; only one that uses
+  // a wait opens the store.
+  const remote = lazyRemoteStore(
+    syncService,
+    config.namespace && !options?.namespaceBound ? config.namespace : undefined,
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent); ${update}`,
+  );
   return {
     supported: true,
-    store: new ControlPlaneSignalWaitStore(
-      options?.namespaceBound
-        ? remote
-        : namespaceBoundStore(remote, syncService, config.namespace),
-    ),
+    store: new ControlPlaneSignalWaitStore(remote.store),
+    ready: remote.open,
   };
 }
 
@@ -1556,40 +1556,41 @@ export function signalWaitsOf(
 }
 
 /**
- * A control-plane store that binds the sync service to the datastore's
- * namespace before its first use. The S3 and GCS extensions bind for good
- * on the first sync or control-plane call, so a store used before any pull
- * would bind to no namespace and fail every later pull. The pull is the
- * only call that binds, as in `initializeControlPlaneVaultForCli`.
+ * The control-plane store of a custom datastore, opened on first use: the
+ * sync service is bound to `namespace` by a pull when one is given (the
+ * only call that binds, as in `initializeControlPlaneVaultForCli`), and
+ * only then is the store created. `open` rejects with `notAtomic` when the
+ * store lacks `putIfAbsent`. A failed open is tried again by the next call.
  */
-function namespaceBoundStore(
-  store: AtomicControlPlaneStore,
+function lazyRemoteStore(
   syncService: DatastoreSyncService,
   namespace: string | undefined,
-): AtomicControlPlaneStore {
-  if (!namespace) return store;
-  let bound: Promise<unknown> | undefined;
-  const bind = () => bound ??= syncService.pullChanged({ namespace });
+  notAtomic: string,
+): { store: AtomicControlPlaneStore; open: () => Promise<void> } {
+  let opened: Promise<AtomicControlPlaneStore> | undefined;
+  const open = (): Promise<AtomicControlPlaneStore> => {
+    opened ??= (async () => {
+      if (namespace) await syncService.pullChanged({ namespace });
+      const store = syncService.controlPlaneStore!();
+      if (!isAtomicControlPlaneStore(store)) throw new UserError(notAtomic);
+      return store;
+    })().catch((error) => {
+      opened = undefined;
+      throw error;
+    });
+    return opened;
+  };
   return {
-    put: async (key, data) => {
-      await bind();
-      await store.put(key, data);
+    open: async () => {
+      await open();
     },
-    putIfAbsent: async (key, data) => {
-      await bind();
-      return await store.putIfAbsent(key, data);
-    },
-    get: async (key) => {
-      await bind();
-      return await store.get(key);
-    },
-    delete: async (key) => {
-      await bind();
-      await store.delete(key);
-    },
-    list: async (prefix) => {
-      await bind();
-      return await store.list(prefix);
+    store: {
+      put: async (key, data) => await (await open()).put(key, data),
+      putIfAbsent: async (key, data) =>
+        await (await open()).putIfAbsent(key, data),
+      get: async (key) => await (await open()).get(key),
+      delete: async (key) => await (await open()).delete(key),
+      list: async (prefix) => await (await open()).list(prefix),
     },
   };
 }

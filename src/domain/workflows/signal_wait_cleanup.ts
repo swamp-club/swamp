@@ -248,6 +248,10 @@ export async function closeStepWait(
 ): Promise<void> {
   const ref = waitRefOf(run, step);
   if (!ref) return;
+  // A wait with no registration was closed already, or never registered.
+  // An ended run is saved more than once, and each save comes here, so
+  // this costs one read where there is nothing left to do.
+  if ((await store.findRegistration(ref.waitId)).kind === "absent") return;
   if (!step.signalWait?.receipt) {
     await store.settle(cancelledOutcome(ref, now));
   }

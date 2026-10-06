@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { quoteShellWord } from "../shell_word.ts";
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -56,6 +57,7 @@ import {
   SIGNAL_WAITS_NOT_CONFIGURED,
   type SignalWaitStore,
   type SignalWaitSupport,
+  UNSHARED_SIGNAL_WAITS,
 } from "./signal_wait_store.ts";
 import {
   applyAcceptedSignals,
@@ -2944,7 +2946,7 @@ export class WorkflowExecutionService {
         workflow = found;
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
-        if (holdsSignalWait(found)) this.requireSignalWaits(found.name);
+        if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
 
         // Provenance for the runtime pass, collected from the workflow as
         // loaded from disk. Taken here rather than from the evaluation below
@@ -3600,17 +3602,25 @@ export class WorkflowExecutionService {
       ) {
         throw new UserError(
           `Run ${runId} has not finished suspending: the process that started it is still running other steps and still saves the run. ` +
-            `Wait for it to finish, then check the run before resuming: an approval or rejection made while it was still running may not have been kept and must be given again.`,
+            `Wait for it to finish, then check the run before resuming (swamp workflow history ${
+              quoteShellWord(workflow.name)
+            }): an approval or rejection made while it was still running may not have been kept and must be given again.`,
         );
       }
       if (existingRun.findSignalWaits().length > 0) {
         // The only place a wait changes the run record: each accepted
         // signal is applied to its step, under the claim.
         const openWait = await applyAcceptedSignals(
-          this.requireSignalWaits(workflow.name),
+          this.signalWaitsForSettling(),
           existingRun,
           new Date(),
         );
+        if (openWait && !this.signalWaits.supported) {
+          throw new UserError(
+            `Step "${openWait.stepName}" in job "${openWait.jobName}" is still waiting for a signal, and this datastore cannot deliver one: ${this.signalWaits.reason}. ` +
+              `The wait ends at its deadline, after which a resume fails the step; or cancel the run.`,
+          );
+        }
         if (openWait) throw new UserError(openSignalWaitMessage(openWait));
       }
       await this.checkNestedWaitsSettled(existingRun);
@@ -4480,7 +4490,7 @@ export class WorkflowExecutionService {
           if (!dropped.isSignalWait) continue;
           if (
             await settleReenteredWait(
-              this.requireSignalWaits(workflow.name),
+              this.signalWaitsForSettling(),
               run,
               dropped,
               new Date(),
@@ -4882,7 +4892,7 @@ export class WorkflowExecutionService {
       if (reenterSignalWait) {
         const unreadable = stepRun.signalWait === undefined;
         const settled = await settleReenteredWait(
-          this.requireSignalWaits(workflow.name),
+          this.signalWaitsForSettling(),
           run,
           stepRun,
           new Date(),
@@ -6494,6 +6504,38 @@ export class WorkflowExecutionService {
     }
     await waits.removeRegistration(earlier.waitId);
     return undefined;
+  }
+
+  /**
+   * The store a resume settles a run's waits from. On a datastore that
+   * cannot hold wait records this is a store that keeps nothing: such a run
+   * was suspended by a build from before those records, nothing can signal
+   * it here, and its waits end at their deadline, so the resume can still
+   * fail them with `wait_timeout` and run the `failed` handlers.
+   */
+  private signalWaitsForSettling(): SignalWaitStore {
+    return this.signalWaits.supported
+      ? this.signalWaits.store
+      : UNSHARED_SIGNAL_WAITS;
+  }
+
+  /**
+   * Refuses a workflow with a wait before anything runs when its wait
+   * records cannot be kept: no store, or one that turns out not to be
+   * usable once opened.
+   */
+  private async openSignalWaits(workflowName: string): Promise<void> {
+    this.requireSignalWaits(workflowName);
+    if (!this.signalWaits.supported || !this.signalWaits.ready) return;
+    try {
+      await this.signalWaits.ready();
+    } catch (error) {
+      throw new UserError(
+        `Workflow "${workflowName}" waits for a signal, which this datastore cannot support: ${
+          error instanceof Error ? error.message : String(error)
+        }.`,
+      );
+    }
   }
 
   /**

@@ -427,7 +427,7 @@ Deno.test({
       );
       assertEquals(
         run?.getJob("main")?.getStep("review")?.status,
-        "waiting",
+        "waiting_signal",
       );
       assertEquals(
         run?.getJob("main")?.getStep("approve-deploy")?.status,
