@@ -130,6 +130,7 @@ for (
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: root,
+        manifestDir: root,
         modelsDir: root,
         allModelFiles: [source],
         modelEntryPoints: [source],
@@ -199,6 +200,7 @@ for (
       const hashInput = {
         manifest,
         rootDir: root,
+        manifestDir: root,
         modelFilePaths: [source],
         vaultFilePaths: [],
         datastoreFilePaths: [],

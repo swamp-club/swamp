@@ -1041,6 +1041,11 @@ export {
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
 export {
+  type DeclaredAcceptance,
+  type DeclaredAcceptances,
+  type QualityFindings,
+} from "./extensions/push.ts";
+export {
   type ApiCallRecord,
   type CollectiveEntitlement,
   type CollectiveTrial,

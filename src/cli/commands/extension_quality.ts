@@ -152,6 +152,7 @@ export const extensionQualityCommand = new Command()
           prepareInput: {
             manifest: resolved.manifest,
             repoDir,
+            manifestDir,
             modelsDir: resolved.modelsDir,
             allModelFiles: resolved.allModelFiles,
             modelEntryPoints: resolved.modelEntryPoints,
@@ -180,6 +181,7 @@ export const extensionQualityCommand = new Command()
           hashInput: {
             manifest: resolved.manifest,
             rootDir: repoDir,
+            manifestDir,
             modelFilePaths: resolved.allModelFiles,
             vaultFilePaths: resolved.allVaultFiles,
             datastoreFilePaths: resolved.allDatastoreFiles,
@@ -194,7 +196,7 @@ export const extensionQualityCommand = new Command()
             packageJsonPath: undefined,
           },
         }),
-        renderer.handlers(),
+        renderer.handlers({ manifestDir, repoDir }),
       );
 
       cliCtx.logger.debug`Extension quality command completed`;

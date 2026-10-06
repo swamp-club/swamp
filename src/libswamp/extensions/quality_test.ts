@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
+import { buildPrepareInput } from "./push_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -100,34 +101,12 @@ function makePrepareInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
 ): ExtensionPushPrepareInput {
   const modelPath = join(repoDir, "models", "echo.ts");
-  return {
-    manifest,
-    repoDir,
-    modelsDir: join(repoDir, "models"),
+  return buildPrepareInput(manifest, repoDir, {
     allModelFiles: [modelPath],
     modelEntryPoints: [modelPath],
-    vaultsDir: join(repoDir, "vaults"),
-    allVaultFiles: [],
-    vaultEntryPoints: [],
-    datastoresDir: join(repoDir, "datastores"),
-    allDatastoreFiles: [],
-    datastoreEntryPoints: [],
-    reportsDir: join(repoDir, "reports"),
-    allReportFiles: [],
-    reportEntryPoints: [],
-    webhooksDir: join(repoDir, "webhooks"),
-    allWebhookFiles: [],
-    webhookEntryPoints: [],
-    workflowFiles: [],
-    skillDirs: [],
-    allSkillFiles: [],
-    includeFilePaths: [],
-    additionalFilePaths: [],
-    binaryFilePaths: [],
-    dryRun: true,
     registryChecks: "skip",
     ...overrides,
-  };
+  });
 }
 
 function makeHashInput(
@@ -138,6 +117,7 @@ function makeHashInput(
   return {
     manifest,
     rootDir: repoDir,
+    manifestDir: repoDir,
     modelFilePaths: [join(repoDir, "models", "echo.ts")],
     vaultFilePaths: [],
     datastoreFilePaths: [],
@@ -419,7 +399,11 @@ Deno.test("extensionQuality: prepare failure yields an error event and does not 
       pushPrepareOverrides: {
         analyzeExtensionSafety: () =>
           Promise.resolve({
-            errors: [{ file: "echo.ts", message: "contains eval()" }],
+            errors: [{
+              ruleId: "dynamic-code",
+              file: "echo.ts",
+              message: "contains eval()",
+            }],
             warnings: [],
           }),
       },
@@ -689,5 +673,103 @@ Deno.test("extensionQuality: unparseable deno config falls back to no import map
     completedData(events);
     assert(capturedConfig !== undefined, "scorer should have invoked deno");
     assertEquals(capturedConfig!.imports, undefined);
+  });
+});
+
+// ── Declared acceptances ──────────────────────────────────────────────
+
+const ACCEPTING_MODEL_SOURCE = [
+  "const S = z.object({",
+  "  apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: holds the name of a vault key",
+  "  token: z.string(),",
+  "});",
+  "",
+].join("\n");
+
+Deno.test("extensionQuality: findings and acceptances are reported on the fresh run and again on the cache hit", async () => {
+  await withQualityFixture(
+    ACCEPTING_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const model = join(repoDir, "models", "echo.ts");
+      const finding = (line: number) => ({
+        ruleId: "credentials-sensitive-field",
+        dimension: "Credentials & Secrets",
+        severity: "medium" as const,
+        file: model,
+        line,
+        message: `line ${line} looks like a secret`,
+      });
+      const deps = makeQualityDeps(cacheRoot, {
+        pushPrepareOverrides: {
+          checkReviewRules: () =>
+            Promise.resolve({
+              errors: [],
+              warnings: [finding(2), finding(3)],
+              passed: true,
+            }),
+        },
+      });
+
+      const first = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      assertEquals(first.cacheHit, false);
+      assertEquals(
+        first.findings.reviewRulesResult.warnings.map((w) => w.line),
+        [3],
+      );
+      assertEquals(first.findings.acceptances.accepted.map((a) => a.line), [2]);
+      assertEquals(
+        first.findings.acceptances.accepted[0].file,
+        "models/echo.ts",
+      );
+
+      const second = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      assertEquals(second.cacheHit, true);
+      assertEquals(
+        second.findings.reviewRulesResult.warnings.map((w) => w.line),
+        [3],
+      );
+      assertEquals(second.findings.acceptances.accepted.map((a) => a.line), [
+        2,
+      ]);
+    },
+  );
+});
+
+Deno.test("extensionQuality: a cache hit still fails on an invalid acceptance instead of dropping the error", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot);
+    const first = await collect(extensionQuality(ctx, deps, input));
+    assertEquals(completedData(first).cacheHit, false);
+
+    // Same source, so the second run is a cache hit; the review rules are
+    // stubbed to report an invalid acceptance, as an upgraded rule set could
+    // without the source hash moving.
+    const second = await collect(extensionQuality(ctx, {
+      ...deps,
+      pushPrepareDeps: makePushPrepareDeps({
+        checkReviewRules: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "invalid-acceptance",
+              dimension: "Declared acceptances",
+              severity: "high" as const,
+              file: join(repoDir, "models", "echo.ts"),
+              line: 1,
+              message: "Acceptance is invalid",
+            }],
+            warnings: [],
+            passed: false,
+          }),
+      }),
+    }, input));
+    assertEquals(eventKinds(second), ["cache_hit", "error"]);
   });
 });

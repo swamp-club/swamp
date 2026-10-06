@@ -533,6 +533,7 @@ On push, an extension is packaged as a gzipped tar archive:
 extension.tar.gz
 └── extension/
     ├── manifest.yaml
+    ├── quality.yaml          # Declared acceptances and the generated declaration, when present
     ├── models/              # Source TypeScript model files
     │   └── ssh/
     │       ├── connection.ts
@@ -1059,9 +1060,78 @@ without it. Nearly every clean-runner publish carries at least one warning, so
 every external CI publish on the stable channel failed on its next run, and
 issue #3047 restored `--yes` the same day and removed `--accept-warnings`
 rather than keep an alias. The accountability gain, the `acceptedWarnings`
-record, stayed. Any future tightening of `--yes` is decided in the
-declared-acceptance redesign (#3021: acceptances beside the code and the
-manifest), with a deprecation window.
+record, stayed. Any future tightening of `--yes` is decided after declared
+acceptances (below, #3021) have landed, with a deprecation window.
+
+### Declared acceptances
+
+A waiver covers a run; an acceptance covers one finding, for good, where the
+finding is, with a reason, and is reviewed with the code. The rule catalog
+(`src/domain/extensions/extension_rule_catalog.ts`) is the single source of
+truth for every rule id a safety or review finding carries, its severity
+class, its scope (site, file or extension), its remediation text and whether
+it can be accepted at all: error-level rules, the adversarial-review family
+(evidence, not a lint; #3065) and the acceptance meta rules never can, and an
+unknown id never can. A test cross-checks the catalog against the detectors.
+
+Every finding carries `ruleId`, `file`, a 1-based `line` when it has one and
+`remediation`; the four safety warnings are one finding per offending line.
+That identity (file, rule, line) is what an acceptance names, so a
+rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
+
+- **Inline directive** (`src/domain/extensions/extension_acceptances.ts`):
+  `// swamp-quality-ignore <rule-id>: <reason>` on the finding's line or the
+  line directly above, or `<!-- … -->` on the line above in Markdown; the
+  same comment anywhere in a file accepts the file-scoped
+  `testing-completeness`. The parser reads raw lines; the review rules strip
+  comments, and the safety checks scan every source line as written, so
+  nothing can hide behind a directive, on push or on pull. A directive's
+  reason may not contain a quote character, `Deno.Command(` or a base64 run,
+  so a directive cannot trigger the rule it accepts; only the long-line
+  count discounts the directive's own text (at most about 230 characters,
+  and never a span holding a quote). A standalone directive targets the next
+  line, or the one after a single blank line, so a formatter's blank line
+  after an HTML comment is harmless; stacked directives share a target.
+  Directive text inside a Markdown fenced code block or a source `/* ... */`
+  block is documentation and is not parsed. No reason, the
+  `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
+  rule, a `*/` after the directive on its line (a block comment that would
+  hide code from the safety scan), or more than 50 directives in a file is a
+  blocking `invalid-acceptance` finding naming the comment; reasons are
+  capped at 200 characters and rejected, never truncated.
+- **Sidecar** (`src/domain/extensions/extension_quality_sidecar.ts`):
+  `quality.yaml` beside `manifest.yaml`, discovered by location only (most
+  manifests are regenerated and the manifest schema drops unknown keys
+  silently), strict schema, version 1. It carries extension-scoped
+  acceptances (`bare-specifiers`), a site rule for a `.txt` file (no comment
+  form; file-wide, contained in the manifest's directory) and the `generated`
+  declaration `{ by, source, commit }` agreed with #3065, which accepts
+  `testing-completeness` for the package; a file entry names a site-scoped
+  rule in a `.txt` file only, never a file-scoped one. It joins the content
+  hash when present (an extension without one keeps its hash), so a changed
+  acceptance moves the hash and the review-report path, and is packaged at
+  the archive root. A malformed sidecar blocks before any gate.
+  Pull does not copy it: a pulled extension cannot be re-pushed, and the
+  registry holds the acceptances.
+- **One pass, shared** (`runQualityFindings` in
+  `src/libswamp/extensions/push.ts`): push runs it at stage 10b and
+  `swamp extension quality` on every run including a cache hit. The review
+  rules, the bare-specifier check and `applyAcceptances` (pure,
+  property-tested: accepted plus remaining is exactly the input) produce the
+  unaccepted findings the warnings gate counts, the `stale-acceptance`
+  warning for each directive that matches nothing, and the acceptances with
+  their reasons. `testing-completeness` is accepted per file first, then
+  the remaining findings collapse to one per extension carrying the files.
+- **Reporting.** The dry-run, completed and quality summaries close with
+  `Accepted, with reasons:` and `For next time:` (each unaccepted warning
+  with its remediation and the paste-ready acceptance, with a `<reason>`
+  placeholder the parser rejects). In JSON they are `declaredAcceptances` and
+  `forNextTime` beside `acceptedWarnings`, built from the gated warnings, not
+  the waiver record, so a `--json` run, a dry run and an interactive "y" all
+  get them, with files relative to the manifest's directory (a `../` path for
+  a typed directory beside it). The acceptances travel to the registry in
+  `contentMetadata.acceptances` (stored by swamp-club#3095) with files by
+  their archive path (`models/x.ts`, `vaults/v.ts`), never a local one.
 
 ## Dependencies
 
@@ -1291,12 +1361,15 @@ Every TypeScript file in an extension is checked before push and after pull.
 
 ### Warnings (prompt user)
 
-- Lines with more than 500 non-whitespace characters
-- Base64-like strings (100+ consecutive base64 characters)
-- Use of `Deno.Command()` to spawn subprocesses
-- IPv4 address literals in `.md` and `.txt` files outside the RFC 5737
-  documentation, loopback and link-local ranges (found by the extensible content
-  rule framework)
+One finding per offending line, each with a rule id, so each can be declared
+acceptable on its own (see Declared acceptances):
+
+- `long-line`: a line with more than 500 non-whitespace characters
+- `base64-run`: a run of 100+ consecutive base64 characters
+- `deno-command`: `Deno.Command(` on the line (subprocess spawning)
+- `ipv4-address-literals`: IPv4 address literals in `.md` and `.txt` files
+  outside the RFC 5737 documentation, loopback and link-local ranges (found by
+  the extensible content rule framework)
 
 ### Binaries
 

@@ -70,6 +70,7 @@ Deno.test("analyzeExtensionSafety errors on hidden files", async () => {
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.errors.length, 1);
+      assertEquals(result.errors[0].ruleId, "hidden-file");
       assertEquals(
         result.errors[0].message.includes("Hidden files"),
         true,
@@ -168,6 +169,40 @@ Deno.test("analyzeExtensionSafety warns on Deno.Command()", async () => {
         result.warnings[0].message.includes("Deno.Command()"),
         true,
       );
+      assertEquals(result.warnings[0].ruleId, "deno-command");
+      assertEquals(result.warnings[0].line, 1);
+      assertEquals(typeof result.warnings[0].remediation, "string");
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: one Deno.Command() warning per offending line", async () => {
+  await withTempFiles(
+    {
+      "cmd.ts":
+        'const a = 1;\nnew Deno.Command("ls");\nconst b = 2;\nnew Deno.Command("pwd");\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [2, 4]);
+      assertEquals(
+        result.warnings.every((w) => w.ruleId === "deno-command"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: one long-line warning per offending line, with its rule id", async () => {
+  const long = "x".repeat(501);
+  await withTempFiles(
+    {
+      "asset.ts": `const a = "${long}";\nconst b = 1;\nconst c = "${long}";\n`,
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      const longLines = result.warnings.filter((w) => w.ruleId === "long-line");
+      assertEquals(longLines.map((w) => w.line), [1, 3]);
     },
   );
 });
@@ -472,15 +507,27 @@ Deno.test("analyzeExtensionSafety: clean .md without IPs passes", async () => {
   );
 });
 
-Deno.test("analyzeExtensionSafety: multiple IPs in one .md produce one warning", async () => {
+Deno.test("analyzeExtensionSafety: multiple IPs on one .md line produce one warning naming each", async () => {
   await withTempFiles(
-    { "README.md": "Host: 10.0.1.50\nJump: 172.16.0.1\nSubnet: 192.168.0.0\n" },
+    { "README.md": "Hosts: 10.0.1.50, 172.16.0.1 and 192.168.0.0\n" },
     async (_dir, paths) => {
       const result = await analyzeExtensionSafety(paths);
       assertEquals(result.warnings.length, 1);
+      assertEquals(result.warnings[0].ruleId, "ipv4-address-literals");
+      assertEquals(result.warnings[0].line, 1);
       assertEquals(result.warnings[0].message.includes("10.0.1.50"), true);
       assertEquals(result.warnings[0].message.includes("172.16.0.1"), true);
       assertEquals(result.warnings[0].message.includes("192.168.0.0"), true);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: IPs on separate .md lines produce one warning per line", async () => {
+  await withTempFiles(
+    { "README.md": "Host: 10.0.1.50\nSafe: 192.0.2.1\nSubnet: 192.168.0.0\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [1, 3]);
     },
   );
 });
@@ -494,6 +541,92 @@ Deno.test("analyzeExtensionSafety: IP detection does not fire on .ts files", asy
         result.warnings.filter((w) => w.message.includes("IPv4")).length,
         0,
       );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the rule it accepts", async () => {
+  const long = "x-".repeat(200);
+  await withTempFiles(
+    {
+      "a.ts": [
+        "// swamp-quality-ignore deno-command: wraps the vendor CLI",
+        `const s = "${long}"; // swamp-quality-ignore long-line: ${
+          "r-".repeat(100)
+        }`,
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a directive marker inside a string literal hides nothing", async () => {
+  const blob = "Q".repeat(120);
+  await withTempFiles(
+    {
+      "a.ts": [
+        `const t = "// swamp-quality-ignore"; new Deno.Command("sh", { args: ["${blob}"] });`,
+        `const u = '// swamp-quality-ignore deno-command: x'; new Deno.Command("sh");`,
+        'const v = `// swamp-quality-ignore base64-run: x`; const w = "' +
+        blob + '";',
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      const byLine = result.warnings.map((w) => `${w.ruleId}@${w.line}`).sort();
+      assertEquals(byLine, [
+        "base64-run@1",
+        "base64-run@3",
+        "deno-command@1",
+        "deno-command@2",
+      ]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a Markdown directive's own reason never fires the IPv4 rule", async () => {
+  await withTempFiles(
+    {
+      "README.md":
+        "<!-- swamp-quality-ignore ipv4-address-literals: the lab gateway is 10.0.0.1 -->\nGateway: 10.0.0.1\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [2]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a quote inside a regex cannot make a string read as a directive that hides Deno.Command() (push and pull scan the raw line)", async () => {
+  await withTempFiles(
+    {
+      "a.ts":
+        '/"/.test(s) + "// swamp-quality-ignore long-line: y"; new Deno.Command("sh");\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.ruleId), ["deno-command"]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a directive shown inside a fenced Markdown block is scanned as written", async () => {
+  await withTempFiles(
+    {
+      "README.md":
+        "```markdown\n<!-- swamp-quality-ignore ipv4-address-literals: gateway 10.0.0.1 -->\n```\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => [w.ruleId, w.line]), [[
+        "ipv4-address-literals",
+        2,
+      ]]);
     },
   );
 });

@@ -1,0 +1,702 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { extname, isAbsolute, relative, SEPARATOR } from "@std/path";
+import {
+  findRule,
+  isAcceptableRule,
+  isKnownRule,
+  remediationFor,
+  type RuleScope,
+} from "./extension_rule_catalog.ts";
+import type { ReviewFinding } from "./extension_review_rules.ts";
+
+/**
+ * Declared acceptances: an author's reasoned judgement that one warning-level
+ * finding is acceptable, written where the finding is.
+ *
+ * A site-scoped finding (one line in one file) is accepted by a comment on
+ * that line, or on the line directly above:
+ *
+ *     secretName: z.string(), // swamp-quality-ignore credentials-sensitive-field: reference to a Secret, not a secret
+ *
+ * A file-scoped finding (testing-completeness) is accepted by the same
+ * comment anywhere in the file. Markdown files take an HTML comment on the
+ * line above (`<!-- swamp-quality-ignore ipv4-address-literals: reason -->`).
+ * Extension-scoped findings, and site findings in files with no comment
+ * form (`.txt`), are accepted by an entry in the `quality.yaml` sidecar
+ * beside the manifest (see `extension_quality_sidecar.ts`).
+ *
+ * An acceptance names one finding by (file, rule, line). It never widens: a
+ * rule-wide or file-wide acceptance of a site-scoped rule is not expressible,
+ * an error-level rule has no acceptance form, and a directive that matches
+ * nothing is itself a warning (`stale-acceptance`). A directive that is
+ * malformed, has no reason, or names a rule that cannot be accepted is a
+ * blocking finding (`invalid-acceptance`).
+ *
+ * The parser reads raw lines. The review rules strip comments before
+ * matching, and the safety checks scan every line as written; a directive's
+ * reason may not contain a quote, `Deno.Command(` or a base64 run, so a
+ * directive cannot trigger the rule it accepts and nothing can hide behind
+ * one. Only the long-line count discounts the directive's own text.
+ */
+
+/** The directive keyword, in the spirit of `deno-lint-ignore`. */
+export const ACCEPTANCE_DIRECTIVE = "swamp-quality-ignore";
+
+/** The longest reason a directive or sidecar entry may carry. */
+export const MAX_ACCEPTANCE_REASON_LENGTH = 200;
+
+/** The most directives one file may carry. */
+export const MAX_DIRECTIVES_PER_FILE = 50;
+
+/** Rule id grammar: lowercase words joined by hyphens. */
+const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+/**
+ * The placeholder the paste-ready snippets carry in place of a reason. A
+ * directive still carrying it is invalid, so pasting a snippet verbatim
+ * never accepts anything.
+ */
+export const REASON_PLACEHOLDER = "<reason>";
+
+/** What an acceptance names. */
+export type AcceptanceTarget =
+  /** One line of one file: a site-scoped finding. */
+  | { kind: "line"; file: string; line: number }
+  /** Every finding of the rule in one file: a file-scoped rule, or a sidecar entry for a `.txt` file. */
+  | { kind: "file"; file: string }
+  /** Every finding of the rule in the extension: an extension-scoped rule. */
+  | { kind: "extension" };
+
+/** Where an acceptance was declared. */
+export type AcceptanceSource = "inline" | "sidecar" | "generated";
+
+/** A declared acceptance, parsed from a comment or a sidecar entry. */
+export interface AcceptanceDirective {
+  ruleId: string;
+  reason: string;
+  target: AcceptanceTarget;
+  source: AcceptanceSource;
+  /**
+   * For an inline directive, the file and 1-based line the comment sits on;
+   * for a sidecar entry, the sidecar path and the entry's index.
+   */
+  declaredAt: { file: string; line: number };
+}
+
+/** A directive the parser could not accept, with why. */
+export interface InvalidAcceptance {
+  /** Where the directive sits. */
+  file: string;
+  line: number;
+  /** The directive text as written, for the error message. */
+  text: string;
+  /** Why it is invalid. */
+  problem: string;
+}
+
+/** Result of parsing one file's directives. */
+export interface ParsedDirectives {
+  directives: AcceptanceDirective[];
+  invalid: InvalidAcceptance[];
+}
+
+/** The comment form a file kind takes, or none. */
+export type CommentForm = "line" | "html" | "none";
+
+/** The comment form for a file, by extension. */
+export function commentFormFor(file: string): CommentForm {
+  switch (extname(file).toLowerCase()) {
+    case ".ts":
+    case ".js":
+    case ".tsx":
+    case ".jsx":
+      return "line";
+    case ".md":
+      return "html";
+    default:
+      return "none";
+  }
+}
+
+/**
+ * Validates a rule id and reason against the catalog and the caps, for an
+ * acceptance declared in a comment, in a sidecar entry with no file (an
+ * extension-scoped rule), or in a sidecar entry naming a file (a site or
+ * file-scoped rule in a file with no comment form).
+ */
+export function validateAcceptance(
+  ruleId: string,
+  reason: string,
+  where: "comment" | "sidecar" | "sidecar-file",
+): string | undefined {
+  if (!isKnownRule(ruleId)) {
+    return `"${ruleId}" is not a rule id`;
+  }
+  const entry = findRule(ruleId)!;
+  if (entry.severity === "error") {
+    return `"${ruleId}" is an error-level rule and cannot be accepted`;
+  }
+  if (!isAcceptableRule(ruleId)) {
+    return `"${ruleId}" is not a rule that can be accepted`;
+  }
+  if (reason.length === 0) {
+    return "a reason is required after the colon";
+  }
+  if (reason === REASON_PLACEHOLDER) {
+    return `replace ${REASON_PLACEHOLDER} with why this is acceptable`;
+  }
+  if (reason.length > MAX_ACCEPTANCE_REASON_LENGTH) {
+    return `the reason is longer than ${MAX_ACCEPTANCE_REASON_LENGTH} characters`;
+  }
+  if (where === "comment" && entry.scope === "extension") {
+    return `"${ruleId}" is extension-scoped; declare it in quality.yaml beside the manifest`;
+  }
+  if (where === "sidecar" && entry.scope !== "extension") {
+    return entry.scope === "site"
+      ? `"${ruleId}" is site-scoped; declare it on the line in the source file, or name a .txt file`
+      : `"${ruleId}" is file-scoped; declare it in the file, or use the generated declaration for a generated package`;
+  }
+  if (where === "sidecar-file" && entry.scope !== "site") {
+    return entry.scope === "extension"
+      ? `"${ruleId}" is extension-scoped and takes no file`
+      : `"${ruleId}" is file-scoped; declare it in the file itself, or use the generated declaration for a generated package`;
+  }
+  return undefined;
+}
+
+/**
+ * Parses the acceptance directives in one file. `file` is the path the
+ * findings carry (absolute), so targets compare equal to findings.
+ */
+export function parseAcceptanceDirectives(
+  content: string,
+  file: string,
+): ParsedDirectives {
+  const form = commentFormFor(file);
+  const directives: AcceptanceDirective[] = [];
+  const invalid: InvalidAcceptance[] = [];
+  if (form === "none") return { directives, invalid };
+
+  const lines = content.split("\n");
+  // Text that documents a directive is not one: a Markdown fenced code block,
+  // or a `/* ... */` block (a JSDoc example) in source.
+  let fenced = false;
+  let blockComment = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (form === "html") {
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenced = !fenced;
+        continue;
+      }
+      if (fenced) continue;
+    } else {
+      if (blockComment) {
+        if (line.includes("*/")) blockComment = false;
+        continue;
+      }
+      const open = line.indexOf("/*");
+      if (
+        open !== -1 && !isInsideQuotes(line, open) &&
+        !lineCommentBefore(line, open) &&
+        !line.includes("*/", open + 1)
+      ) {
+        // A block comment spanning lines (a JSDoc example) is documentation.
+        // One that closes on its own line is parsed as usual, and a
+        // directive inside it is refused below.
+        blockComment = true;
+        continue;
+      }
+    }
+    const found = findDirectiveStart(line, form);
+    if (found === undefined) continue;
+    const { at, openerAt } = found;
+    const lineNumber = i + 1;
+
+    const text = line.slice(openerAt).trim();
+    if (directives.length + invalid.length >= MAX_DIRECTIVES_PER_FILE) {
+      invalid.push({
+        file,
+        line: lineNumber,
+        text,
+        problem:
+          `more than ${MAX_DIRECTIVES_PER_FILE} acceptance directives in one file`,
+      });
+      continue;
+    }
+
+    let body = line.slice(at + ACCEPTANCE_DIRECTIVE.length);
+    if (form === "line" && body.includes("*/")) {
+      // A `//` inside a `/* ... */` block: code after the `*/` would be
+      // hidden from the safety scan, so the directive must end its line.
+      invalid.push({
+        file,
+        line: lineNumber,
+        text,
+        problem:
+          "a block comment closes after the directive; the directive must end its line",
+      });
+      continue;
+    }
+    if (form === "html") {
+      const close = body.indexOf("-->");
+      if (close === -1) {
+        invalid.push({
+          file,
+          line: lineNumber,
+          text,
+          problem: "the HTML comment is not closed on the same line",
+        });
+        continue;
+      }
+      body = body.slice(0, close);
+    }
+    const match = /^\s+([^\s:]+)\s*:\s*(.*?)\s*$/.exec(body);
+    if (!match) {
+      invalid.push({
+        file,
+        line: lineNumber,
+        text,
+        problem: `expected "${ACCEPTANCE_DIRECTIVE} <rule-id>: <reason>"`,
+      });
+      continue;
+    }
+    const ruleId = match[1];
+    const reason = match[2];
+    if (!RULE_ID_PATTERN.test(ruleId)) {
+      invalid.push({
+        file,
+        line: lineNumber,
+        text,
+        problem: `"${ruleId}" is not a rule id`,
+      });
+      continue;
+    }
+    const problem = validateAcceptance(ruleId, reason, "comment") ??
+      (form === "line" ? reasonProblemInSource(reason) : undefined);
+    if (problem !== undefined) {
+      invalid.push({ file, line: lineNumber, text, problem });
+      continue;
+    }
+
+    const scope: RuleScope = findRule(ruleId)!.scope;
+    let target: AcceptanceTarget;
+    if (scope === "file") {
+      target = { kind: "file", file };
+    } else {
+      const standalone = line.slice(0, openerAt).trim().length === 0;
+      target = {
+        kind: "line",
+        file,
+        line: standalone ? nextTargetLine(lines, i, form) : lineNumber,
+      };
+    }
+    directives.push({
+      ruleId,
+      reason,
+      target,
+      source: "inline",
+      declaredAt: { file, line: lineNumber },
+    });
+  }
+  return { directives, invalid };
+}
+
+/** A run the safety analyzer reads as base64. */
+const BASE64_RUN = /[A-Za-z0-9+/=]{100,}/;
+
+/**
+ * Why a reason may not appear in a source comment. The safety analyzer
+ * scans source lines as written, so the reason must not carry anything the
+ * line checks would match, and must not carry a quote, which could make a
+ * string's text read as a comment.
+ */
+function reasonProblemInSource(reason: string): string | undefined {
+  if (/["'`]/.test(reason)) {
+    return "the reason may not contain a quote character";
+  }
+  if (reason.includes("Deno.Command(")) {
+    return "the reason may not contain Deno.Command(";
+  }
+  if (BASE64_RUN.test(reason)) {
+    return "the reason may not contain a run of 100 or more base64 characters";
+  }
+  return undefined;
+}
+
+/**
+ * The 1-based number of the line a standalone directive at index `i`
+ * targets: the first following line that is not another standalone
+ * directive (stacked directives all target the same line), allowing one
+ * blank line in between, which a formatter puts after an HTML comment
+ * block. Falls back to the next line when nothing qualifies, which then
+ * reads as stale.
+ */
+function nextTargetLine(
+  lines: string[],
+  i: number,
+  form: Exclude<CommentForm, "none">,
+): number {
+  let blanksSkipped = 0;
+  for (let j = i + 1; j < lines.length; j++) {
+    if (lines[j].trim().length === 0) {
+      if (blanksSkipped >= 1) break;
+      blanksSkipped++;
+      continue;
+    }
+    if (isStandaloneDirectiveLine(lines[j], form)) {
+      blanksSkipped = 0;
+      continue;
+    }
+    return j + 1;
+  }
+  return i + 2;
+}
+
+/**
+ * Finds the directive on a line: the first keyword that directly follows a
+ * comment opener which is not inside a string literal. The keyword inside a
+ * string, or outside a comment, is not a directive.
+ */
+function findDirectiveStart(
+  line: string,
+  form: Exclude<CommentForm, "none">,
+): { at: number; openerAt: number } | undefined {
+  const opener = form === "line" ? "//" : "<!--";
+  let from = 0;
+  while (from < line.length) {
+    const at = line.indexOf(ACCEPTANCE_DIRECTIVE, from);
+    if (at === -1) return undefined;
+    const openerAt = line.lastIndexOf(opener, at);
+    // Quote tracking applies to source lines only: an apostrophe in
+    // Markdown prose must not hide a trailing HTML comment.
+    const quoted = form === "line" && isInsideQuotes(line, openerAt);
+    if (
+      openerAt !== -1 && !quoted &&
+      line.slice(openerAt + opener.length, at).trim().length === 0
+    ) {
+      return { at, openerAt };
+    }
+    from = at + ACCEPTANCE_DIRECTIVE.length;
+  }
+  return undefined;
+}
+
+/**
+ * The span of the acceptance directive on a line, as `[start, end)` column
+ * offsets, or undefined when the line carries none. This is the one
+ * definition of where a directive sits: the parser uses it to read the
+ * directive, and the safety analyzer uses it to drop exactly that text
+ * before scanning, so a directive never triggers the rule it accepts and
+ * the same marker inside a string literal is still scanned.
+ */
+export function directiveSpan(
+  line: string,
+  file: string,
+): { start: number; end: number } | undefined {
+  const form = commentFormFor(file);
+  if (form === "none") return undefined;
+  const found = findDirectiveStart(line, form);
+  if (found === undefined) return undefined;
+  if (form === "line") return { start: found.openerAt, end: line.length };
+  const close = line.indexOf("-->", found.at);
+  return {
+    start: found.openerAt,
+    end: close === -1 ? line.length : close + "-->".length,
+  };
+}
+
+/**
+ * The line with its acceptance directive removed. Used for the long-line
+ * count and for Markdown content rules, where the HTML span is bounded by
+ * `-->`; the other safety checks scan the line as written. A span whose text
+ * holds a quote character is left in place, since the opener could then be
+ * inside a string.
+ */
+export function withoutDirective(line: string, file: string): string {
+  const span = directiveSpan(line, file);
+  if (span === undefined) return line;
+  if (/["'`]/.test(line.slice(span.start, span.end))) return line;
+  return line.slice(0, span.start) + line.slice(span.end);
+}
+
+/** True when the line is nothing but a standalone acceptance directive. */
+function isStandaloneDirectiveLine(
+  line: string,
+  form: Exclude<CommentForm, "none">,
+): boolean {
+  const found = findDirectiveStart(line, form);
+  return found !== undefined &&
+    line.slice(0, found.openerAt).trim().length === 0;
+}
+
+/** True when a `//` line comment (not inside quotes) starts before `index`. */
+function lineCommentBefore(line: string, index: number): boolean {
+  let from = 0;
+  while (from < index) {
+    const at = line.indexOf("//", from);
+    if (at === -1 || at >= index) return false;
+    if (!isInsideQuotes(line, at)) return true;
+    from = at + 2;
+  }
+  return false;
+}
+
+/** True when `index` sits inside a quoted string literal on the line. */
+function isInsideQuotes(line: string, index: number): boolean {
+  let quote: string | undefined;
+  for (let k = 0; k < index; k++) {
+    const ch = line[k];
+    if (quote !== undefined) {
+      if (ch === "\\") k++;
+      else if (ch === quote) quote = undefined;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    }
+  }
+  return quote !== undefined;
+}
+
+/** The identity a finding carries; both finding types satisfy it. */
+export interface AcceptableFinding {
+  ruleId: string;
+  file: string;
+  line?: number;
+}
+
+/** A finding together with the acceptance that covers it. */
+export interface AcceptedFinding<T extends AcceptableFinding> {
+  finding: T;
+  reason: string;
+  source: AcceptanceSource;
+  declaredAt: { file: string; line: number };
+}
+
+/** The partitions {@link applyAcceptances} produces. */
+export interface AppliedAcceptances<T extends AcceptableFinding> {
+  /** Findings no acceptance covers; they stay in the gate. */
+  remaining: T[];
+  /** Findings an acceptance covers, with the reason. */
+  accepted: AcceptedFinding<T>[];
+  /** Inline and sidecar acceptances that matched no finding. */
+  stale: AcceptanceDirective[];
+}
+
+/** True when the directive names the finding. */
+function covers(
+  directive: AcceptanceDirective,
+  finding: AcceptableFinding,
+): boolean {
+  if (directive.ruleId !== finding.ruleId) return false;
+  const target = directive.target;
+  switch (target.kind) {
+    case "line":
+      return target.file === finding.file && target.line === finding.line;
+    case "file":
+      return target.file === finding.file;
+    case "extension":
+      return true;
+  }
+}
+
+/**
+ * Applies declared acceptances to findings. Pure: a finding moves to
+ * `accepted` only when a directive names it, every other finding is kept
+ * unchanged in `remaining`, and the two together are exactly the input. A
+ * directive that names nothing is returned as `stale`, except a `generated`
+ * declaration, which is a statement about the package rather than about one
+ * finding.
+ */
+export function applyAcceptances<T extends AcceptableFinding>(
+  findings: T[],
+  directives: AcceptanceDirective[],
+): AppliedAcceptances<T> {
+  const remaining: T[] = [];
+  const accepted: AcceptedFinding<T>[] = [];
+  const used = new Set<AcceptanceDirective>();
+
+  for (const finding of findings) {
+    const directive = directives.find((d) => covers(d, finding));
+    if (directive === undefined) {
+      remaining.push(finding);
+      continue;
+    }
+    used.add(directive);
+    accepted.push({
+      finding,
+      reason: directive.reason,
+      source: directive.source,
+      declaredAt: directive.declaredAt,
+    });
+  }
+
+  const stale = directives.filter((d) =>
+    !used.has(d) && d.source !== "generated"
+  );
+  return { remaining, accepted, stale };
+}
+
+const ACCEPTANCE_DIMENSION = "Declared acceptances";
+
+/** The blocking finding for a directive that cannot be accepted. */
+export function invalidAcceptanceFinding(
+  issue: InvalidAcceptance,
+): ReviewFinding {
+  return {
+    ruleId: "invalid-acceptance",
+    dimension: ACCEPTANCE_DIMENSION,
+    severity: "high",
+    file: issue.file,
+    line: issue.line,
+    message: `Acceptance "${issue.text}" is invalid: ${issue.problem}.`,
+  };
+}
+
+/** The warning for a directive that names no finding. */
+export function staleAcceptanceFinding(
+  directive: AcceptanceDirective,
+): ReviewFinding {
+  const where = directive.target.kind === "line"
+    ? `line ${directive.target.line}`
+    : directive.target.kind === "file"
+    ? "this file"
+    : "this extension";
+  return {
+    ruleId: "stale-acceptance",
+    dimension: ACCEPTANCE_DIMENSION,
+    severity: "medium",
+    file: directive.declaredAt.file,
+    line: directive.declaredAt.line,
+    message:
+      `Acceptance of ${directive.ruleId} matches nothing: the rule does not fire on ${where}. Remove it.`,
+    remediation: remediationFor("stale-acceptance"),
+  };
+}
+
+// ── Paste-ready acceptances ───────────────────────────────────────────
+
+/** The text an author pastes to accept a finding, and where it goes. */
+export interface AcceptanceSnippet {
+  /** The comment or sidecar entry, with the reason placeholder. */
+  text: string;
+  /** Where to put it, in words. */
+  placement: string;
+}
+
+function escapesDir(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
+}
+
+/**
+ * A finding's file relative to the manifest's directory, with forward
+ * slashes, for the summaries. A file elsewhere in the repository (a vault
+ * beside a `extensions/models/manifest.yaml`) is a `../` path when
+ * `repoDir` is given; a file outside the repository (the adversarial-review
+ * report in the review dir) keeps its absolute path.
+ */
+export function fileRelativeToManifest(
+  manifestDir: string,
+  file: string,
+  repoDir?: string,
+): string {
+  if (file.startsWith("(")) return file;
+  const rel = relative(manifestDir, file);
+  if (!escapesDir(rel)) return rel.replaceAll("\\", "/");
+  if (repoDir !== undefined && !escapesDir(relative(repoDir, file))) {
+    return rel.replaceAll("\\", "/");
+  }
+  return file;
+}
+
+function sidecarEntry(ruleId: string, file?: string): string {
+  return [
+    "# quality.yaml, beside manifest.yaml",
+    "version: 1",
+    "accept:",
+    `  - rule: ${ruleId}`,
+    ...(file !== undefined ? [`    file: ${file}`] : []),
+    `    reason: ${REASON_PLACEHOLDER}`,
+  ].join("\n");
+}
+
+/**
+ * The exact text to paste to accept a finding, or undefined when the rule
+ * has no acceptance form. `file` is the finding's path as it carries it;
+ * `manifestDir` makes the sidecar paths relative.
+ */
+export function acceptanceSnippet(
+  finding: AcceptableFinding,
+  manifestDir: string,
+  repoDir?: string,
+): AcceptanceSnippet | undefined {
+  if (!isAcceptableRule(finding.ruleId)) return undefined;
+  const scope = findRule(finding.ruleId)!.scope;
+  const rel = fileRelativeToManifest(manifestDir, finding.file, repoDir);
+  if (scope === "extension") {
+    return {
+      text: sidecarEntry(finding.ruleId),
+      placement: "in quality.yaml beside manifest.yaml",
+    };
+  }
+  const form = commentFormFor(finding.file);
+  if (scope === "file") {
+    // A file-scoped rule is always accepted in the file itself; a collapsed
+    // finding stands for several files, and the comment goes at the top of
+    // each one it lists.
+    if (finding.file.startsWith("(")) {
+      return {
+        text:
+          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+        placement: "at the top of each file listed",
+      };
+    }
+    return {
+      text:
+        `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+      placement: `at the top of ${rel}`,
+    };
+  }
+  const where = finding.line !== undefined
+    ? `on line ${finding.line} of ${rel}, or the line above`
+    : `on the line in ${rel}`;
+  switch (form) {
+    case "line":
+      return {
+        text:
+          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+        placement: where,
+      };
+    case "html":
+      return {
+        text:
+          `<!-- ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER} -->`,
+        placement: finding.line !== undefined
+          ? `on the line above line ${finding.line} of ${rel}`
+          : `on the line above, in ${rel}`,
+      };
+    case "none":
+      return {
+        text: sidecarEntry(finding.ruleId, rel),
+        placement:
+          `in quality.yaml beside manifest.yaml (${rel} has no comment form; this accepts the rule for the whole file)`,
+      };
+  }
+}

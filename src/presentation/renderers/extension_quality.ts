@@ -21,11 +21,52 @@ import type {
   EventHandlers,
   ExtensionQualityEvent,
   FactorStatus,
+  SwampError,
 } from "../../libswamp/mod.ts";
+import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
+import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  buildFindingsReport,
+  renderFindingsReport,
+  withAcceptance,
+} from "./extension_findings_report.ts";
+
+/** Per-run inputs for the stream handlers. */
+export interface ExtensionQualityHandlerOptions {
+  /** The manifest's directory; the report's file paths are relative to it. */
+  manifestDir: string;
+  /** The repository directory, so a file in a typed directory beside the manifest prints as a `../` path. */
+  repoDir?: string;
+}
+
+/**
+ * The details a failed run carries, surfaced before the error so the
+ * author sees which acceptance or file is at fault, as push does.
+ */
+function errorDetails(error: SwampError): {
+  reviewRuleErrors?: ReviewFinding[];
+  safetyErrors?: SafetyIssue[];
+} {
+  const details = error.details as Record<string, unknown> | undefined;
+  return {
+    ...(Array.isArray(details?.reviewRuleErrors)
+      ? { reviewRuleErrors: details.reviewRuleErrors as ReviewFinding[] }
+      : {}),
+    ...(Array.isArray(details?.safetyErrors)
+      ? { safetyErrors: details.safetyErrors as SafetyIssue[] }
+      : {}),
+  };
+}
+
+function fileAndLine(finding: { file: string; line?: number }): string {
+  return finding.line !== undefined
+    ? `${finding.file}:${finding.line}`
+    : finding.file;
+}
 
 function formatDownloads(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -50,6 +91,9 @@ export interface ExtensionQualityRenderer
   extends Renderer<ExtensionQualityEvent> {
   passed(): boolean;
   failureMessage(): string;
+  handlers(
+    options?: ExtensionQualityHandlerOptions,
+  ): EventHandlers<ExtensionQualityEvent>;
 }
 
 class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
@@ -64,8 +108,12 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
     return this._failureMessage;
   }
 
-  handlers(): EventHandlers<ExtensionQualityEvent> {
+  handlers(
+    options?: ExtensionQualityHandlerOptions,
+  ): EventHandlers<ExtensionQualityEvent> {
     const logger = getSwampLogger(["extension", "quality"]);
+    const manifestDir = options?.manifestDir ?? "";
+    const repoDir = options?.repoDir;
     return {
       packaging: () => {
         logger.info("Packaging extension for quality scoring...");
@@ -79,7 +127,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         logger.info("Scoring extension against Swamp Club quality rubric...");
       },
       completed: (e) => {
-        const { score, archiveSize } = e.data;
+        const { score, archiveSize, findings } = e.data;
         const provisional = score.provisionalPoints > 0
           ? ` (+${score.provisionalPoints} pending server verification)`
           : "";
@@ -136,9 +184,38 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }
         }
+        renderFindingsReport(
+          logger,
+          buildFindingsReport(
+            {
+              safetyWarnings: findings.safetyWarnings,
+              reviewWarnings: findings.reviewRulesResult.warnings,
+              acceptances: findings.acceptances,
+            },
+            manifestDir,
+            repoDir,
+          ),
+        );
         logger.info`Packaged archive: ${archiveSize} bytes`;
       },
       error: (e) => {
+        const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);
+        if (reviewRuleErrors) {
+          logger.error`Extension review rule errors:`;
+          for (const f of reviewRuleErrors) {
+            const summary = f.message.split("\n")[0];
+            logger
+              .error`  [${f.severity}] ${f.ruleId} — ${
+              fileAndLine(f)
+            }: ${summary}`;
+          }
+        }
+        if (safetyErrors) {
+          logger.error`Safety errors:`;
+          for (const f of safetyErrors) {
+            logger.error`  ${fileAndLine(f)}: ${f.message}`;
+          }
+        }
         throw new UserError(e.error.message);
       },
     };
@@ -157,7 +234,11 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
     return this._failureMessage;
   }
 
-  handlers(): EventHandlers<ExtensionQualityEvent> {
+  handlers(
+    options?: ExtensionQualityHandlerOptions,
+  ): EventHandlers<ExtensionQualityEvent> {
+    const manifestDir = options?.manifestDir ?? "";
+    const repoDir = options?.repoDir;
     return {
       packaging: () => {},
       cache_hit: () => {},
@@ -169,6 +250,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           archiveSize,
           cacheHit,
           dependencyTrustResult,
+          findings,
         } = e.data;
         console.log(JSON.stringify(
           {
@@ -190,12 +272,38 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             cacheHash,
             archiveSize,
             cacheHit,
+            warnings: withAcceptance(
+              findings.safetyWarnings,
+              manifestDir,
+              repoDir,
+            ),
+            reviewRuleWarnings: withAcceptance(
+              findings.reviewRulesResult.warnings,
+              manifestDir,
+              repoDir,
+            ),
+            ...buildFindingsReport(
+              {
+                safetyWarnings: findings.safetyWarnings,
+                reviewWarnings: findings.reviewRulesResult.warnings,
+                acceptances: findings.acceptances,
+              },
+              manifestDir,
+              repoDir,
+            ),
           },
           null,
           2,
         ));
       },
       error: (e) => {
+        const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);
+        if (reviewRuleErrors) {
+          console.log(JSON.stringify({ reviewRuleErrors }, null, 2));
+        }
+        if (safetyErrors) {
+          console.log(JSON.stringify({ safetyErrors }, null, 2));
+        }
         throw new UserError(e.error.message);
       },
     };

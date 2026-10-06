@@ -135,6 +135,30 @@ Deno.test("schema-strictness: ignores commented-out passthrough", () => {
   assertEquals(result.warnings.length, 0);
 });
 
+Deno.test("credentials-sensitive-field: the finding carries the line it fires on and its remediation", () => {
+  const result = evaluateReviewRules([
+    source({
+      content:
+        "const S = z.object({\n  name: z.string(),\n  apiKey: z.string(),\n});\n",
+    }),
+  ]);
+  const finding = result.warnings.find((w) =>
+    w.ruleId === "credentials-sensitive-field"
+  );
+  assertEquals(finding?.line, 3);
+  assertEquals(typeof finding?.remediation, "string");
+});
+
+Deno.test("schema-strictness: the finding carries the line it fires on", () => {
+  const result = evaluateReviewRules([
+    source({
+      content: "const a = 1;\nconst S = z.object({}).passthrough();\n",
+    }),
+  ]);
+  const finding = result.warnings.find((w) => w.ruleId === "schema-strictness");
+  assertEquals(finding?.line, 2);
+});
+
 Deno.test("credentials-sensitive-field: warns on unmarked secret field", () => {
   const result = evaluateReviewRules([
     source({
@@ -938,4 +962,29 @@ Deno.test("credentials-sensitive-field: every .meta({ sensitive: true }) form su
       `${name} should not warn`,
     );
   }
+});
+
+Deno.test("checkReviewRules: the missing-report finding carries the catalog remediation", async () => {
+  const dims = applicableDimensions(["model"]);
+  const result = await checkReviewRules(
+    {
+      files: [],
+      report: {
+        reportPath: "/nowhere/report.json",
+        extensionName: "@a/b",
+        extensionVersion: "1",
+        applicableDimensions: dims,
+        skeleton: "{}",
+      },
+    },
+    DEFAULT_REVIEW_RULES,
+    {
+      readTextFile: () => Promise.reject(new Error("missing")),
+      fileExists: () => Promise.resolve(false),
+    },
+  );
+  const missing = result.warnings.find((w) =>
+    w.ruleId === "adversarial-review-report"
+  );
+  assertEquals(typeof missing?.remediation, "string");
 });

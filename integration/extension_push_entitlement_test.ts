@@ -159,6 +159,7 @@ async function withScenario(
     ): ExtensionPushPrepareInput => ({
       manifest,
       repoDir: root,
+      manifestDir: root,
       modelsDir: root,
       allModelFiles: [source],
       modelEntryPoints: [source],

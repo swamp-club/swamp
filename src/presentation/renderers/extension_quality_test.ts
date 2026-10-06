@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
+import { join, resolve } from "@std/path";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ExtensionQualityEvent } from "../../libswamp/mod.ts";
 import type { RubricScore } from "../../domain/extensions/extension_rubric_scorer.ts";
@@ -75,6 +82,11 @@ function completedEvent(
       archiveSize: 1024,
       cacheHit: false,
       dependencyTrustResult: emptyTrustResult,
+      findings: {
+        safetyWarnings: [],
+        reviewRulesResult: { errors: [], warnings: [], passed: true },
+        acceptances: { accepted: [] },
+      },
     },
   };
 }
@@ -168,3 +180,180 @@ Deno.test(
     );
   },
 );
+
+// ── Findings report ───────────────────────────────────────────────────
+
+function capture(run: () => void): string[] {
+  const logs: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+  };
+  const push = (...args: unknown[]) => {
+    logs.push(
+      stripAnsiCode(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      ),
+    );
+  };
+  console.log = push;
+  console.info = push;
+  console.warn = push;
+  console.error = push;
+  try {
+    run();
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+    console.error = original.error;
+  }
+  return logs;
+}
+
+function completedWithFindings(
+  manifestDir: string,
+): Extract<ExtensionQualityEvent, { kind: "completed" }> {
+  const event = completedEvent(makeScore());
+  event.data.findings = {
+    safetyWarnings: [{
+      ruleId: "deno-command",
+      file: join(manifestDir, "models", "b.ts"),
+      line: 9,
+      message: "Line 9 uses Deno.Command() to spawn subprocesses.",
+      remediation: "prefer primitives",
+    }],
+    reviewRulesResult: {
+      errors: [],
+      warnings: [{
+        ruleId: "stale-acceptance",
+        dimension: "Declared acceptances",
+        severity: "medium",
+        file: join(manifestDir, "models", "a.ts"),
+        line: 2,
+        message: "Acceptance of deno-command matches nothing",
+        remediation: "remove it",
+      }],
+      passed: true,
+    },
+    acceptances: {
+      accepted: [{
+        ruleId: "credentials-sensitive-field",
+        file: "models/a.ts",
+        line: 4,
+        reason: "reference to a Secret",
+        source: "inline",
+        message: "looks like a secret",
+      }],
+    },
+  };
+  return event;
+}
+
+Deno.test("createExtensionQualityRenderer: json completed carries the warnings with paste text, declaredAcceptances and forNextTime", () => {
+  const manifestDir = resolve("/ext");
+  const renderer = createExtensionQualityRenderer("json");
+  const logs = capture(() =>
+    renderer.handlers({ manifestDir }).completed(
+      completedWithFindings(manifestDir),
+    )
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.warnings.length, 1);
+  assertEquals(
+    doc.warnings[0].acceptance,
+    "// swamp-quality-ignore deno-command: <reason>",
+  );
+  assertEquals(doc.reviewRuleWarnings[0].ruleId, "stale-acceptance");
+  assertEquals("acceptance" in doc.reviewRuleWarnings[0], false);
+  assertEquals(
+    doc.declaredAcceptances.accepted[0].reason,
+    "reference to a Secret",
+  );
+  assertEquals(doc.forNextTime.map((e: { file: string }) => e.file), [
+    "models/b.ts",
+    "models/a.ts",
+  ]);
+  assertEquals(doc.forNextTime[0].remediation, "prefer primitives");
+});
+
+Deno.test("createExtensionQualityRenderer: json completed omits the report fields when there is nothing to report", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  const logs = capture(() =>
+    renderer.handlers({ manifestDir: resolve("/ext") }).completed(
+      completedEvent(makeScore()),
+    )
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.warnings, []);
+  assertEquals(doc.reviewRuleWarnings, []);
+  assertEquals("declaredAcceptances" in doc, false);
+  assertEquals("forNextTime" in doc, false);
+});
+
+Deno.test("createExtensionQualityRenderer: log completed prints the accepted and For next time blocks", () => {
+  const manifestDir = resolve("/ext");
+  const renderer = createExtensionQualityRenderer("log");
+  const logs = capture(() =>
+    renderer.handlers({ manifestDir }).completed(
+      completedWithFindings(manifestDir),
+    )
+  );
+  const output = logs.join("\n");
+  assertStringIncludes(output, "Accepted, with reasons:");
+  assertStringIncludes(
+    output,
+    "credentials-sensitive-field — models/a.ts:4: reference to a Secret",
+  );
+  assertStringIncludes(output, "For next time:");
+  assertStringIncludes(output, "deno-command — models/b.ts:9:");
+  assertStringIncludes(
+    output,
+    "// swamp-quality-ignore deno-command: <reason>",
+  );
+  assertStringIncludes(output, "stale-acceptance — models/a.ts:2:");
+});
+
+Deno.test("createExtensionQualityRenderer: a failed run names the invalid acceptance before the error, in log and JSON", () => {
+  const error = {
+    kind: "error" as const,
+    error: {
+      code: "validation_failed",
+      message:
+        "Extension review found issues that must be resolved before pushing.",
+      details: {
+        reviewRuleErrors: [{
+          ruleId: "invalid-acceptance",
+          dimension: "Declared acceptances",
+          severity: "high",
+          file: "/ext/models/a.ts",
+          line: 4,
+          message:
+            'Acceptance "// swamp-quality-ignore dynamic-code: x" is invalid: cannot be accepted.',
+        }],
+      },
+    },
+  } as unknown as Extract<ExtensionQualityEvent, { kind: "error" }>;
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createExtensionQualityRenderer(mode);
+    let thrown: unknown;
+    const logs = capture(() => {
+      try {
+        renderer.handlers({ manifestDir: resolve("/ext") }).error(error);
+      } catch (e) {
+        thrown = e;
+      }
+    });
+    assert(thrown instanceof UserError, mode);
+    const output = logs.join("\n");
+    assertStringIncludes(output, "invalid-acceptance", mode);
+    assertStringIncludes(output, "swamp-quality-ignore dynamic-code", mode);
+    assertStringIncludes(
+      output,
+      mode === "log" ? "/ext/models/a.ts:4" : '"line": 4',
+      mode,
+    );
+  }
+});

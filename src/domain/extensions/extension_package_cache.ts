@@ -19,6 +19,7 @@
 
 import { join, relative, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
+import { qualitySidecarPath } from "./extension_quality_sidecar.ts";
 
 function encodeHex(bytes: Uint8Array): string {
   const chars: string[] = [];
@@ -50,6 +51,12 @@ function encodeHex(bytes: Uint8Array): string {
 export interface PackageCacheHashInput {
   manifest: ExtensionManifest;
   rootDir: string;
+  /**
+   * The manifest's directory. The `quality.yaml` sidecar beside it joins the
+   * hash, so a changed acceptance moves the content hash and the
+   * review-report path.
+   */
+  manifestDir: string;
   modelFilePaths: string[];
   vaultFilePaths: string[];
   datastoreFilePaths: string[];
@@ -118,6 +125,15 @@ export async function computePackageCacheHash(
   if (input.packageJsonPath) {
     parts.push("package-json");
     parts.push(await readFileIfExists(input.packageJsonPath));
+  }
+  // Only when present, like deno-config and package-json above, so every
+  // extension without a sidecar keeps its hash across this change.
+  const sidecar = await computeFileContentHashIfExists(
+    qualitySidecarPath(input.manifestDir),
+  );
+  if (sidecar !== null) {
+    parts.push("quality-sidecar");
+    parts.push(sidecar);
   }
 
   const payload = new TextEncoder().encode(parts.join("\n"));

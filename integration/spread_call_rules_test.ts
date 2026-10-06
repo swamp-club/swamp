@@ -274,13 +274,6 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/domain/extensions/extension_review_rules.ts",
-    reason: "review findings for one report",
-    calls: [
-      "findings.push(...evaluateReviewReport({ ...input.report, report, parseErrors }))",
-    ],
-  },
-  {
     file: "src/domain/extensions/extension_skill_validator.ts",
     reason: "files in one skill directory, capped at 2MB",
     calls: [

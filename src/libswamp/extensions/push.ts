@@ -17,7 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, extname, join, relative } from "@std/path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  SEPARATOR,
+} from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import {
@@ -43,6 +51,7 @@ import type {
   ExtensionContentKind,
   ExtensionReviewInput,
   ReviewFileRef,
+  ReviewFinding,
   ReviewRulesResult,
 } from "../../domain/extensions/extension_review_rules.ts";
 import {
@@ -170,6 +179,11 @@ export interface CompilationError {
 export interface ExtensionPushPrepareInput {
   manifest: ExtensionManifest;
   repoDir: string;
+  /**
+   * The manifest's directory. The `quality.yaml` sidecar (declared
+   * acceptances, the generated declaration) is discovered beside it.
+   */
+  manifestDir: string;
   modelsDir: string;
   allModelFiles: string[];
   modelEntryPoints: string[];
@@ -225,6 +239,14 @@ export interface ExtensionPushPrepared {
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
   reviewRulesResult: ReviewRulesResult;
+  /** The `quality.yaml` sidecar beside the manifest, when one exists. */
+  sidecar: { path: string; value: QualitySidecar } | undefined;
+  /**
+   * The findings the author declared acceptable, with reasons. The
+   * `safetyWarnings` and `reviewRulesResult.warnings` above hold only the
+   * findings no acceptance covers, so the warnings gate counts those alone.
+   */
+  acceptances: DeclaredAcceptances;
   archiveBytes: Uint8Array;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
@@ -435,6 +457,30 @@ import { checkDependencyTrust } from "../../domain/extensions/extension_dependen
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
+import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import {
+  type GeneratedDeclaration,
+  parseQualitySidecar,
+  QUALITY_SIDECAR_FILENAME,
+  type QualitySidecar,
+  qualitySidecarPath,
+  sidecarDirectives,
+} from "../../domain/extensions/extension_quality_sidecar.ts";
+import {
+  type AcceptanceDirective,
+  type AcceptanceSource,
+  applyAcceptances,
+  commentFormFor,
+  fileRelativeToManifest,
+  type InvalidAcceptance,
+  invalidAcceptanceFinding,
+  parseAcceptanceDirectives,
+  staleAcceptanceFinding,
+} from "../../domain/extensions/extension_acceptances.ts";
+import type {
+  ExtensionAcceptance,
+  ExtensionAcceptances,
+} from "../../domain/extensions/extension_content.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
@@ -900,6 +946,10 @@ export async function extensionPushPrepare(
     }
   }
 
+  // 6a2. The quality sidecar beside the manifest. Read and validated here so
+  // a malformed one blocks like a malformed manifest, before any gate runs.
+  const sidecar = await readQualitySidecar(input.manifestDir);
+
   // 6b. Safety analysis
   // Include files are safety-checked but excluded from quality checks
   // (they may have their own tooling and conventions).
@@ -916,6 +966,7 @@ export async function extensionPushPrepare(
     ...qualityFiles,
     ...input.includeFilePaths,
     ...input.binaryFilePaths,
+    ...(sidecar ? [sidecar.path] : []),
   ];
   const binaryExemptSet = new Set(input.binaryFilePaths);
   const safetyResult = await deps.analyzeExtensionSafety(
@@ -1025,63 +1076,30 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 10b. Review — runs after the mechanical gates (safety/deps/fmt) so those
-  // fire first. Two parts: deterministic static file rules (NOT the adversarial
-  // review — those only warn), and validation of the adversarial-review report
-  // (the agent/CI judgment pass). Report findings are warnings: a missing or
-  // stale report surfaces the "continue despite warnings?" prompt rather than a
-  // hard block, so a benign version bump nudges the reviewer instead of bricking
-  // the push.
-  const reviewInput: ExtensionReviewInput = {
-    files: buildReviewFileRefs(input),
-  };
-  const reviewKinds = contentKindsPresent(input);
-  if (input.contentHash && reviewKinds.length > 0) {
-    const dims = applicableDimensions(reviewKinds);
-    reviewInput.report = {
-      reportPath: reviewReportPath(input.manifest.name, input.contentHash),
-      extensionName: input.manifest.name,
-      extensionVersion: input.manifest.version,
-      applicableDimensions: dims,
-      skeleton: buildReviewReportSkeleton(
-        input.manifest.name,
-        input.manifest.version,
-        dims,
-      ),
-    };
-  }
-  const reviewRulesResult = await deps.checkReviewRules(reviewInput);
+  // 10b. Review, bare specifiers and declared acceptances — one pass shared
+  // with `swamp extension quality`, after the mechanical gates (safety,
+  // deps, fmt) so those fire first.
+  const findings = await runQualityFindings(ctx, deps, {
+    input,
+    sidecar,
+    safetyWarnings: safetyResult.warnings,
+    files: allFiles,
+  });
+  const reviewRulesResult = findings.reviewRulesResult;
   if (reviewRulesResult.errors.length > 0) {
     throw validationFailed(
       "Extension review found issues that must be resolved before pushing.",
       { reviewRuleErrors: reviewRulesResult.errors },
     );
   }
-
-  // 10c. Bare specifier check — warn that the server-side scorer cannot
-  // resolve bare imports (it strips deno.json and writes a controlled one).
-  const bareSpecifiers = new Set<string>();
-  for (const file of sourceFiles) {
-    try {
-      const src = await Deno.readTextFile(file);
-      for (const name of extractBareSpecifierNames(src)) {
-        bareSpecifiers.add(name);
-      }
-    } catch {
-      // File unreadable — skip.
-    }
-  }
-  if (bareSpecifiers.size > 0) {
-    const names = [...bareSpecifiers].sort();
-    reviewRulesResult.warnings.push({
-      ruleId: "bare-specifiers",
-      dimension: "scoring",
-      severity: "medium",
-      file: "(multiple files)",
-      message: `Extension uses bare import specifiers (${
-        names.map((s) => `"${s}"`).join(", ")
-      }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
-    });
+  if (
+    contentMetadata &&
+    (findings.acceptances.accepted.length > 0 ||
+      findings.acceptances.generated)
+  ) {
+    contentMetadata.acceptances = toContentMetadataAcceptances(
+      findings.acceptances,
+    );
   }
 
   // 11. Bundle entry points + build archive — skip on cache hit
@@ -1165,9 +1183,11 @@ export async function extensionPushPrepare(
 
   return {
     resolvedData,
-    safetyWarnings: safetyResult.warnings,
+    safetyWarnings: findings.safetyWarnings,
     dependencyTrustResult,
     reviewRulesResult,
+    sidecar,
+    acceptances: findings.acceptances,
     archiveBytes,
     manifest: input.manifest,
     contentMetadata,
@@ -1195,6 +1215,327 @@ const AUTH_FAILED_REASON = "authentication failed";
 function isNotAuthenticatedError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error &&
     (error as SwampError).code === "not_authenticated";
+}
+
+// ── Quality findings (shared with `swamp extension quality`) ─────────
+
+/** One declared acceptance, as the summaries and the registry see it. */
+export interface DeclaredAcceptance {
+  ruleId: string;
+  /**
+   * The file relative to the manifest's directory (forward slashes, a
+   * `../` path for a typed directory beside it); absent for
+   * extension-scoped rules.
+   */
+  file?: string;
+  /**
+   * The file's path inside the archive (`models/x.ts`, `vaults/v.ts`,
+   * `files/README.md`), which is what the registry receives; absent when
+   * the file is not packaged under a known directory.
+   */
+  archivePath?: string;
+  line?: number;
+  reason: string;
+  source: AcceptanceSource;
+  /** The accepted finding's message. */
+  message: string;
+}
+
+/** Everything the author declared acceptable in this run. */
+export interface DeclaredAcceptances {
+  accepted: DeclaredAcceptance[];
+  /** The generated declaration from the quality sidecar, when present. */
+  generated?: GeneratedDeclaration;
+}
+
+/** The warning-level findings of a run after acceptances are applied. */
+export interface QualityFindings {
+  /** Safety warnings no acceptance covers. */
+  safetyWarnings: SafetyIssue[];
+  /**
+   * Review findings: `warnings` holds those no acceptance covers plus one
+   * stale-acceptance warning per directive that matched nothing; `errors`
+   * holds invalid acceptances and any blocking review finding.
+   */
+  reviewRulesResult: ReviewRulesResult;
+  acceptances: DeclaredAcceptances;
+}
+
+/** Input to {@link runQualityFindings}. */
+export interface QualityFindingsInput {
+  input: ExtensionPushPrepareInput;
+  /** The parsed sidecar, from {@link readQualitySidecar}. */
+  sidecar: { path: string; value: QualitySidecar } | undefined;
+  /** The safety analyzer's warnings for `files`. */
+  safetyWarnings: SafetyIssue[];
+  /** Every file the extension packages; directives are read from those with a comment form. */
+  files: string[];
+}
+
+/**
+ * Runs the review rules, the bare-specifier check and the declared
+ * acceptances over an extension. Push calls it from prepare; quality calls
+ * it on every run, including a cache hit, so both report the same findings
+ * and the same acceptances for the same source.
+ */
+export async function runQualityFindings(
+  ctx: LibSwampContext,
+  deps: Pick<ExtensionPushPrepareDeps, "checkReviewRules">,
+  { input, sidecar, safetyWarnings, files }: QualityFindingsInput,
+): Promise<QualityFindings> {
+  // Static review rules, plus the adversarial-review report when the caller
+  // computed a content hash. Report findings are warnings: a missing or
+  // stale report surfaces the "continue despite warnings?" prompt rather
+  // than a hard block, so a benign version bump nudges the reviewer instead
+  // of bricking the push.
+  const reviewInput: ExtensionReviewInput = {
+    files: buildReviewFileRefs(input),
+  };
+  const reviewKinds = contentKindsPresent(input);
+  if (input.contentHash && reviewKinds.length > 0) {
+    const dims = applicableDimensions(reviewKinds);
+    reviewInput.report = {
+      reportPath: reviewReportPath(input.manifest.name, input.contentHash),
+      extensionName: input.manifest.name,
+      extensionVersion: input.manifest.version,
+      applicableDimensions: dims,
+      skeleton: buildReviewReportSkeleton(
+        input.manifest.name,
+        input.manifest.version,
+        dims,
+      ),
+    };
+  }
+  const reviewRulesResult = await deps.checkReviewRules(reviewInput);
+
+  // Bare specifiers: the server-side scorer cannot resolve bare imports (it
+  // strips deno.json and writes a controlled one).
+  const sourceFiles = [
+    ...input.allModelFiles,
+    ...input.allVaultFiles,
+    ...input.allDatastoreFiles,
+    ...input.allReportFiles,
+    ...input.allWebhookFiles,
+  ];
+  const bareSpecifiers = new Set<string>();
+  for (const file of sourceFiles) {
+    try {
+      const src = await Deno.readTextFile(file);
+      for (const name of extractBareSpecifierNames(src)) {
+        bareSpecifiers.add(name);
+      }
+    } catch {
+      // File unreadable — skip.
+    }
+  }
+  if (bareSpecifiers.size > 0) {
+    const names = [...bareSpecifiers].sort();
+    reviewRulesResult.warnings.push({
+      ruleId: "bare-specifiers",
+      dimension: "scoring",
+      severity: "medium",
+      file: "(multiple files)",
+      message: `Extension uses bare import specifiers (${
+        names.map((s) => `"${s}"`).join(", ")
+      }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
+      remediation: remediationFor("bare-specifiers"),
+    });
+  }
+
+  // Declared acceptances: inline directives from every packaged file with a
+  // comment form, and the sidecar's entries.
+  const directives: AcceptanceDirective[] = [];
+  const invalid: InvalidAcceptance[] = [];
+  for (const file of files) {
+    if (commentFormFor(file) === "none") continue;
+    let content: string;
+    try {
+      content = await Deno.readTextFile(file);
+    } catch {
+      continue;
+    }
+    const parsed = parseAcceptanceDirectives(content, file);
+    for (const d of parsed.directives) directives.push(d);
+    for (const i of parsed.invalid) invalid.push(i);
+  }
+  if (sidecar) {
+    const parsed = sidecarDirectives(
+      sidecar.value,
+      sidecar.path,
+      input.manifestDir,
+    );
+    for (const d of parsed.directives) directives.push(d);
+    for (const i of parsed.invalid) invalid.push(i);
+  }
+  ctx.logger
+    .debug`Declared acceptances: ${directives.length} directive(s), ${invalid.length} invalid`;
+
+  const applied = applyAcceptances(
+    [...safetyWarnings, ...reviewRulesResult.warnings],
+    directives,
+  );
+  const remainingSafety: SafetyIssue[] = [];
+  const remainingReview: ReviewFinding[] = [];
+  for (const finding of applied.remaining) {
+    if (isReviewFinding(finding)) remainingReview.push(finding);
+    else remainingSafety.push(finding);
+  }
+  for (const stale of applied.stale) {
+    remainingReview.push(staleAcceptanceFinding(stale));
+  }
+  const errors = [
+    ...reviewRulesResult.errors,
+    ...invalid.map(invalidAcceptanceFinding),
+  ];
+
+  const accepted: DeclaredAcceptance[] = applied.accepted.map((a) => {
+    const archivePath = archivePathFor(input, a.finding.file);
+    return {
+      ruleId: a.finding.ruleId,
+      ...(a.finding.file.startsWith("(") ? {} : {
+        file: fileRelativeToManifest(
+          input.manifestDir,
+          a.finding.file,
+          input.repoDir,
+        ),
+      }),
+      ...(archivePath !== undefined ? { archivePath } : {}),
+      ...(a.finding.line !== undefined ? { line: a.finding.line } : {}),
+      reason: a.reason,
+      source: a.source,
+      message: a.finding.message,
+    };
+  });
+
+  return {
+    safetyWarnings: remainingSafety,
+    reviewRulesResult: {
+      errors,
+      warnings: collapseTestingCompleteness(remainingReview, input),
+      passed: errors.length === 0,
+    },
+    acceptances: {
+      accepted,
+      ...(sidecar?.value.generated
+        ? { generated: sidecar.value.generated }
+        : {}),
+    },
+  };
+}
+
+function isReviewFinding(
+  finding: SafetyIssue | ReviewFinding,
+): finding is ReviewFinding {
+  return "dimension" in finding;
+}
+
+const TESTING_COMPLETENESS_LISTED = 5;
+
+/**
+ * Collapses the per-file testing-completeness findings that survive the
+ * acceptances into one finding per extension ("N of M entry points have no
+ * sibling test"), carrying the remaining files so each can still be
+ * accepted on its own. Every other finding passes through unchanged.
+ */
+function collapseTestingCompleteness(
+  warnings: ReviewFinding[],
+  input: ExtensionPushPrepareInput,
+): ReviewFinding[] {
+  const untested = warnings.filter((w) => w.ruleId === "testing-completeness");
+  if (untested.length <= 1) return warnings;
+  const rest = warnings.filter((w) => w.ruleId !== "testing-completeness");
+  const files = untested.map((w) => w.file);
+  const total = input.modelEntryPoints.length + input.vaultEntryPoints.length +
+    input.datastoreEntryPoints.length + input.reportEntryPoints.length +
+    input.webhookEntryPoints.length;
+  const listed = files.slice(0, TESTING_COMPLETENESS_LISTED).map((f) =>
+    fileRelativeToManifest(input.manifestDir, f, input.repoDir)
+  );
+  const more = files.length - listed.length;
+  const first = untested[0];
+  return [
+    ...rest,
+    {
+      ruleId: "testing-completeness",
+      dimension: first.dimension,
+      severity: first.severity,
+      file: `(${files.length} files)`,
+      message:
+        `${files.length} of ${total} entry points have no sibling \`_test.ts\`: ${
+          listed.join(", ")
+        }${
+          more > 0 ? `, and ${more} more` : ""
+        }. Cover success and failure paths with unit tests before publishing.`,
+      ...(first.remediation ? { remediation: first.remediation } : {}),
+      files,
+    },
+  ];
+}
+
+/**
+ * The path a packaged file has inside the archive, mirroring
+ * {@link createArchive} exactly: additional files and binaries land at
+ * `files/<manifest entry>` by index wherever they sit on disk, include
+ * files under `models/` by their path from the models directory, and typed
+ * sources under their kind. Undefined for a file the archive does not
+ * carry, so no local path ever leaves the machine.
+ */
+function archivePathFor(
+  input: ExtensionPushPrepareInput,
+  file: string,
+): string | undefined {
+  const fwd = (p: string) => p.replaceAll("\\", "/");
+  const additional = input.additionalFilePaths.indexOf(file);
+  if (additional !== -1 && input.manifest.additionalFiles[additional]) {
+    return `files/${fwd(input.manifest.additionalFiles[additional])}`;
+  }
+  const binary = input.binaryFilePaths.indexOf(file);
+  if (binary !== -1 && input.manifest.binaries[binary]) {
+    return `files/${fwd(input.manifest.binaries[binary])}`;
+  }
+  const under = (dir: string): string | undefined => {
+    const rel = relative(dir, file);
+    return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel)
+      ? undefined
+      : fwd(rel);
+  };
+  if (input.includeFilePaths.includes(file)) {
+    const rel = under(input.modelsDir);
+    return rel !== undefined ? `models/${rel}` : undefined;
+  }
+  const typed: Array<[string, string[], string]> = [
+    ["models", input.allModelFiles, input.modelsDir],
+    ["vaults", input.allVaultFiles, input.vaultsDir],
+    ["datastores", input.allDatastoreFiles, input.datastoresDir],
+    ["reports", input.allReportFiles, input.reportsDir],
+    ["webhooks", input.allWebhookFiles, input.webhooksDir],
+  ];
+  for (const [kind, files, dir] of typed) {
+    if (!files.includes(file)) continue;
+    const rel = under(dir);
+    if (rel !== undefined) return `${kind}/${rel}`;
+  }
+  return undefined;
+}
+
+/**
+ * The acceptances as content metadata carries them to the registry: files
+ * by their archive path, never a local one.
+ */
+function toContentMetadataAcceptances(
+  acceptances: DeclaredAcceptances,
+): ExtensionAcceptances {
+  const accepted: ExtensionAcceptance[] = acceptances.accepted.map((a) => ({
+    rule: a.ruleId,
+    ...(a.archivePath !== undefined ? { file: a.archivePath } : {}),
+    ...(a.line !== undefined ? { line: a.line } : {}),
+    reason: a.reason,
+    source: a.source,
+  }));
+  return {
+    accepted,
+    ...(acceptances.generated ? { generated: acceptances.generated } : {}),
+  };
 }
 
 /** A 403 from the registry that is not a missing token scope. */
@@ -1388,6 +1729,45 @@ export async function* extensionPush(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads and validates the `quality.yaml` sidecar beside the manifest.
+ * Returns undefined when there is none; throws a validation error, naming
+ * every problem, when there is one that does not parse.
+ */
+export async function readQualitySidecar(
+  manifestDir: string,
+): Promise<{ path: string; value: QualitySidecar } | undefined> {
+  const path = qualitySidecarPath(manifestDir);
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw validationFailed(
+      `Could not read ${QUALITY_SIDECAR_FILENAME}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const parsed = parseQualitySidecar(raw);
+  if (!parsed.ok) {
+    throw validationFailed(
+      `${QUALITY_SIDECAR_FILENAME} beside the manifest is invalid:\n` +
+        parsed.errors.map((e) => `  ${e}`).join("\n"),
+      { sidecarErrors: parsed.errors },
+    );
+  }
+  return { path, value: parsed.sidecar };
+}
 
 function buildResolvedData(
   input: ExtensionPushPrepareInput,
@@ -1719,6 +2099,13 @@ async function createArchive(
         dependencies: input.manifest.dependencies,
       }),
     );
+
+    // The quality sidecar travels at the archive root beside manifest.yaml,
+    // byte for byte, so the registry sees the acceptances as written.
+    const sidecarPath = qualitySidecarPath(input.manifestDir);
+    if (await fileExists(sidecarPath)) {
+      await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
+    }
 
     // Copy model source files
     for (const modelFile of input.allModelFiles) {

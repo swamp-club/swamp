@@ -72,6 +72,10 @@ import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import {
+  buildFindingsReport,
+  withAcceptance,
+} from "../../presentation/renderers/extension_findings_report.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
@@ -142,21 +146,27 @@ export function resolveWarningsGate(input: {
 
 /**
  * Collects the warnings the gate covers into the record the summary prints
- * when they are accepted. Review findings drop their report skeleton: the
- * `reviewRuleWarnings` document already carries it, and repeating it would
- * bury the summary.
+ * when they are accepted. Findings drop their report skeleton and their
+ * remediation: the `reviewRuleWarnings` and `warnings` documents already
+ * carry them, and repeating them would bury the summary.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];
   reviewRulesResult: { warnings: ReviewFinding[] };
 }): AcceptedWarnings {
   return {
-    safety: prepared.safetyWarnings,
+    safety: prepared.safetyWarnings.map((w) => ({
+      ruleId: w.ruleId,
+      file: w.file,
+      ...(w.line !== undefined ? { line: w.line } : {}),
+      message: w.message,
+    })),
     review: prepared.reviewRulesResult.warnings.map((w) => ({
       ruleId: w.ruleId,
       dimension: w.dimension,
       severity: w.severity,
       file: w.file,
+      ...(w.line !== undefined ? { line: w.line } : {}),
       message: w.message,
     })),
   };
@@ -456,6 +466,7 @@ export const extensionPushCommand = new Command()
     const cacheHashInput = {
       manifest,
       rootDir: repoDir,
+      manifestDir,
       modelFilePaths: allModelFiles,
       vaultFilePaths: allVaultFiles,
       datastoreFilePaths: allDatastoreFiles,
@@ -484,6 +495,7 @@ export const extensionPushCommand = new Command()
       prepared = await extensionPushPrepare(ctx, prepareDeps, {
         manifest,
         repoDir,
+        manifestDir,
         modelsDir,
         allModelFiles,
         modelEntryPoints,
@@ -564,6 +576,7 @@ export const extensionPushCommand = new Command()
                 prepared = await extensionPushPrepare(ctx, prepareDeps, {
                   manifest,
                   repoDir,
+                  manifestDir,
                   modelsDir,
                   allModelFiles,
                   modelEntryPoints,
@@ -646,13 +659,19 @@ export const extensionPushCommand = new Command()
     // 6a. Handle review-rule warnings
     if (prepared.reviewRulesResult.warnings.length > 0) {
       renderer.renderReviewRuleWarnings(
-        prepared.reviewRulesResult.warnings,
+        withAcceptance(
+          prepared.reviewRulesResult.warnings,
+          manifestDir,
+          repoDir,
+        ),
       );
     }
 
     // 6b. Handle safety warnings
     if (prepared.safetyWarnings.length > 0) {
-      renderer.renderSafetyWarnings(prepared.safetyWarnings);
+      renderer.renderSafetyWarnings(
+        withAcceptance(prepared.safetyWarnings, manifestDir, repoDir),
+      );
     }
 
     // 6c. One gate covers safety and review-rule warnings, so the user is
@@ -679,6 +698,18 @@ export const extensionPushCommand = new Command()
     const accepted = gate.kind === "proceed" && gate.waivedBy
       ? { warnings: gatedWarnings, waivedBy: gate.waivedBy }
       : undefined;
+    // The closing report is built from the gated warnings themselves, not
+    // the waiver record, so a dry run, a --json run and an interactive "y"
+    // all get the same advice.
+    const report = buildFindingsReport(
+      {
+        safetyWarnings: prepared.safetyWarnings,
+        reviewWarnings: prepared.reviewRulesResult.warnings,
+        acceptances: prepared.acceptances,
+      },
+      manifestDir,
+      repoDir,
+    );
 
     // 6d. Version-drift check (advisory warning only)
     // Fetch the last-published version from the registry to compare
@@ -748,6 +779,7 @@ export const extensionPushCommand = new Command()
         registryChecks: prepared.registryChecks,
         apiCalls: apiCalls.calls,
         accepted,
+        report,
       });
       const verdict = registryChecksVerdict(prepared.registryChecks);
       if (!verdict.ok) {
@@ -779,7 +811,7 @@ export const extensionPushCommand = new Command()
         channel: options.channel,
         collectiveEntitlement: prepared.collectiveEntitlement,
       }),
-      renderer.handlers({ accepted }),
+      renderer.handlers({ accepted, report }),
     );
 
     cliCtx.logger.debug("Extension push command completed");

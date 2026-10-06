@@ -41,13 +41,26 @@ import type { DependencyTrustIssue } from "../../domain/extensions/extension_dep
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
+import {
+  type FindingsReport,
+  renderFindingsReport,
+} from "./extension_findings_report.ts";
 
 /**
  * A review warning as it appears in the accepted-warnings record: the
- * finding without its report skeleton, which the `reviewRuleWarnings`
- * document already carries in full.
+ * finding without its report skeleton or remediation, which the
+ * `reviewRuleWarnings` document already carries in full.
  */
-export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
+export type AcceptedReviewWarning = Omit<
+  ReviewFinding,
+  "skeleton" | "remediation"
+>;
+
+/**
+ * A safety warning as it appears in the accepted-warnings record: the issue
+ * without its remediation, which the `warnings` document already carries.
+ */
+export type AcceptedSafetyWarning = Omit<SafetyIssue, "remediation">;
 
 /**
  * The safety and review warnings the pusher waived with `--yes` or `--force`.
@@ -56,7 +69,7 @@ export type AcceptedReviewWarning = Omit<ReviewFinding, "skeleton">;
  * upgrade entries) never gate a push and are not part of the record.
  */
 export interface AcceptedWarnings {
-  safety: SafetyIssue[];
+  safety: AcceptedSafetyWarning[];
   review: AcceptedReviewWarning[];
 }
 
@@ -87,12 +100,16 @@ export interface ExtensionPushDryRunData {
   apiCalls: ApiCallRecord[];
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
+  /** The declared acceptances and the For next time advice. */
+  report?: FindingsReport;
 }
 
 /** Per-run inputs for the stream handlers. */
 export interface ExtensionPushHandlerOptions {
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
+  /** The declared acceptances and the For next time advice. */
+  report?: FindingsReport;
 }
 
 /** Extended renderer with methods for the prepare-phase outputs. */
@@ -117,6 +134,13 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent>;
+}
+
+/** `file:line` when the finding has a line, else the file alone. */
+function fileAndLine(finding: { file: string; line?: number }): string {
+  return finding.line !== undefined
+    ? `${finding.file}:${finding.line}`
+    : finding.file;
 }
 
 function acceptedWarningsHeader(accepted: WarningsAcceptance): string {
@@ -254,7 +278,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       // skeleton) stays in the JSON output.
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
     }
   }
 
@@ -263,21 +287,23 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     for (const e of errors) {
       const summary = e.message.split("\n")[0];
       this.logger
-        .error`  [${e.severity}] ${e.dimension} — ${e.file}: ${summary}`;
+        .error`  [${e.severity}] ${e.dimension} — ${
+        fileAndLine(e)
+      }: ${summary}`;
     }
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
     this.logger.warn`Safety warnings:`;
     for (const w of warnings) {
-      this.logger.warn`  ${w.file}: ${w.message}`;
+      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
     }
   }
 
   renderSafetyErrors(errors: SafetyIssue[]): void {
     this.logger.error`Safety errors (push blocked):`;
     for (const e of errors) {
-      this.logger.error`  ${e.file}: ${e.message}`;
+      this.logger.error`  ${fileAndLine(e)}: ${e.message}`;
     }
   }
 
@@ -335,12 +361,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   private renderAcceptedWarnings(accepted: WarningsAcceptance): void {
     this.logger.warn(acceptedWarningsHeader(accepted));
     for (const w of accepted.warnings.safety) {
-      this.logger.warn`  ${w.file}: ${w.message}`;
+      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
     }
     for (const w of accepted.warnings.review) {
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
     }
   }
 
@@ -383,6 +409,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.accepted) {
       this.renderAcceptedWarnings(data.accepted);
     }
+    if (data.report) {
+      renderFindingsReport(this.logger, data.report);
+    }
   }
 
   handlers(
@@ -422,6 +451,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         this.logger.info`${parts.join(", ")}`;
         if (options?.accepted) {
           this.renderAcceptedWarnings(options.accepted);
+        }
+        if (options?.report) {
+          renderFindingsReport(this.logger, options.report);
         }
       },
       error: (e) => {
@@ -504,8 +536,14 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   renderDryRun(data: ExtensionPushDryRunData): void {
     // The document carries the record alone, under `acceptedWarnings`, and
     // only when something was waived; the waiving flag is a log-mode detail.
-    const { accepted, contentHash, registryChecks, apiCalls, ...summary } =
-      data;
+    const {
+      accepted,
+      report,
+      contentHash,
+      registryChecks,
+      apiCalls,
+      ...summary
+    } = data;
     console.log(
       JSON.stringify(
         {
@@ -514,6 +552,7 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
           registryChecks,
           apiCalls,
           ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
+          ...(report ?? {}),
           status: "dry_run",
         },
         null,
@@ -528,9 +567,13 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
-        const summary = options?.accepted
-          ? { ...e.data, acceptedWarnings: options.accepted.warnings }
-          : e.data;
+        const summary = {
+          ...e.data,
+          ...(options?.accepted
+            ? { acceptedWarnings: options.accepted.warnings }
+            : {}),
+          ...(options?.report ?? {}),
+        };
         console.log(JSON.stringify(summary, null, 2));
       },
       error: (e) => {

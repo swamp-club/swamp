@@ -431,7 +431,9 @@ the registry did not send.
 `apiCalls` lists every HTTP call the run made (registry, OSV, npm) with its
 method, URL and outcome; the log summary says "No API calls were made." only
 when that list is empty. `contentHash` is the hash the adversarial-review report
-path is keyed by.
+path is keyed by. `declaredAcceptances` and `forNextTime` close the document:
+what the author accepted, and the paste-ready acceptance for each remaining
+warning (see [Declaring acceptances](#declaring-acceptances)).
 
 ### Reproducing the CI layout
 
@@ -595,7 +597,13 @@ The safety analyzer scans all files before push. Issues are classified as
 **errors** (block the push) or **warnings** (prompt for confirmation). `--yes`
 (or `--force`) answers that prompt along with the push confirmation; the dry-run
 and push summaries then list what it waived under `acceptedWarnings`, in log and
-JSON output.
+JSON output. A warning the author has judged acceptable is better declared where
+it is, with a reason, than waived for the run: see
+[Declaring acceptances](#declaring-acceptances).
+
+Every finding carries a `ruleId` (the ids below), the `file`, the 1-based `line`
+when it has one, a `remediation` (how to fix it properly) and, for a rule that
+can be accepted, the exact `acceptance` text to paste.
 
 ### Errors (block push)
 
@@ -612,11 +620,106 @@ JSON output.
 
 ### Warnings (prompted)
 
-| Rule             | Detail                                              |
-| ---------------- | --------------------------------------------------- |
-| `Deno.Command()` | Subprocess spawning detected                        |
-| Long lines       | Lines with 500+ non-whitespace characters           |
-| Base64 blobs     | Strings that look like base64 (100+ matching chars) |
+One finding per offending line, so each can be accepted on its own.
+
+| Rule id                 | Detail                                                              |
+| ----------------------- | ------------------------------------------------------------------- |
+| `deno-command`          | `Deno.Command(` on the line (subprocess spawning)                   |
+| `long-line`             | A line with 500+ non-whitespace characters                          |
+| `base64-run`            | A line with a run of 100+ base64 characters                         |
+| `ipv4-address-literals` | An IPv4 literal in `.md` or `.txt` outside the documentation ranges |
+
+The review rules (`credentials-sensitive-field`, `schema-strictness`,
+`testing-completeness`) and the extension-scoped `bare-specifiers` finding are
+warnings too. `testing-completeness` reports once per extension when more than
+one entry point has no sibling `_test.ts`, naming the files. The
+`adversarial-review-report` family is evidence, not a lint, and has no
+acceptance form.
+
+Error-level rule ids (`dynamic-code`, `hidden-file`, `file-type`, `symlink`,
+`file-size`, `total-size`, `file-count`, `unreadable-file`, `fmt`, `lint`,
+`dynamic-import`, `upgrade-chain`) can never be accepted.
+
+## Declaring acceptances
+
+An acceptance is a reasoned judgement that one warning-level finding is
+acceptable for this extension. It lives where the finding is, like a lint
+ignore, is reviewed in the pull request with the code, and is reported in
+`quality`, in the push summary and `--json`, and to the registry. Push writes
+nothing: the summaries print the exact text to paste.
+
+**Site-scoped rules** (`credentials-sensitive-field`, `schema-strictness`,
+`deno-command`, `base64-run`, `long-line`, `ipv4-address-literals`) take a
+comment on the finding's line, or on the line directly above (one blank line in
+between is allowed; several directives may stack), with a required reason.
+Directive text inside a fenced code block or a `/* ... */` block is
+documentation and is ignored:
+
+```typescript
+apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: holds the name of a vault key
+```
+
+In Markdown the comment is an HTML comment on the line above:
+
+```markdown
+<!-- swamp-quality-ignore ipv4-address-literals: documented lab gateway -->
+
+Gateway: 10.0.0.1
+```
+
+**File-scoped** `testing-completeness` takes the same comment anywhere in the
+file (the top is conventional):
+
+```typescript
+// swamp-quality-ignore testing-completeness: thin wrapper covered by the integration suite
+```
+
+**Extension-scoped findings**, a site rule in a `.txt` file (which has no
+comment form), and the `generated` declaration for a codegen package live in a
+`quality.yaml` sidecar beside `manifest.yaml`. It is discovered by location,
+never named in the manifest (most manifests are regenerated), packaged into the
+archive root beside `manifest.yaml`, and part of the content hash:
+
+```yaml
+version: 1
+generated: # a codegen package: accepts testing-completeness for every model
+  by: swamp-extensions/codegen
+  source: https://api.example.com/openapi.yaml
+  commit: 0123abcd
+accept:
+  - rule: bare-specifiers
+    reason: scored locally; the server cannot resolve the import map
+  - rule: ipv4-address-literals
+    file: docs/hosts.txt
+    reason: documented lab addresses
+```
+
+Rules, enforced by construction:
+
+- An acceptance names one finding by file, rule and line. A new match elsewhere
+  still warns. The sidecar refuses site-scoped rules except for `.txt` files,
+  and refuses files outside the manifest's directory.
+- A comment with no reason, with the `<reason>` placeholder still in place,
+  naming an unknown or error-level rule, or more than 50 per file, is a blocking
+  `invalid-acceptance` error naming the comment. Reasons are capped at 200
+  characters, and in source files may not contain a quote character,
+  `Deno.Command(` or a base64 run: the safety checks scan every line as written,
+  so a directive can never trigger or hide a finding.
+- An acceptance whose rule no longer fires there is a `stale-acceptance` warning
+  at the comment, so acceptances do not accumulate.
+- A malformed `quality.yaml` blocks the push before any gate runs, like a
+  malformed manifest.
+
+**Reporting.** The dry-run and completed push summaries, and
+`swamp extension quality`, end with two blocks: `Accepted, with reasons:` (each
+declared acceptance, and the generated declaration) and `For next time:` (each
+unaccepted warning with how to fix it and, when the rule can be accepted, the
+exact comment or sidecar entry to paste and where it goes). In `--json` they are
+`declaredAcceptances` (`{ accepted: [...], generated? }`) and `forNextTime`
+(`[{ ruleId, file, line?, message, remediation?, acceptance?, placement? }]`),
+beside `acceptedWarnings` and omitted when empty; every finding in
+`reviewRuleWarnings` and `warnings` carries `acceptance` and `remediation`. The
+acceptances also travel to the registry in `contentMetadata.acceptances`.
 
 ## CalVer Versioning
 

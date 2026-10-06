@@ -101,9 +101,15 @@ Deno.test("resolveWarningsGate: no warnings proceeds without a record in every m
   }
 });
 
-Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review skeleton", () => {
+Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review skeleton and every remediation", () => {
   const record = buildAcceptedWarnings({
-    safetyWarnings: [{ file: "models/a.ts", message: "uses Deno.Command" }],
+    safetyWarnings: [{
+      ruleId: "deno-command",
+      file: "models/a.ts",
+      line: 7,
+      message: "uses Deno.Command",
+      remediation: "prefer swamp primitives",
+    }],
     reviewRulesResult: {
       warnings: [
         {
@@ -112,6 +118,7 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
           severity: "high",
           file: "manifest.yaml",
           message: "No adversarial review recorded",
+          remediation: "run the review",
           skeleton: '{"dimensions":[]}',
         },
         {
@@ -125,7 +132,12 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
     },
   });
   assertEquals(record, {
-    safety: [{ file: "models/a.ts", message: "uses Deno.Command" }],
+    safety: [{
+      ruleId: "deno-command",
+      file: "models/a.ts",
+      line: 7,
+      message: "uses Deno.Command",
+    }],
     review: [
       {
         ruleId: "adversarial-review-report",
