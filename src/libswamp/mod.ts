@@ -1040,6 +1040,11 @@ export {
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
 export {
+  type DeclaredAcceptance,
+  type DeclaredAcceptances,
+  type QualityFindings,
+} from "./extensions/push.ts";
+export {
   type ApiCallRecord,
   REGISTRY_CHECK_LABELS,
   type RegistryCheckNotRunCause,

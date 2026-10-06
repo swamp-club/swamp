@@ -146,4 +146,33 @@ export interface ExtensionContentMetadata {
   reports: ExtractedReport[];
   webhooks: ExtractedWebhook[];
   skills: ExtractedSkill[];
+  /**
+   * The warning-level findings the author declared acceptable, with their
+   * reasons, and the generated declaration when the package is generated.
+   * Filled by push at prepare time so the registry can show what the author
+   * acknowledged (stored server-side by swamp-club#3095). Absent when the
+   * extension declares nothing.
+   */
+  acceptances?: ExtensionAcceptances;
+}
+
+/** One declared acceptance as the registry receives it. */
+export interface ExtensionAcceptance {
+  /** The rule the acceptance names, e.g. `credentials-sensitive-field`. */
+  rule: string;
+  /** The file, relative to the manifest's directory with forward slashes; absent for extension-scoped rules. */
+  file?: string;
+  /** The 1-based line for a site-scoped finding. */
+  line?: number;
+  /** The author's reason. */
+  reason: string;
+  /** Where the acceptance was declared. */
+  source: "inline" | "sidecar" | "generated";
+}
+
+/** The declared acceptances carried in content metadata. */
+export interface ExtensionAcceptances {
+  accepted: ExtensionAcceptance[];
+  /** The generated declaration from the quality sidecar, when present. */
+  generated?: { by: string; source: string; commit: string };
 }

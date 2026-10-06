@@ -674,3 +674,68 @@ Deno.test("extensionQuality: unparseable deno config falls back to no import map
     assertEquals(capturedConfig!.imports, undefined);
   });
 });
+
+// ── Declared acceptances ──────────────────────────────────────────────
+
+const ACCEPTING_MODEL_SOURCE = [
+  "const S = z.object({",
+  "  apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: holds the name of a vault key",
+  "  token: z.string(),",
+  "});",
+  "",
+].join("\n");
+
+Deno.test("extensionQuality: findings and acceptances are reported on the fresh run and again on the cache hit", async () => {
+  await withQualityFixture(
+    ACCEPTING_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const model = join(repoDir, "models", "echo.ts");
+      const finding = (line: number) => ({
+        ruleId: "credentials-sensitive-field",
+        dimension: "Credentials & Secrets",
+        severity: "medium" as const,
+        file: model,
+        line,
+        message: `line ${line} looks like a secret`,
+      });
+      const deps = makeQualityDeps(cacheRoot, {
+        pushPrepareOverrides: {
+          checkReviewRules: () =>
+            Promise.resolve({
+              errors: [],
+              warnings: [finding(2), finding(3)],
+              passed: true,
+            }),
+        },
+      });
+
+      const first = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      assertEquals(first.cacheHit, false);
+      assertEquals(
+        first.findings.reviewRulesResult.warnings.map((w) => w.line),
+        [3],
+      );
+      assertEquals(first.findings.acceptances.accepted.map((a) => a.line), [2]);
+      assertEquals(
+        first.findings.acceptances.accepted[0].file,
+        "models/echo.ts",
+      );
+
+      const second = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      assertEquals(second.cacheHit, true);
+      assertEquals(
+        second.findings.reviewRulesResult.warnings.map((w) => w.line),
+        [3],
+      );
+      assertEquals(second.findings.acceptances.accepted.map((a) => a.line), [
+        2,
+      ]);
+    },
+  );
+});

@@ -37,6 +37,7 @@ import { notAuthenticated, type SwampError } from "../errors.ts";
 import { buildPrepareInput } from "./push_test_helpers.ts";
 import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 function makeManifest(
@@ -1281,4 +1282,294 @@ Deno.test("extensionPushPrepare: an invalid quality.yaml blocks before any gate,
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
+});
+
+// ── Declared acceptances ──────────────────────────────────────────────
+
+const SECRET_FINDING = (file: string, line: number) => ({
+  ruleId: "credentials-sensitive-field",
+  dimension: "Credentials & Secrets",
+  severity: "medium" as const,
+  file,
+  line,
+  message: "looks like a secret",
+  remediation: "mark it sensitive",
+});
+
+async function withAcceptanceFixture(
+  files: Record<string, string>,
+  fn: (dir: string, paths: Record<string, string>) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "acceptances-" });
+  try {
+    await Deno.mkdir(join(dir, "models"));
+    const paths: Record<string, string> = {};
+    for (const [name, content] of Object.entries(files)) {
+      paths[name] = join(dir, name);
+      await Deno.writeTextFile(paths[name], content);
+    }
+    await fn(dir, paths);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+function acceptanceInput(
+  dir: string,
+  models: string[],
+): ExtensionPushPrepareInput {
+  return makePrepareInput({
+    manifestDir: dir,
+    modelsDir: join(dir, "models"),
+    allModelFiles: models,
+    modelEntryPoints: models,
+  });
+}
+
+Deno.test("extensionPushPrepare: an inline acceptance takes its finding out of the gate, records it, and leaves an unmarked field elsewhere warning", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": [
+      "const S = z.object({",
+      "  secretName: z.string(), // swamp-quality-ignore credentials-sensitive-field: reference to a Secret, not a secret",
+      "});",
+      "",
+    ].join("\n"),
+    "models/b.ts": "const T = z.object({\n  apiKey: z.string(),\n});\n",
+  }, async (dir, paths) => {
+    const deps = makePrepareDeps({
+      checkReviewRules: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [
+            SECRET_FINDING(paths["models/a.ts"], 2),
+            SECRET_FINDING(paths["models/b.ts"], 2),
+          ],
+          passed: true,
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      acceptanceInput(dir, [paths["models/a.ts"], paths["models/b.ts"]]),
+    );
+    assertEquals(result.reviewRulesResult.warnings.length, 1);
+    assertPathEquals(
+      result.reviewRulesResult.warnings[0].file,
+      paths["models/b.ts"],
+    );
+    assertEquals(result.acceptances.accepted, [{
+      ruleId: "credentials-sensitive-field",
+      file: "models/a.ts",
+      line: 2,
+      reason: "reference to a Secret, not a secret",
+      source: "inline",
+      message: "looks like a secret",
+    }]);
+    assertEquals(result.contentMetadata?.acceptances, {
+      accepted: [{
+        rule: "credentials-sensitive-field",
+        file: "models/a.ts",
+        line: 2,
+        reason: "reference to a Secret, not a secret",
+        source: "inline",
+      }],
+    });
+  });
+});
+
+Deno.test("extensionPushPrepare: an inline acceptance covers a safety warning on its line", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": [
+      "const a = 1;",
+      "// swamp-quality-ignore deno-command: wraps the vendor CLI, arguments are validated",
+      'new Deno.Command("vendor");',
+      "",
+    ].join("\n"),
+  }, async (dir, paths) => {
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [{
+            ruleId: "deno-command",
+            file: paths["models/a.ts"],
+            line: 3,
+            message: "Line 3 uses Deno.Command() to spawn subprocesses.",
+          }],
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(result.safetyWarnings, []);
+    assertEquals(result.acceptances.accepted.length, 1);
+    assertEquals(result.acceptances.accepted[0].ruleId, "deno-command");
+    assertEquals(result.acceptances.accepted[0].line, 3);
+  });
+});
+
+Deno.test("extensionPushPrepare: an acceptance whose rule no longer fires is a stale-acceptance warning at the comment", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": [
+      "const a = 1;",
+      "const b = 2; // swamp-quality-ignore deno-command: used to spawn here",
+      "",
+    ].join("\n"),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(result.reviewRulesResult.warnings.length, 1);
+    const stale = result.reviewRulesResult.warnings[0];
+    assertEquals(stale.ruleId, "stale-acceptance");
+    assertEquals(stale.severity, "medium");
+    assertPathEquals(stale.file, paths["models/a.ts"]);
+    assertEquals(stale.line, 2);
+    assertEquals(result.acceptances.accepted, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: an acceptance of an error-level rule blocks the push, naming the comment", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": "eval(x); // swamp-quality-ignore dynamic-code: trust me\n",
+  }, async (dir, paths) => {
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    const errors = (error.details as Record<string, unknown>)
+      .reviewRuleErrors as ReviewFinding[];
+    assertEquals(errors.length, 1);
+    assertEquals(errors[0].ruleId, "invalid-acceptance");
+    assertEquals(errors[0].severity, "high");
+    assertEquals(errors[0].line, 1);
+    assertStringIncludes(errors[0].message, "dynamic-code");
+    assertStringIncludes(errors[0].message, "cannot be accepted");
+  });
+});
+
+Deno.test("extensionPushPrepare: a generated declaration accepts every testing-completeness finding and travels in content metadata", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": "export const a = 1;\n",
+    "models/b.ts": "export const b = 1;\n",
+    "quality.yaml":
+      "version: 1\ngenerated:\n  by: codegen\n  source: spec.yaml\n  commit: abc\n",
+  }, async (dir, paths) => {
+    const untested = (file: string) => ({
+      ruleId: "testing-completeness",
+      dimension: "Testing Completeness",
+      severity: "medium" as const,
+      file,
+      message: "No sibling _test.ts found",
+    });
+    const deps = makePrepareDeps({
+      checkReviewRules: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [
+            untested(paths["models/a.ts"]),
+            untested(paths["models/b.ts"]),
+          ],
+          passed: true,
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      acceptanceInput(dir, [paths["models/a.ts"], paths["models/b.ts"]]),
+    );
+    assertEquals(result.reviewRulesResult.warnings, []);
+    assertEquals(result.acceptances.accepted.length, 2);
+    assertEquals(result.acceptances.accepted[0].source, "generated");
+    assertStringIncludes(result.acceptances.accepted[0].reason, "codegen");
+    assertEquals(result.acceptances.generated, {
+      by: "codegen",
+      source: "spec.yaml",
+      commit: "abc",
+    });
+    assertEquals(result.contentMetadata?.acceptances?.generated, {
+      by: "codegen",
+      source: "spec.yaml",
+      commit: "abc",
+    });
+  });
+});
+
+Deno.test("extensionPushPrepare: a header comment accepts testing-completeness for that file only, and the rest collapse to one finding", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      "// swamp-quality-ignore testing-completeness: thin wrapper covered by the integration suite\nexport const a = 1;\n",
+    "models/b.ts": "export const b = 1;\n",
+    "models/c.ts": "export const c = 1;\n",
+  }, async (dir, paths) => {
+    const untested = (file: string) => ({
+      ruleId: "testing-completeness",
+      dimension: "Testing Completeness",
+      severity: "medium" as const,
+      file,
+      message: "No sibling _test.ts found",
+      remediation: "add a test",
+    });
+    const models = [
+      paths["models/a.ts"],
+      paths["models/b.ts"],
+      paths["models/c.ts"],
+    ];
+    const deps = makePrepareDeps({
+      checkReviewRules: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: models.map(untested),
+          passed: true,
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      acceptanceInput(dir, models),
+    );
+    assertEquals(result.acceptances.accepted.map((a) => a.file), [
+      "models/a.ts",
+    ]);
+    assertEquals(result.reviewRulesResult.warnings.length, 1);
+    const collapsed = result.reviewRulesResult.warnings[0];
+    assertEquals(collapsed.ruleId, "testing-completeness");
+    assertEquals(collapsed.file, "(2 files)");
+    assertStringIncludes(collapsed.message, "2 of 3 entry points");
+    assertStringIncludes(collapsed.message, "models/b.ts, models/c.ts");
+    assertEquals(collapsed.files?.length, 2);
+    assertEquals(collapsed.remediation, "add a test");
+  });
+});
+
+Deno.test("extensionPushPrepare: a sidecar entry accepts the bare-specifiers finding", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import x from "lodash";\nexport const a = x;\n',
+    "quality.yaml":
+      "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: scored locally\n",
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(
+      result.reviewRulesResult.warnings.filter((w) =>
+        w.ruleId === "bare-specifiers"
+      ),
+      [],
+    );
+    assertEquals(result.acceptances.accepted.length, 1);
+    assertEquals(result.acceptances.accepted[0].ruleId, "bare-specifiers");
+    assertEquals(result.acceptances.accepted[0].source, "sidecar");
+    assertEquals(result.acceptances.accepted[0].file, undefined);
+  });
 });

@@ -42,6 +42,9 @@ import {
   type ExtensionPushPrepared,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
+  type QualityFindings,
+  readQualitySidecar,
+  runQualityFindings,
 } from "./push.ts";
 
 /** Emitted by the extension quality generator. */
@@ -59,6 +62,12 @@ export interface ExtensionQualityData {
   archiveSize: number;
   cacheHit: boolean;
   dependencyTrustResult: DependencyTrustResult;
+  /**
+   * The warning-level findings push would gate on, after the declared
+   * acceptances are applied, and the acceptances themselves. Computed on
+   * every run, including a cache hit, so quality always reports them.
+   */
+  findings: QualityFindings;
 }
 
 /** Input to run a quality score. */
@@ -133,6 +142,7 @@ export async function* extensionQuality(
       let archiveBytes: Uint8Array;
       let cacheHit = false;
       let dependencyTrustResult: DependencyTrustResult | undefined = undefined;
+      let findings: QualityFindings;
 
       const cached = await deps.cache.get(hash);
       if (cached) {
@@ -162,6 +172,31 @@ export async function* extensionQuality(
             passed: true,
           };
         }
+
+        // The cached archive was written only after the gates passed, but
+        // the findings and acceptances are reported on every run: the same
+        // pass push runs, over the same files.
+        const sidecar = await readQualitySidecar(
+          input.prepareInput.manifestDir,
+        );
+        const files = [
+          ...sourceFiles,
+          ...input.prepareInput.workflowFiles.map((wf) => wf.sourcePath),
+          ...input.prepareInput.additionalFilePaths,
+          ...input.prepareInput.includeFilePaths,
+          ...input.prepareInput.binaryFilePaths,
+          ...(sidecar ? [sidecar.path] : []),
+        ];
+        const safety = await deps.pushPrepareDeps.analyzeExtensionSafety(
+          files,
+          new Set(input.prepareInput.binaryFilePaths),
+        );
+        findings = await runQualityFindings(ctx, deps.pushPrepareDeps, {
+          input: input.prepareInput,
+          sidecar,
+          safetyWarnings: safety.warnings,
+          files,
+        });
       } else {
         yield { kind: "packaging" };
         let prepared: ExtensionPushPrepared;
@@ -177,6 +212,11 @@ export async function* extensionQuality(
         }
         archiveBytes = prepared.archiveBytes;
         dependencyTrustResult = prepared.dependencyTrustResult;
+        findings = {
+          safetyWarnings: prepared.safetyWarnings,
+          reviewRulesResult: prepared.reviewRulesResult,
+          acceptances: prepared.acceptances,
+        };
         await deps.cache.put(hash, archiveBytes, {
           extensionName: input.prepareInput.manifest.name,
           extensionVersion: input.prepareInput.manifest.version,
@@ -241,6 +281,7 @@ export async function* extensionQuality(
           archiveSize: archiveBytes.length,
           cacheHit,
           dependencyTrustResult,
+          findings,
         },
       };
     })(),

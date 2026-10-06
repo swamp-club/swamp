@@ -91,6 +91,12 @@ export interface ReviewFinding {
   /** How to fix the finding properly, from the rule catalog. */
   remediation?: string;
   /**
+   * The files a collapsed finding stands for. Set only on the
+   * once-per-extension testing-completeness finding, which lists the entry
+   * points still without a sibling test so each can be accepted on its own.
+   */
+  files?: string[];
+  /**
    * Optional fill-in report skeleton (JSON). Set only on the missing-report
    * finding so JSON consumers get it as a discrete field rather than parsing
    * it out of `message`.
