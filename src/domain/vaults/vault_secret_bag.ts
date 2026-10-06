@@ -32,8 +32,10 @@ export interface SecretBagEntry {
   dataOrigin: boolean;
 }
 
+const SENTINEL_SOURCE = "__SWAMP_VSEC_[0-9a-f]{8}_\\d+__";
+
 /** Matches exactly one sentinel, as produced by {@link VaultSecretBag}. */
-export const SENTINEL_EXACT = /^__SWAMP_VSEC_[0-9a-f]{8}_\d+__$/;
+export const SENTINEL_EXACT = new RegExp(`^${SENTINEL_SOURCE}$`);
 
 /** A command with sentinels replaced, and the environment that feeds it. */
 export interface ShellSecretResolution {
@@ -108,7 +110,7 @@ export class VaultSecretBag {
   private readonly prefix: string;
 
   /** Pattern that matches any sentinel produced by this bag or any other. */
-  static readonly SENTINEL_PATTERN = /__SWAMP_VSEC_[0-9a-f]{8}_\d+__/g;
+  static readonly SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
 
   constructor() {
     this.prefix = crypto.getRandomValues(new Uint8Array(4))
@@ -256,7 +258,8 @@ export class VaultSecretBag {
   /**
    * Rebuilds a bag from {@link VaultSecretBag.toEntries}, keeping each
    * sentinel exactly as shipped. Secrets added afterwards get this bag's own
-   * prefix.
+   * prefix. Entries come from one bag, so sentinels are unique; a repeated
+   * one would keep its last value.
    */
   static fromEntries(entries: readonly SecretBagEntry[]): VaultSecretBag {
     const bag = new VaultSecretBag();

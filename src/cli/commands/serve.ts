@@ -2385,9 +2385,15 @@ export const serveCommand = new Command()
 
     const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
     if (dispatchEnvAllow !== undefined) {
-      logger.info`worker dispatch environment limited to ${
-        dispatchEnvAllow.length === 0 ? "none" : dispatchEnvAllow.join(",")
-      }`;
+      if (dispatchEnvAllow.length === 0) {
+        logger
+          .info`dispatch-env-allow is empty: no environment variables ship to workers`;
+      } else {
+        logger
+          .info`dispatch-env-allow: only these environment variables ship to workers: ${
+          dispatchEnvAllow.join(", ")
+        }`;
+      }
       for (const name of dispatchEnvAllow.filter(isDeniedEnvVar)) {
         logger
           .warn`dispatch-env-allow lists ${name}, which never ships to workers`;

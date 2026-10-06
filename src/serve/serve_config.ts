@@ -627,7 +627,9 @@ function validateConfigValues(
     const allow = raw["dispatch-env-allow"];
     if (
       !Array.isArray(allow) ||
-      !allow.every((name) => typeof name === "string" && name.trim() !== "")
+      !allow.every((name) =>
+        typeof name === "string" && name.trim() !== "" && !name.includes(",")
+      )
     ) {
       throw configError(
         path,

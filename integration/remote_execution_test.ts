@@ -847,6 +847,7 @@ Deno.test({
         const fallbackArgv = fallbackOut.split("\n").find((line) =>
           line.includes("echo STEP=")
         );
+        assertEquals(fallbackArgv !== undefined, true, fallbackOut);
         assertStringIncludes(fallbackArgv!, "***");
       } finally {
         workerStop.abort();

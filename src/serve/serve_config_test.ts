@@ -2687,6 +2687,7 @@ Deno.test("loadServeConfig: dispatch-env-allow must be a list of names", () => {
       "dispatch-env-allow: DEPLOY_ENV",
       'dispatch-env-allow: [""]',
       "dispatch-env-allow: [1]",
+      'dispatch-env-allow: ["A,B"]',
     ]
   ) {
     withTempDir((dir) => {
