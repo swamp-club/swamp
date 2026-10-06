@@ -25,6 +25,7 @@ const SESSION_KEY_PREFIX = "dashboard-sessions/";
 const TOKEN_INDEX_PREFIX = `${SESSION_KEY_PREFIX}by-token/`;
 const SLOT_KEY_PREFIX = `${SESSION_KEY_PREFIX}slots/`;
 const SESSION_ID_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_SLOT_PROBES = 64;
 
 /** An absolute lifetime bounds inactive dashboard-session coordination data. */
 export const DASHBOARD_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
@@ -42,6 +43,11 @@ const DashboardSessionSchema = z.object({
 
 const DashboardSessionTokenIndexSchema = z.object({
   slot: z.number().int().nonnegative(),
+});
+
+const DashboardSessionSlotSchema = z.object({
+  id: z.string().regex(SESSION_ID_PATTERN),
+  expiresAt: z.string().datetime(),
 });
 
 /**
@@ -156,7 +162,7 @@ export class ControlPlaneDashboardSessionStore
       return null;
     }
     if (Date.parse(session.expiresAt) <= this.#now()) {
-      await this.#deleteSession(session);
+      await this.#deleteSession(session, false);
       return null;
     }
     return session;
@@ -167,8 +173,12 @@ export class ControlPlaneDashboardSessionStore
     const raw = await this.#store.get(this.#key(id));
     if (raw === null) return;
     try {
+      const session = DashboardSessionSchema.parse(
+        JSON.parse(new TextDecoder().decode(raw)),
+      );
       await this.#deleteSession(
-        DashboardSessionSchema.parse(JSON.parse(new TextDecoder().decode(raw))),
+        session,
+        Date.parse(session.expiresAt) > this.#now(),
       );
     } catch {
       await this.#store.delete(this.#key(id));
@@ -205,16 +215,24 @@ export class ControlPlaneDashboardSessionStore
       expiresAt: session.expiresAt,
     }));
     const start = Number.parseInt(session.id.slice(0, 8), 16) % this.#capacity;
-    for (let offset = 0; offset < this.#capacity; offset++) {
+    const probeCount = Math.min(this.#capacity, MAX_SLOT_PROBES);
+    for (let offset = 0; offset < probeCount; offset++) {
       const slot = (start + offset) % this.#capacity;
       const key = this.#slotKey(slot);
       if (this.#store.putIfAbsent) {
         if (await this.#store.putIfAbsent(key, encoded)) return slot;
         const existing = await this.#store.get(key);
         if (existing === null || !this.#isExpiredSlot(existing)) continue;
-        await this.#store.delete(key);
+        await this.#reclaimExpiredSlot(slot, existing);
         if (await this.#store.putIfAbsent(key, encoded)) return slot;
-      } else if (await this.#store.get(key) === null) {
+      } else {
+        const existing = await this.#store.get(key);
+        if (existing === null) {
+          await this.#store.put(key, encoded);
+          return slot;
+        }
+        if (!this.#isExpiredSlot(existing)) continue;
+        await this.#reclaimExpiredSlot(slot, existing);
         await this.#store.put(key, encoded);
         return slot;
       }
@@ -224,7 +242,7 @@ export class ControlPlaneDashboardSessionStore
 
   #isExpiredSlot(data: Uint8Array): boolean {
     try {
-      const slot = z.object({ expiresAt: z.string().datetime() }).parse(
+      const slot = DashboardSessionSlotSchema.parse(
         JSON.parse(new TextDecoder().decode(data)),
       );
       return Date.parse(slot.expiresAt) <= this.#now();
@@ -233,17 +251,58 @@ export class ControlPlaneDashboardSessionStore
     }
   }
 
-  async #deleteSession(session: DashboardSession): Promise<void> {
+  async #reclaimExpiredSlot(slot: number, data: Uint8Array): Promise<void> {
+    let expiredSlot: z.infer<typeof DashboardSessionSlotSchema>;
+    try {
+      expiredSlot = DashboardSessionSlotSchema.parse(
+        JSON.parse(new TextDecoder().decode(data)),
+      );
+    } catch {
+      // A malformed expired slot is safe to replace; its record cannot be
+      // attributed to a token index for targeted cleanup.
+      await this.#store.delete(this.#slotKey(slot));
+      return;
+    }
+    const rawSession = await this.#store.get(this.#key(expiredSlot.id));
+    if (rawSession !== null) {
+      let session: DashboardSession;
+      try {
+        session = DashboardSessionSchema.parse(
+          JSON.parse(new TextDecoder().decode(rawSession)),
+        );
+      } catch {
+        await this.#store.delete(this.#key(expiredSlot.id));
+        await this.#store.delete(this.#slotKey(slot));
+        return;
+      }
+      if (session.id === expiredSlot.id) {
+        await this.#deleteSession(session, false);
+      }
+    }
+    await this.#store.delete(this.#slotKey(slot));
+  }
+
+  async #deleteSession(
+    session: DashboardSession,
+    releaseSlot = true,
+  ): Promise<void> {
     await this.#store.delete(this.#key(session.id));
     const indexKey = this.#tokenIndexKey(session.tokenName, session.id);
     const index = await this.#store.get(indexKey);
     await this.#store.delete(indexKey);
-    if (index === null) return;
+    if (index === null || !releaseSlot) return;
     try {
       const { slot } = DashboardSessionTokenIndexSchema.parse(
         JSON.parse(new TextDecoder().decode(index)),
       );
-      await this.#store.delete(this.#slotKey(slot));
+      const slotData = await this.#store.get(this.#slotKey(slot));
+      if (slotData === null) return;
+      const slotRecord = DashboardSessionSlotSchema.parse(
+        JSON.parse(new TextDecoder().decode(slotData)),
+      );
+      if (slotRecord.id === session.id) {
+        await this.#store.delete(this.#slotKey(slot));
+      }
     } catch {
       // A malformed index can only retain a slot until its backing session TTL.
     }

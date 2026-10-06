@@ -379,6 +379,23 @@ Deno.test("validateDashboardSessionOrigin: honors public HTTPS proxy headers", (
   });
 });
 
+Deno.test("validateDashboardSessionOrigin: honors a configured public host without proxy headers", () => {
+  const request = new Request("http://127.0.0.1:9090/auth/dashboard/session", {
+    headers: {
+      host: "127.0.0.1:9090",
+      origin: "https://swamp.example.test",
+    },
+  });
+  const result = validateDashboardSessionOrigin(request, false, false, [
+    "swamp.example.test",
+  ]);
+  assertEquals(result, {
+    allowed: true,
+    origin: "https://swamp.example.test",
+    secure: true,
+  });
+});
+
 Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () => {
   const result = validateWebSocketOrigin(
     "http://evil.com",

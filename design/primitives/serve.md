@@ -799,10 +799,12 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   Successful reauthentication broadcasts the same kind of state change, so
   other tabs reconnect using the replacement cookie rather than retaining an
   older live socket. Local HTTP development omits `Secure` only because browsers
-  reject `Secure` cookies over HTTP. Behind a trusted TLS-terminating proxy,
-  serve uses `X-Forwarded-Proto` and `X-Forwarded-Host` to enforce the public
-  origin and set `Secure`; direct TLS deployments do the same from their listener
-  configuration.
+   reject `Secure` cookies over HTTP. Behind a trusted TLS-terminating proxy,
+   serve uses `X-Forwarded-Proto` and `X-Forwarded-Host` to enforce the public
+   origin and set `Secure`. A proxy that does not preserve those headers must
+   configure its public authority with `--trusted-hosts`; serve then recognizes
+   that configured browser origin and sets `Secure` from its HTTPS scheme.
+   Direct TLS deployments do the same from their listener configuration.
 
   After an unexpected close it reconnects with jittered exponential backoff
   (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is

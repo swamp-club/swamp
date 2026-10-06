@@ -24,17 +24,14 @@ import {
   DashboardSessionCapacityError,
 } from "./dashboard_session_store.ts";
 
-function createStore(): ControlPlaneStore {
+function createStore(
+  options?: { readonly putIfAbsent?: boolean },
+): ControlPlaneStore {
   const records = new Map<string, Uint8Array>();
-  return {
+  const store: ControlPlaneStore = {
     put: (key, data) => {
       records.set(key, data);
       return Promise.resolve();
-    },
-    putIfAbsent: (key, data) => {
-      if (records.has(key)) return Promise.resolve(false);
-      records.set(key, data);
-      return Promise.resolve(true);
     },
     get: (key) => Promise.resolve(records.get(key) ?? null),
     delete: (key) => {
@@ -46,6 +43,14 @@ function createStore(): ControlPlaneStore {
         [...records.keys()].filter((key) => key.startsWith(prefix)),
       ),
   };
+  if (options?.putIfAbsent !== false) {
+    store.putIfAbsent = (key, data) => {
+      if (records.has(key)) return Promise.resolve(false);
+      records.set(key, data);
+      return Promise.resolve(true);
+    };
+  }
+  return store;
 }
 
 const IDENTITY = {
@@ -75,6 +80,56 @@ Deno.test("ControlPlaneDashboardSessionStore: removes expired sessions before en
   const replacement = await store.create(IDENTITY, "https://serve.test");
   assertEquals(await store.get(expired.id), null);
   assertEquals(await store.get(replacement.id), replacement);
+});
+
+Deno.test("ControlPlaneDashboardSessionStore: reclaims expired slots without putIfAbsent", async () => {
+  let now = Date.parse("2026-10-06T00:00:00.000Z");
+  const store = new ControlPlaneDashboardSessionStore(
+    createStore({
+      putIfAbsent: false,
+    }),
+    {
+      now: () => now,
+      ttlMs: 10,
+      capacity: 1,
+    },
+  );
+  const expired = await store.create(IDENTITY, "https://serve.test");
+  now += 11;
+
+  const replacement = await store.create(
+    { ...IDENTITY, tokenName: "another-operator" },
+    "https://serve.test",
+  );
+
+  assertEquals(await store.get(expired.id), null);
+  assertEquals(await store.get(replacement.id), replacement);
+});
+
+Deno.test("ControlPlaneDashboardSessionStore: does not release a slot reclaimed from an expired session", async () => {
+  let now = Date.parse("2026-10-06T00:00:00.000Z");
+  const store = new ControlPlaneDashboardSessionStore(createStore(), {
+    now: () => now,
+    ttlMs: 10,
+    capacity: 1,
+  });
+  const expired = await store.create(IDENTITY, "https://serve.test");
+  now += 11;
+  const replacement = await store.create(
+    { ...IDENTITY, tokenName: "another-operator" },
+    "https://serve.test",
+  );
+
+  await store.delete(expired.id);
+  assertEquals(await store.get(replacement.id), replacement);
+  await assertRejects(
+    () =>
+      store.create(
+        { ...IDENTITY, tokenName: "third-operator" },
+        "https://serve.test",
+      ),
+    DashboardSessionCapacityError,
+  );
 });
 
 Deno.test("ControlPlaneDashboardSessionStore: refuses new active sessions at capacity", async () => {

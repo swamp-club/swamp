@@ -881,12 +881,14 @@ function forwardedHeaderValue(req: Request, name: string): string | null {
 /**
  * Requires mutation of a dashboard cookie session to come from the exact
  * public origin serving the request. Trusted proxies provide the public scheme
- * and authority; direct connections use serve's TLS configuration and Host.
+ * and authority; configured trusted hosts also support TLS-terminating proxies
+ * that preserve neither forwarding header.
  */
 export function validateDashboardSessionOrigin(
   req: Request,
   tlsEnabled: boolean,
   trustProxy: boolean,
+  trustedHosts?: readonly string[],
 ): { allowed: boolean; origin?: string; secure: boolean; reason?: string } {
   const origin = req.headers.get("origin");
   if (origin === null) {
@@ -926,18 +928,42 @@ export function validateDashboardSessionOrigin(
     };
   }
   const expected = normalizeDashboardOrigin(`${protocol}://${host}`);
-  if (expected === null || normalizedOrigin !== expected) {
+  if (expected !== null && normalizedOrigin === expected) {
     return {
-      allowed: false,
+      allowed: true,
+      origin: normalizedOrigin,
       secure: protocol === "https",
-      reason: `origin does not match request authority: ${origin}`,
+    };
+  }
+  if (
+    trustedHosts && isTrustedDashboardOrigin(normalizedOrigin, trustedHosts)
+  ) {
+    return {
+      allowed: true,
+      origin: normalizedOrigin,
+      secure: normalizedOrigin.startsWith("https://"),
     };
   }
   return {
-    allowed: true,
-    origin: normalizedOrigin,
+    allowed: false,
     secure: protocol === "https",
+    reason: `origin does not match request authority: ${origin}`,
   };
+}
+
+function isTrustedDashboardOrigin(
+  origin: string,
+  trustedHosts: readonly string[],
+): boolean {
+  const originHost = new URL(origin).hostname.toLowerCase();
+  return trustedHosts.some((trustedHost) => {
+    try {
+      return new URL(`http://${trustedHost}`).hostname.toLowerCase() ===
+        originHost;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -5936,6 +5962,7 @@ export const serveCommand = new Command()
             req,
             tlsEnabled,
             trustProxy,
+            trustedHosts,
           );
           const dashboardSessionResponse = await handleDashboardSession(req, {
             secure: dashboardOrigin.secure,
@@ -5944,6 +5971,7 @@ export const serveCommand = new Command()
                 request,
                 tlsEnabled,
                 trustProxy,
+                trustedHosts,
               );
               if (!allowed.allowed) {
                 logger.warn(
