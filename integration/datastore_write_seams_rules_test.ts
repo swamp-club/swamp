@@ -267,7 +267,8 @@ function unitOfWorkSeamCallers(files: readonly SourceFile[]): string[] {
 
 const REPORTER_SEAM_MODULE =
   "src/infrastructure/persistence/unit_of_work_scope.ts";
-const REPORTER_SEAM_REFERENCE = /\buseUnscopedChangeReporterForTesting\b/g;
+const REPORTER_SEAM_REFERENCE =
+  /\b(?:useUnscopedChangeReporterForTesting|resetUnscopedWarningsForTesting)\b/g;
 
 function unscopedReporterSeamCallers(files: readonly SourceFile[]): string[] {
   const keys: string[] = [];
@@ -805,8 +806,9 @@ const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
 // install a factory, so production units always forward late changes.
 const PINNED_UNIT_OF_WORK_SEAM_CALLERS: readonly string[] = [];
 
-// Production references to the unscoped-change reporter seam
-// (swamp-club#3056). Empty: only tests replace the route-2 warning.
+// Production references to the unscoped-change test seams
+// (useUnscopedChangeReporterForTesting, resetUnscopedWarningsForTesting;
+// swamp-club#3056). Empty: only tests replace or reset the route-2 warning.
 const PINNED_UNSCOPED_REPORTER_SEAM_CALLERS: readonly string[] = [];
 
 // Production callers that still write on route 2 (swamp-club#3056). The list
@@ -1064,9 +1066,10 @@ Deno.test("datastore write seams: the unscoped-change reporter seam has no produ
   assertPinnedSet(
     unscopedReporterSeamCallers(files),
     PINNED_UNSCOPED_REPORTER_SEAM_CALLERS,
-    "Production references to useUnscopedChangeReporterForTesting",
-    "Only tests may replace the route-2 reporter. Production keeps the\n" +
-      "warning, so an unscoped write in the field is still visible.",
+    "Production references to the unscoped-change test seams",
+    "Only tests may replace the route-2 reporter or reset its warnings.\n" +
+      "Production keeps the warning, so an unscoped write in the field is\n" +
+      "still visible.",
   );
 });
 

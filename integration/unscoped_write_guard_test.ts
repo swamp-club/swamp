@@ -39,7 +39,10 @@ import {
   createRepositoryContext,
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
-import { signalChange } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
+import {
+  resetUnscopedWarningsForTesting,
+  signalChange,
+} from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import {
   unscopedWriterKey,
   withUnscopedWriteGuard,
@@ -215,6 +218,8 @@ Deno.test("signalChange: in production, route 2 warns once per call site and nam
     marks.push(path);
     return Promise.resolve();
   };
+  // Each run starts from no warned call sites (deno test --repeats).
+  resetUnscopedWarningsForTesting();
   const warnings = await captureWarnings(async () => {
     for (const path of ["data/a", "data/b"]) {
       await signalChange(hook, { kind: "write", path });

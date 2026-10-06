@@ -256,6 +256,16 @@ function warnOnce({ change, caller }: UnscopedChange): void {
 }
 
 /**
+ * Test seam: forgets which call sites the production warning has already
+ * named, so a test of the warn-once rule sees a first warning on every run
+ * (`deno test --repeats`). Only tests may call it
+ * (`integration/datastore_write_seams_rules_test.ts`).
+ */
+export function resetUnscopedWarningsForTesting(): void {
+  warnedCallSites.clear();
+}
+
+/**
  * Test seam: sends every route-2 write to `reporter` instead of the
  * production warning until the returned function is called. Throws when a
  * reporter is already installed. Only tests may call it
