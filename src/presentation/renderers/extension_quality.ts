@@ -126,7 +126,7 @@ function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   }
   if (!data.registryScorable) {
     reasons.push(
-      "the registry cannot score this extension: it uses bare import specifiers",
+      "the registry cannot score this extension (it uses bare import specifiers)",
     );
   }
   if (reasons.length === 0) return undefined;
