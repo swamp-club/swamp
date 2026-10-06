@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -378,13 +379,21 @@ const runDoctorCommand = withRemoteOptions(
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
 
       try {
-        const result = await diagnoseLocalRuns(
-          tracker,
-          repoContext.workflowRunRepo,
-          repoContext.workflowRepo,
-          repoContext.outputRepo,
-          localOwnerLiveness(),
-          !!options.fix,
+        // In a root unit of work with no push, so the fix's saves stage into
+        // it instead of reaching the hook through signalChange's fallback
+        // (swamp-club#3056). Nothing pushes, as before.
+        const result = await runCommandInRootUnit(
+          repoContext,
+          { push: undefined },
+          () =>
+            diagnoseLocalRuns(
+              tracker,
+              repoContext.workflowRunRepo,
+              repoContext.workflowRepo,
+              repoContext.outputRepo,
+              localOwnerLiveness(),
+              !!options.fix,
+            ),
         );
 
         if (ctx.outputMode === "json") {

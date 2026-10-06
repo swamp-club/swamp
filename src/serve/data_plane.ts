@@ -49,6 +49,7 @@ import {
   createResourceWriter,
 } from "../domain/models/data_writer.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
@@ -176,11 +177,20 @@ export class DataPlane {
         () =>
           root === "bundle"
             ? this.#handleBundle(req, segments)
-            : this.#handleData(
-              req,
-              segments,
-              auth.workerName,
-              auth.dispatchId,
+            // The writes run in a root unit of work with no push, so they
+            // stage into it instead of reaching the hook through
+            // signalChange's fallback (swamp-club#3056). Nothing pushes
+            // here, as before: the dispatching run's push carries them.
+            : runInRootUnitOfWork(
+              this.#options.repoContext,
+              { flush: undefined },
+              () =>
+                this.#handleData(
+                  req,
+                  segments,
+                  auth.workerName,
+                  auth.dispatchId,
+                ),
             ),
       );
     } catch (error) {

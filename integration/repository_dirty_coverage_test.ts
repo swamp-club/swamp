@@ -92,6 +92,7 @@ import { pathExists } from "../src/infrastructure/persistence/test_helpers/stage
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
+import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
 await initializeLogging({});
 
@@ -275,15 +276,21 @@ async function withHarness(
     };
     try {
       const first = build();
-      await fn({
-        ...first,
-        repoDir,
-        cacheRoot,
-        definitionsDir,
-        workflowsDir,
-        markDirty,
-        fresh: build,
-      }, { abs, forwarded });
+      // A hooked write from production code that takes signalChange's hook
+      // fallback fails the test (swamp-club#3056). The rows' deliberate
+      // no-scope runs call repositories from this file, which the guard
+      // leaves alone.
+      await withUnscopedWriteGuard(() =>
+        fn({
+          ...first,
+          repoDir,
+          cacheRoot,
+          definitionsDir,
+          workflowsDir,
+          markDirty,
+          fresh: build,
+        }, { abs, forwarded })
+      );
     } finally {
       for (const ctx of opened) ctx.catalogStore.close();
     }

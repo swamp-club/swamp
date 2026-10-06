@@ -32,6 +32,7 @@ import type { Data } from "../domain/data/data.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import { createDataId } from "../domain/data/data_id.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { createModelOutputId } from "../domain/models/model_output.ts";
@@ -348,20 +349,30 @@ export class CapabilityService {
     );
     const type = ModelType.create(params.modelType);
     const repo = this.#repoForWorker(workerName, params.dispatchId);
-    if (params.removeLatestMarkerOnly) {
-      await repo.removeLatestMarker(
-        type,
-        params.modelId,
-        params.dataName,
-      );
-    } else {
-      await repo.delete(
-        type,
-        params.modelId,
-        params.dataName,
-        params.version,
-      );
-    }
+    // The delete runs in a root unit of work with no push, so its mark stages
+    // into it instead of reaching the hook through signalChange's fallback
+    // (swamp-club#3056). Nothing pushes here, as before: the dispatching
+    // run's push carries it.
+    await runInRootUnitOfWork(
+      this.#repoContext,
+      { flush: undefined },
+      async () => {
+        if (params.removeLatestMarkerOnly) {
+          await repo.removeLatestMarker(
+            type,
+            params.modelId,
+            params.dataName,
+          );
+        } else {
+          await repo.delete(
+            type,
+            params.modelId,
+            params.dataName,
+            params.version,
+          );
+        }
+      },
+    );
     return { deleted: true };
   }
 

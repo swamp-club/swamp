@@ -56,6 +56,7 @@ import {
   isChildOf,
   withCapturedSpans,
 } from "../src/infrastructure/tracing/span_test_helpers.ts";
+import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
 await initializeLogging({});
 
@@ -149,13 +150,17 @@ Deno.test("createDeviceAuthDeps: mintServerToken sends only per-path markDirty b
         "infra",
       );
 
-      const token = await deps.mintServerToken(
-        "user:user-1",
-        "user@example.com",
-        ["team-a"],
-        [],
-        dir,
-        repoContext,
+      // The mint's writes stage into a root unit, not through
+      // signalChange's fallback (swamp-club#3056).
+      const token = await withUnscopedWriteGuard(() =>
+        deps.mintServerToken(
+          "user:user-1",
+          "user@example.com",
+          ["team-a"],
+          [],
+          dir,
+          repoContext,
+        )
       );
       const tokenName = token.split(".")[0];
 

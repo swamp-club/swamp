@@ -33,6 +33,12 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import { hostname } from "node:os";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { ActiveRun } from "../src/domain/models/active_run.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import {
   saveGatedWorkflow,
   saveModel,
@@ -74,6 +80,85 @@ async function editedWorkflowYaml(repos: RowRepos, name: string) {
   const doc = parse(await Deno.readTextFile(path)) as Record<string, unknown>;
   doc.description = "edited";
   return stringify(doc);
+}
+
+/** A pid no process has, so a run it owns has a dead owner. */
+const DEAD_PID = 2147483647;
+
+/** Registers a run in A's run tracker, as the process that started it did. */
+function track(repos: RowRepos, run: ActiveRun): void {
+  const tracker = RunTrackerStore.fromSwampDir(swampPath(repos.repoA));
+  try {
+    tracker.register(run);
+  } finally {
+    tracker.close();
+  }
+}
+
+/** A stranded workflow run: what a force exit leaves, step in flight. */
+interface StrandedRun {
+  workflowName: string;
+  runId: string;
+}
+
+/** Saves a workflow run left running by a dead process, and its tracker row. */
+async function strandedWorkflowRun(repos: RowRepos): Promise<StrandedRun> {
+  const model = await saveModel(repos.serveRepo, "m1");
+  const workflow = await saveWorkflow(repos.serveRepo, "stranded", model);
+  const startedAt = new Date().toISOString();
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    status: "running",
+    startedAt,
+    pid: DEAD_PID,
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      startedAt,
+      steps: [{ stepName: "noop", status: "running", startedAt }],
+    }],
+    tags: {},
+  });
+  await repos.a.repoContext.workflowRunRepo.save(workflow.id, run);
+  track(
+    repos,
+    ActiveRun.createWorkflowRun({
+      id: run.id,
+      workflowName: workflow.name,
+      pid: DEAD_PID,
+      hostname: hostname(),
+    }),
+  );
+  return { workflowName: workflow.name, runId: run.id };
+}
+
+/** Saves a model and a method run of it left running by a dead process. */
+async function strandedMethodRun(repos: RowRepos): Promise<string> {
+  const model = await saveModel(repos.serveRepo, "m1");
+  const output = ModelOutput.create({
+    definitionId: model.id,
+    methodName: "noop",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    },
+  });
+  output.markRunning(DEAD_PID);
+  await repos.a.repoContext.outputRepo.save(repos.modelType, "noop", output);
+  track(
+    repos,
+    ActiveRun.createModelMethodRun({
+      id: output.id,
+      modelType: repos.modelType.normalized,
+      methodName: "noop",
+      pid: DEAD_PID,
+      hostname: hostname(),
+    }),
+  );
+  return model.name;
 }
 
 /** A run suspended at a manual approval gate named `gate`. */
@@ -620,13 +705,15 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow cancel",
     // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
-    rootUnit: { serve: true },
-    syncOrder: { serve: ["push", "release"] },
+    // pinned to push before the gate exit, as it did before. The CLI runs
+    // its cancel in a root with no push (swamp-club#3056): the run claim is
+    // released and nothing pushes, pinned before it adopted the root.
+    rootUnit: { cli: true, serve: true },
+    syncOrder: { cli: ["release"], serve: ["push", "release"] },
     // CLI workflow cancel saves the run through repoContext.workflowRunRepo
-    // itself, not through a use case, so the save marks through
-    // signalChange's hook fallback (unit_of_work_scope.ts signalChange in
-    // PINNED_MARK_CALL_SITES). Serve goes through workflowCancelSuspended.
+    // itself, not through a use case, so its mark is staged by the root
+    // rather than a use case's unit. Serve goes through
+    // workflowCancelSuspended.
     outsideUseCase: {
       cli: ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
     },
@@ -646,6 +733,72 @@ const ROWS: AnyRow[] = [
       type: "workflow.cancel",
       payload: { runId: run.runId, workflowIdOrName: run.workflowName },
     }),
+  }),
+  // CLI-only commands that save run records and push nothing
+  // (swamp-club#3056). Serve has no equivalent request.
+  row({
+    name: "workflow recover",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
+    syncOrder: { cli: [] },
+    // The dead owner's run is settled, then reset for resume: two saves made
+    // by the command itself, not a use case.
+    outsideUseCase: {
+      cli: [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
+    },
+    seed: (repos: RowRepos) => strandedWorkflowRun(repos),
+    cli: (repos, run: StrandedRun) => ({
+      args: [
+        "workflow",
+        "recover",
+        run.workflowName,
+        "--run",
+        run.runId,
+        "--acknowledge-unknown",
+        ...json(repos),
+      ],
+    }),
+    serve: null,
+  }),
+  row({
+    name: "run doctor --fix",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
+    syncOrder: { cli: [] },
+    // The dead owner's method run and workflow run are settled by the
+    // command itself, not a use case.
+    outsideUseCase: {
+      cli: [
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
+    },
+    seed: async (repos: RowRepos) => {
+      await strandedWorkflowRun(repos);
+      await strandedMethodRun(repos);
+    },
+    cli: (repos) => ({ args: ["run", "doctor", "--fix", ...json(repos)] }),
+    serve: null,
+  }),
+  row({
+    name: "model cancel",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
+    syncOrder: { cli: [] },
+    // The dead owner's method run is cancelled by the command itself, not a
+    // use case.
+    outsideUseCase: { cli: ["markDirty outputs/<type>/noop/<id>-<time>.yaml"] },
+    seed: (repos: RowRepos) => strandedMethodRun(repos),
+    cli: (repos, modelName: string) => ({
+      args: ["model", "cancel", modelName, ...json(repos)],
+    }),
+    serve: null,
   }),
 ];
 
@@ -1167,6 +1320,38 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": ["workflow-runs/<id>/workflow-run-<id>.yaml"],
       },
     },
+  },
+  "workflow recover": {
+    // GAP: marked, never pushed, as for workflow cancel.
+    cli: {
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
+  },
+  "run doctor --fix": {
+    // GAP: marked, never pushed, as for workflow cancel.
+    cli: {
+      "ops": [
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
+  },
+  "model cancel": {
+    // GAP: marked, never pushed, as for workflow cancel.
+    cli: {
+      "ops": [
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+      ],
+      "remote": { "added": [], "removed": [], "changed": [] },
+    },
+    serve: null,
   },
 };
 

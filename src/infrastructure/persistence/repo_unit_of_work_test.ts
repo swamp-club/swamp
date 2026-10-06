@@ -27,7 +27,10 @@ import {
   assertThrows,
 } from "@std/assert";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
+import type {
+  StagedChange,
+  UnitOfWork,
+} from "../../domain/datastore/unit_of_work.ts";
 import {
   createLegacyUnitOfWork,
   legacyUnitOfWorkParent,
@@ -41,7 +44,11 @@ import {
   runInRootUnitOfWork,
   useUnitOfWorkFactoryForTesting,
 } from "./repo_unit_of_work.ts";
-import { currentUnitOfWork, runInUnitOfWork } from "./unit_of_work_scope.ts";
+import {
+  currentUnitOfWork,
+  runInUnitOfWork,
+  signalChange,
+} from "./unit_of_work_scope.ts";
 
 function recordingHook(): {
   hook: MarkDirtyHook;
@@ -423,6 +430,41 @@ Deno.test("runInRootUnitOfWork: a nested root without a push becomes a child tha
   );
   assertEquals(outerPush.calls(), 1);
   assertEquals(outerRoot!.staged(), [{ kind: "write", path: "/cache/data/a" }]);
+});
+
+Deno.test("runInRootUnitOfWork: a root without a push sends the same hook calls, at the same points, as no root (swamp-club#3056)", async () => {
+  const changes: StagedChange[] = [
+    { kind: "write", path: "/cache/data/a" },
+    { kind: "remove", path: "/cache/data/b" },
+    { kind: "bulk", reason: "probe" },
+    { kind: "write", path: "/cache/data/a" },
+  ];
+  // Each entry is the hook calls seen once the change's signal returned, so
+  // a root that batched or deferred a mark would differ.
+  const run = async (inRoot: boolean) => {
+    const { hook, calls } = recordingHook();
+    const seen: (string | undefined)[][] = [];
+    const body = async () => {
+      for (const change of changes) {
+        await signalChange(hook, change);
+        seen.push([...calls]);
+      }
+    };
+    if (inRoot) {
+      await runInRootUnitOfWork(
+        { markDirty: hook },
+        { flush: undefined },
+        body,
+      );
+    } else {
+      await body();
+    }
+    return { seen, calls };
+  };
+  const bare = await run(false);
+  const rooted = await run(true);
+  assertEquals(rooted.seen, bare.seen);
+  assertEquals(rooted.calls, bare.calls);
 });
 
 Deno.test("useUnitOfWorkFactoryForTesting: receives the flush, parent and role production chose", async () => {

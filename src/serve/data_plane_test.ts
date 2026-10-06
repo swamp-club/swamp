@@ -36,6 +36,11 @@ import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { Data } from "../domain/data/data.ts";
 import { generateDataId } from "../domain/data/data_id.ts";
 import { SOLO_NAMESPACE } from "../domain/data/namespace.ts";
+import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/data-plane-test");
 
@@ -202,16 +207,29 @@ interface Harness {
 
 async function withHarness(
   fn: (h: Harness) => Promise<void>,
+  options: { markDirty?: (path?: string) => Promise<void> } = {},
 ): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-data-plane-test" });
   try {
     const { repo, stored } = createInMemoryRepo(tempDir);
+    const markDirty = options.markDirty;
+    if (markDirty !== undefined) {
+      // As the data repository signals each write before making it.
+      const save = repo.save.bind(repo);
+      repo.save = (async (...args: Parameters<typeof repo.save>) => {
+        await signalChange(markDirty, { kind: "write", path: args[2].name });
+        return await save(...args);
+      }) as typeof repo.save;
+    }
     const dispatches = new DispatchRegistry();
     const bundles = new BundleRegistry();
     const firstWrites: string[] = [];
     const plane = new DataPlane({
       repoDir: tempDir,
-      repoContext: { unifiedDataRepo: repo } as unknown as RepositoryContext,
+      repoContext: {
+        unifiedDataRepo: repo,
+        markDirty,
+      } as unknown as RepositoryContext,
       sessions: {
         verify: (c) => c === "good-credential" ? { workerId: "w1" } : null,
       },
@@ -843,4 +861,37 @@ Deno.test("dataPlaneOperation: names operations from the route shape only", () =
     "writer_finalize",
   );
   assertEquals(dataPlaneOperation("PUT", ["data", "other"]), "unknown");
+});
+
+Deno.test("DataPlane: writes stage into a root unit over the repository context's hook (swamp-club#3056)", async () => {
+  const marks: (string | undefined)[] = [];
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  try {
+    await withHarness(async (h) => {
+      h.dispatches.register(activeDispatch());
+      const ok = await h.plane.handle(
+        request("/data/resource", {
+          method: "POST",
+          body: JSON.stringify({
+            specName: "result",
+            name: "result",
+            data: { value: "x" },
+          }),
+        }),
+      );
+      assertEquals(ok?.status, 200);
+    }, {
+      markDirty: (path) => {
+        marks.push(path);
+        return Promise.resolve();
+      },
+    });
+  } finally {
+    dispose();
+  }
+  assertEquals(reports, []);
+  assertEquals(marks, ["result"]);
 });

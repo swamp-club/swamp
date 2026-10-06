@@ -28,6 +28,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { createServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { useUnscopedChangeReporterForTesting } from "../../infrastructure/persistence/unit_of_work_scope.ts";
 import {
   handleAccessCanI,
   handleAccessCheck,
@@ -333,6 +334,24 @@ Deno.test("handleAccessReload: pushes reconciled grants to remote datastore befo
   assertEquals(response.payload.success, true);
 });
 
+Deno.test("handleAccessReload: a failed push still pulls, loads the snapshot and replies success", async () => {
+  const { service: syncService, pushCalls, pullCalls } =
+    createMockSyncService();
+  syncService.pushChanged = (options?: DatastoreSyncOptions) => {
+    pushCalls.push(options ?? {});
+    return Promise.reject(new Error("datastore unreachable"));
+  };
+  const ctx = createReloadCtx(syncService);
+  const socket = createMockSocket();
+
+  await handleAccessReload(socket, ctx, "req-reload", null);
+
+  assertEquals(pushCalls.length, 1);
+  assertEquals(pullCalls.length, 1);
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.payload.success, true);
+});
+
 Deno.test("handleAccessReload: works without syncService (local-only mode)", async () => {
   const ctx = createReloadCtx(undefined);
   const socket = createMockSocket();
@@ -527,6 +546,26 @@ function createRacingSyncService(cacheRoot: string): {
   return { service, marks, dirtyAtPush };
 }
 
+/** The production callers of route-2 writes made while `fn` runs. */
+async function unscopedWritesDuring(
+  fn: () => Promise<unknown>,
+): Promise<string[]> {
+  const unscoped: string[] = [];
+  const dispose = useUnscopedChangeReporterForTesting(({ caller }) => {
+    if (
+      caller?.file.startsWith("src/") && !caller.file.endsWith("_test.ts")
+    ) {
+      unscoped.push(`${caller.file}:${caller.line}`);
+    }
+  });
+  try {
+    await fn();
+  } finally {
+    dispose();
+  }
+  return unscoped;
+}
+
 Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, before the push (swamp-club#2415)", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
@@ -568,7 +607,12 @@ Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, bef
         datastoreConfig,
       };
 
-      await handleAccessReload(createMockSocket(), ctx, "req-1", null);
+      // The reconcile writes stage into a root unit, not through
+      // signalChange's fallback (swamp-club#3056).
+      const unscoped = await unscopedWritesDuring(() =>
+        handleAccessReload(createMockSocket(), ctx, "req-1", null)
+      );
+      assertEquals(unscoped, []);
 
       // A bare markDirty() sets bulkInvalidated and turns the push into a
       // walk of the whole cache.

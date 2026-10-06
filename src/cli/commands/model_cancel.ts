@@ -26,6 +26,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   isProcessAlive,
@@ -370,21 +371,27 @@ export const modelCancelCommand = new Command()
           return;
         }
 
-        const outcomes = await cancelModelMethodRuns(cancellable, reason, {
-          tracker: runTracker,
-          outputRepo: repoContext.outputRepo,
-          onStopping: (stops) => {
-            const waiting = liveStops(stops);
-            if (!waiting || cliCtx.outputMode === "json") return;
-            const count = cancellable.filter((r) =>
-              waiting.live.some(({ pid }) =>
-                pid === r.pid
-              )
-            ).length;
-            cliCtx.logger
-              .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
-          },
-        });
+        // In a root unit of work with no push, so the run saves stage into
+        // it instead of reaching the hook through signalChange's fallback
+        // (swamp-club#3056). Nothing pushes, as before.
+        const outcomes = await runCommandInRootUnit(
+          repoContext,
+          { push: undefined },
+          () =>
+            cancelModelMethodRuns(cancellable, reason, {
+              tracker: runTracker,
+              outputRepo: repoContext.outputRepo,
+              onStopping: (stops) => {
+                const waiting = liveStops(stops);
+                if (!waiting || cliCtx.outputMode === "json") return;
+                const count = cancellable.filter((r) =>
+                  waiting.live.some(({ pid }) => pid === r.pid)
+                ).length;
+                cliCtx.logger
+                  .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
+              },
+            }),
+        );
         const cancelled = outcomes.filter((o) => o.status === "cancelled")
           .map(({ run }) => methodRunFields(run));
         const finished = outcomes.filter((o) => o.status !== "cancelled")
@@ -452,16 +459,21 @@ export const modelCancelCommand = new Command()
         );
       }
 
-      const [{ status }] = await cancelModelMethodRuns([latest], reason, {
-        tracker: runTracker,
-        outputRepo: repoContext.outputRepo,
-        onStopping: (stops) => {
-          const waiting = liveStops(stops);
-          if (!waiting || cliCtx.outputMode === "json") return;
-          cliCtx.logger
-            .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
-        },
-      });
+      const [{ status }] = await runCommandInRootUnit(
+        repoContext,
+        { push: undefined },
+        () =>
+          cancelModelMethodRuns([latest], reason, {
+            tracker: runTracker,
+            outputRepo: repoContext.outputRepo,
+            onStopping: (stops) => {
+              const waiting = liveStops(stops);
+              if (!waiting || cliCtx.outputMode === "json") return;
+              cliCtx.logger
+                .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
+            },
+          }),
+      );
 
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({

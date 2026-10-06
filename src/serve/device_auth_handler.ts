@@ -50,6 +50,7 @@ import { createResourceWriter } from "../domain/models/data_writer.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { stageWritesThenPush } from "./stage_writes_then_push.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
@@ -415,74 +416,87 @@ async function mintServerTokenImpl(
     await vaultService.put(vaultName, secretKey, plaintext);
   });
 
-  const { def, savedDefinitionPath } = await withSpan(
-    "swamp.serve.auth.mint.definition_save",
-    {},
+  // The writes run in a root unit of work with no push, so their marks
+  // stage into it instead of reaching the hook through signalChange's
+  // fallback (swamp-club#3056). The push below opens its own root once this
+  // one has ended.
+  const { def, savedDefinitionPath } = await runInRootUnitOfWork(
+    repoContext,
+    { flush: undefined },
     async () => {
-      const defRepo = repoContext.definitionRepo;
-      const existing = await defRepo.findByName(
-        SERVER_TOKEN_MODEL_TYPE,
-        tokenName,
+      const saved = await withSpan(
+        "swamp.serve.auth.mint.definition_save",
+        {},
+        async () => {
+          const defRepo = repoContext.definitionRepo;
+          const existing = await defRepo.findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            tokenName,
+          );
+          if (existing) {
+            return { def: existing, savedDefinitionPath: undefined };
+          }
+          const created = Definition.create({
+            type: SERVER_TOKEN_MODEL_TYPE.normalized,
+            name: tokenName,
+            // Creation owns typeVersion now that the repository no longer stamps
+            // it (swamp-club#900).
+            typeVersion: serverTokenModel.version,
+          });
+          const autoDefRepo = new YamlDefinitionRepository(
+            repoDir,
+            repoContext.eventBus,
+            repoContext.autoDefinitionsDir,
+            false,
+            repoContext.markDirty,
+          );
+          await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, created);
+          return {
+            def: created,
+            savedDefinitionPath: autoDefRepo.getPath(
+              SERVER_TOKEN_MODEL_TYPE,
+              created.id,
+            ),
+          };
+        },
       );
-      if (existing) return { def: existing, savedDefinitionPath: undefined };
-      const created = Definition.create({
-        type: SERVER_TOKEN_MODEL_TYPE.normalized,
+
+      const now = Date.now();
+      const tokenData = {
         name: tokenName,
-        // Creation owns typeVersion now that the repository no longer stamps
-        // it (swamp-club#900).
-        typeVersion: serverTokenModel.version,
-      });
-      const autoDefRepo = new YamlDefinitionRepository(
-        repoDir,
-        repoContext.eventBus,
-        repoContext.autoDefinitionsDir,
-        false,
-        repoContext.markDirty,
-      );
-      await autoDefRepo.save(SERVER_TOKEN_MODEL_TYPE, created);
-      return {
-        def: created,
-        savedDefinitionPath: autoDefRepo.getPath(
-          SERVER_TOKEN_MODEL_TYPE,
-          created.id,
-        ),
+        state: "active" as const,
+        principalId,
+        principalEmail,
+        collectives,
+        groups,
+        createdAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + DEFAULT_DURATION_MS).toISOString(),
+        vaultName,
+        secretKey,
+        secretFingerprint: await serverTokenSecretFingerprint(plaintext),
       };
+
+      await withSpan("swamp.serve.auth.mint.token_write", {}, async () => {
+        const { writeResource } = createResourceWriter(
+          repoContext.unifiedDataRepo,
+          SERVER_TOKEN_MODEL_TYPE,
+          saved.def.id,
+          serverTokenModel.resources!,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          tokenName,
+        );
+        await writeResource(
+          "token",
+          TOKEN_DATA_NAME,
+          tokenData as unknown as Record<string, unknown>,
+        );
+      });
+      return saved;
     },
   );
-
-  const now = Date.now();
-  const tokenData = {
-    name: tokenName,
-    state: "active" as const,
-    principalId,
-    principalEmail,
-    collectives,
-    groups,
-    createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + DEFAULT_DURATION_MS).toISOString(),
-    vaultName,
-    secretKey,
-    secretFingerprint: await serverTokenSecretFingerprint(plaintext),
-  };
-
-  await withSpan("swamp.serve.auth.mint.token_write", {}, async () => {
-    const { writeResource } = createResourceWriter(
-      repoContext.unifiedDataRepo,
-      SERVER_TOKEN_MODEL_TYPE,
-      def.id,
-      serverTokenModel.resources!,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      tokenName,
-    );
-    await writeResource(
-      "token",
-      TOKEN_DATA_NAME,
-      tokenData as unknown as Record<string, unknown>,
-    );
-  });
 
   if (syncService) {
     // The push runs inside this active span, so the datastore's own push

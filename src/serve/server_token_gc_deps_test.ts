@@ -32,6 +32,11 @@ import {
 } from "./server_token_gc_deps.ts";
 import type { TokenGcInfo } from "./server_token_gc_service.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
+import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 
 const TOKEN_DEF_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_DEF_ID = "00000000-0000-4000-8000-000000000003";
@@ -292,6 +297,45 @@ Deno.test("createServerTokenGcDeps: collectToken deletes only the data of a reco
   const result = await deps.collectToken(listed(), always);
 
   assertEquals(result, "collected");
+  assertEquals(h.events, [`data:${TOKEN_DEF_ID}/token-main`, "push"]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken's orphaned-data deletes stage into a root unit over its hook, then it pushes (swamp-club#3056)", async () => {
+  const h = harness({ owner: null });
+  const marks: (string | undefined)[] = [];
+  const markDirty = (path?: string) => {
+    marks.push(path);
+    return Promise.resolve();
+  };
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    markDirty,
+    modelDeleteDeps: {
+      ...h.input.modelDeleteDeps,
+      // As the data repository signals before it deletes.
+      deleteData: async (_type, id, name) => {
+        await signalChange(markDirty, {
+          kind: "remove",
+          path: `${id}/${name}`,
+        });
+        h.events.push(`data:${id}/${name}`);
+      },
+    },
+  });
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  let result: string;
+  try {
+    result = await deps.collectToken(listed(), always);
+  } finally {
+    dispose();
+  }
+
+  assertEquals(result, "collected");
+  assertEquals(reports, []);
+  assertEquals(marks, [`${TOKEN_DEF_ID}/token-main`]);
   assertEquals(h.events, [`data:${TOKEN_DEF_ID}/token-main`, "push"]);
 });
 

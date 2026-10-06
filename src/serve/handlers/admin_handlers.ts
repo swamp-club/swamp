@@ -1832,35 +1832,46 @@ export async function handleRunDoctor(
   let orphanedWorkflowRuns = 0;
   let orphanedReaped = 0;
   if (ctx.controlPlaneStore && ctx.instanceId) {
+    const controlPlaneStore = ctx.controlPlaneStore;
+    const runTracker = ctx.runTracker;
     try {
-      // From the records, not the index as it stands: a stale entry would
-      // hide the very run being looked for (swamp-club#2518).
-      await ctx.repoContext.workflowRunRepo.rebuildIndexes?.();
-      const yamlRuns = await ctx.repoContext.workflowRunRepo
-        .findGlobalByStatus("running");
+      // The fix's saves run in a root unit of work with no push, so they
+      // stage into it instead of reaching the hook through signalChange's
+      // fallback (swamp-club#3056). Nothing pushes, as before.
+      await runInRootUnitOfWork(
+        ctx.repoContext,
+        { flush: undefined },
+        async () => {
+          // From the records, not the index as it stands: a stale entry would
+          // hide the very run being looked for (swamp-club#2518).
+          await ctx.repoContext.workflowRunRepo.rebuildIndexes?.();
+          const yamlRuns = await ctx.repoContext.workflowRunRepo
+            .findGlobalByStatus("running");
 
-      const heartbeatCache = new Map<string, boolean>();
-      for (const { run, workflowId } of yamlRuns) {
-        if (!run.instanceId || run.instanceId === ctx.instanceId) continue;
+          const heartbeatCache = new Map<string, boolean>();
+          for (const { run, workflowId } of yamlRuns) {
+            if (!run.instanceId || run.instanceId === ctx.instanceId) continue;
 
-        let hasHeartbeat = heartbeatCache.get(run.instanceId);
-        if (hasHeartbeat === undefined) {
-          const data = await ctx.controlPlaneStore.get(
-            `heartbeats/${run.instanceId}`,
-          );
-          hasHeartbeat = data !== null;
-          heartbeatCache.set(run.instanceId, hasHeartbeat);
-        }
-        if (hasHeartbeat) continue;
+            let hasHeartbeat = heartbeatCache.get(run.instanceId);
+            if (hasHeartbeat === undefined) {
+              const data = await controlPlaneStore.get(
+                `heartbeats/${run.instanceId}`,
+              );
+              hasHeartbeat = data !== null;
+              heartbeatCache.set(run.instanceId, hasHeartbeat);
+            }
+            if (hasHeartbeat) continue;
 
-        orphanedWorkflowRuns++;
-        if (payload?.fix) {
-          run.interruptOrphaned("doctor_reap");
-          await ctx.repoContext.workflowRunRepo.save(workflowId, run);
-          ctx.runTracker.markSettled(run.id, "doctor_reap");
-          orphanedReaped++;
-        }
-      }
+            orphanedWorkflowRuns++;
+            if (payload?.fix) {
+              run.interruptOrphaned("doctor_reap");
+              await ctx.repoContext.workflowRunRepo.save(workflowId, run);
+              runTracker.markSettled(run.id, "doctor_reap");
+              orphanedReaped++;
+            }
+          }
+        },
+      );
     } catch (err: unknown) {
       getSwampLogger(["serve", "run-doctor"]).warn(
         "Failed to scan YAML workflow runs: {error}",

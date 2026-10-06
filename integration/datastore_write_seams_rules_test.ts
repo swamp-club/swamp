@@ -45,6 +45,7 @@
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
+import { PINNED_UNSCOPED_WRITERS } from "./unscoped_write_guard.ts";
 import {
   assertPinnedSet,
   constructorCalls,
@@ -257,6 +258,25 @@ function unitOfWorkSeamCallers(files: readonly SourceFile[]): string[] {
     lines.forEach((line, i) => {
       if (isCommentLine(line)) return;
       for (const _match of line.matchAll(SEAM_REFERENCE)) {
+        keys.push(`${rel}: ${owners[i]}`);
+      }
+    });
+  }
+  return countedKeys(keys);
+}
+
+const REPORTER_SEAM_MODULE =
+  "src/infrastructure/persistence/unit_of_work_scope.ts";
+const REPORTER_SEAM_REFERENCE =
+  /\b(?:useUnscopedChangeReporterForTesting|resetUnscopedWarningsForTesting)\b/g;
+
+function unscopedReporterSeamCallers(files: readonly SourceFile[]): string[] {
+  const keys: string[] = [];
+  for (const { rel, lines, owners } of files) {
+    if (rel === REPORTER_SEAM_MODULE) continue;
+    lines.forEach((line, i) => {
+      if (isCommentLine(line)) return;
+      for (const _match of line.matchAll(REPORTER_SEAM_REFERENCE)) {
         keys.push(`${rel}: ${owners[i]}`);
       }
     });
@@ -786,6 +806,17 @@ const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
 // install a factory, so production units always forward late changes.
 const PINNED_UNIT_OF_WORK_SEAM_CALLERS: readonly string[] = [];
 
+// Production references to the unscoped-change test seams
+// (useUnscopedChangeReporterForTesting, resetUnscopedWarningsForTesting;
+// swamp-club#3056). Empty: only tests replace or reset the route-2 warning.
+const PINNED_UNSCOPED_REPORTER_SEAM_CALLERS: readonly string[] = [];
+
+// Production callers that still write on route 2 (swamp-club#3056). The list
+// itself is PINNED_UNSCOPED_WRITERS in integration/unscoped_write_guard.ts,
+// which the guard reads at runtime; this pins its keys. Empty: every
+// route-2 caller found runs in a root unit of work.
+const EXPECTED_UNSCOPED_WRITERS: readonly string[] = [];
+
 // Hook references in datastore-tier repositories other than signalChange's
 // first argument. Empty since the datastore rework Phase 1 repository moves
 // (swamp-club#2996): repositories never call, pass on or store their hook.
@@ -827,6 +858,13 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/workflow_evaluate.ts: workflowEvaluateCommand (x2)",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
+  // Commands that push nothing, in a root with no push, so their saves
+  // stage into it rather than through signalChange's hook fallback
+  // (swamp-club#3056).
+  "src/cli/commands/model_cancel.ts: modelCancelCommand (x2)",
+  "src/cli/commands/run.ts: runDoctorCommand",
+  "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
+  "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
 ];
 
 // Callers of ModelLockResult.flush (push, then release) whose push is not a
@@ -1022,6 +1060,32 @@ Deno.test("datastore write seams: the transactional use-case scan counts exporte
     "src/libswamp/probe.ts: probeReturn",
     "src/libswamp/probe.ts: probeWrite",
   ]);
+});
+
+Deno.test("datastore write seams: the unscoped-change reporter seam has no production callers (swamp-club#3056)", () => {
+  assertPinnedSet(
+    unscopedReporterSeamCallers(files),
+    PINNED_UNSCOPED_REPORTER_SEAM_CALLERS,
+    "Production references to the unscoped-change test seams",
+    "Only tests may replace the route-2 reporter or reset its warnings.\n" +
+      "Production keeps the warning, so an unscoped write in the field is\n" +
+      "still visible.",
+  );
+});
+
+Deno.test("datastore write seams: production writers still on route 2 are pinned with a reason (swamp-club#3056)", async () => {
+  assertEquals(
+    PINNED_UNSCOPED_WRITERS.map((pin) => pin.writer).sort(),
+    [...EXPECTED_UNSCOPED_WRITERS].sort(),
+    "PINNED_UNSCOPED_WRITERS changed. Prefer running the writer in a root\n" +
+      "unit of work; pin it only when that would change behaviour.",
+  );
+  for (const { writer, reason } of PINNED_UNSCOPED_WRITERS) {
+    const [file, fn] = writer.split(": ");
+    const code = await Deno.readTextFile(join(SRC_DIR, "..", file));
+    assertEquals(code.includes(fn), true, `${writer}: function not found`);
+    assertEquals(reason.trim() !== "", true, `${writer}: give a reason`);
+  }
 });
 
 Deno.test("datastore write seams: the unit-of-work test seam has no production callers (swamp-club#3025)", () => {

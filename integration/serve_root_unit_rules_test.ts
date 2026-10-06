@@ -297,11 +297,30 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/deps.ts: executeWorkflowWithLocks",
   // Hand marks re-staged just before their push, through
   // stageWritesThenPush. Each root covers only the marks and the push, as a
-  // failed write pushed nothing before.
-  "src/serve/device_auth_handler.ts: mintServerTokenImpl",
+  // failed write pushed nothing before. The writes before them run in a
+  // root of their own with no push (swamp-club#3056), which ends before
+  // the push's root opens.
+  "src/serve/device_auth_handler.ts: mintServerTokenImpl (x2)",
+  "src/serve/grant_write_tracking.ts: createGrantWriteCommit",
   "src/serve/grant_write_tracking.ts: publishGrantWrites",
-  "src/serve/handlers/access_handlers.ts: handleAccessReload",
+  "src/serve/handlers/access_handlers.ts: handleAccessReload (x2)",
   "src/serve/stage_writes_then_push.ts: stageWritesThenPush",
+  // Serve's background garbage collection, outside any request: the push
+  // the batch or collection made in a finally is the root's flush
+  // (swamp-club#3056).
+  "src/serve/bookkeeping_gc.ts: reapBatch",
+  "src/serve/server_token_gc_deps.ts: createServerTokenGcDeps",
+  // Writes that push nothing, in a root with no push, so they stage into it
+  // rather than through signalChange's hook fallback (swamp-club#3056): boot
+  // and continuous reconciliation, run.doctor's fix, and worker data-plane
+  // writes and capability deletes, which the dispatching run's push carries.
+  "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns",
+  "src/serve/boot_reconciliation.ts: sweepStaleRecords",
+  "src/serve/capability_service.ts: CapabilityService",
+  "src/serve/data_plane.ts: DataPlane",
+  "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
+  // model.validate: model checks receive the hooked repositories.
+  "src/serve/handlers/model_handlers.ts: handleModelValidate",
   // The token secret migration, one root per token under that token's name
   // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
   // commands before or after their own root, never inside one.

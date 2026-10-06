@@ -27,6 +27,7 @@ import {
   createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { renderDetachedNestedRuns } from "./nested_run_hints.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -1091,16 +1092,24 @@ export const workflowCancelCommand = withRemoteOptions(
       }
 
       const { cancelled, finished, deleted, claimTimedOut, ...settled } =
-        await withRunTracker(
-          repoDir,
-          (runTracker) =>
-            cancelAllLocalRuns(localRuns, reason, {
-              runRepo,
-              findEvaluatedWorkflow,
-              runTracker,
-              runClaims,
-              outputRepo: repoContext.outputRepo,
-            }),
+        // In a root unit of work with no push, so the run saves stage into
+        // it instead of reaching the hook through signalChange's fallback
+        // (swamp-club#3056). Nothing pushes, as before.
+        await runCommandInRootUnit(
+          repoContext,
+          { push: undefined },
+          () =>
+            withRunTracker(
+              repoDir,
+              (runTracker) =>
+                cancelAllLocalRuns(localRuns, reason, {
+                  runRepo,
+                  findEvaluatedWorkflow,
+                  runTracker,
+                  runClaims,
+                  outputRepo: repoContext.outputRepo,
+                }),
+            ),
         );
 
       // Runs whose workflow file fails to load are left for the user to
@@ -1214,16 +1223,23 @@ export const workflowCancelCommand = withRemoteOptions(
     }
 
     const previousStatus = run.status;
-    const finalRun = await withRunTracker(
-      repoDir,
-      (runTracker) =>
-        cancelLocalRun(run, workflow, reason, {
-          runRepo,
-          findEvaluatedWorkflow,
-          runTracker,
-          runClaims,
-          outputRepo: repoContext.outputRepo,
-        }),
+    // In a root unit of work with no push, as for --all above
+    // (swamp-club#3056).
+    const finalRun = await runCommandInRootUnit(
+      repoContext,
+      { push: undefined },
+      () =>
+        withRunTracker(
+          repoDir,
+          (runTracker) =>
+            cancelLocalRun(run, workflow, reason, {
+              runRepo,
+              findEvaluatedWorkflow,
+              runTracker,
+              runClaims,
+              outputRepo: repoContext.outputRepo,
+            }),
+        ),
     );
     if (!finalRun) {
       throw new UserError(`Workflow run no longer exists: ${run.id}`);
