@@ -8,8 +8,9 @@ or suspended state:
 - **completed** — all steps succeeded
 - **failed** — a step failed (and `allowFailure` was not set)
 - **cancelled** — the run was cancelled via `swamp workflow cancel` or timeout
-- **suspended** — a `manual_approval` step is waiting for approval; the CLI
-  exits and the run can be resumed later with `swamp workflow resume`
+- **suspended** — a `manual_approval` step is waiting for approval, or a
+  `wait_for_signal` step is waiting for a signal; the CLI exits and the run can
+  be resumed later with `swamp workflow resume`
 
 There is no async, detached, or fire-and-forget mode. If you need non-blocking
 execution, run the workflow through `swamp serve` (which processes runs
@@ -31,6 +32,12 @@ When a `manual_approval` step is reached:
 2. The run's effective inputs are persisted to the run record
 3. The run status becomes `suspended`
 4. The CLI process exits
+
+A `wait_for_signal` step suspends the same way, with the step marked `waiting`
+and holding a wait ID. `swamp workflow signal <wait-id> --payload '<json>'`
+settles it. A resume refuses while a wait is open; once the wait's deadline has
+passed, the resume fails the step with `wait_timeout` instead. The waiting step
+is settled as it stands: its `guard` and `dependsOn` are not evaluated again.
 
 Resume is a separate invocation: `swamp workflow resume <workflow>`. It
 re-enters the executor, skips completed steps, and runs the remaining pending
@@ -61,9 +68,10 @@ one still fails with `Step run not found`.
 Under `swamp serve`, a workflow with `autoResume: true` resumes without that
 second invocation. Serve launches the resume once an approval made through serve
 decides the last gate. `--auto-resume` does the same for workflows that declare
-no inputs. An automatic resume supplies no inputs. If it fails to start, the run
-stays suspended and needs a manual resume, or, when the workflow changed shape,
-a cancel or a revert of the change. The dashboard lists approved-but-suspended
+no inputs. Neither resumes a run that still has a step waiting for a signal. An
+automatic resume supplies no inputs. If it fails to start, the run stays
+suspended and needs a manual resume, or, when the workflow changed shape, a
+cancel or a revert of the change. The dashboard lists approved-but-suspended
 runs with a Resume action and the equivalent CLI command.
 
 A gate inside a nested workflow suspends the child run and its parent. Approve
@@ -173,11 +181,12 @@ A workflow file that fails to load is not a deleted workflow: `--all` leaves its
 runs alone and lists them under `notCancelled`, and a cancel by name is refused.
 Fix the file, or cancel the run with `--run <id>`.
 
-A cancelled run's record holds no job `running` and no step `running` or
-`waiting_approval`. Cancel and supersede settle unfinished work as an abort
-does: waiting gates and pending steps fail with error `cancelled` (or are
-skipped when their `dependsOn` is unmet), so `history get` shows failed jobs
-under a `cancelled` run. A guarded step that never ran stays `pending`.
+A cancelled run's record holds no job `running` and no step `running`,
+`waiting_approval` or `waiting`. Cancel and supersede settle unfinished work as
+an abort does: waiting gates, unsignalled waits and pending steps fail with
+error `cancelled` (or are skipped when their `dependsOn` is unmet), so
+`history get` shows failed jobs under a `cancelled` run. A guarded step that
+never ran stays `pending`.
 
 `swamp workflow reject` settles the same way before it marks the run `failed`:
 other waiting gates fail with error `cancelled`, and the run still reports the

@@ -267,6 +267,10 @@ swamp workflow resume  <parent> --run <parent-run-id>
 - A rejected child fails the parent's step as a rejected approval; a plain retry
   of the parent then refuses, as for a gate of its own.
 - `swamp workflow approvals` lists the child's gate; its row names the parent.
+- A child that waits for a signal (`wait_for_signal`) suspends the parent the
+  same way: `swamp workflow signal <wait-id> --payload '<json>'`, resume the
+  child, then resume the parent. The parent's refusal names the wait ID. The
+  parent cannot read the child's payload through `steps.<nested>.outputs`.
 - Under `swamp serve`, the parent resumes on its own once the child finishes,
   when the parent's auto-resume policy is on and the approver may approve it.
 - In `--json` output, the suspended document's `approvalRequired` names the gate

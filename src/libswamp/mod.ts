@@ -86,6 +86,7 @@ export {
   type WorkflowTelemetrySink,
 } from "./workflows/run.ts";
 export {
+  type SkippedSupersedeData,
   type SupersedeResult,
   supersedeSuspendedRuns,
 } from "./workflows/supersede.ts";
@@ -378,6 +379,23 @@ export {
   type WorkflowApprovalsDeps,
   type WorkflowApprovalsEvent,
 } from "./workflows/approvals.ts";
+export {
+  createWorkflowSignalDeps,
+  workflowSignal,
+  type WorkflowSignalData,
+  type WorkflowSignalDeps,
+  type WorkflowSignalEvent,
+  type WorkflowSignalInput,
+} from "./workflows/signal.ts";
+export {
+  createWorkflowWaitsDeps,
+  type SignalWaitInfo,
+  type UnreadableWaitInfo,
+  workflowWaits,
+  type WorkflowWaitsData,
+  type WorkflowWaitsDeps,
+  type WorkflowWaitsEvent,
+} from "./workflows/waits.ts";
 
 // Vault operations
 export {

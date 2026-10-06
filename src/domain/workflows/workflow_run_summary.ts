@@ -102,8 +102,9 @@ const WorkflowRunSummarySchema = z.object({
 
 /**
  * Recovers `awaitingResume` for a run record written before the flag was
- * persisted. A suspended run with no step still `waiting_approval` has every
- * gate decided and is waiting for a resume. Only step status strings are read
+ * persisted, and for one that omits it. A suspended run with no step still
+ * `waiting_approval` or `waiting` has every gate decided and every wait
+ * settled, and is waiting for a resume. Only step status strings are read
  * and only a boolean is kept, so nothing from the heavy subtree is retained.
  */
 function deriveAwaitingResume(
@@ -117,9 +118,8 @@ function deriveAwaitingResume(
     const steps = (job as { steps?: unknown } | null)?.steps;
     if (!Array.isArray(steps)) continue;
     for (const step of steps) {
-      if (
-        (step as { status?: unknown } | null)?.status === "waiting_approval"
-      ) {
+      const stepStatus = (step as { status?: unknown } | null)?.status;
+      if (stepStatus === "waiting_approval" || stepStatus === "waiting") {
         return undefined;
       }
     }
@@ -144,6 +144,11 @@ function deriveWaitingOnRun(
     if (!Array.isArray(steps)) continue;
     for (const step of steps) {
       const s = step as { status?: unknown; nestedRun?: unknown } | null;
+      // A wait for a signal is a wait of the run's own, as a gate is.
+      if (s?.status === "waiting") {
+        gateWaits = true;
+        continue;
+      }
       if (s?.status !== "waiting_approval") continue;
       if (s.nestedRun === undefined) {
         gateWaits = true;

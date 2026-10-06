@@ -400,6 +400,275 @@ creates N parallel gates, each approved by its expanded step name. `resume()`
 refuses to start while any step is still `waiting_approval`
 (`src/domain/workflows/execution_service.ts`), so all N must be decided first.
 
+### Wait for Signal (`wait_for_signal`)
+
+Pauses the workflow until a small JSON message arrives or a deadline passes. The
+message becomes the step's output, so later steps branch on it with ordinary
+guards. A `manual_approval` gate answers yes or no; a wait carries a value.
+
+```yaml
+jobs:
+  - name: release
+    steps:
+      - name: review
+        allowFailure: true
+        task:
+          type: wait_for_signal
+          timeout: 86400
+          schema:
+            type: object
+            additionalProperties: false
+            required: [verdict]
+            properties:
+              verdict:
+                type: string
+                enum: [ship, fix, abandon]
+      - name: ship
+        dependsOn:
+          - step: review
+            condition: { type: succeeded }
+        # A guard skips the step when it is truthy:
+        # skip unless the verdict is ship.
+        guard: ${{ steps.review.outputs.payload.verdict != "ship" }}
+        task:
+          type: model_method
+          modelIdOrName: release
+          methodName: deploy
+      - name: escalate
+        dependsOn:
+          - step: review
+            condition: { type: failed }
+        task:
+          type: model_method
+          modelIdOrName: release
+          methodName: escalate
+```
+
+```sh
+swamp workflow run release              # runs to the wait, prints the wait ID, exits suspended
+swamp workflow waits                    # lists waits: ID, workflow, step, deadline, schema
+swamp workflow signal <waitId> --payload '{"verdict":"ship"}'
+swamp workflow resume release           # continues the run
+```
+
+**Task fields** (`src/domain/workflows/step_task.ts`):
+
+- `timeout` (required): seconds the wait stays open, at most 31536000 (one
+  year). A wait never stays open forever.
+- `schema` (required): the payload schema, checked by the same
+  `InputValidationService` as workflow `inputs`
+  (`src/domain/inputs/input_validation_service.ts`). It must declare
+  `type: object` or `properties`: the flat form that `inputs` also accepts (a
+  bare map of properties) is refused when the workflow is parsed, because it is
+  ambiguous with the schema's own keywords. `type: object` alone accepts any
+  object.
+- The schema may use only keywords a payload is checked against: `type`,
+  `enum`, `required`, `properties`, `additionalProperties`, `items`,
+  `minItems`, `maxItems` and `uniqueItems`, plus the annotations `description`,
+  `title`, `examples` and `$comment`. Any other keyword (`pattern`, `minimum`,
+  `format`, `oneOf`, ...) is refused when the workflow is parsed. So is
+  `default`, which is never applied to a payload; an empty `enum`, which the
+  validator skips; and an object or array keyword on a nested schema that does
+  not declare `type: object` or `type: array`, which the validator would not
+  read
+  (`unenforcedSchemaKeywords` in `src/domain/workflows/signal_wait.ts`). A
+  payload comes from outside the workflow, so a schema never promises a check
+  that is not made. `additionalProperties: false` closes an object at any
+  depth, whether or not it declares `properties`. Workflow `inputs` keep accepting and ignoring such
+  keywords.
+- The schema may read `inputs.*`, which is resolved before the wait captures
+  it. It may not read `self`, `steps`, `data`, `env` or `vault`: those are not
+  resolved in a schema and would be compared with payloads as literal text.
+  `workflow validate` refuses such a schema, and a step that reaches its wait
+  with an expression still in its schema fails instead of opening a wait no
+  payload could satisfy.
+
+**Terms.** A _wait_ is one pause of one step for one message. Its _wait ID_ is a
+random UUID issued when the step starts waiting. A _signal_ is the message
+delivered to a wait. The _receipt_ is what swamp records about the signal. The
+_deadline_ is when the wait stops accepting one. These are distinct from an
+approval gate and its `waiting_approval` status.
+
+**The wait is state on the step.** `WorkflowRun` stays the aggregate root; no
+storage, repository or port is added. `SignalWait`
+(`src/domain/workflows/signal_wait.ts`) is a value object holding the wait ID,
+the schema captured when the step started waiting, the deadline and, once
+settled, the receipt. The schema is captured, so a later edit to the workflow
+file does not change what an open wait accepts. The transitions live on
+`StepRun` (`src/domain/workflows/workflow_run.ts`), so the rule that only an
+open, unexpired wait accepts a signal is enforced in one place:
+
+- `waitForSignal(wait)` parks the step in the `waiting` status.
+- `acceptSignal(payload, submittedBy, now)` succeeds the step with the payload
+  and receipt, or refuses and changes nothing.
+- `timeOutWait(now)` fails the step with error `wait_timeout` once the deadline
+  has passed.
+- `failUnreadableWait()` fails a waiting step whose stored wait cannot be read
+  with error `wait_unreadable`. The wait is parsed leniently so a hand-edited
+  record never makes a run unloadable; such a step has no ID to signal and no
+  deadline to pass, so a resume fails it and logs a warning.
+- `cancelOpenWait()` fails the step with error `cancelled` when the run ends.
+- `resetToPending()` clears the wait, so a retry gets a new wait ID and a signal
+  for the old attempt finds nothing open.
+
+**The `waiting` status.** A waiting step does not reuse `waiting_approval`. An
+older binary would list the wait as an approval gate, and approving it would
+succeed the step with no payload. A status the older binary does not know makes
+it refuse the run instead. The kind of wait is recorded beside the status
+(`wait.kind: signal`), which leaves room for other kinds of wait.
+`isUnfinishedStatus` (`src/domain/workflows/trigger_condition.ts`) is the one
+predicate for "this step has not reached an outcome"; code that only needs to
+know that uses it rather than naming the statuses.
+
+**Suspending.** Reaching the step suspends the run the way an approval gate
+does: sibling steps in flight finish, the record is saved, and the command
+exits. `workflow run` prints the wait ID in log mode. In JSON mode the suspended
+document carries `signalRequired` (workflow, run, job, step, `waitId`,
+`deadline`) in place of `approvalRequired` when the run suspended on a wait, and
+`signalWaits`, which lists every step of the run still waiting for a signal
+(`stepId`, `jobId`, `waitId`, `deadline`). `signalWaits` is present beside
+`approvalRequired` too, when a gate and a wait suspend the run together.
+
+A run on `swamp serve` does not send the `signal_wait_requested` event to its
+client (`isWireEvent` in `src/serve/serializer.ts`): a client dispatches events
+by kind and a released client has no handler for a new one. The `suspended`
+event's `wait` field carries the same facts.
+
+**Signalling.** `swamp workflow signal <waitId> --payload '<json>'`
+(`src/libswamp/workflows/signal.ts`) follows `workflow approve`: it finds the
+run that holds the wait, takes the run's claim, reads the run again, and saves
+under the claim. A signal names the wait ID and nothing else: step names are
+unique only within a job and `forEach` expands one step into many, so a name
+does not identify a wait. Each refusal has its own message:
+
+| Refusal           | When                                                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| not found         | No run holds a wait with that ID.                                                                                          |
+| not ready         | The run is stored as `running`, or as `suspended` while the process running it is alive and has not finished the level the wait is in. Send the signal again; the message also names the cancel. |
+| expired           | The deadline has passed. The message names the resume that fails the step.                                                 |
+| payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                      |
+| already settled   | A signal already settled the wait. The stored receipt is shown.                                                            |
+| closed            | The step is no longer waiting: the run was cancelled, a gate was rejected, or the wait timed out.                          |
+
+The "not ready" refusal exists because the process running a level still saves
+the record until the level drains, and would save over a signal. Those saves
+already say `suspended`, and a sibling step still queued is recorded `pending`,
+so the step statuses alone do not show the level has drained. The CLI asks the
+run tracker (`suspendedRunOwnerIsRunning` in
+`src/domain/workflows/orphaned_run_reaper.ts`): the owner marks its row
+`suspended` only after its last save, so a row still `running` under a live
+owner refuses the signal. A process killed mid-level leaves the record
+`suspended` with a step `running` for good. The tracker also says whether that
+owner is gone (`suspendedRunHasDeadOwner`): if it is, the signal is delivered
+and the resume runs the abandoned step again.
+
+Every refusal names the wait ID exactly as it was typed, and none names the
+person who sent an earlier signal. Telemetry records the first line of an error
+with the typed arguments removed, so the ID never reaches it; the receipt of an
+already settled wait is in the error's details, not its message.
+
+**The payload is untrusted.** It comes from outside the process, is stored in
+the plaintext run record and is later read by guards. Before anything is stored
+`SignalWait.validatePayload` requires, whatever the schema allows:
+
+- a JSON object, no larger than 16 KiB serialised;
+- no key named `__proto__`, `constructor` or `prototype` at any depth (the
+  reserved keys), with the refusal naming the key;
+- nesting no deeper than 16 levels;
+- validity under the captured schema.
+
+The stored payload is exactly what was sent. Schema defaults are never applied
+to it, nothing is coerced, and no key is added or dropped: a payload is stored
+unchanged or refused. A `null` value is refused for every property the schema
+declares, and for an array item whose `items` schema is declared: only a
+property with a default accepts one, and a wait schema may not declare a
+default. A key the schema does not declare but allows, such as any key under
+a bare `type: object`, is not checked and may hold `null`, as it may hold
+anything else. The payload must not carry secrets.
+
+**Output.** The step's outputs are:
+
+```text
+steps.review.outputs = {
+  payload: { verdict: "ship" },
+  signal: { id, waitId, receivedAt, submittedBy }
+}
+```
+
+`signal` is written by swamp, never by the sender. `submittedBy` is the OS user,
+as `decidedBy` is for a local approve. The step's stored `output` carries
+`type: wait_for_signal` beside them, and `StepOutputResolver`
+(`src/domain/workflows/step_output_resolver.ts`) restores the outputs on resume
+without reading the datastore.
+
+**Resuming.** `workflow resume` refuses while a wait is still open, as it does
+for an undecided gate, and names the signal command. Otherwise it continues,
+with the payload restored into `steps.<name>.outputs`.
+
+**Timing out.** A wait past its deadline refuses signals, and the next resume
+fails the step with error `wait_timeout`, so `failed` handlers run.
+`allowFailure` decides whether that fails the job and the run. A step that
+holds a wait re-enters the walk as a nested wait does: its `dependsOn`, its
+`guard` and its start are not evaluated again, because a guard that reads
+resume-time inputs could otherwise turn the timeout into a skip, and starting
+the step again would open a second wait. A waiting `forEach` iteration that
+the resume's collection no longer produces is not walked, so it is settled
+when its job ends: it fails with `wait_timeout` (or `wait_unreadable`) under
+the same `allowFailure` rule.
+
+**Listing.** `swamp workflow waits` (`src/libswamp/workflows/waits.ts`) lists
+the waits of suspended runs, soonest deadline first, with the wait ID,
+workflow, run, job, step, deadline and schema. A wait past its deadline is
+listed with `expired: true` and the resume command, so the run that needs a
+resume can be found. A waiting step whose stored wait cannot be read is listed
+apart, in `unreadableWaits`, with the resume that fails it. The printed commands
+carry `--repo-dir` when the command was given one.
+
+**Cancel and reject** settle a waiting step as they settle a waiting gate: it
+fails with error `cancelled`. See "Settling a cancelled run" below.
+
+**Supersede.** `workflow run` cancels suspended runs of the same workflow with
+matching inputs. It leaves alone a run that has a step waiting for a signal and
+reports it as kept, with its wait IDs (`skippedRuns` on the `superseded_runs`
+event). Otherwise a workflow with no inputs would cancel its own waiting run
+each time it is started. A run whose wait is past its deadline is left alone
+too: cancelling it would discard the `failed` handler that a resume runs. Such
+a run stays suspended until someone resumes it, so a workflow started
+repeatedly and never resumed accumulates suspended runs.
+
+**Nested workflows.** A parent waiting on a child that waits for a signal is
+told to signal the child's wait, then resume the child, then resume the parent.
+A parent's `steps.<nested>.outputs` holds the child's `model_method` step
+outputs only, so a parent cannot read a child's signal payload.
+
+**forEach compatibility:** A `forEach` expansion of a `wait_for_signal` step
+creates one wait per iteration, each with its own wait ID. `resume()` refuses
+to start while any of them is still open.
+
+**Limits of this version:**
+
+- A signal must be sent from the host that ran the workflow. The check that
+  keeps a signal from being saved over while a level is still finishing reads
+  that host's run tracker. On a datastore shared between hosts, a signal sent
+  from another host while sibling steps of the wait's level are still
+  finishing can be accepted and then overwritten: the step goes back to
+  `waiting` and the signal must be sent again.
+- Only the CLI can signal. An outside system cannot call in by itself;
+  something must run `swamp workflow signal` on a machine with the repository
+  and its datastore.
+- Resume is manual, including for runs that `swamp serve` started: serve does
+  not auto-resume a run that still has a step waiting for a signal, open or
+  past its deadline. The local command does no authorization, as local
+  `approve` does none.
+- Deadlines are noticed only when something looks. An expired wait stays
+  suspended until the next resume.
+- Finding a wait by ID scans the suspended runs, and every run when none of
+  them holds it. There is no index from wait ID to run.
+- Older binaries cannot read a run with a waiting step, and treat a workflow
+  file containing the task as broken.
+- The dashboard lists suspended runs as awaiting approval or awaiting resume.
+  A run suspended only on a signal wait is in neither list.
+
 ### Retry Failed Steps
 
 `swamp workflow resume <workflow> --run <id>` on a **failed** run retries it
@@ -1555,7 +1824,8 @@ the files that take the claim and the files that opt out.
 
 **Settling a cancelled run.** Every cancel settles the work the run leaves
 unfinished before it marks the run `cancelled`, so a cancelled record never
-keeps a job `running` or a step `running` or `waiting_approval`. That holds for
+keeps a job `running` or a step `running`, `waiting_approval` or `waiting`. That
+holds for
 a live abort, an offline cancel of a suspended run or of one whose owner died,
 a supersede, serve's cancel of a suspended run, and the backstops that cancel a
 run an interrupted `workflow run` or `workflow resume` left running. All of
@@ -1565,6 +1835,7 @@ the only production caller of `WorkflowRun.endAsCancelled`;
 
 - A step still `running` (its owner died) fails with error `cancelled`.
 - A `waiting_approval` gate fails with error `cancelled`.
+- A `waiting` step (a wait no signal settled) fails with error `cancelled`.
 - A pending step is skipped when its `dependsOn` is unmet, otherwise it fails
   with error `cancelled`. A step with a `guard` stays `pending`: its guard
   never decided.

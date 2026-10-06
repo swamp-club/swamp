@@ -18133,3 +18133,89 @@ Deno.test("guard: a forEach item holding a control character does not fail a mod
     ]);
   });
 });
+
+Deno.test("wait_for_signal: sibling steps of the level finish before the run suspends on the wait", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executed: string[] = [];
+
+    class RecordingExecutor implements StepExecutor {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        executed.push(ctx.stepName);
+        return Promise.resolve({ executed: true });
+      }
+    }
+
+    const workflow = Workflow.create({
+      name: "wait-with-sibling",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(600, { type: "object" }),
+            }),
+            Step.create({
+              name: "sibling",
+              task: StepTask.model("test-model", "run"),
+            }),
+            Step.create({
+              name: "after",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                { step: "review", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new RecordingExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const suspended = events.at(-1);
+    assertEquals(suspended?.kind, "suspended");
+    const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
+    const job = stored.getJob("job1")!;
+    assertEquals(stored.status, "suspended");
+    assertEquals(job.status, "running");
+    assertEquals(job.getStep("review")!.status, "waiting");
+    assertEquals(job.getStep("sibling")!.status, "succeeded");
+    assertEquals(job.getStep("after")!.status, "pending");
+    assertEquals(executed, ["sibling"]);
+
+    const requested = events.filter((e) => e.kind === "signal_wait_requested");
+    assertEquals(requested.length, 1);
+    const wait = job.getStep("review")!.signalWait!;
+    if (requested[0].kind === "signal_wait_requested") {
+      assertEquals(requested[0].waitId, wait.id);
+      assertEquals(requested[0].deadline, wait.deadline.toISOString());
+      assertEquals(requested[0].workflowName, workflow.name);
+    }
+    if (suspended?.kind === "suspended") {
+      assertEquals(suspended.wait, {
+        id: wait.id,
+        deadline: wait.deadline.toISOString(),
+      });
+    }
+    // The deadline is the configured timeout after the step started waiting.
+    assertEquals(
+      wait.deadline.getTime() - job.getStep("review")!.startedAt!.getTime() >=
+        600_000,
+      true,
+    );
+  });
+});

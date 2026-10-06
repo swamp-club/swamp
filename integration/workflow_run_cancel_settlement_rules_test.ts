@@ -24,7 +24,7 @@
  *   `WorkflowRun.endAsCancelled`.
  *
  * `endAsCancelled` changes only the run's status. Called directly, it leaves
- * the run's jobs `running` and its steps `running`, `waiting_approval` or
+ * the run's jobs `running` and its steps `running`, `waiting_approval`, `waiting` or
  * `pending` in a record marked cancelled (swamp-club#2895). Every cancel
  * goes through `cancelAndSettle`, which settles that work first.
  *

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   deserializeEvent,
+  isWireEvent,
   serializeEvent,
   serializeSwampError,
 } from "./serializer.ts";
@@ -277,5 +278,28 @@ Deno.test("deserializeEvent: run events round-trip renderer-equivalent through J
   for (const event of corpus) {
     const wire = JSON.parse(JSON.stringify(serializeEvent(event)));
     assertEquals(deserializeEvent(wire), event);
+  }
+});
+
+Deno.test("isWireEvent: signal_wait_requested never reaches a client, which has no handler for it", () => {
+  assertEquals(
+    isWireEvent({ kind: "signal_wait_requested" }),
+    false,
+  );
+});
+
+Deno.test("isWireEvent: the events an existing client handles are still sent", () => {
+  for (
+    const kind of [
+      "started",
+      "step_started",
+      "approval_requested",
+      "step_failed",
+      "suspended",
+      "completed",
+      "error",
+    ]
+  ) {
+    assertEquals(isWireEvent({ kind }), true, kind);
   }
 });

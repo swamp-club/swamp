@@ -52,6 +52,13 @@ import {
   NestedRunLink,
 } from "./nested_run_link.ts";
 import {
+  openSignalWaitMessage,
+  schemaExpressions,
+  SignalWait,
+  WAIT_TIMEOUT_STEP_ERROR,
+  WAIT_UNREADABLE_STEP_ERROR,
+} from "./signal_wait.ts";
+import {
   cancelAndSettle,
   failAbandonedSteps,
   settleNotResumedJob,
@@ -894,6 +901,24 @@ function suspendedEventFor(
       timeout: taskData?.type === "manual_approval"
         ? taskData.timeout
         : undefined,
+    };
+  }
+  const signalWait = run.findSignalWaits()[0];
+  if (signalWait) {
+    return {
+      kind: "suspended",
+      run,
+      jobId: signalWait.jobName,
+      stepId: signalWait.stepName,
+      prompt: "",
+      ...(signalWait.wait
+        ? {
+          wait: {
+            id: signalWait.wait.id,
+            deadline: signalWait.wait.deadline.toISOString(),
+          },
+        }
+        : {}),
     };
   }
   const nested = run.findNestedWaits()[0];
@@ -3516,6 +3541,8 @@ export class WorkflowExecutionService {
             `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
         );
       }
+      const openWait = existingRun.findOpenSignalWait(new Date());
+      if (openWait) throw new UserError(openSignalWaitMessage(openWait));
       await this.checkNestedWaitsSettled(existingRun);
     }
 
@@ -4368,6 +4395,33 @@ export class WorkflowExecutionService {
         }
       }
 
+      // A step still waiting for a signal that this walk never reached is an
+      // iteration a smaller forEach collection dropped. A resume refuses an
+      // open wait, so its deadline has passed or it cannot be read. Settle
+      // it as re-entering it would have, rather than report the job
+      // succeeded with the step still waiting.
+      if (run.status !== "suspended" && !options.signal?.aborted) {
+        for (const dropped of jobRun.steps) {
+          if (!dropped.isSignalWait) continue;
+          const unreadable = dropped.failUnreadableWait();
+          if (!unreadable && !dropped.timeOutWait(new Date())) continue;
+          const allowFailure = job.steps.find((s) =>
+            s.name === (dropped.forEachTemplate ?? dropped.stepName)
+          )?.allowFailure;
+          if (allowFailure) dropped.markAllowedFailure();
+          else jobFailed = true;
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: dropped.stepName,
+            runId: run.id,
+            error: dropped.error ?? "",
+            allowedFailure: allowFailure || undefined,
+            forEachTemplate: dropped.forEachTemplate,
+          };
+        }
+      }
+
       // When the run is suspended and this job still has non-terminal steps
       // (pending or waiting_approval), leave the job running so resume picks
       // it up. In all other cases — normal completion or failure — complete
@@ -4542,10 +4596,15 @@ export class WorkflowExecutionService {
     // child's outcome, and a guard or dependsOn that changed since must not
     // skip it and strand the child (swamp-club#2736).
     const reenterNestedWait = stepRun.isNestedWait;
+    // A step waiting for a signal re-enters the same way: it settles the wait
+    // it holds, and is never skipped or started again, which would lose the
+    // wait's deadline or open a second wait.
+    const reenterSignalWait = stepRun.isSignalWait;
+    const reenterWait = reenterNestedWait || reenterSignalWait;
 
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
-    if (!reenterNestedWait && !shouldStepRun(step, jobRun)) {
+    if (!reenterWait && !shouldStepRun(step, jobRun)) {
       if (options.cleanupStepLevel) {
         stepRun.skipUnstarted({ kind: "dependency" });
       } else {
@@ -4605,7 +4664,7 @@ export class WorkflowExecutionService {
     }
 
     // Evaluate guard expression — truthy means the step is already done
-    if (step.guard && !reenterNestedWait) {
+    if (step.guard && !reenterWait) {
       const guardCel = extractCelExpression(step.guard);
       if (!guardCel) {
         stepSpan.end();
@@ -4704,8 +4763,8 @@ export class WorkflowExecutionService {
       }
     }
 
-    // Start step. A re-entered nested wait keeps its start time.
-    if (!reenterNestedWait) stepRun.start();
+    // Start step. A re-entered wait keeps its start time.
+    if (!reenterWait) stepRun.start();
 
     // This step's `steps.<name>.outputs`, taken from the full output before
     // it is stripped for the run record. Declared here so the finally below
@@ -4734,6 +4793,80 @@ export class WorkflowExecutionService {
           options,
           !!step.allowFailure,
         );
+        return;
+      }
+
+      // A re-entered signal wait fails once its deadline has passed, so
+      // `failed` handlers run; one still open suspends the run on it again.
+      if (reenterSignalWait) {
+        const unreadable = stepRun.failUnreadableWait();
+        if (unreadable) {
+          getSwampLogger(["workflow", "resume"]).warn(
+            "Step {stepName} of run {runId} held a wait that could not be read, so no signal could reach it. The step failed with {error}.",
+            {
+              stepName,
+              runId: run.id,
+              error: WAIT_UNREADABLE_STEP_ERROR,
+            },
+          );
+        }
+        if (unreadable || stepRun.timeOutWait(new Date())) {
+          if (step.allowFailure) stepRun.markAllowedFailure();
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            runId: run.id,
+            error: unreadable
+              ? WAIT_UNREADABLE_STEP_ERROR
+              : WAIT_TIMEOUT_STEP_ERROR,
+            allowedFailure: step.allowFailure || undefined,
+            forEachTemplate,
+            forEachIndex,
+          };
+        } else {
+          run.suspend(stepExprContext?.inputs);
+        }
+        return;
+      }
+
+      // Handle wait for signal tasks — suspend the workflow, as a manual
+      // approval does, until `workflow signal` settles the wait.
+      if (task.type === "wait_for_signal") {
+        // The schema is captured as data: an expression still in it would be
+        // compared with payloads as literal text, and no payload could match.
+        const unresolved = schemaExpressions(task.schema);
+        if (unresolved.length > 0) {
+          const error =
+            `The wait_for_signal schema of step "${stepName}" contains an expression that was not resolved: ${
+              unresolved[0]
+            }. A schema may read inputs.*, but not self, steps or data.`;
+          stepRun.fail(error);
+          if (step.allowFailure) stepRun.markAllowedFailure();
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            runId: run.id,
+            error,
+            allowedFailure: step.allowFailure || undefined,
+            forEachTemplate,
+            forEachIndex,
+          };
+          return;
+        }
+        const wait = SignalWait.open(task.schema, task.timeout, new Date());
+        stepRun.waitForSignal(wait);
+        yield {
+          kind: "signal_wait_requested",
+          runId: run.id,
+          workflowName: workflow.name,
+          jobId: job.name,
+          stepId: stepName,
+          waitId: wait.id,
+          deadline: wait.deadline.toISOString(),
+        };
+        run.suspend(stepExprContext?.inputs);
         return;
       }
 

@@ -33,6 +33,8 @@ import { workflowApproveCommand } from "./workflow_approve.ts";
 import { workflowRejectCommand } from "./workflow_reject.ts";
 import { workflowResumeCommand } from "./workflow_resume.ts";
 import { workflowApprovalsCommand } from "./workflow_approvals.ts";
+import { workflowSignalCommand } from "./workflow_signal.ts";
+import { workflowWaitsCommand } from "./workflow_waits.ts";
 import { workflowCancelCommand } from "./workflow_cancel.ts";
 import { workflowRecoverCommand } from "./workflow_recover.ts";
 import { workflowTriggerCommand } from "./workflow_trigger.ts";
@@ -58,5 +60,7 @@ export const workflowCommand = new Command()
   .command("recover", workflowRecoverCommand)
   .command("resume", workflowResumeCommand)
   .command("approvals", workflowApprovalsCommand)
+  .command("signal", workflowSignalCommand)
+  .command("waits", workflowWaitsCommand)
   .command("schema", workflowSchemaCommand)
   .command("trigger", workflowTriggerCommand);

@@ -87,6 +87,8 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   "unexpected",
   "url",
   "value",
+  // A signal wait's id is all `workflow signal` needs to answer the wait.
+  "wait_id",
 ]);
 
 /**

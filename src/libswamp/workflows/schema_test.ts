@@ -103,3 +103,31 @@ Deno.test("workflowSchema exposes object properties through the preprocess layer
     assert(key in workflowProperties, `workflow schema should expose '${key}'`);
   }
 });
+
+Deno.test("workflowSchema: the step task schema includes wait_for_signal with its required fields", async () => {
+  const events = await collect<WorkflowSchemaEvent>(
+    workflowSchema(createLibSwampContext()),
+  );
+  const completed = events[0] as Extract<
+    WorkflowSchemaEvent,
+    { kind: "completed" }
+  >;
+
+  const variants = Object.values(
+    completed.data.stepTask as Record<string, unknown>,
+  ).flatMap((value) => Array.isArray(value) ? value : []) as Array<{
+    properties?: Record<string, { const?: unknown }>;
+    required?: string[];
+  }>;
+  const waitForSignal = variants.find((variant) =>
+    variant.properties?.type?.const === "wait_for_signal"
+  );
+
+  assert(waitForSignal, JSON.stringify(completed.data.stepTask).slice(0, 400));
+  assertEquals(
+    ["schema", "timeout", "type"].every((key) =>
+      waitForSignal.required?.includes(key)
+    ),
+    true,
+  );
+});

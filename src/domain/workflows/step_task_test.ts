@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "./signal_wait.ts";
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 
 Deno.test("StepTask.modelMethod creates model method task", () => {
@@ -577,4 +578,145 @@ Deno.test("StepTask.assert: value equality works", () => {
   const a = StepTask.assert("true", "msg", "high");
   const b = StepTask.assert("true", "msg", "high");
   assertEquals(a.equals(b), true);
+});
+
+Deno.test("StepTask.waitForSignal: creates a wait for signal task", () => {
+  const schema = {
+    type: "object" as const,
+    required: ["verdict"],
+    properties: { verdict: { type: "string" as const, enum: ["ship"] } },
+  };
+  const task = StepTask.waitForSignal(600, schema);
+
+  assertEquals(task.isWaitForSignal(), true);
+  assertEquals(task.isManualApproval(), false);
+  assertEquals(task.toData(), {
+    type: "wait_for_signal",
+    timeout: 600,
+    schema,
+  });
+  assertEquals(StepTask.fromData(task.toData()).equals(task), true);
+});
+
+Deno.test("StepTaskSchema: wait_for_signal requires a positive timeout and a schema", () => {
+  const schema = { properties: { verdict: { type: "string" } } };
+
+  assertEquals(
+    StepTaskSchema.safeParse({ type: "wait_for_signal", timeout: 60, schema })
+      .success,
+    true,
+  );
+  for (
+    const bad of [
+      { type: "wait_for_signal", schema },
+      { type: "wait_for_signal", timeout: 0, schema },
+      { type: "wait_for_signal", timeout: -5, schema },
+      { type: "wait_for_signal", timeout: 60 },
+      { type: "wait_for_signal", timeout: 60, schema: "object" },
+      {
+        type: "wait_for_signal",
+        timeout: 60,
+        schema: { properties: { verdict: { type: "verdict" } } },
+      },
+    ]
+  ) {
+    assertEquals(
+      StepTaskSchema.safeParse(bad).success,
+      false,
+      JSON.stringify(bad),
+    );
+  }
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal timeout is at most one year", () => {
+  const schema = { type: "object" };
+  const parse = (timeout: number) =>
+    StepTaskSchema.safeParse({ type: "wait_for_signal", timeout, schema })
+      .success;
+
+  assertEquals(parse(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS), true);
+  assertEquals(parse(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS + 1), false);
+  // Far enough out that the deadline would not be a date at all.
+  assertEquals(parse(99999999999999), false);
+  assertEquals(parse(Infinity), false);
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal schema keyword no payload is checked against is refused by name", () => {
+  const error = assertThrows(
+    () =>
+      StepTaskSchema.parse({
+        type: "wait_for_signal",
+        timeout: 60,
+        schema: {
+          type: "object",
+          required: ["sha"],
+          properties: {
+            sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+          },
+        },
+      }),
+    Error,
+    "may only use keywords a payload is checked against",
+  );
+  assertEquals(
+    error.message.includes(
+      "schema.properties.sha.pattern: not a supported keyword",
+    ),
+    true,
+  );
+  assertEquals(error.message.includes("Supported keywords: type, enum"), true);
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal schema with a default or an empty enum is refused", () => {
+  for (
+    const [property, reason] of [
+      [{ type: "string", default: "fix" }, "default: a default is never"],
+      [{ type: "string", enum: [] }, "enum: an empty enum is not checked"],
+    ] as const
+  ) {
+    assertThrows(
+      () =>
+        StepTaskSchema.parse({
+          type: "wait_for_signal",
+          timeout: 60,
+          schema: { type: "object", properties: { verdict: property } },
+        }),
+      Error,
+      `schema.properties.verdict.${reason}`,
+    );
+  }
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal schema in the flat form is refused with the nested form shown", () => {
+  for (
+    const schema of [
+      { verdict: { type: "string" } },
+      { verdict: { type: "string" }, required: ["verdict"] },
+      {},
+    ]
+  ) {
+    assertThrows(
+      () =>
+        StepTaskSchema.parse({ type: "wait_for_signal", timeout: 60, schema }),
+      Error,
+      'must declare "type: object" or "properties"',
+    );
+  }
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal schema with type object or properties is accepted", () => {
+  for (
+    const schema of [
+      { type: "object" },
+      { properties: { verdict: { type: "string" } } },
+      { type: "object", properties: {}, additionalProperties: false },
+    ]
+  ) {
+    assertEquals(
+      StepTaskSchema.safeParse({ type: "wait_for_signal", timeout: 60, schema })
+        .success,
+      true,
+      JSON.stringify(schema),
+    );
+  }
 });

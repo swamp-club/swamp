@@ -576,6 +576,9 @@ export const workflowRunCommand = new Command()
                   commandTarget: formatCommandTarget({
                     repoDir: options.repoDir as string | undefined,
                   }),
+                  localCommandTarget: formatCommandTarget({
+                    repoDir: options.repoDir as string | undefined,
+                  }),
                 });
               const eventStream = workflowRun(libCtx, deps, {
                 workflowIdOrName,

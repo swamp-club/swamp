@@ -363,3 +363,73 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "auto-resume: a run that still waits for a signal is not resumed after its last gate is approved",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      // Opted in, with the gate and a signal wait side by side: approving
+      // the gate leaves the wait open, so the resume stays manual.
+      const workflow = Workflow.create({
+        name: "auto-resume-open-wait",
+        autoResume: true,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "approve-deploy",
+                task: StepTask.manualApproval("Approve the deploy"),
+              }),
+              Step.create({
+                name: "review",
+                task: StepTask.waitForSignal(3600, { type: "object" }),
+              }),
+              Step.create({
+                name: "deploy",
+                task: StepTask.directExecution(
+                  "command/shell",
+                  "auto-resume-open-wait-shell",
+                  "execute",
+                  { run: "echo post-gate-step-ran" },
+                ),
+                dependsOn: [
+                  {
+                    step: "approve-deploy",
+                    condition: TriggerCondition.succeeded(),
+                  },
+                  { step: "review", condition: TriggerCondition.succeeded() },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+      const { ctx, registry, runId, data } = await suspendAndApprove(
+        repoDir,
+        workflow,
+        true,
+      );
+
+      assertEquals(data.autoResumed, false);
+      assertEquals(data.allGatesDecided, false);
+      assertEquals(registry.get(runId), undefined);
+      assertEquals(await runStatus(ctx, workflow, runId), {
+        status: "suspended",
+        deploy: "pending",
+      });
+      const run = await ctx.repoContext.workflowRunRepo.findById(
+        createWorkflowId(workflow.id),
+        createWorkflowRunId(runId),
+      );
+      assertEquals(run?.getJob("main")?.getStep("review")?.status, "waiting");
+      assertEquals(
+        run?.getJob("main")?.getStep("approve-deploy")?.status,
+        "succeeded",
+      );
+    });
+  },
+});

@@ -154,7 +154,8 @@ export function liveStepOutputs(
  * persisted StepRun. A model_method step's outputs are the flat merge of the
  * attributes of the JSON resources it wrote; a workflow step's outputs are its
  * child run's model_method step outputs, keyed by child step name, one level
- * deep. Resources the reader cannot find (ephemeral lifetime, collected
+ * deep; a wait_for_signal step's outputs are the payload it received and the
+ * signal's receipt. Resources the reader cannot find (ephemeral lifetime, collected
  * versions, an uncached remote datastore) or the policy rejects contribute
  * nothing.
  */
@@ -179,6 +180,13 @@ export class StepOutputResolver {
     if (!isRecord(output)) return { attributesByDataId: {} };
     if (output.type === "model_method") {
       return await this.resolveResources(output);
+    }
+    if (output.type === "wait_for_signal") {
+      // The payload and receipt are stored on the step itself.
+      return {
+        outputs: { payload: output.payload, signal: output.signal },
+        attributesByDataId: {},
+      };
     }
     if (output.type === "workflow") {
       const workflowId = output.workflowId;

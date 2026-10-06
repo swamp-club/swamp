@@ -68,7 +68,7 @@ import {
   executeWorkflowWithLocks,
 } from "../deps.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
-import { serializeEvent } from "../serializer.ts";
+import { isWireEvent, serializeEvent } from "../serializer.ts";
 import type {
   WorkflowApprovePayload,
   WorkflowCancelPayload,
@@ -321,6 +321,7 @@ export async function handleWorkflowRun(
             );
           }
           if (socket.readyState !== WebSocket.OPEN) return;
+          if (!isWireEvent(event)) return;
           const serialized = serializeEvent(
             event as { kind: string; [key: string]: unknown },
           );
@@ -463,6 +464,7 @@ export async function handleWorkflowRun(
               }
             }
           }
+          if (!isWireEvent(event)) return;
           const serialized = serializeEvent(
             event as { kind: string; [key: string]: unknown },
           );
@@ -1860,6 +1862,7 @@ export async function handleWorkflowResume(
             try {
               for await (const event of resumeGenerator()) {
                 if (socket.readyState !== WebSocket.OPEN) break;
+                if (!isWireEvent(event)) continue;
                 const serialized = await redactStreamEvent(
                   serializeEvent(
                     event as { kind: string; [key: string]: unknown },

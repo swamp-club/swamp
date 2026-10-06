@@ -27,7 +27,7 @@
 import { mapWorkflowExecutionEvent } from "../libswamp/mod.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
-import { serializeEvent } from "./serializer.ts";
+import { isWireEvent, serializeEvent } from "./serializer.ts";
 import { resolveResumableRun } from "../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
@@ -280,6 +280,7 @@ export async function startDetachedResume(
                 })
               ) {
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
+                if (!isWireEvent(mapped)) continue;
                 const serialized = serializeEvent(
                   mapped as { kind: string; [key: string]: unknown },
                 );
@@ -568,6 +569,9 @@ export async function autoResumeParentAfterChild(
     return skip("parent_steps_running");
   }
   if (parent.findWaitingApprovalStep() !== undefined) return false;
+  // A wait for a signal, open or past its deadline, is never resumed
+  // automatically: the resume is manual in this version.
+  if (parent.findSignalWaits().length > 0) return false;
   if (!(await link.childrenSettled(parent))) return false;
 
   const resolution = await resolveRecordedWorkflow(

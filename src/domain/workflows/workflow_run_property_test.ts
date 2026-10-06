@@ -30,6 +30,7 @@ import {
   type StepRunRef,
   WorkflowRun,
 } from "./workflow_run.ts";
+import { SignalWait, WAIT_TIMEOUT_STEP_ERROR } from "./signal_wait.ts";
 
 // Two jobs that share step names, since tracking is per record.
 const JOBS = ["a", "b"];
@@ -426,6 +427,141 @@ Deno.test("WorkflowRun nested waits: a finished run never keeps a step waiting o
           // Round-trips keep every link and flag.
           const restored = WorkflowRun.fromData(run.toData());
           assertEquals(restored.toData(), run.toData());
+        }
+      },
+    ),
+  );
+});
+
+const WAIT_SCHEMA = {
+  type: "object" as const,
+  additionalProperties: false,
+  required: ["verdict"],
+  properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
+};
+const WAIT_OPENED = new Date("2026-01-01T00:00:00.000Z");
+const BEFORE_DEADLINE = new Date("2026-01-01T00:00:30.000Z");
+const AFTER_DEADLINE = new Date("2026-01-01T00:02:00.000Z");
+
+/** Every transition a step holding a wait can go through, in any order. */
+const WAIT_TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
+  ...TRANSITIONS,
+  (s) => s.waitForSignal(SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED)),
+  (s) => s.acceptSignal({ verdict: "ship" }, "ada", BEFORE_DEADLINE),
+  (s) => s.acceptSignal({ verdict: "nope" }, "ada", BEFORE_DEADLINE),
+  (s) => s.acceptSignal({ verdict: "ship" }, "ada", AFTER_DEADLINE),
+  (s) => s.timeOutWait(BEFORE_DEADLINE),
+  (s) => s.timeOutWait(AFTER_DEADLINE),
+  (s) => s.cancelOpenWait(),
+  (s) => s.cancelUndecidedApproval(),
+  (s) => s.failUnreadableWait(),
+];
+
+Deno.test("StepRun signal wait: only an open, unexpired wait accepts a signal, and a refusal changes nothing (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat(WAIT_TRANSITIONS.length - 1), { maxLength: 12 }),
+      fc.constantFrom(BEFORE_DEADLINE, AFTER_DEADLINE),
+      fc.constantFrom({ verdict: "ship" }, { verdict: "nope" }, "ship"),
+      (ops, now, payload) => {
+        const run = createFailedRun();
+        const step = run.jobs[0].steps[0];
+        step.resetToPending();
+        for (const op of ops) WAIT_TRANSITIONS[op](step);
+
+        const before = step.toData();
+        const wait = step.signalWait;
+        const open = step.status === "waiting" && wait !== undefined &&
+          !wait.isSettled && !wait.isExpired(now);
+        const outcome = step.acceptSignal(payload, "ada", now);
+
+        const valid = typeof payload === "object" &&
+          payload.verdict === "ship";
+        assertEquals(outcome.accepted, open && valid);
+        if (outcome.accepted) {
+          assertEquals(step.status, "succeeded");
+          assertEquals(step.signalWait?.receipt, outcome.receipt);
+          assertEquals(step.output, {
+            type: "wait_for_signal",
+            payload,
+            signal: outcome.receipt,
+          });
+        } else {
+          assertEquals(step.toData(), before);
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("StepRun signal wait: a settled wait never reopens, and resetToPending always drops the wait (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat(WAIT_TRANSITIONS.length - 1), { maxLength: 16 }),
+      (ops) => {
+        const run = createFailedRun();
+        const step = run.jobs[0].steps[0];
+        step.resetToPending();
+        let settledId: string | undefined;
+        for (const op of ops) {
+          WAIT_TRANSITIONS[op](step);
+          const wait = step.signalWait;
+          if (settledId !== undefined && wait?.id === settledId) {
+            // Once a wait holds a receipt, that wait keeps it.
+            assert(wait.isSettled);
+            assert(
+              !step.acceptSignal({ verdict: "ship" }, "ada", BEFORE_DEADLINE)
+                .accepted,
+            );
+          }
+          if (wait?.isSettled) settledId = wait.id;
+        }
+
+        // Round-trips whatever state the sequence reached.
+        assertEquals(
+          WorkflowRun.fromData(run.toData()).toData().jobs,
+          run.toData().jobs,
+        );
+
+        step.resetToPending();
+        assertEquals(step.signalWait, undefined);
+        assertEquals(step.toData().wait, undefined);
+        assertEquals(step.status, "pending");
+      },
+    ),
+  );
+});
+
+Deno.test("StepRun signal wait: timing out and cancelling only ever act on a waiting step (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.nat(WAIT_TRANSITIONS.length - 1), { maxLength: 12 }),
+      fc.boolean(),
+      (ops, cancel) => {
+        const run = createFailedRun();
+        const step = run.jobs[0].steps[0];
+        step.resetToPending();
+        for (const op of ops) WAIT_TRANSITIONS[op](step);
+
+        const before = step.toData();
+        const wasWaiting = step.status === "waiting";
+        if (cancel) {
+          step.cancelOpenWait();
+          if (wasWaiting) {
+            assertEquals(step.status, "failed");
+            assertEquals(step.error, CANCELLED_STEP_ERROR);
+          } else {
+            assertEquals(step.toData(), before);
+          }
+        } else {
+          const timedOut = step.timeOutWait(AFTER_DEADLINE);
+          assertEquals(timedOut, wasWaiting);
+          if (wasWaiting) {
+            assertEquals(step.status, "failed");
+            assertEquals(step.error, WAIT_TIMEOUT_STEP_ERROR);
+          } else {
+            assertEquals(step.toData(), before);
+          }
         }
       },
     ),

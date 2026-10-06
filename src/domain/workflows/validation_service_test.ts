@@ -2498,3 +2498,66 @@ Deno.test("validate: step writes false overrides job writes true — no warning"
   );
   assertEquals(warning, undefined);
 });
+
+function waitWorkflow(schema: Record<string, unknown>): Workflow {
+  return Workflow.create({
+    name: "wait-workflow",
+    jobs: [
+      Job.create({
+        name: "release",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, schema),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("fails a wait_for_signal schema that reads self, steps or data", async () => {
+  for (
+    const expr of [
+      "${{ self.env }}",
+      "${{ steps.build.outputs.tag }}",
+      '${{ data.latest("m", "x").attributes.v }}',
+      "${{ env.REGION }}",
+      '${{ vault.get("v", "k") }}',
+    ]
+  ) {
+    const results = await service.validate(waitWorkflow({
+      type: "object",
+      properties: { verdict: { type: "string", enum: [expr] } },
+    }));
+    const result = results.find((r) => r.name.includes("Wait schema"));
+    assertEquals(result?.passed, false, expr);
+    assertEquals(result?.name, "Wait schema in job 'release' step 'review'");
+    assertEquals(result?.error?.includes(expr), true, expr);
+    assertEquals(result?.error?.includes("inputs.* only"), true);
+  }
+});
+
+Deno.test("passes a wait_for_signal schema that is literal or reads inputs only", async () => {
+  for (
+    const enumValue of [
+      "ship",
+      "${{ inputs.allowed }}",
+      "self.env is fine",
+      // Inputs whose fields share a name with another root.
+      "${{ inputs.env.allowed }}",
+      "${{ inputs.data.values[0] }}",
+      "${{ inputs.cfg.steps[0] }}",
+    ]
+  ) {
+    const results = await service.validate(waitWorkflow({
+      type: "object",
+      properties: { verdict: { type: "string", enum: [enumValue] } },
+    }));
+    assertEquals(
+      results.filter((r) => r.name.includes("Wait schema")),
+      [],
+      enumValue,
+    );
+  }
+});

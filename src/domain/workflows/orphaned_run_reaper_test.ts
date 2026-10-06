@@ -30,6 +30,8 @@ import {
   settleDeadOwnerMethodRuns,
   settleDeadOwnerRun,
   settleInterruptedWorkflowRows,
+  suspendedRunHasDeadOwner,
+  suspendedRunOwnerIsRunning,
   trackerShowsDeadOwner,
 } from "./orphaned_run_reaper.ts";
 import { WorkflowRun } from "./workflow_run.ts";
@@ -1276,4 +1278,99 @@ Deno.test("settleInterruptedWorkflowRows: settles rows whose record finished or 
     [renamed.id, "record_settled"],
     [goneId, "record_missing"],
   ]);
+});
+
+Deno.test("suspendedRunHasDeadOwner: a suspended run whose tracker row still runs under a dead pid was abandoned", () => {
+  const run = makeRun({ pid: 4242, status: "suspended" });
+  const dead = liveness([4242]);
+
+  const abandoned = stubs([], [trackerRow(run.id, { pid: 4242 })]);
+  assertEquals(suspendedRunHasDeadOwner(run, abandoned.runTracker, dead), true);
+
+  // The owner is still alive: the level has not drained yet.
+  assertEquals(
+    suspendedRunHasDeadOwner(run, abandoned.runTracker, liveness()),
+    false,
+  );
+});
+
+Deno.test("suspendedRunHasDeadOwner: never judges a run it cannot tie to a dead local owner", () => {
+  const run = makeRun({ pid: 4242, status: "suspended" });
+  const dead = liveness([4242, 999]);
+
+  // No tracker row.
+  assertEquals(
+    suspendedRunHasDeadOwner(run, stubs([], []).runTracker, dead),
+    false,
+  );
+  // The owner drained the level and marked its row suspended itself.
+  const settled = stubs([], [
+    trackerRow(run.id, { pid: 4242, status: "suspended" }),
+  ]);
+  assertEquals(suspendedRunHasDeadOwner(run, settled.runTracker, dead), false);
+  // The row belongs to another process than the record names.
+  const otherPid = stubs([], [trackerRow(run.id, { pid: 999 })]);
+  assertEquals(suspendedRunHasDeadOwner(run, otherPid.runTracker, dead), false);
+  // Owned on another host.
+  const elsewhere = stubs([], [
+    trackerRow(run.id, { pid: 4242, hostname: "other-host" }),
+  ]);
+  assertEquals(
+    suspendedRunHasDeadOwner(run, elsewhere.runTracker, dead),
+    false,
+  );
+  // A run that is not suspended is the reaper's to judge.
+  const running = makeRun({ pid: 4242 });
+  const runningRows = stubs([], [trackerRow(running.id, { pid: 4242 })]);
+  assertEquals(
+    suspendedRunHasDeadOwner(running, runningRows.runTracker, dead),
+    false,
+  );
+});
+
+Deno.test("suspendedRunOwnerIsRunning: true only while the tracker row still runs under an owner not shown gone", () => {
+  const run = makeRun({ pid: 4242, status: "suspended" });
+  const alive = liveness();
+  const dead = liveness([4242]);
+
+  // Mid-level: the record says suspended, the row still says running.
+  const midLevel = stubs([], [trackerRow(run.id, { pid: 4242 })]);
+  assertEquals(
+    suspendedRunOwnerIsRunning(run, midLevel.runTracker, alive),
+    true,
+  );
+  // The same row under a dead owner: nothing will save the record again.
+  assertEquals(
+    suspendedRunOwnerIsRunning(run, midLevel.runTracker, dead),
+    false,
+  );
+
+  // The owner drained the level and marked its row suspended.
+  const drained = stubs([], [
+    trackerRow(run.id, { pid: 4242, status: "suspended" }),
+  ]);
+  assertEquals(
+    suspendedRunOwnerIsRunning(run, drained.runTracker, alive),
+    false,
+  );
+  // No tracker row to judge by.
+  assertEquals(
+    suspendedRunOwnerIsRunning(run, stubs([], []).runTracker, alive),
+    false,
+  );
+  // An owner on another host cannot be checked, so it counts as running.
+  const elsewhere = stubs([], [
+    trackerRow(run.id, { pid: 4242, hostname: "other-host" }),
+  ]);
+  assertEquals(
+    suspendedRunOwnerIsRunning(run, elsewhere.runTracker, dead),
+    true,
+  );
+  // A run that is not suspended is not this predicate's to judge.
+  const running = makeRun({ pid: 4242 });
+  const runningRows = stubs([], [trackerRow(running.id, { pid: 4242 })]);
+  assertEquals(
+    suspendedRunOwnerIsRunning(running, runningRows.runTracker, alive),
+    false,
+  );
 });

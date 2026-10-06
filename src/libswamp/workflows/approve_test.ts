@@ -40,6 +40,7 @@ import {
   unclaimedRuns,
   type WorkflowRunClaims,
 } from "../../domain/workflows/run_claim.ts";
+import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 
 /** The approve deps, with no evaluated snapshot to settle a reject against. */
 function rejectDeps(deps: WorkflowApproveDeps): WorkflowRejectDeps {
@@ -540,4 +541,35 @@ Deno.test("workflowReject: reads the run and saves the decision under the run's 
   assertEquals(claimed, [run.id]);
   assertEquals(saves, ["claimed"]);
   assertEquals(stored.data.status, "failed");
+});
+
+Deno.test("workflowApprove: reports allGatesDecided false while a step still waits for a signal, open or expired", async () => {
+  for (const opened of [new Date(), new Date("2020-01-01T00:00:00.000Z")]) {
+    const workflow = makeWorkflow(["gate"]);
+    const run = suspendAtGates(workflow, ["gate"]);
+    // The deploy step stands in for a wait_for_signal step beside the gate.
+    run.getJob("main")!.getStep("deploy")!.waitForSignal(
+      SignalWait.open({ type: "object" }, 60, opened),
+    );
+
+    const last = await approve(makeDeps(workflow, run), "gate");
+
+    assertEquals(last?.kind, "completed");
+    if (last?.kind === "completed") {
+      assertEquals(last.data.allGatesDecided, false);
+    }
+  }
+});
+
+Deno.test("workflowApprove: a step waiting for a signal is not a gate to approve", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  run.getJob("main")!.getStep("deploy")!.waitForSignal(
+    SignalWait.open({ type: "object" }, 60, new Date()),
+  );
+
+  const last = await approve(makeDeps(workflow, run), "deploy");
+
+  assertEquals(last?.kind, "error");
+  assertEquals(run.getJob("main")!.getStep("deploy")!.status, "waiting");
 });

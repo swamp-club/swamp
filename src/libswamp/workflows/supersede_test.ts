@@ -27,6 +27,7 @@ import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
+import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 
 function createWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -317,4 +318,107 @@ Deno.test("supersedeSuspendedRuns: leaves a run deleted since the listing", asyn
 
   assertEquals(result.cancelledRunIds, []);
   assertEquals(saved, []);
+});
+
+/** A suspended run of `wf` whose only step waits for a signal. */
+function createWaitingRun(
+  wf: Workflow,
+  inputs: Record<string, unknown>,
+  opened: Date,
+): { run: WorkflowRun; waitId: string } {
+  const run = createSuspendedRun(wf, inputs);
+  const wait = SignalWait.open({ type: "object" }, 60, opened);
+  run.getJob("j")!.getStep("s")!.waitForSignal(wait);
+  return { run: WorkflowRun.fromData(run.toData()), waitId: wait.id };
+}
+
+Deno.test("supersedeSuspendedRuns: leaves a matching run that waits for a signal and reports it as skipped", async () => {
+  const wf = createWorkflow("deploy");
+  const { run, waitId } = createWaitingRun(wf, {}, new Date());
+  const saved: WorkflowRun[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo(saved, [run]),
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, [{ runId: run.id, waitIds: [waitId] }]);
+  assertEquals(saved, []);
+  assertEquals(run.status, "suspended");
+  assertEquals(run.getJob("j")!.getStep("s")!.status, "waiting");
+});
+
+Deno.test("supersedeSuspendedRuns: leaves a run whose wait is past its deadline, so a resume can still fail its step", async () => {
+  const wf = createWorkflow("deploy");
+  const { run, waitId } = createWaitingRun(
+    wf,
+    {},
+    new Date("2020-01-01T00:00:00.000Z"),
+  );
+  const saved: WorkflowRun[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo(saved, [run]),
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, [{ runId: run.id, waitIds: [waitId] }]);
+  assertEquals(saved, []);
+});
+
+Deno.test("supersedeSuspendedRuns: decides the skip on the run as stored under its claim", async () => {
+  const wf = createWorkflow("deploy");
+  // Listed while it waited; signalled before the claim was taken.
+  const { run: listed } = createWaitingRun(wf, {}, new Date());
+  const current = WorkflowRun.fromData(listed.toData());
+  current.getJob("j")!.getStep("s")!.acceptSignal({}, "ada", new Date());
+  const saved: WorkflowRun[] = [];
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([listed]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo(saved, [current]),
+  );
+
+  assertEquals(result.skippedRuns, []);
+  assertEquals(result.cancelledRunIds, [listed.id]);
+  assertEquals(saved, [current]);
+});
+
+Deno.test("supersedeSuspendedRuns: a run with different inputs is neither cancelled nor reported as skipped", async () => {
+  const wf = createWorkflow("deploy");
+  const { run } = createWaitingRun(wf, { env: "prod" }, new Date());
+
+  const result = await supersedeSuspendedRuns(
+    wf,
+    { env: "staging" },
+    {
+      findSuspendedRuns: () => Promise.resolve([run]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    stubRunRepo([], [run]),
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, []);
 });

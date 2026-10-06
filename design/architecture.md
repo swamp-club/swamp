@@ -37,8 +37,9 @@ backends, sync and locking).
 
 **Workflows wire methods together.** A workflow is a DAG of jobs and steps.
 Steps read each other's data through expressions and can fan out with
-`forEach`. A step can pause for a human (`manual_approval`), and a workflow can
-run on a schedule or from a webhook. →
+`forEach`. A step can pause for a human (`manual_approval`) or for a JSON
+message (`wait_for_signal`), and a workflow can run on a schedule or from a
+webhook. →
 [primitives/workflows.md](./primitives/workflows.md).
 [run-tracker](./enablers/run-tracker.md) records runs so they can be observed,
 and [reports](./enablers/reports.md) analyse them afterwards.

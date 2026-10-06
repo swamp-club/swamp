@@ -97,7 +97,8 @@ export async function nestedWaitView(
     });
   }
   const awaitingResume = run.status === "suspended" &&
-    run.findWaitingApprovalStep() === undefined && allFinished;
+    run.findWaitingApprovalStep() === undefined &&
+    run.findSignalWaits().length === 0 && allFinished;
   return {
     ...(nestedWaits.length > 0 ? { nestedWaits } : {}),
     ...(awaitingResume ? { awaitingResume } : {}),
