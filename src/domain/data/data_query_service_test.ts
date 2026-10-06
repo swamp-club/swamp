@@ -3048,6 +3048,54 @@ Deno.test("getLatestRecord: dropping a step's latest that another repository del
   }
 });
 
+Deno.test("getLatestRecord: a version that dropping a deleted row makes latest is not shadowed by a lagging marker (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1-v3 of one step, so v1 and v2 hold neither flag.
+    // Another repository has deleted v3, and the marker lags on v1 while v2
+    // is still on disk.
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      2,
+      "s1",
+    );
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      1,
+      "s1",
+    );
+    for (const version of [1, 2, 3]) {
+      catalog.upsertNewVersion(
+        makeRow({ version, step_name: "s1", owner_type: "workflow-step" }),
+      );
+    }
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("DataQueryService: rolling back a deferred write that a backfill promoted restores every step's latest (swamp-club#2975)", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-backfill-rollback-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));

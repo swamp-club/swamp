@@ -136,8 +136,8 @@ Deno.test("property: upsertNewVersion in any promotion order matches computeLate
 });
 
 /**
- * Step names for versions 1..n, plus an interleaving of one promote and
- * at most one remove per version. Every version starts as an in-flight
+ * Step names for versions 1..n, plus an interleaving of at most one
+ * promote and one remove per version. Every version starts as an in-flight
  * deferred write; removing one before it is promoted is a rollback, after
  * it is a delete.
  */
@@ -172,21 +172,41 @@ Deno.test("property: removals interleaved with out-of-order promotions match com
             promoted.add(version);
             store.upsertNewVersion(makeRow(version, steps[version - 1]));
           };
-          for (const { op, version } of ops) {
-            if (op === "remove") {
-              removed.add(version);
+          // Consecutive removals go through one bulkRemoveVersions call, a
+          // lone removal through removeVersion.
+          let batch: number[] = [];
+          const flushRemovals = () => {
+            if (batch.length === 1) {
               store.removeVersion(
                 "",
                 "test-model",
                 "model-001",
                 "my-data",
-                version,
+                batch[0],
                 computeLatestFlags,
               );
-            } else if (!removed.has(version)) {
-              promote(version);
+            } else {
+              store.bulkRemoveVersions(
+                "",
+                "test-model",
+                "model-001",
+                "my-data",
+                batch,
+                computeLatestFlags,
+              );
+            }
+            batch = [];
+          };
+          for (const { op, version } of ops) {
+            if (op === "remove") {
+              removed.add(version);
+              batch.push(version);
+            } else {
+              flushRemovals();
+              if (!removed.has(version)) promote(version);
             }
           }
+          flushRemovals();
           // Promote whatever is still in flight, so every survivor counts.
           for (let version = 1; version <= steps.length; version++) {
             if (!removed.has(version) && !promoted.has(version)) {

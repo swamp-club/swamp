@@ -437,42 +437,43 @@ export class DataQueryService {
     // upsertNewVersion, which orders by version (swamp-club#2520). A higher
     // promoted version still on disk means the marker lags — the catalog row
     // stands. An unpromoted deferred write (neither flag) does not count.
-    const higher = [
-      ...this.catalogStore.iterateFiltered(
-        "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?",
-        [
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-          latest,
-        ],
-      ),
+    const higherWhere =
+      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?";
+    const higherParams = [
+      row.namespace,
+      row.type_normalized,
+      row.model_id,
+      row.data_name,
+      latest,
     ];
-    let higherOnDisk = false;
-    for (const stale of higher) {
-      if (
-        this.dataRepo.findByNameSync(
+    const gone = [
+      ...this.catalogStore.iterateFiltered(higherWhere, higherParams),
+    ]
+      .filter((stale) =>
+        !this.dataRepo.findByNameSync(
           type,
           row.model_id,
           row.data_name,
           stale.version,
         )
-      ) {
-        if (stale.is_latest === 1 || stale.is_step_latest === 1) {
-          higherOnDisk = true;
-        }
-        continue;
-      }
-      this.catalogStore.removeVersion(
-        stale.namespace,
-        stale.type_normalized,
-        stale.model_id,
-        stale.data_name,
-        stale.version,
-        computeLatestFlags,
-      );
-    }
+      )
+      .map((stale) => stale.version);
+    this.catalogStore.bulkRemoveVersions(
+      row.namespace,
+      row.type_normalized,
+      row.model_id,
+      row.data_name,
+      gone,
+      computeLatestFlags,
+    );
+    // Read the flags after the removal: it recomputes them, which can flag a
+    // higher row that is still on disk (swamp-club#2975).
+    const higherOnDisk = [
+      ...this.catalogStore.iterateFiltered(
+        `${higherWhere} AND (is_latest = 1 OR is_step_latest = 1)`,
+        higherParams,
+      ),
+    ].length > 0;
     if (higherOnDisk) return null;
     const current = this.toCatalogRow(data, type, row.model_id, true);
     this.catalogStore.upsertNewVersion(current);
