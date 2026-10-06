@@ -966,8 +966,10 @@ jobs:
 - Validated at parse time by building a croner `Cron`
   (`src/domain/workflows/workflow.ts`).
 - On `swamp serve` startup, every workflow with a schedule is registered.
-- A filesystem watcher on the `workflows/` directory reloads live. Adding,
-  changing, or removing a schedule takes effect without a restart.
+- A filesystem watcher on the effective workflows directory reloads live: the
+  repo's `workflows/` directory, or the managed config `workflows/` directory
+  when `managedConfig` is on — the same directory the workflow loader reads.
+  Adding, changing, or removing a schedule takes effect without a restart.
 - Each scheduled fire calls the `executeWorkflow` callback injected into
   `ScheduledExecutionService` (`src/libswamp/workflows/scheduled_execution.ts`).
   Serve wires it to `executeWorkflowWithLocks` (`src/serve/deps.ts`), the same

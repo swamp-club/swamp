@@ -137,7 +137,7 @@ export function createWorkflowEditDeps(
       findBrokenWorkflow(workflowsDir, idOrName),
     getPath: (id) => workflowRepo.getPath(id),
     resolveSymlink: async (name) => {
-      const symlinkPath = join(repoDir, "workflows", name, "workflow.yaml");
+      const symlinkPath = join(workflowsDir, name, "workflow.yaml");
       try {
         return await Deno.realPath(symlinkPath);
       } catch {

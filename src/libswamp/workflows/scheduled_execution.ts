@@ -32,7 +32,8 @@ import {
   type ScheduleEntry,
   WorkflowScheduler,
 } from "../../domain/workflows/workflow_scheduler.ts";
-import { workflowsDir, WorkflowWatcher } from "./watcher.ts";
+import { WorkflowWatcher } from "./watcher.ts";
+import { workflowsDirFor } from "./broken_workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -256,7 +257,7 @@ export class ScheduledExecutionService {
     this.triggerOverrides = deps.triggerOverrides ?? new Map();
     this.scheduler = new WorkflowScheduler();
     this.watcher = new WorkflowWatcher(
-      workflowsDir(deps.repoDir),
+      workflowsDirFor(deps.repoDir),
       deps.workflowRepo,
       (workflowId, schedule, workflowName) =>
         this.handleScheduleChange(workflowId, schedule, workflowName),

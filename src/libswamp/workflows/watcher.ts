@@ -19,11 +19,13 @@
 
 /**
  * WorkflowWatcher monitors the workflows directory for changes and notifies
- * a callback when workflow schedules are added, modified, or removed.
+ * a callback when workflow schedules are added, modified, or removed. The
+ * caller supplies the directory the workflow loader reads (`workflowsDirFor`),
+ * which is the managed config workflows directory when managedConfig is on.
  * Uses Deno.watchFs with debouncing to coalesce rapid filesystem events.
  */
 
-import { basename, join } from "@std/path";
+import { basename } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -194,11 +196,4 @@ export class WorkflowWatcher {
       }
     }
   }
-}
-
-/**
- * Returns the workflows directory path for a given repo directory.
- */
-export function workflowsDir(repoDir: string): string {
-  return join(repoDir, "workflows");
 }
