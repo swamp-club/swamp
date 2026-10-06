@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname, relative } from "@std/path";
+import { extname, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
   isAcceptableRule,
@@ -261,7 +261,7 @@ export function parseAcceptanceDirectives(
       target = {
         kind: "line",
         file,
-        line: standalone ? nextNonBlankLine(lines, i) : lineNumber,
+        line: standalone ? nextNonBlankLine(lines, i, form) : lineNumber,
       };
     }
     directives.push({
@@ -281,9 +281,16 @@ export function parseAcceptanceDirectives(
  * line after an HTML comment block. Falls back to the next line when
  * nothing follows.
  */
-function nextNonBlankLine(lines: string[], i: number): number {
+function nextNonBlankLine(
+  lines: string[],
+  i: number,
+  form: Exclude<CommentForm, "none">,
+): number {
   for (let j = i + 1; j < lines.length; j++) {
-    if (lines[j].trim().length > 0) return j + 1;
+    if (lines[j].trim().length === 0) continue;
+    // Stacked directives all target the first line that is not one of them.
+    if (isStandaloneDirectiveLine(lines[j], form)) continue;
+    return j + 1;
   }
   return i + 2;
 }
@@ -303,8 +310,11 @@ function findDirectiveStart(
     const at = line.indexOf(ACCEPTANCE_DIRECTIVE, from);
     if (at === -1) return undefined;
     const openerAt = line.lastIndexOf(opener, at);
+    // Quote tracking applies to source lines only: an apostrophe in
+    // Markdown prose must not hide a trailing HTML comment.
+    const quoted = form === "line" && isInsideQuotes(line, openerAt);
     if (
-      openerAt !== -1 && !isInsideQuotes(line, openerAt) &&
+      openerAt !== -1 && !quoted &&
       line.slice(openerAt + opener.length, at).trim().length === 0
     ) {
       return { at, openerAt };
@@ -312,6 +322,47 @@ function findDirectiveStart(
     from = at + ACCEPTANCE_DIRECTIVE.length;
   }
   return undefined;
+}
+
+/**
+ * The span of the acceptance directive on a line, as `[start, end)` column
+ * offsets, or undefined when the line carries none. This is the one
+ * definition of where a directive sits: the parser uses it to read the
+ * directive, and the safety analyzer uses it to drop exactly that text
+ * before scanning, so a directive never triggers the rule it accepts and
+ * the same marker inside a string literal is still scanned.
+ */
+export function directiveSpan(
+  line: string,
+  file: string,
+): { start: number; end: number } | undefined {
+  const form = commentFormFor(file);
+  if (form === "none") return undefined;
+  const found = findDirectiveStart(line, form);
+  if (found === undefined) return undefined;
+  if (form === "line") return { start: found.openerAt, end: line.length };
+  const close = line.indexOf("-->", found.at);
+  return {
+    start: found.openerAt,
+    end: close === -1 ? line.length : close + "-->".length,
+  };
+}
+
+/** The line with its acceptance directive removed, for scanners. */
+export function withoutDirective(line: string, file: string): string {
+  const span = directiveSpan(line, file);
+  if (span === undefined) return line;
+  return line.slice(0, span.start) + line.slice(span.end);
+}
+
+/** True when the line is nothing but a standalone acceptance directive. */
+function isStandaloneDirectiveLine(
+  line: string,
+  form: Exclude<CommentForm, "none">,
+): boolean {
+  const found = findDirectiveStart(line, form);
+  return found !== undefined &&
+    line.slice(0, found.openerAt).trim().length === 0;
 }
 
 /** True when `index` sits inside a quoted string literal on the line. */
@@ -464,7 +515,7 @@ export function fileRelativeToManifest(
   const rel = relative(manifestDir, file);
   // A file outside the manifest's directory (the adversarial-review report
   // in the review dir) keeps its absolute path rather than a ../ chain.
-  if (rel.startsWith("..")) return file;
+  if (rel === ".." || rel.startsWith(".." + SEPARATOR)) return file;
   return rel.replaceAll("\\", "/");
 }
 

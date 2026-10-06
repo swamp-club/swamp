@@ -563,3 +563,41 @@ Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the ru
     },
   );
 });
+
+Deno.test("analyzeExtensionSafety: a directive marker inside a string literal hides nothing", async () => {
+  const blob = "Q".repeat(120);
+  await withTempFiles(
+    {
+      "a.ts": [
+        `const t = "// swamp-quality-ignore"; new Deno.Command("sh", { args: ["${blob}"] });`,
+        `const u = '// swamp-quality-ignore deno-command: x'; new Deno.Command("sh");`,
+        'const v = `// swamp-quality-ignore base64-run: x`; const w = "' +
+        blob + '";',
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      const byLine = result.warnings.map((w) => `${w.ruleId}@${w.line}`).sort();
+      assertEquals(byLine, [
+        "base64-run@1",
+        "base64-run@3",
+        "deno-command@1",
+        "deno-command@2",
+      ]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a Markdown directive's own reason never fires the IPv4 rule", async () => {
+  await withTempFiles(
+    {
+      "README.md":
+        "<!-- swamp-quality-ignore ipv4-address-literals: the lab gateway is 10.0.0.1 -->\nGateway: 10.0.0.1\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.map((w) => w.line), [2]);
+    },
+  );
+});

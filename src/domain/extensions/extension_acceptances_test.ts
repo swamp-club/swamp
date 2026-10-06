@@ -23,6 +23,7 @@ import {
   acceptanceSnippet,
   applyAcceptances,
   commentFormFor,
+  directiveSpan,
   fileRelativeToManifest,
   invalidAcceptanceFinding,
   MAX_ACCEPTANCE_REASON_LENGTH,
@@ -31,6 +32,7 @@ import {
   REASON_PLACEHOLDER,
   staleAcceptanceFinding,
   validateAcceptance,
+  withoutDirective,
 } from "./extension_acceptances.ts";
 
 const TS = "/ext/models/thing.ts";
@@ -131,6 +133,51 @@ Deno.test("parseAcceptanceDirectives: a comment opener inside a string literal i
     file: TS,
     line: 3,
   });
+});
+
+Deno.test("parseAcceptanceDirectives: stacked standalone directives all target the first line that is not a directive", () => {
+  const parsed = parseAcceptanceDirectives(
+    [
+      "// swamp-quality-ignore long-line: vendored fixture",
+      "// swamp-quality-ignore base64-run: vendored fixture",
+      `const BLOB = "${"A".repeat(120)}";`,
+    ].join("\n"),
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.map((d) => d.target), [
+    { kind: "line", file: TS, line: 3 },
+    { kind: "line", file: TS, line: 3 },
+  ]);
+});
+
+Deno.test("parseAcceptanceDirectives: an apostrophe in Markdown prose does not hide a trailing HTML directive", () => {
+  const parsed = parseAcceptanceDirectives(
+    "It's at 10.0.0.1 <!-- swamp-quality-ignore ipv4-address-literals: lab gateway -->\n",
+    MD,
+  );
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: MD,
+    line: 1,
+  });
+});
+
+Deno.test("directiveSpan and withoutDirective: cover exactly the recognised comment, never text inside a string", () => {
+  const ts =
+    'const c = new Deno.Command("x"); // swamp-quality-ignore deno-command: vendor';
+  assertEquals(withoutDirective(ts, TS), 'const c = new Deno.Command("x"); ');
+  const quoted = 'const t = "// swamp-quality-ignore"; new Deno.Command("sh");';
+  assertEquals(directiveSpan(quoted, TS), undefined);
+  assertEquals(withoutDirective(quoted, TS), quoted);
+  const md =
+    "Host 10.0.0.1 <!-- swamp-quality-ignore ipv4-address-literals: lab 10.0.0.2 --> tail";
+  assertEquals(withoutDirective(md, MD), "Host 10.0.0.1  tail");
+  assertEquals(
+    withoutDirective("plain 10.0.0.1", "/ext/hosts.txt"),
+    "plain 10.0.0.1",
+  );
 });
 
 Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", () => {

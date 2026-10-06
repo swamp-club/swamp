@@ -23,6 +23,7 @@ import {
   findDynamicCodeExecution,
 } from "./dynamic_code_detector.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
+import { withoutDirective } from "./extension_acceptances.ts";
 
 /** A safety issue found during analysis. */
 export interface SafetyIssue {
@@ -199,8 +200,6 @@ const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
 const LONG_LINE_THRESHOLD = 500;
 const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
 const MAX_REPORTED_LOCATIONS = 5;
-/** A trailing acceptance directive, dropped before the line checks so it never triggers the rule it accepts. */
-const ACCEPTANCE_DIRECTIVE_COMMENT = /\/\/\s*swamp-quality-ignore\b.*$/;
 
 const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
   "eval-reference": "eval",
@@ -335,7 +334,10 @@ export async function analyzeExtensionSafety(
       // warns.
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].replace(ACCEPTANCE_DIRECTIVE_COMMENT, "");
+        // Drop exactly the acceptance directive the parser recognises (a
+        // real comment, never text inside a string literal), so a directive
+        // never triggers the rule it accepts and nothing else is hidden.
+        const line = withoutDirective(lines[i], file);
         const stripped = line.replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
           warnings.push(issue(
@@ -379,8 +381,14 @@ export async function analyzeExtensionSafety(
         } catch {
           continue;
         }
+        // As for `.ts` lines: a Markdown directive's own text (its reason
+        // may quote an address) must not trigger the rule it accepts.
+        const scanned = content.split("\n").map((l) =>
+          withoutDirective(l, file)
+        )
+          .join("\n");
         for (const rule of matchingRules) {
-          for (const detected of rule.detect(content, file)) {
+          for (const detected of rule.detect(scanned, file)) {
             const detection: ContentDetection = typeof detected === "string"
               ? { message: detected }
               : detected;
