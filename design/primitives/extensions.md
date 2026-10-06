@@ -165,8 +165,21 @@ whoami, the versions list and the drift lookup; OSV and npm for the
 dependency-trust audit) and says "No API calls were made." only when the list
 is empty. In JSON these are the `registryChecks` and `apiCalls` fields of the
 `dry_run` document, beside `contentHash`. `extension quality` packages
-through the same prepare phase but skips the registry checks and makes no
-registry call.
+through the same prepare phase, on a cache hit too, but skips the registry
+checks and makes no registry call. It runs the local gates in `collect`
+mode (`localGates`): each failed gate (content collectives, the
+additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
+upgrade chain, review errors, archive size) is recorded instead of thrown,
+files a check rejected (hidden, symlink, disallowed type, oversized,
+unreadable, disallowed additionalFiles) are left out of the archive (never
+copied into it), and the rubric is scored and printed beside the failures.
+Such an archive is never cached or uploaded. A push enforces: the first
+failure throws.
+
+The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
+version that wrote each entry and is reused only by that version, because a
+reused archive skips the fmt/lint gate. The version is not part of the hash,
+which also keys the adversarial-review report.
 
 The content hash is layout-bound: files are labelled by their path relative
 to the swamp repo dir, so the same extension hashes differently from a
@@ -629,10 +642,17 @@ them.
 
 | Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                            |
 | ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply                                                      |
+| **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
 | **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
 | **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
 | **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default behavior                                                                                                 |
+
+Every lint of extension code (push, `extension quality`, `extension fmt`)
+passes `--rules-exclude=no-import-prefix`: with a project config Deno's
+recommended set forbids the `npm:`/`jsr:` imports the bare-specifier finding
+asks for, so the two would contradict. The project's other rules still apply.
+The `bare-specifiers` finding names, per name, the import-map target to write
+instead (exact key, else the longest trailing-slash prefix key).
 
 In the bare-specifier row, `--node-modules-dir=auto` also creates `.deno/`
 metadata if needed.
@@ -1106,8 +1126,8 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   after an HTML comment is harmless; stacked directives share a target.
   Directive text inside a Markdown fenced code block or a source `/* ... */`
   block is documentation and is not parsed. No reason, the
-  `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
-  rule, a `*/` after the directive on its line (a block comment that would
+  `<reason>` placeholder, an unknown, error-level or otherwise non-acceptable
+  rule (with its remediation), an extension-scoped rule, a `*/` after the directive on its line (a block comment that would
   hide code from the safety scan), or more than 50 directives in a file is a
   blocking `invalid-acceptance` finding naming the comment; reasons are
   capped at 200 characters and rejected, never truncated.
@@ -1115,8 +1135,9 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   `quality.yaml` beside `manifest.yaml`, discovered by location only (most
   manifests are regenerated and the manifest schema drops unknown keys
   silently), strict schema, version 1. It carries extension-scoped
-  acceptances (`bare-specifiers`), a site rule for a `.txt` file (no comment
-  form; file-wide, contained in the manifest's directory) and the `generated`
+  acceptances (no catalog rule is one today: `bare-specifiers` is not
+  acceptable, since the registry cannot score the extension however it is
+  justified), a site rule for a `.txt` file (no comment form; file-wide, contained in the manifest's directory) and the `generated`
   declaration `{ by, source, commit }` agreed with #3065, which accepts
   `testing-completeness` for the package; a file entry names a site-scoped
   rule in a `.txt` file only, never a file-scoped one. It joins the content

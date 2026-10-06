@@ -351,13 +351,17 @@ Deno.test("parseAcceptanceDirectives: the adversarial-review family and the meta
   }
 });
 
-Deno.test("parseAcceptanceDirectives: an extension-scoped rule in a comment points at the sidecar", () => {
+Deno.test("parseAcceptanceDirectives: bare-specifiers cannot be accepted, and the problem names the import-map fix", () => {
   const parsed = parseAcceptanceDirectives(
     "import x from 'lodash'; // swamp-quality-ignore bare-specifiers: fine\n",
     TS,
   );
   assertEquals(parsed.directives, []);
-  assertStringIncludes(parsed.invalid[0].problem, "quality.yaml");
+  assertStringIncludes(
+    parsed.invalid[0].problem,
+    '"bare-specifiers" is not a rule that can be accepted',
+  );
+  assertStringIncludes(parsed.invalid[0].problem, "import-map target");
 });
 
 Deno.test("parseAcceptanceDirectives: a malformed directive is invalid", () => {
@@ -412,9 +416,9 @@ Deno.test("validateAcceptance: a site-scoped rule in the sidecar is refused", ()
     validateAcceptance("credentials-sensitive-field", "x", "sidecar")!,
     "site-scoped",
   );
-  assertEquals(
-    validateAcceptance("bare-specifiers", "x", "sidecar"),
-    undefined,
+  assertStringIncludes(
+    validateAcceptance("bare-specifiers", "x", "sidecar")!,
+    "not a rule that can be accepted",
   );
   assertStringIncludes(
     validateAcceptance("testing-completeness", "x", "sidecar")!,
@@ -426,7 +430,7 @@ Deno.test("validateAcceptance: a site-scoped rule in the sidecar is refused", ()
   );
   assertStringIncludes(
     validateAcceptance("bare-specifiers", "x", "sidecar-file")!,
-    "takes no file",
+    "not a rule that can be accepted",
   );
 });
 
@@ -578,7 +582,7 @@ Deno.test("acceptanceSnippet: a site finding in Markdown is an HTML comment on t
   assertStringIncludes(snippet?.placement ?? "", "above line 3 of README.md");
 });
 
-Deno.test("acceptanceSnippet: a site finding in a .txt file and an extension finding are sidecar entries", () => {
+Deno.test("acceptanceSnippet: a site finding in a .txt file is a sidecar entry; bare-specifiers has none", () => {
   const txt = acceptanceSnippet(
     { ruleId: "ipv4-address-literals", file: "/ext/docs/hosts.txt", line: 2 },
     "/ext",
@@ -586,12 +590,13 @@ Deno.test("acceptanceSnippet: a site finding in a .txt file and an extension fin
   assertStringIncludes(txt?.text ?? "", "- rule: ipv4-address-literals");
   assertStringIncludes(txt?.text ?? "", "file: docs/hosts.txt");
   assertStringIncludes(txt?.text ?? "", "reason: <reason>");
-  const ext = acceptanceSnippet(
-    { ruleId: "bare-specifiers", file: "(multiple files)" },
-    "/ext",
+  assertEquals(
+    acceptanceSnippet(
+      { ruleId: "bare-specifiers", file: "(multiple files)" },
+      "/ext",
+    ),
+    undefined,
   );
-  assertStringIncludes(ext?.text ?? "", "- rule: bare-specifiers");
-  assertEquals((ext?.text ?? "").includes("file:"), false);
 });
 
 Deno.test("acceptanceSnippet: testing-completeness is a header comment; unacceptable rules have no snippet", () => {

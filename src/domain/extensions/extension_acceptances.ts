@@ -155,7 +155,12 @@ export function validateAcceptance(
     return `"${ruleId}" is an error-level rule and cannot be accepted`;
   }
   if (!isAcceptableRule(ruleId)) {
-    return `"${ruleId}" is not a rule that can be accepted`;
+    // The problem is quoted inside a sentence the caller ends with a period.
+    return entry.remediation
+      ? `"${ruleId}" is not a rule that can be accepted. ${
+        entry.remediation.replace(/\.$/, "")
+      }`
+      : `"${ruleId}" is not a rule that can be accepted`;
   }
   if (reason.length === 0) {
     return "a reason is required after the colon";

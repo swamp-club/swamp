@@ -43,6 +43,7 @@ import type { CollectiveEntitlement } from "../../domain/extensions/extension_pu
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
+import { listTarGzEntries } from "../../infrastructure/archive/tar_archive.ts";
 
 function makeManifest(
   overrides?: Partial<ExtensionManifest>,
@@ -1993,27 +1994,56 @@ Deno.test("extensionPushPrepare: a header comment accepts testing-completeness f
   });
 });
 
-Deno.test("extensionPushPrepare: a sidecar entry accepts the bare-specifiers finding", async () => {
+Deno.test("extensionPushPrepare: a sidecar entry for bare-specifiers is an invalid acceptance that blocks the push", async () => {
   await withAcceptanceFixture({
     "models/a.ts": 'import x from "lodash";\nexport const a = x;\n',
     "quality.yaml":
       "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: scored locally\n",
   }, async (dir, paths) => {
-    const result = await extensionPushPrepare(
-      ctx,
-      makePrepareDeps(),
-      acceptanceInput(dir, [paths["models/a.ts"]]),
-    );
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      )
+    ) as SwampError;
+    const details = error.details as { reviewRuleErrors: ReviewFinding[] };
     assertEquals(
-      result.reviewRulesResult.warnings.filter((w) =>
-        w.ruleId === "bare-specifiers"
-      ),
-      [],
+      details.reviewRuleErrors.map((f) => f.ruleId),
+      ["invalid-acceptance"],
     );
-    assertEquals(result.acceptances.accepted.length, 1);
-    assertEquals(result.acceptances.accepted[0].ruleId, "bare-specifiers");
-    assertEquals(result.acceptances.accepted[0].source, "sidecar");
-    assertEquals(result.acceptances.accepted[0].file, undefined);
+    assertStringIncludes(
+      details.reviewRuleErrors[0].message,
+      '"bare-specifiers" is not a rule that can be accepted. Replace each bare name',
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-map replacement and stays a warning", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import { z } from "zod";\nimport { join } from "@std/path";\nimport x from "lodash";\nexport const a = [z, join, x];\n',
+    "deno.json": JSON.stringify({
+      imports: { "zod": "npm:zod@4.3.6", "@std/": "jsr:@std/" },
+    }),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+    });
+    const bare = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "bare-specifiers"
+    );
+    assertEquals(bare.length, 1);
+    assertEquals(bare[0].severity, "medium");
+    assertEquals(
+      bare[0].message,
+      "Extension uses bare import specifiers, which the registry's scorer " +
+        "cannot resolve, so it would publish unscored. Replace " +
+        '"@std/path" with "jsr:@std/path"; ' +
+        '"lodash" with an explicit npm: or jsr: specifier; ' +
+        '"zod" with "npm:zod@4.3.6".',
+    );
   });
 });
 
@@ -2111,4 +2141,240 @@ Deno.test("extensionPushPrepare: an accepted finding in an additional file maps 
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+// ── Local gates in collect mode (extension quality) ─────────────────
+
+async function archiveEntries(bytes: Uint8Array): Promise<string[]> {
+  return await listTarGzEntries(ReadableStream.from([bytes]));
+}
+
+/** A real extension dir: one model plus the given additional files. */
+async function withCollectFixture(
+  additional: Record<string, string>,
+  fn: (dir: string, input: ExtensionPushPrepareInput) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "collect-gates-" });
+  try {
+    await Deno.mkdir(join(dir, "models"));
+    const model = join(dir, "models", "echo.ts");
+    await Deno.writeTextFile(model, "export const x = 1;\n");
+    const rels = Object.keys(additional);
+    for (const [rel, content] of Object.entries(additional)) {
+      await Deno.writeTextFile(join(dir, rel), content);
+    }
+    const input = buildPrepareInput(
+      makeManifest({ additionalFiles: rels }),
+      dir,
+      {
+        allModelFiles: [model],
+        modelEntryPoints: [model],
+        additionalFilePaths: rels.map((r) => join(dir, r)),
+        registryChecks: "skip",
+        localGates: "collect",
+      },
+    );
+    await fn(dir, input);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("extensionPushPrepare: collect mode records every failed local gate and still builds the archive", async () => {
+  await withCollectFixture({ "README.md": "# hi\n" }, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [{
+            ruleId: "dynamic-code",
+            file: input.allModelFiles[0],
+            line: 1,
+            message: "File contains eval()",
+          }],
+          warnings: [],
+        }),
+      extractDependencySpecifiers: () =>
+        Promise.resolve([{
+          name: "left-pad",
+          version: "1",
+          registry: "npm",
+          sourceFile: input.allModelFiles[0],
+        }]),
+      checkDependencyTrust: () =>
+        Promise.resolve({
+          errors: [{ dependency: "npm:left-pad@1", message: "untrusted" }],
+          warnings: [],
+          audited: [],
+          passed: false,
+        }),
+      checkExtensionQuality: () =>
+        Promise.resolve({
+          passed: false,
+          issues: [{ check: "fmt", output: "not formatted" }],
+        }),
+      checkReviewRules: () =>
+        Promise.resolve({
+          errors: [{
+            ruleId: "schema-strictness",
+            dimension: "schema",
+            severity: "high",
+            file: input.allModelFiles[0],
+            message: "blocking",
+          } as ReviewFinding],
+          warnings: [],
+          passed: false,
+        }),
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, input);
+
+    assertEquals(
+      result.gateFailures.map((f) => f.gate),
+      ["safety", "dependency-trust", "fmt-lint", "review"],
+    );
+    assertStringIncludes(result.gateFailures[0].message, "safety errors");
+    // The model has a site-level error, not a file-rejecting one, so it is
+    // still packaged and the rubric can score it.
+    const entries = await archiveEntries(result.archiveBytes);
+    assertEquals(entries.includes("extension/models/echo.ts"), true);
+    assertEquals(entries.includes("extension/files/README.md"), true);
+  });
+});
+
+Deno.test("extensionPushPrepare: enforce mode (the default) still throws the first failed local gate", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      checkExtensionQuality: () =>
+        Promise.resolve({
+          passed: false,
+          issues: [{ check: "lint", output: "lint" }],
+        }),
+    });
+    const error = await assertRejects(
+      () =>
+        extensionPushPrepare(ctx, deps, { ...input, localGates: undefined }),
+    ) as SwampError;
+    assertStringIncludes(error.message, "formatting or lint issues");
+  });
+});
+
+Deno.test("extensionPushPrepare: collect mode leaves files rejected by safety and the allowlist out of the archive", async () => {
+  await withCollectFixture({
+    "README.md": "# hi\n",
+    ".secret.txt": "token\n",
+    "tool.sh": "#!/bin/sh\n",
+    "LICENSE.md": "MIT\n",
+  }, async (dir, input) => {
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [
+            {
+              ruleId: "hidden-file",
+              file: join(dir, ".secret.txt"),
+              message: "Hidden files are not allowed in extensions.",
+            },
+            {
+              ruleId: "file-type",
+              file: join(dir, "tool.sh"),
+              message: 'File extension ".sh" is not allowed.',
+            },
+          ],
+          warnings: [],
+        }),
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, input);
+
+    assertEquals(
+      result.gateFailures.map((f) => f.gate),
+      ["additional-files", "safety"],
+    );
+    const files = (await archiveEntries(result.archiveBytes))
+      .filter((e) => e.startsWith("extension/files/") && !e.endsWith("/"))
+      .sort();
+    assertEquals(files, [
+      "extension/files/LICENSE.md",
+      "extension/files/README.md",
+    ]);
+  });
+});
+
+Deno.test("extensionPushPrepare: collect mode never follows a symlink a safety error rejected", async () => {
+  const outside = await Deno.makeTempDir({ prefix: "collect-outside-" });
+  try {
+    const target = join(outside, "secret.md");
+    await Deno.writeTextFile(target, "do not package\n");
+    await withCollectFixture({ "README.md": "# hi\n" }, async (dir, input) => {
+      const link = join(dir, "NOTES.md");
+      await Deno.symlink(target, link, { type: "file" });
+      const withLink: ExtensionPushPrepareInput = {
+        ...input,
+        manifest: {
+          ...input.manifest,
+          additionalFiles: [...input.manifest.additionalFiles, "NOTES.md"],
+        },
+        additionalFilePaths: [...input.additionalFilePaths, link],
+      };
+      const deps = makePrepareDeps({
+        analyzeExtensionSafety: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "symlink",
+              file: link,
+              message: "Symlinks are not allowed in extensions.",
+            }],
+            warnings: [],
+          }),
+      });
+
+      const result = await extensionPushPrepare(ctx, deps, withLink);
+
+      assertEquals(result.gateFailures.map((f) => f.gate), ["safety"]);
+      const entries = await archiveEntries(result.archiveBytes);
+      assertEquals(entries.includes("extension/files/NOTES.md"), false);
+      assertEquals(entries.includes("extension/files/README.md"), true);
+    });
+  } finally {
+    await Deno.remove(outside, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("extensionPushPrepare: collect mode with no failed gate reports none", async () => {
+  await withCollectFixture({ "README.md": "# hi\n" }, async (_dir, input) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
+    assertEquals(result.gateFailures, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cached archive when a check rejected files", async () => {
+  await withCollectFixture(
+    { "README.md": "# hi\n", "NOTES.md": "n\n" },
+    async (dir, input) => {
+      let bundles = 0;
+      const deps = makePrepareDeps({
+        bundleEntryPoint: () => {
+          bundles++;
+          return Promise.resolve("/* bundled */");
+        },
+        analyzeExtensionSafety: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "symlink",
+              file: join(dir, "NOTES.md"),
+              message: "Symlinks are not allowed in extensions.",
+            }],
+            warnings: [],
+          }),
+      });
+      const result = await extensionPushPrepare(ctx, deps, {
+        ...input,
+        cachedArchive: new Uint8Array([0x1f, 0x8b, 0x00]),
+      });
+      assertEquals(bundles, 1, "the cached archive must not be reused");
+      const entries = await archiveEntries(result.archiveBytes);
+      assertEquals(entries.includes("extension/files/NOTES.md"), false);
+      assertEquals(result.excludedFromArchive, [join(dir, "NOTES.md")]);
+    },
+  );
 });

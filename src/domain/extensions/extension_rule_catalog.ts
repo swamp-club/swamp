@@ -27,7 +27,9 @@
  * false for it and nothing else in the codebase decides otherwise. The
  * adversarial-review family is warning-level but is evidence, not a lint,
  * and is not acceptable here either (it is handled by the attestation
- * design, swamp-club#3065). A rule id that is not in the catalog is unknown
+ * design, swamp-club#3065). `bare-specifiers` is warning-level but not
+ * acceptable: an accepted finding would still publish an extension the
+ * registry cannot score. A rule id that is not in the catalog is unknown
  * and is never acceptable.
  *
  * The detectors keep their own severities (`ReviewRule.severity`,
@@ -149,13 +151,15 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
       "Add a sibling <name>_test.ts covering the success and failure paths.",
   },
   // ── Extension-scoped (appended by push) ─────────────────────────────
+  // Not acceptable: the registry cannot score the extension however the
+  // author justifies it, and the fix is mechanical.
   {
     id: "bare-specifiers",
     severity: "warning",
     scope: "extension",
-    acceptable: true,
+    acceptable: false,
     remediation:
-      "Use explicit npm: or jsr: prefixes (for example npm:package@version) so the registry scorer can resolve imports.",
+      "Replace each bare name with its import-map target from deno.json (an explicit npm: or jsr: specifier such as npm:zod@4) so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
   // ── Adversarial-review evidence: warnings, never acceptable here ────
   {

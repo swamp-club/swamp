@@ -46,8 +46,6 @@ import { findRule } from "./extension_rule_catalog.ts";
  *   source: https://api.example.com/openapi.yaml
  *   commit: 0123abcd
  * accept:
- *   - rule: bare-specifiers        # an extension-scoped rule
- *     reason: scored locally; the server cannot resolve the import map
  *   - rule: ipv4-address-literals  # a site-scoped rule in a .txt file, which has no comment form
  *     file: docs/hosts.txt
  *     reason: documented lab addresses

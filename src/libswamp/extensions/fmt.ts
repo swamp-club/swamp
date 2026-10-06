@@ -21,7 +21,11 @@ import type {
   QualityCheckResult,
   QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
-import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
+import {
+  checkExtensionQuality,
+  denoToolConfigArgs,
+  extensionLintArgs,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -55,13 +59,21 @@ export type ExtensionFmtEvent =
 export interface ExtensionFmtInput {
   tsFiles: string[];
   check: boolean;
+  /**
+   * The project `deno.json`, found as push finds it, so fmt formats and
+   * lints under the same rules push checks with.
+   */
+  denoConfigPath?: string;
 }
 
 /** Dependencies for the extension fmt operation. */
 export interface ExtensionFmtDeps {
-  checkQuality: (files: string[]) => Promise<QualityCheckResult>;
-  runFmt: (files: string[]) => Promise<string>;
-  runLint: (files: string[]) => Promise<string>;
+  checkQuality: (
+    files: string[],
+    denoConfigPath?: string,
+  ) => Promise<QualityCheckResult>;
+  runFmt: (files: string[], denoConfigPath?: string) => Promise<string>;
+  runLint: (files: string[], denoConfigPath?: string) => Promise<string>;
 }
 
 /** Wires real infrastructure into ExtensionFmtDeps. */
@@ -70,16 +82,16 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
   const denoPath = await denoRuntime.ensureDeno();
 
   return {
-    checkQuality: (files: string[]) =>
+    checkQuality: (files: string[], denoConfigPath?: string) =>
       checkExtensionQuality(
         files,
         denoPath,
-        undefined,
+        denoConfigPath,
         denoRuntime.getDenoEnv(),
       ),
-    runFmt: async (files: string[]) => {
+    runFmt: async (files: string[], denoConfigPath?: string) => {
       const command = new Deno.Command(denoPath, {
-        args: ["fmt", "--no-config", ...files],
+        args: ["fmt", ...denoToolConfigArgs(denoConfigPath), ...files],
         stdout: "piped",
         stderr: "piped",
         env: { ...denoRuntime.getDenoEnv(), NO_COLOR: "1" },
@@ -90,9 +102,13 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
         new TextDecoder().decode(output.stdout)
       ).trim();
     },
-    runLint: async (files: string[]) => {
+    runLint: async (files: string[], denoConfigPath?: string) => {
       const command = new Deno.Command(denoPath, {
-        args: ["lint", "--fix", "--no-config", ...files],
+        args: [
+          ...(await extensionLintArgs(denoConfigPath)),
+          "--fix",
+          ...files,
+        ],
         stdout: "piped",
         stderr: "piped",
         env: { ...denoRuntime.getDenoEnv(), NO_COLOR: "1" },
@@ -124,7 +140,10 @@ export async function* extensionFmt(
       }
 
       if (input.check) {
-        const result = await deps.checkQuality(input.tsFiles);
+        const result = await deps.checkQuality(
+          input.tsFiles,
+          input.denoConfigPath,
+        );
         yield {
           kind: "completed",
           data: {
@@ -137,9 +156,15 @@ export async function* extensionFmt(
       }
 
       // Auto-fix mode
-      const fmtOutput = await deps.runFmt(input.tsFiles);
-      const lintOutput = await deps.runLint(input.tsFiles);
-      const remaining = await deps.checkQuality(input.tsFiles);
+      const fmtOutput = await deps.runFmt(input.tsFiles, input.denoConfigPath);
+      const lintOutput = await deps.runLint(
+        input.tsFiles,
+        input.denoConfigPath,
+      );
+      const remaining = await deps.checkQuality(
+        input.tsFiles,
+        input.denoConfigPath,
+      );
 
       yield {
         kind: "completed",

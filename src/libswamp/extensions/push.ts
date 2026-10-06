@@ -32,7 +32,10 @@ import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
-import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
+import {
+  extractBareSpecifierNames,
+  importMapTarget,
+} from "../../domain/models/bundle.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
 import type {
   ExtensionContentMetadata,
@@ -214,6 +217,15 @@ export interface ExtensionPushPrepareInput {
    */
   registryChecks: RegistryChecksMode;
   /**
+   * What to do when a local gate fails (content collectives, the
+   * additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
+   * upgrade chain, review errors, archive size). A push enforces them: the
+   * first failure throws. `extension quality` collects them so it can still
+   * score the archive and print the rubric beside every failure. Defaults to
+   * `enforce`.
+   */
+  localGates?: LocalGatesMode;
+  /**
    * The channel the push publishes to; stable when omitted. The
    * version-exists check compares it with the channel a published version
    * is already on.
@@ -238,6 +250,43 @@ export interface ExtensionPushPrepareInput {
    */
   cachedArchive?: Uint8Array;
 }
+
+/** How the prepare phase treats a failed local gate. */
+export type LocalGatesMode = "enforce" | "collect";
+
+/** The local gates prepare runs, in the order it runs them. */
+export type LocalGate =
+  | "content-collectives"
+  | "additional-files"
+  | "safety"
+  | "dependency-trust"
+  | "skills"
+  | "fmt-lint"
+  | "upgrade-chain"
+  | "review"
+  | "archive-size";
+
+/** A local gate that failed in `collect` mode, with the error push would throw. */
+export interface LocalGateFailure {
+  gate: LocalGate;
+  message: string;
+  details?: unknown;
+}
+
+/**
+ * Safety rules whose error rejects the file itself. In `collect` mode a file
+ * carrying one is left out of the archive: it is never copied, so a
+ * rejected symlink's target is not packaged. (A bundled entry point that
+ * imports a rejected file can still resolve it; the archive is only scored
+ * locally.)
+ */
+const FILE_REJECTING_SAFETY_RULES: ReadonlySet<string> = new Set([
+  "hidden-file",
+  "file-type",
+  "symlink",
+  "file-size",
+  "unreadable-file",
+]);
 
 /** Result of the prepare phase, containing everything needed for push. */
 export interface ExtensionPushPrepared {
@@ -265,6 +314,18 @@ export interface ExtensionPushPrepared {
   registryChecks: RegistryCheckResult[];
   /** The content hash the review report is keyed by, when the caller computed one. */
   contentHash: string | undefined;
+  /**
+   * The local gates that failed, in `collect` mode. Always empty under
+   * `enforce`, where the first failure throws instead. When non-empty the
+   * archive was built without the rejected files, and must be neither
+   * uploaded nor cached.
+   */
+  gateFailures: LocalGateFailure[];
+  /**
+   * The files a gate rejected and the archive leaves out, in `collect` mode
+   * (sorted). Always empty under `enforce`.
+   */
+  excludedFromArchive: string[];
   /**
    * What the registry reported the extension's collective entitles the
    * caller to, from the sign-in whoami call. Undefined when the registry sent
@@ -705,6 +766,17 @@ export async function extensionPushPrepare(
   // packaging-only callers (`skip`) never contact the registry.
   const mode = input.registryChecks;
   const registryChecks: RegistryCheckResult[] = [];
+  // Local gates: a push throws the first failure; `collect` records each one
+  // and carries on to packaging, so quality can score beside them.
+  const gateFailures: LocalGateFailure[] = [];
+  const failGate = (gate: LocalGate, error: SwampError): void => {
+    if (input.localGates !== "collect") throw error;
+    gateFailures.push({
+      gate,
+      message: error.message,
+      ...(error.details !== undefined ? { details: error.details } : {}),
+    });
+  };
   let credentials:
     | { serverUrl: string; apiKey: string; username: string }
     | undefined;
@@ -896,13 +968,16 @@ export async function extensionPushPrepare(
         0,
         slashIndex + 1,
       );
-      throw validationFailed(
-        "Extension content uses collectives that don't match the extension package. " +
-          "All model types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
-        {
-          expectedCollective,
-          mismatches: collectiveResult.mismatches,
-        },
+      failGate(
+        "content-collectives",
+        validationFailed(
+          "Extension content uses collectives that don't match the extension package. " +
+            "All model types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
+          {
+            expectedCollective,
+            mismatches: collectiveResult.mismatches,
+          },
+        ),
       );
     }
   }
@@ -912,16 +987,22 @@ export async function extensionPushPrepare(
 
   // 6a. Pre-check additionalFiles against the extension allowlist so the
   // error can name the manifest field and suggest `binaries`.
+  // Files a gate rejected; in `collect` mode they are left out of the archive.
+  const rejectedFiles = new Set<string>();
   for (const file of input.additionalFilePaths) {
     const ext = extname(file).toLowerCase();
     if (!ALLOWED_EXTENSIONS.has(ext) && !LEGAL_BASENAMES.has(basename(file))) {
       const rel = relative(input.repoDir, file);
-      throw validationFailed(
-        `File "${rel}" in additionalFiles has extension "${ext}" which is not allowed. ` +
-          `Allowed extensions for additionalFiles: ${
-            [...ALLOWED_EXTENSIONS].join(", ")
-          }. ` +
-          `If this is an executable or binary file, move it to the \`binaries\` field in manifest.yaml instead.`,
+      rejectedFiles.add(file);
+      failGate(
+        "additional-files",
+        validationFailed(
+          `File "${rel}" in additionalFiles has extension "${ext}" which is not allowed. ` +
+            `Allowed extensions for additionalFiles: ${
+              [...ALLOWED_EXTENSIONS].join(", ")
+            }. ` +
+            `If this is an executable or binary file, move it to the \`binaries\` field in manifest.yaml instead.`,
+        ),
       );
     }
   }
@@ -955,9 +1036,17 @@ export async function extensionPushPrepare(
   );
 
   if (safetyResult.errors.length > 0) {
-    throw validationFailed(
-      "Extension has safety errors that must be resolved before pushing.",
-      { safetyErrors: safetyResult.errors },
+    for (const issue of safetyResult.errors) {
+      if (FILE_REJECTING_SAFETY_RULES.has(issue.ruleId)) {
+        rejectedFiles.add(issue.file);
+      }
+    }
+    failGate(
+      "safety",
+      validationFailed(
+        "Extension has safety errors that must be resolved before pushing.",
+        { safetyErrors: safetyResult.errors },
+      ),
     );
   }
 
@@ -975,9 +1064,12 @@ export async function extensionPushPrepare(
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
     dependencyTrustResult = await deps.checkDependencyTrust(specifiers);
     if (dependencyTrustResult.errors.length > 0) {
-      throw validationFailed(
-        "Extension has dependency trust errors that must be resolved before pushing.",
-        { dependencyTrustErrors: dependencyTrustResult.errors },
+      failGate(
+        "dependency-trust",
+        validationFailed(
+          "Extension has dependency trust errors that must be resolved before pushing.",
+          { dependencyTrustErrors: dependencyTrustResult.errors },
+        ),
       );
     }
   } else {
@@ -993,11 +1085,14 @@ export async function extensionPushPrepare(
   if (input.skillDirs.length > 0) {
     const skillResult = await validateExtensionSkills(input.skillDirs);
     if (skillResult.errors.length > 0) {
-      throw validationFailed(
-        "Extension has skill validation errors:\n" +
-          skillResult.errors.map((e) => `  ${e.skill}: ${e.message}`).join(
-            "\n",
-          ),
+      failGate(
+        "skills",
+        validationFailed(
+          "Extension has skill validation errors:\n" +
+            skillResult.errors.map((e) => `  ${e.skill}: ${e.message}`).join(
+              "\n",
+            ),
+        ),
       );
     }
 
@@ -1036,9 +1131,12 @@ export async function extensionPushPrepare(
       deps.getDenoEnv(),
     );
     if (!qualityResult.passed) {
-      throw validationFailed(
-        "Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix.",
-        { qualityErrors: qualityResult.issues },
+      failGate(
+        "fmt-lint",
+        validationFailed(
+          "Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix.",
+          { qualityErrors: qualityResult.issues },
+        ),
       );
     }
   }
@@ -1050,9 +1148,12 @@ export async function extensionPushPrepare(
     input.allModelFiles,
   );
   if (upgradeChainIssues.length > 0) {
-    throw validationFailed(
-      "Extension has model upgrade chain errors that must be resolved before pushing.",
-      { upgradeChainErrors: upgradeChainIssues },
+    failGate(
+      "upgrade-chain",
+      validationFailed(
+        "Extension has model upgrade chain errors that must be resolved before pushing.",
+        { upgradeChainErrors: upgradeChainIssues },
+      ),
     );
   }
 
@@ -1067,9 +1168,12 @@ export async function extensionPushPrepare(
   });
   const reviewRulesResult = findings.reviewRulesResult;
   if (reviewRulesResult.errors.length > 0) {
-    throw validationFailed(
-      "Extension review found issues that must be resolved before pushing.",
-      { reviewRuleErrors: reviewRulesResult.errors },
+    failGate(
+      "review",
+      validationFailed(
+        "Extension review found issues that must be resolved before pushing.",
+        { reviewRuleErrors: reviewRulesResult.errors },
+      ),
     );
   }
   if (
@@ -1082,29 +1186,39 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 11. Bundle entry points + build archive — skip on cache hit
+  // 11. Bundle entry points + build archive — skip on cache hit, unless a
+  // check rejected files: the cached archive was built before the rejection
+  // and may hold them, so collect mode rebuilds without them.
   let totalBundles: number;
   let archiveBytes: Uint8Array;
-  if (usingCachedArchive) {
+  if (usingCachedArchive && rejectedFiles.size === 0) {
     totalBundles = input.modelEntryPoints.length +
       input.vaultEntryPoints.length +
       input.datastoreEntryPoints.length + input.reportEntryPoints.length +
       input.webhookEntryPoints.length;
     archiveBytes = input.cachedArchive!;
   } else {
-    const built = await bundleAndArchive(input, deps, denoPath, ctx);
+    const built = await bundleAndArchive(
+      rejectedFiles.size > 0 ? withoutFiles(input, rejectedFiles) : input,
+      deps,
+      denoPath || await deps.ensureDenoPath(),
+      ctx,
+    );
     totalBundles = built.totalBundles;
     archiveBytes = built.archiveBytes;
   }
   // Same compressed limit pull enforces, so consumers can download what is
   // pushed. The decompressed limit is enforced at install only.
   if (archiveBytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
-    throw validationFailed(
-      `Extension archive is ${
-        formatArchiveBytes(archiveBytes.byteLength)
-      }, over the ${
-        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
-      } archive size limit. Reduce bundled dependencies or binaries.`,
+    failGate(
+      "archive-size",
+      validationFailed(
+        `Extension archive is ${
+          formatArchiveBytes(archiveBytes.byteLength)
+        }, over the ${
+          formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
+        } archive size limit. Reduce bundled dependencies or binaries.`,
+      ),
     );
   }
 
@@ -1188,6 +1302,49 @@ export async function extensionPushPrepare(
     registryChecks,
     contentHash: input.contentHash,
     collectiveEntitlement,
+    gateFailures,
+    excludedFromArchive: [...rejectedFiles].sort(),
+  };
+}
+
+/**
+ * The prepare input with `rejected` files left out of every list the archive
+ * is built from. `additionalFiles` / `additionalFilePaths` and `binaries` /
+ * `binaryFilePaths` are parallel arrays, so each pair is filtered in
+ * lockstep. Used only in `collect` mode.
+ */
+function withoutFiles(
+  input: ExtensionPushPrepareInput,
+  rejected: ReadonlySet<string>,
+): ExtensionPushPrepareInput {
+  const keep = (f: string) => !rejected.has(f);
+  const additional = input.additionalFilePaths
+    .map((path, i) => ({ path, rel: input.manifest.additionalFiles[i] }))
+    .filter((e) => keep(e.path));
+  const binaries = input.binaryFilePaths
+    .map((path, i) => ({ path, rel: input.manifest.binaries[i] }))
+    .filter((e) => keep(e.path));
+  return {
+    ...input,
+    manifest: {
+      ...input.manifest,
+      additionalFiles: additional.map((e) => e.rel),
+      binaries: binaries.map((e) => e.rel),
+    },
+    allModelFiles: input.allModelFiles.filter(keep),
+    modelEntryPoints: input.modelEntryPoints.filter(keep),
+    allVaultFiles: input.allVaultFiles.filter(keep),
+    vaultEntryPoints: input.vaultEntryPoints.filter(keep),
+    allDatastoreFiles: input.allDatastoreFiles.filter(keep),
+    datastoreEntryPoints: input.datastoreEntryPoints.filter(keep),
+    allReportFiles: input.allReportFiles.filter(keep),
+    reportEntryPoints: input.reportEntryPoints.filter(keep),
+    allWebhookFiles: input.allWebhookFiles.filter(keep),
+    webhookEntryPoints: input.webhookEntryPoints.filter(keep),
+    workflowFiles: input.workflowFiles.filter((wf) => keep(wf.sourcePath)),
+    includeFilePaths: input.includeFilePaths.filter(keep),
+    additionalFilePaths: additional.map((e) => e.path),
+    binaryFilePaths: binaries.map((e) => e.path),
   };
 }
 
@@ -1256,6 +1413,48 @@ export interface QualityFindingsInput {
 }
 
 /**
+ * The project `deno.json` import map, or undefined when there is no config
+ * or it has no usable `imports` object.
+ */
+export async function readImportMap(
+  denoConfigPath: string | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (!denoConfigPath) return undefined;
+  try {
+    const config = JSON.parse(await Deno.readTextFile(denoConfigPath));
+    if (
+      config.imports && typeof config.imports === "object" &&
+      !Array.isArray(config.imports)
+    ) {
+      return config.imports as Record<string, string>;
+    }
+  } catch {
+    // Missing or unparseable config — fall back to no import map.
+  }
+  return undefined;
+}
+
+/**
+ * The bare-specifiers finding's message: what happens (the registry cannot
+ * score the extension) and, per name, the explicit specifier to write
+ * instead, taken from the import map when it has one.
+ */
+export function bareSpecifiersMessage(
+  names: string[],
+  imports: Record<string, string> | undefined,
+): string {
+  const fixes = names.map((name) => {
+    const target = importMapTarget(name, imports);
+    return target
+      ? `"${name}" with "${target}"`
+      : `"${name}" with an explicit npm: or jsr: specifier`;
+  });
+  return "Extension uses bare import specifiers, which the registry's scorer " +
+    "cannot resolve, so it would publish unscored. Replace " +
+    `${fixes.join("; ")}.`;
+}
+
+/**
  * Runs the review rules, the bare-specifier check and the declared
  * acceptances over an extension. Push calls it from prepare; quality calls
  * it on every run, including a cache hit, so both report the same findings
@@ -1312,15 +1511,13 @@ export async function runQualityFindings(
     }
   }
   if (bareSpecifiers.size > 0) {
-    const names = [...bareSpecifiers].sort();
+    const imports = await readImportMap(input.denoConfigPath);
     reviewRulesResult.warnings.push({
       ruleId: "bare-specifiers",
       dimension: "scoring",
       severity: "medium",
       file: "(multiple files)",
-      message: `Extension uses bare import specifiers (${
-        names.map((s) => `"${s}"`).join(", ")
-      }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
+      message: bareSpecifiersMessage([...bareSpecifiers].sort(), imports),
       remediation: remediationFor("bare-specifiers"),
     });
   }

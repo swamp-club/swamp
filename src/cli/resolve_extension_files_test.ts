@@ -27,6 +27,8 @@ import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
+  findDenoConfig,
+  findPackageJsonDir,
   inferExtensionsRoot,
   isPulledExtensionManifest,
   planWorkflowArchiveNames,
@@ -2219,6 +2221,43 @@ Deno.test("projectConfigBoundary: the root or repo dir that contains the manifes
     projectConfigBoundary(join("/", "nowhere", "m"), root, repo),
     join("/", "nowhere", "m"),
   );
+});
+
+Deno.test("findDenoConfig: the nearest deno.json walking up to the boundary, inclusive", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "extensions", "models", "ext");
+    await Deno.mkdir(ext, { recursive: true });
+    assertEquals(await findDenoConfig(ext, dir), undefined);
+
+    await Deno.writeTextFile(join(dir, "deno.json"), "{}");
+    assertPathEquals((await findDenoConfig(ext, dir))!, join(dir, "deno.json"));
+
+    await Deno.writeTextFile(join(ext, "deno.json"), "{}");
+    assertPathEquals((await findDenoConfig(ext, dir))!, join(ext, "deno.json"));
+
+    // A deno.json above the boundary is never used.
+    await Deno.remove(join(ext, "deno.json"));
+    assertEquals(
+      await findDenoConfig(ext, join(dir, "extensions")),
+      undefined,
+    );
+  });
+});
+
+Deno.test("findDenoConfig: a directory named deno.json is not a config", async () => {
+  await withTempRepo(async (dir) => {
+    await Deno.mkdir(join(dir, "deno.json"));
+    assertEquals(await findDenoConfig(dir, dir), undefined);
+  });
+});
+
+Deno.test("findPackageJsonDir: the directory holding the nearest package.json", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "extensions", "models");
+    assertEquals(await findPackageJsonDir(ext, dir), undefined);
+    await Deno.writeTextFile(join(dir, "package.json"), "{}");
+    assertPathEquals((await findPackageJsonDir(ext, dir))!, dir);
+  });
 });
 
 Deno.test("resolveExtensionFiles: default in-repo search order for workflows and skills is unchanged", async () => {

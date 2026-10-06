@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname, resolve } from "@std/path";
+import { dirname } from "@std/path";
 import {
   consumeStream,
   createExtensionPushPrepareDeps,
@@ -38,44 +38,18 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
+  findDenoConfig,
   isPulledExtensionManifest,
   projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
+import { VERSION } from "./version.ts";
 import { loadIdentity } from "../load_identity.ts";
 
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
   extensionsDir?: string;
-}
-
-/**
- * Walks up from `startDir` looking for a `deno.json` file, stopping at
- * `boundaryDir` (inclusive). Kept consistent with the equivalent helper
- * in `extension_push.ts`.
- */
-async function findDenoConfig(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  let current = resolve(startDir);
-  const boundary = resolve(boundaryDir);
-
-  while (true) {
-    const candidate = `${current}/deno.json`;
-    try {
-      await Deno.stat(candidate);
-      return candidate;
-    } catch {
-      // not here
-    }
-    if (current === boundary) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return undefined;
 }
 
 export const extensionQualityCommand = new Command()
@@ -143,7 +117,10 @@ export const extensionQualityCommand = new Command()
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const identity = await loadIdentity();
       const prepareDeps = createExtensionPushPrepareDeps(identity);
-      const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
+      const cache = new ExtensionPackageCache(
+        defaultPackageCacheRoot(repoDir),
+        VERSION,
+      );
       const deps = createExtensionQualityDeps(prepareDeps, cache);
       const renderer = createExtensionQualityRenderer(cliCtx.outputMode);
 

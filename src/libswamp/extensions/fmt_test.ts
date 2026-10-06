@@ -140,3 +140,84 @@ Deno.test("extensionFmt: fix mode with remaining issues", async () => {
     },
   ]);
 });
+
+Deno.test("extensionFmt: check mode checks under the project config", async () => {
+  const ctx = createLibSwampContext();
+  const seen: Array<string | undefined> = [];
+  const deps = makeDeps({
+    checkQuality: (_files, denoConfigPath) => {
+      seen.push(denoConfigPath);
+      return Promise.resolve({ passed: true, issues: [] });
+    },
+  });
+
+  await collect<ExtensionFmtEvent>(
+    extensionFmt(ctx, deps, {
+      tsFiles: ["a.ts"],
+      check: true,
+      denoConfigPath: "/ext/deno.json",
+    }),
+  );
+
+  assertEquals(seen, ["/ext/deno.json"]);
+});
+
+Deno.test("extensionFmt: fix mode formats, lints and re-checks under the project config", async () => {
+  const ctx = createLibSwampContext();
+  const seen: string[] = [];
+  const record = (step: string, denoConfigPath?: string) =>
+    seen.push(`${step}:${denoConfigPath ?? "none"}`);
+  const deps = makeDeps({
+    runFmt: (_files, denoConfigPath) => {
+      record("fmt", denoConfigPath);
+      return Promise.resolve("");
+    },
+    runLint: (_files, denoConfigPath) => {
+      record("lint", denoConfigPath);
+      return Promise.resolve("");
+    },
+    checkQuality: (_files, denoConfigPath) => {
+      record("check", denoConfigPath);
+      return Promise.resolve({ passed: true, issues: [] });
+    },
+  });
+
+  await collect<ExtensionFmtEvent>(
+    extensionFmt(ctx, deps, {
+      tsFiles: ["a.ts"],
+      check: false,
+      denoConfigPath: "/ext/deno.json",
+    }),
+  );
+
+  assertEquals(seen, [
+    "fmt:/ext/deno.json",
+    "lint:/ext/deno.json",
+    "check:/ext/deno.json",
+  ]);
+});
+
+Deno.test("extensionFmt: without a project config every step uses the defaults", async () => {
+  const ctx = createLibSwampContext();
+  const seen: Array<string | undefined> = [];
+  const deps = makeDeps({
+    runFmt: (_files, denoConfigPath) => {
+      seen.push(denoConfigPath);
+      return Promise.resolve("");
+    },
+    runLint: (_files, denoConfigPath) => {
+      seen.push(denoConfigPath);
+      return Promise.resolve("");
+    },
+    checkQuality: (_files, denoConfigPath) => {
+      seen.push(denoConfigPath);
+      return Promise.resolve({ passed: true, issues: [] });
+    },
+  });
+
+  await collect<ExtensionFmtEvent>(
+    extensionFmt(ctx, deps, { tsFiles: ["a.ts"], check: false }),
+  );
+
+  assertEquals(seen, [undefined, undefined, undefined]);
+});

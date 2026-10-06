@@ -299,9 +299,12 @@ Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
 bundle by the swamp packager. Bare specifiers backed by `deno.json` or
 `package.json` work for the bundler, but follow the hermeticity rule above for
 anything that needs to score: prefer the inline form in entrypoint files.
-`swamp extension quality` detects bare specifiers before scoring and fails
-early; `swamp extension push` adds a review warning that the extension may show
-as unscored on the registry.
+`swamp extension quality` and `swamp extension push` report the same
+`bare-specifiers` warning, naming for each bare name its explicit target from
+the `deno.json` import map. Quality still prints the rubric but fails, because
+the registry would publish the extension unscored; push warns. The finding
+cannot be accepted. Swamp's lint never applies Deno's `no-import-prefix` rule,
+so a `deno.json` needs no exclude for the `npm:`/`jsr:` form.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
@@ -457,9 +460,12 @@ a packaged file, or a version bump, moves the hash.
 `swamp extension push` all consult a content-hash-keyed cache at
 `.swamp/cache/packages/<hash>/`. The hash is derived from the manifest, every
 referenced source file, and the deno/package-json configuration — so any source
-change invalidates the entry by construction. The cache is a pure optimization:
-a cache miss falls back to fresh packaging. The cache is never load-bearing for
-correctness and can be deleted safely at any time.
+change invalidates the entry by construction. An entry is reused only by the
+swamp version that wrote it, since a reused archive skips the fmt/lint gate; a
+cache hit still runs every other gate. Quality writes the cache only when every
+gate passed. The cache is a pure optimization: a cache miss falls back to fresh
+packaging. The cache is never load-bearing for correctness and can be deleted
+safely at any time.
 
 ## Version-Drift Check
 
@@ -528,8 +534,8 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 4. **Detect project config** — walks up from manifest directory to repo root
    looking for `deno.json` (takes priority) then `package.json`. If found and
    the extension uses bare specifiers, it is used for bundling. `deno.json` is
-   also used for quality checks; `package.json` projects use default lint/fmt
-   rules.
+   also used for quality checks, by push, `extension quality` and
+   `extension fmt` alike; `package.json` projects use default lint/fmt rules.
 5. **Resolve include files** — collects files from the manifest's `include`
    field (if present). These are copied to the archive alongside model sources
    but not bundled or quality-checked.
@@ -537,11 +543,14 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    disallowed patterns and limits
 7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
    datastore, and report files (using the project's `deno.json` config if
-   present, otherwise default rules). Include files are excluded.
+   present, otherwise default rules). Lint never applies `no-import-prefix`,
+   which would forbid the `npm:`/`jsr:` imports swamp requires. Include files
+   are excluded.
 8. **Bare specifier check** — scans source files for bare import specifiers
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
-   cannot resolve bare specifiers, so a warning is added to the review warnings
-   prompting the user to confirm before push.
+   cannot resolve bare specifiers, so a warning naming each import-map
+   replacement is added to the review warnings, prompting the user to confirm
+   before push. It cannot be accepted.
 9. **Bundle TypeScript** — compiles each entry point (models, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
@@ -558,7 +567,9 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 
 Format and lint extension files before publishing. The `extension fmt` command
 resolves all TypeScript files referenced by the manifest (model entry points and
-their local imports), then runs `deno fmt` and `deno lint --fix` on them.
+their local imports), then runs `deno fmt` and `deno lint --fix` on them under
+the project `deno.json` that push uses (found the same way), or Deno's defaults
+when there is none, so `fmt --check` and push give the same verdict.
 
 ### Commands
 
@@ -631,8 +642,10 @@ One finding per offending line, so each can be accepted on its own.
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
 `testing-completeness`) and the extension-scoped `bare-specifiers` finding are
-warnings too. `testing-completeness` reports once per extension when more than
-one entry point has no sibling `_test.ts`, naming the files. The
+warnings too. `bare-specifiers` cannot be accepted: the registry cannot score
+the extension however it is justified, and the fix is to write each import's
+`npm:`/`jsr:` target. `testing-completeness` reports once per extension when
+more than one entry point has no sibling `_test.ts`, naming the files. The
 `adversarial-review-report` family is evidence, not a lint, and has no
 acceptance form.
 
@@ -674,11 +687,11 @@ file (the top is conventional):
 // swamp-quality-ignore testing-completeness: thin wrapper covered by the integration suite
 ```
 
-**Extension-scoped findings**, a site rule in a `.txt` file (which has no
-comment form), and the `generated` declaration for a codegen package live in a
-`quality.yaml` sidecar beside `manifest.yaml`. It is discovered by location,
-never named in the manifest (most manifests are regenerated), packaged into the
-archive root beside `manifest.yaml`, and part of the content hash:
+A site rule in a `.txt` file (which has no comment form) and the `generated`
+declaration for a codegen package live in a `quality.yaml` sidecar beside
+`manifest.yaml`. It is discovered by location, never named in the manifest (most
+manifests are regenerated), packaged into the archive root beside
+`manifest.yaml`, and part of the content hash:
 
 ```yaml
 version: 1
@@ -687,8 +700,6 @@ generated: # a codegen package: accepts testing-completeness for every model
   source: https://api.example.com/openapi.yaml
   commit: 0123abcd
 accept:
-  - rule: bare-specifiers
-    reason: scored locally; the server cannot resolve the import map
   - rule: ipv4-address-literals
     file: docs/hosts.txt
     reason: documented lab addresses
@@ -700,11 +711,12 @@ Rules, enforced by construction:
   still warns. The sidecar refuses site-scoped rules except for `.txt` files,
   and refuses files outside the manifest's directory.
 - A comment with no reason, with the `<reason>` placeholder still in place,
-  naming an unknown or error-level rule, or more than 50 per file, is a blocking
-  `invalid-acceptance` error naming the comment. Reasons are capped at 200
-  characters, and in source files may not contain a quote character,
-  `Deno.Command(` or a base64 run: the safety checks scan every line as written,
-  so a directive can never trigger or hide a finding.
+  naming an unknown, error-level or otherwise non-acceptable rule
+  (`bare-specifiers`, the `adversarial-review-report` family), or more than 50
+  per file, is a blocking `invalid-acceptance` error naming the comment. Reasons
+  are capped at 200 characters, and in source files may not contain a quote
+  character, `Deno.Command(` or a base64 run: the safety checks scan every line
+  as written, so a directive can never trigger or hide a finding.
 - An acceptance whose rule no longer fires there is a `stale-acceptance` warning
   at the comment, so acceptances do not accumulate.
 - A malformed `quality.yaml` blocks the push before any gate runs, like a
@@ -806,8 +818,14 @@ swamp extension quality manifest.yaml --json
 Scores the extension against the 10 client-earnable Swamp Club quality factors
 (README, LICENSE, JSDoc coverage, repository URL, manifest completeness,
 slow-type diagnostics, etc.) and prints per-factor results with remediation
-hints. The packaged tarball is written to `.swamp/cache/packages/<hash>/` and
-reused by dry-run and push when the source tree hasn't changed.
+hints. It runs the same gates push runs; when one fails (safety, fmt/lint,
+collectives, upgrade chain, dependency trust, review errors, size) it still
+prints the rubric, then each failure with its details, and exits non-zero
+(`gateFailures` in `--json`; `excludedFromArchive` lists files a check rejected
+and left out of the scored archive). `registryScorable: false` means the
+registry would publish the extension unscored. When every gate passes, the
+packaged tarball is written to `.swamp/cache/packages/<hash>/` and reused by
+dry-run and push while the source tree and swamp version are unchanged.
 
 This step is optional — skipping does not block the push. See the
 `swamp-extension` skill for the full rubric and per-factor guidance.

@@ -224,7 +224,10 @@ Deno.test("computePackageCacheHash: same files under different roots produce ide
 Deno.test("ExtensionPackageCache: get returns null when entry absent", async () => {
   const tmp = await Deno.makeTempDir();
   try {
-    const cache = new ExtensionPackageCache(join(tmp, "packages"));
+    const cache = new ExtensionPackageCache(
+      join(tmp, "packages"),
+      "20261006.1",
+    );
     const got = await cache.get("deadbeef");
     assertEquals(got, null);
   } finally {
@@ -235,7 +238,10 @@ Deno.test("ExtensionPackageCache: get returns null when entry absent", async () 
 Deno.test("ExtensionPackageCache: put writes and get retrieves", async () => {
   const tmp = await Deno.makeTempDir();
   try {
-    const cache = new ExtensionPackageCache(join(tmp, "packages"));
+    const cache = new ExtensionPackageCache(
+      join(tmp, "packages"),
+      "20261006.1",
+    );
     const bytes = new Uint8Array([0x1f, 0x8b, 0x01, 0x02, 0x03]);
     await cache.put("abcd1234", bytes, {
       extensionName: "@example/test",
@@ -258,7 +264,10 @@ Deno.test("ExtensionPackageCache: put writes and get retrieves", async () => {
 Deno.test("ExtensionPackageCache: get returns null for corrupt metadata", async () => {
   const tmp = await Deno.makeTempDir();
   try {
-    const cache = new ExtensionPackageCache(join(tmp, "packages"));
+    const cache = new ExtensionPackageCache(
+      join(tmp, "packages"),
+      "20261006.1",
+    );
     const entry = cache.entryDir("abc");
     await Deno.mkdir(entry, { recursive: true });
     await Deno.writeFile(join(entry, "extension.tar.gz"), new Uint8Array([1]));
@@ -266,6 +275,64 @@ Deno.test("ExtensionPackageCache: get returns null for corrupt metadata", async 
 
     const got = await cache.get("abc");
     assertEquals(got, null);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("ExtensionPackageCache: an entry is reused only by the swamp version that wrote it", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const root = join(tmp, "packages");
+    const bytes = new Uint8Array([0x1f, 0x8b, 0x01]);
+    const extras = {
+      extensionName: "@example/test",
+      extensionVersion: "2026.01.01.0",
+      rubricVersion: 1,
+    };
+    const written = await new ExtensionPackageCache(root, "20261006.1").put(
+      "abcd1234",
+      bytes,
+      extras,
+    );
+    assertEquals(written.swampVersion, "20261006.1");
+
+    assert(
+      (await new ExtensionPackageCache(root, "20261006.1").get("abcd1234")) !==
+        null,
+    );
+    assertEquals(
+      await new ExtensionPackageCache(root, "20261007.1").get("abcd1234"),
+      null,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("ExtensionPackageCache: an entry written before entries recorded a version is a miss", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const cache = new ExtensionPackageCache(
+      join(tmp, "packages"),
+      "20261006.1",
+    );
+    const entry = cache.entryDir("abc");
+    await Deno.mkdir(entry, { recursive: true });
+    await Deno.writeFile(join(entry, "extension.tar.gz"), new Uint8Array([1]));
+    await Deno.writeTextFile(
+      join(entry, "metadata.json"),
+      JSON.stringify({
+        hash: "abc",
+        extensionName: "@example/test",
+        extensionVersion: "2026.01.01.0",
+        archiveSize: 1,
+        cachedAt: "2026-10-01T00:00:00.000Z",
+        rubricVersion: 3,
+      }),
+    );
+
+    assertEquals(await cache.get("abc"), null);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

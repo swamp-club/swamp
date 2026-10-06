@@ -24,6 +24,8 @@ import {
   checkUpgradeChainConsistency,
   checkVersionBumpWithoutUpgrade,
   checkVersionConsistency,
+  denoToolConfigArgs,
+  extensionLintArgs,
   type PublishedExtensionState,
   stripCommentsAndStrings,
 } from "./extension_quality_checker.ts";
@@ -327,6 +329,110 @@ Deno.test("checkExtensionQuality uses deno.json config when denoConfigPath provi
       );
       assertEquals(result.passed, true);
       assertEquals(result.issues, []);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: an npm:-prefixed import passes lint under a project deno.json", async () => {
+  // Deno's recommended set applies no-import-prefix when a config is present;
+  // swamp requires the prefix, so its lint never applies that rule.
+  await withTempFiles(
+    {
+      "model.ts":
+        'import { z } from "npm:zod@4";\nexport const s = z.string();\n',
+      "deno.json": '{ "fmt": { "lineWidth": 100 } }',
+    },
+    async (dir, paths) => {
+      const result = await checkExtensionQuality(
+        paths.filter((p) => p.endsWith(".ts")),
+        DENO_PATH,
+        join(dir, "deno.json"),
+      );
+      assertEquals(result.issues, []);
+      assertEquals(result.passed, true);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: the project's own lint rules still apply", async () => {
+  await withTempFiles(
+    {
+      "model.ts": 'import { z } from "npm:zod@4";\nconsole.log(z);\n',
+      "deno.json": '{ "lint": { "rules": { "include": ["no-console"] } } }',
+    },
+    async (dir, paths) => {
+      const result = await checkExtensionQuality(
+        paths.filter((p) => p.endsWith(".ts")),
+        DENO_PATH,
+        join(dir, "deno.json"),
+      );
+      assertEquals(result.passed, false);
+      assertEquals(result.issues.length, 1);
+      assertStringIncludes(result.issues[0].output, "no-console");
+    },
+  );
+});
+
+Deno.test("extensionLintArgs: the project config or --no-config, never no-import-prefix", async () => {
+  assertEquals(await extensionLintArgs(undefined), [
+    "lint",
+    "--no-config",
+    "--rules-exclude=no-import-prefix",
+  ]);
+  await withTempFiles(
+    {
+      "deno.json":
+        '{ "lint": { "rules": { "exclude": ["no-explicit-any", "no-import-prefix"] } } }',
+    },
+    async (dir) => {
+      assertEquals(await extensionLintArgs(join(dir, "deno.json")), [
+        "lint",
+        "--config",
+        join(dir, "deno.json"),
+        "--rules-exclude=no-explicit-any,no-import-prefix",
+      ]);
+    },
+  );
+  assertEquals(denoToolConfigArgs("/p/deno.json"), [
+    "--config",
+    "/p/deno.json",
+  ]);
+  assertEquals(denoToolConfigArgs(undefined), ["--no-config"]);
+});
+
+Deno.test("extensionLintArgs: a config that is not plain JSON is linted exactly as written", async () => {
+  await withTempFiles(
+    {
+      "deno.json": '// comment\n{ "lint": { "rules": { "exclude": ["x"] } } }',
+    },
+    async (dir) => {
+      assertEquals(await extensionLintArgs(join(dir, "deno.json")), [
+        "lint",
+        "--config",
+        join(dir, "deno.json"),
+      ]);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: the project's own lint excludes still apply alongside npm: imports", async () => {
+  // --rules-exclude on the command line replaces the config's exclude list,
+  // so swamp passes the project's exclusions along with its own.
+  await withTempFiles(
+    {
+      "model.ts":
+        'import { z } from "npm:zod@4";\nexport const f = (y: any) => [y, z];\n',
+      "deno.json":
+        '{ "lint": { "rules": { "exclude": ["no-explicit-any"] } } }',
+    },
+    async (dir, paths) => {
+      const result = await checkExtensionQuality(
+        paths.filter((p) => p.endsWith(".ts")),
+        DENO_PATH,
+        join(dir, "deno.json"),
+      );
+      assertEquals(result.issues, []);
+      assertEquals(result.passed, true);
     },
   );
 });

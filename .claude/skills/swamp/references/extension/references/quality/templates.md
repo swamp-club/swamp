@@ -185,8 +185,9 @@ Rules this example demonstrates:
   `swamp extension quality` run in a hermetic sandbox that strips the repo's
   `deno.json` and writes its own with no imports map, so a bare specifier cannot
   resolve at score time even when an import map maps it at bundle time.
-  `swamp extension quality` detects bare specifiers before scoring and fails
-  early; `swamp extension push` warns that the extension may show as unscored.
+  `swamp extension quality` and `swamp extension push` report the same
+  non-acceptable `bare-specifiers` warning naming each import-map replacement;
+  quality fails on it, push warns.
 
 ## Pre-publish command sequence
 

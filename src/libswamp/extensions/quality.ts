@@ -29,22 +29,20 @@ import {
   type RubricScoreDeps,
   scoreExtensionTarball,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
-import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
 import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { LibSwampContext } from "../context.ts";
-import { validationFailed } from "../errors.ts";
 import type { SwampError } from "../errors.ts";
 import {
   extensionPushPrepare,
   type ExtensionPushPrepared,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
+  type LocalGateFailure,
   type QualityFindings,
-  readQualitySidecar,
-  runQualityFindings,
+  readImportMap,
 } from "./push.ts";
 
 /** Emitted by the extension quality generator. */
@@ -68,6 +66,18 @@ export interface ExtensionQualityData {
    * every run, including a cache hit, so quality always reports them.
    */
   findings: QualityFindings;
+  /**
+   * The local gates that failed — each would stop a push. The score is
+   * still computed so the author sees the rubric beside them.
+   */
+  gateFailures: LocalGateFailure[];
+  /** Files a gate rejected, left out of the scored archive (sorted). */
+  excludedFromArchive: string[];
+  /**
+   * False when the registry's scorer cannot score the published extension
+   * (bare import specifiers), whatever the local score says.
+   */
+  registryScorable: boolean;
 }
 
 /** Input to run a quality score. */
@@ -82,25 +92,6 @@ export interface ExtensionQualityDeps {
   cache: ExtensionPackageCache;
   ensureDenoPath: () => Promise<string>;
   makeScoreDeps: (denoPath: string) => RubricScoreDeps;
-}
-
-async function readImportMap(
-  denoConfigPath: string | undefined,
-): Promise<Record<string, string> | undefined> {
-  if (!denoConfigPath) return undefined;
-  try {
-    const raw = await Deno.readTextFile(denoConfigPath);
-    const config = JSON.parse(raw);
-    if (
-      config.imports && typeof config.imports === "object" &&
-      !Array.isArray(config.imports)
-    ) {
-      return config.imports as Record<string, string>;
-    }
-  } catch {
-    // Missing or unparseable config — fall back to no import map.
-  }
-  return undefined;
 }
 
 /** Wires real infrastructure into ExtensionQualityDeps. */
@@ -139,104 +130,46 @@ export async function* extensionQuality(
       const hash = await computePackageCacheHash(input.hashInput);
       ctx.logger.debug`Package cache hash: ${hash}`;
 
-      let archiveBytes: Uint8Array;
-      let cacheHit = false;
-      let dependencyTrustResult: DependencyTrustResult | undefined = undefined;
-      let findings: QualityFindings;
-
       const cached = await deps.cache.get(hash);
+      const cacheHit = cached !== null;
       if (cached) {
-        cacheHit = true;
-        archiveBytes = cached.archiveBytes;
         ctx.logger
           .debug`Cache hit: reusing ${cached.archiveBytes.length} bytes`;
         yield { kind: "cache_hit", hash };
-
-        const sourceFiles = [
-          ...input.prepareInput.allModelFiles,
-          ...input.prepareInput.allVaultFiles,
-          ...input.prepareInput.allDatastoreFiles,
-          ...input.prepareInput.allReportFiles,
-          ...input.prepareInput.allWebhookFiles,
-        ];
-        const specifiers = await deps.pushPrepareDeps
-          .extractDependencySpecifiers(sourceFiles);
-        if (specifiers.length > 0) {
-          dependencyTrustResult = await deps.pushPrepareDeps
-            .checkDependencyTrust(specifiers);
-        } else {
-          dependencyTrustResult = {
-            errors: [],
-            warnings: [],
-            audited: [],
-            passed: true,
-          };
-        }
-
-        // The cached archive was written only after the gates passed, but
-        // the findings and acceptances are reported on every run: the same
-        // pass push runs, over the same files.
-        const sidecar = await readQualitySidecar(
-          input.prepareInput.manifestDir,
-        );
-        const files = [
-          ...sourceFiles,
-          ...input.prepareInput.workflowFiles.map((wf) => wf.sourcePath),
-          ...input.prepareInput.additionalFilePaths,
-          ...input.prepareInput.includeFilePaths,
-          ...input.prepareInput.binaryFilePaths,
-          ...(sidecar ? [sidecar.path] : []),
-        ];
-        const safety = await deps.pushPrepareDeps.analyzeExtensionSafety(
-          files,
-          new Set(input.prepareInput.binaryFilePaths),
-        );
-        if (safety.errors.length > 0) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              "Extension has safety errors that must be resolved before pushing.",
-              { safetyErrors: safety.errors },
-            ),
-          };
-          return;
-        }
-        findings = await runQualityFindings(ctx, deps.pushPrepareDeps, {
-          input: input.prepareInput,
-          sidecar,
-          safetyWarnings: safety.warnings,
-          files,
-        });
-        if (findings.reviewRulesResult.errors.length > 0) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              "Extension review found issues that must be resolved before pushing.",
-              { reviewRuleErrors: findings.reviewRulesResult.errors },
-            ),
-          };
-          return;
-        }
       } else {
         yield { kind: "packaging" };
-        let prepared: ExtensionPushPrepared;
-        try {
-          prepared = await extensionPushPrepare(
-            ctx,
-            deps.pushPrepareDeps,
-            { ...input.prepareInput, dryRun: true, registryChecks: "skip" },
-          );
-        } catch (error) {
-          yield { kind: "error", error: error as SwampError };
-          return;
-        }
-        archiveBytes = prepared.archiveBytes;
-        dependencyTrustResult = prepared.dependencyTrustResult;
-        findings = {
-          safetyWarnings: prepared.safetyWarnings,
-          reviewRulesResult: prepared.reviewRulesResult,
-          acceptances: prepared.acceptances,
-        };
+      }
+
+      // Push's own prepare path, so quality runs every gate push runs, on a
+      // cache hit too. Local gate failures are collected rather than thrown,
+      // so the rubric is still scored and printed beside them.
+      let prepared: ExtensionPushPrepared;
+      try {
+        prepared = await extensionPushPrepare(
+          ctx,
+          deps.pushPrepareDeps,
+          {
+            ...input.prepareInput,
+            dryRun: true,
+            registryChecks: "skip",
+            localGates: "collect",
+            ...(cached ? { cachedArchive: cached.archiveBytes } : {}),
+          },
+        );
+      } catch (error) {
+        yield { kind: "error", error: error as SwampError };
+        return;
+      }
+      const archiveBytes = prepared.archiveBytes;
+      const findings: QualityFindings = {
+        safetyWarnings: prepared.safetyWarnings,
+        reviewRulesResult: prepared.reviewRulesResult,
+        acceptances: prepared.acceptances,
+      };
+
+      // A cached archive means every gate passed; never cache one built
+      // around a failure.
+      if (!cacheHit && prepared.gateFailures.length === 0) {
         await deps.cache.put(hash, archiveBytes, {
           extensionName: input.prepareInput.manifest.name,
           extensionVersion: input.prepareInput.manifest.version,
@@ -245,36 +178,12 @@ export async function* extensionQuality(
         ctx.logger.debug`Cache put: ${archiveBytes.length} bytes at ${hash}`;
       }
 
-      const allSourceFiles = [
-        ...input.prepareInput.allModelFiles,
-        ...input.prepareInput.allVaultFiles,
-        ...input.prepareInput.allDatastoreFiles,
-        ...input.prepareInput.allReportFiles,
-        ...input.prepareInput.allWebhookFiles,
-      ];
-      const bareSpecifiers = new Set<string>();
-      for (const file of allSourceFiles) {
-        try {
-          const src = await Deno.readTextFile(file);
-          for (const name of extractBareSpecifierNames(src)) {
-            bareSpecifiers.add(name);
-          }
-        } catch {
-          // File unreadable — skip.
-        }
-      }
-      if (bareSpecifiers.size > 0) {
-        const names = [...bareSpecifiers].sort();
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Extension uses bare import specifiers that cannot be resolved by the server-side scorer: ${
-              names.map((s) => `"${s}"`).join(", ")
-            }. Use explicit npm: or jsr: prefixes in your source files (e.g., "npm:package@version").`,
-          ),
-        };
-        return;
-      }
+      // The registry's scorer strips deno.json, so it cannot resolve bare
+      // specifiers and leaves such an extension unscored. The local score
+      // below resolves the import map, so say so rather than hide it.
+      const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
+        w.ruleId === "bare-specifiers"
+      );
 
       yield { kind: "scoring" };
       const denoPath = await deps.ensureDenoPath();
@@ -287,8 +196,9 @@ export async function* extensionQuality(
         input.prepareInput.manifest,
         scoreDeps,
         {
-          dependencyTrustPassed: dependencyTrustResult?.passed,
-          dependencyTrustBlockerCount: dependencyTrustResult?.errors.length,
+          dependencyTrustPassed: prepared.dependencyTrustResult.passed,
+          dependencyTrustBlockerCount:
+            prepared.dependencyTrustResult.errors.length,
           importMap,
         },
       );
@@ -300,8 +210,11 @@ export async function* extensionQuality(
           cacheHash: hash,
           archiveSize: archiveBytes.length,
           cacheHit,
-          dependencyTrustResult,
+          dependencyTrustResult: prepared.dependencyTrustResult,
           findings,
+          gateFailures: prepared.gateFailures,
+          excludedFromArchive: prepared.excludedFromArchive,
+          registryScorable,
         },
       };
     })(),
