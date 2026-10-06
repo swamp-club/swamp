@@ -157,15 +157,36 @@ Deno.test("get reads secret via op CLI", async () => {
 
   assertEquals(result, "sk-test-123");
   assertEquals(calls.length, 2); // --version + read
-  // If the provider passes its service-account token only to the op child,
-  // assert it through the recorded env option
-  assertEquals(calls[1].env?.OP_SERVICE_ACCOUNT_TOKEN, "test-token");
 });
 ```
 
 Each recorded call has `command`, `args` and `timestamp`, plus `env`, `cwd` and
-`clearEnv` when the code passed them to `Deno.Command`. `env` is recorded
-verbatim, so don't log `calls`.
+`clearEnv` when the code passed them to `Deno.Command`. Use `env` to assert a
+secret reaches only the child process. It is recorded verbatim, so don't log
+`calls`:
+
+```typescript
+Deno.test("token file is passed to op via env only", async () => {
+  const tokenFile = await Deno.makeTempFile();
+  try {
+    await Deno.writeTextFile(tokenFile, "test-token");
+    const { calls } = await withMockedCommand(
+      () => ({ stdout: "sk-test-123", code: 0 }),
+      async () => {
+        const provider = vault.createProvider("test", {
+          op_vault: "Eng",
+          op_service_account_token_file: tokenFile,
+        });
+        await provider.get("api-key");
+      },
+    );
+    const read = calls.find((c) => c.args[0] === "read");
+    assertEquals(read?.env?.OP_SERVICE_ACCOUNT_TOKEN, "test-token");
+  } finally {
+    await Deno.remove(tokenFile);
+  }
+});
+```
 
 `withMockedCommand` supports two modes:
 
