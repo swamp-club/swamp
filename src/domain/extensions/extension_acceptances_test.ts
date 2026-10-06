@@ -180,6 +180,15 @@ Deno.test("directiveSpan and withoutDirective: cover exactly the recognised comm
   );
 });
 
+Deno.test("parseAcceptanceDirectives: a directive inside a block comment that closes on the line is invalid", () => {
+  const parsed = parseAcceptanceDirectives(
+    'const T = "x"; /* // swamp-quality-ignore long-line: table */ new Deno.Command("sh");\n',
+    TS,
+  );
+  assertEquals(parsed.directives, []);
+  assertStringIncludes(parsed.invalid[0].problem, "must end its line");
+});
+
 Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", () => {
   const parsed = parseAcceptanceDirectives(
     "<!-- swamp-quality-ignore ipv4-address-literals: lab\n10.0.0.1\n",

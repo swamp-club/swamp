@@ -172,8 +172,10 @@ export function validateAcceptance(
       ? `"${ruleId}" is site-scoped; declare it on the line in the source file, or name a .txt file`
       : `"${ruleId}" is file-scoped; declare it in the file, or use the generated declaration for a generated package`;
   }
-  if (where === "sidecar-file" && entry.scope === "extension") {
-    return `"${ruleId}" is extension-scoped and takes no file`;
+  if (where === "sidecar-file" && entry.scope !== "site") {
+    return entry.scope === "extension"
+      ? `"${ruleId}" is extension-scoped and takes no file`
+      : `"${ruleId}" is file-scoped; declare it in the file itself, or use the generated declaration for a generated package`;
   }
   return undefined;
 }
@@ -212,6 +214,18 @@ export function parseAcceptanceDirectives(
     }
 
     let body = line.slice(at + ACCEPTANCE_DIRECTIVE.length);
+    if (form === "line" && body.includes("*/")) {
+      // A `//` inside a `/* ... */` block: code after the `*/` would be
+      // hidden from the safety scan, so the directive must end its line.
+      invalid.push({
+        file,
+        line: lineNumber,
+        text,
+        problem:
+          "a block comment closes after the directive; the directive must end its line",
+      });
+      continue;
+    }
     if (form === "html") {
       const close = body.indexOf("-->");
       if (close === -1) {

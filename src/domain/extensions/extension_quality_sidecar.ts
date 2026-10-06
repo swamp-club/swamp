@@ -238,7 +238,13 @@ export function sidecarDirectives(
       return;
     }
     const scope = findRule(entry.rule)!.scope;
-    if (scope === "site" && commentFormFor(entry.file) !== "none") {
+    if (scope !== "site") {
+      reject(
+        `"${entry.rule}" is file-scoped; declare it in ${entry.file} itself, or use the generated declaration for a generated package`,
+      );
+      return;
+    }
+    if (commentFormFor(entry.file) !== "none") {
       reject(
         `"${entry.rule}" is site-scoped and ${
           extname(entry.file)

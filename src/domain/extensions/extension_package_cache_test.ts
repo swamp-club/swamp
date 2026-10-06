@@ -331,6 +331,12 @@ Deno.test("computePackageCacheHash: the quality.yaml sidecar beside the manifest
   const tmp = await Deno.makeTempDir();
   try {
     const without = await computePackageCacheHash(await makeHashInput(tmp));
+    // No sidecar leaves the hash exactly as before the sidecar existed: the
+    // marker is only hashed when the file is present.
+    assertEquals(
+      without,
+      await computePackageCacheHash(await makeHashInput(tmp)),
+    );
     await Deno.writeTextFile(
       join(tmp, "quality.yaml"),
       "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: scored locally\n",

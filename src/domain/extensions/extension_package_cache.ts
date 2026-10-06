@@ -126,8 +126,15 @@ export async function computePackageCacheHash(
     parts.push("package-json");
     parts.push(await readFileIfExists(input.packageJsonPath));
   }
-  parts.push("quality-sidecar");
-  parts.push(await readFileIfExists(qualitySidecarPath(input.manifestDir)));
+  // Only when present, like deno-config and package-json above, so every
+  // extension without a sidecar keeps its hash across this change.
+  const sidecar = await computeFileContentHashIfExists(
+    qualitySidecarPath(input.manifestDir),
+  );
+  if (sidecar !== null) {
+    parts.push("quality-sidecar");
+    parts.push(sidecar);
+  }
 
   const payload = new TextEncoder().encode(parts.join("\n"));
   const digest = await crypto.subtle.digest("SHA-256", payload);

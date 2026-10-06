@@ -211,6 +211,22 @@ Deno.test("sidecarDirectives: a site-scoped rule naming a file with a comment fo
   }
 });
 
+Deno.test("sidecarDirectives: testing-completeness with a file is refused; it belongs in the file or the generated declaration", () => {
+  const { directives, invalid } = sidecarDirectives(
+    sidecar({
+      accept: [{
+        rule: "testing-completeness",
+        file: "models/foo.ts",
+        reason: "r",
+      }],
+    }),
+    SIDECAR,
+    DIR,
+  );
+  assertEquals(directives, []);
+  assertStringIncludes(invalid[0].problem, "file-scoped");
+});
+
 Deno.test("sidecarDirectives: testing-completeness without a file is refused in favour of the generated declaration", () => {
   const { directives, invalid } = sidecarDirectives(
     sidecar({ accept: [{ rule: "testing-completeness", reason: "r" }] }),

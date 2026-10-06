@@ -739,3 +739,39 @@ Deno.test("extensionQuality: findings and acceptances are reported on the fresh 
     },
   );
 });
+
+Deno.test("extensionQuality: a cache hit still fails on an invalid acceptance instead of dropping the error", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot);
+    const first = await collect(extensionQuality(ctx, deps, input));
+    assertEquals(completedData(first).cacheHit, false);
+
+    // A directive naming an error-level rule in a file that is not part of
+    // the hash input (the hash covers the model file list, not this one).
+    await Deno.writeTextFile(
+      join(repoDir, "models", "echo.ts"),
+      CLEAN_MODEL_SOURCE,
+    );
+    const second = await collect(extensionQuality(ctx, {
+      ...deps,
+      pushPrepareDeps: makePushPrepareDeps({
+        checkReviewRules: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "invalid-acceptance",
+              dimension: "Declared acceptances",
+              severity: "high" as const,
+              file: join(repoDir, "models", "echo.ts"),
+              line: 1,
+              message: "Acceptance is invalid",
+            }],
+            warnings: [],
+            passed: false,
+          }),
+      }),
+    }, input));
+    assertEquals(eventKinds(second), ["cache_hit", "error"]);
+  });
+});

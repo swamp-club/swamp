@@ -983,9 +983,12 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   targets the next non-blank line, so a formatter's blank line after an HTML
   comment is harmless. No reason, the
   `<reason>` placeholder, an unknown or error-level rule, an extension-scoped
-  rule, or more than 50 directives in a file is a blocking
-  `invalid-acceptance` finding naming the comment; reasons are capped at 200
-  characters and rejected, never truncated.
+  rule, a `*/` after the directive on its line (a block comment that would
+  hide code from the safety scan), or more than 50 directives in a file is a
+  blocking `invalid-acceptance` finding naming the comment; reasons are
+  capped at 200 characters and rejected, never truncated. Directive
+  detection is per line, so a `//` inside a multi-line template literal reads
+  as a comment; that line is scanned without the directive text only.
 - **Sidecar** (`src/domain/extensions/extension_quality_sidecar.ts`):
   `quality.yaml` beside `manifest.yaml`, discovered by location only (most
   manifests are regenerated and the manifest schema drops unknown keys
@@ -993,9 +996,11 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   acceptances (`bare-specifiers`), a site rule for a `.txt` file (no comment
   form; file-wide, contained in the manifest's directory) and the `generated`
   declaration `{ by, source, commit }` agreed with #3065, which accepts
-  `testing-completeness` for the package. It joins the content hash, so a
-  changed acceptance moves the hash and the review-report path, and is
-  packaged at the archive root. A malformed sidecar blocks before any gate.
+  `testing-completeness` for the package; a file entry names a site-scoped
+  rule in a `.txt` file only, never a file-scoped one. It joins the content
+  hash when present (an extension without one keeps its hash), so a changed
+  acceptance moves the hash and the review-report path, and is packaged at
+  the archive root. A malformed sidecar blocks before any gate.
   Pull does not copy it: a pulled extension cannot be re-pushed, and the
   registry holds the acceptances.
 - **One pass, shared** (`runQualityFindings` in

@@ -191,12 +191,32 @@ export async function* extensionQuality(
           files,
           new Set(input.prepareInput.binaryFilePaths),
         );
+        if (safety.errors.length > 0) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              "Extension has safety errors that must be resolved before pushing.",
+              { safetyErrors: safety.errors },
+            ),
+          };
+          return;
+        }
         findings = await runQualityFindings(ctx, deps.pushPrepareDeps, {
           input: input.prepareInput,
           sidecar,
           safetyWarnings: safety.warnings,
           files,
         });
+        if (findings.reviewRulesResult.errors.length > 0) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              "Extension review found issues that must be resolved before pushing.",
+              { reviewRuleErrors: findings.reviewRulesResult.errors },
+            ),
+          };
+          return;
+        }
       } else {
         yield { kind: "packaging" };
         let prepared: ExtensionPushPrepared;
