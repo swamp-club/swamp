@@ -34,6 +34,7 @@ import {
 } from "../resolve_extension_files.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { VERSION } from "./version.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
@@ -396,7 +397,10 @@ export const extensionPushCommand = new Command()
     });
     const renderer = createExtensionPushRenderer(cliCtx.outputMode);
     const registryChecks = options.dryRun ? "collect" : "enforce";
-    const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
+    const cache = new ExtensionPackageCache(
+      defaultPackageCacheRoot(repoDir),
+      VERSION,
+    );
 
     // 3b. Opportunistic package cache lookup — if a prior `swamp
     // extension quality` run packaged the same source, reuse those

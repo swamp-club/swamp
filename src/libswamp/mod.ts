@@ -1043,6 +1043,9 @@ export {
 export {
   type DeclaredAcceptance,
   type DeclaredAcceptances,
+  type LocalGate,
+  type LocalGateFailure,
+  type LocalGatesMode,
   type QualityFindings,
 } from "./extensions/push.ts";
 export {

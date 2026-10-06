@@ -214,7 +214,10 @@ for (
         denoConfigPath: undefined,
         packageJsonPath: undefined,
       };
-      const cache = new ExtensionPackageCache(join(root, "cache"));
+      const cache = new ExtensionPackageCache(
+        join(root, "cache"),
+        "test-version",
+      );
       const hash = await computePackageCacheHash(hashInput);
       const omittedHash = await computePackageCacheHash({
         ...hashInput,

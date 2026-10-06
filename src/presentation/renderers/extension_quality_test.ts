@@ -26,7 +26,11 @@ import {
   assertThrows,
 } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { ExtensionQualityEvent } from "../../libswamp/mod.ts";
+import type {
+  ExtensionQualityData,
+  ExtensionQualityEvent,
+  LocalGateFailure,
+} from "../../libswamp/mod.ts";
 import type { RubricScore } from "../../domain/extensions/extension_rubric_scorer.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -73,6 +77,7 @@ const emptyTrustResult: DependencyTrustResult = {
 
 function completedEvent(
   score: RubricScore,
+  overrides: Partial<ExtensionQualityData> = {},
 ): Extract<ExtensionQualityEvent, { kind: "completed" }> {
   return {
     kind: "completed",
@@ -87,6 +92,10 @@ function completedEvent(
         reviewRulesResult: { errors: [], warnings: [], passed: true },
         acceptances: { accepted: [] },
       },
+      gateFailures: [],
+      excludedFromArchive: [],
+      registryScorable: true,
+      ...overrides,
     },
   };
 }
@@ -356,4 +365,86 @@ Deno.test("createExtensionQualityRenderer: a failed run names the invalid accept
       mode,
     );
   }
+});
+
+const SAFETY_FAILURE: LocalGateFailure = {
+  gate: "safety",
+  message: "Extension has safety errors that must be resolved before pushing.",
+  details: {
+    safetyErrors: [{
+      ruleId: "hidden-file",
+      file: "/ext/files/.notes.md",
+      message: "Hidden files are not allowed in extensions.",
+    }],
+  },
+};
+
+Deno.test("createExtensionQualityRenderer: log prints the rubric, then every failed check with its details, then fails", () => {
+  const renderer = createExtensionQualityRenderer("log");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers({ manifestDir: resolve("/ext") }).completed(
+        completedEvent(makeScore(), {
+          gateFailures: [SAFETY_FAILURE],
+          excludedFromArchive: ["/ext/files/.notes.md"],
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  assertStringIncludes(thrown.message, "would block a push (safety)");
+  assertEquals(renderer.passed(), false);
+  const output = logs.join("\n");
+  const rubricAt = output.indexOf("Rubric v3");
+  const gatesAt = output.indexOf("Checks that would block a push:");
+  assert(rubricAt >= 0 && gatesAt > rubricAt, output);
+  assertStringIncludes(output, "/ext/files/.notes.md: Hidden files");
+  assertStringIncludes(output, "without the 1 file(s) a check rejected");
+});
+
+Deno.test("createExtensionQualityRenderer: json carries the rubric, gateFailures and registryScorable in one document, then fails", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers({ manifestDir: resolve("/ext") }).completed(
+        completedEvent(makeScore(), {
+          gateFailures: [SAFETY_FAILURE],
+          registryScorable: false,
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  assertStringIncludes(thrown.message, "cannot score this extension");
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.rubricVersion, 3);
+  assertEquals(doc.registryScorable, false);
+  assertEquals(doc.gateFailures[0].gate, "safety");
+  assertEquals(
+    doc.gateFailures[0].details.safetyErrors[0].ruleId,
+    "hidden-file",
+  );
+});
+
+Deno.test("createExtensionQualityRenderer: an unscorable extension fails in log mode even with every check passing", () => {
+  const renderer = createExtensionQualityRenderer("log");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers().completed(
+        completedEvent(makeScore(), { registryScorable: false }),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  assertStringIncludes(logs.join("\n"), "would publish unscored");
 });

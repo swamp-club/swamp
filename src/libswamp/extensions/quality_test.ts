@@ -240,7 +240,7 @@ function makeQualityDeps(
 ): ExtensionQualityDeps {
   return {
     pushPrepareDeps: makePushPrepareDeps(options?.pushPrepareOverrides),
-    cache: new ExtensionPackageCache(cacheRoot),
+    cache: new ExtensionPackageCache(cacheRoot, "test-version"),
     ensureDenoPath: options?.ensureDenoPath ??
       (() => Promise.resolve("/fake/deno")),
     makeScoreDeps: () => fakeScoreDeps(options?.onRunDeno),
@@ -391,7 +391,7 @@ Deno.test("extensionQuality: source content change produces a new hash and repac
 
 // ── Error paths ───────────────────────────────────────────────────────
 
-Deno.test("extensionQuality: prepare failure yields an error event and does not populate the cache", async () => {
+Deno.test("extensionQuality: a failed gate is reported beside the rubric and the cache is not written", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest();
     const input = makeQualityInput(repoDir, manifest);
@@ -401,7 +401,7 @@ Deno.test("extensionQuality: prepare failure yields an error event and does not 
           Promise.resolve({
             errors: [{
               ruleId: "dynamic-code",
-              file: "echo.ts",
+              file: join(repoDir, "models", "echo.ts"),
               message: "contains eval()",
             }],
             warnings: [],
@@ -410,48 +410,52 @@ Deno.test("extensionQuality: prepare failure yields an error event and does not 
     });
 
     const events = await collect(extensionQuality(ctx, deps, input));
-    assertEquals(eventKinds(events), ["packaging", "error"]);
-    const last = events[events.length - 1];
-    if (last.kind === "error") {
-      assertEquals(last.error.code, "validation_failed");
-    }
+    assertEquals(eventKinds(events), ["packaging", "scoring", "completed"]);
+    const data = completedData(events);
+    assertEquals(data.gateFailures.map((f) => f.gate), ["safety"]);
+    assertStringIncludes(data.gateFailures[0].message, "safety errors");
+    assertEquals(data.score.rubricVersion, RUBRIC_VERSION);
 
     const hash = await computePackageCacheHash(input.hashInput);
     assertEquals(await deps.cache.get(hash), null);
   });
 });
 
+Deno.test("extensionQuality: a file a safety error rejects is reported as left out of the scored archive", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const hidden = join(repoDir, ".notes.md");
+    await Deno.writeTextFile(hidden, "hidden\n");
+    const manifest = makeManifest({ additionalFiles: [".notes.md"] });
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { additionalFilePaths: [hidden] },
+      hashInput: { additionalFilePaths: [hidden] },
+    });
+    const deps = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: {
+        analyzeExtensionSafety: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "hidden-file",
+              file: hidden,
+              message: "Hidden files are not allowed in extensions.",
+            }],
+            warnings: [],
+          }),
+      },
+    });
+
+    const data = completedData(
+      await collect(extensionQuality(ctx, deps, input)),
+    );
+    assertEquals(data.gateFailures.map((f) => f.gate), ["safety"]);
+    assertEquals(data.excludedFromArchive, [hidden]);
+  });
+});
+
 const BARE_IMPORT_MODEL_SOURCE =
   'import { z } from "zod";\nexport const schema = z.string();\n';
 
-Deno.test("extensionQuality: bare import specifiers abort before scoring with a validation error", async () => {
-  await withQualityFixture(
-    BARE_IMPORT_MODEL_SOURCE,
-    async (repoDir, cacheRoot) => {
-      const manifest = makeManifest();
-      const input = makeQualityInput(repoDir, manifest);
-      let denoResolves = 0;
-      const deps = makeQualityDeps(cacheRoot, {
-        ensureDenoPath: () => {
-          denoResolves++;
-          return Promise.resolve("/fake/deno");
-        },
-      });
-
-      const events = await collect(extensionQuality(ctx, deps, input));
-      assertEquals(eventKinds(events), ["packaging", "error"]);
-      const last = events[events.length - 1];
-      if (last.kind === "error") {
-        assertEquals(last.error.code, "validation_failed");
-        assertStringIncludes(last.error.message, '"zod"');
-        assertStringIncludes(last.error.message, "npm:");
-      }
-      assertEquals(denoResolves, 0, "scoring must not start on bare imports");
-    },
-  );
-});
-
-Deno.test("extensionQuality: bare import specifier check also fires on the cache-hit path", async () => {
+Deno.test("extensionQuality: bare import specifiers are scored locally but reported as unscorable by the registry", async () => {
   await withQualityFixture(
     BARE_IMPORT_MODEL_SOURCE,
     async (repoDir, cacheRoot) => {
@@ -459,17 +463,36 @@ Deno.test("extensionQuality: bare import specifier check also fires on the cache
       const input = makeQualityInput(repoDir, manifest);
       const deps = makeQualityDeps(cacheRoot);
 
-      // First run packages (populating the cache) and then errors.
-      const first = await collect(extensionQuality(ctx, deps, input));
-      assertEquals(eventKinds(first), ["packaging", "error"]);
+      const events = await collect(extensionQuality(ctx, deps, input));
+      assertEquals(eventKinds(events), ["packaging", "scoring", "completed"]);
+      const data = completedData(events);
+      assertEquals(data.registryScorable, false);
+      const bare = data.findings.reviewRulesResult.warnings.find((w) =>
+        w.ruleId === "bare-specifiers"
+      );
+      assert(bare !== undefined, "bare-specifiers finding must be reported");
+      assertStringIncludes(bare.message, '"zod"');
+      assertStringIncludes(bare.message, "unscored");
+    },
+  );
+});
 
-      // Second run hits the cache but must still refuse to score.
+Deno.test("extensionQuality: a cache hit still reports bare import specifiers as unscorable", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const deps = makeQualityDeps(cacheRoot);
+
+      const first = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      assertEquals(first.registryScorable, false);
+
       const second = await collect(extensionQuality(ctx, deps, input));
-      assertEquals(eventKinds(second), ["cache_hit", "error"]);
-      const last = second[second.length - 1];
-      if (last.kind === "error") {
-        assertStringIncludes(last.error.message, '"zod"');
-      }
+      assertEquals(eventKinds(second), ["cache_hit", "scoring", "completed"]);
+      assertEquals(completedData(second).registryScorable, false);
     },
   );
 });
@@ -554,7 +577,7 @@ Deno.test("extensionQuality: cache hit audits webhook source dependencies", asyn
   });
 });
 
-Deno.test("extensionQuality: bare import in a webhook source fails validation", async () => {
+Deno.test("extensionQuality: a bare import in a webhook source makes the extension unscorable", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const webhookPath = join(repoDir, "webhooks", "hook.ts");
     await Deno.mkdir(join(repoDir, "webhooks"), { recursive: true });
@@ -568,14 +591,10 @@ Deno.test("extensionQuality: bare import in a webhook source fails validation", 
       hashInput: { webhookFilePaths: [webhookPath] },
     });
 
-    const events = await collect(
-      extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
     );
-    const last = events[events.length - 1];
-    assertEquals(last.kind, "error");
-    if (last.kind === "error") {
-      assertStringIncludes(last.error.message, '"zod"');
-    }
+    assertEquals(data.registryScorable, false);
   });
 });
 
@@ -741,7 +760,7 @@ Deno.test("extensionQuality: findings and acceptances are reported on the fresh 
   );
 });
 
-Deno.test("extensionQuality: a cache hit still fails on an invalid acceptance instead of dropping the error", async () => {
+Deno.test("extensionQuality: a cache hit still reports an invalid acceptance as a failed review gate", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest();
     const input = makeQualityInput(repoDir, manifest);
@@ -770,6 +789,97 @@ Deno.test("extensionQuality: a cache hit still fails on an invalid acceptance in
           }),
       }),
     }, input));
-    assertEquals(eventKinds(second), ["cache_hit", "error"]);
+    assertEquals(eventKinds(second), ["cache_hit", "scoring", "completed"]);
+    const data = completedData(second);
+    assertEquals(data.cacheHit, true);
+    assertEquals(data.gateFailures.map((f) => f.gate), ["review"]);
+  });
+});
+
+Deno.test("extensionQuality: a cache hit runs the gates the old cache-hit path skipped", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot);
+    assertEquals(
+      completedData(await collect(extensionQuality(ctx, deps, input)))
+        .cacheHit,
+      false,
+    );
+
+    // The content collective check and the dependency-trust blocker now
+    // fail without the source hash moving.
+    const second = completedData(
+      await collect(extensionQuality(ctx, {
+        ...deps,
+        pushPrepareDeps: makePushPrepareDeps({
+          extractContentMetadata: () =>
+            Promise.resolve({
+              models: [{
+                fileName: "echo.ts",
+                type: "@someoneelse/echo",
+                version: "2026.03.22.1",
+                globalArguments: [],
+                methods: [],
+                resources: [],
+                files: [],
+              }],
+              extensions: [],
+              workflows: [],
+              vaults: [],
+              datastores: [],
+              reports: [],
+              webhooks: [],
+              skills: [],
+            }),
+          extractDependencySpecifiers: () =>
+            Promise.resolve([{
+              name: "leftpad",
+              version: "1.0.0",
+              registry: "npm" as const,
+              sourceFile: join(repoDir, "models", "echo.ts"),
+            }]),
+          checkDependencyTrust: () =>
+            Promise.resolve({
+              errors: [{ dependency: "npm:leftpad", message: "too new" }],
+              warnings: [],
+              audited: [],
+              passed: false,
+            }),
+        }),
+      }, input)),
+    );
+    assertEquals(second.cacheHit, true);
+    assertEquals(
+      second.gateFailures.map((f) => f.gate),
+      ["content-collectives", "dependency-trust"],
+    );
+  });
+});
+
+Deno.test("extensionQuality: a cache entry from another swamp version is a miss, so every gate runs", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    let fmtLintRuns = 0;
+    const counting = {
+      checkExtensionQuality: () => {
+        fmtLintRuns++;
+        return Promise.resolve({ passed: true, issues: [] });
+      },
+    };
+    const older: ExtensionQualityDeps = {
+      ...makeQualityDeps(cacheRoot, { pushPrepareOverrides: counting }),
+      cache: new ExtensionPackageCache(cacheRoot, "older-version"),
+    };
+    completedData(await collect(extensionQuality(ctx, older, input)));
+    assertEquals(fmtLintRuns, 1);
+
+    const newer = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: counting,
+    });
+    const events = await collect(extensionQuality(ctx, newer, input));
+    assertEquals(eventKinds(events), ["packaging", "scoring", "completed"]);
+    assertEquals(fmtLintRuns, 2, "a cold run checks fmt/lint again");
   });
 });

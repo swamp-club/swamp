@@ -19,8 +19,10 @@
 
 import type {
   EventHandlers,
+  ExtensionQualityData,
   ExtensionQualityEvent,
   FactorStatus,
+  LocalGateFailure,
   SwampError,
 } from "../../libswamp/mod.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
@@ -66,6 +68,69 @@ function fileAndLine(finding: { file: string; line?: number }): string {
   return finding.line !== undefined
     ? `${finding.file}:${finding.line}`
     : finding.file;
+}
+
+/**
+ * One line per detail a failed gate carries (the same details push prints
+ * when it throws), indented under the gate's message.
+ */
+function gateFailureDetailLines(failure: LocalGateFailure): string[] {
+  const details = failure.details as Record<string, unknown> | undefined;
+  const lines: string[] = [];
+  const list = (key: string): Record<string, unknown>[] =>
+    Array.isArray(details?.[key])
+      ? details[key] as Record<string, unknown>[]
+      : [];
+  for (const f of list("safetyErrors")) {
+    const issue = f as unknown as SafetyIssue;
+    lines.push(`${fileAndLine(issue)}: ${issue.message}`);
+  }
+  for (const f of list("reviewRuleErrors")) {
+    const finding = f as unknown as ReviewFinding;
+    lines.push(
+      `[${finding.severity}] ${finding.ruleId} — ${fileAndLine(finding)}: ${
+        finding.message.split("\n")[0]
+      }`,
+    );
+  }
+  for (const key of ["qualityErrors", "upgradeChainErrors"]) {
+    for (const f of list(key)) {
+      const output = String(f.output ?? "").trim();
+      lines.push(`${String(f.check)}: ${output.split("\n")[0]}`);
+    }
+  }
+  for (const f of list("dependencyTrustErrors")) {
+    lines.push(`${String(f.dependency)}: ${String(f.message)}`);
+  }
+  for (const f of list("mismatches")) {
+    lines.push(
+      `${String(f.kind)} ${String(f.identifier)} (${String(f.fileName)})`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * Why a completed run still fails: a gate that would stop a push, or an
+ * extension the registry cannot score. Undefined when neither holds.
+ */
+function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
+  const reasons: string[] = [];
+  if (data.gateFailures.length > 0) {
+    const gates = [...new Set(data.gateFailures.map((f) => f.gate))];
+    reasons.push(
+      `${data.gateFailures.length} check(s) would block a push (${
+        gates.join(", ")
+      })`,
+    );
+  }
+  if (!data.registryScorable) {
+    reasons.push(
+      "the registry cannot score this extension: it uses bare import specifiers",
+    );
+  }
+  if (reasons.length === 0) return undefined;
+  return `Extension quality failed: ${reasons.join("; ")}.`;
 }
 
 function formatDownloads(n: number): string {
@@ -197,6 +262,33 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           ),
         );
         logger.info`Packaged archive: ${archiveSize} bytes`;
+        const { gateFailures, excludedFromArchive, registryScorable } = e.data;
+        if (gateFailures.length > 0) {
+          logger.error`Checks that would block a push:`;
+          for (const failure of gateFailures) {
+            logger.error`  ${failure.gate}: ${failure.message}`;
+            for (const line of gateFailureDetailLines(failure)) {
+              logger.error`      ${line}`;
+            }
+          }
+        }
+        if (excludedFromArchive.length > 0) {
+          logger
+            .warn`The rubric above scores the archive without the ${excludedFromArchive.length} file(s) a check rejected:`;
+          for (const file of excludedFromArchive) {
+            logger.warn`  ${file}`;
+          }
+        }
+        if (!registryScorable) {
+          logger
+            .error`The registry cannot score this extension: it uses bare import specifiers, so it would publish unscored. The rubric above resolves the import map locally; the registry does not.`;
+        }
+        const failure = qualityFailureMessage(e.data);
+        if (failure) {
+          this._passed = false;
+          this._failureMessage = failure;
+          throw new UserError(failure);
+        }
       },
       error: (e) => {
         const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);
@@ -251,6 +343,9 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           cacheHit,
           dependencyTrustResult,
           findings,
+          gateFailures,
+          excludedFromArchive,
+          registryScorable,
         } = e.data;
         console.log(JSON.stringify(
           {
@@ -272,6 +367,9 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             cacheHash,
             archiveSize,
             cacheHit,
+            registryScorable,
+            gateFailures,
+            excludedFromArchive,
             warnings: withAcceptance(
               findings.safetyWarnings,
               manifestDir,
@@ -295,6 +393,12 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           null,
           2,
         ));
+        const failure = qualityFailureMessage(e.data);
+        if (failure) {
+          this._passed = false;
+          this._failureMessage = failure;
+          throw new UserError(failure);
+        }
       },
       error: (e) => {
         const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);

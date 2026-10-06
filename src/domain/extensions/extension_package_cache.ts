@@ -79,6 +79,13 @@ export interface CachedPackageMetadata {
   archiveSize: number;
   cachedAt: string;
   rubricVersion: number;
+  /**
+   * The swamp version that wrote the entry. An entry is reused only by the
+   * same version: a cached archive skips the fmt/lint gates, so a newer
+   * swamp, whose gates may have changed, packages and checks afresh.
+   * Absent on entries written before the field existed.
+   */
+  swampVersion?: string;
 }
 
 /** A cached package retrieved from disk. */
@@ -222,10 +229,18 @@ async function readFileIfExists(path: string): Promise<string> {
 
 /**
  * On-disk repository for cached extension tarballs. Construct with the
- * cache root directory (typically `<repoDir>/.swamp/cache/packages/`).
+ * cache root directory (typically `<repoDir>/.swamp/cache/packages/`) and
+ * the running swamp version: entries written by any other version, or
+ * before entries recorded one, are misses.
+ *
+ * The version lives in the entry, not in the hash, because the hash is
+ * also the content hash an adversarial-review report is keyed by.
  */
 export class ExtensionPackageCache {
-  constructor(private readonly cacheRoot: string) {}
+  constructor(
+    private readonly cacheRoot: string,
+    private readonly swampVersion: string,
+  ) {}
 
   /** Returns the per-entry directory for a given hash. */
   entryDir(hash: string): string {
@@ -254,6 +269,7 @@ export class ExtensionPackageCache {
     } catch {
       return null;
     }
+    if (metadata.swampVersion !== this.swampVersion) return null;
 
     return { archiveBytes, metadata };
   }
@@ -283,6 +299,7 @@ export class ExtensionPackageCache {
       archiveSize: archiveBytes.length,
       cachedAt: new Date().toISOString(),
       rubricVersion: extras.rubricVersion,
+      swampVersion: this.swampVersion,
     };
     await Deno.writeTextFile(metadataPath, JSON.stringify(metadata, null, 2));
 
