@@ -135,6 +135,103 @@ Deno.test("property: upsertNewVersion in any promotion order matches computeLate
   }
 });
 
+/**
+ * Step names for versions 1..n, plus an interleaving of at most one
+ * promote and one remove per version. Every version starts as an in-flight
+ * deferred write; removing one before it is promoted is a rollback, after
+ * it is a delete.
+ */
+const arbPromotionsAndRemovals = arbStepNames.chain((steps) =>
+  fc.tuple(
+    fc.constant(steps),
+    fc.shuffledSubarray(
+      steps.flatMap((_, i) => [
+        { op: "promote" as const, version: i + 1 },
+        { op: "remove" as const, version: i + 1 },
+      ]),
+      { minLength: 0, maxLength: steps.length * 2 },
+    ),
+  )
+);
+
+Deno.test("property: removals interleaved with out-of-order promotions match computeLatestFlags over the surviving rows (swamp-club#2975)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-property-" });
+  try {
+    fc.assert(
+      fc.property(arbPromotionsAndRemovals, ([steps, ops]) => {
+        const store = new CatalogStore(
+          join(dir, `${crypto.randomUUID()}.db`),
+        );
+        try {
+          for (const [i, step] of steps.entries()) {
+            store.upsert({ ...makeRow(i + 1, step), is_pending: 1 });
+          }
+          const removed = new Set<number>();
+          const promoted = new Set<number>();
+          const promote = (version: number) => {
+            promoted.add(version);
+            store.upsertNewVersion(makeRow(version, steps[version - 1]));
+          };
+          // Consecutive removals go through one bulkRemoveVersions call, a
+          // lone removal through removeVersion.
+          let batch: number[] = [];
+          const flushRemovals = () => {
+            if (batch.length === 1) {
+              store.removeVersion(
+                "",
+                "test-model",
+                "model-001",
+                "my-data",
+                batch[0],
+                computeLatestFlags,
+              );
+            } else {
+              store.bulkRemoveVersions(
+                "",
+                "test-model",
+                "model-001",
+                "my-data",
+                batch,
+                computeLatestFlags,
+              );
+            }
+            batch = [];
+          };
+          for (const { op, version } of ops) {
+            if (op === "remove") {
+              removed.add(version);
+              batch.push(version);
+            } else {
+              flushRemovals();
+              if (!removed.has(version)) promote(version);
+            }
+          }
+          flushRemovals();
+          // Promote whatever is still in flight, so every survivor counts.
+          for (let version = 1; version <= steps.length; version++) {
+            if (!removed.has(version) && !promoted.has(version)) {
+              promote(version);
+            }
+          }
+          const expected = steps
+            .map((step, i) => makeRow(i + 1, step))
+            .filter((r) => !removed.has(r.version));
+          computeLatestFlags(expected);
+          assertEquals(flags([...store.iterate()]), flags(expected));
+        } finally {
+          store.close();
+        }
+      }),
+    );
+  } finally {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch {
+      // Windows can report EBUSY before SQLite handles are released.
+    }
+  }
+});
+
 // ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
 
 const NAMES = ["a", "b", "c", "d", "e", "f", "g", "h"];

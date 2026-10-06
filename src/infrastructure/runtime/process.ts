@@ -16,6 +16,36 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+import { hostname } from "node:os";
+
+/**
+ * Identifies where this process's pids live, for judging whether a pid
+ * another process recorded on the same machine is still running: the
+ * hostname, plus on Linux the pid namespace. Containers that share a hostname
+ * (host networking) but not a pid namespace get different identities, so one
+ * never reads the other's live pid as dead. It does not tell machines apart
+ * beyond their hostname: every Linux host's root pid namespace has the same
+ * id. Callers rely on what it judges being local, as the data catalog is.
+ * Falls back to the hostname alone when the namespace cannot be read.
+ */
+export function processHostIdentity(): string {
+  if (cachedHostIdentity === undefined) {
+    const host = hostname();
+    cachedHostIdentity = host;
+    if (Deno.build.os === "linux") {
+      try {
+        cachedHostIdentity = `${host}#${
+          Deno.readLinkSync("/proc/self/ns/pid")
+        }`;
+      } catch {
+        // Hostname alone
+      }
+    }
+  }
+  return cachedHostIdentity;
+}
+
+let cachedHostIdentity: string | undefined;
 
 /**
  * Check if a process with the given PID is no longer running.
@@ -38,6 +68,39 @@ export function isProcessDead(pid: number): boolean {
       return true;
     }
     return false;
+  }
+}
+
+/**
+ * Like {@link isProcessDead}, but never resumes or otherwise disturbs the
+ * process it probes, for pids read from persisted data that may since have
+ * been reused. POSIX hosts send SIGURG, whose default action is to ignore
+ * it; unlike SIGCONT it does not resume a stopped process, and a process of
+ * another user is not signalled at all (permission denied reads as alive).
+ * Linux first checks `/proc/<pid>`, which sends nothing, and only probes
+ * with SIGURG when the entry is missing, since `/proc` mounted with
+ * `hidepid` hides other users' live processes. A pid reused as a thread id
+ * also resolves under `/proc` and reads as alive, which errs on the safe
+ * side. Windows uses `tasklist`. Returns `false` (not dead) on any
+ * unexpected error.
+ */
+export function isProcessGone(pid: number): boolean {
+  if (Deno.build.os === "windows") {
+    return isProcessDeadWindows(pid);
+  }
+  if (Deno.build.os === "linux") {
+    try {
+      Deno.statSync(`/proc/${pid}`);
+      return false;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) return false;
+    }
+  }
+  try {
+    Deno.kill(pid, "SIGURG");
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
   }
 }
 

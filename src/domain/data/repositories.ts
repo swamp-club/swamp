@@ -287,12 +287,18 @@ export interface UnifiedDataRepository {
    * @param type - The model type
    * @param modelId - The model input ID
    * @param data - The data entity (for ownership validation)
+   * @param options.deferred - The version is a deferred write: register it
+   *   as pending (not promoted) before any content is written.
+   *   finalizeVersionDeferred completes the pending row and
+   *   advanceLatestMarkers or rollbackVersions settles it; if registering
+   *   fails, the allocated version is removed before the error is thrown
    * @returns The allocated version number and content file path
    */
   allocateVersion(
     type: ModelType,
     modelId: string,
     data: Data,
+    options?: { deferred?: boolean },
   ): Promise<{ version: number; contentPath: string; priorVersions: number[] }>;
 
   /**

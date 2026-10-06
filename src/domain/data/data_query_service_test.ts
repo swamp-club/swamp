@@ -1112,6 +1112,7 @@ function createOnDiskData(
   dataName: string,
   modelName: string,
   version = 1,
+  stepName?: string,
 ): void {
   const versionDir = join(
     dir,
@@ -1138,7 +1139,9 @@ function createOnDiskData(
       garbageCollection: 5,
       streaming: false,
       tags: { type: "resource", specName: dataName, modelName },
-      ownerDefinition: { ownerType: "model-method", ownerRef: modelId },
+      ownerDefinition: stepName === undefined
+        ? { ownerType: "model-method", ownerRef: modelId }
+        : { ownerType: "workflow-step", ownerRef: modelId, stepName },
       createdAt: "2026-01-01T00:00:00.000Z",
     }),
   );
@@ -2987,6 +2990,193 @@ Deno.test("getLatestRecord: an unpromoted deferred version above the marker does
     const record = await service.getLatestRecord("ingest", "my-data");
     assertEquals(record?.version, 2);
     assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: dropping a step's latest that another repository deleted makes the step's previous version its step latest (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1 (s1), v2 (s2) and v3 (s1); another repository
+    // sharing the datastore has since deleted v3, leaving the marker on v2.
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      1,
+      "s1",
+    );
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      2,
+      "s2",
+    );
+    for (const [version, step] of [[1, "s1"], [2, "s2"], [3, "s1"]] as const) {
+      catalog.upsertNewVersion(
+        makeRow({ version, step_name: step, owner_type: "workflow-step" }),
+      );
+    }
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(
+      [...catalog.iterate()]
+        .sort((a, b) => a.version - b.version)
+        .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`),
+      ["1:0:1", "2:1:1"],
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: a version that dropping a deleted row makes latest is not shadowed by a lagging marker (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The catalog knows v1-v3 of one step, so v1 and v2 hold neither flag.
+    // Another repository has deleted v3, and the marker lags on v1 while v2
+    // is still on disk.
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      2,
+      "s1",
+    );
+    createOnDiskData(
+      dir,
+      "test-model",
+      "model-001",
+      "my-data",
+      "ingest",
+      1,
+      "s1",
+    );
+    for (const version of [1, 2, 3]) {
+      catalog.upsertNewVersion(
+        makeRow({ version, step_name: "s1", owner_type: "workflow-step" }),
+      );
+    }
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 2);
+    assertEquals(catalog.findLatestRow("ingest", "my-data")?.version, 2);
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestRecord: the refresh keeps the pending row of an in-flight deferred write that has no metadata yet (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The marker is on v1. Another repository deleted v3, and v2 is an
+    // in-flight streamed deferred write whose metadata is not written yet.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    catalog.upsert(
+      makeRow({ version: 2, is_latest: 0, is_pending: 1, pending_pid: 4242 }),
+    );
+    catalog.upsertNewVersion(makeRow({ version: 3 }));
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 1);
+    assertEquals(
+      [...catalog.iterate()]
+        .sort((a, b) => a.version - b.version)
+        .map((r) => `${r.version}:${r.is_latest}:${r.is_pending}`),
+      ["1:1:0", "2:0:1"],
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("DataQueryService: a backfill leaves an in-flight deferred write unpromoted, and rolling it back keeps every step's latest (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-backfill-rollback-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+    const type = ModelType.create("test/model");
+    const data = (stepName: string) =>
+      Data.create({
+        name: "out",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 100,
+        tags: { type: "resource", modelName: "writer" },
+        ownerDefinition: {
+          ownerType: "workflow-step",
+          ownerRef: "test/model:run",
+          stepName,
+        },
+      });
+    const bytes = new TextEncoder().encode("x");
+    await dataRepo.save(type, "m1", data("s1"), bytes);
+    await dataRepo.save(type, "m1", data("s2"), bytes);
+    const inFlight = await dataRepo.saveDeferred(type, "m1", data("s1"), bytes);
+
+    // A backfill walks the disk, which already holds the in-flight v3, but
+    // the catalog holds v3 as pending, so the backfill leaves it unpromoted.
+    catalog.invalidate();
+    await service.ensurePopulated();
+    const flags = () =>
+      [...catalog.iterate()]
+        .sort((a, b) => a.version - b.version)
+        .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+    assertEquals(flags(), ["1:0:1", "2:1:1", "3:0:0"]);
+    assertEquals(
+      [...catalog.iterate()].find((r) => r.version === 3)?.is_pending,
+      1,
+    );
+
+    await dataRepo.rollbackVersions([inFlight]);
+
+    assertEquals(flags(), ["1:0:1", "2:1:1"]);
   } finally {
     catalog.close();
     Deno.removeSync(dir, { recursive: true });

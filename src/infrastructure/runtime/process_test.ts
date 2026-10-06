@@ -17,13 +17,32 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { hostname } from "node:os";
 import {
   checkOpenFileLimit,
   getOpenFileSoftLimit,
   isProcessDead,
+  isProcessGone,
+  processHostIdentity,
   tryRaiseOpenFileLimit,
 } from "./process.ts";
+
+Deno.test("isProcessGone: false for a live process, true for a pid no process can hold", () => {
+  assertEquals(isProcessGone(Deno.pid), false);
+  assertEquals(isProcessGone(Deno.ppid), false);
+  assertEquals(isProcessGone(2147483647), true);
+});
+
+Deno.test("processHostIdentity: is the hostname, plus the pid namespace on Linux when readable", () => {
+  const identity = processHostIdentity();
+  if (Deno.build.os === "linux" && identity !== hostname()) {
+    assertStringIncludes(identity, `${hostname()}#pid:[`);
+  } else {
+    assertEquals(identity, hostname());
+  }
+  assertEquals(processHostIdentity(), identity, "stable within a process");
+});
 
 Deno.test("isProcessDead: returns false for the current process", () => {
   assertEquals(isProcessDead(Deno.pid), false);

@@ -424,10 +424,33 @@ may return several records for one data name written by different workflow
 steps; an older step's record reports `isLatest: false`. `data.latest()`
 returns the single latest record regardless of step.
 
-Known gap: deleting a version (`swamp data delete --version`, GC, the version
-cap, or rolling back an unpromoted deferred write) re-promotes only the
-surviving highest version. Another step whose latest was deleted keeps no
-`is_step_latest` row until the catalog is rebuilt.
+Removing versions (`swamp data delete --version`, GC, the version cap, rolling
+back a deferred write, or dropping a row whose version another repository
+deleted) recomputes both flags with `computeLatestFlags` over the group's
+remaining promoted rows, in the same transaction as the removal
+(`CatalogStore.removeVersion`, `bulkRemoveVersions`). A step whose latest was
+removed falls back to its previous version (swamp-club#2975). A deferred write
+is registered as pending (`is_pending = 1`, neither flag) as soon as its
+version is allocated, before any of its files reach disk, and stays pending
+until it is promoted or rolled back; the recompute skips it. Delete and GC
+choose the new latest from promoted versions only, and GC and the write-time
+version cap never count, keep or prune a pending version, so an in-flight
+deferred write is never promoted early. When only pending versions are left,
+the latest marker keeps naming the deleted version, so reads find nothing until
+the write is promoted; if the write is rolled back instead, the emptied name is
+removed. A backfill never overwrites a pending row and derives the other rows'
+flags without it, inside one transaction; only a catalog rebuilt from an empty
+table (a schema change) treats an in-flight write as promoted, and rolling it
+back afterwards still recomputes the flags. A pending row records the pid and
+host identity (hostname, plus pid namespace on Linux) of the process that wrote
+it. GC (not a dry run) first rolls back each pending write of the model whose
+writer had this process's host identity and is no longer alive, since nothing
+else will promote or roll it back, and removes a data name that leaves with no
+versions. A row from another host or container, the current process or a live
+pid stays in flight. Promotion clears a row's pending mark before it moves the
+latest marker, and reclaim skips a version the marker names, so a promotion
+that stopped halfway is never reclaimed. If writing a deferred version fails,
+the write removes its own version and pending row.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
@@ -572,6 +595,9 @@ CREATE TABLE catalog (
   job_name        TEXT NOT NULL DEFAULT '',
   step_name       TEXT NOT NULL DEFAULT '',
   source          TEXT NOT NULL DEFAULT '',
+  is_pending      INTEGER NOT NULL DEFAULT 0,
+  pending_pid     INTEGER NOT NULL DEFAULT 0,
+  pending_host    TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
 );
 

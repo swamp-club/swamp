@@ -31,7 +31,8 @@ const logger = getLogger(["swamp", "persistence", "catalog"]);
  * (namespace, type_normalized, model_id, data_name) group: the highest
  * promoted version. The `is_step_latest` flag marks the latest version each
  * workflow step wrote to that group (see {@link CatalogStore.upsertNewVersion}),
- * and is always set on the `is_latest` row.
+ * and is always set on the `is_latest` row. `is_pending` marks a deferred
+ * write that is not promoted yet; it holds neither latest flag until it is.
  */
 export interface CatalogRow {
   namespace: string;
@@ -59,6 +60,20 @@ export interface CatalogRow {
   job_name: string;
   step_name: string;
   source: string;
+  /**
+   * 1 while a deferred write is not yet promoted, so recomputing the latest
+   * flags can tell it apart from a superseded row (both hold neither flag).
+   * Absent means 0.
+   */
+  is_pending?: number;
+  /**
+   * The pid and host identity (hostname, plus pid namespace on Linux; see
+   * processHostIdentity) of the process that wrote a pending row, so GC can
+   * tell a write whose process died (never to be promoted or rolled back)
+   * from one still in flight. 0 and "" when the row is not pending.
+   */
+  pending_pid?: number;
+  pending_host?: string;
 }
 
 /**
@@ -102,7 +117,7 @@ export interface CatalogCheckpointStats {
  * On startup, if the stored version differs, the catalog is dropped and
  * rebuilt via self-healing backfill.
  */
-export const CATALOG_SCHEMA_VERSION = "7";
+export const CATALOG_SCHEMA_VERSION = "8";
 
 /**
  * Columns of the catalog table at {@link CATALOG_SCHEMA_VERSION}. A catalog
@@ -136,6 +151,9 @@ export const CATALOG_COLUMNS: readonly (keyof CatalogRow)[] = [
   "job_name",
   "step_name",
   "source",
+  "is_pending",
+  "pending_pid",
+  "pending_host",
 ];
 
 /**
@@ -152,6 +170,17 @@ export interface CatalogStoreOptions {
    * (swamp-club#2858).
    */
   writeTracker?: SharedDatastoreWriteTracker;
+}
+
+/** A row's primary key as one string, for set membership. */
+function rowKey(row: {
+  namespace: string;
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  version: number;
+}): string {
+  return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
 }
 
 export class CatalogStore {
@@ -258,6 +287,9 @@ export class CatalogStore {
         job_name        TEXT NOT NULL DEFAULT '',
         step_name       TEXT NOT NULL DEFAULT '',
         source          TEXT NOT NULL DEFAULT '',
+        is_pending      INTEGER NOT NULL DEFAULT 0,
+        pending_pid     INTEGER NOT NULL DEFAULT 0,
+        pending_host    TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
       );
 
@@ -376,8 +408,9 @@ export class CatalogStore {
         namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
         spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
         streaming, size, created_at, tags,
-        owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
+        is_pending, pending_pid, pending_host
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.namespace,
@@ -405,6 +438,9 @@ export class CatalogStore {
       row.job_name,
       row.step_name,
       row.source,
+      row.is_pending ?? 0,
+      row.pending_pid ?? 0,
+      row.pending_host ?? "",
     );
   }
 
@@ -453,7 +489,10 @@ export class CatalogStore {
       // Not filtered on flags: a superseded model-method row holds neither
       // flag yet still outranks lower step rows, exactly as it does in
       // computeLatestFlags. An unpromoted deferred row counts too; if it is
-      // rolled back, its step has no step latest until the catalog is rebuilt.
+      // rolled back, removeVersion recomputes the flags without it. The
+      // removal recompute skips pending rows, so until a pending row settles
+      // a lower row of its step may hold is_step_latest from one path and not
+      // the other; both agree once it is promoted or rolled back.
       const higherInScope = this.db.prepare(
         `SELECT 1 FROM catalog
          WHERE ${groupWhere} AND version > ? AND ${stepScope}
@@ -484,6 +523,9 @@ export class CatalogStore {
         ...row,
         is_latest: isLatest,
         is_step_latest: isStepLatest,
+        is_pending: 0,
+        pending_pid: 0,
+        pending_host: "",
       });
       this.db.exec("COMMIT");
     } catch (error) {
@@ -498,19 +540,44 @@ export class CatalogStore {
    * are left untouched. Used by backfill so data the on-disk walk
    * cannot see — e.g. under lazy hydration — is preserved rather than
    * deleted.
+   *
+   * A row whose version the catalog holds as pending (an in-flight deferred
+   * write, on disk before it is promoted) is never overwritten, so a backfill
+   * cannot promote it. With `computeFlags`, the latest flags of the rows that
+   * are written are derived inside the same IMMEDIATE transaction, after the
+   * pending rows are left out, so no writer can register a pending row in
+   * between.
    */
-  bulkUpsert(rows: readonly CatalogRow[]): void {
+  bulkUpsert(
+    rows: readonly CatalogRow[],
+    computeFlags?: (rows: CatalogRow[]) => void,
+  ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const pending = new Set(
+        (this.db.prepare(
+          `SELECT namespace, type_normalized, model_id, data_name, version
+           FROM catalog WHERE is_pending = 1`,
+        ).all() as {
+          namespace: string;
+          type_normalized: string;
+          model_id: string;
+          data_name: string;
+          version: number;
+        }[]).map(rowKey),
+      );
+      const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
+      computeFlags?.(toWrite);
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
-          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
+          is_pending, pending_pid, pending_host
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const row of rows) {
+      for (const row of toWrite) {
         stmt.run(
           row.namespace,
           row.type_normalized,
@@ -537,6 +604,9 @@ export class CatalogStore {
           row.job_name,
           row.step_name,
           row.source,
+          row.is_pending ?? 0,
+          row.pending_pid ?? 0,
+          row.pending_host ?? "",
         );
       }
       this.db.exec("COMMIT");
@@ -563,8 +633,9 @@ export class CatalogStore {
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, garbage_collection, owner_type,
           streaming, size, created_at, tags,
-          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
+          is_pending, pending_pid, pending_host
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
@@ -593,6 +664,9 @@ export class CatalogStore {
           row.job_name,
           row.step_name,
           row.source,
+          row.is_pending ?? 0,
+          row.pending_pid ?? 0,
+          row.pending_host ?? "",
         );
       }
       const meta = this.db.prepare(
@@ -724,11 +798,9 @@ export class CatalogStore {
   }
 
   /**
-   * Removes a single version row from the catalog.
-   *
-   * Callers that delete the row which was `is_latest` must subsequently
-   * upsert the new latest via {@link upsertNewVersion}; this method does
-   * not promote a surviving row on its own.
+   * Removes a single version row from the catalog and recomputes both latest
+   * flags for the rest of its group, in one IMMEDIATE transaction (see
+   * {@link bulkRemoveVersions}).
    */
   removeVersion(
     namespace: string,
@@ -736,12 +808,75 @@ export class CatalogStore {
     modelId: string,
     dataName: string,
     version: number,
+    computeFlags: (rows: CatalogRow[]) => void,
   ): void {
-    const stmt = this.db.prepare(
-      `DELETE FROM catalog
-       WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
+    this.bulkRemoveVersions(
+      namespace,
+      typeNormalized,
+      modelId,
+      dataName,
+      [version],
+      computeFlags,
     );
-    stmt.run(namespace, typeNormalized, modelId, dataName, version);
+  }
+
+  /**
+   * Versions of one (namespace, type, model, name) group that are in-flight
+   * deferred writes: written but not yet promoted or rolled back.
+   */
+  pendingVersions(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): Set<number> {
+    const rows = this.db.prepare(
+      `SELECT version FROM catalog
+       WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?
+         AND is_pending = 1`,
+    ).all(namespace, typeNormalized, modelId, dataName) as {
+      version: number;
+    }[];
+    return new Set(rows.map((r) => r.version));
+  }
+
+  /**
+   * Ends a deferred write's pending state when its promotion begins: clears
+   * the pending mark and writer identity (the flags stay 0 until the caller
+   * promotes the row), or removes the row when `keep` is false.
+   */
+  settlePending(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    version: number,
+    keep: boolean,
+  ): void {
+    const where =
+      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ? AND is_pending = 1";
+    this.db.prepare(
+      keep
+        ? `UPDATE catalog SET is_pending = 0, pending_pid = 0, pending_host = '' WHERE ${where}`
+        : `DELETE FROM catalog WHERE ${where}`,
+    ).run(namespace, typeNormalized, modelId, dataName, version);
+  }
+
+  /**
+   * Every pending row (an in-flight deferred write) of one model, across its
+   * data names.
+   */
+  pendingRows(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+  ): CatalogRow[] {
+    return [
+      ...this.iterateFiltered(
+        "namespace = ? AND type_normalized = ? AND model_id = ? AND is_pending = 1",
+        [namespace, typeNormalized, modelId],
+      ),
+    ];
   }
 
   /**
@@ -1132,13 +1267,16 @@ export class CatalogStore {
   }
 
   /**
-   * Removes multiple versions for a single (type, model, name) triple in a
-   * single BEGIN IMMEDIATE transaction, replacing N individual removeVersion()
-   * calls with one fsync.
+   * Removes multiple versions for a single (type, model, name) triple and
+   * recomputes both latest flags for the group's remaining promoted rows via
+   * `computeFlags`, all in one BEGIN IMMEDIATE transaction. The recompute
+   * restores `is_step_latest` for a step whose latest was removed, which
+   * re-promoting only the surviving highest version cannot (swamp-club#2975).
+   * Pending rows (unpromoted deferred writes) are left out, so they keep
+   * neither flag.
    *
    * If the transaction fails, it is rolled back and the catalog remains
-   * consistent. Falls back gracefully — callers may catch and retry with
-   * individual removeVersion() calls if needed.
+   * consistent.
    */
   bulkRemoveVersions(
     namespace: string,
@@ -1146,6 +1284,7 @@ export class CatalogStore {
     modelId: string,
     dataName: string,
     versions: readonly number[],
+    computeFlags: (rows: CatalogRow[]) => void,
   ): void {
     if (versions.length === 0) return;
     this.db.exec("BEGIN IMMEDIATE");
@@ -1157,6 +1296,13 @@ export class CatalogStore {
       for (const version of versions) {
         stmt.run(namespace, typeNormalized, modelId, dataName, version);
       }
+      this.recomputeGroupFlags(
+        namespace,
+        typeNormalized,
+        modelId,
+        dataName,
+        computeFlags,
+      );
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1359,43 +1505,80 @@ export class CatalogStore {
   ): number {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const rows: CatalogRow[] = [
-        ...this.iterateFiltered("(is_latest = ? OR is_step_latest = ?)", [
-          1,
-          1,
-        ]),
-      ];
-      const before = new Map(
-        rows.map((r) => [r, `${r.is_latest}:${r.is_step_latest}`]),
+      const changed = this.writeRecomputedFlags(
+        [
+          ...this.iterateFiltered("(is_latest = ? OR is_step_latest = ?)", [
+            1,
+            1,
+          ]),
+        ],
+        computeFlags,
       );
-      computeFlags(rows);
-      const changed = rows.filter((r) =>
-        before.get(r) !== `${r.is_latest}:${r.is_step_latest}`
-      );
-      if (changed.length > 0) {
-        const stmt = this.db.prepare(
-          `UPDATE catalog SET is_latest = ?, is_step_latest = ?
-           WHERE namespace = ? AND type_normalized = ? AND model_id = ?
-             AND data_name = ? AND version = ?`,
-        );
-        for (const row of changed) {
-          stmt.run(
-            row.is_latest,
-            row.is_step_latest,
-            row.namespace,
-            row.type_normalized,
-            row.model_id,
-            row.data_name,
-            row.version,
-          );
-        }
-      }
       this.db.exec("COMMIT");
-      return changed.length;
+      return changed;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /**
+   * Recomputes both latest flags for one (namespace, type, model, name)
+   * group over its promoted rows. Must run inside the caller's transaction.
+   */
+  private recomputeGroupFlags(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): void {
+    this.writeRecomputedFlags(
+      [
+        ...this.iterateFiltered(
+          "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND is_pending = 0",
+          [namespace, typeNormalized, modelId, dataName],
+        ),
+      ],
+      computeFlags,
+    );
+  }
+
+  /**
+   * Runs `computeFlags` over `rows` and writes back each row whose flags
+   * changed. Returns the number of rows changed. Must run inside the
+   * caller's transaction.
+   */
+  private writeRecomputedFlags(
+    rows: CatalogRow[],
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): number {
+    const before = new Map(
+      rows.map((r) => [r, `${r.is_latest}:${r.is_step_latest}`]),
+    );
+    computeFlags(rows);
+    const changed = rows.filter((r) =>
+      before.get(r) !== `${r.is_latest}:${r.is_step_latest}`
+    );
+    if (changed.length > 0) {
+      const stmt = this.db.prepare(
+        `UPDATE catalog SET is_latest = ?, is_step_latest = ?
+         WHERE namespace = ? AND type_normalized = ? AND model_id = ?
+           AND data_name = ? AND version = ?`,
+      );
+      for (const row of changed) {
+        stmt.run(
+          row.is_latest,
+          row.is_step_latest,
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.version,
+        );
+      }
+    }
+    return changed.length;
   }
 
   /**

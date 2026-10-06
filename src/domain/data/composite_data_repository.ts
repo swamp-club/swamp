@@ -69,10 +69,11 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
+    options?: { deferred?: boolean },
   ): Promise<
     { version: number; contentPath: string; priorVersions: number[] }
   > {
-    return this.routeWrite(data).allocateVersion(type, modelId, data);
+    return this.routeWrite(data).allocateVersion(type, modelId, data, options);
   }
 
   finalizeVersion(

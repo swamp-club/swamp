@@ -25,6 +25,7 @@ import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   Data,
@@ -57,6 +58,14 @@ import {
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+
+/**
+ * The latest marker's value when a data name has versions on disk but none
+ * promoted, only in-flight deferred writes. Versions start at 1, so no write
+ * is ever allocated it and reads through the marker find nothing.
+ */
+const NO_PROMOTED_VERSION = 0;
 
 // Re-export domain repository types so existing infra-path importers keep working.
 // New domain code should import directly from src/domain/data/repositories.ts.
@@ -831,6 +840,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
+    const checksum = await this.computeChecksum(content);
     const { version: newVersion } = await this.atomicAllocateVersionDir(
       type,
       modelId,
@@ -840,62 +850,44 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dataToSave = data.withNewVersion({
       version: newVersion,
       size: content.length,
-      checksum: await this.computeChecksum(content),
+      checksum,
     });
+    try {
+      // Register the write as pending before any of its files reach disk, so
+      // delete and GC never mistake the new version for a promoted one.
+      this.upsertPendingRow(type, modelId, dataToSave);
 
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    const boundary = this.baseDir;
-    await assertSafePath(metadataPath, boundary);
-    const metadata = dataToSave.toData();
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataContent);
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      const boundary = this.baseDir;
+      await assertSafePath(metadataPath, boundary);
+      const metadata = dataToSave.toData();
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataContent = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataContent);
 
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    await assertSafePath(contentPath, boundary);
-    await atomicWriteFile(contentPath, content);
-
-    // Catalog row with both latest flags 0 — invisible to latest-based queries
-    this.catalogStore.upsert({
-      namespace: this.namespace,
-      type_normalized: type.normalized,
-      model_id: modelId,
-      data_name: data.name,
-      id: data.id,
-      version: newVersion,
-      is_latest: 0,
-      is_step_latest: 0,
-      model_name: dataToSave.tags["modelName"] ?? "",
-      spec_name: dataToSave.tags["specName"] ?? "",
-      data_type: dataToSave.tags["type"] ?? "",
-      content_type: dataToSave.contentType,
-      lifetime: dataToSave.lifetime,
-      garbage_collection: garbageCollectionToColumn(
-        dataToSave.garbageCollection,
-      ),
-      owner_type: dataToSave.ownerDefinition.ownerType,
-      streaming: dataToSave.streaming ? 1 : 0,
-      size: dataToSave.size ?? 0,
-      created_at: dataToSave.createdAt.toISOString(),
-      tags: JSON.stringify(dataToSave.tags),
-      owner_ref: dataToSave.ownerDefinition.ownerRef,
-      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
-      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
-      job_name: dataToSave.ownerDefinition.jobName ?? "",
-      step_name: dataToSave.ownerDefinition.stepName ?? "",
-      source: dataToSave.ownerDefinition.source ?? "",
-    });
-    this.catalogStore.recordLocalWrite();
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      await assertSafePath(contentPath, boundary);
+      await atomicWriteFile(contentPath, content);
+    } catch (error) {
+      // No receipt reaches the caller, so nothing else would roll this
+      // version back; its pending row would stay under this live process.
+      await this.rollbackVersions([
+        { type, modelId, dataName: data.name, version: newVersion },
+      ]);
+      throw error;
+    }
 
     return { type, modelId, dataName: data.name, version: newVersion };
   }
@@ -1063,12 +1055,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         dataName,
         version,
+        computeLatestFlags,
       );
       this.catalogStore.recordLocalWrite();
 
       // Update latest marker if needed
-      const versions = await this.listVersions(type, modelId, dataName);
-      const newLatest = maxOf(versions);
+      const { onDisk, promoted } = await this.listPromotedVersions(
+        type,
+        modelId,
+        dataName,
+      );
+      const newLatest = maxOf(promoted);
       if (newLatest !== undefined) {
         await this.updateLatestMarker(type, modelId, dataName, newLatest);
         // Update catalog to reflect new latest version
@@ -1091,6 +1088,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         } else if (latestData) {
           this.catalogUpsert(type, modelId, latestData);
         }
+      } else if (onDisk.length > 0) {
+        // Only in-flight deferred writes are left. Point the marker at
+        // NO_PROMOTED_VERSION, which no write is ever allocated, so reads
+        // find nothing instead of falling back to the highest version on
+        // disk; the write's promotion moves the marker forward again.
+        await this.updateLatestMarker(
+          type,
+          modelId,
+          dataName,
+          NO_PROMOTED_VERSION,
+        );
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -1332,6 +1340,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     data: Data,
+    options?: { deferred?: boolean },
   ): Promise<
     { version: number; contentPath: string; priorVersions: number[] }
   > {
@@ -1368,6 +1377,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         data.name,
       );
+
+    // A deferred write is registered as pending before its content is
+    // streamed in; finalizeVersionDeferred completes the row.
+    if (options?.deferred) {
+      try {
+        this.upsertPendingRow(
+          type,
+          modelId,
+          data.withNewVersion({ version: newVersion, size: 0 }),
+        );
+      } catch (error) {
+        // The writer never gets the allocation, so nothing else would roll
+        // the empty version directory back.
+        await this.rollbackVersions([
+          { type, modelId, dataName: data.name, version: newVersion },
+        ]);
+        throw error;
+      }
+    }
 
     const contentPath = this.getContentPath(
       type,
@@ -1477,36 +1505,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(metadataPath, metadataContent);
 
-    this.catalogStore.upsert({
-      namespace: this.namespace,
-      type_normalized: type.normalized,
-      model_id: modelId,
-      data_name: data.name,
-      id: data.id,
-      version,
-      is_latest: 0,
-      is_step_latest: 0,
-      model_name: dataToSave.tags["modelName"] ?? "",
-      spec_name: dataToSave.tags["specName"] ?? "",
-      data_type: dataToSave.tags["type"] ?? "",
-      content_type: dataToSave.contentType,
-      lifetime: dataToSave.lifetime,
-      garbage_collection: garbageCollectionToColumn(
-        dataToSave.garbageCollection,
-      ),
-      owner_type: dataToSave.ownerDefinition.ownerType,
-      streaming: dataToSave.streaming ? 1 : 0,
-      size: dataToSave.size ?? 0,
-      created_at: dataToSave.createdAt.toISOString(),
-      tags: JSON.stringify(dataToSave.tags),
-      owner_ref: dataToSave.ownerDefinition.ownerRef,
-      workflow_run_id: dataToSave.ownerDefinition.workflowRunId ?? "",
-      workflow_name: dataToSave.ownerDefinition.workflowName ?? "",
-      job_name: dataToSave.ownerDefinition.jobName ?? "",
-      step_name: dataToSave.ownerDefinition.stepName ?? "",
-      source: dataToSave.ownerDefinition.source ?? "",
-    });
-    this.catalogStore.recordLocalWrite();
+    this.upsertPendingRow(type, modelId, dataToSave);
 
     return {
       receipt: { type, modelId, dataName: data.name, version },
@@ -1520,13 +1519,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<void> {
     for (const receipt of receipts) {
       try {
-        await this.advanceLatestMarker(
+        const data = await this.findByName(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
           receipt.version,
         );
-        const data = await this.findByName(
+        // Settle the pending row before the marker moves, so a failure or
+        // crash between the two never leaves a version the marker names
+        // looking like an orphan GC may reclaim. A version without metadata
+        // (a writer that never finalized) had no row before deferred writes
+        // were registered early, and gets none.
+        this.catalogStore.settlePending(
+          this.namespace,
+          receipt.type.normalized,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+          data !== null,
+        );
+        this.catalogStore.recordLocalWrite();
+        await this.advanceLatestMarker(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
@@ -1560,8 +1573,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.modelId,
           receipt.dataName,
           receipt.version,
+          computeLatestFlags,
         );
         this.catalogStore.recordLocalWrite();
+        await this.removeNameLeftWithDanglingMarker(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+        );
       } catch (error) {
         logger
           .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
@@ -1947,10 +1966,24 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 
+    if (!dryRun) {
+      const reclaimed = await this.reclaimOrphanedDeferredWrites(
+        type,
+        modelId,
+      );
+      versionsRemoved += reclaimed.versionsRemoved;
+      bytesReclaimed += reclaimed.bytesReclaimed;
+    }
+
     const allData = await this.findAllForModel(type, modelId);
 
     for (const data of allData) {
-      const versions = await this.listVersions(type, modelId, data.name);
+      // Only promoted versions are counted, kept or pruned.
+      const { promoted: versions } = await this.listPromotedVersions(
+        type,
+        modelId,
+        data.name,
+      );
       if (versions.length <= 1) continue;
 
       const gc = data.garbageCollection;
@@ -2036,15 +2069,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           modelId,
           data.name,
           versionsToRemove,
+          computeLatestFlags,
         );
         this.catalogStore.recordLocalWrite();
 
-        const currentVersions = await this.listVersions(
+        const { onDisk, promoted } = await this.listPromotedVersions(
           type,
           modelId,
           data.name,
         );
-        const latestVersion = maxOf(currentVersions);
+        const latestVersion = maxOf(promoted);
         if (latestVersion !== undefined) {
           await this.updateLatestMarker(
             type,
@@ -2062,6 +2096,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           if (latestData) {
             this.catalogUpsert(type, modelId, latestData);
           }
+        } else if (onDisk.length > 0) {
+          // Only in-flight deferred writes are left: as delete does.
+          await this.updateLatestMarker(
+            type,
+            modelId,
+            data.name,
+            NO_PROMOTED_VERSION,
+          );
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
           await this.stage({ kind: "remove", path: dataNameDir });
@@ -2143,8 +2185,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     priorVersions: number[],
     cap: number,
   ): Promise<void> {
-    if (priorVersions.length < cap) return;
-    const sorted = [...priorVersions].sort((a, b) => a - b);
+    // An in-flight deferred write is neither counted nor pruned, as in GC.
+    const pending = this.catalogStore.pendingVersions(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
+    const promoted = priorVersions.filter((v) => !pending.has(v));
+    if (promoted.length < cap) return;
+    const sorted = [...promoted].sort((a, b) => a - b);
     const toRemove = sorted.slice(0, sorted.length - cap + 1);
     for (const version of toRemove) {
       const versionDir = this.getPath(type, modelId, dataName, version);
@@ -2162,6 +2212,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         dataName,
         toRemove,
+        computeLatestFlags,
       );
       this.catalogStore.recordLocalWrite();
       logger
@@ -2279,6 +2330,224 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       throw error;
     }
+  }
+
+  /**
+   * The version the latest marker names, or null when there is no marker.
+   * Unlike {@link getLatestVersion} it never falls back to scanning the
+   * version directories.
+   */
+  private async readLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number | null> {
+    const latestPath = join(
+      this.getDataNameDir(type, modelId, dataName),
+      "latest",
+    );
+    try {
+      const version = parseInt(
+        (await Deno.readTextFile(latestPath)).trim(),
+        10,
+      );
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a text file or not found
+    }
+    try {
+      const version = parseInt(
+        (await Deno.readLink(latestPath)).replace(/\/$/, ""),
+        10,
+      );
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a symlink either
+    }
+    return null;
+  }
+
+  /**
+   * Removes a data name that has no versions left but still has a latest
+   * marker. Deleting the last promoted version while a deferred write is in
+   * flight leaves the marker at NO_PROMOTED_VERSION; once that write is
+   * rolled back too, nothing is left to read. A name without a marker (a
+   * first deferred write rolled back) is left as it is.
+   */
+  private async removeNameLeftWithDanglingMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    if ((await this.listVersions(type, modelId, dataName)).length > 0) return;
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    try {
+      await Deno.lstat(join(dataNameDir, "latest"));
+    } catch {
+      return;
+    }
+    await this.stage({ kind: "remove", path: dataNameDir });
+    await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+    this.catalogRemove(type, modelId, dataName);
+  }
+
+  /**
+   * Writes the catalog row of a deferred write that is not promoted yet: both
+   * latest flags 0, so latest-based queries do not see it, and marked pending
+   * with this process's pid and host identity, so delete and GC leave it alone
+   * while it is in flight and GC can reclaim it if this process dies.
+   */
+  private upsertPendingRow(type: ModelType, modelId: string, data: Data): void {
+    this.catalogStore.upsert({
+      namespace: this.namespace,
+      type_normalized: type.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version: data.version,
+      is_latest: 0,
+      is_step_latest: 0,
+      model_name: data.tags["modelName"] ?? "",
+      spec_name: data.tags["specName"] ?? "",
+      data_type: data.tags["type"] ?? "",
+      content_type: data.contentType,
+      lifetime: data.lifetime,
+      garbage_collection: garbageCollectionToColumn(data.garbageCollection),
+      owner_type: data.ownerDefinition.ownerType,
+      streaming: data.streaming ? 1 : 0,
+      size: data.size ?? 0,
+      created_at: data.createdAt.toISOString(),
+      tags: JSON.stringify(data.tags),
+      owner_ref: data.ownerDefinition.ownerRef,
+      workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+      workflow_name: data.ownerDefinition.workflowName ?? "",
+      job_name: data.ownerDefinition.jobName ?? "",
+      step_name: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
+      is_pending: 1,
+      pending_pid: Deno.pid,
+      pending_host: processHostIdentity(),
+    });
+    this.catalogStore.recordLocalWrite();
+  }
+
+  /**
+   * The versions on disk, and those of them that are promoted. An in-flight
+   * deferred write (a pending catalog row) is on disk before it is promoted,
+   * so delete and GC must not make it latest, count it as the latest to keep,
+   * or prune it until it is promoted or rolled back. A backfill keeps the
+   * pending rows it finds; only a catalog rebuilt from an empty table (a
+   * schema change) treats every version on disk as promoted.
+   */
+  private async listPromotedVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<{ onDisk: number[]; promoted: number[] }> {
+    const onDisk = await this.listVersions(type, modelId, dataName);
+    const pending = this.catalogStore.pendingVersions(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
+    return { onDisk, promoted: onDisk.filter((v) => !pending.has(v)) };
+  }
+
+  /**
+   * Rolls back deferred writes whose process died before promoting or
+   * rolling them back. Their pending rows would otherwise keep the versions
+   * out of GC and the version cap until a catalog rebuild. A row counts as
+   * orphaned only when it was written under this process's host identity
+   * (hostname, plus pid namespace on Linux) and its pid is dead; a row from
+   * another host or container, this process, or a live pid is left in
+   * flight. A data name left with no versions is removed, as GC removes an
+   * emptied name.
+   */
+  private async reclaimOrphanedDeferredWrites(
+    type: ModelType,
+    modelId: string,
+  ): Promise<GarbageCollectionResult> {
+    const host = processHostIdentity();
+    const orphans = this.catalogStore
+      .pendingRows(this.namespace, type.normalized, modelId)
+      .filter((row) =>
+        row.pending_host === host && row.pending_pid !== undefined &&
+        row.pending_pid > 0 && row.pending_pid !== Deno.pid &&
+        isProcessGone(row.pending_pid)
+      );
+    let versionsRemoved = 0;
+    let bytesReclaimed = 0;
+    const names = new Set<string>();
+    for (const row of orphans) {
+      // Promotion settles the pending row before moving the marker, so a
+      // marker naming this version means it was promoted all the same:
+      // finish settling it instead of reclaiming it.
+      if (
+        await this.readLatestMarker(type, modelId, row.data_name) ===
+          row.version
+      ) {
+        const data = await this.findByName(
+          type,
+          modelId,
+          row.data_name,
+          row.version,
+        );
+        this.catalogStore.settlePending(
+          this.namespace,
+          type.normalized,
+          modelId,
+          row.data_name,
+          row.version,
+          data !== null,
+        );
+        this.catalogStore.recordLocalWrite();
+        if (data) this.catalogUpsert(type, modelId, data);
+        continue;
+      }
+      const versionDir = this.getPath(
+        type,
+        modelId,
+        row.data_name,
+        row.version,
+      );
+      await this.stage({ kind: "remove", path: versionDir });
+      try {
+        bytesReclaimed += (await Deno.stat(
+          this.getContentPath(type, modelId, row.data_name, row.version),
+        )).size;
+      } catch {
+        // Ignore stat errors
+      }
+      try {
+        await Deno.remove(versionDir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      this.catalogStore.removeVersion(
+        this.namespace,
+        type.normalized,
+        modelId,
+        row.data_name,
+        row.version,
+        computeLatestFlags,
+      );
+      this.catalogStore.recordLocalWrite();
+      versionsRemoved++;
+      names.add(row.data_name);
+      logger
+        .debug`Reclaimed orphaned deferred write ${row.data_name} v${row.version} (pid ${row.pending_pid} is gone)`;
+    }
+    // Kept inline rather than shared with removeNameLeftWithDanglingMarker:
+    // the write-seams ratchet pins each staged change by call site.
+    for (const name of names) {
+      if ((await this.listVersions(type, modelId, name)).length > 0) continue;
+      const dataNameDir = this.getDataNameDir(type, modelId, name);
+      await this.stage({ kind: "remove", path: dataNameDir });
+      await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+      this.catalogRemove(type, modelId, name);
+    }
+    return { versionsRemoved, bytesReclaimed };
   }
 
   private async updateLatestMarker(

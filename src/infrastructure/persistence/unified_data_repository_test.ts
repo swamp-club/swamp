@@ -23,16 +23,19 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { hostname } from "node:os";
+import { processHostIdentity } from "../runtime/process.ts";
 import {
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
 } from "./unified_data_repository.ts";
-import { CatalogStore } from "./catalog_store.ts";
+import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { RenameForward } from "../../domain/data/repositories.ts";
+import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -1798,4 +1801,608 @@ Deno.test("findAllGlobal: walks types, model ids and data names in name order", 
       expected.slice(1),
     );
   });
+});
+
+// --- Removing a version keeps every step's latest (swamp-club#2975) ---
+
+function stepData(stepName: string, garbageCollection = 100): Data {
+  return Data.create({
+    name: "out",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "workflow-step",
+      ownerRef: "test/model:run",
+      stepName,
+    },
+  });
+}
+
+/** `version:is_latest:is_step_latest` for every catalog row of `out`. */
+function outFlags(catalogStore: CatalogStore): string[] {
+  return [...catalogStore.iterate()]
+    .filter((r) => r.data_name === "out")
+    .sort((a, b) => a.version - b.version)
+    .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
+/** The flags a full catalog rebuild derives for the promoted rows of `out`. */
+function rebuiltOutFlags(catalogStore: CatalogStore): string[] {
+  const rows = [...catalogStore.iterate()].filter((r) =>
+    r.data_name === "out" && r.is_pending === 0
+  );
+  computeLatestFlags(rows);
+  return rows
+    .sort((a, b) => a.version - b.version)
+    .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
+}
+
+async function withStepRepo(
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    catalogStore: CatalogStore,
+  ) => Promise<void>,
+  enableWriteGc = false,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    await fn(
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        SOLO_NAMESPACE,
+        enableWriteGc,
+      ),
+      catalogStore,
+    );
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const bytes = (s: string) => new TextEncoder().encode(s);
+
+Deno.test("delete: deleting a step's latest version makes its previous version that step's latest again (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2"), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1"), bytes("c"));
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:1", "3:1:1"]);
+
+    await repo.delete(testType, "m1", "out", 3);
+
+    assertEquals(outFlags(catalogStore), ["1:0:1", "2:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("rollbackVersions: rolling back a step's deferred write makes its promoted version that step's latest (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    // s1 reserves v1 and v2 as deferred writes; s2 then promotes v3.
+    const first = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+    const second = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+    await repo.save(testType, "m1", stepData("s2"), bytes("c"));
+    // v1 promotes while v2 is still in flight, so v2 outranks it in s1.
+    await repo.advanceLatestMarkers([first]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:0", "3:1:1"]);
+
+    await repo.rollbackVersions([second]);
+
+    assertEquals(outFlags(catalogStore), ["1:0:1", "3:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("rollbackVersions: rolling back one deferred write leaves another in-flight one unpromoted (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const rolledBack = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s2"),
+      bytes("b"),
+    );
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("c"));
+
+    await repo.rollbackVersions([rolledBack]);
+
+    assertEquals(outFlags(catalogStore), ["1:1:1", "3:0:0"]);
+    const inFlight = [...catalogStore.iterate()].find((r) => r.version === 3);
+    assertEquals(inFlight?.is_pending, 1);
+  });
+});
+
+Deno.test("collectGarbage: every step keeps a step latest after pruning old versions (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2", 3), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("c"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("d"));
+
+    const result = await repo.collectGarbage(testType, "m1");
+    assertEquals(result.versionsRemoved, 1);
+
+    assertEquals(outFlags(catalogStore), ["2:0:1", "3:0:0", "4:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  });
+});
+
+Deno.test("save: every step keeps a step latest after the write-time version cap prunes (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2", 3), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("c"));
+    await repo.save(testType, "m1", stepData("s1", 3), bytes("d"));
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2, 3, 4]);
+    assertEquals(outFlags(catalogStore), ["2:0:1", "3:0:0", "4:1:1"]);
+    assertEquals(outFlags(catalogStore), rebuiltOutFlags(catalogStore));
+  }, true);
+});
+
+Deno.test("delete: deleting a version leaves an in-flight deferred write unpromoted (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s2"), bytes("b"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("c"));
+
+    await repo.delete(testType, "m1", "out", 2);
+
+    assertEquals(outFlags(catalogStore), ["1:1:1", "3:0:0"]);
+    const inFlight = [...catalogStore.iterate()].find((r) => r.version === 3);
+    assertEquals(inFlight?.is_pending, 1);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 1);
+  });
+});
+
+Deno.test("delete: deleting the only promoted version keeps an in-flight deferred write, which promotes later (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+
+    await repo.delete(testType, "m1", "out", 1);
+
+    // The directory and the in-flight write stay, but neither the catalog
+    // nor a disk read sees the write until its own promotion.
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2]);
+    assertEquals(outFlags(catalogStore), ["2:0:0"]);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(repo.findByNameSync(testType, "m1", "out"), null);
+
+    await repo.advanceLatestMarkers([inFlight]);
+
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+    assertEquals(outFlags(catalogStore), ["2:1:1"]);
+  });
+});
+
+Deno.test("collectGarbage: counts, keeps and prunes only promoted versions, never an in-flight deferred write (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1", 1), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1", 1), bytes("b"));
+    await repo.saveDeferred(testType, "m1", stepData("s1", 1), bytes("c"));
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [2, 3]);
+    assertEquals(outFlags(catalogStore), ["2:1:1", "3:0:0"]);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+  });
+});
+
+Deno.test("save: the write-time version cap neither counts nor prunes an in-flight deferred write (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.saveDeferred(testType, "m1", stepData("s1", 2), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1", 2), bytes("b"));
+    await repo.save(testType, "m1", stepData("s1", 2), bytes("c"));
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2, 3]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:0:0", "3:1:1"]);
+  }, true);
+});
+
+/** A pid no process can hold, so isProcessDead reports it gone. */
+const DEAD_PID = 2147483647;
+
+/** Rewrites the writer identity of a pending catalog row. */
+function setPendingWriter(
+  catalogStore: CatalogStore,
+  modelId: string,
+  version: number,
+  pid: number,
+  host = processHostIdentity(),
+): void {
+  const row = [...catalogStore.iterate()].find((r) =>
+    r.model_id === modelId && r.version === version
+  );
+  assertExists(row);
+  assertEquals(row.is_pending, 1);
+  catalogStore.upsert({ ...row, pending_pid: pid, pending_host: host });
+}
+
+Deno.test("collectGarbage: rolls back a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  });
+});
+
+Deno.test("collectGarbage: leaves a deferred write from a live process, this process, another host or another container in flight (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    for (const modelId of ["live", "self", "remote", "container"]) {
+      await repo.save(testType, modelId, stepData("s1"), bytes("a"));
+      await repo.saveDeferred(testType, modelId, stepData("s1"), bytes("b"));
+    }
+    const self = [...catalogStore.iterate()].find((r) =>
+      r.model_id === "self" && r.version === 2
+    );
+    assertEquals([self?.pending_pid, self?.pending_host], [
+      Deno.pid,
+      processHostIdentity(),
+    ]);
+    setPendingWriter(catalogStore, "live", 2, Deno.ppid);
+    setPendingWriter(catalogStore, "remote", 2, DEAD_PID, "another-host");
+    // Same hostname, another pid namespace: host networking in a container.
+    setPendingWriter(
+      catalogStore,
+      "container",
+      2,
+      DEAD_PID,
+      `${hostname()}#pid:[1]`,
+    );
+
+    for (const modelId of ["live", "self", "remote", "container"]) {
+      const result = await repo.collectGarbage(testType, modelId);
+      assertEquals(result.versionsRemoved, 0, modelId);
+      assertEquals(
+        await repo.listVersions(testType, modelId, "out"),
+        [1, 2],
+        modelId,
+      );
+    }
+  });
+});
+
+Deno.test("collectGarbage: a dry run does not roll back a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    await repo.collectGarbage(testType, "m1", { dryRun: true });
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2]);
+  });
+});
+
+Deno.test("collectGarbage: removes a data name whose only version left was a deferred write whose process died (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    await repo.delete(testType, "m1", "out", 1);
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), []);
+    assertEquals(outFlags(catalogStore), []);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+  });
+});
+
+Deno.test("allocateVersion: a deferred allocation is pending before its content is written (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const { version } = await repo.allocateVersion(
+      testType,
+      "m1",
+      stepData("s1"),
+      { deferred: true },
+    );
+
+    const row = [...catalogStore.iterate()].find((r) => r.version === version);
+    assertEquals(
+      [row?.is_latest, row?.is_step_latest, row?.is_pending, row?.pending_pid],
+      [0, 0, 1, Deno.pid],
+    );
+  });
+});
+
+Deno.test("delete: a streamed deferred write allocated before the delete is not made readable by it (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    const data = stepData("s1");
+    await repo.save(testType, "m1", data, bytes("a"));
+    const { version, contentPath, priorVersions } = await repo.allocateVersion(
+      testType,
+      "m1",
+      data,
+      { deferred: true },
+    );
+
+    await repo.delete(testType, "m1", "out", 1);
+    await Deno.writeFile(contentPath, bytes("b"));
+    const { receipt } = await repo.finalizeVersionDeferred(
+      testType,
+      "m1",
+      data,
+      version,
+      priorVersions,
+    );
+
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(outFlags(catalogStore), ["2:0:0"]);
+
+    await repo.advanceLatestMarkers([receipt]);
+    assertEquals((await repo.findByName(testType, "m1", "out"))?.version, 2);
+  });
+});
+
+Deno.test("rollbackVersions: rolling back the only write left after its promoted versions were deleted removes the name (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("b"),
+    );
+    await repo.delete(testType, "m1", "out", 1);
+
+    await repo.rollbackVersions([inFlight]);
+
+    const dataNameDir = dirname(repo.getPath(testType, "m1", "out", 1));
+    assertEquals(
+      await Deno.stat(dataNameDir).then(() => true, () => false),
+      false,
+    );
+    assertEquals(outFlags(catalogStore), []);
+  });
+});
+
+Deno.test("rollbackVersions: rolling back a first deferred write leaves its data name directory as before (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo) => {
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+
+    await repo.rollbackVersions([inFlight]);
+
+    const dataNameDir = dirname(repo.getPath(testType, "m1", "out", 1));
+    assertEquals(
+      await Deno.stat(dataNameDir).then(() => true, () => false),
+      true,
+    );
+    assertEquals(await repo.listVersions(testType, "m1", "out"), []);
+  });
+});
+
+Deno.test("collectGarbage: settles rather than reclaims a pending version the latest marker names (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+    // A promotion that moved the marker before its process died.
+    await Deno.writeTextFile(
+      join(dirname(repo.getPath(testType, "m1", "out", 2)), "latest"),
+      "2",
+    );
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 0);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:1:1"]);
+    const settled = [...catalogStore.iterate()].find((r) => r.version === 2);
+    assertEquals(settled?.is_pending, 0);
+  });
+});
+
+Deno.test("advanceLatestMarkers: settles the pending row before promoting, and drops it for a version that was never finalized (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    const finished = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+    const unfinished = await repo.allocateVersion(
+      testType,
+      "m2",
+      stepData("s1"),
+      { deferred: true },
+    );
+
+    await repo.advanceLatestMarkers([
+      finished,
+      {
+        type: testType,
+        modelId: "m2",
+        dataName: "out",
+        version: unfinished.version,
+      },
+    ]);
+
+    const rows = [...catalogStore.iterate()];
+    const m1 = rows.find((r) => r.model_id === "m1");
+    assertEquals(
+      [m1?.is_latest, m1?.is_pending, m1?.pending_pid, m1?.pending_host],
+      [1, 0, 0, ""],
+    );
+    assertEquals(rows.filter((r) => r.model_id === "m2"), []);
+  });
+});
+
+/** Fails the metadata write of one version, as a full disk would. */
+class FailingMetadataRepository extends FileSystemUnifiedDataRepository {
+  failVersion: number | null = null;
+
+  override getMetadataPath(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): string {
+    if (version === this.failVersion) {
+      throw new Error("No space left on device");
+    }
+    return super.getMetadataPath(type, modelId, dataName, version);
+  }
+}
+
+Deno.test("saveDeferred: a failed write removes its version and pending row (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const repo = new FailingMetadataRepository(dir, undefined, catalogStore);
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    repo.failVersion = 2;
+
+    await assertRejects(
+      () => repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b")),
+      Error,
+      "No space left on device",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** Fails writing a pending row, as a locked catalog would. */
+class FailingPendingCatalog extends CatalogStore {
+  failPending = false;
+
+  override upsert(row: CatalogRow): void {
+    if (this.failPending && row.is_pending === 1) {
+      throw new Error("database is locked");
+    }
+    super.upsert(row);
+  }
+}
+
+Deno.test("saveDeferred: a failed pending-row write removes the allocated version (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new FailingPendingCatalog(join(dir, "_catalog.db"));
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+    );
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    catalogStore.failPending = true;
+
+    await assertRejects(
+      () => repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b")),
+      Error,
+      "database is locked",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("saveDeferred: a write that reuses a deleted version number is not readable through the latest marker (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo) => {
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1"), bytes("b"));
+    // Only the in-flight v1 is left once v2 is deleted.
+    await repo.delete(testType, "m1", "out", 2);
+
+    const next = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("c"),
+    );
+
+    assertEquals(next.version, 2);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(repo.findByNameSync(testType, "m1", "out"), null);
+  });
+});
+
+Deno.test("allocateVersion: a failed pending-row write removes the allocated version (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new FailingPendingCatalog(join(dir, "_catalog.db"));
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+    );
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    catalogStore.failPending = true;
+
+    await assertRejects(
+      () =>
+        repo.allocateVersion(testType, "m1", stepData("s1"), {
+          deferred: true,
+        }),
+      Error,
+      "database is locked",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
