@@ -19,7 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { ExtensionApiClient } from "./extension_api_client.ts";
+import {
+  ExtensionApiClient,
+  REGISTRY_FORBIDDEN_CODE,
+  REGISTRY_TOKEN_SCOPE_CODE,
+} from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
@@ -1114,6 +1118,7 @@ Deno.test("ExtensionApiClient.checkResponse surfaces scope-specific 403 message"
   );
   assertStringIncludes(error.message, "extensions:push");
   assertStringIncludes(error.message, "collective settings");
+  assertEquals(error.code, REGISTRY_TOKEN_SCOPE_CODE);
   await server.shutdown();
 });
 
@@ -1134,6 +1139,9 @@ Deno.test("ExtensionApiClient.checkResponse passes through non-scope 403 message
     UserError,
   );
   assertStringIncludes(error.message, "insufficient permissions");
+  // The code lets the push tell a refusal from other failures without
+  // matching the server's prose.
+  assertEquals(error.code, REGISTRY_FORBIDDEN_CODE);
   await server.shutdown();
 });
 

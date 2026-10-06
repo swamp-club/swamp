@@ -90,8 +90,9 @@ a private manifest; it does not convert an already-private extension to public.
 Only private intent is sent to the registry; public omits the request field.
 
 Preview/dry-run `visibility` is `public`, `private` or `default` (registry
-decides); successful publication reports applied `public` or `private`. A dry
-run does not verify registry permissions or private-extension entitlement. An
+decides); successful publication reports applied `public` or `private`. With
+credentials, a dry run runs the registry checks read-only, including
+private-entitlement for private intent (see "What the dry run checks"). An
 explicit private publish requires a private confirmation response. On a
 confirmation error, check registry state before retrying: publication may
 already have completed.
@@ -382,18 +383,31 @@ With credentials present, the dry run runs the registry checks a real push runs,
 read-only, and reports each one in the `dry_run` document's `registryChecks`
 array with the wording the push would fail with:
 
-| Check                   | Passed when                                              |
-| ----------------------- | -------------------------------------------------------- |
-| `authentication`        | the stored key is accepted by the registry               |
-| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry |
-| `collective-membership` | the manifest's collective is one of yours                |
-| `version-exists`        | the manifest version is not published on any channel     |
+| Check                   | Passed when                                                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `authentication`        | the stored key is accepted by the registry                                                                                       |
+| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry                                                                         |
+| `collective-membership` | the manifest's collective is one of yours                                                                                        |
+| `private-entitlement`   | (private intent only) the collective's reported plan allows private extensions: a paid plan, or a free plan with an active trial |
+| `version-exists`        | the manifest version is not published on any channel                                                                             |
 
 A `failed` check exits non-zero after the summary. A `not-run` check names the
 missing prerequisite in `message` and `cause`: `no-credentials` leaves the run
 green, since the registry was never asked; `registry-unavailable` exits
-non-zero, since the registry never confirmed what the push needs. The dry run
-never prompts and never writes to the registry.
+non-zero, since the registry never confirmed what the push needs;
+`entitlement-undecided` leaves the run green, since the registry answered but
+what it reported does not settle private entitlement (no entitlement reported,
+or a free plan with no trial, which the registry may start at publish). The dry
+run never prompts and never writes to the registry.
+
+`private-entitlement` fails only for a free plan whose trial has ended, with the
+message the push throws:
+`Collective "@acme" is on the Free plan and its trial
+ended on 2026-08-19. Private publication requires a paid plan; upgrade at
+https://swamp-club.com/o/acme/billing.`
+A real push the registry refuses on entitlement reports the registry's sentence
+followed by what it had reported for the collective at sign-in; it names no plan
+the registry did not send.
 
 `apiCalls` lists every HTTP call the run made (registry, OSV, npm) with its
 method, URL and outcome; the log summary says "No API calls were made." only
@@ -484,8 +498,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 
 1. **Parse manifest** — validates schema, checks required fields
 2. **Registry checks** — authentication, reserved collective, collective
-   membership (the manifest's collective is one of yours) and version exists (on
-   any channel). A dry run reports them; a push stops at the first failure.
+   membership (the manifest's collective is one of yours), private entitlement
+   (private intent only: the collective's reported plan allows private
+   extensions) and version exists (on any channel). A dry run reports them; a
+   push stops at the first failure.
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
 4. **Detect project config** — walks up from manifest directory to repo root

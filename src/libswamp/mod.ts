@@ -1018,6 +1018,7 @@ export {
 } from "../domain/extensions/extension_update_check_cache.ts";
 export { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 export {
+  type CollectiveLookup,
   type CompilationError,
   createExtensionPushExecuteDeps,
   createExtensionPushPrepareDeps,
@@ -1041,6 +1042,8 @@ export {
 } from "./extensions/push.ts";
 export {
   type ApiCallRecord,
+  type CollectiveEntitlement,
+  type CollectiveTrial,
   REGISTRY_CHECK_LABELS,
   type RegistryCheckNotRunCause,
   type RegistryCheckResult,

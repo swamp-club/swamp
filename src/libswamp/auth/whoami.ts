@@ -152,8 +152,11 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
  * undefined rather than an empty array so the renderers can tell "this server
  * does not report entitlement" apart from "entitlement says everything is
  * free", and fall back to the older output shape only in the first case.
+ *
+ * Shared with extension push, which reads entitlement from the same whoami
+ * call it already makes for membership and keeps it in memory only.
  */
-function toEntitlements(
+export function entitlementsOf(
   response: WhoamiResponse,
 ): WhoamiCollectiveEntitlement[] | undefined {
   const entitlements = response.collectiveEntitlements;
@@ -217,7 +220,7 @@ export async function* whoami(
     }
 
     const collectives = getCollectives(response);
-    const entitlements = toEntitlements(response);
+    const entitlements = entitlementsOf(response);
     const fingerprint = await keyFingerprint(credentials.apiKey);
 
     if (!response.collectiveToken) {
