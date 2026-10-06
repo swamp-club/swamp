@@ -20,10 +20,10 @@
 /**
  * The push functions (swamp-club#3055). Every push a CLI command or serve
  * handler makes is one of these, passed as a root unit of work's flush or
- * checkpoint; commands and handlers never call `pushChanged` themselves. `PINNED_DIRECT_PUSHES`
- * (`integration/datastore_write_seams_rules_test.ts`) holds every
- * production `pushChanged` call to this module, the coordinator, and the
- * deliberate exceptions.
+ * checkpoint; commands and handlers never call `pushChanged` themselves.
+ * `PINNED_DIRECT_PUSHES` (`integration/datastore_write_seams_rules_test.ts`)
+ * holds every production `pushChanged` call to this module, the coordinator,
+ * and the deliberate exceptions.
  */
 
 import {

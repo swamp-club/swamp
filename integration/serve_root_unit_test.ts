@@ -31,6 +31,7 @@
 
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -38,6 +39,7 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { getRegisteredLockKeys } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
 import {
   runInRootUnitOfWork,
@@ -961,6 +963,64 @@ Deno.test("serve root units: an inline model.method.run with a model lock that t
         "release",
       ],
     );
+  });
+});
+
+/** Every warning logged under any category while `fn` runs, rendered. */
+async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  return captured.map((record) =>
+    record.message.map((part) => String(part)).join("")
+  );
+}
+
+Deno.test("serve root units: an inline model.method.run whose lock push fails has already replied, warns once, and still releases the lock", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    repos.remote.failNext("commit", new Error("injected commit failure"), {
+      instance: "A",
+    });
+    let timeline: string[] = [];
+    const warnings = await captureWarnings(async () => {
+      timeline = await methodRunTimeline(repos, {
+        detached: false,
+        payload: LOCKED_RUN,
+      });
+    });
+    assertEquals(timeline, [
+      "pull",
+      "release",
+      "event",
+      "done",
+      "deregister",
+      "prepare",
+      "release",
+    ]);
+    assertEquals(
+      warnings.filter((warning) =>
+        warning.startsWith("Failed to release locks: ")
+      ).length,
+      1,
+    );
+    assertEquals(
+      warnings.some((warning) => warning.includes("injected commit failure")),
+      true,
+    );
+    assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
   });
 });
 

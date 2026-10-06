@@ -32,9 +32,8 @@ import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_
  *
  * The push runs only once every path was staged (`pushWhen: "completed"`). A
  * legacy root also flushes when it is abandoned, but a mark that failed
- * skipped the push before. The
- * mark's error is thrown; so is the push's, and the caller handles both as it
- * did. With no paths it still pushes once.
+ * skipped the push before. The mark's error is thrown; so is the push's, and
+ * the caller handles both as it did. With no paths it still pushes once.
  */
 export async function stageWritesThenPush(
   repoContext: Pick<RepositoryContext, "markDirty">,

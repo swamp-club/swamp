@@ -73,9 +73,9 @@ const logger = getSwampLogger(["cli", "root-unit"]);
  *   the identical `markDirty()` call. Use cases `fn` runs open children of
  *   the root.
  * - The root's flush runs `options.push` once when the root ends (subject to
- *   `pushWhen`, which the root applies). Its error is held until the locks are released, so the
- *   release always runs and the push error reaches the same handler a
- *   combined push-then-release did.
+ *   `pushWhen`, which the root applies). Its error is held until the locks
+ *   are released, so the release always runs and the push error reaches the
+ *   same handler a combined push-then-release did.
  */
 export async function runCommandInRootUnit<T>(
   repoContext: Pick<RepositoryContext, "markDirty">,

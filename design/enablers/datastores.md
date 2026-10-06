@@ -1227,8 +1227,9 @@ operation inside a unit of work:
   whose flush is its push under the gate's shared mode, once the run completed
   (a use case that reports an error still completes). A run that took model
   locks pushes them as the root's flush instead, on every outcome, and releases
-  them after the root (swamp-club#3055). `workflow.resume` and the detached resume (`startDetachedResume`,
-  `src/serve/resume_launcher.ts`) push on every outcome as their root's flush.
+  them after the root (swamp-club#3055). `workflow.resume` and the detached
+  resume (`startDetachedResume`, `src/serve/resume_launcher.ts`) push on every
+  outcome as their root's flush.
   The detached resume's root ends after its terminal frame; its cleanup and
   the parent's auto-resume run after that, so the parent's resume opens a root
   of its own rather than one nested in the child's, which would throw. If its
