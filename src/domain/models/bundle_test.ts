@@ -349,15 +349,16 @@ Deno.test("rewriteZodImports: throws rather than guess when zod import text is i
   assertEquals(error.code, "bundle_parse_failed");
   assertStringIncludes(
     error.message,
-    "Cannot load the extension bundle /repo/.swamp/bundles/ab12/gen.js:",
+    "Cannot load the extension at /repo/.swamp/bundles/ab12/gen.js: its bundle",
   );
+  assertStringIncludes(error.message, "A cached bundle may be damaged");
   assertStringIncludes(error.message, "swamp issue bug");
 });
 
 Deno.test("rewriteZodImports: the parse error reads cleanly when the bundle path is unknown", () => {
   const input = `${REAL_ZOD_IMPORT}\nconst = ;\n`;
   const error = assertThrows(() => rewriteZodImports(input), UserError);
-  assertStringIncludes(error.message, "Cannot load the extension bundle: it ");
+  assertStringIncludes(error.message, "Cannot load the extension: its bundle ");
 });
 
 Deno.test("rejectZodV3Imports: names the bundle when it does not parse", () => {

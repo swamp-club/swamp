@@ -130,7 +130,8 @@ interface ImportDeclarationSpan {
  * match, and without a parse there is no telling a real import from generated
  * text — guessing either way silently breaks the extension.
  *
- * @param origin - The bundle or source path, named in the error when known
+ * @param origin - The bundle or source path, named in the error when known.
+ *   The error says "the extension at", so either kind of path reads right.
  */
 function findImportDeclarations(
   js: string,
@@ -153,12 +154,14 @@ function findImportDeclarations(
     const reason = error instanceof Error ? error.message : String(error);
     throw markErrorPaths(
       new UserError(
-        `Cannot load the extension bundle${origin ? ` ${origin}` : ""}: it ` +
-          `holds text that looks like a zod import, and swamp could not ` +
-          `parse the bundle to tell a real import from generated text ` +
-          `(${reason}). This is a limit of swamp's bundle parser, not an ` +
-          `error in the extension — report it with \`swamp issue bug\` and ` +
-          `include this message.`,
+        `Cannot load the extension${origin ? ` at ${origin}` : ""}: its ` +
+          `bundle holds text that looks like a zod import, and swamp could ` +
+          `not parse the bundle to tell a real import from generated text ` +
+          `(${reason}). A cached bundle may be damaged — delete it so swamp ` +
+          `rebuilds it from the extension source, or pull the extension ` +
+          `again. If the error remains, the extension uses syntax swamp's ` +
+          `bundle parser does not support: report it with ` +
+          `\`swamp issue bug\` and include this message.`,
         "bundle_parse_failed",
       ),
       [origin],
