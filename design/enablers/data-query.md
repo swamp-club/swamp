@@ -438,18 +438,19 @@ version cap never count, keep or prune a pending version, so an in-flight
 deferred write is never promoted early. When only pending versions are left,
 the latest marker keeps naming the deleted version, so reads find nothing until
 the write is promoted; if the write is rolled back instead, the emptied name is
-removed. A catalog rebuild derives rows from disk and treats an in-flight write
-as promoted; rolling it back afterwards still recomputes the flags. A pending
-row records the pid and host identity (hostname, plus pid namespace on Linux)
-of the process that wrote it. GC (not a dry run) first rolls back each pending
-write of the model whose writer had this process's host identity and is no
-longer alive, since nothing else will promote or roll it back, and removes a
-data name that leaves with no versions. A row from another host or container,
-the current process or a live pid stays in flight. Promotion clears a row's
-pending mark before it moves the latest marker, and reclaim skips a version the
-marker names, so a promotion that stopped halfway is never reclaimed. If
-writing a deferred version fails, the write removes its own version and pending
-row.
+removed. A backfill never overwrites a pending row and derives the other rows'
+flags without it, inside one transaction; only a catalog rebuilt from an empty
+table (a schema change) treats an in-flight write as promoted, and rolling it
+back afterwards still recomputes the flags. A pending row records the pid and
+host identity (hostname, plus pid namespace on Linux) of the process that wrote
+it. GC (not a dry run) first rolls back each pending write of the model whose
+writer had this process's host identity and is no longer alive, since nothing
+else will promote or roll it back, and removes a data name that leaves with no
+versions. A row from another host or container, the current process or a live
+pid stays in flight. Promotion clears a row's pending mark before it moves the
+latest marker, and reclaim skips a version the marker names, so a promotion
+that stopped halfway is never reclaimed. If writing a deferred version fails,
+the write removes its own version and pending row.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in

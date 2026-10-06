@@ -1599,9 +1599,9 @@ export class DataQueryService {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
 
-    computeLatestFlags(rows);
-
-    this.catalogStore.bulkUpsert(rows);
+    // Flags are derived inside bulkUpsert's transaction, without versions the
+    // catalog holds as pending (in-flight deferred writes).
+    this.catalogStore.bulkUpsert(rows, computeLatestFlags);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
     this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
@@ -1669,8 +1669,7 @@ export class DataQueryService {
         }
       }
     }
-    computeLatestFlags(rows);
-    this.catalogStore.bulkUpsert(rows);
+    this.catalogStore.bulkUpsert(rows, computeLatestFlags);
     this.catalogStore.enforceUniqueLatest(computeLatestFlags);
     this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);

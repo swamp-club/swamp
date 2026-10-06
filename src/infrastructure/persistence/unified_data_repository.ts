@@ -2435,8 +2435,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * The versions on disk, and those of them that are promoted. An in-flight
    * deferred write (a pending catalog row) is on disk before it is promoted,
    * so delete and GC must not make it latest, count it as the latest to keep,
-   * or prune it until it is promoted or rolled back. A catalog rebuild marks
-   * every version on disk as promoted, an in-flight one included.
+   * or prune it until it is promoted or rolled back. A backfill keeps the
+   * pending rows it finds; only a catalog rebuilt from an empty table (a
+   * schema change) treats every version on disk as promoted.
    */
   private async listPromotedVersions(
     type: ModelType,

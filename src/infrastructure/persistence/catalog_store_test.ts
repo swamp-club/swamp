@@ -869,6 +869,48 @@ Deno.test("CatalogStore: upsertNewVersion clears the pending mark of the version
   store.close();
 });
 
+Deno.test("CatalogStore: bulkUpsert never overwrites a pending row and derives flags without it (swamp-club#2975)", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
+  store.upsert(
+    makeRow({
+      version: 2,
+      step_name: "s1",
+      is_latest: 0,
+      is_pending: 1,
+      pending_pid: 4242,
+      pending_host: "host-a",
+    }),
+  );
+
+  // A backfill walk that found both versions on disk.
+  store.bulkUpsert(
+    [
+      makeRow({ version: 1, step_name: "s1", is_latest: 0 }),
+      makeRow({ version: 2, step_name: "s1", is_latest: 0 }),
+    ],
+    computeLatestFlags,
+  );
+
+  const rows = [...store.iterate()]
+    .sort((a, b) => a.version - b.version)
+    .map((r) =>
+      `${r.version}:${r.is_latest}:${r.is_step_latest}:${r.is_pending}:${r.pending_pid}`
+    );
+  assertEquals(rows, ["1:1:1:0:0", "2:0:0:1:4242"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: bulkUpsert without computeFlags writes flags as supplied", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  store.bulkUpsert([
+    makeRow({ version: 1, is_latest: 0, is_step_latest: 1 }),
+    makeRow({ version: 2, is_latest: 1 }),
+  ]);
+  assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
+  store.close();
+});
+
 Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

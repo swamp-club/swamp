@@ -172,6 +172,17 @@ export interface CatalogStoreOptions {
   writeTracker?: SharedDatastoreWriteTracker;
 }
 
+/** A row's primary key as one string, for set membership. */
+function rowKey(row: {
+  namespace: string;
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  version: number;
+}): string {
+  return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
+}
+
 export class CatalogStore {
   private db: DatabaseSync;
   private readonly dbPath: string;
@@ -529,10 +540,34 @@ export class CatalogStore {
    * are left untouched. Used by backfill so data the on-disk walk
    * cannot see — e.g. under lazy hydration — is preserved rather than
    * deleted.
+   *
+   * A row whose version the catalog holds as pending (an in-flight deferred
+   * write, on disk before it is promoted) is never overwritten, so a backfill
+   * cannot promote it. With `computeFlags`, the latest flags of the rows that
+   * are written are derived inside the same IMMEDIATE transaction, after the
+   * pending rows are left out, so no writer can register a pending row in
+   * between.
    */
-  bulkUpsert(rows: readonly CatalogRow[]): void {
+  bulkUpsert(
+    rows: readonly CatalogRow[],
+    computeFlags?: (rows: CatalogRow[]) => void,
+  ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const pending = new Set(
+        (this.db.prepare(
+          `SELECT namespace, type_normalized, model_id, data_name, version
+           FROM catalog WHERE is_pending = 1`,
+        ).all() as {
+          namespace: string;
+          type_normalized: string;
+          model_id: string;
+          data_name: string;
+          version: number;
+        }[]).map(rowKey),
+      );
+      const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
+      computeFlags?.(toWrite);
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
@@ -542,7 +577,7 @@ export class CatalogStore {
           is_pending, pending_pid, pending_host
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const row of rows) {
+      for (const row of toWrite) {
         stmt.run(
           row.namespace,
           row.type_normalized,

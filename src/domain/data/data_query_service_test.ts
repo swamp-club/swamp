@@ -3131,7 +3131,7 @@ Deno.test("getLatestRecord: the refresh keeps the pending row of an in-flight de
   }
 });
 
-Deno.test("DataQueryService: rolling back a deferred write that a backfill promoted restores every step's latest (swamp-club#2975)", async () => {
+Deno.test("DataQueryService: a backfill leaves an in-flight deferred write unpromoted, and rolling it back keeps every step's latest (swamp-club#2975)", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-backfill-rollback-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
   try {
@@ -3160,15 +3160,19 @@ Deno.test("DataQueryService: rolling back a deferred write that a backfill promo
     await dataRepo.save(type, "m1", data("s2"), bytes);
     const inFlight = await dataRepo.saveDeferred(type, "m1", data("s1"), bytes);
 
-    // A rebuild walks the disk, which already holds the in-flight v3, and
-    // treats it as promoted.
+    // A backfill walks the disk, which already holds the in-flight v3, but
+    // the catalog holds v3 as pending, so the backfill leaves it unpromoted.
     catalog.invalidate();
     await service.ensurePopulated();
     const flags = () =>
       [...catalog.iterate()]
         .sort((a, b) => a.version - b.version)
         .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
-    assertEquals(flags(), ["1:0:0", "2:0:1", "3:1:1"]);
+    assertEquals(flags(), ["1:0:1", "2:1:1", "3:0:0"]);
+    assertEquals(
+      [...catalog.iterate()].find((r) => r.version === 3)?.is_pending,
+      1,
+    );
 
     await dataRepo.rollbackVersions([inFlight]);
 
