@@ -146,7 +146,13 @@ document lists `registryChecks` (authentication, reserved collective, collective
 membership, version exists) with the wording the real push uses; a `failed`
 check exits non-zero and a `not-run` check names the missing prerequisite (no
 credentials). `apiCalls` lists every HTTP call the run made, and `contentHash`
-is the hash the adversarial-review report is keyed by.
+is the hash the adversarial-review report is keyed by. `forNextTime` lists each
+remaining warning with its `remediation` and, for rules that can be accepted,
+the exact `acceptance` text to paste where the finding is (an inline
+`swamp-quality-ignore` comment, or a `quality.yaml` entry beside the manifest);
+`declaredAcceptances` lists what the extension already accepts. Offer the user
+the fix first and the acceptance only when the finding is not right for this
+extension; never paste the `<reason>` placeholder as is.
 
 To get the same `contentHash` CI's publish computes, run the dry run in CI's
 layout: `cd` into the extension directory, `swamp repo init --quiet --tool none`
@@ -191,7 +197,9 @@ swamp extension push manifest.yaml --yes --json
 **Verify:** The command exits successfully and reports the published version.
 
 `--yes` also waives safety and review warnings; the completed summary records
-them under `acceptedWarnings` so the user can see what was waived.
+them under `acceptedWarnings` so the user can see what was waived, and its
+`For next time:` block (`forNextTime` in JSON) says how to fix or declare each
+one so the next push carries no waiver.
 
 For explicit-private publication, verify the successful output reports
 `visibility: "private"`. A dry run proves intent, not applied registry
