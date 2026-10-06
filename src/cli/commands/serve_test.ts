@@ -20,10 +20,11 @@
 import {
   assert,
   assertEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   assertOffLoopbackSecurity,
@@ -37,6 +38,7 @@ import {
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
   readCancelRequestReason,
+  readTlsFile,
   resolveServeStartupSettings,
   shouldWarnGroupRefreshIgnored,
   validateWebSocketOrigin,
@@ -1376,6 +1378,44 @@ Deno.test("resolveServeStartupSettings: TLS is enabled when both cert and key ar
     mergedServeOptions({ certFile: "cert.pem", keyFile: "key.pem" }),
   );
   assertEquals(settings.tlsEnabled, true);
+});
+
+Deno.test("readTlsFile: returns the file content", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "server.pem");
+    await Deno.writeTextFile(path, "PEM");
+    assertEquals(await readTlsFile("certificate", path), "PEM");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("readTlsFile: a missing file is a UserError naming the path", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "missing.pem");
+    await assertRejects(
+      () => readTlsFile("certificate", path),
+      UserError,
+      `TLS certificate file not found: ${path}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("readTlsFile: an unreadable path is a UserError naming the path", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await assertRejects(
+      () => readTlsFile("private key", dir),
+      UserError,
+      `Failed to read TLS private key file ${dir}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("resolveServeStartupSettings: rejects --key-file without --cert-file", () => {

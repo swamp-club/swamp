@@ -28,6 +28,7 @@ import { configure, type LogRecord } from "@logtape/logtape";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 import {
   loadServeConfig,
   mergeServeOptions,
@@ -36,6 +37,8 @@ import {
   parseTokenSecretsKeyConfig,
   parseWebhookConfig,
   readServeConfigFile,
+  resolveServePath,
+  resolveServeTlsPaths,
   type ServeConfigFile,
   type TriggerOverrideEntry,
   type WebhookConfigEntry,
@@ -143,6 +146,143 @@ Deno.test("loadServeConfig: missing config with explicit --config is an error", 
     Error,
     "Serve config file not found",
   );
+});
+
+Deno.test("loadServeConfig: a relative --config resolves against the repository", () => {
+  withTempDir((dir) => {
+    Deno.mkdirSync(join(dir, "conf"));
+    Deno.writeTextFileSync(
+      join(dir, "conf", "alt.yaml"),
+      stringifyYaml({ port: 4100 }),
+    );
+    const config = loadServeConfig(join("conf", "alt.yaml"), dir);
+    assertEquals(config?.port, 4100);
+  });
+});
+
+Deno.test("loadServeConfig: a missing relative --config names the path under the repository", () => {
+  withTempDir((dir) => {
+    assertThrows(
+      () => loadServeConfig("missing.yaml", dir),
+      Error,
+      `Serve config file not found: ${join(dir, "missing.yaml")}`,
+    );
+  });
+});
+
+Deno.test("loadServeConfig: an absolute --config is read as given", () => {
+  withTempDir((dir) => {
+    withTempDir((elsewhere) => {
+      const path = join(elsewhere, "abs.yaml");
+      Deno.writeTextFileSync(path, stringifyYaml({ port: 4200 }));
+      assertEquals(loadServeConfig(path, dir)?.port, 4200);
+    });
+  });
+});
+
+Deno.test("resolveServePath: resolves a relative path against the repository", () => {
+  withTempDir((dir) => {
+    assertPathEquals(
+      resolveServePath(dir, join("certs", "server.pem")),
+      join(dir, "certs", "server.pem"),
+    );
+  });
+});
+
+Deno.test("resolveServePath: returns an absolute path unchanged", () => {
+  withTempDir((dir) => {
+    withTempDir((elsewhere) => {
+      const absolute = join(elsewhere, "server.pem");
+      assertPathEquals(resolveServePath(dir, absolute), absolute);
+    });
+  });
+});
+
+Deno.test("resolveServeTlsPaths: resolves relative cert-file and key-file against the repository", () => {
+  withTempDir((dir) => {
+    const merged = mergeServeOptions(
+      null,
+      { certFile: "certs/server.pem", keyFile: "certs/server.key" },
+      new Set(["cert-file", "key-file"]),
+      () => undefined,
+    );
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertPathEquals(resolved.certFile!, join(dir, "certs", "server.pem"));
+    assertPathEquals(resolved.keyFile!, join(dir, "certs", "server.key"));
+    assertEquals(merged.certFile, "certs/server.pem");
+    assertEquals(merged.keyFile, "certs/server.key");
+    assertEquals(resolved.port, merged.port);
+  });
+});
+
+Deno.test("resolveServeTlsPaths: resolves paths that came from env vars", () => {
+  withTempDir((dir) => {
+    const merged = mergeServeOptions(null, {}, new Set<string>(), (name) => {
+      if (name === "SWAMP_SERVE_CERT_FILE") return "env-cert.pem";
+      if (name === "SWAMP_SERVE_KEY_FILE") return "env-key.pem";
+      return undefined;
+    });
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertPathEquals(resolved.certFile!, join(dir, "env-cert.pem"));
+    assertPathEquals(resolved.keyFile!, join(dir, "env-key.pem"));
+  });
+});
+
+Deno.test("resolveServeTlsPaths: leaves absolute paths alone", () => {
+  withTempDir((dir) => {
+    withTempDir((elsewhere) => {
+      const cert = join(elsewhere, "server.pem");
+      const key = join(elsewhere, "server.key");
+      const merged = mergeServeOptions(
+        null,
+        { certFile: cert, keyFile: key },
+        new Set(["cert-file", "key-file"]),
+        () => undefined,
+      );
+      const resolved = resolveServeTlsPaths(dir, merged);
+      assertPathEquals(resolved.certFile!, cert);
+      assertPathEquals(resolved.keyFile!, key);
+    });
+  });
+});
+
+Deno.test("resolveServeTlsPaths: leaves unset paths unset", () => {
+  withTempDir((dir) => {
+    const resolved = resolveServeTlsPaths(
+      dir,
+      mergeServeOptions(null, {}, new Set<string>(), () => undefined),
+    );
+    assertEquals(resolved.certFile, undefined);
+    assertEquals(resolved.keyFile, undefined);
+  });
+});
+
+Deno.test("resolveServeTlsPaths: an empty env var stays empty, so TLS stays off", () => {
+  withTempDir((dir) => {
+    const merged = mergeServeOptions(null, {}, new Set<string>(), (name) => {
+      if (name === "SWAMP_SERVE_CERT_FILE") return "";
+      if (name === "SWAMP_SERVE_KEY_FILE") return "";
+      return undefined;
+    });
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertEquals(resolved.certFile, "");
+    assertEquals(resolved.keyFile, "");
+  });
+});
+
+Deno.test("resolveServeTlsPaths: an empty serve.yaml value stays empty, so TLS stays off", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { tls: { "cert-file": "", "key-file": "" } });
+    const merged = mergeServeOptions(
+      loadServeConfig(undefined, dir),
+      {},
+      new Set<string>(),
+      () => undefined,
+    );
+    const resolved = resolveServeTlsPaths(dir, merged);
+    assertEquals(resolved.certFile, "");
+    assertEquals(resolved.keyFile, "");
+  });
 });
 
 Deno.test("loadServeConfig: invalid YAML produces clear error", () => {

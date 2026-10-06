@@ -62,10 +62,10 @@ it the default file is optional.
 
 | Option (flag / yaml key) | Env var | Default | Notes |
 | --- | --- | --- | --- |
-| `--config` | — | `.swamp/serve.yaml` | Alternative config file |
+| `--config` | — | `.swamp/serve.yaml` | Alternative config file; a relative path resolves against the repository (`resolveServePath`) |
 | `--port` / `port` | — | `9090` | |
 | `--host` / `host` | — | `127.0.0.1` | Off-loopback needs TLS and an auth mode (`assertOffLoopbackSecurity`) |
-| `--cert-file`, `--key-file` / `tls.*` | `SWAMP_SERVE_CERT_FILE`, `_KEY_FILE` | unset | Both set ⇒ TLS; `ws://` becomes `wss://` |
+| `--cert-file`, `--key-file` / `tls.*` | `SWAMP_SERVE_CERT_FILE`, `_KEY_FILE` | unset | Both set ⇒ TLS; `ws://` becomes `wss://`; relative paths resolve against the repository, from any source (`resolveServeTlsPaths`) |
 | `--auth-mode` / `auth.mode` | — | `none` | `none` \| `token` \| `oauth`; `none` logs a deprecation warning |
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | — | unset | See [Identity and access](#identity-and-access) |
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |

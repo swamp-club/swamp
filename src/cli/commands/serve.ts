@@ -223,6 +223,8 @@ import {
   parseExplicitFlags,
   parseTokenSecretsKeyConfig,
   parseWebhookConfig,
+  resolveServePath,
+  resolveServeTlsPaths,
   SERVE_CONFIG_PATH,
   type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
@@ -1042,12 +1044,38 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
 }
 
 /**
+ * Reads a TLS file whose path resolveServeTlsPaths already made absolute, and
+ * names that path when it cannot be read, since it may differ from the
+ * relative one the operator configured.
+ */
+export async function readTlsFile(
+  kind: "certificate" | "private key",
+  path: string,
+): Promise<string> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (cause) {
+    if (cause instanceof Deno.errors.NotFound) {
+      throw markErrorPaths(
+        new UserError(`TLS ${kind} file not found: ${path}`),
+        [path],
+      );
+    }
+    throw markErrorPaths(
+      new UserError(`Failed to read TLS ${kind} file ${path}: ${cause}`),
+      [path, ...errorPaths(cause)],
+    );
+  }
+}
+
+/**
  * Runs serve's startup checks on the options a `swamp serve daemon enable`
  * unit will start with, so enable refuses arguments that would make the unit
  * fail on every start. Options are resolved as the daemon process sees them:
  * explicit flags are the ones written into the unit, env vars come from the
  * unit environment alone (never the enabling shell), and a relative --config
- * resolves against the repository, which is the unit's working directory.
+ * resolves against the repository, as loadServeConfig resolves it for the
+ * daemon itself (resolveServePath).
  */
 export function validateServeDaemonArgs(
   options: AnyOptions,
@@ -1072,9 +1100,8 @@ export function validateServeDaemonArgs(
     unitArgs.push(arg);
   }
 
-  const configPath = options.config as string | undefined;
   const configFile = loadServeConfig(
-    configPath === undefined ? undefined : resolve(repoDir, configPath),
+    options.config as string | undefined,
     repoDir,
   );
   const merged = mergeServeOptions(
@@ -1343,7 +1370,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--config <path:string>",
-    "Path to serve config file (default: .swamp/serve.yaml)",
+    "Path to serve config file (default: .swamp/serve.yaml; a relative path resolves against the repository)",
   )
   .option("--port <port:number>", "Port for the daemon to listen on", {
     default: 9090,
@@ -1354,11 +1381,11 @@ const daemonEnableCommand = new Command()
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
-    "Path to PEM-encoded TLS certificate",
+    "Path to PEM-encoded TLS certificate (a relative path resolves against the repository)",
   )
   .option(
     "--key-file <path:string>",
-    "Path to PEM-encoded TLS private key",
+    "Path to PEM-encoded TLS private key (a relative path resolves against the repository)",
   )
   .option(
     "--grants-file <path:string>",
@@ -1801,7 +1828,7 @@ const checkConfigCommand = new Command()
   )
   .option(
     "--config <path:string>",
-    "Path to serve config file (default: .swamp/serve.yaml)",
+    "Path to serve config file (default: .swamp/serve.yaml; a relative path resolves against the repository)",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -1863,7 +1890,9 @@ const checkConfigCommand = new Command()
     const tokenSecretsKey = await checkTokenSecretsKey(
       parseTokenSecretsKeyConfig(
         configFile,
-        (options.config as string | undefined) ?? SERVE_CONFIG_PATH,
+        options.config === undefined
+          ? SERVE_CONFIG_PATH
+          : resolveServePath(repoDir, options.config as string),
       ),
       repoDir,
     );
@@ -1980,18 +2009,18 @@ export const serveCommand = new Command()
   )
   .option(
     "--config <path:string>",
-    "Path to serve config file (default: .swamp/serve.yaml)",
+    "Path to serve config file (default: .swamp/serve.yaml; a relative path resolves against the repository)",
   )
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
     "--cert-file <path:string>",
-    "Path to PEM-encoded TLS certificate (env: SWAMP_SERVE_CERT_FILE)",
+    "Path to PEM-encoded TLS certificate (env: SWAMP_SERVE_CERT_FILE; a relative path resolves against the repository)",
   )
   .option(
     "--key-file <path:string>",
-    "Path to PEM-encoded TLS private key (env: SWAMP_SERVE_KEY_FILE)",
+    "Path to PEM-encoded TLS private key (env: SWAMP_SERVE_KEY_FILE; a relative path resolves against the repository)",
   )
   .option(
     "--grants-file <path:string>",
@@ -2263,9 +2292,12 @@ export const serveCommand = new Command()
     // same path, not the default under the repo.
     const serveConfigPath = options.config === undefined
       ? undefined
-      : resolve(options.config as string);
+      : resolveServePath(repoDir, options.config as string);
     const explicitFlags = parseExplicitFlags(Deno.args);
-    const merged = mergeServeOptions(configFile, options, explicitFlags);
+    const merged = resolveServeTlsPaths(
+      repoDir,
+      mergeServeOptions(configFile, options, explicitFlags),
+    );
 
     const port = merged.port;
     const host = merged.host;
@@ -2295,8 +2327,8 @@ export const serveCommand = new Command()
     let cert: string | undefined;
     let key: string | undefined;
     if (certFile && keyFile) {
-      cert = await Deno.readTextFile(certFile);
-      key = await Deno.readTextFile(keyFile);
+      cert = await readTlsFile("certificate", certFile);
+      key = await readTlsFile("private key", keyFile);
     }
 
     if (cert) {
@@ -2928,7 +2960,7 @@ export const serveCommand = new Command()
         {
           tokenSecretsKey: parseTokenSecretsKeyConfig(
             configFile,
-            (options.config as string | undefined) ?? SERVE_CONFIG_PATH,
+            serveConfigPath ?? SERVE_CONFIG_PATH,
           ),
           vaultService: () =>
             VaultService.fromRepository(resolvedRepoDir, {
