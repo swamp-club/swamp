@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
+import { UserError } from "../errors.ts";
 import {
   bundleExtension,
   extractBareSpecifierNames,
@@ -341,11 +342,32 @@ Deno.test("rewriteZodImports: is idempotent when import text remains inside a te
 
 Deno.test("rewriteZodImports: throws rather than guess when zod import text is in a bundle that does not parse", () => {
   const input = `${REAL_ZOD_IMPORT}\nconst = ;\n`;
-  assertThrows(
-    () => rewriteZodImports(input),
-    Error,
-    "does not parse as a JavaScript module",
+  const error = assertThrows(
+    () => rewriteZodImports(input, "/repo/.swamp/bundles/ab12/gen.js"),
+    UserError,
   );
+  assertEquals(error.code, "bundle_parse_failed");
+  assertStringIncludes(
+    error.message,
+    "Cannot load the extension bundle /repo/.swamp/bundles/ab12/gen.js:",
+  );
+  assertStringIncludes(error.message, "swamp issue bug");
+});
+
+Deno.test("rewriteZodImports: the parse error reads cleanly when the bundle path is unknown", () => {
+  const input = `${REAL_ZOD_IMPORT}\nconst = ;\n`;
+  const error = assertThrows(() => rewriteZodImports(input), UserError);
+  assertStringIncludes(error.message, "Cannot load the extension bundle: it ");
+});
+
+Deno.test("rejectZodV3Imports: names the bundle when it does not parse", () => {
+  const input = `import { z } from "npm:zod@3";\nconst = ;\n`;
+  const error = assertThrows(
+    () => rejectZodV3Imports(input, "/repo/extensions/models/gen.ts"),
+    UserError,
+  );
+  assertEquals(error.code, "bundle_parse_failed");
+  assertStringIncludes(error.message, "/repo/extensions/models/gen.ts");
 });
 
 // Syntax Babel only parses with a plugin enabled. A bundle using it beside a

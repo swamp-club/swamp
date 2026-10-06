@@ -129,8 +129,13 @@ interface ImportDeclarationSpan {
  * Throws when the bundle does not parse. Callers reach this only after a text
  * match, and without a parse there is no telling a real import from generated
  * text — guessing either way silently breaks the extension.
+ *
+ * @param origin - The bundle or source path, named in the error when known
  */
-function findImportDeclarations(js: string): ImportDeclarationSpan[] {
+function findImportDeclarations(
+  js: string,
+  origin?: string,
+): ImportDeclarationSpan[] {
   let body;
   try {
     body = parse(js, {
@@ -146,9 +151,17 @@ function findImportDeclarations(js: string): ImportDeclarationSpan[] {
   } catch (error) {
     // Syntax errors, and stack overflow on extreme nesting.
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Cannot locate the zod imports of an extension bundle because it ` +
-        `does not parse as a JavaScript module: ${reason}`,
+    throw markErrorPaths(
+      new UserError(
+        `Cannot load the extension bundle${origin ? ` ${origin}` : ""}: it ` +
+          `holds text that looks like a zod import, and swamp could not ` +
+          `parse the bundle to tell a real import from generated text ` +
+          `(${reason}). This is a limit of swamp's bundle parser, not an ` +
+          `error in the extension — report it with \`swamp issue bug\` and ` +
+          `include this message.`,
+        "bundle_parse_failed",
+      ),
+      [origin],
     );
   }
 
@@ -176,9 +189,9 @@ const ZOD_V3_IMPORT_RE =
  * introspection and should upgrade. Only import declarations count: zod v3
  * import text inside a string or template literal is the extension's data.
  */
-export function rejectZodV3Imports(js: string): void {
+export function rejectZodV3Imports(js: string, origin?: string): void {
   if (!ZOD_V3_IMPORT_RE.test(js)) return;
-  for (const { start, end } of findImportDeclarations(js)) {
+  for (const { start, end } of findImportDeclarations(js, origin)) {
     const match = ZOD_V3_IMPORT_RE.exec(js.slice(start, end));
     if (match) {
       throw new UserError(
@@ -242,8 +255,10 @@ function rewriteZodImportDeclaration(declaration: string): string {
  * template literal, comment or regex literal is left byte-identical.
  *
  * Throws when the bundle holds zod import text but does not parse.
+ *
+ * @param origin - The bundle or source path, named in that error when known
  */
-export function rewriteZodImports(js: string): string {
+export function rewriteZodImports(js: string, origin?: string): string {
   // Loaders call this on every cached bundle, nearly all of them already
   // rewritten — skip the parse unless there is something that could match.
   if (
@@ -255,7 +270,9 @@ export function rewriteZodImports(js: string): string {
 
   const parts: string[] = [];
   let cursor = 0;
-  for (const { start, end, specifier } of findImportDeclarations(js)) {
+  for (
+    const { start, end, specifier } of findImportDeclarations(js, origin)
+  ) {
     if (!ZOD_SPECIFIER_RE.test(specifier)) continue;
     parts.push(js.slice(cursor, start));
     parts.push(rewriteZodImportDeclaration(js.slice(start, end)));
@@ -812,8 +829,8 @@ export async function bundleExtension(
     // Rewrite externalized zod imports to use globalThis.__swamp_zod
     // so extensions share swamp's Zod instance in the compiled binary.
     if (!options?.selfContained) {
-      rejectZodV3Imports(js);
-      js = rewriteZodImports(js);
+      rejectZodV3Imports(js, absolutePath);
+      js = rewriteZodImports(js, absolutePath);
     }
 
     logger.debug`Bundled ${absolutePath} (${js.length} bytes)`;

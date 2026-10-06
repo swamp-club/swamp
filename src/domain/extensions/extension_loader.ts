@@ -1094,7 +1094,9 @@ export class ExtensionLoader {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
       js = await this.recoverMissingBundle(paths);
     }
-    const fixed = fixCjsEsmInterop(rewriteZodImports(js));
+    const fixed = fixCjsEsmInterop(
+      rewriteZodImports(js, paths.bundlePath),
+    );
     if (fixed !== js) {
       js = fixed;
       await Deno.writeTextFile(paths.bundlePath, js);
@@ -1861,7 +1863,7 @@ export class ExtensionLoader {
     baseDir?: string,
     sourceFingerprint?: string,
   ): Promise<Record<string, unknown>> {
-    const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js, relativePath));
 
     if (this.repoDir) {
       const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
@@ -1874,7 +1876,9 @@ export class ExtensionLoader {
       try {
         await Deno.stat(bundlePath);
         let cachedJs = await Deno.readTextFile(bundlePath);
-        const fixed = fixCjsEsmInterop(rewriteZodImports(cachedJs));
+        const fixed = fixCjsEsmInterop(
+          rewriteZodImports(cachedJs, bundlePath),
+        );
         if (fixed !== cachedJs) {
           cachedJs = fixed;
           await Deno.writeTextFile(bundlePath, cachedJs);
