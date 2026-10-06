@@ -112,9 +112,13 @@ export async function signalChange(
   reportUnscopedChange(change);
 }
 
-/** Where an unscoped write came from: a frame in the repository's source. */
+/** Where an unscoped write came from. */
 export interface UnscopedCaller {
-  /** Path relative to the repository root, e.g. `src/serve/bookkeeping_gc.ts`. */
+  /**
+   * Path relative to the repository root, e.g. `src/serve/bookkeeping_gc.ts`,
+   * or the frame's full URL when it lies outside the repository's source
+   * (extension code, an unexpected binary layout).
+   */
   readonly file: string;
   readonly line: number;
   /**
@@ -156,17 +160,33 @@ const FRAME = /^\s*at (?:async )?(?:(.+?) \()?(\S+?):(\d+):\d+\)?$/;
 /**
  * Finds the caller of a route-2 write in a stack trace: the first frame from
  * the repository's source (`root` is its URL prefix) outside
- * `src/infrastructure/persistence/`. Runtime and dependency frames are
- * skipped.
+ * `src/infrastructure/persistence/`. Runtime frames are skipped. With no
+ * such frame it falls back to the first `file:` frame outside the
+ * repository's source, named by its full URL, so a caller loaded from
+ * elsewhere still gets its own warning.
  */
 export function unscopedCallerFrom(
   stack: string,
   root: string,
 ): UnscopedCaller | undefined {
   const frames: { file: string; line: number; fn: string | undefined }[] = [];
+  let foreign: UnscopedCaller | undefined;
   for (const text of stack.split("\n")) {
     const match = FRAME.exec(text);
-    if (match === null || !match[2].startsWith(root)) continue;
+    if (match === null) continue;
+    if (!match[2].startsWith(root)) {
+      if (
+        foreign === undefined && match[2].startsWith("file:") &&
+        !match[2].includes(`/${PERSISTENCE_DIR}`)
+      ) {
+        foreign = {
+          file: match[2],
+          line: Number(match[3]),
+          fn: functionName(match[1]),
+        };
+      }
+      continue;
+    }
     frames.push({
       file: match[2].slice(root.length),
       line: Number(match[3]),
@@ -176,7 +196,7 @@ export function unscopedCallerFrom(
   const index = frames.findIndex((frame) =>
     !frame.file.startsWith(PERSISTENCE_DIR)
   );
-  if (index === -1) return undefined;
+  if (index === -1) return foreign;
   const frame = frames[index];
   const fn = frame.fn ??
     frames.slice(index + 1).find((below) =>
@@ -213,12 +233,21 @@ function reportUnscopedChange(change: StagedChange): void {
   }
 }
 
+/**
+ * A caller as `file:line (fn)`, as the production warning and the test guard
+ * both print it.
+ */
+export function formatUnscopedCaller(
+  caller: UnscopedCaller | undefined,
+): string {
+  if (caller === undefined) return "an unknown caller";
+  return `${caller.file}:${caller.line}${
+    caller.fn === undefined ? "" : ` (${caller.fn})`
+  }`;
+}
+
 function warnOnce({ change, caller }: UnscopedChange): void {
-  const site = caller === undefined
-    ? "an unknown caller"
-    : `${caller.file}:${caller.line}${
-      caller.fn === undefined ? "" : ` (${caller.fn})`
-    }`;
+  const site = formatUnscopedCaller(caller);
   if (warnedCallSites.has(site)) return;
   warnedCallSites.add(site);
   const target = change.kind === "bulk" ? change.reason : change.path;

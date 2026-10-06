@@ -272,7 +272,8 @@ export function createServerTokenGcDeps(
 
         let touchedLocalFiles = false;
         // The deletes run in a root unit of work whose flush is the push,
-        // on every outcome as the finally it replaced did (swamp-club#3056).
+        // on every outcome (swamp-club#3056). pushDeletes logs a failed push
+        // rather than throwing it, so a collection error is never masked.
         return await runInRootUnitOfWork({ markDirty }, {
           // Push whatever was deleted, even after a partial failure, so no
           // delete is left uncommitted.

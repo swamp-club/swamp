@@ -346,6 +346,23 @@ Deno.test("unscopedCallerFrom: paths are relative to the root, so a checkout und
   }
 });
 
+Deno.test("unscopedCallerFrom: with no source frame outside persistence, names the first file frame outside the repository by its URL", () => {
+  const stack = [
+    "Error",
+    `    at signalChange (${ROOT}src/infrastructure/persistence/unit_of_work_scope.ts:114:21)`,
+    "    at async ext:cli/40_test.js:300:5",
+    // Persistence frames from another layout are never the caller.
+    "    at async save (file:///opt/swamp/src/infrastructure/persistence/yaml_definition_repository.ts:747:5)",
+    "    at async saveIt (file:///home/me/.swamp/extensions/x/mod.ts:12:3)",
+    "    at async later (file:///home/me/.swamp/extensions/x/mod.ts:40:3)",
+  ].join("\n");
+  assertEquals(unscopedCallerFrom(stack, ROOT), {
+    file: "file:///home/me/.swamp/extensions/x/mod.ts",
+    line: 12,
+    fn: "saveIt",
+  });
+});
+
 Deno.test("unscopedCallerFrom: undefined when every source frame is in the persistence layer", () => {
   const stack = stackOf([
     [

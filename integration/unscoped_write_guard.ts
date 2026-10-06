@@ -35,6 +35,7 @@
  */
 
 import {
+  formatUnscopedCaller,
   type UnscopedCaller,
   type UnscopedChange,
   useUnscopedChangeReporterForTesting,
@@ -76,12 +77,7 @@ export function unscopedWriterKey(
 
 function describe({ change, caller }: UnscopedChange): string {
   const target = change.kind === "bulk" ? change.reason : change.path;
-  const site = caller === undefined
-    ? "an unknown caller"
-    : `${caller.file}:${caller.line}${
-      caller.fn === undefined ? "" : ` (${caller.fn})`
-    }`;
-  return `${change.kind} ${target} from ${site}`;
+  return `${change.kind} ${target} from ${formatUnscopedCaller(caller)}`;
 }
 
 let active = false;
