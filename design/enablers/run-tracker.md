@@ -90,8 +90,16 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    `swamp model cancel`, and `swamp run doctor --fix` (local or via the
    `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
    `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
-   continuous reconciler and `run.doctor` also reconcile YAML workflow-run
-   records from dead remote instances whose heartbeats are gone. Local
+   continuous reconciler also reconciles YAML workflow-run records from dead
+   remote instances whose heartbeats are gone. `run.doctor` judges each
+   `running` record of another instance with `ownerGoneDecider`
+   (`src/serve/suspended_run_cancel.ts`), as a cancel does: by the pid of a
+   tracker row from this host when there is one, and otherwise by a missing
+   heartbeat, which counts only while this instance's own heartbeat is in the
+   control plane. Without a control-plane-capable datastore serve records no
+   heartbeats, so a record with no row from this host is left alone rather
+   than read as orphaned, and a live run of another serve instance on the same
+   repo is never interrupted (swamp-club#3059). Local
    `swamp run doctor` also counts a running row as stale as soon as its owner
    is a dead process on this host (`findDeadProcessRuns`), without waiting
    for the TTL, and with `--fix` reaps it through `reapDeadProcessRuns`.

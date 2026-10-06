@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { hostname } from "node:os";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -878,10 +879,15 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
   const settled: string[] = [];
   const ctx = {
     instanceId: "self",
-    controlPlaneStore: { get: () => Promise.resolve(null) },
+    // Heartbeats are recorded, and the peer has none.
+    controlPlaneStore: {
+      get: (key: string) =>
+        Promise.resolve(key === "heartbeats/self" ? new Uint8Array([1]) : null),
+    },
     runTracker: {
       findAll: () => [],
       findStaleRuns: () => [],
+      findById: () => null,
       markSettled: (id: string) => settled.push(id),
     },
     repoContext: {
@@ -997,5 +1003,211 @@ Deno.test("handleRunDoctor: fix settles an interrupted row whose renamed workflo
     } finally {
       tracker.close();
     }
+  });
+});
+
+/** A pid no process has: the largest a 32-bit pid_t holds. */
+const DEAD_PID = 2147483647;
+
+/** A run record left `running` under `pid` by serve instance `instanceId`. */
+function runningRecord(pid: number, instanceId: string): WorkflowRun {
+  return WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: crypto.randomUUID(),
+    workflowName: "deploy",
+    status: "running",
+    startedAt: new Date().toISOString(),
+    pid,
+    instanceId,
+    jobs: [],
+    tags: {},
+  });
+}
+
+/** Registers the tracker row the owner of `run` wrote on this host. */
+function registerLocalRow(tracker: RunTrackerStore, run: WorkflowRun): void {
+  const now = new Date().toISOString();
+  tracker.register(ActiveRun.fromData({
+    id: run.id,
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: run.workflowName,
+    pid: run.pid!,
+    hostname: hostname(),
+    instanceId: run.instanceId,
+    startedAt: now,
+    heartbeatAt: now,
+    status: "running",
+  }));
+}
+
+interface DoctorReply {
+  orphanedWorkflowRuns: number;
+  orphanedReaped: number;
+}
+
+/**
+ * Runs `handleRunDoctor` as serve instance `self` over `runs`, with a control
+ * plane holding a heartbeat for each of `heartbeats`. Returns the reply, the
+ * ids of the runs saved and the control-plane keys read.
+ */
+async function doctorScan(
+  tracker: RunTrackerStore,
+  runs: WorkflowRun[],
+  heartbeats: string[],
+  fix: boolean,
+): Promise<{ reply: DoctorReply; saved: string[]; reads: string[] }> {
+  const saved: string[] = [];
+  const reads: string[] = [];
+  const ctx = {
+    instanceId: "self",
+    controlPlaneStore: {
+      get: (key: string) => {
+        reads.push(key);
+        return Promise.resolve(
+          heartbeats.some((id) => key === `heartbeats/${id}`)
+            ? new Uint8Array([1])
+            : null,
+        );
+      },
+    },
+    runTracker: tracker,
+    repoContext: {
+      markDirty: () => Promise.resolve(),
+      workflowRunRepo: {
+        findGlobalByStatus: () =>
+          Promise.resolve(
+            runs.map((run) => ({ run, workflowId: run.workflowId })),
+          ),
+        save: (_workflowId: WorkflowId, run: WorkflowRun) => {
+          saved.push(run.id);
+          return Promise.resolve();
+        },
+        findById: (_workflowId: WorkflowId, runId: WorkflowRunId) =>
+          Promise.resolve(runs.find((run) => run.id === runId) ?? null),
+        listWorkflowIds: () => Promise.resolve([]),
+      },
+      workflowRepo: { findByName: () => Promise.resolve(null) },
+    },
+    authConfig: {
+      mode: "none" as const,
+      admins: [],
+      allowedCollectives: [],
+      allowedUsers: [],
+      oauthProvider: "",
+      groupsField: "collectives",
+      restrictedModelTypes: [],
+      restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
+    },
+  } as unknown as ConnectionContext;
+  const socket = createMockSocket();
+  await handleRunDoctor(socket, ctx, "req-doctor", { fix }, null);
+  return { reply: JSON.parse(socket.sent[0]).payload, saved, reads };
+}
+
+async function withDoctorTracker(
+  fn: (tracker: RunTrackerStore) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const tracker = new RunTrackerStore(join(dir, "run_tracker.db"));
+    try {
+      await fn(tracker);
+    } finally {
+      tracker.close();
+    }
+  });
+}
+
+Deno.test("handleRunDoctor: without recorded heartbeats, a run a live process on this host owns is not orphaned (swamp-club#3059)", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const run = runningRecord(Deno.pid, "peer");
+    registerLocalRow(tracker, run);
+
+    const report = await doctorScan(tracker, [run], [], false);
+    assertEquals(report.reply.orphanedWorkflowRuns, 0);
+
+    const fix = await doctorScan(tracker, [run], [], true);
+    assertEquals(fix.reply.orphanedWorkflowRuns, 0);
+    assertEquals(fix.reply.orphanedReaped, 0);
+    assertEquals(fix.saved, []);
+    assertEquals(run.status, "running");
+    assertEquals(tracker.findById(run.id)?.status, "running");
+  });
+});
+
+Deno.test("handleRunDoctor: without recorded heartbeats, another instance's run with no tracker row is left alone", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const run = runningRecord(DEAD_PID, "peer");
+
+    const fix = await doctorScan(tracker, [run], [], true);
+
+    assertEquals(fix.reply.orphanedWorkflowRuns, 0);
+    assertEquals(fix.saved, []);
+    assertEquals(run.status, "running");
+  });
+});
+
+Deno.test("handleRunDoctor: without recorded heartbeats, fix interrupts a run whose owner on this host is dead", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const run = runningRecord(DEAD_PID, "old-instance");
+    registerLocalRow(tracker, run);
+
+    const report = await doctorScan(tracker, [run], [], false);
+    assertEquals(report.reply.orphanedWorkflowRuns, 1);
+    assertEquals(report.reply.orphanedReaped, 0);
+    assertEquals(report.saved, []);
+
+    // As a reap on heartbeat age leaves the row; only such a row is settled.
+    tracker.complete(run.id, "interrupted");
+    const fix = await doctorScan(tracker, [run], [], true);
+    assertEquals(fix.reply.orphanedReaped, 1);
+    assertEquals(fix.saved, [run.id]);
+    assertEquals(run.status, "interrupted");
+    assertEquals(run.tags.interrupt_reason, "doctor_reap");
+    assertEquals(tracker.findById(run.id)?.cancelReason, "doctor_reap");
+  });
+});
+
+Deno.test("handleRunDoctor: with heartbeats recorded, fix interrupts a run of an instance that has none", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const run = runningRecord(DEAD_PID, "peer");
+
+    const fix = await doctorScan(tracker, [run], ["self"], true);
+
+    assertEquals(fix.reply.orphanedWorkflowRuns, 1);
+    assertEquals(fix.reply.orphanedReaped, 1);
+    assertEquals(fix.saved, [run.id]);
+    assertEquals(run.status, "interrupted");
+  });
+});
+
+Deno.test("handleRunDoctor: a run of an instance that still has a heartbeat is not orphaned", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const run = runningRecord(DEAD_PID, "peer");
+
+    const fix = await doctorScan(tracker, [run], ["self", "peer"], true);
+
+    assertEquals(fix.reply.orphanedWorkflowRuns, 0);
+    assertEquals(fix.saved, []);
+    assertEquals(run.status, "running");
+  });
+});
+
+Deno.test("handleRunDoctor: reads each instance's heartbeat once for the whole scan", async () => {
+  await withDoctorTracker(async (tracker) => {
+    const runs = [
+      runningRecord(DEAD_PID, "peer"),
+      runningRecord(DEAD_PID, "peer"),
+    ];
+
+    const report = await doctorScan(tracker, runs, ["self"], false);
+
+    assertEquals(report.reply.orphanedWorkflowRuns, 2);
+    assertEquals(report.reads.toSorted(), [
+      "heartbeats/peer",
+      "heartbeats/self",
+    ]);
   });
 });

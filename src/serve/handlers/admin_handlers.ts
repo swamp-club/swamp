@@ -146,6 +146,7 @@ import type {
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
+import { ownerGoneDecider } from "../suspended_run_cancel.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
@@ -1852,19 +1853,30 @@ export async function handleRunDoctor(
           const yamlRuns = await ctx.repoContext.workflowRunRepo
             .findGlobalByStatus("running");
 
-          const heartbeatCache = new Map<string, boolean>();
+          // Each heartbeat is read once for the whole scan.
+          const heartbeats = new Map<string, Promise<Uint8Array | null>>();
+          const ownerGone = ownerGoneDecider({
+            activeRunRegistry: ctx.activeRunRegistry,
+            runTracker,
+            instanceId: ctx.instanceId,
+            controlPlaneStore: {
+              get: (key) => {
+                let read = heartbeats.get(key);
+                if (!read) {
+                  read = controlPlaneStore.get(key);
+                  heartbeats.set(key, read);
+                }
+                return read;
+              },
+            },
+          });
           for (const { run, workflowId } of yamlRuns) {
             if (!run.instanceId || run.instanceId === ctx.instanceId) continue;
 
-            let hasHeartbeat = heartbeatCache.get(run.instanceId);
-            if (hasHeartbeat === undefined) {
-              const data = await controlPlaneStore.get(
-                `heartbeats/${run.instanceId}`,
-              );
-              hasHeartbeat = data !== null;
-              heartbeatCache.set(run.instanceId, hasHeartbeat);
-            }
-            if (hasHeartbeat) continue;
+            // As a cancel decides it. A missing heartbeat alone says nothing
+            // where serve records none, and going by it interrupted live
+            // runs of other instances (swamp-club#3059).
+            if (!(await ownerGone(run)).gone) continue;
 
             orphanedWorkflowRuns++;
             if (payload?.fix) {

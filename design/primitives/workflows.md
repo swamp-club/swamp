@@ -1691,6 +1691,11 @@ swamp-club#2518):
   recorded: without a control-plane-capable datastore it writes none, and a
   missing heartbeat then says nothing about an instance on another host.
 
+`swamp run doctor` through serve (the `run.doctor` handler) uses the same
+decision to call a `running` run of another instance orphaned, so it reports
+and with `--fix` interrupts only a run whose owner is shown gone
+(swamp-club#3059).
+
 The run is then cancelled like an offline cancel of a run whose owner died:
 its in-flight steps fail with "the process running this step stopped before
 the step finished", its tracker row is completed `cancelled`, and the method
