@@ -591,10 +591,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
-    // Straight after the write, so the entry names this version of the file.
-    const record = await statRecord(path).catch(() => undefined);
 
-    await this.updateIndexEntry(workflowId, run, record ?? undefined);
+    await this.updateIndexEntry(workflowId, run, path, content);
 
     // Emit events based on status changes
     if (this.eventBus) {
@@ -1020,12 +1018,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         return;
       }
       const entries = result.entries;
+      // Ids that a record names in its body under another file name, which
+      // a rebuild indexes by the body id: their entries are not gone.
+      const bodyIds = new Set<string>();
       let changed = false;
       for (const runId of suspects) {
         const path = join(runsDir, `workflow-run-${runId}.yaml`);
         const current = await statRecord(path);
         if (current === null) {
-          if (runId in entries) {
+          if (runId in entries && !bodyIds.has(runId)) {
             delete entries[runId];
             changed = true;
           }
@@ -1042,17 +1043,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           }
           continue;
         }
-        if (read.summary.id !== runId) {
-          // A record whose body names another run: index it as a rebuild
-          // would, by the id in its body.
-          await this.rebuildIndexUnqueued(runsDir, indexDir);
-          return;
-        }
+        // A record whose body names another run is indexed as a rebuild
+        // would, by the id in its body; it has no entry under its file name,
+        // so it is read on every verify, and written only when it changed.
+        const id = read.summary.id;
+        if (id !== runId) bodyIds.add(id);
         const next = indexEntryOf(read.summary, read.record);
         // An entry that cannot be fingerprinted is read every time; it is
         // written only when it says something new.
-        if (JSON.stringify(entries[runId]) === JSON.stringify(next)) continue;
-        entries[runId] = next;
+        if (JSON.stringify(entries[id]) === JSON.stringify(next)) continue;
+        entries[id] = next;
         changed = true;
       }
       if (!changed) return;
@@ -1160,7 +1160,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async updateIndexEntry(
     workflowId: WorkflowId,
     run: WorkflowRun,
-    record: RecordFingerprint | undefined,
+    path: string,
+    written: string,
   ): Promise<void> {
     const indexDir = this.getLocalIndexDir(workflowId);
     await withIndexQueue(indexDir, async () => {
@@ -1176,6 +1177,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
         const existing = result?.entries ?? {};
         const summary = parseWorkflowRunSummary(run.toPersistedData());
+        // Fingerprinted only while the file still holds what this save
+        // wrote: another writer may have replaced it since, and an entry
+        // with no fingerprint is read and corrected by verifyIndexes.
+        const record = await fingerprintIfContent(path, written);
         existing[run.id] = indexEntryOf(summary, record);
         await writeRunIndex(indexDir, existing);
       } catch (error) {
@@ -1262,6 +1267,24 @@ async function readIndexedRecord(
     summary: parseWorkflowRunSummary(parsed),
     record: sameFingerprint(before, after),
   };
+}
+
+/**
+ * The fingerprint of the file at `path` when it holds exactly `expected`
+ * and did not change while it was read, else none. Never throws.
+ */
+async function fingerprintIfContent(
+  path: string,
+  expected: string,
+): Promise<RecordFingerprint | undefined> {
+  try {
+    const before = await statRecord(path);
+    const content = await Deno.readTextFile(path);
+    const after = await statRecord(path);
+    return content === expected ? sameFingerprint(before, after) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The fingerprint when two stats of one file agree, else none. */

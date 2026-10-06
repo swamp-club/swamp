@@ -313,8 +313,10 @@ export function runRecordFinder(
       if (run) return { run, workflowId: workflow.id };
     }
     // Listed afresh for each miss, never from a snapshot: a record that
-    // arrives meanwhile must not have its row settled as missing. A miss
-    // settles its row, so this is paid once per row.
+    // arrives meanwhile must not have its row settled as missing. In the
+    // settle sweep a miss settles its row, so the sweep pays this once per
+    // row; doctor's dead-owner lookup pays it on each run for a row whose
+    // workflow was renamed.
     for (const workflowId of await runRepo.listWorkflowIds()) {
       if (workflowId === workflow?.id) continue;
       const run = await runRepo.findById(workflowId, runId);

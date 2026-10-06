@@ -124,7 +124,11 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    (`record_settled`) or is stored under no workflow (`record_missing`), such
    as a row reaped while its owner went on to finish the run. It runs at
    serve boot and in `run doctor --fix`, local and through the `run.doctor`
-   handler (swamp-club#2917). The serve boot
+   handler (swamp-club#2917). A record that arrives by datastore pull after
+   its row was settled `record_missing` is no longer found through the row:
+   doctor's record scan still settles it within 7 days of its start, and
+   past that only the serve boot reaper and the continuous reconciler, which
+   look at every `running` record, see it. The serve boot
    reaper, the continuous reconciler and the `run.doctor` handler look at
    every record still `running`, whatever its age: a run can wait at an
    approval gate for longer than any window and be orphaned by a later resume
@@ -145,7 +149,9 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    was built from (mtime, size, and ctime and inode where the platform has
    them); doctor stats every record, reads only those whose fingerprint
    differs or that have no entry, and writes an index only when an entry was
-   wrong (swamp-club#3051).
+   wrong (swamp-club#3051). A save fingerprints its entry only when the file
+   still holds what it wrote, so a record another writer replaced in between
+   is left to be read by the next verification.
 
    A server cancel also clears a `running` record whose owner is gone, as
    `cancelled` rather than `interrupted`; see "Running runs whose owner is

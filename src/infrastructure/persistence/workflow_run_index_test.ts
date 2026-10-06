@@ -22,11 +22,13 @@ import { join } from "@std/path";
 import {
   countYamlRunFiles,
   deleteRunIndex,
+  fingerprintMatches,
   getIndexPath,
   INDEX_SCHEMA_VERSION,
   isIndexStale,
   readRunIndex,
   RUNS_INDEX_FILENAME,
+  statRecord,
   withIndexQueue,
   type WorkflowRunIndex,
   writeRunIndex,
@@ -252,4 +254,46 @@ Deno.test("withIndexQueue: a failed function rejects its caller and does not hol
 
   await assertRejects(() => failed, Error, "index write failed");
   assertEquals(await next, "ran");
+});
+
+Deno.test("statRecord: fingerprints a file, and is null for one that is gone", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "workflow-run-x.yaml");
+    await Deno.writeTextFile(path, "status: running\n");
+
+    const fingerprint = await statRecord(path);
+
+    const info = await Deno.stat(path);
+    assertEquals(fingerprint?.size, info.size);
+    assertEquals(fingerprint?.mtimeMs, info.mtime?.getTime());
+    assertEquals(fingerprint?.ino, info.ino ?? undefined);
+    assertEquals(await statRecord(join(dir, "missing.yaml")), null);
+  });
+});
+
+Deno.test("fingerprintMatches: only an object with every field equal matches", () => {
+  const current = { mtimeMs: 10, size: 20, ctimeMs: 30, ino: 40 };
+
+  assertEquals(fingerprintMatches({ ...current }, current), true);
+  for (
+    const stored of [
+      undefined,
+      null,
+      "junk",
+      42,
+      { ...current, mtimeMs: 11 },
+      { ...current, size: 21 },
+      { ...current, ctimeMs: 31 },
+      { ...current, ino: 41 },
+      { mtimeMs: 10, size: 20 },
+      { ...current, mtimeMs: "10" },
+    ]
+  ) {
+    assertEquals(fingerprintMatches(stored, current), false, String(stored));
+  }
+  // A platform without ctime or inode leaves both out on either side.
+  assertEquals(
+    fingerprintMatches({ mtimeMs: 10, size: 20 }, { mtimeMs: 10, size: 20 }),
+    true,
+  );
 });

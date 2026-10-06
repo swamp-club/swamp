@@ -22,7 +22,12 @@ import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
-import { getIndexPath, readRunIndex } from "./workflow_run_index.ts";
+import {
+  getIndexPath,
+  readRunIndex,
+  withIndexQueue,
+} from "./workflow_run_index.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -2051,5 +2056,76 @@ Deno.test("verifyIndexes: keeps the entry a save writes while a replaced record 
       );
       assertEquals(index?.entries[run.id]?.status, "failed");
     }
+  });
+});
+
+Deno.test("save: an entry is not fingerprinted against a record another writer replaced", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const path = repo.getPath(workflow.id, run.id);
+    const runningRecord = await Deno.readTextFile(path);
+    run.complete();
+
+    // Hold the index queue so the save's entry waits behind it, then put
+    // the running version back as another writer would.
+    let release!: () => void;
+    const held = withIndexQueue(
+      indexDir,
+      () => new Promise<void>((resolve) => release = resolve),
+    );
+    const saving = repo.save(workflow.id, run);
+    await waitFor(
+      async () => (await Deno.readTextFile(path)).includes("status: failed"),
+      "the save to write its record",
+    );
+    await Deno.writeTextFile(path, runningRecord);
+    release();
+    await Promise.all([held, saving]);
+
+    assertEquals(
+      (await readRunIndex(indexDir))?.entries[run.id]?.record,
+      undefined,
+    );
+    await repo.verifyIndexes();
+    assertEquals(
+      (await readRunIndex(indexDir))?.entries[run.id]?.status,
+      "running",
+    );
+  });
+});
+
+Deno.test("verifyIndexes: a record whose body names another run is not rewritten each time", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    // The record is stored under a file name that is not its own id.
+    await Deno.rename(
+      repo.getPath(workflow.id, run.id),
+      join(
+        dir,
+        ".swamp",
+        "workflow-runs",
+        workflow.id,
+        `workflow-run-${crypto.randomUUID()}.yaml`,
+      ),
+    );
+    const indexPath = getIndexPath(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    await repo.verifyIndexes();
+    const past = new Date("2020-01-01T00:00:00Z");
+    await Deno.utime(indexPath, past, past);
+
+    await repo.verifyIndexes();
+
+    assertEquals((await Deno.stat(indexPath)).mtime?.getTime(), past.getTime());
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    assertEquals(Object.keys(index?.entries ?? {}), [run.id]);
   });
 });
