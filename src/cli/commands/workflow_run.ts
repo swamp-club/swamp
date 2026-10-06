@@ -36,6 +36,7 @@ import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -349,7 +350,7 @@ export const workflowRunCommand = new Command()
         {
           push: syncService
             ? async () => {
-              await syncService.pushChanged({ namespace });
+              await pushNamespace(syncService, namespace);
             }
             : undefined,
           onCleanupError: (pushErr) => {

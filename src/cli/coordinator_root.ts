@@ -27,7 +27,7 @@ import {
   type RootUnitOfWork,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
-import { pushGlobalLockAtEnd } from "./push_paths.ts";
+import { pushGlobalLockAtEnd } from "../infrastructure/persistence/push_paths.ts";
 
 /**
  * Runs `fn`, the rest of a command that opened its repository with

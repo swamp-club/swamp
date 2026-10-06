@@ -31,7 +31,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
-import { pushGlobalLockAtEnd } from "../push_paths.ts";
+import { pushGlobalLockAtEnd } from "../../infrastructure/persistence/push_paths.ts";
 import {
   consumeStream,
   createWorkflowEvaluateDeps,

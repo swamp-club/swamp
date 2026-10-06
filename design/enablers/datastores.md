@@ -1176,12 +1176,13 @@ operation inside a unit of work:
   - Model-lock commands split `ModelLockResult.flush()` into `push()` and
     `release()`. `push` is the root's flush, and `release` runs after the root
     has ended, so the locks are released after the push, as before. `flush()`
-    is still push-then-release for callers that open no root: per-step locks
-    inside a workflow run, and serve.
+    is still push-then-release for per-step locks inside a workflow run, its
+    one remaining caller (swamp-club#3055).
   - Commands that pushed only once their mutation completed (the
     managed-config commands through `runManagedConfigMutation`, worker prune,
-    datastore config migrate) pass `pushWhen: "completed"`, so a failed
-    command still pushes nothing.
+    datastore config migrate) pass `pushWhen: "completed"`, which
+    `runInRootUnitOfWork` applies (swamp-club#3055), so a failed command
+    still pushes nothing.
   - A push or release failure reaches the handler the command used before:
     the release error replaces the push error, as a `finally` did, and neither
     hides the command's own error.
@@ -1189,12 +1190,10 @@ operation inside a unit of work:
     mint and worker token create and revoke also push mid-command (mint and
     create then read the token back). That push is the root's checkpoint
     (`runCommandInRootUnit`'s `checkpoint` option, swamp-club#3053), pinned
-    in `PINNED_CHECKPOINT_CALLS` and under the checkpoint group of
-    `PINNED_CLI_PUSH_CALLS`, and the root still makes the end-of-command lock
-    push.
-  - Commands on the global lock (data gc, data prune, workflow delete, the
-    `--all` evaluates) still push through the process-exit coordinator and
-    open no root.
+    in `PINNED_CHECKPOINT_CALLS`, and the root still makes the end-of-command
+    lock push.
+  - Commands on the global lock run in a root since swamp-club#3055; see
+    "One flush path" below.
   - The use-case sync characterization switches on `rootUnit` for these rows,
     checking that the root staged every mark and that pushes keep their place
     relative to lock release (`syncOrder`, recorded before the change).
@@ -1216,8 +1215,9 @@ operation inside a unit of work:
   it for long runs. The device auth mint, grant publishing and `access.reload`
   stage their per-path re-marks through `stageWritesThenPush`
   (`src/serve/stage_writes_then_push.ts`), a root that covers only the marks and
-  the push, as a failed write pushed nothing before. Its flush pushes only once
-  every mark was staged, because a legacy root also flushes on abandon.
+  the push, as a failed write pushed nothing before. It pushes only once every
+  mark was staged (`pushWhen: "completed"`), because a legacy root also flushes
+  on abandon.
 - **Serve success-only, method run and resume roots (swamp-club#3035).** The
   handlers that push only after a successful reply (model, vault and workflow
   create, edit and delete, and `vault.migrate`) run their work in a root whose
@@ -1226,16 +1226,46 @@ operation inside a unit of work:
   reply rather than the outcome. `model.method.run` runs the run in a root
   whose flush is its push under the gate's shared mode, once the run completed
   (a use case that reports an error still completes). A run that took model
-  locks still pushes through the locks' flush when it releases them, outside
-  the root. `workflow.resume` and the detached resume (`startDetachedResume`,
+  locks pushes them as the root's flush instead, on every outcome, and releases
+  them after the root (swamp-club#3055). `workflow.resume` and the detached resume (`startDetachedResume`,
   `src/serve/resume_launcher.ts`) push on every outcome as their root's flush.
   The detached resume's root ends after its terminal frame; its cleanup and
   the parent's auto-resume run after that, so the parent's resume opens a root
   of its own rather than one nested in the child's, which would throw. If its
-  root cannot open, it still ends its stream with an error frame. The
-  serve pushes not yet a root's flush are pinned in `PINNED_SERVE_RAW_PUSHES`
-  (`integration/serve_root_unit_rules_test.ts`): background garbage collection
-  only.
+  root cannot open, it still ends its stream with an error frame.
+- **One flush path (swamp-club#3055).** Every production push is a root's
+  flush or checkpoint, or a pinned deliberate exception:
+  - `runInRootUnitOfWork` hands its flush the outcome (`{ completed }`) and
+    takes `pushWhen: "always" | "completed"`, the one "push only on success"
+    option; the CLI's root, `stageWritesThenPush` and the serve method-run
+    handlers use it instead of their own flags.
+  - Serve `model.method.run` makes the model lock's push its root's flush on
+    every outcome and releases the lock after the root. The reply, telemetry,
+    cancel or run deregistration and stream terminal keep their place: before
+    a lock's push, and around the no-lock push as before.
+  - The CLI commands that pushed only at the `flushDatastoreSync()` teardown
+    (workflow delete, data gc, data prune, run gc, the `--all` evaluates,
+    model validate with check options, datastore compact) run in
+    `runInCoordinatorRoot` (`src/cli/coordinator_root.ts`), whose flush is
+    the global lock's coordinator push (`pushGlobalLockAtEnd`). As at
+    teardown, a push timeout is thrown after a completed command and dropped
+    after a failed one. `workflow evaluate` with dynamic model references
+    gives that push to the root it already opens, since a second root would
+    nest. The teardown stays as a safety net and finds nothing left to flush.
+  - Per-step model locks inside a workflow run keep `ModelLockResult.flush()`
+    (push, then release): the step's lock owns its push and release, and Phase
+    3 replaces model locks with leases.
+  - The push functions live in `src/infrastructure/persistence/push_paths.ts`
+    (`pushNamespace`, `pushModelLockScope`, `pushGlobalLockAtEnd`); commands
+    and handlers pass them as a flush or checkpoint and never call
+    `pushChanged` themselves. `PINNED_DIRECT_PUSHES`
+    (`integration/datastore_write_seams_rules_test.ts`) lists every production
+    `pushChanged` call: the push paths, the coordinator, and the deliberate
+    exceptions (`datastore sync`, `datastore setup`'s migration push, the
+    lockfile publish, serve start-up and token GC, serve background GC). In
+    serve, a push-path call outside a root's flush is pinned in
+    `integration/serve_root_unit_rules_test.ts`; `pushChangedToRemote`, the
+    push path the handlers' flushes call, is the only one.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`

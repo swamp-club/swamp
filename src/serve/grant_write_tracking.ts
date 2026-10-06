@@ -36,6 +36,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 import { stageWritesThenPush } from "./stage_writes_then_push.ts";
+import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 
 const logger = getSwampLogger(["serve", "grant-write-tracking"]);
 
@@ -126,7 +127,7 @@ export async function publishGrantWrites(
   const syncService = deps.syncService;
   try {
     await stageWritesThenPush({ markDirty: deps.markDirty }, paths, {
-      flush: () => syncService.pushChanged({ namespace: deps.namespace }),
+      flush: () => pushNamespace(syncService, deps.namespace),
     });
   } catch (error) {
     logger.warn("Failed to push grant changes to the datastore: {error}", {

@@ -55,6 +55,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
+import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -504,7 +505,7 @@ async function mintServerTokenImpl(
             TOKEN_DATA_NAME,
           ),
         ],
-        { flush: () => syncService.pushChanged({ namespace }) },
+        { flush: () => pushNamespace(syncService, namespace) },
       );
     });
 

@@ -118,6 +118,7 @@ import type {
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import {
   getSwampLogger,
@@ -1582,7 +1583,14 @@ function heldForOtherRunsMessage(
  *          (and pushes changes for sync-capable datastores).
  */
 export interface ModelLockResult {
-  /** {@link push}, then {@link release} even when the push fails. */
+  /**
+   * {@link push}, then {@link release} even when the push fails. Its one
+   * remaining caller is the per-step model lock in a workflow run
+   * (`StepLockResult.flush`, run by `DefaultStepExecutor`): the step's lock
+   * owns its push and release, and Phase 3 replaces model locks with leases
+   * (swamp-club#3055). Everything else pushes through a root unit of work
+   * with {@link push} and calls {@link release} after the root ends.
+   */
   flush: () => Promise<void>;
   /**
    * Pushes changed files for sync-capable datastores (single- or two-phase),
@@ -2066,18 +2074,12 @@ export async function flushSinglePhasePush(
     }
     write(dim("Pushing changes to datastore..."));
 
-    let pushed: number | void;
-    if (caps?.scopedSync) {
-      const context: SyncContext = { models: [...models] };
-      pushed = await syncService.pushChanged({
-        context,
-        ...(namespace ? { namespace } : {}),
-      });
-    } else if (namespace) {
-      pushed = await syncService.pushChanged({ namespace });
-    } else {
-      pushed = await syncService.pushChanged();
-    }
+    const pushed = await pushModelLockScope(
+      syncService,
+      caps?.scopedSync === true,
+      models,
+      namespace,
+    );
     if (pushed && pushed > 0) {
       write(dim(`Pushed ${pushed} file(s) to datastore`));
     } else {

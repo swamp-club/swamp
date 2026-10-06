@@ -127,6 +127,7 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
+import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 
 const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 
@@ -813,7 +814,7 @@ export async function handleAccessReload(
         // and still pushes.
         const syncService = ctx.syncService;
         await stageWritesThenPush(ctx.repoContext, writtenPaths, {
-          flush: () => syncService.pushChanged({ namespace }),
+          flush: () => pushNamespace(syncService, namespace),
         });
       } catch (error) {
         logger
