@@ -89,7 +89,6 @@ export interface RemoteStepResult {
   outputs: DispatchOutput[];
   logs: string[];
   durationMs: number;
-  followUpActions?: unknown[];
   /** The worker that executed the step (telemetry attribution). */
   workerName?: string;
 }

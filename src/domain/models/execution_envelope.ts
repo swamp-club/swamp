@@ -95,8 +95,6 @@ export interface ExecutionResult {
   logs: string[];
   /** Execution duration in milliseconds. */
   durationMs: number;
-  /** Follow-up actions from the method result (in-process execution only). */
-  followUpActions?: unknown[];
 }
 
 const TRACE_HEADER_ENV_NAMES: ReadonlyMap<string, string> = new Map([

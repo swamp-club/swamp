@@ -138,7 +138,6 @@ export interface MethodExecutor {
 export class InProcessExecutor {
   /**
    * The context with writers injected, available after execute() completes.
-   * Used by the execution service for follow-up actions.
    */
   contextWithWriters?: MethodContext;
 
@@ -323,7 +322,6 @@ export class InProcessExecutor {
         outputs,
         logs,
         durationMs,
-        followUpActions: result.followUpActions,
       };
     } catch (error) {
       const durationMs = performance.now() - start;

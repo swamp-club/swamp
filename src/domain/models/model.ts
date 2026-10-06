@@ -547,7 +547,7 @@ export interface WorkflowGateFailure {
 
 /**
  * Internal invocation tracking state threaded through nested runModel
- * calls and follow-up actions. Not part of the extension author API.
+ * calls. Not part of the extension author API.
  */
 export interface InvocationTracking {
   depth: number;
@@ -636,33 +636,6 @@ export interface DataWriterCallbacks {
 }
 
 /**
- * Follow-up action to be executed after a method completes.
- */
-export interface FollowUpAction {
-  /**
-   * Name of the method to call next.
-   */
-  methodName: string;
-
-  /**
-   * Delay before executing the follow-up action (in milliseconds).
-   */
-  delayMs?: number;
-
-  /**
-   * Maximum number of retries for this action.
-   */
-  maxRetries?: number;
-
-  /**
-   * Condition that must be met to continue with follow-up actions.
-   * If this returns false, the workflow stops.
-   * Receives the data handles from the previous method execution.
-   */
-  continueCondition?: (dataHandles: DataHandle[]) => boolean;
-}
-
-/**
  * Result of a method execution.
  */
 export interface MethodResult {
@@ -670,11 +643,6 @@ export interface MethodResult {
    * Data handles referencing artifacts already persisted by DataWriter.
    */
   dataHandles?: DataHandle[];
-
-  /**
-   * Optional follow-up actions to execute.
-   */
-  followUpActions?: FollowUpAction[];
 
   /**
    * Where the method body executed: "loopback" for in-process, or the

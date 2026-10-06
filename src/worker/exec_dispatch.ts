@@ -63,25 +63,6 @@ function toOutputs(handles: DataHandle[]): DispatchOutput[] {
   }));
 }
 
-function serializeFollowUpActions(
-  result: {
-    followUpActions?: Array<{
-      methodName: string;
-      delayMs?: number;
-      maxRetries?: number;
-    }>;
-  },
-): unknown[] | undefined {
-  if (!result.followUpActions || result.followUpActions.length === 0) {
-    return undefined;
-  }
-  return result.followUpActions.map((action) => ({
-    methodName: action.methodName,
-    delayMs: action.delayMs,
-    maxRetries: action.maxRetries,
-  }));
-}
-
 /**
  * Rebuild the definition named in a remote execution envelope so the worker
  * can run one method against it.
@@ -237,7 +218,6 @@ export async function runDispatchRunner(
       outputs: toOutputs(handles),
       logs,
       durationMs,
-      followUpActions: serializeFollowUpActions(methodResult),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
