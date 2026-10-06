@@ -24,7 +24,10 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
-import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
+import {
+  FileSystemUnifiedDataRepository,
+  sortedSubdirectoryNames,
+} from "./unified_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
@@ -1727,5 +1730,72 @@ Deno.test("delete: deleting an old version of an item with a deletion marker kee
       .map((r) => r.version)
       .sort();
     assertEquals(versions, [2, 3]);
+  });
+});
+
+Deno.test("sortedSubdirectoryNames: keeps only directories, in code-unit order", () => {
+  const entries = [
+    { name: "b", isDirectory: true },
+    { name: "latest", isDirectory: false },
+    { name: "a", isDirectory: true },
+    { name: "Z", isDirectory: true },
+    { name: "c", isDirectory: true },
+  ];
+  assertEquals(sortedSubdirectoryNames(entries), ["Z", "a", "b", "c"]);
+});
+
+/** Saves one JSON item per name under `modelId`, in the order given. */
+async function saveNamed(
+  repo: FileSystemUnifiedDataRepository,
+  type: ModelType,
+  modelId: string,
+  names: string[],
+): Promise<void> {
+  for (const name of names) {
+    await repo.save(
+      type,
+      modelId,
+      makeJsonData(name),
+      new TextEncoder().encode(`{"name":"${name}"}`),
+    );
+  }
+}
+
+Deno.test("findAllForModel: returns data in name order regardless of save order", async () => {
+  await withTempRepo(async (repo) => {
+    await saveNamed(repo, testType, "model-1", ["c", "a", "b"]);
+    const names = (await repo.findAllForModel(testType, "model-1")).map((d) =>
+      d.name
+    );
+    assertEquals(names, ["a", "b", "c"]);
+    assertEquals(
+      repo.findAllForModelSync(testType, "model-1").map((d) => d.name),
+      ["a", "b", "c"],
+    );
+  });
+});
+
+Deno.test("findAllGlobal: walks types, model ids and data names in name order", async () => {
+  await withTempRepo(async (repo) => {
+    const otherType = ModelType.create("other/type");
+    await saveNamed(repo, testType, "model-b", ["y", "x"]);
+    await saveNamed(repo, otherType, "model-c", ["q"]);
+    await saveNamed(repo, testType, "model-a", ["n", "m"]);
+    const expected = [
+      "other/type model-c q",
+      "test/model model-a m",
+      "test/model model-a n",
+      "test/model model-b x",
+      "test/model model-b y",
+    ];
+    const key = (
+      r: { data: { name: string }; modelType: ModelType; modelId: string },
+    ) => `${r.modelType.normalized} ${r.modelId} ${r.data.name}`;
+    assertEquals((await repo.findAllGlobal()).map(key), expected);
+    assertEquals(repo.findAllGlobalSync().map(key), expected);
+    assertEquals(
+      (await repo.findAllForType(testType)).map(key),
+      expected.slice(1),
+    );
   });
 });
