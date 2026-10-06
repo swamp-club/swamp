@@ -425,6 +425,7 @@ Deno.test("createExtensionQualityRenderer: json carries the rubric, gateFailures
   assertEquals(logs.length, 1);
   const doc = JSON.parse(logs[0]);
   assertEquals(doc.rubricVersion, 3);
+  assertEquals(doc.status, "failed");
   assertEquals(doc.registryScorable, false);
   assertEquals(doc.gateFailures[0].gate, "safety");
   assertEquals(
@@ -447,4 +448,22 @@ Deno.test("createExtensionQualityRenderer: an unscorable extension fails in log 
   });
   assert(thrown instanceof UserError);
   assertStringIncludes(logs.join("\n"), "would publish unscored");
+});
+
+Deno.test("createExtensionQualityRenderer: json status is failed when the rubric passes but the registry cannot score the extension", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  const logs = capture(() => {
+    try {
+      renderer.handlers().completed(
+        completedEvent(makeScore({ allPassed: true }), {
+          registryScorable: false,
+        }),
+      );
+    } catch {
+      // The run fails; the document is what is under test.
+    }
+  });
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.allPassed, true);
+  assertEquals(doc.status, "failed");
 });

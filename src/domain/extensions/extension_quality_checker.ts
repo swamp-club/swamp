@@ -352,12 +352,50 @@ export const EXTENSION_LINT_RULE_EXCLUDES: readonly string[] = [
   "no-import-prefix",
 ];
 
-/** The `deno lint` arguments for extension code, before the file list. */
-export function extensionLintArgs(denoConfigPath?: string): string[] {
+/**
+ * The project's own `lint.rules.exclude` from its `deno.json`: `[]` when the
+ * config sets none, undefined when the file cannot be read or is not plain
+ * JSON (a `deno.json` with comments).
+ */
+async function projectLintExcludes(
+  denoConfigPath: string,
+): Promise<string[] | undefined> {
+  try {
+    const config = JSON.parse(await Deno.readTextFile(denoConfigPath));
+    const exclude = config?.lint?.rules?.exclude;
+    return Array.isArray(exclude)
+      ? exclude.filter((r): r is string => typeof r === "string")
+      : [];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `deno lint` arguments for extension code, before the file list.
+ *
+ * `--rules-exclude` on the command line replaces the config's
+ * `lint.rules.exclude` rather than adding to it, so the project's own
+ * exclusions are passed along with {@link EXTENSION_LINT_RULE_EXCLUDES}.
+ * When the config cannot be read as JSON, no exclusion is passed and the
+ * config lints exactly as written.
+ */
+export async function extensionLintArgs(
+  denoConfigPath?: string,
+): Promise<string[]> {
+  const projectExcludes = denoConfigPath
+    ? await projectLintExcludes(denoConfigPath)
+    : [];
+  if (projectExcludes === undefined) {
+    return ["lint", ...denoToolConfigArgs(denoConfigPath)];
+  }
+  const excludes = [
+    ...new Set([...projectExcludes, ...EXTENSION_LINT_RULE_EXCLUDES]),
+  ];
   return [
     "lint",
     ...denoToolConfigArgs(denoConfigPath),
-    `--rules-exclude=${EXTENSION_LINT_RULE_EXCLUDES.join(",")}`,
+    `--rules-exclude=${excludes.join(",")}`,
   ];
 }
 
@@ -432,7 +470,7 @@ export async function checkExtensionQuality(
 
   // Check linting
   const lintCommand = new Deno.Command(denoPath, {
-    args: [...extensionLintArgs(denoConfigPath), ...tsFiles],
+    args: [...(await extensionLintArgs(denoConfigPath)), ...tsFiles],
     stdout: "piped",
     stderr: "piped",
     env: { ...baseEnv, NO_COLOR: "1" },

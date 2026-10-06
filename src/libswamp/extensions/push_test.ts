@@ -2346,3 +2346,35 @@ Deno.test("extensionPushPrepare: collect mode with no failed gate reports none",
     assertEquals(result.gateFailures, []);
   });
 });
+
+Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cached archive when a check rejected files", async () => {
+  await withCollectFixture(
+    { "README.md": "# hi\n", "NOTES.md": "n\n" },
+    async (dir, input) => {
+      let bundles = 0;
+      const deps = makePrepareDeps({
+        bundleEntryPoint: () => {
+          bundles++;
+          return Promise.resolve("/* bundled */");
+        },
+        analyzeExtensionSafety: () =>
+          Promise.resolve({
+            errors: [{
+              ruleId: "symlink",
+              file: join(dir, "NOTES.md"),
+              message: "Symlinks are not allowed in extensions.",
+            }],
+            warnings: [],
+          }),
+      });
+      const result = await extensionPushPrepare(ctx, deps, {
+        ...input,
+        cachedArchive: new Uint8Array([0x1f, 0x8b, 0x00]),
+      });
+      assertEquals(bundles, 1, "the cached archive must not be reused");
+      const entries = await archiveEntries(result.archiveBytes);
+      assertEquals(entries.includes("extension/files/NOTES.md"), false);
+      assertEquals(result.excludedFromArchive, [join(dir, "NOTES.md")]);
+    },
+  );
+});

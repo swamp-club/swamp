@@ -373,23 +373,68 @@ Deno.test("checkExtensionQuality: the project's own lint rules still apply", asy
   );
 });
 
-Deno.test("extensionLintArgs: the project config or --no-config, never no-import-prefix", () => {
-  assertEquals(extensionLintArgs(undefined), [
+Deno.test("extensionLintArgs: the project config or --no-config, never no-import-prefix", async () => {
+  assertEquals(await extensionLintArgs(undefined), [
     "lint",
     "--no-config",
     "--rules-exclude=no-import-prefix",
   ]);
-  assertEquals(extensionLintArgs("/p/deno.json"), [
-    "lint",
-    "--config",
-    "/p/deno.json",
-    "--rules-exclude=no-import-prefix",
-  ]);
+  await withTempFiles(
+    {
+      "deno.json":
+        '{ "lint": { "rules": { "exclude": ["no-explicit-any", "no-import-prefix"] } } }',
+    },
+    async (dir) => {
+      assertEquals(await extensionLintArgs(join(dir, "deno.json")), [
+        "lint",
+        "--config",
+        join(dir, "deno.json"),
+        "--rules-exclude=no-explicit-any,no-import-prefix",
+      ]);
+    },
+  );
   assertEquals(denoToolConfigArgs("/p/deno.json"), [
     "--config",
     "/p/deno.json",
   ]);
   assertEquals(denoToolConfigArgs(undefined), ["--no-config"]);
+});
+
+Deno.test("extensionLintArgs: a config that is not plain JSON is linted exactly as written", async () => {
+  await withTempFiles(
+    {
+      "deno.json": '// comment\n{ "lint": { "rules": { "exclude": ["x"] } } }',
+    },
+    async (dir) => {
+      assertEquals(await extensionLintArgs(join(dir, "deno.json")), [
+        "lint",
+        "--config",
+        join(dir, "deno.json"),
+      ]);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: the project's own lint excludes still apply alongside npm: imports", async () => {
+  // --rules-exclude on the command line replaces the config's exclude list,
+  // so swamp passes the project's exclusions along with its own.
+  await withTempFiles(
+    {
+      "model.ts":
+        'import { z } from "npm:zod@4";\nexport const f = (y: any) => [y, z];\n',
+      "deno.json":
+        '{ "lint": { "rules": { "exclude": ["no-explicit-any"] } } }',
+    },
+    async (dir, paths) => {
+      const result = await checkExtensionQuality(
+        paths.filter((p) => p.endsWith(".ts")),
+        DENO_PATH,
+        join(dir, "deno.json"),
+      );
+      assertEquals(result.issues, []);
+      assertEquals(result.passed, true);
+    },
+  );
 });
 
 Deno.test("checkExtensionQuality: fmt output contains no ANSI escape codes", async () => {

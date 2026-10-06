@@ -104,7 +104,11 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
     },
     runLint: async (files: string[], denoConfigPath?: string) => {
       const command = new Deno.Command(denoPath, {
-        args: [...extensionLintArgs(denoConfigPath), "--fix", ...files],
+        args: [
+          ...(await extensionLintArgs(denoConfigPath)),
+          "--fix",
+          ...files,
+        ],
         stdout: "piped",
         stderr: "piped",
         env: { ...denoRuntime.getDenoEnv(), NO_COLOR: "1" },

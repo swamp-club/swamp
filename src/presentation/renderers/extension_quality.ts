@@ -347,9 +347,13 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           excludedFromArchive,
           registryScorable,
         } = e.data;
+        // `status` is the run's outcome, matching the exit code: a failed
+        // check or an extension the registry cannot score fails the run
+        // whatever the rubric says. `allPassed` stays the rubric's own.
+        const failure = qualityFailureMessage(e.data);
         console.log(JSON.stringify(
           {
-            status: score.allPassed ? "passed" : "failed",
+            status: failure || !score.allPassed ? "failed" : "passed",
             rubricVersion: score.rubricVersion,
             earnedPoints: score.earnedPoints,
             maxEarnablePoints: score.maxEarnablePoints,
@@ -393,7 +397,6 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
           null,
           2,
         ));
-        const failure = qualityFailureMessage(e.data);
         if (failure) {
           this._passed = false;
           this._failureMessage = failure;

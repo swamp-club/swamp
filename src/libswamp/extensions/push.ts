@@ -275,8 +275,10 @@ export interface LocalGateFailure {
 
 /**
  * Safety rules whose error rejects the file itself. In `collect` mode a file
- * carrying one is left out of the archive: it is never copied, and a symlink
- * is never followed.
+ * carrying one is left out of the archive: it is never copied, so a
+ * rejected symlink's target is not packaged. (A bundled entry point that
+ * imports a rejected file can still resolve it; the archive is only scored
+ * locally.)
  */
 const FILE_REJECTING_SAFETY_RULES: ReadonlySet<string> = new Set([
   "hidden-file",
@@ -1184,10 +1186,12 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 11. Bundle entry points + build archive — skip on cache hit
+  // 11. Bundle entry points + build archive — skip on cache hit, unless a
+  // check rejected files: the cached archive was built before the rejection
+  // and may hold them, so collect mode rebuilds without them.
   let totalBundles: number;
   let archiveBytes: Uint8Array;
-  if (usingCachedArchive) {
+  if (usingCachedArchive && rejectedFiles.size === 0) {
     totalBundles = input.modelEntryPoints.length +
       input.vaultEntryPoints.length +
       input.datastoreEntryPoints.length + input.reportEntryPoints.length +
@@ -1197,7 +1201,7 @@ export async function extensionPushPrepare(
     const built = await bundleAndArchive(
       rejectedFiles.size > 0 ? withoutFiles(input, rejectedFiles) : input,
       deps,
-      denoPath,
+      denoPath || await deps.ensureDenoPath(),
       ctx,
     );
     totalBundles = built.totalBundles;

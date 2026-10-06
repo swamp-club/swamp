@@ -159,7 +159,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     scope: "extension",
     acceptable: false,
     remediation:
-      "Replace each bare name with its import-map target from deno.json, an explicit npm: or jsr: specifier (for example npm:zod@4), so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
+      "Replace each bare name with its import-map target from deno.json (an explicit npm: or jsr: specifier such as npm:zod@4) so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
   // ── Adversarial-review evidence: warnings, never acceptable here ────
   {

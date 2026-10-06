@@ -171,8 +171,8 @@ mode (`localGates`): each failed gate (content collectives, the
 additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
 upgrade chain, review errors, archive size) is recorded instead of thrown,
 files a check rejected (hidden, symlink, disallowed type, oversized,
-unreadable, disallowed additionalFiles) are left out of the archive and
-never followed, and the rubric is scored and printed beside the failures.
+unreadable, disallowed additionalFiles) are left out of the archive (never
+copied into it), and the rubric is scored and printed beside the failures.
 Such an archive is never cached or uploaded. A push enforces: the first
 failure throws.
 
