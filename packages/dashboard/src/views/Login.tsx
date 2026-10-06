@@ -31,12 +31,12 @@ function providerHost(verificationBaseUri: string | null): string {
 }
 
 export function Login() {
-  const { authMode, verificationBaseUri, login } = useSwamp();
+  const { authMode, verificationBaseUri, completeLogin, login } = useSwamp();
 
   if (authMode === "oauth") {
     return (
       <OAuthLogin
-        onToken={login}
+        onAuthenticated={completeLogin}
         providerHost={providerHost(verificationBaseUri)}
       />
     );
@@ -45,7 +45,7 @@ export function Login() {
   return <TokenLogin onToken={login} />;
 }
 
-function TokenLogin({ onToken }: { onToken: (t: string) => void }) {
+function TokenLogin({ onToken }: { onToken: (t: string) => Promise<void> }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -58,25 +58,7 @@ function TokenLogin({ onToken }: { onToken: (t: string) => void }) {
       setError(null);
 
       try {
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(
-          `${proto}//${location.host}/`,
-          [`bearer.${value.trim()}`],
-        );
-
-        await new Promise<void>((resolve, reject) => {
-          ws.onopen = () => {
-            ws.close();
-            resolve();
-          };
-          ws.onerror = () => reject(new Error("Invalid token"));
-          ws.onclose = (event) => {
-            if (event.code !== 1000) reject(new Error("Connection rejected"));
-          };
-          setTimeout(() => reject(new Error("Connection timeout")), 5000);
-        });
-
-        onToken(value.trim());
+        await onToken(value.trim());
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Authentication failed",
@@ -127,8 +109,8 @@ interface DeviceGrant {
 type OAuthState = "idle" | "starting" | "waiting" | "error";
 
 function OAuthLogin(
-  { onToken, providerHost }: {
-    onToken: (t: string) => void;
+  { onAuthenticated, providerHost }: {
+    onAuthenticated: () => Promise<void>;
     providerHost: string;
   },
 ) {
@@ -140,7 +122,7 @@ function OAuthLogin(
     setState("starting");
     setError(null);
 
-    fetch("/auth/device", { method: "POST" })
+    fetch("/auth/dashboard/device", { method: "POST" })
       .then((r) => {
         if (!r.ok) throw new Error("Failed to start login");
         return r.json();
@@ -169,7 +151,7 @@ function OAuthLogin(
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const resp = await fetch("/auth/device/token", {
+        const resp = await fetch("/auth/dashboard/device/token", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode: grant.deviceCode }),
@@ -177,6 +159,11 @@ function OAuthLogin(
         });
 
         if (resp.status === 202) return;
+        if (resp.ok) {
+          await resp.body?.cancel();
+          await onAuthenticated();
+          return;
+        }
 
         let data: Record<string, string>;
         try {
@@ -187,9 +174,7 @@ function OAuthLogin(
           return;
         }
 
-        if (resp.ok && data.token) {
-          onToken(data.token);
-        } else if (resp.status === 410) {
+        if (resp.status === 410) {
           setError("Login expired. Please try again.");
           setState("error");
         } else if (resp.status === 403) {
@@ -213,7 +198,7 @@ function OAuthLogin(
       clearInterval(interval);
       ac.abort();
     };
-  }, [grant, state, onToken]);
+  }, [grant, state, onAuthenticated]);
 
   return (
     <div className="login-page">

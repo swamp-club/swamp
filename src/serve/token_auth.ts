@@ -130,7 +130,13 @@ export function splitServerToken(
   return { name: presented.slice(0, dot), secret: presented.slice(dot + 1) };
 }
 
-export type WebSocketTokenTransport = "bearer" | "subprotocol" | "query";
+export type WebSocketTokenTransport =
+  | "bearer"
+  | "subprotocol"
+  | "query"
+  | "cookie";
+
+export const DASHBOARD_SESSION_COOKIE = "swamp-dashboard-session";
 
 export interface ExtractedWebSocketToken {
   token: string;
@@ -139,6 +145,34 @@ export interface ExtractedWebSocketToken {
 
 const BEARER_PREFIX_LEN = "Bearer ".length;
 const SUBPROTOCOL_PREFIX = "bearer.";
+
+/**
+ * Reads the one dashboard session credential from a request cookie header.
+ * Duplicate and malformed cookies are rejected instead of selecting an
+ * attacker-controlled value by position.
+ */
+export function extractDashboardSessionToken(req: Request): string | null {
+  const cookie = req.headers.get("cookie");
+  if (cookie === null) return null;
+
+  let token: string | null = null;
+  for (const entry of cookie.split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    const name = entry.slice(0, separator).trim();
+    if (name !== DASHBOARD_SESSION_COOKIE) continue;
+    if (token !== null) return null;
+
+    try {
+      const candidate = decodeURIComponent(entry.slice(separator + 1));
+      if (candidate.length === 0) return null;
+      token = candidate;
+    } catch {
+      return null;
+    }
+  }
+  return token;
+}
 
 export function extractWebSocketToken(
   req: Request,
@@ -171,6 +205,11 @@ export function extractWebSocketToken(
   const tokenParam = url.searchParams.get("token");
   if (tokenParam !== null && tokenParam.length > 0) {
     return { token: tokenParam, transport: "query" };
+  }
+
+  const sessionToken = extractDashboardSessionToken(req);
+  if (sessionToken !== null) {
+    return { token: sessionToken, transport: "cookie" };
   }
 
   return null;

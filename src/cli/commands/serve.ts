@@ -94,6 +94,7 @@ import {
   createDeviceAuthDeps,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
+import { handleDashboardSession } from "../../serve/dashboard_session_handler.ts";
 import { traceHttpRequests } from "../../serve/http_request_span.ts";
 import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -5689,18 +5690,21 @@ export const serveCommand = new Command()
           }
         }
 
-        // Device authorization endpoints (OAuth mode only)
+        // Browser dashboard sessions and OAuth device authorization.
+        const authPath = new URL(req.url).pathname;
+        const isDeviceAuthRequest = authPath === "/auth/device" ||
+          authPath === "/auth/device/token" ||
+          authPath === "/auth/dashboard/device" ||
+          authPath === "/auth/dashboard/device/token";
+        let deviceAuthDeps: ReturnType<typeof createDeviceAuthDeps> | undefined;
+        let deviceRemoteAddr: string | undefined;
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
-          const deviceRemoteAddr = trustProxy
+          deviceRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
-          const url = new URL(req.url);
-          if (
-            url.pathname === "/auth/device" ||
-            url.pathname === "/auth/device/token"
-          ) {
+          if (isDeviceAuthRequest) {
             const deviceRateCheck = checkIpBurst(deviceRemoteAddr);
             if (!deviceRateCheck.allowed) {
               return new Response(
@@ -5715,12 +5719,8 @@ export const serveCommand = new Command()
               );
             }
           }
-          const oauthConfig = {
-            ...authConfig,
-            oauthClientId: authConfig.oauthClientId!,
-          };
-          const deviceAuthDeps = createDeviceAuthDeps(
-            oauthConfig,
+          deviceAuthDeps = createDeviceAuthDeps(
+            { ...authConfig, oauthClientId: authConfig.oauthClientId },
             oauthClientSecret,
             resolvedRepoDir,
             repoContext,
@@ -5732,6 +5732,29 @@ export const serveCommand = new Command()
             connectionCtx.instanceId,
             deviceRemoteAddr,
           );
+        }
+        const dashboardSessionResponse = await handleDashboardSession(req, {
+          secure: tlsEnabled,
+          originAllowed: (request) => {
+            const origin = request.headers.get("origin");
+            if (origin === null) return true;
+            const requestHost = request.headers.get("host");
+            return requestHost !== null &&
+              origin === `${tlsEnabled ? "https" : "http"}://${requestHost}`;
+          },
+          deviceAuthDeps,
+          authenticate: async (token) => {
+            const result = await authenticateServerToken(
+              token,
+              resolvedRepoDir,
+              repoContext,
+            );
+            return result.ok;
+          },
+        });
+        if (dashboardSessionResponse !== null) return dashboardSessionResponse;
+
+        if (deviceAuthDeps) {
           const deviceAuthResponse = await handleDeviceAuth(
             req,
             deviceAuthDeps,

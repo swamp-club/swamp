@@ -55,7 +55,7 @@ export interface Timers {
 export interface ConnectionDeps<S extends SocketLike> extends Timers {
   createSocket(protocols: string[] | undefined, handlers: SocketHandlers): S;
   /** Asks serve over HTTP whether it accepts `token`. */
-  probe(token: string, signal: AbortSignal): Promise<ProbeResult>;
+  probe(token: string | null, signal: AbortSignal): Promise<ProbeResult>;
   /** One `/auth/info` request; null when serve did not answer usefully. */
   fetchAuthInfo(signal: AbortSignal): Promise<AuthInfo | null>;
   random?: () => number;
@@ -264,7 +264,7 @@ export function createConnection<S extends SocketLike>(
     };
     try {
       created = deps.createSocket(
-        presented !== null ? [`bearer.${presented}`] : undefined,
+        socketProtocols(presented, authMode),
         handlers,
       );
     } catch (err) {
@@ -353,14 +353,16 @@ export async function requestAuthInfo(
  */
 export async function requestTokenProbe(
   fetchFn: FetchFn,
-  token: string,
+  token: string | null,
   signal: AbortSignal,
 ): Promise<ProbeResult> {
   try {
-    const response = await fetchFn("/api/v1/health", {
-      headers: { Authorization: `Bearer ${token}` },
-      signal,
-    });
+    const response = await fetchFn(
+      "/api/v1/health",
+      !token
+        ? { signal }
+        : { headers: { Authorization: `Bearer ${token}` }, signal },
+    );
     await response.body?.cancel();
     return response.status;
   } catch {

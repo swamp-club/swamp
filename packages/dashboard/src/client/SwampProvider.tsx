@@ -46,9 +46,11 @@ import {
 interface SwampContextValue {
   connected: boolean;
   token: string | null;
+  sessionReady: boolean;
   authMode: AuthInfo["mode"] | null;
   verificationBaseUri: string | null;
-  login: (token: string) => void;
+  login: (token: string) => Promise<void>;
+  completeLogin: () => Promise<void>;
   logout: () => void;
   request: <T = Record<string, unknown>>(
     type: string,
@@ -66,8 +68,7 @@ interface SwampContextValue {
 }
 
 const SwampContext = createContext<SwampContextValue | null>(null);
-
-const TOKEN_KEY = "swamp-dashboard-token";
+const SESSION_CHANNEL = "swamp-dashboard-session";
 
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -76,8 +77,8 @@ function getWsUrl(): string {
 }
 
 const timers = {
-  setTimer: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
-  clearTimer: (id: number) => globalThis.clearTimeout(id),
+  setTimer: (fn: () => void, ms: number) => window.setTimeout(fn, ms),
+  clearTimer: (id: number) => window.clearTimeout(id),
 };
 
 const fetchAuthInfo = (signal: AbortSignal) =>
@@ -92,9 +93,8 @@ async function gunzipFrame(data: ArrayBuffer): Promise<string> {
 
 export function SwampProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
-  const [token, setToken] = useState<string | null>(
-    () => sessionStorage.getItem(TOKEN_KEY),
-  );
+  const [token, setToken] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [authMode, setAuthMode] = useState<AuthInfo["mode"] | null>(null);
   const [verificationBaseUri, setVerificationBaseUri] = useState<string | null>(
     null,
@@ -122,10 +122,40 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     applyAuthInfo,
   ]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    globalThis.fetch("/auth/dashboard/session", { signal: controller.signal })
+      .then(async (response) => {
+        await response.body?.cancel();
+        if (response.ok) setToken("");
+      })
+      .catch(() => {})
+      .finally(() => setSessionReady(true));
+    return () => controller.abort();
+  }, []);
+
   const clearToken = useCallback(() => {
-    sessionStorage.removeItem(TOKEN_KEY);
     setToken(null);
   }, []);
+
+  const sessionAuthenticated = useCallback(async () => {
+    const response = await globalThis.fetch("/auth/dashboard/session");
+    await response.body?.cancel();
+    if (!response.ok) throw new Error("Authentication failed");
+    setToken("");
+  }, []);
+
+  const notifyReauthenticated = useCallback(() => {
+    if (!("BroadcastChannel" in globalThis)) return;
+    const channel = new BroadcastChannel(SESSION_CHANNEL);
+    channel.postMessage("reauthenticated");
+    channel.close();
+  }, []);
+
+  const completeLogin = useCallback(async () => {
+    await sessionAuthenticated();
+    notifyReauthenticated();
+  }, [notifyReauthenticated, sessionAuthenticated]);
 
   // Built once, on first render: the callbacks it captures (clearToken,
   // applyAuthInfo, the refs) must stay stable, so keep their deps empty.
@@ -213,24 +243,56 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    if (!("BroadcastChannel" in globalThis)) return;
+    const channel = new BroadcastChannel(SESSION_CHANNEL);
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (event.data === "logout") {
+        connectionRef.current?.stop();
+        clearToken();
+        return;
+      }
+      if (event.data === "reauthenticated") {
+        connectionRef.current?.stop();
+        clearToken();
+        sessionAuthenticated().catch(() => {});
+      }
+    };
+    return () => channel.close();
+  }, [clearToken, sessionAuthenticated]);
+
+  useEffect(() => {
     const connection = connectionRef.current;
     if (!connection) return;
     if (authMode === "none") {
       connection.start({ token: null, authMode });
-    } else if (authMode !== null && token) {
+    } else if (sessionReady && authMode !== null && token !== null) {
       connection.start({ token, authMode });
     }
     return () => connection.stop();
-  }, [token, authMode]);
+  }, [token, authMode, sessionReady]);
 
-  const login = useCallback((newToken: string) => {
-    sessionStorage.setItem(TOKEN_KEY, newToken);
-    setToken(newToken);
-  }, []);
+  const login = useCallback(async (newToken: string) => {
+    const response = await globalThis.fetch("/auth/dashboard/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: newToken }),
+    });
+    await response.body?.cancel();
+    if (!response.ok) throw new Error("Authentication failed");
+    setToken("");
+    notifyReauthenticated();
+  }, [notifyReauthenticated]);
 
   const logout = useCallback(() => {
     connectionRef.current?.stop();
     clearToken();
+    if ("BroadcastChannel" in globalThis) {
+      const channel = new BroadcastChannel(SESSION_CHANNEL);
+      channel.postMessage("logout");
+      channel.close();
+    }
+    globalThis.fetch("/auth/dashboard/session", { method: "DELETE" })
+      .catch(() => {});
   }, [clearToken]);
 
   const send = useCallback(
@@ -278,9 +340,11 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       value={{
         connected,
         token,
+        sessionReady,
         authMode,
         verificationBaseUri,
         login,
+        completeLogin,
         logout,
         request,
         requestDetached,

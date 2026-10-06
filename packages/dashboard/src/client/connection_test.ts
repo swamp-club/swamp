@@ -550,6 +550,19 @@ Deno.test("socketProtocols: requests no subprotocol without a token", () => {
   assertEquals(socketProtocols("", "token"), undefined);
 });
 
+Deno.test("requestTokenProbe: uses browser credentials when no bearer token is supplied", async () => {
+  let seen: RequestInit | undefined;
+  await requestTokenProbe(
+    (_url, init) => {
+      seen = init;
+      return Promise.resolve(new Response(null, { status: 200 }));
+    },
+    "",
+    new AbortController().signal,
+  );
+  assertEquals(seen?.headers, undefined);
+});
+
 Deno.test("socketProtocols: presents no token before the auth mode is known", () => {
   assertEquals(socketProtocols("abc", null), undefined);
 });
