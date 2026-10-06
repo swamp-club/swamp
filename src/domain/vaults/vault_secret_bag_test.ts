@@ -656,14 +656,35 @@ Deno.test("VaultSecretBag.resolveForShell: mid-word quotes in here-document pros
   }
 });
 
-Deno.test("VaultSecretBag.resolveForShell: a here-document string opened mid-word around a vault.get use is not seen", () => {
-  // Accepted miss of the token-boundary rule (swamp-club#3106): a double
-  // quote opens a here-document string only at a token boundary.
+Deno.test("VaultSecretBag.resolveForShell: here-document strings attached to other text pair up on their line", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const ref = "${__SWAMP_VAULT_0}";
+  for (
+    const [line, expected] of [
+      [`mysql -u root -p"${s}" db`, `mysql -u root -p"${ref}" db`],
+      [`curl -H"Authorization: ${s}" x`, `curl -H"Authorization: ${ref}" x`],
+      [`cmd >"${s}"`, `cmd >"${ref}"`],
+      [`echo \${A}"${s}"`, `echo \${A}"${ref}"`],
+      [`echo 'prefix: '"${s}"`, `echo 'prefix: '"${ref}"`],
+      [`echo "a""${s}"`, `echo "a""${ref}"`],
+      [`echo $(x)"${s}"`, `echo $(x)"${ref}"`],
+      [`echo foo"bar ${s}"`, `echo foo"bar ${ref}"`],
+    ]
+  ) {
+    assertEquals(
+      bag.resolveForShell(`cat <<EOF > gen.sh\n${line}\nEOF`).command,
+      `cat <<EOF > gen.sh\n${expected}\nEOF`,
+    );
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForShell: a vault.get use inside single quotes in a here-document stays bare", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("v");
   assertEquals(
-    bag.resolveForShell(`cat <<EOF\necho foo"bar ${s}"\nEOF`).command,
-    `cat <<EOF\necho foo"bar "\${__SWAMP_VAULT_0}""\nEOF`,
+    bag.resolveForShell(`cat <<EOF > gen.sh\nPASS='${s}'\nEOF`).command,
+    `cat <<EOF > gen.sh\nPASS='\${__SWAMP_VAULT_0}'\nEOF`,
   );
 });
 

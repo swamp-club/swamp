@@ -83,7 +83,8 @@ Deno.test("VaultSecretBag.resolveForShell: singleQuoted reports a vault.get sent
 
 /**
  * A here-document body fragment. `inString` records, per vault.get use in
- * the fragment, whether the author placed it inside a double-quoted string.
+ * the fragment, whether the reference must stay bare: the author placed it
+ * inside a double- or single-quoted string.
  */
 interface BodyFragment {
   lines: string[];
@@ -118,6 +119,14 @@ const arbBodyFragment = fc.constantFrom<BodyFragment>(
   fragment([`echo "line1`, `${USE}"`], [true]),
   fragment([`echo "line1`, `it's in the string`, `${USE}"`], [true]),
   fragment([`msg="first`, `second ${USE} third"`], [true]),
+  fragment([`mysql -u root -p"${USE}" db`], [true]),
+  fragment([`cmd >"${USE}"`], [true]),
+  fragment([`echo 'prefix: '"${USE}"`], [true]),
+  fragment([`echo "a""${USE}"`], [true]),
+  fragment([`echo foo"bar ${USE}"`], [true]),
+  fragment([`PASS='${USE}'`], [true]),
+  fragment([`a 3" gap here`]),
+  fragment([`ENV API_KEY=${USE}`], [false]),
 );
 
 Deno.test("VaultSecretBag.resolveForShell: a vault.get use in a here-document body is bare exactly when the author's text has it in a double-quoted string", () => {
