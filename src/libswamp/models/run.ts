@@ -287,11 +287,18 @@ export interface ModelMethodRunInput {
   definitionName?: string;
   /**
    * With `definitionName`, the id of the definition the caller authorized,
-   * or null when it authorized a name no definition had. A run that then
-   * finds anything else under the name fails, so a rename between the
-   * caller's check and the run cannot redirect it (swamp-club#2672).
+   * or null when it authorized a name no definition had.
    */
   expectedDefinitionId?: string | null;
+  /**
+   * Called when the definition `definitionName` resolves to is not the one
+   * `expectedDefinitionId` names: renamed in between, or created by a
+   * concurrent run. The run proceeds on it only if this allows it, so the
+   * caller authorizes what actually runs (swamp-club#2672).
+   */
+  authorizeResolvedDefinition?: (
+    found: { definition: Definition; type: ModelType },
+  ) => boolean;
   runtimeTags?: Record<string, string>;
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
@@ -407,9 +414,12 @@ export async function* modelMethodRun(
                   ? deps.lookupDefinition
                   : async (name) => {
                     const found = await deps.lookupDefinition(name);
+                    // A definition gone since the check is refused: what
+                    // the run would create was never authorized.
                     if (
                       (found?.definition.id ?? null) !==
-                        input.expectedDefinitionId
+                        input.expectedDefinitionId &&
+                      !(found && input.authorizeResolvedDefinition?.(found))
                     ) {
                       throw new UserError(
                         `Model ${name} changed while the request was being ` +

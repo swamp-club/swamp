@@ -1408,3 +1408,58 @@ Deno.test("modelMethodRun: direct execution refuses a definition other than the 
   }
   assertEquals(executed, false);
 });
+
+Deno.test("modelMethodRun: direct execution proceeds on a different definition the caller authorizes", async () => {
+  const nsType = ModelType.create("@myorg/raced-model");
+  const modelDef: ModelDefinition = {
+    type: nsType,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  // A concurrent run created the definition after this one was authorized.
+  const winner = Definition.create({ name: "my-instance" });
+  const seen: string[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    lookupDefinition: (name: string) =>
+      Promise.resolve(
+        name === "my-instance" ? { definition: winner, type: nsType } : null,
+      ),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      return key === nsType.normalized ? modelDef : undefined;
+    },
+    createAndSaveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+  const run = (allow: boolean) =>
+    collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        modelIdOrName: "my-instance",
+        methodName: "run",
+        inputs: {},
+        lastEvaluated: false,
+        typeArg: "@myorg/raced-model",
+        definitionName: "my-instance",
+        expectedDefinitionId: null,
+        authorizeResolvedDefinition: (found) => {
+          seen.push(found.definition.id);
+          return allow;
+        },
+      }),
+    ).then(
+      (events) => JSON.stringify(events.find((e) => e.kind === "error") ?? ""),
+      (error) => String(error),
+    );
+  assertEquals((await run(true)).includes("changed while"), false);
+  assertStringIncludes(await run(false), "changed while the request was being");
+  assertEquals(seen.every((id) => id === winner.id), true);
+});

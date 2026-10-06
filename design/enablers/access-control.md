@@ -377,8 +377,11 @@ acts on the definition `definitionName` names, which a request may set apart
 from `modelIdOrName`. That definition is authorized too, by its canonical name
 and fields (or, before it exists, by the name to be created with the named
 type), after the requested model and the type; it is the one locked, recorded
-for cancel and attach, and audited. The run is handed that definition's id and
-fails if the name resolves to anything else by then (swamp-club#2672). Because
+for cancel and attach, and audited. The run is handed that definition's id. If
+the name resolves to another definition by then (renamed, or created by a
+concurrent run), the run proceeds only if the caller may run that one, judged
+the same way; a definition deleted in between fails the run
+(swamp-club#2672). Because
 a direct run can rewrite an existing definition's global arguments, it takes
 that definition's model lock whatever the method's kind. The
 name vaults are authorized under is tracked by swamp-club#2676.
@@ -721,7 +724,8 @@ from the AST evaluation parses) and
   a path where it was not, and every expression in a workflow step whose
   target it changed, since where an expression sits decides where its value
   goes. An expression left in place, under an unchanged step, is not
-  re-checked. A reference whose model
+  re-checked. Steps are identified by job and step name, so adding, removing
+  or reordering other steps does not count as moving them. A reference whose model
   is computed, a cross-model accessor (`data.query`, `data.findByTag`), the
   `model` map used whole or with a computed key, a `ns:` or `*:` prefix, more
   than 32 named models, or text the analyzer cannot parse needs `read` on all

@@ -427,6 +427,39 @@ function authorizeMethodRun(
 }
 
 /**
+ * Whether a direct run may proceed on `found`, a definition other than the
+ * one it was authorized on: renamed in between, or created by a concurrent
+ * run under the same name. It is judged as the run's own target would be,
+ * by its canonical name and fields, and as admin for a restricted or
+ * control-plane type (swamp-club#2672).
+ */
+function resolvedRunAllowed(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  methodName: string,
+  found: DefinitionLookupResult,
+  ctx: ConnectionContext,
+): boolean {
+  const resource = modelAccessResource(found);
+  const fields = { ...resource.fields, methodName };
+  return isAdminOnlyModelType(
+      undefined,
+      found.type.normalized,
+      ctx.authConfig.restrictedModelTypes,
+    )
+    ? isAuthorized(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields,
+    }, ctx)
+    : isAuthorized(socket, requestId, principal, "run", {
+      ...resource,
+      fields,
+    }, ctx);
+}
+
+/**
  * Authorizes the expressions in a run's inputs against the caller, who
  * wrote them (swamp-club#2755, swamp-club#2786): data they read must be
  * readable by the caller, and `env` needs write on the model, as authoring
@@ -631,6 +664,15 @@ export async function handleModelMethodRun(
                   expectedDefinitionId: target.run
                     ? target.run.definition?.definition.id ?? null
                     : undefined,
+                  authorizeResolvedDefinition: (found) =>
+                    resolvedRunAllowed(
+                      socket,
+                      requestId,
+                      principal,
+                      payload.methodName,
+                      found,
+                      ctx,
+                    ),
                   skipAllReports: payload.skipAllReports || isDirectExecution,
                   skipReportNames: payload.skipReportNames,
                   skipReportLabels: payload.skipReportLabels,
@@ -905,6 +947,15 @@ export async function handleModelMethodRun(
                   expectedDefinitionId: target.run
                     ? target.run.definition?.definition.id ?? null
                     : undefined,
+                  authorizeResolvedDefinition: (found) =>
+                    resolvedRunAllowed(
+                      socket,
+                      requestId,
+                      principal,
+                      payload.methodName,
+                      found,
+                      ctx,
+                    ),
                   skipAllReports: payload.skipAllReports || isDirectExecution,
                   skipReportNames: payload.skipReportNames,
                   skipReportLabels: payload.skipReportLabels,

@@ -35,8 +35,8 @@ import { scanExpressions } from "../expressions/expression_scanner.ts";
 import type { Workflow } from "./workflow.ts";
 
 /**
- * One thing a workflow step runs. `location` is the step it sits in
- * (`jobs[j].steps[k]`), absent for a target not tied to a step.
+ * One thing a workflow step runs. `location` is the step it sits in, as a
+ * scope by job and step name, absent for a target not tied to a step.
  */
 export type StepTarget =
   & { readonly location?: string }
@@ -59,12 +59,48 @@ export type StepTarget =
     }
   );
 
+/**
+ * Each step's scope: `jobs[<job>].steps[<step>]` by name, with an occurrence
+ * count for a repeated name, keyed by its index path (`jobs[j].steps[k]`).
+ * Scopes by name stay put when other steps are added, removed or reordered,
+ * so an edit elsewhere in the workflow does not look like it moved them.
+ */
+function stepScopes(workflow: Workflow): Map<string, string> {
+  const scopes = new Map<string, string>();
+  const jobsSeen = new Map<string, number>();
+  workflow.jobs.forEach((job, j) => {
+    const jobN = jobsSeen.get(job.name) ?? 0;
+    jobsSeen.set(job.name, jobN + 1);
+    const stepsSeen = new Map<string, number>();
+    job.steps.forEach((step, k) => {
+      const stepN = stepsSeen.get(step.name) ?? 0;
+      stepsSeen.set(step.name, stepN + 1);
+      scopes.set(
+        `jobs[${j}].steps[${k}]`,
+        `jobs[${JSON.stringify([job.name, jobN])}].steps[${
+          JSON.stringify([step.name, stepN])
+        }]`,
+      );
+    });
+  });
+  return scopes;
+}
+
+/** `path` with its leading `jobs[j].steps[k]` replaced by the step's scope. */
+function scopedPath(scopes: Map<string, string>, path: string): string {
+  const match = /^jobs\[\d+\]\.steps\[\d+\]/.exec(path);
+  if (!match) return path;
+  const scope = scopes.get(match[0]);
+  return scope ? scope + path.slice(match[0].length) : path;
+}
+
 /** Every step target in `workflow`, one per step that runs something. */
 export function workflowStepTargets(workflow: Workflow): StepTarget[] {
   const targets: StepTarget[] = [];
+  const scopes = stepScopes(workflow);
   workflow.jobs.forEach((job, j) =>
     job.steps.forEach((step, k) => {
-      const location = `jobs[${j}].steps[${k}]`;
+      const location = scopes.get(`jobs[${j}].steps[${k}]`)!;
       const task = step.task.data;
       if (task.type === "model_method") {
         if (task.modelIdOrName) {
@@ -97,7 +133,9 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
 
 /**
  * Every expression a run of `workflow` evaluates as authored: its `${{ }}`
- * templates and its assert steps' bare predicates.
+ * templates and its assert steps' bare predicates. Paths inside a step are
+ * given by the step's scope (job and step name), so they match across edits
+ * that add, remove or reorder other steps.
  */
 export function analyzeWorkflowExpressions(
   workflow: Workflow,
@@ -115,7 +153,11 @@ export function analyzeWorkflowExpressions(
       }
     })
   );
-  return analyzeContentExpressions(workflow.toData(), asserts);
+  const scopes = stepScopes(workflow);
+  return analyzeContentExpressions(workflow.toData(), asserts).map((e) => ({
+    ...e,
+    paths: e.paths.map((path) => scopedPath(scopes, path)),
+  }));
 }
 
 /**

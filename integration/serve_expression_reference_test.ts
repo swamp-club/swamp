@@ -1067,3 +1067,46 @@ Deno.test("serve expressions: a name nothing owns yet needs read on all data", a
     );
   });
 });
+
+Deno.test("serve expressions: deleting an unrelated step leaves the others' stored references alone", async () => {
+  await withStepFixtures(async (f) => {
+    const flow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "ordered",
+        version: 1,
+        jobs: [{
+          name: "main",
+          steps: [
+            {
+              name: "first",
+              task: {
+                type: "model_method",
+                modelIdOrName: "dev-db",
+                methodName: "noop",
+              },
+            },
+            {
+              name: "admin-step",
+              task: {
+                type: "model_method",
+                modelIdOrName: "dev-db",
+                methodName: "noop",
+                inputs: {
+                  x: '${{ data.latest("prod-db", "state").attributes.value }}',
+                },
+              },
+            },
+          ],
+        }],
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+    await f.repo.repoContext.workflowRepo.save(flow);
+    assertAllowed(
+      await editWorkflow(f.ctx, flow, (data) => {
+        data.jobs[0].steps.shift();
+      }),
+      "deleting the earlier step",
+    );
+  });
+});

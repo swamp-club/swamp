@@ -61,19 +61,19 @@ Deno.test("workflowStepTargets: lists model, direct and nested workflow steps", 
       kind: "model",
       modelIdOrName: "db",
       methodName: "get",
-      location: "jobs[0].steps[0]",
+      location: 'jobs[["main",0]].steps[["s0",0]]',
     },
     {
       kind: "direct",
       modelType: "@acme/thing",
       modelName: "t1",
       methodName: "create",
-      location: "jobs[0].steps[1]",
+      location: 'jobs[["main",0]].steps[["s1",0]]',
     },
     {
       kind: "workflow",
       workflowIdOrName: "child",
-      location: "jobs[0].steps[2]",
+      location: 'jobs[["main",0]].steps[["s2",0]]',
     },
   ]);
 });
@@ -234,4 +234,36 @@ Deno.test("stepRetargetSourcesChanged: inputs and forEach changes count, a retag
     ),
     true,
   );
+});
+
+Deno.test("step scopes: removing an earlier step leaves later steps' scopes alone", () => {
+  const task = {
+    type: "model_method",
+    modelIdOrName: "${{ self.e }}",
+    methodName: "get",
+    inputs: { x: '${{ data.latest("prod", "s") }}' },
+  };
+  const make = (names: string[]) =>
+    Workflow.fromData(
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        name: "w",
+        version: 1,
+        jobs: [{
+          name: "main",
+          steps: names.map((name) => ({ name, task })),
+        }],
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+  const before = make(["first", "keep"]);
+  const after = make(["keep"]);
+  const keyOf = (w: Workflow) =>
+    workflowStepTargets(w).filter((t) => t.location?.includes('"keep"'))
+      .map(stepTargetKey);
+  assertEquals(keyOf(after), keyOf(before));
+  const pathsOf = (w: Workflow) =>
+    analyzeWorkflowExpressions(w).flatMap((e) =>
+      e.paths.filter((p) => p.includes('"keep"'))
+    );
+  assertEquals(pathsOf(after), pathsOf(before));
 });
