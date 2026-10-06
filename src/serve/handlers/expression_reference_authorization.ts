@@ -207,8 +207,8 @@ function memo(
  * return. The data accessors match records by the model name stored on
  * them, and fall back to the definition with that name or id, so both count:
  * the current owner of every record stored under the name, and the
- * definition the name resolves to. A name that matches neither is judged as
- * sent. Deny wins.
+ * definition the name resolves to. A name that matches neither needs read
+ * on all data. Deny wins.
  */
 async function dataReadable(
   socket: WebSocket,
@@ -259,7 +259,16 @@ async function dataReadable(
     resources.push(modelAccessResource(definition, "data"));
   }
   if (resources.length === 0) {
-    resources.push(unresolvedAccessResource("data", target));
+    // Nothing owns the name yet, so the reference will read whatever is
+    // stored under it later, by anyone: judge it as reading any data.
+    return isAuthorizedForAll(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "data",
+      ctx,
+    );
   }
   return resources.every((resource) =>
     isAuthorized(socket, requestId, principal, "read", resource, ctx)

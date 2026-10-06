@@ -708,13 +708,20 @@ from the AST evaluation parses) and
 | Supplied by                        | Checked                                                      |
 | ---------------------------------- | ------------------------------------------------------------ |
 | `model.create`                     | every expression in its global arguments                     |
-| `model.edit`, `workflow.edit`      | each expression whose text the stored content does not hold  |
+| `model.edit`, `workflow.edit`      | each expression it puts somewhere new (see below)            |
 | `model.method.run` inputs          | every expression in the inputs                               |
 | runs, evaluate, validate           | nothing: stored content is the author's                      |
 
 - **Data.** A reference to a named model needs `read` on the data it can
   return: every current owner of records stored under that name, and every
-  definition with that name or id; deny wins. A reference whose model
+  definition with that name or id; deny wins. A name nothing owns yet needs
+  `read` on all data, since it will read whatever is stored under it later.
+- **What an edit puts somewhere new.** An edit is checked for every
+  expression whose text is new, every stored expression it moves or copies to
+  a path where it was not, and every expression in a workflow step whose
+  target it changed, since where an expression sits decides where its value
+  goes. An expression left in place, under an unchanged step, is not
+  re-checked. A reference whose model
   is computed, a cross-model accessor (`data.query`, `data.findByTag`), the
   `model` map used whole or with a computed key, a `ns:` or `*:` prefix, more
   than 32 named models, or text the analyzer cannot parse needs `read` on all
@@ -757,9 +764,8 @@ What this does not cover, by design:
   `self.globalArguments` therefore reads whatever model the runner names, like
   one computed from `inputs`. Don't compute a data target from a global
   argument when runners shouldn't choose the model.
-- The check runs when text is saved. A reference to a name that nothing owns
-  today reads data later stored under that name, and expressions stored before
-  this check existed are not re-checked.
+- The check runs when text is saved. Expressions stored before this check
+  existed are not re-checked.
 - `vault.get` in run inputs is masked in output but its value reaches the
   method; vault authorization is swamp-club#2676.
 

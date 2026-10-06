@@ -257,15 +257,39 @@ Deno.test("expressionsAddedByEdit: a retarget re-checks only self- or inputs-com
   assertEquals(expressionsAddedByEdit(before, after, false), []);
 });
 
-Deno.test("expressionsAddedByEdit: a self-computed expression at a new path is checked", () => {
+Deno.test("expressionsAddedByEdit: any stored expression at a new path is checked", () => {
   const computed = '${{ data.latest(self.item, "s") }}';
   const literal = '${{ data.latest("dev", "s") }}';
-  const before = contentOf({ a: computed, b: literal });
-  // The same text copied to another place, where self may differ.
-  const after = contentOf({ a: computed, c: computed, b: literal, d: literal });
+  const kept = '${{ data.latest("other", "s") }}';
+  const before = contentOf({ a: computed, b: literal, k: kept });
+  // Copied to another place, where self or the destination may differ.
+  const after = contentOf({
+    a: computed,
+    c: computed,
+    b: literal,
+    d: literal,
+    k: kept,
+  });
   assertEquals(
-    expressionsAddedByEdit(before, after, false).map((e) => e.raw),
-    [computed],
+    expressionsAddedByEdit(before, after, false).map((e) => e.raw).sort(),
+    [computed, literal].sort(),
+  );
+});
+
+Deno.test("expressionsAddedByEdit: an expression under a changed scope is checked in place", () => {
+  const literal = '${{ data.latest("prod", "s") }}';
+  const content = contentOf({
+    jobs: [{ steps: [{ task: { inputs: { p: literal } } }] }],
+  });
+  assertEquals(expressionsAddedByEdit(content, content, false), []);
+  assertEquals(
+    expressionsAddedByEdit(content, content, false, ["jobs[0].steps[0]"])
+      .map((e) => e.raw),
+    [literal],
+  );
+  assertEquals(
+    expressionsAddedByEdit(content, content, false, ["jobs[0].steps[1]"]),
+    [],
   );
 });
 

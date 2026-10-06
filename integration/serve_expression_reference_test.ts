@@ -971,3 +971,99 @@ Deno.test("serve expressions: a self-computed step target placed in another step
     }
   });
 });
+
+Deno.test("serve expressions: a stored literal reference sent somewhere new is checked", async () => {
+  await withStepFixtures(async (f) => {
+    await saveModel(f.repo, "echo-db");
+    const creds = '${{ data.latest("prod-db", "state").attributes.value }}';
+    const flow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "migrate",
+        version: 1,
+        jobs: [{
+          name: "main",
+          steps: [{
+            name: "m",
+            task: {
+              type: "model_method",
+              modelIdOrName: "dev-db",
+              methodName: "noop",
+              inputs: { password: creds },
+            },
+          }],
+        }],
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+    await f.repo.repoContext.workflowRepo.save(flow);
+    assertRefused(
+      await editWorkflow(f.ctx, flow, (data) => {
+        (data.jobs[0].steps[0].task as Record<string, unknown>).modelIdOrName =
+          "echo-db";
+      }),
+      "the step holding it now runs another model",
+    );
+    assertRefused(
+      await editWorkflow(
+        f.ctx,
+        flow,
+        addStep({
+          type: "model_method",
+          modelIdOrName: "echo-db",
+          methodName: "noop",
+          inputs: { leak: creds },
+        }),
+      ),
+      "copied into a new step",
+    );
+    assertAllowed(
+      await editWorkflow(f.ctx, flow, (data) => {
+        data.tags = { team: "a" };
+      }),
+      "an unrelated edit leaves it alone",
+    );
+
+    // A model edit that moves it to another field is checked too.
+    await saveWithArgs(f.repo, "holder", { dbPassword: creds });
+    const holder = (await f.repo.repoContext.definitionRepo.findByNameGlobal(
+      "holder",
+    ))!.definition;
+    assertRefused(
+      await sendRequest(
+        f.ctx,
+        editRequest(holder, {
+          globalArguments: { dbPassword: creds, shown: creds },
+        }),
+      ),
+      "moved to another model field",
+    );
+  });
+});
+
+Deno.test("serve expressions: a name nothing owns yet needs read on all data", async () => {
+  await withFixtures(async (f) => {
+    const create = (name: string, ref: string) =>
+      sendRequest(
+        f.ctx,
+        request("model.create", {
+          typeArg: f.repo.modelType.normalized,
+          name,
+          globalArguments: { x: `\${{ data.latest("${ref}", "state") }}` },
+        }),
+      );
+    assertRefused(await create("waits", "not-yet-created"), "unowned name");
+    assertAllowed(
+      await sendRequest(
+        createServeCtx(f.repo, GRANTS.slice(0, 3)),
+        request("model.create", {
+          typeArg: f.repo.modelType.normalized,
+          name: "waits",
+          globalArguments: {
+            x: '${{ data.latest("not-yet-created", "state") }}',
+          },
+        }),
+      ),
+      "unowned name with no data deny",
+    );
+  });
+});

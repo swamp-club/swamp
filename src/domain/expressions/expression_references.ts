@@ -196,32 +196,44 @@ export function analyzeContentExpressions(
 }
 
 /**
- * The expressions an edit must be authorized for (swamp-club#2755):
+ * The expressions an edit must be authorized for (swamp-club#2755). Where an
+ * expression sits decides where its value goes, so it is checked whenever
+ * the edit puts it somewhere new:
  *
- * - every expression whose raw text the stored content does not hold;
- * - an expression that reads data through a target computed from `self` or
- *   `inputs`, when it appears at a path where the stored content did not
- *   have it, since what `self` holds depends on where it is evaluated;
- * - every such expression, when `retargeted`: the edit changed a value
- *   `self` or `inputs` reads, expression text included, so a stored target
- *   computed from it can point elsewhere.
+ * - its raw text is not in the stored content;
+ * - it appears at a path where the stored content did not have it (moved or
+ *   copied, to a field or step whose output the writer may read);
+ * - it sits under one of `changedScopes`, path prefixes whose destination
+ *   the edit changed (a workflow step now running a different target);
+ * - when `retargeted` (the edit changed a value `self` or `inputs` reads),
+ *   it reads data through a target computed from `self` or `inputs`.
  *
- * An expression with a literal target is never re-checked, so an edit to an
- * unrelated field of a model that already reads other data is unaffected.
+ * An expression left where it was, under an unchanged destination, is not
+ * re-checked, so an edit to an unrelated field of a model or workflow that
+ * already reads other data is unaffected.
  */
 export function expressionsAddedByEdit(
   before: readonly AnalyzedExpression[],
   after: readonly AnalyzedExpression[],
   retargeted: boolean,
+  changedScopes: readonly string[] = [],
 ): AnalyzedExpression[] {
   const stored = new Map(before.map((e) => [e.raw, new Set(e.paths)]));
+  const inChangedScope = (path: string) =>
+    changedScopes.some((scope) =>
+      path === scope || path.startsWith(`${scope}.`) ||
+      path.startsWith(`${scope}[`)
+    );
   return after.filter((e) => {
     const storedPaths = stored.get(e.raw);
     if (!storedPaths) return true;
-    if (!e.references.dataWide || !e.references.readsSelfOrInputs) {
-      return false;
+    if (
+      e.paths.some((path) => !storedPaths.has(path) || inChangedScope(path))
+    ) {
+      return true;
     }
-    return retargeted || e.paths.some((path) => !storedPaths.has(path));
+    return retargeted && e.references.dataWide &&
+      e.references.readsSelfOrInputs;
   });
 }
 

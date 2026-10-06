@@ -266,10 +266,19 @@ async function authorizeWorkflowEdit(
   // A workflow's inputs.* and self.* come from its input defaults and its
   // steps' forEach, so only a change there can retarget what is stored.
   const retargetable = stepRetargetSourcesChanged(before, after);
+  // A step now running a different target sends its inputs somewhere new,
+  // so every expression in it is checked again.
+  const storedAt = new Map(
+    workflowStepTargets(before).map((t) => [t.location, stepTargetKey(t)]),
+  );
+  const retargetedSteps = workflowStepTargets(after)
+    .filter((t) => storedAt.get(t.location) !== stepTargetKey(t))
+    .flatMap((t) => (t.location ? [t.location] : []));
   const added = expressionsAddedByEdit(
     analyzeWorkflowExpressions(before),
     analyzeWorkflowExpressions(after),
     retargetable,
+    retargetedSteps,
   );
   const refusal = await authorizeExpressionReferences(
     socket,
