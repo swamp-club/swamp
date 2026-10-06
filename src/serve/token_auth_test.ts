@@ -22,6 +22,7 @@ import {
   authenticateServerToken,
   classifyRedeemError,
   DASHBOARD_SESSION_COOKIE,
+  extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
   type ServerTokenAuthDeps,
@@ -116,29 +117,27 @@ Deno.test("extractWebSocketToken: extracts from query parameter", () => {
   assertEquals(result, { token: "mytoken.secret123", transport: "query" });
 });
 
-Deno.test("extractWebSocketToken: extracts the dashboard session cookie", () => {
+Deno.test("extractDashboardSessionId: extracts the dashboard session cookie", () => {
   const req = makeReq("http://localhost:4000/", {
     cookie: `${DASHBOARD_SESSION_COOKIE}=mytoken.secret123`,
   });
-  assertEquals(extractWebSocketToken(req), {
-    token: "mytoken.secret123",
-    transport: "cookie",
-  });
-});
-
-Deno.test("extractWebSocketToken: ignores an invalid dashboard session cookie", () => {
-  const req = makeReq("http://localhost:4000/", {
-    cookie: `${DASHBOARD_SESSION_COOKIE}=%E0%A4%A`,
-  });
+  assertEquals(extractDashboardSessionId(req), "mytoken.secret123");
   assertEquals(extractWebSocketToken(req), null);
 });
 
-Deno.test("extractWebSocketToken: rejects duplicate dashboard session cookies", () => {
+Deno.test("extractDashboardSessionId: ignores an invalid dashboard session cookie", () => {
+  const req = makeReq("http://localhost:4000/", {
+    cookie: `${DASHBOARD_SESSION_COOKIE}=%E0%A4%A`,
+  });
+  assertEquals(extractDashboardSessionId(req), null);
+});
+
+Deno.test("extractDashboardSessionId: rejects duplicate dashboard session cookies", () => {
   const req = makeReq("http://localhost:4000/", {
     cookie:
       `${DASHBOARD_SESSION_COOKIE}=first.secret; ${DASHBOARD_SESSION_COOKIE}=second.secret`,
   });
-  assertEquals(extractWebSocketToken(req), null);
+  assertEquals(extractDashboardSessionId(req), null);
 });
 
 Deno.test("extractWebSocketToken: returns null when no token present", () => {

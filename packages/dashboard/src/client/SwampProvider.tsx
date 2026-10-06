@@ -72,6 +72,20 @@ const SwampContext = createContext<SwampContextValue | null>(null);
 const SESSION_CHANNEL = "swamp-dashboard-session";
 const dashboardSession = createDashboardSessionClient(globalThis.fetch);
 
+interface DashboardSessionEvent {
+  readonly type: "logout" | "reauthenticated";
+  readonly sourceId: string;
+}
+
+function isDashboardSessionEvent(
+  value: unknown,
+): value is DashboardSessionEvent {
+  return typeof value === "object" && value !== null &&
+    "type" in value && "sourceId" in value &&
+    (value.type === "logout" || value.type === "reauthenticated") &&
+    typeof value.sourceId === "string";
+}
+
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // Ask serve to send large responses as gzip binary frames.
@@ -103,6 +117,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   );
   const socketRef = useRef<WebSocket | null>(null);
   const sessionGenerationRef = useRef(0);
+  const sessionSourceIdRef = useRef(crypto.randomUUID());
   const pendingRef = useRef<
     Map<
       string,
@@ -165,7 +180,12 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   const notifyReauthenticated = useCallback(() => {
     if (!("BroadcastChannel" in globalThis)) return;
     const channel = new BroadcastChannel(SESSION_CHANNEL);
-    channel.postMessage("reauthenticated");
+    channel.postMessage(
+      {
+        type: "reauthenticated",
+        sourceId: sessionSourceIdRef.current,
+      } satisfies DashboardSessionEvent,
+    );
     channel.close();
   }, []);
 
@@ -263,12 +283,18 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     if (!("BroadcastChannel" in globalThis)) return;
     const channel = new BroadcastChannel(SESSION_CHANNEL);
     channel.onmessage = (event: MessageEvent<unknown>) => {
-      if (event.data === "logout") {
+      if (
+        !isDashboardSessionEvent(event.data) ||
+        event.data.sourceId === sessionSourceIdRef.current
+      ) {
+        return;
+      }
+      if (event.data.type === "logout") {
         connectionRef.current?.stop();
         clearToken();
         return;
       }
-      if (event.data === "reauthenticated") {
+      if (event.data.type === "reauthenticated") {
         connectionRef.current?.stop();
         clearToken();
         sessionAuthenticated().catch(() => {});
@@ -297,14 +323,24 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   }, [notifyReauthenticated]);
 
   const logout = useCallback(() => {
-    connectionRef.current?.stop();
-    clearToken();
-    if ("BroadcastChannel" in globalThis) {
-      const channel = new BroadcastChannel(SESSION_CHANNEL);
-      channel.postMessage("logout");
-      channel.close();
-    }
-    dashboardSession.clear().catch(() => {});
+    dashboardSession.clear()
+      .then(() => {
+        connectionRef.current?.stop();
+        clearToken();
+        if ("BroadcastChannel" in globalThis) {
+          const channel = new BroadcastChannel(SESSION_CHANNEL);
+          channel.postMessage(
+            {
+              type: "logout",
+              sourceId: sessionSourceIdRef.current,
+            } satisfies DashboardSessionEvent,
+          );
+          channel.close();
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("swamp: could not log out of the dashboard", error);
+      });
   }, [clearToken]);
 
   const send = useCallback(

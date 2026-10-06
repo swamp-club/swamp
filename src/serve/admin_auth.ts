@@ -24,7 +24,6 @@ import type {
 } from "../domain/access/mod.ts";
 import {
   authenticateServerToken,
-  extractDashboardSessionToken,
   type ServerTokenAuthResult,
 } from "./token_auth.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
@@ -73,14 +72,15 @@ export type TokenAuthResult =
   | { ok: false; response: Response };
 
 /**
- * Authenticates a request's bearer token or dashboard-session cookie with the
- * same rate limits as `authenticateAdmin`, but grants any valid token: it
- * answers only 401 or 429, never 403.
+ * Authenticates a request's bearer token with the same rate limits as
+ * `authenticateAdmin`, but grants any valid token: it answers only 401 or 429,
+ * never 403.
  */
 export async function authenticateToken(
   req: Request,
   remoteAddr: string,
   deps: AdminAuthDeps,
+  presentedToken?: string | null,
 ): Promise<TokenAuthResult> {
   const clientAddr = deps.trustProxy
     ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
@@ -114,7 +114,7 @@ export async function authenticateToken(
   const authHeader = req.headers.get("authorization");
   const token = authHeader?.startsWith("Bearer ")
     ? authHeader.slice(7)
-    : extractDashboardSessionToken(req);
+    : presentedToken;
 
   if (!token) {
     return {

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   createDashboardSessionClient,
   DASHBOARD_SESSION_PATH,
@@ -31,10 +31,9 @@ Deno.test("createDashboardSessionClient: restores only an accepted cookie sessio
   });
 
   assertEquals(await client.restore(), true);
-  assertEquals(calls, [{
-    input: DASHBOARD_SESSION_PATH,
-    init: { signal: undefined },
-  }]);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].input, DASHBOARD_SESSION_PATH);
+  assertEquals(calls[0].init?.signal instanceof AbortSignal, true);
 });
 
 Deno.test("createDashboardSessionClient: reports an absent or revoked session", async () => {
@@ -55,6 +54,7 @@ Deno.test("createDashboardSessionClient: exchanges a manually entered token only
   assertEquals(seen?.method, "POST");
   assertEquals(seen?.headers, { "content-type": "application/json" });
   assertEquals(seen?.body, JSON.stringify({ token: "admin.secret" }));
+  assertEquals(seen?.signal instanceof AbortSignal, true);
 });
 
 Deno.test("createDashboardSessionClient: clears the cookie session without a credential", async () => {
@@ -65,5 +65,17 @@ Deno.test("createDashboardSessionClient: clears the cookie session without a cre
   });
 
   await client.clear();
-  assertEquals(seen, { method: "DELETE" });
+  assertEquals(seen?.method, "DELETE");
+  assertEquals(seen?.signal instanceof AbortSignal, true);
+});
+
+Deno.test("createDashboardSessionClient: describes an origin rejection to the login form", async () => {
+  const client = createDashboardSessionClient(() =>
+    Promise.resolve(new Response(null, { status: 403 }))
+  );
+  await assertRejects(
+    () => client.exchange("admin.secret"),
+    Error,
+    "origin check",
+  );
 });

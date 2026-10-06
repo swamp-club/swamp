@@ -122,8 +122,16 @@ function OAuthLogin(
     setState("starting");
     setError(null);
 
-    fetch("/auth/dashboard/device", { method: "POST" })
+    fetch("/auth/dashboard/device", {
+      method: "POST",
+      signal: AbortSignal.timeout(5_000),
+    })
       .then((r) => {
+        if (r.status === 403) {
+          throw new Error(
+            "Login rejected by server origin check — see serve logs",
+          );
+        }
         if (!r.ok) throw new Error("Failed to start login");
         return r.json();
       })
@@ -155,7 +163,7 @@ function OAuthLogin(
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode: grant.deviceCode }),
-          signal: ac.signal,
+          signal: AbortSignal.any([ac.signal, AbortSignal.timeout(5_000)]),
         });
 
         if (resp.status === 202) return;

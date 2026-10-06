@@ -19,15 +19,92 @@
 
 import {
   DASHBOARD_SESSION_COOKIE,
-  extractDashboardSessionToken,
+  extractDashboardSessionId,
 } from "./token_auth.ts";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
 } from "./device_auth_handler.ts";
+import { generateOpaqueToken } from "../domain/remote/session_credential.ts";
+
+export interface DashboardSessionStore {
+  create(serverToken: string, origin: string): string;
+  get(sessionId: string): DashboardSession | null;
+  delete(sessionId: string): void;
+}
+
+export interface DashboardSession {
+  readonly serverToken: string;
+  /** Exact origin that established this browser session. */
+  readonly origin: string;
+}
+
+/** Returns the canonical HTTP(S) origin, or null for malformed input. */
+export function normalizeDashboardOrigin(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves a dashboard session only for the exact origin that created it.
+ * This prevents a same-site page on another port from using the ambient
+ * cookie during a WebSocket upgrade.
+ */
+export function resolveDashboardSessionForOrigin(
+  sessionId: string,
+  origin: string | null,
+  sessions: DashboardSessionStore,
+): string | null {
+  const session = sessions.get(sessionId);
+  const normalizedOrigin = origin === null
+    ? null
+    : normalizeDashboardOrigin(origin);
+  if (
+    session === null || normalizedOrigin === null ||
+    session.origin !== normalizedOrigin
+  ) {
+    return null;
+  }
+  return session.serverToken;
+}
+
+/**
+ * Per-serve-instance mapping of opaque browser sessions to server tokens.
+ *
+ * Browser cookies contain only a random session identifier. A serve restart
+ * deliberately drops these sessions; the underlying server token continues to
+ * follow its existing expiry and revocation rules.
+ */
+export class InMemoryDashboardSessionStore implements DashboardSessionStore {
+  readonly #sessions = new Map<string, DashboardSession>();
+
+  create(serverToken: string, origin: string): string {
+    const sessionId = generateOpaqueToken();
+    this.#sessions.set(sessionId, { serverToken, origin });
+    return sessionId;
+  }
+
+  get(sessionId: string): DashboardSession | null {
+    return this.#sessions.get(sessionId) ?? null;
+  }
+
+  delete(sessionId: string): void {
+    this.#sessions.delete(sessionId);
+  }
+}
+
+export type DashboardSessionAuthentication =
+  | { ok: true }
+  | { ok: false; response: Response };
 
 export interface DashboardSessionDeps {
-  authenticate(token: string): Promise<boolean>;
+  authenticate(token: string): Promise<DashboardSessionAuthentication>;
+  sessions: DashboardSessionStore;
   secure: boolean;
   /** Browser-origin requests must be same-origin before changing a session. */
   originAllowed?(req: Request): boolean;
@@ -44,10 +121,18 @@ function expiredCookie(secure: boolean): string {
   return `${cookie("", secure)}; Max-Age=0`;
 }
 
-function sessionCreatedResponse(token: string, secure: boolean): Response {
+function sessionCreatedResponse(
+  token: string,
+  origin: string,
+  req: Request,
+  deps: DashboardSessionDeps,
+): Response {
+  const previousSessionId = extractDashboardSessionId(req);
+  if (previousSessionId !== null) deps.sessions.delete(previousSessionId);
+  const sessionId = deps.sessions.create(token, origin);
   return new Response(null, {
     status: 204,
-    headers: { "set-cookie": cookie(token, secure) },
+    headers: { "set-cookie": cookie(sessionId, deps.secure) },
   });
 }
 
@@ -64,7 +149,15 @@ export async function handleDashboardSession(
   ) {
     return null;
   }
-  if (deps.originAllowed && !deps.originAllowed(req)) {
+  const requiresOrigin = req.method !== "GET";
+  const receivedOrigin = req.headers.get("origin");
+  const origin = receivedOrigin === null
+    ? null
+    : normalizeDashboardOrigin(receivedOrigin);
+  if (
+    requiresOrigin &&
+    (origin === null || (deps.originAllowed && !deps.originAllowed(req)))
+  ) {
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -73,11 +166,14 @@ export async function handleDashboardSession(
     return await handleDeviceAuth(req, deps.deviceAuthDeps, {
       startPath: "/auth/dashboard/device",
       tokenPath: "/auth/dashboard/device/token",
-      onAuthenticated: (token) => sessionCreatedResponse(token, deps.secure),
+      onAuthenticated: (token) =>
+        sessionCreatedResponse(token, origin!, req, deps),
     });
   }
 
   if (req.method === "DELETE") {
+    const sessionId = extractDashboardSessionId(req);
+    if (sessionId !== null) deps.sessions.delete(sessionId);
     return new Response(null, {
       status: 204,
       headers: { "set-cookie": expiredCookie(deps.secure) },
@@ -85,8 +181,11 @@ export async function handleDashboardSession(
   }
 
   if (req.method === "GET") {
-    const token = extractDashboardSessionToken(req);
-    if (token === null || !(await deps.authenticate(token))) {
+    const sessionId = extractDashboardSessionId(req);
+    const session = sessionId === null ? null : deps.sessions.get(sessionId);
+    if (session === null) return new Response(null, { status: 401 });
+    const result = await deps.authenticate(session.serverToken);
+    if (!result.ok) {
       return new Response(null, { status: 401 });
     }
     return Response.json({ authenticated: true });
@@ -104,8 +203,7 @@ export async function handleDashboardSession(
   if (typeof body.token !== "string" || body.token.length === 0) {
     return new Response("Invalid token", { status: 400 });
   }
-  if (!(await deps.authenticate(body.token))) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-  return sessionCreatedResponse(body.token, deps.secure);
+  const result = await deps.authenticate(body.token);
+  if (!result.ok) return result.response;
+  return sessionCreatedResponse(body.token, origin!, req, deps);
 }

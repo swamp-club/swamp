@@ -41,6 +41,7 @@ import {
   readTlsFile,
   resolveServeStartupSettings,
   shouldWarnGroupRefreshIgnored,
+  validateDashboardSessionOrigin,
   validateWebSocketOrigin,
 } from "./serve.ts";
 import {
@@ -349,6 +350,34 @@ Deno.test("assertOffLoopbackSecurity: IPv6 loopback ::1 with no TLS and no auth 
 });
 
 // --- WebSocket origin/host validation ---
+
+Deno.test("validateDashboardSessionOrigin: requires the exact browser origin including port", () => {
+  const request = new Request("http://localhost:9090/auth/dashboard/session", {
+    headers: {
+      host: "localhost:9090",
+      origin: "http://localhost:3000",
+    },
+  });
+  const result = validateDashboardSessionOrigin(request, false, false);
+  assertEquals(result.allowed, false);
+});
+
+Deno.test("validateDashboardSessionOrigin: honors public HTTPS proxy headers", () => {
+  const request = new Request("http://127.0.0.1:9090/auth/dashboard/session", {
+    headers: {
+      host: "127.0.0.1:9090",
+      origin: "https://swamp.example.test",
+      "x-forwarded-host": "swamp.example.test",
+      "x-forwarded-proto": "https",
+    },
+  });
+  const result = validateDashboardSessionOrigin(request, false, true);
+  assertEquals(result, {
+    allowed: true,
+    origin: "https://swamp.example.test",
+    secure: true,
+  });
+});
 
 Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () => {
   const result = validateWebSocketOrigin(

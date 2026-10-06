@@ -140,6 +140,16 @@ Deno.test("authenticateToken: returns 401 without a bearer token", async () => {
   if (!result.ok) assertEquals(result.response.status, 401);
 });
 
+Deno.test("authenticateToken: does not treat a dashboard session cookie as an admin credential", async () => {
+  const deps = makeDeps();
+  const req = new Request("http://localhost/api/v1/cancel", {
+    headers: { cookie: "swamp-dashboard-session=opaque-session-id" },
+  });
+  const result = await authenticateToken(req, "127.0.0.1", deps);
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.response.status, 401);
+});
+
 Deno.test("authenticateToken: returns 401 with an invalid token", async () => {
   const deps = makeDeps();
   const req = new Request("http://localhost/api/v1/health/stream", {
