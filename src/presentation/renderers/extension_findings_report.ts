@@ -110,8 +110,15 @@ export function buildFindingsReport(
   }
   for (const w of findings.reviewWarnings) {
     if (w.files && w.files.length > 0) {
+      // One entry per file the collapsed finding stands for, each with the
+      // per-file wording so the advice reads per file.
       for (const file of w.files) {
-        forNextTime.push(forNextTimeEntry({ ...w, file }, manifestDir));
+        forNextTime.push(forNextTimeEntry({
+          ...w,
+          file,
+          message: "No sibling `_test.ts` found — cover both success and " +
+            "failure paths with unit tests before publishing.",
+        }, manifestDir));
       }
     } else {
       forNextTime.push(forNextTimeEntry(w, manifestDir));

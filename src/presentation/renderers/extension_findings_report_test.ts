@@ -93,6 +93,7 @@ Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands
     "models/b.ts",
     "models/c.ts",
   ]);
+  assertStringIncludes(report.forNextTime?.[0].message ?? "", "No sibling");
   assertEquals(
     report.forNextTime?.[0].acceptance,
     "// swamp-quality-ignore testing-completeness: <reason>",

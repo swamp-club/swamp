@@ -775,10 +775,7 @@ export function evaluateReviewReport(
     }
   }
 
-  return findings.map((finding) => {
-    const remediation = remediationFor(finding.ruleId);
-    return remediation === undefined ? finding : { ...finding, remediation };
-  });
+  return findings;
 }
 
 // ── Async wrapper (reads source from disk) ────────────────────────────
@@ -893,9 +890,18 @@ export async function checkReviewRules(
         parseErrors = parsed.errors;
       }
     }
-    findings.push(
-      ...evaluateReviewReport({ ...input.report, report, parseErrors }),
-    );
+    for (
+      const finding of evaluateReviewReport({
+        ...input.report,
+        report,
+        parseErrors,
+      })
+    ) {
+      const remediation = remediationFor(finding.ruleId);
+      findings.push(
+        remediation === undefined ? finding : { ...finding, remediation },
+      );
+    }
   }
 
   const errors = findings.filter((f) => isBlockingSeverity(f.severity));

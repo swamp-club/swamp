@@ -23,6 +23,7 @@ import {
   acceptanceSnippet,
   applyAcceptances,
   commentFormFor,
+  fileRelativeToManifest,
   invalidAcceptanceFinding,
   MAX_ACCEPTANCE_REASON_LENGTH,
   MAX_DIRECTIVES_PER_FILE,
@@ -430,5 +431,32 @@ Deno.test("acceptanceSnippet: testing-completeness is a header comment; unaccept
       "/ext",
     ),
     undefined,
+  );
+});
+
+Deno.test("acceptanceSnippet: a collapsed testing-completeness finding takes the header comment for each listed file", () => {
+  const snippet = acceptanceSnippet(
+    { ruleId: "testing-completeness", file: "(2 files)" },
+    "/ext",
+  );
+  assertEquals(
+    snippet?.text,
+    "// swamp-quality-ignore testing-completeness: <reason>",
+  );
+  assertStringIncludes(snippet?.placement ?? "", "each file listed");
+});
+
+Deno.test("fileRelativeToManifest: a file outside the manifest directory keeps its absolute path", () => {
+  assertEquals(
+    fileRelativeToManifest("/ext", "/tmp/review/report.json"),
+    "/tmp/review/report.json",
+  );
+  assertEquals(
+    fileRelativeToManifest("/ext", "/ext/models/a.ts"),
+    "models/a.ts",
+  );
+  assertEquals(
+    fileRelativeToManifest("/ext", "(multiple files)"),
+    "(multiple files)",
   );
 });

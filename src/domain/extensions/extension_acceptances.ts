@@ -413,7 +413,11 @@ export function fileRelativeToManifest(
   file: string,
 ): string {
   if (file.startsWith("(")) return file;
-  return relative(manifestDir, file).replaceAll("\\", "/");
+  const rel = relative(manifestDir, file);
+  // A file outside the manifest's directory (the adversarial-review report
+  // in the review dir) keeps its absolute path rather than a ../ chain.
+  if (rel.startsWith("..")) return file;
+  return rel.replaceAll("\\", "/");
 }
 
 function sidecarEntry(ruleId: string, file?: string): string {
@@ -447,6 +451,15 @@ export function acceptanceSnippet(
   }
   const form = commentFormFor(finding.file);
   if (scope === "file") {
+    if (finding.file.startsWith("(")) {
+      // A collapsed finding stands for several files; the comment goes at
+      // the top of each one it lists.
+      return {
+        text:
+          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+        placement: "at the top of each file listed",
+      };
+    }
     if (form !== "line") {
       return {
         text: sidecarEntry(finding.ruleId, rel),

@@ -963,3 +963,28 @@ Deno.test("credentials-sensitive-field: every .meta({ sensitive: true }) form su
     );
   }
 });
+
+Deno.test("checkReviewRules: the missing-report finding carries the catalog remediation", async () => {
+  const dims = applicableDimensions(["model"]);
+  const result = await checkReviewRules(
+    {
+      files: [],
+      report: {
+        reportPath: "/nowhere/report.json",
+        extensionName: "@a/b",
+        extensionVersion: "1",
+        applicableDimensions: dims,
+        skeleton: "{}",
+      },
+    },
+    DEFAULT_REVIEW_RULES,
+    {
+      readTextFile: () => Promise.reject(new Error("missing")),
+      fileExists: () => Promise.resolve(false),
+    },
+  );
+  const missing = result.warnings.find((w) =>
+    w.ruleId === "adversarial-review-report"
+  );
+  assertEquals(typeof missing?.remediation, "string");
+});
