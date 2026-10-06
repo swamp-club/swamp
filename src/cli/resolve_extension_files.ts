@@ -276,6 +276,53 @@ export function projectConfigBoundary(
   return dir;
 }
 
+/**
+ * Walks up from `startDir` to `boundaryDir` (inclusive) and returns the path
+ * of the first `fileName` found, or undefined when none exists in between.
+ */
+async function findUpward(
+  startDir: string,
+  boundaryDir: string,
+  fileName: string,
+): Promise<string | undefined> {
+  let current = resolve(startDir);
+  const boundary = resolve(boundaryDir);
+  while (true) {
+    const candidate = join(current, fileName);
+    if (await isFile(candidate)) return candidate;
+    if (current === boundary) break;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
+}
+
+/**
+ * The project `deno.json` for an extension: the first one walking up from
+ * `startDir` to `boundaryDir` (see {@link projectConfigBoundary}). Push,
+ * quality and fmt all use it, so they format, lint and bundle under the same
+ * config.
+ */
+export function findDenoConfig(
+  startDir: string,
+  boundaryDir: string,
+): Promise<string | undefined> {
+  return findUpward(startDir, boundaryDir, "deno.json");
+}
+
+/**
+ * The directory of the first `package.json` walking up from `startDir` to
+ * `boundaryDir` (inclusive), or undefined when there is none.
+ */
+export async function findPackageJsonDir(
+  startDir: string,
+  boundaryDir: string,
+): Promise<string | undefined> {
+  const path = await findUpward(startDir, boundaryDir, "package.json");
+  return path === undefined ? undefined : dirname(path);
+}
+
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await Deno.stat(path)).isDirectory;

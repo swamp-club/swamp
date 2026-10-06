@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { dirname } from "@std/path";
 import {
   consumeStream,
   createExtensionFmtDeps,
@@ -34,7 +35,9 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
+  findDenoConfig,
   isPulledExtensionManifest,
+  projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -97,6 +100,7 @@ export const extensionFmtCommand = new Command()
       allReportFiles,
       allWebhookFiles,
       additionalFilePaths,
+      extensionsRoot,
     } = await resolveExtensionFiles({
       repoDir,
       manifestPath: absoluteManifestPath,
@@ -116,13 +120,25 @@ export const extensionFmtCommand = new Command()
     ];
     const tsFiles = allFiles.filter((f) => f.endsWith(".ts"));
 
+    // The project deno.json, found the way push finds it, so fmt and push
+    // format and lint under the same rules.
+    const manifestDir = dirname(absoluteManifestPath);
+    const denoConfigPath = await findDenoConfig(
+      manifestDir,
+      projectConfigBoundary(manifestDir, extensionsRoot, repoDir),
+    );
+
     // 4. Create deps, input, renderer and run generator
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createExtensionFmtDeps();
     const renderer = createExtensionFmtRenderer(cliCtx.outputMode);
 
     await consumeStream(
-      extensionFmt(ctx, deps, { tsFiles, check: options.check ?? false }),
+      extensionFmt(ctx, deps, {
+        tsFiles,
+        check: options.check ?? false,
+        denoConfigPath,
+      }),
       renderer.handlers(),
     );
 

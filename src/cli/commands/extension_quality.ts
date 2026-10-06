@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname, resolve } from "@std/path";
+import { dirname } from "@std/path";
 import {
   consumeStream,
   createExtensionPushPrepareDeps,
@@ -38,6 +38,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
+  findDenoConfig,
   isPulledExtensionManifest,
   projectConfigBoundary,
   resolveExtensionFiles,
@@ -48,34 +49,6 @@ import { loadIdentity } from "../load_identity.ts";
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
   extensionsDir?: string;
-}
-
-/**
- * Walks up from `startDir` looking for a `deno.json` file, stopping at
- * `boundaryDir` (inclusive). Kept consistent with the equivalent helper
- * in `extension_push.ts`.
- */
-async function findDenoConfig(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  let current = resolve(startDir);
-  const boundary = resolve(boundaryDir);
-
-  while (true) {
-    const candidate = `${current}/deno.json`;
-    try {
-      await Deno.stat(candidate);
-      return candidate;
-    } catch {
-      // not here
-    }
-    if (current === boundary) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return undefined;
 }
 
 export const extensionQualityCommand = new Command()

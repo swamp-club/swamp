@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -27,6 +27,8 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
+  findDenoConfig,
+  findPackageJsonDir,
   projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
@@ -170,70 +172,6 @@ export function buildAcceptedWarnings(prepared: {
       message: w.message,
     })),
   };
-}
-
-/**
- * Walks up from `startDir` looking for a `deno.json` file, stopping at
- * `boundaryDir` (inclusive). Returns the absolute path if found, or
- * undefined if no `deno.json` exists between `startDir` and the boundary.
- */
-async function findDenoConfig(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  let current = resolve(startDir);
-  const boundary = resolve(boundaryDir);
-
-  while (true) {
-    const candidate = join(current, "deno.json");
-    try {
-      await Deno.stat(candidate);
-      return candidate;
-    } catch {
-      // Not found at this level
-    }
-
-    // Stop if we've reached the boundary
-    if (current === boundary) break;
-
-    // Walk up
-    const parent = dirname(current);
-    // Safety: stop if we can't go higher (filesystem root)
-    if (parent === current) break;
-    current = parent;
-  }
-
-  return undefined;
-}
-
-/**
- * Walks up from `startDir` looking for a `package.json` file, stopping at
- * `boundaryDir` (inclusive). Returns the absolute path to the directory
- * containing package.json if found, or undefined.
- */
-async function findPackageJson(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  let current = resolve(startDir);
-  const boundary = resolve(boundaryDir);
-
-  while (true) {
-    const candidate = join(current, "package.json");
-    try {
-      await Deno.stat(candidate);
-      return current;
-    } catch {
-      // Not found at this level
-    }
-
-    if (current === boundary) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
-  return undefined;
 }
 
 /**
@@ -415,7 +353,7 @@ export const extensionPushCommand = new Command()
     if (denoConfigPath) {
       cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
     } else {
-      const candidateDir = await findPackageJson(
+      const candidateDir = await findPackageJsonDir(
         manifestDir,
         configBoundary,
       );

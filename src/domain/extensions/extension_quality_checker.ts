@@ -334,11 +334,40 @@ function skipTemplateBody(
 }
 
 /**
+ * The config arguments for `deno fmt` / `deno lint` over extension files:
+ * the project's `deno.json` when there is one, Deno's defaults otherwise.
+ * Every caller (push, quality, fmt) uses this, so they agree on the rules.
+ */
+export function denoToolConfigArgs(denoConfigPath?: string): string[] {
+  return denoConfigPath ? ["--config", denoConfigPath] : ["--no-config"];
+}
+
+/**
+ * Lint rules swamp never applies to extension code. Swamp requires explicit
+ * `npm:` / `jsr:` import prefixes (the registry scorer cannot resolve bare
+ * specifiers), and Deno's recommended `no-import-prefix` rule, applied when a
+ * project config is present, forbids exactly those.
+ */
+export const EXTENSION_LINT_RULE_EXCLUDES: readonly string[] = [
+  "no-import-prefix",
+];
+
+/** The `deno lint` arguments for extension code, before the file list. */
+export function extensionLintArgs(denoConfigPath?: string): string[] {
+  return [
+    "lint",
+    ...denoToolConfigArgs(denoConfigPath),
+    `--rules-exclude=${EXTENSION_LINT_RULE_EXCLUDES.join(",")}`,
+  ];
+}
+
+/**
  * Checks extension TypeScript files for formatting and lint issues.
  *
  * Runs `deno fmt --check` and `deno lint` on all `.ts` files. When a
  * `denoConfigPath` is provided, uses `--config <path>` so the project's
  * own lint/fmt rules apply; otherwise uses `--no-config` for default rules.
+ * Lint never applies {@link EXTENSION_LINT_RULE_EXCLUDES}.
  * Both checks run even if the first fails, so all issues are reported in
  * a single pass.
  *
@@ -383,9 +412,12 @@ export async function checkExtensionQuality(
   // Check formatting
   const baseEnv = denoEnv ?? Deno.env.toObject();
   const fmtCommand = new Deno.Command(denoPath, {
-    args: denoConfigPath
-      ? ["fmt", "--check", "--config", denoConfigPath, ...tsFiles]
-      : ["fmt", "--check", "--no-config", ...tsFiles],
+    args: [
+      "fmt",
+      "--check",
+      ...denoToolConfigArgs(denoConfigPath),
+      ...tsFiles,
+    ],
     stdout: "piped",
     stderr: "piped",
     env: { ...baseEnv, NO_COLOR: "1" },
@@ -400,9 +432,7 @@ export async function checkExtensionQuality(
 
   // Check linting
   const lintCommand = new Deno.Command(denoPath, {
-    args: denoConfigPath
-      ? ["lint", "--config", denoConfigPath, ...tsFiles]
-      : ["lint", "--no-config", ...tsFiles],
+    args: [...extensionLintArgs(denoConfigPath), ...tsFiles],
     stdout: "piped",
     stderr: "piped",
     env: { ...baseEnv, NO_COLOR: "1" },
