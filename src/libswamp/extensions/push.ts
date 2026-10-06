@@ -1241,8 +1241,8 @@ export async function runQualityFindings(
       continue;
     }
     const parsed = parseAcceptanceDirectives(content, file);
-    directives.push(...parsed.directives);
-    invalid.push(...parsed.invalid);
+    for (const d of parsed.directives) directives.push(d);
+    for (const i of parsed.invalid) invalid.push(i);
   }
   if (sidecar) {
     const parsed = sidecarDirectives(
@@ -1250,8 +1250,8 @@ export async function runQualityFindings(
       sidecar.path,
       input.manifestDir,
     );
-    directives.push(...parsed.directives);
-    invalid.push(...parsed.invalid);
+    for (const d of parsed.directives) directives.push(d);
+    for (const i of parsed.invalid) invalid.push(i);
   }
   ctx.logger
     .debug`Declared acceptances: ${directives.length} directive(s), ${invalid.length} invalid`;
@@ -1266,7 +1266,9 @@ export async function runQualityFindings(
     if (isReviewFinding(finding)) remainingReview.push(finding);
     else remainingSafety.push(finding);
   }
-  remainingReview.push(...applied.stale.map(staleAcceptanceFinding));
+  for (const stale of applied.stale) {
+    remainingReview.push(staleAcceptanceFinding(stale));
+  }
   const errors = [
     ...reviewRulesResult.errors,
     ...invalid.map(invalidAcceptanceFinding),
