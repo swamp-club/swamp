@@ -1024,6 +1024,41 @@ Deno.test("serve root units: an inline model.method.run whose lock push fails ha
   });
 });
 
+Deno.test("serve root units: an inline model.method.run whose lock pull fails replies with its error and holds no lock, and the next run succeeds", async () => {
+  await withRowRepos({}, async (repos) => {
+    await saveModel(repos.serveRepo, "m1");
+    await settle(repos);
+    repos.remote.failNext("pull", new Error("injected pull failure"), {
+      instance: "A",
+    });
+    const failed = await methodRunTimeline(repos, {
+      detached: false,
+      payload: LOCKED_RUN,
+    });
+    assertEquals(failed.includes("error"), true);
+    assertEquals(failed.includes("done"), false);
+    // Serve has no process teardown between requests, so the lock taken
+    // before the pull must be released by the failed request itself
+    // (swamp-club#2901).
+    assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
+
+    assertEquals(
+      await methodRunTimeline(repos, { detached: false, payload: LOCKED_RUN }),
+      [
+        "pull",
+        "release",
+        "event",
+        "done",
+        "deregister",
+        "prepare",
+        "commit",
+        "release",
+      ],
+    );
+    assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
+  });
+});
+
 Deno.test("serve root units: an inline model.method.run without a lock replies, pushes, then deregisters", async () => {
   await withRowRepos({}, async (repos) => {
     await settle(repos);

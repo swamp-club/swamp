@@ -67,7 +67,9 @@ days are purged at startup, except a workflow or method row reaped
 `interrupted` with no reason (`cancel_reason` null): its workflow or method run
 record may still say `running`, and the row is the evidence that settles it
 (see Dead owner below). Once the record is
-settled, `markSettled` stores a reason and the row is purged as usual. `swamp run gc` removes older records on demand:
+settled, `markSettled` stores a reason and the row is purged as usual. An
+unsettled row is still purged once it is 90 days old, so no path that fails
+to settle it keeps it forever. `swamp run gc` removes older records on demand:
 30-day default, `--older-than`, `--dry-run`, `--server`
 (`src/cli/commands/run_gc.ts`, protocol `run.gc`).
 
@@ -115,8 +117,18 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    boot reaper, the `run.doctor` handler) then calls `markSettled` on the
    row, only after the record is saved. `run doctor` scans recent records
    (7 days) and finds older ones through their workflow row, by workflow
-   name, so no run is stranded by age; with `--fix` it also marks settled an
-   `interrupted` row whose record is no longer `running`. The serve boot
+   name and, when the name no longer resolves, by run id under any workflow,
+   so no run is stranded by age or a rename. It does not look at a settled
+   row again. `settleInterruptedWorkflowRows` marks settled every
+   `interrupted` workflow row whose record is no longer `running`
+   (`record_settled`) or is stored under no workflow (`record_missing`), such
+   as a row reaped while its owner went on to finish the run. It runs at
+   serve boot and in `run doctor --fix`, local and through the `run.doctor`
+   handler (swamp-club#2917). A record that arrives by datastore pull after
+   its row was settled `record_missing` is no longer found through the row:
+   doctor's record scan still settles it within 7 days of its start, and
+   past that only the serve boot reaper and the continuous reconciler, which
+   look at every `running` record, see it. The serve boot
    reaper, the continuous reconciler and the `run.doctor` handler look at
    every record still `running`, whatever its age: a run can wait at an
    approval gate for longer than any window and be orphaned by a later resume
@@ -132,8 +144,14 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    a datastore pull replaced. The correction re-reads the record inside the
    queue and writes from that, never from the reader's copy, so a save that
    landed in between is not overwritten. `swamp run doctor`, local and through serve,
-   rebuilds the indexes from the records before it looks
-   (`rebuildIndexes`).
+   verifies the indexes against the records before it looks
+   (`verifyIndexes`). Each entry keeps a fingerprint of the record file it
+   was built from (mtime, size, and ctime and inode where the platform has
+   them); doctor stats every record, reads only those whose fingerprint
+   differs or that have no entry, and writes an index only when an entry was
+   wrong (swamp-club#3051). A save fingerprints its entry only when the file
+   still holds what it wrote, so a record another writer replaced in between
+   is left to be read by the next verification.
 
    A server cancel also clears a `running` record whose owner is gone, as
    `cancelled` rather than `interrupted`; see "Running runs whose owner is
@@ -179,7 +197,7 @@ settled, `markSettled` stores a reason and the row is purged as usual. `swamp ru
    stops the live resume, and serve's boot reapers find either a running row
    or, with no row, a live pid, and leave it alone. A resume that fails before
    execution restores the record, stops the heartbeat and returns the row to
-   its prior status; the row keeps the failed resume's pid and hostname, which
+   its prior status and reason, so a settled row stays settled; the row keeps the failed resume's pid and hostname, which
    no reaper reads on a row that is not running. The hand-over is best-effort:
    a tracker error is logged and the resume goes on. A resume that serve
    drives carries serve's instance id while it runs, which a later serve boot

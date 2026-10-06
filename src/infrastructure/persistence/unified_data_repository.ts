@@ -96,6 +96,39 @@ async function hasVersionMetadata(versionDir: string): Promise<boolean> {
   }
 }
 
+/**
+ * Names of the directory entries that are directories, sorted by UTF-16
+ * code unit (the default string sort, which no locale can change).
+ *
+ * Every walk in {@link FileSystemUnifiedDataRepository} visits a level in
+ * this order so the same repository walks identically on every filesystem.
+ * readdir order is sorted on APFS and NTFS but hash order on ext4, and the
+ * catalog backfill inserts rows in walk order, so without the sort a
+ * limited `data query` page came back in a different order per machine
+ * (swamp-club#3066).
+ */
+export function sortedSubdirectoryNames(
+  entries: Iterable<Pick<Deno.DirEntry, "name" | "isDirectory">>,
+): string[] {
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (entry.isDirectory) names.push(entry.name);
+  }
+  return names.sort();
+}
+
+/** {@link sortedSubdirectoryNames} of `dir`; NotFound propagates. */
+async function listSubdirectories(dir: string): Promise<string[]> {
+  const entries: Deno.DirEntry[] = [];
+  for await (const entry of Deno.readDir(dir)) entries.push(entry);
+  return sortedSubdirectoryNames(entries);
+}
+
+/** Sync twin of {@link listSubdirectories}. */
+function listSubdirectoriesSync(dir: string): string[] {
+  return sortedSubdirectoryNames(Deno.readDirSync(dir));
+}
+
 function hasVersionMetadataSync(versionDir: string): boolean {
   try {
     return Deno.statSync(join(versionDir, "metadata.yaml")).isFile;
@@ -252,6 +285,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
+  /**
+   * Every model's data, walked in name order at each level: type path
+   * segments, then model id, then data name (see
+   * {@link sortedSubdirectoryNames}). The catalog backfill relies on this
+   * order so a freshly backfilled catalog has the same rowid order on every
+   * filesystem.
+   */
   async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
@@ -271,6 +311,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
+  /** One type's data, model ids in name order; see {@link findAllGlobal}. */
   async findAllForType(
     type: ModelTypeInput,
   ): Promise<
@@ -283,9 +324,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     > = [];
 
     try {
-      for await (const entry of Deno.readDir(typeDir)) {
-        if (!entry.isDirectory) continue;
-        const modelId = entry.name;
+      for (const modelId of await listSubdirectories(typeDir)) {
         try {
           const dataItems = await this.findAllForModel(modelType, modelId);
           for (const data of dataItems) {
@@ -344,27 +383,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     renames?: RenameForward[],
   ): Promise<void> {
     try {
-      const entries: { name: string; isDirectory: boolean }[] = [];
-      for await (const entry of Deno.readDir(currentDir)) {
-        if (entry.isDirectory) {
-          entries.push({ name: entry.name, isDirectory: true });
-        }
-      }
+      const entries = await listSubdirectories(currentDir);
 
       // Check if we're at a model-id level by seeing if any child directories
       // contain data-name directories (which contain version subdirectories)
-      for (const entry of entries) {
-        const childPath = join(currentDir, entry.name);
-        const childSegments = [...pathSegments, entry.name];
+      for (const name of entries) {
+        const childPath = join(currentDir, name);
+        const childSegments = [...pathSegments, name];
 
         // Try to determine if this is a model-id directory by checking if
         // its children look like data-name directories (containing version dirs)
         const isModelIdDir = await this.isModelIdDirectory(childPath);
 
         if (isModelIdDir && childSegments.length >= 2) {
-          // pathSegments = type segments, entry.name = model ID
+          // pathSegments = type segments, name = model ID
           const typeSegments = pathSegments;
-          const modelId = entry.name;
+          const modelId = name;
           const typeStr = typeSegments.join("/");
 
           try {
@@ -417,10 +451,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const cutoffMs = cutoff.getTime();
 
     try {
-      for await (const entry of Deno.readDir(dataDir)) {
-        if (!entry.isDirectory) continue;
-        const dataName = entry.name;
-
+      for (const dataName of await listSubdirectories(dataDir)) {
         const latestVersion = await this.getLatestVersion(
           type,
           modelId,
@@ -617,6 +648,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return versions.sort((a, b) => a - b);
   }
 
+  /** One model's data, in data-name order; see {@link findAllGlobal}. */
   async findAllForModel(
     type: ModelTypeInput,
     modelId: string,
@@ -642,10 +674,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const seen = new Set<string>();
 
     try {
-      for await (const entry of Deno.readDir(dataDir)) {
-        if (!entry.isDirectory) continue;
-        const dataName = entry.name;
-
+      for (const dataName of await listSubdirectories(dataDir)) {
         // Read the name's own latest version, then follow a rename marker
         // from depth 1: the same reads as an unversioned findByName, with
         // the marker visible on the way.
@@ -1723,10 +1752,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const seen = new Set<string>();
 
     try {
-      for (const entry of Deno.readDirSync(dataDir)) {
-        if (!entry.isDirectory) continue;
-        const dataName = entry.name;
-
+      for (const dataName of listSubdirectoriesSync(dataDir)) {
         const latest = this.getLatestVersionSync(type, modelId, dataName);
         let data = latest === null
           ? null
@@ -1761,6 +1787,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
+  /** Sync twin of {@link findAllGlobal}, in the same name order. */
   findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
@@ -1792,12 +1819,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
   ): Promise<void> {
     try {
-      const entries: string[] = [];
-      for await (const entry of Deno.readDir(currentDir)) {
-        if (entry.isDirectory) {
-          entries.push(entry.name);
-        }
-      }
+      const entries = await listSubdirectories(currentDir);
 
       for (const name of entries) {
         const childPath = join(currentDir, name);
@@ -1855,12 +1877,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     renames?: RenameForward[],
   ): void {
     try {
-      const entries: string[] = [];
-      for (const entry of Deno.readDirSync(currentDir)) {
-        if (entry.isDirectory) {
-          entries.push(entry.name);
-        }
-      }
+      const entries = listSubdirectoriesSync(currentDir);
 
       for (const name of entries) {
         const childPath = join(currentDir, name);

@@ -141,7 +141,18 @@ Validate the extension can be pushed without actually uploading.
 swamp extension push manifest.yaml --dry-run --json
 ```
 
-**Verify:** Exit code 0. Confirm any warnings with the user.
+**Verify:** Exit code 0. Confirm any warnings with the user. The `dry_run`
+document lists `registryChecks` (authentication, reserved collective, collective
+membership, version exists) with the wording the real push uses; a `failed`
+check exits non-zero and a `not-run` check names the missing prerequisite (no
+credentials). `apiCalls` lists every HTTP call the run made, and `contentHash`
+is the hash the adversarial-review report is keyed by.
+
+To get the same `contentHash` CI's publish computes, run the dry run in CI's
+layout: `cd` into the extension directory, `swamp repo init --quiet --tool none`
+if there is no `.swamp.yaml` there, then
+`swamp extension push manifest.yaml --dry-run --json`. See
+[reproducing the CI layout](references/publishing.md#reproducing-the-ci-layout).
 
 If private publication is requested, retain `visibility: private` in the
 manifest or pass optional `--visibility private` in both this dry run and

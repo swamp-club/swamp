@@ -169,7 +169,7 @@ export async function* extensionQuality(
           prepared = await extensionPushPrepare(
             ctx,
             deps.pushPrepareDeps,
-            { ...input.prepareInput, dryRun: true },
+            { ...input.prepareInput, dryRun: true, registryChecks: "skip" },
           );
         } catch (error) {
           yield { kind: "error", error: error as SwampError };

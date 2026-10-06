@@ -33,6 +33,7 @@ import { CalVer } from "../../domain/models/calver.ts";
 import {
   computePackageCacheHash,
   consumeStream,
+  createApiCallRecorder,
   createExtensionPushExecuteDeps,
   createExtensionPushPrepareDeps,
   createLibSwampContext,
@@ -40,6 +41,7 @@ import {
   ExtensionPackageCache,
   extensionPush,
   extensionPushPrepare,
+  registryChecksVerdict,
   resolvePublishVisibility,
   RUBRIC_VERSION,
 } from "../../libswamp/mod.ts";
@@ -278,7 +280,10 @@ export const extensionPushCommand = new Command()
     "Skip confirmation prompts; the summary records any warnings this waived",
   )
   .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
-  .option("--dry-run", "Build archive locally without pushing to registry")
+  .option(
+    "--dry-run",
+    "Build the archive and run the registry checks read-only, without pushing",
+  )
   .option(
     "--visibility <visibility:string>",
     "Publication visibility: public (registry default) or private; overrides manifest visibility. Omit to use the manifest or registry default.",
@@ -419,8 +424,14 @@ export const extensionPushCommand = new Command()
     // 3. Create libswamp context and deps
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const identity = await loadIdentity();
-    const prepareDeps = createExtensionPushPrepareDeps(identity);
+    // Every HTTP call made before the upload is recorded so the dry-run
+    // summary can list the calls actually made.
+    const apiCalls = createApiCallRecorder();
+    const prepareDeps = createExtensionPushPrepareDeps(identity, {
+      recorder: apiCalls,
+    });
     const renderer = createExtensionPushRenderer(cliCtx.outputMode);
+    const registryChecks = options.dryRun ? "collect" : "enforce";
     const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
 
     // 3b. Opportunistic package cache lookup — if a prior `swamp
@@ -479,7 +490,7 @@ export const extensionPushCommand = new Command()
         additionalFilePaths,
         binaryFilePaths,
         dryRun: options.dryRun ?? false,
-
+        registryChecks,
         releaseNotes: options.releaseNotes,
         denoConfigPath,
         packageJsonDir,
@@ -559,7 +570,7 @@ export const extensionPushCommand = new Command()
                   additionalFilePaths,
                   binaryFilePaths,
                   dryRun: options.dryRun ?? false,
-
+                  registryChecks,
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,
                   packageJsonDir,
@@ -708,15 +719,24 @@ export const extensionPushCommand = new Command()
       }
     }
 
-    // 7. Dry run — stop here
+    // 7. Dry run — report and stop. A failed registry check, or one the
+    // registry did not answer, exits non-zero with the message the real push
+    // would have failed with; no bump prompt, since a dry run never prompts.
     if (prepared.isDryRun) {
       renderer.renderDryRun({
         name: prepared.manifest.name,
         version: prepared.manifest.version,
         archiveSize: prepared.archiveBytes.length,
         visibility: prepared.resolvedData.visibility,
+        contentHash: prepared.contentHash,
+        registryChecks: prepared.registryChecks,
+        apiCalls: apiCalls.calls,
         accepted,
       });
+      const verdict = registryChecksVerdict(prepared.registryChecks);
+      if (!verdict.ok) {
+        throw new UserError(verdict.message);
+      }
       return;
     }
 

@@ -20,8 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type {
+  ApiCallRecord,
   ExtensionPushEvent,
   ExtensionPushResolvedData,
+  RegistryCheckResult,
 } from "../../libswamp/mod.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -55,6 +57,16 @@ function resolved(
   };
 }
 
+const dryRunBase = {
+  name: "@test/ext",
+  version: "2026.09.16.1",
+  archiveSize: 100,
+  visibility: "public" as const,
+  contentHash: undefined,
+  registryChecks: [],
+  apiCalls: [],
+};
+
 for (const visibility of ["public", "private", "default"] as const) {
   for (const mode of ["log", "json"] as const) {
     Deno.test(`extensionPushRenderer: ${mode} preview and dry run show requested ${visibility}`, () => {
@@ -65,9 +77,7 @@ for (const visibility of ["public", "private", "default"] as const) {
         const renderer = createExtensionPushRenderer(mode);
         renderer.renderResolved(resolved(visibility));
         renderer.renderDryRun({
-          name: "@test/ext",
-          version: "2026.09.16.1",
-          archiveSize: 100,
+          ...dryRunBase,
           visibility,
         });
         if (mode === "json") {
@@ -160,7 +170,8 @@ const completedEvent = {
 /**
  * Captures everything the renderer writes: `writeOutput` and the JSON
  * renderer go through console.log, while LogTape's console sink routes
- * info and warn records to console.info and console.warn.
+ * info, warn and error records to console.info, console.warn and
+ * console.error.
  */
 function capture(run: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = [];
@@ -168,6 +179,7 @@ function capture(run: () => void | Promise<void>): Promise<string[]> {
     log: console.log,
     info: console.info,
     warn: console.warn,
+    error: console.error,
   };
   const push = (...args: unknown[]) => {
     logs.push(
@@ -179,6 +191,7 @@ function capture(run: () => void | Promise<void>): Promise<string[]> {
   console.log = push;
   console.info = push;
   console.warn = push;
+  console.error = push;
   return Promise.resolve()
     .then(run)
     .then(() => logs)
@@ -186,17 +199,13 @@ function capture(run: () => void | Promise<void>): Promise<string[]> {
       console.log = original.log;
       console.info = original.info;
       console.warn = original.warn;
+      console.error = original.error;
     });
 }
 
 Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omits it when none", async () => {
   const renderer = createExtensionPushRenderer("json");
-  const base = {
-    name: "@test/ext",
-    version: "2026.09.16.1",
-    archiveSize: 100,
-    visibility: "public" as const,
-  };
+  const base = dryRunBase;
   const withRecord = await capture(() =>
     renderer.renderDryRun({
       ...base,
@@ -215,6 +224,8 @@ Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omit
     "version",
     "archiveSize",
     "visibility",
+    "registryChecks",
+    "apiCalls",
     "acceptedWarnings",
     "status",
   ]);
@@ -244,10 +255,7 @@ Deno.test("extensionPushRenderer: log dry run lists accepted warnings after the 
   const renderer = createExtensionPushRenderer("log");
   const logs = await capture(() =>
     renderer.renderDryRun({
-      name: "@test/ext",
-      version: "2026.09.16.1",
-      archiveSize: 100,
-      visibility: "public",
+      ...dryRunBase,
       accepted: { warnings: accepted, waivedBy: "--yes" },
     })
   );
@@ -276,13 +284,112 @@ Deno.test("extensionPushRenderer: log completed summary lists accepted warnings,
 Deno.test("extensionPushRenderer: log summaries say nothing about acceptance when none", async () => {
   const renderer = createExtensionPushRenderer("log");
   const logs = await capture(async () => {
-    renderer.renderDryRun({
-      name: "@test/ext",
-      version: "2026.09.16.1",
-      archiveSize: 100,
-      visibility: "public",
-    });
+    renderer.renderDryRun(dryRunBase);
     await renderer.handlers().completed(completedEvent);
   });
   assertEquals(logs.join("\n").includes("Accepted"), false);
+});
+
+const checks: RegistryCheckResult[] = [
+  { name: "authentication", status: "passed", message: "Signed in as seth." },
+  {
+    name: "reserved-collective",
+    status: "passed",
+    message:
+      'Collective "@swamp" is reserved; membership verified by the registry.',
+  },
+  {
+    name: "collective-membership",
+    status: "not-run",
+    message: "authentication failed",
+    cause: "authentication-failed",
+  },
+  {
+    name: "version-exists",
+    status: "failed",
+    message: "Version 2026.09.16.1 already exists for @test/ext.",
+  },
+];
+
+const calls: ApiCallRecord[] = [
+  {
+    service: "registry",
+    method: "GET",
+    url: "https://swamp-club.com/api/whoami",
+    outcome: "ok",
+    status: 200,
+  },
+  {
+    service: "osv",
+    method: "POST",
+    url: "https://api.osv.dev/v1/query",
+    outcome: "error",
+  },
+];
+
+Deno.test("extensionPushRenderer: JSON dry run carries contentHash, registryChecks and apiCalls in the dry_run document", async () => {
+  const renderer = createExtensionPushRenderer("json");
+  const logs = await capture(() =>
+    renderer.renderDryRun({
+      ...dryRunBase,
+      contentHash: "deadbeef",
+      registryChecks: checks,
+      apiCalls: calls,
+    })
+  );
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(Object.keys(parsed), [
+    "name",
+    "version",
+    "archiveSize",
+    "visibility",
+    "contentHash",
+    "registryChecks",
+    "apiCalls",
+    "status",
+  ]);
+  assertEquals(parsed.contentHash, "deadbeef");
+  assertEquals(parsed.registryChecks, checks);
+  assertEquals(parsed.apiCalls, calls);
+  assertEquals(parsed.status, "dry_run");
+});
+
+Deno.test("extensionPushRenderer: log dry run prints the content hash, each check's verdict and the calls made", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.renderDryRun({
+      ...dryRunBase,
+      contentHash: "deadbeef",
+      registryChecks: checks,
+      apiCalls: calls,
+    })
+  );
+  const output = logs.map(stripAnsiCode).join("\n");
+  assertStringIncludes(output, 'Content hash: "deadbeef"');
+  assertStringIncludes(output, "Registry checks:");
+  assertStringIncludes(output, "authentication: passed — Signed in as seth.");
+  assertStringIncludes(
+    output,
+    "collective membership: not run — authentication failed",
+  );
+  assertStringIncludes(
+    output,
+    "version exists: failed — Version 2026.09.16.1 already exists for @test/ext.",
+  );
+  assertStringIncludes(output, "API calls made (2):");
+  assertStringIncludes(
+    output,
+    "registry: GET https://swamp-club.com/api/whoami ok (200)",
+  );
+  assertStringIncludes(output, "osv: POST https://api.osv.dev/v1/query error");
+  assertEquals(output.includes("No API calls were made."), false);
+});
+
+Deno.test("extensionPushRenderer: log dry run says no API calls were made only when the list is empty", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() => renderer.renderDryRun(dryRunBase));
+  const output = logs.map(stripAnsiCode).join("\n");
+  assertStringIncludes(output, "No API calls were made.");
+  assertEquals(output.includes("Registry checks:"), false);
+  assertEquals(output.includes("Content hash:"), false);
 });

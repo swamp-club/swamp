@@ -1520,6 +1520,9 @@ export class DataQueryService {
 
   private async backfillAsync(): Promise<void> {
     // Read before walking the disk; see CatalogStore.markPopulated.
+    // The walk is in name order at every level (see
+    // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get
+    // the same rowids on every filesystem (swamp-club#3066).
     const generation = this.catalogStore.generation();
     const renames: RenameForward[] = [];
     const allData = await this.dataRepo.findAllGlobal({ renames });
@@ -1598,6 +1601,9 @@ export class DataQueryService {
 
   private backfillSync(): void {
     // Read before walking the disk; see CatalogStore.markPopulated.
+    // The walk is in name order at every level (see
+    // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get
+    // the same rowids on every filesystem (swamp-club#3066).
     const generation = this.catalogStore.generation();
     const renames: RenameForward[] = [];
     const allData = this.dataRepo.findAllGlobalSync({ renames });

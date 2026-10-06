@@ -32,6 +32,18 @@ const logger = getLogger(["swamp", "serve", "runtime-data-poller"]);
 
 const DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS = 30_000;
 
+/**
+ * What a running replica refreshes from its peers. `auto-definitions` rides
+ * with `data` because a definition a peer creates at runtime — a server
+ * token, an enrollment token — is read from the local repo when its
+ * credential is presented, and is otherwise pulled only at boot
+ * (swamp-club#2481).
+ */
+export const RUNTIME_DATA_SUBDIRS: readonly string[] = [
+  "data",
+  "auto-definitions",
+];
+
 export interface RuntimeDataPollerOptions {
   syncService: DatastoreSyncService;
   syncGate?: SyncGate;
@@ -104,7 +116,7 @@ export class RuntimeDataPoller {
         (signal) =>
           this.#syncService.pullChanged({
             signal,
-            subdirs: ["data"],
+            subdirs: [...RUNTIME_DATA_SUBDIRS],
             namespace: this.#namespace,
           }),
         {

@@ -93,7 +93,7 @@ Deno.test("RuntimeDataPoller: start and stop lifecycle completes cleanly", async
   await poller.stop();
 });
 
-Deno.test("RuntimeDataPoller: pullChanged is called with subdirs data", async () => {
+Deno.test("RuntimeDataPoller: pullChanged is called with subdirs data and auto-definitions", async () => {
   const sync = createMockSyncService();
   const { catalogInvalidate } = createCallbackTrackers();
 
@@ -108,7 +108,7 @@ Deno.test("RuntimeDataPoller: pullChanged is called with subdirs data", async ()
   await poller.stop();
 
   const call = sync.pullCalls[0];
-  assertEquals(call.subdirs, ["data"]);
+  assertEquals(call.subdirs, ["data", "auto-definitions"]);
 });
 
 Deno.test("RuntimeDataPoller: namespace is passed through to pullChanged", async () => {

@@ -1012,6 +1012,7 @@ export {
   extensionPushPrepare,
   type ExtensionPushPrepared,
   type ExtensionPushPrepareDeps,
+  type ExtensionPushPrepareDepsOptions,
   type ExtensionPushPrepareInput,
   type ExtensionPushResolvedData,
   type ExtensionPushSuccessData,
@@ -1020,6 +1021,18 @@ export {
   type ResolvedReportEntry,
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
+export {
+  type ApiCallRecord,
+  REGISTRY_CHECK_LABELS,
+  type RegistryCheckNotRunCause,
+  type RegistryCheckResult,
+  type RegistryChecksMode,
+  registryChecksVerdict,
+} from "../domain/extensions/extension_publish_checks.ts";
+export {
+  type ApiCallRecorder,
+  createApiCallRecorder,
+} from "../infrastructure/http/recording_fetcher.ts";
 export {
   type PublishVisibility,
   resolvePublishVisibility,

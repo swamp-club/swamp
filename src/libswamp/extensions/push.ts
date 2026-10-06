@@ -25,7 +25,6 @@ import {
   MAX_EXTENSION_ARCHIVE_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
 import type {
   ExtensionContentMetadata,
@@ -61,6 +60,14 @@ import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { validateExtensionSkills } from "../../domain/extensions/extension_skill_validator.ts";
+import {
+  evaluateCollectiveMembership,
+  evaluateVersionExists,
+  type PublishedVersion,
+  registryCheckNotRun,
+  type RegistryCheckResult,
+  type RegistryChecksMode,
+} from "../../domain/extensions/extension_publish_checks.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -180,6 +187,13 @@ export interface ExtensionPushPrepareInput {
   additionalFilePaths: string[];
   binaryFilePaths: string[];
   dryRun: boolean;
+  /**
+   * What to do with the registry-side checks (authentication, collective
+   * membership, reserved collective, version exists): a real push enforces
+   * them, a dry run collects their verdicts, packaging-only callers skip
+   * them and never contact the registry.
+   */
+  registryChecks: RegistryChecksMode;
   releaseNotes?: string;
   denoConfigPath?: string;
   packageJsonDir?: string;
@@ -211,6 +225,13 @@ export interface ExtensionPushPrepared {
   contentMetadata: ExtensionContentMetadata | undefined;
   counts: ExtensionPushCounts;
   isDryRun: boolean;
+  /**
+   * The registry checks' verdicts. Empty when the checks were skipped; in
+   * `enforce` mode every entry passed, since a failure throws instead.
+   */
+  registryChecks: RegistryCheckResult[];
+  /** The content hash the review report is keyed by, when the caller computed one. */
+  contentHash: string | undefined;
 }
 
 /** Content counts for the extension. */
@@ -296,11 +317,16 @@ export interface ExtensionPushPrepareDeps {
   ) => Promise<ReviewRulesResult>;
   ensureDenoPath: () => Promise<string>;
   getDenoEnv: () => Record<string, string>;
-  getLatestVersion: (
+  /**
+   * Finds a published version of the extension on any release channel.
+   * Resolves null when no channel carries that version.
+   */
+  findPublishedVersion: (
     serverUrl: string,
     name: string,
+    version: string,
     apiKey: string,
-  ) => Promise<{ version: string } | null>;
+  ) => Promise<PublishedVersion | null>;
   getLatestVersionDetail: (
     serverUrl: string,
     name: string,
@@ -380,17 +406,43 @@ import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import {
+  type ApiCallRecorder,
+  type Fetcher,
+  recordingFetcher,
+} from "../../infrastructure/http/recording_fetcher.ts";
 
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
+/** Options for the prepare deps factory. */
+export interface ExtensionPushPrepareDepsOptions {
+  /**
+   * Receives every HTTP call the prepare phase makes (registry, OSV, npm),
+   * so the summary can list the calls actually made.
+   */
+  recorder?: ApiCallRecorder;
+  /** The fetch to make calls with; tests pass a fake. Defaults to global fetch. */
+  fetch?: Fetcher;
+}
+
+/** Release channels a version may be published on. */
+const ALL_RELEASE_CHANNELS = ["stable", "rc", "beta"];
+const VERSIONS_PAGE_SIZE = 100;
+const VERSIONS_MAX_PAGES = 50;
+
 /** Wires real infrastructure into ExtensionPushPrepareDeps. */
 export function createExtensionPushPrepareDeps(
   identity?: ClientIdentity,
+  options: ExtensionPushPrepareDepsOptions = {},
 ): ExtensionPushPrepareDeps {
   const authRepo = new AuthRepository();
   const denoRuntime = new EmbeddedDenoRuntime();
+  const fetcherFor = (registryUrl: string): Fetcher | undefined =>
+    options.recorder
+      ? recordingFetcher(options.recorder, registryUrl, options.fetch)
+      : options.fetch;
 
   return {
     loadCredentials: async () => {
@@ -403,27 +455,63 @@ export function createExtensionPushPrepareDeps(
       };
     },
     fetchCollectives: async (serverUrl, apiKey) => {
-      const client = new SwampClubClient(serverUrl, identity);
+      const client = new SwampClubClient(serverUrl, identity, {
+        fetch: fetcherFor(serverUrl),
+      });
       const whoami = await client.whoami(apiKey);
+      // whoami answers a rejected key with its own 401 body rather than an
+      // error, so a stale key fails authentication here instead of passing
+      // the collective check on the username and failing at upload.
+      if (whoami.authenticated === false) {
+        throw notAuthenticated();
+      }
       return getCollectives(whoami);
     },
     extractContentMetadata,
     analyzeExtensionSafety,
     checkExtensionQuality,
     extractDependencySpecifiers,
-    checkDependencyTrust,
+    checkDependencyTrust: (specifiers) =>
+      checkDependencyTrust(
+        specifiers,
+        fetcherFor(resolveServerUrl()) ?? globalThis.fetch,
+      ),
     checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     getDenoEnv: () => denoRuntime.getDenoEnv(),
-    getLatestVersion: async (serverUrl, name, apiKey) => {
-      const client = new ExtensionApiClient(serverUrl, identity);
-      const result = await client.getLatestVersion(name, apiKey);
-      if (!result) return null;
-      return { version: result.version };
+    findPublishedVersion: async (serverUrl, name, version, apiKey) => {
+      const client = new ExtensionApiClient(serverUrl, identity, {
+        fetch: fetcherFor(serverUrl),
+      });
+      // A version is unique per extension across channels, so every channel
+      // is asked and the first match on any of them answers.
+      for (let page = 1; page <= VERSIONS_MAX_PAGES; page++) {
+        const listed = await client.listVersions(name, {
+          channel: ALL_RELEASE_CHANNELS,
+          perPage: VERSIONS_PAGE_SIZE,
+          page,
+        }, apiKey);
+        const match = listed.versions.find((v) => v.version === version);
+        if (match) return { version: match.version, channel: match.channel };
+        // A short page is the last page; so is reaching the total. A
+        // response without usable paging metadata is not paged further.
+        const perPage = listed.meta?.perPage;
+        const total = listed.meta?.total;
+        const seen = (page - 1) * perPage + listed.versions.length;
+        if (
+          listed.versions.length === 0 || !Number.isFinite(seen) ||
+          listed.versions.length < perPage || seen >= total
+        ) {
+          return null;
+        }
+      }
+      return null;
     },
     getLatestVersionDetail: async (serverUrl, name, apiKey) => {
-      const client = new ExtensionApiClient(serverUrl, identity);
+      const client = new ExtensionApiClient(serverUrl, identity, {
+        fetch: fetcherFor(serverUrl),
+      });
       return await client.getLatestVersionDetail(name, apiKey);
     },
   };
@@ -544,53 +632,113 @@ export async function extensionPushPrepare(
       error instanceof Error ? error.message : String(error),
     );
   }
-  // 1. Auth validation (skip in dry-run)
+  // 1. Registry checks: authentication and collective membership. A real
+  // push (`enforce`) stops at the first failure; a dry run (`collect`)
+  // records every verdict so the summary reports what the push would say;
+  // packaging-only callers (`skip`) never contact the registry.
+  const mode = input.registryChecks;
+  const registryChecks: RegistryCheckResult[] = [];
   let credentials:
     | { serverUrl: string; apiKey: string; username: string }
     | undefined;
-  if (!input.dryRun) {
+  // Why the credentialed checks could not run, when they could not.
+  let credentialsUnavailable: string | undefined;
+  if (mode !== "skip") {
     const creds = await deps.loadCredentials();
     if (!creds) {
-      throw notAuthenticated();
-    }
-    credentials = creds;
-
-    // 2. Validate collective matches user's collectives
-    const collectivePart = input.manifest.name.slice(
-      1,
-      input.manifest.name.indexOf("/"),
-    );
-    const isReserved = ModelType.isReservedCollective(input.manifest.name);
-    let collectives: string[] | undefined;
-    try {
-      collectives = await deps.fetchCollectives(
-        credentials.serverUrl,
-        credentials.apiKey,
+      if (mode === "enforce") {
+        throw notAuthenticated();
+      }
+      credentialsUnavailable = NO_CREDENTIALS_REASON;
+      registryChecks.push(
+        registryCheckNotRun(
+          "authentication",
+          "no-credentials",
+          credentialsUnavailable,
+        ),
+        registryCheckNotRun(
+          "reserved-collective",
+          "no-credentials",
+          credentialsUnavailable,
+        ),
+        registryCheckNotRun(
+          "collective-membership",
+          "no-credentials",
+          credentialsUnavailable,
+        ),
       );
-    } catch {
-      ctx.logger
-        .debug`Could not fetch collectives from server, falling back to username check`;
-    }
+    } else {
+      // 2. Validate collective matches user's collectives
+      let collectives: string[] | undefined;
+      let signedOut = false;
+      let lookupFailure: string | undefined;
+      try {
+        collectives = await deps.fetchCollectives(
+          creds.serverUrl,
+          creds.apiKey,
+        );
+      } catch (error) {
+        if (isNotAuthenticatedError(error)) {
+          signedOut = true;
+        } else {
+          lookupFailure = error instanceof Error
+            ? error.message
+            : String(error);
+          ctx.logger
+            .debug`Could not fetch collectives from server, falling back to username check`;
+        }
+      }
 
-    // For reserved collectives, we MUST verify membership via the server
-    if (isReserved && !collectives) {
-      throw validationFailed(
-        `Extension uses reserved collective "@${collectivePart}". ` +
-          `Could not verify membership — please check your network connection and try again.`,
-      );
-    }
-
-    const isAllowed = collectives
-      ? collectives.includes(collectivePart)
-      : collectivePart === credentials.username;
-    if (!isAllowed) {
-      const collectivesList = collectives
-        ? collectives.map((c) => `@${c}`).join(", ")
-        : `@${credentials.username}`;
-      throw validationFailed(
-        `Extension collective "@${collectivePart}" is not one of your collectives (${collectivesList}). ` +
-          `Use one of: ${collectivesList}`,
-      );
+      if (signedOut) {
+        if (mode === "enforce") {
+          throw notAuthenticated();
+        }
+        credentialsUnavailable = AUTH_FAILED_REASON;
+        registryChecks.push(
+          {
+            name: "authentication",
+            status: "failed",
+            message: notAuthenticated().message,
+          },
+          registryCheckNotRun(
+            "reserved-collective",
+            "authentication-failed",
+            credentialsUnavailable,
+          ),
+          registryCheckNotRun(
+            "collective-membership",
+            "authentication-failed",
+            credentialsUnavailable,
+          ),
+        );
+      } else {
+        credentials = creds;
+        registryChecks.push(
+          lookupFailure !== undefined
+            ? registryCheckNotRun(
+              "authentication",
+              "registry-unavailable",
+              `registry did not answer: ${lookupFailure}`,
+            )
+            : {
+              name: "authentication",
+              status: "passed",
+              message: `Signed in as ${creds.username}.`,
+            },
+        );
+        const { reserved, membership } = evaluateCollectiveMembership({
+          extensionName: input.manifest.name,
+          collectives,
+          username: creds.username,
+        });
+        // For reserved collectives, membership MUST be verified by the server.
+        for (const check of [reserved, membership]) {
+          if (check.status === "failed" && mode === "enforce") {
+            throw validationFailed(check.message);
+          }
+        }
+        registryChecks.push(reserved, membership);
+      }
     }
   }
 
@@ -868,18 +1016,56 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 12. Check version (skip in dry-run)
-  if (!input.dryRun && credentials) {
-    const latest = await deps.getLatestVersion(
-      credentials.serverUrl,
-      input.manifest.name,
-      credentials.apiKey,
-    );
-    if (latest && latest.version === input.manifest.version) {
-      throw validationFailed(
-        `Version ${input.manifest.version} already exists for ${input.manifest.name}.`,
-        { existingVersion: latest.version },
+  // 12. The version must not be published on any channel. Runs after
+  // packaging, as it always has, so the cheaper local gates fire first.
+  if (mode !== "skip") {
+    if (!credentials) {
+      registryChecks.push(
+        registryCheckNotRun(
+          "version-exists",
+          credentialsUnavailable === AUTH_FAILED_REASON
+            ? "authentication-failed"
+            : "no-credentials",
+          credentialsUnavailable ?? NO_CREDENTIALS_REASON,
+        ),
       );
+    } else {
+      let published: PublishedVersion | null = null;
+      let lookupFailure: string | undefined;
+      try {
+        published = await deps.findPublishedVersion(
+          credentials.serverUrl,
+          input.manifest.name,
+          input.manifest.version,
+          credentials.apiKey,
+        );
+      } catch (error) {
+        if (mode === "enforce") {
+          throw error;
+        }
+        lookupFailure = error instanceof Error ? error.message : String(error);
+      }
+      if (lookupFailure !== undefined) {
+        registryChecks.push(
+          registryCheckNotRun(
+            "version-exists",
+            "registry-unavailable",
+            `registry lookup failed: ${lookupFailure}`,
+          ),
+        );
+      } else {
+        const check = evaluateVersionExists({
+          extensionName: input.manifest.name,
+          version: input.manifest.version,
+          published,
+        });
+        if (check.status === "failed" && mode === "enforce") {
+          throw validationFailed(check.message, {
+            existingVersion: input.manifest.version,
+          });
+        }
+        registryChecks.push(check);
+      }
     }
   }
 
@@ -902,7 +1088,18 @@ export async function extensionPushPrepare(
       skills: input.skillDirs.length,
     },
     isDryRun: input.dryRun,
+    registryChecks,
+    contentHash: input.contentHash,
   };
+}
+
+const NO_CREDENTIALS_REASON =
+  "no credentials; run 'swamp auth login' to sign in";
+const AUTH_FAILED_REASON = "authentication failed";
+
+function isNotAuthenticatedError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as SwampError).code === "not_authenticated";
 }
 
 // ── Push generator ────────────────────────────────────────────────────

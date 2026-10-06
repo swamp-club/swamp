@@ -442,9 +442,15 @@ Serve runs three background pollers to fix this:
   managedConfig is active, and without a sync service it checks only the hash.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
-- **RuntimeDataPoller** (`subdirs: ["data"]`) refreshes the `data/` subtree
-  (runtime model output), then invalidates the query catalog so the next
-  `data.query` rebuilds from the new local files.
+- **RuntimeDataPoller** (`subdirs: ["data", "auto-definitions"]`) refreshes the
+  `data/` subtree (runtime model output), then invalidates the query catalog so
+  the next `data.query` rebuilds from the new local files. It pulls
+  `auto-definitions/` in the same pull, because a definition a peer creates
+  while serve is running is looked up in the local cache: token authentication
+  resolves a server token's definition by name on every connection, and worker
+  enrollment runs the enrollment token's definition. Without it a token minted
+  on one instance was rejected by its peers until they restarted
+  (swamp-club#2481).
 
 All three run every 30 seconds by default (set with `swamp serve
 --datastore-poll-interval`, `SWAMP_DATASTORE_POLL_INTERVAL` or the `serve.yaml`
@@ -472,8 +478,10 @@ The RuntimeDataPoller gives **eventual visibility**, not immediate consistency.
 An idle peer sees committed output within one polling interval of it reaching
 the remote. Under steady run load it can take about four intervals: three
 skips, then an escalated cycle. The same bound applies to changes reaching the
-AccessDataPoller. The query catalog is invalidated only after a successful pull
-that reports changes, so quiet cycles keep fast cached reads.
+AccessDataPoller, and to a newly minted token being accepted by a peer: until
+the peer's next pull, it rejects the token as unknown. The query catalog is
+invalidated only after a successful pull that reports changes, so quiet cycles
+keep fast cached reads.
 
 ### SyncContext and SyncCapabilities
 

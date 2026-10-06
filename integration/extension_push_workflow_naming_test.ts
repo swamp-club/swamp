@@ -67,7 +67,7 @@ const prepareDeps: ExtensionPushPrepareDeps = {
   bundleEntryPoint: () => Promise.resolve("export const model = {};\n"),
   ensureDenoPath: () => Promise.resolve("unused-deno"),
   getDenoEnv: () => ({}),
-  getLatestVersion: () => Promise.resolve(null),
+  findPublishedVersion: () => Promise.resolve(null),
   getLatestVersionDetail: () => Promise.resolve(null),
 };
 
@@ -168,6 +168,7 @@ for (const variant of variants) {
         additionalFilePaths: resolved.additionalFilePaths,
         binaryFilePaths: resolved.binaryFilePaths,
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const prepared = await extensionPushPrepare(

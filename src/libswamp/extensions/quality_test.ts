@@ -125,6 +125,7 @@ function makePrepareInput(
     additionalFilePaths: [],
     binaryFilePaths: [],
     dryRun: true,
+    registryChecks: "skip",
     ...overrides,
   };
 }
@@ -199,7 +200,7 @@ function makePushPrepareDeps(
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/fake/deno"),
     getDenoEnv: () => ({}),
-    getLatestVersion: () => Promise.resolve(null),
+    findPublishedVersion: () => Promise.resolve(null),
     getLatestVersionDetail: () => Promise.resolve(null),
     ...overrides,
   };

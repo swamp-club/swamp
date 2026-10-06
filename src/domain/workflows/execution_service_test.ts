@@ -8050,6 +8050,9 @@ for (const target of ["name", "id", "direct"]) {
 class RecordingRunTracker implements RunTrackerRepository {
   readonly completions: { runId: string; status: ActiveRunStatus }[] = [];
 
+  /** The reason passed with each completion, in the same order. */
+  readonly completionReasons: (string | undefined)[] = [];
+
   readonly registrations: ActiveRun[] = [];
 
   /** What reactivate reports; false models a missing or finished row. */
@@ -8071,8 +8074,9 @@ class RecordingRunTracker implements RunTrackerRepository {
 
   heartbeat(_runId: string): void {}
 
-  complete(runId: string, status: ActiveRunStatus, _reason?: string): void {
+  complete(runId: string, status: ActiveRunStatus, reason?: string): void {
     this.completions.push({ runId, status });
+    this.completionReasons.push(reason);
   }
 
   markSettled(_runId: string, _reason: string): void {}
@@ -9714,6 +9718,45 @@ for (const purged of [false, true]) {
     });
   });
 }
+
+Deno.test("resume: a failed resume hands a settled row back with its reason (swamp-club#2917)", async () => {
+  await withTempDir(async (tempDir) => {
+    const tracker = new RecordingRunTracker();
+    const workflow = createArithmeticWorkflow(false);
+    const { executor, service } = await setupRetry(tempDir, workflow, tracker);
+    executor.failing.add("compute");
+    const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
+    tracker.existingRow = ActiveRun.fromData({
+      ...ActiveRun.createWorkflowRun({
+        id: failed.id,
+        workflowName: workflow.name,
+        pid: 1234,
+        hostname: hostname(),
+      }).toData(),
+      status: "interrupted",
+      settled: true,
+      cancelReason: "owner_process_dead",
+    });
+    const completions = tracker.completions.length;
+
+    executor.failing.clear();
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(tracker.completions.slice(completions), [
+      { runId: failed.id, status: "interrupted" },
+    ]);
+    assertEquals(tracker.completionReasons.slice(completions), [
+      "owner_process_dead",
+    ]);
+  });
+});
 
 Deno.test("resume: a failed resume of a suspended run hands a registered row back as suspended", async () => {
   await withTempDir(async (tempDir) => {

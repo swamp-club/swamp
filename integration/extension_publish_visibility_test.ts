@@ -152,6 +152,7 @@ for (
         additionalFilePaths: [],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
       let bundles = 0;
       const prepareDeps: ExtensionPushPrepareDeps = {
@@ -188,7 +189,7 @@ for (
         },
         ensureDenoPath: () => Promise.resolve("unused-deno"),
         getDenoEnv: () => ({}),
-        getLatestVersion: () => Promise.resolve(null),
+        findPublishedVersion: () => Promise.resolve(null),
         getLatestVersionDetail: () => Promise.resolve(null),
       };
       const hashInput = {

@@ -50,6 +50,11 @@ export interface ActiveRunData {
    * (`markSettled`). Read from the tracker only; never written by `toData`.
    */
   readonly settled?: boolean;
+  /**
+   * The reason stored with the row's terminal status, if any. Read from the
+   * tracker only; never written by `toData`.
+   */
+  readonly cancelReason?: string | null;
 }
 
 export class ActiveRun {
@@ -68,6 +73,8 @@ export class ActiveRun {
   readonly instanceId: string | undefined;
   /** Whether the run record behind an `interrupted` row has been settled. */
   readonly settled: boolean;
+  /** The reason stored with the row's terminal status, if any. */
+  readonly cancelReason: string | null;
 
   private constructor(data: ActiveRunData) {
     this.id = data.id;
@@ -83,6 +90,7 @@ export class ActiveRun {
     this.initiatedBy = data.initiatedBy ?? null;
     this.instanceId = data.instanceId;
     this.settled = data.settled ?? false;
+    this.cancelReason = data.cancelReason ?? null;
   }
 
   get status(): ActiveRunStatus {
