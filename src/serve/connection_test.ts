@@ -28,7 +28,11 @@ import {
   sanitizeErrorForClient,
   validateServerRequest,
 } from "./connection.ts";
-import { closeSession } from "./handlers/shared.ts";
+import {
+  closeSession,
+  setConnectionCollectives,
+  setConnectionLoginIdentity,
+} from "./handlers/shared.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
@@ -404,6 +408,63 @@ Deno.test("handleMessage cancel of another connection's run records who cancelle
   assertEquals(audit[0].resourceName, "run-7");
   assertEquals(audit[0].principalId, "adam");
   assertEquals(audit[0].detail, "workflow=deploy");
+});
+
+Deno.test("handleMessage audits a request and a cancel with the connection's login identity (swamp-club#3076)", async () => {
+  const registry = new ActiveRunRegistry();
+  registry.register({
+    runId: "run-9",
+    kind: "workflow-run",
+    resourceName: "deploy",
+    buffer: new RunEventBuffer(10),
+    controller: new AbortController(),
+    startedAt: new Date(),
+    completion: Promise.resolve(),
+    principalId: "user:someone-else",
+  });
+  const audit: AuditEvent[] = [];
+  const ctx = {
+    ...makeCtx(modeTokenConfig, [
+      makeGrant({
+        subject: { kind: "user", name: "adam" },
+        resource: { kind: "workflow", pattern: "deploy" },
+        actions: ["run"],
+      }),
+    ]),
+    activeRunRegistry: registry,
+    instanceId: "inst-1",
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+  const socket = mock as unknown as WebSocket;
+  setConnectionCollectives(socket, ["a-collective"], []);
+  setConnectionLoginIdentity(socket, {
+    email: "adam@example.com",
+    username: "adam-login",
+  });
+
+  handleMessage(
+    socket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "server.version", id: "req-v" })),
+    testPrincipal,
+  );
+  handleMessage(
+    socket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "cancel", id: "run-9" })),
+    testPrincipal,
+  );
+
+  await waitFor(() => audit.length >= 2, "request and cancel audited");
+  assertEquals(audit.map((e) => e.action).sort(), ["cancel", "server.version"]);
+  for (const event of audit) {
+    assertEquals(event.principalId, "adam");
+    assertEquals(event.principalUsername, "adam-login");
+    assertEquals(event.principalEmail, "adam@example.com");
+  }
 });
 
 Deno.test("handleMessage cancel refused for lack of a run grant is silent and audited", async () => {

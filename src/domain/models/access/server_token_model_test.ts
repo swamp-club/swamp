@@ -431,6 +431,48 @@ Deno.test("serverTokenModel: rotate preserves principal from original token", as
   assertEquals(token.principalEmail, "user@example.com");
 });
 
+Deno.test("serverTokenModel: rotate keeps the OAuth login identity (swamp-club#3076)", async () => {
+  const { context, store } = await mintToken();
+  store.set("token-main", {
+    ...store.get("token-main")!,
+    oauthIdentity: { email: "user@example.com", username: "user" },
+  });
+  await serverTokenModel.methods.rotate.execute({}, context);
+  assertEquals(store.get("token-main")!.oauthIdentity, {
+    email: "user@example.com",
+    username: "user",
+  });
+});
+
+Deno.test("serverTokenModel: a manual mint records no OAuth login identity, even when asked to (swamp-club#3076)", async () => {
+  const harness = createInMemoryWorkerContext(
+    SERVER_TOKEN_MODEL_TYPE,
+    "manual-token",
+  );
+  await serverTokenModel.methods.mint.execute(
+    {
+      ...mintArgs,
+      oauthIdentity: { email: "forged@example.com", username: "forged" },
+    } as typeof mintArgs,
+    harness.context,
+  );
+  assertEquals("oauthIdentity" in harness.store.get("token-main")!, false);
+});
+
+Deno.test("ServerTokenSchema: parses a record minted before the OAuth login identity existed", () => {
+  const parsed = ServerTokenSchema.parse({
+    name: "t",
+    state: "active",
+    principalId: "user:sub-1",
+    principalEmail: "user@example.com",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-02-01T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: "server-token-t",
+  });
+  assertEquals(parsed.oauthIdentity, undefined);
+});
+
 Deno.test("serverTokenModel: rotate respects custom durationMs", async () => {
   const { context, store } = await mintToken();
   await serverTokenModel.methods.rotate.execute(

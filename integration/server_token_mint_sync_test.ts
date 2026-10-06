@@ -450,3 +450,57 @@ Deno.test("createDeviceAuthDeps: mintServerToken records the fingerprint of the 
     }
   });
 });
+
+Deno.test("createDeviceAuthDeps: mintServerToken records the OAuth login identity (swamp-club#3076)", async () => {
+  await withTempDir(async (dir) => {
+    await writeTokenSecretsVault(dir);
+
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+    });
+    try {
+      const deps = createDeviceAuthDeps(
+        AUTH_CONFIG,
+        "test-client-secret",
+        dir,
+        repoContext,
+      );
+
+      const withUsername = await deps.mintServerToken(
+        "user:user-1",
+        "user@example.com",
+        [],
+        [],
+        dir,
+        repoContext,
+        "user-one",
+      );
+      assertEquals(
+        (await readServerTokenRecord(
+          repoContext,
+          withUsername.split(".")[0],
+        )).oauthIdentity,
+        { email: "user@example.com", username: "user-one" },
+      );
+
+      const withoutUsername = await deps.mintServerToken(
+        "user:user-2",
+        "two@example.com",
+        [],
+        [],
+        dir,
+        repoContext,
+      );
+      assertEquals(
+        (await readServerTokenRecord(
+          repoContext,
+          withoutUsername.split(".")[0],
+        )).oauthIdentity,
+        { email: "two@example.com" },
+      );
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
+});

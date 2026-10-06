@@ -29,6 +29,7 @@ import type {
   AuditOutcome,
 } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import {
   DeviceGrantPollError,
   type DeviceGrantResponse,
@@ -102,6 +103,7 @@ export interface DeviceAuthDeps {
     groups: string[],
     repoDir: string,
     repoContext: RepositoryContext,
+    username?: string,
   ) => Promise<string>;
   readonly storeAccessToken: (
     tokenName: string,
@@ -111,6 +113,8 @@ export interface DeviceAuthDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
   readonly sourceIp?: string;
+  /** Configured user names by id, for login events' username fallback. */
+  readonly resolvedUserNames?: Readonly<Record<string, string>>;
 }
 
 /** Route and response customizations for a browser-specific device flow. */
@@ -127,6 +131,7 @@ function emitAuthAuditEvent(
   principalId?: string,
   detail?: string,
   tokenName?: string,
+  userInfo?: Pick<OAuthUserInfo, "email" | "username">,
 ): AuditEvent | undefined {
   if (!deps.auditEmitter) return undefined;
   const event = buildAuditEvent({
@@ -140,6 +145,18 @@ function emitAuthAuditEvent(
     principalKind: principalId ? "user" : "anonymous",
     principalId: principalId ?? "anonymous",
     initiatedBy: principalId ? `user:${principalId}` : "anonymous",
+    actor: principalId && userInfo
+      ? resolveActorIdentity(
+        { kind: "user", id: principalId },
+        deps.resolvedUserNames,
+        {
+          email: userInfo.email,
+          ...(userInfo.username !== undefined
+            ? { username: userInfo.username }
+            : {}),
+        },
+      )
+      : undefined,
     sourceIp: deps.sourceIp ?? "unknown",
     requestId: crypto.randomUUID(),
     detail,
@@ -311,6 +328,8 @@ async function handleDeviceToken(
         "denied",
         userInfo.sub,
         admissionResult.reason,
+        undefined,
+        userInfo,
       );
       return jsonResponse(403, {
         error: "Not admitted",
@@ -330,6 +349,7 @@ async function handleDeviceToken(
           [...userInfo.groups],
           deps.repoDir,
           deps.repoContext,
+          userInfo.username,
         );
         span.setAttribute("token.name", minted.split(".")[0]);
         return minted;
@@ -356,6 +376,7 @@ async function handleDeviceToken(
       userInfo.sub,
       undefined,
       tokenName,
+      userInfo,
     );
     if (onAuthenticated) return await onAuthenticated(token);
     return jsonResponse(200, {
@@ -415,6 +436,7 @@ async function mintServerTokenImpl(
   defaultVault?: string,
   syncService?: DatastoreSyncService,
   namespace?: string,
+  username?: string,
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
@@ -480,6 +502,13 @@ async function mintServerTokenImpl(
         state: "active" as const,
         principalId,
         principalEmail,
+        // Only this OAuth login sets it, so audit events name a user by what
+        // the provider said rather than by an operator-typed email
+        // (swamp-club#3076).
+        oauthIdentity: {
+          email: principalEmail,
+          ...(username !== undefined ? { username } : {}),
+        },
         collectives,
         groups,
         createdAt: new Date(now).toISOString(),
@@ -575,6 +604,7 @@ export function createDeviceAuthDeps(
   auditEmitter?: AuditEmitter,
   instanceId?: string,
   sourceIp?: string,
+  resolvedUserNames?: Readonly<Record<string, string>>,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -592,6 +622,7 @@ export function createDeviceAuthDeps(
       groups: string[],
       rd: string,
       rc: RepositoryContext,
+      username?: string,
     ) =>
       // The mint writes a definition, a token resource and then pushes — one
       // unit that a poller pull must not interleave with (swamp-club#2247).
@@ -608,6 +639,7 @@ export function createDeviceAuthDeps(
           defaultVault,
           syncService,
           namespace,
+          username,
         )),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
@@ -623,5 +655,6 @@ export function createDeviceAuthDeps(
     auditEmitter,
     instanceId,
     sourceIp,
+    resolvedUserNames,
   };
 }

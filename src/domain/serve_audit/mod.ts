@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export {
+  type ActorIdentity,
   AUDIT_CATEGORIES,
   AUDIT_OUTCOMES,
   type AuditCategory,

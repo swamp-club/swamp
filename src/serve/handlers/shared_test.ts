@@ -36,6 +36,7 @@ import {
   closeConnectionsForPrincipal,
   closeSession,
   COMPRESSION_THRESHOLD_BYTES,
+  connectionActorIdentity,
   type ConnectionContext,
   decideSubjectAccess,
   emitRunCancelAudit,
@@ -57,6 +58,7 @@ import {
   send,
   setConnectionCollectives,
   setConnectionCompression,
+  setConnectionLoginIdentity,
   setConnectionSourceIp,
   setConnectionTeardown,
   setConnectionToken,
@@ -1354,6 +1356,84 @@ Deno.test("emitRunCancelAudit: records the cancel, its outcome and who made it",
   assertEquals(events[1].action, "cancel.all");
   assertEquals(events[1].principalKind, "anonymous");
   assertEquals(events[1].initiatedBy, "ghost");
+});
+
+Deno.test("emitRunCancelAudit: records the caller's login identity, falling back to the configured name (swamp-club#3076)", () => {
+  const events: AuditEvent[] = [];
+  const ctx = {
+    instanceId: "inst-1",
+    resolvedUserNames: { "u-admin": "admin-name" },
+    auditEmitter: { emit: (e: AuditEvent) => events.push(e) },
+  } as unknown as ConnectionContext;
+  const cancel = {
+    action: "cancel",
+    resourceKind: "workflow",
+    resourceName: "run-1",
+    sourceIp: "10.0.0.1",
+    requestId: "req-1",
+    outcome: "success" as const,
+  };
+
+  emitRunCancelAudit(ctx, {
+    ...cancel,
+    principal: makePrincipal("u-collective"),
+    loginIdentity: { email: "member@example.com" },
+  });
+  emitRunCancelAudit(ctx, {
+    ...cancel,
+    principal: makePrincipal("u-admin"),
+    loginIdentity: { email: "admin@example.com" },
+  });
+  emitRunCancelAudit(ctx, {
+    ...cancel,
+    principal: { kind: "worker", id: "runner" },
+  });
+
+  assertEquals(events[0].principalEmail, "member@example.com");
+  assertEquals("principalUsername" in events[0], false);
+  assertEquals(events[1].principalUsername, "admin-name");
+  assertEquals(events[1].principalEmail, "admin@example.com");
+  assertEquals("principalEmail" in events[2], false);
+  assertEquals("principalUsername" in events[2], false);
+});
+
+Deno.test("isAuthorized: a denial names a collective-admitted user by their login identity (swamp-club#3076)", () => {
+  const { socket } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  setConnectionLoginIdentity(socket, {
+    email: "member@example.com",
+    username: "member",
+  });
+  const ctx = makeCtx([]);
+  const audit = withAuditLog(ctx);
+
+  isAuthorized(
+    socket,
+    "req-1",
+    makePrincipal("sub-member"),
+    "run",
+    deployWorkflow,
+    ctx,
+  );
+
+  assertEquals(audit[0].principalId, "sub-member");
+  assertEquals(audit[0].principalUsername, "member");
+  assertEquals(audit[0].principalEmail, "member@example.com");
+});
+
+Deno.test("connectionActorIdentity: nothing known for a socket without a login identity", () => {
+  const { socket } = recordingSocket();
+  setConnectionLoginIdentity(socket, undefined);
+  assertEquals(
+    connectionActorIdentity(socket, makePrincipal("sub-1"), {}),
+    undefined,
+  );
+  assertEquals(
+    connectionActorIdentity(socket, makePrincipal("sub-1"), {
+      resolvedUserNames: { "sub-1": "alice" },
+    }),
+    { username: "alice" },
+  );
 });
 
 Deno.test("filterByResources: keeps an item only when every owner is allowed", async () => {

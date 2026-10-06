@@ -634,6 +634,68 @@ Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.denied on 
   );
 });
 
+Deno.test("handleDeviceAuth: login events and the minted token carry the provider's identity (swamp-club#3076)", async () => {
+  for (const admitted of [true, false]) {
+    const sink = createCollectingSink();
+    const emitter = new AuditEmitter([sink]);
+    const minted: (string | undefined)[] = [];
+    const deps = makeMockDeps({
+      auditEmitter: emitter,
+      getUserInfo: () =>
+        Promise.resolve({
+          sub: "user-1",
+          email: "user@example.com",
+          username: "user-one",
+          collectives: ["team-a"],
+          groups: [],
+        }),
+      checkAdmission: () => ({ admitted, reason: "test" }),
+      mintServerToken: (
+        _principalId,
+        _principalEmail,
+        _collectives,
+        _groups,
+        _repoDir,
+        _repoContext,
+        username,
+      ) => {
+        minted.push(username);
+        return Promise.resolve("oauth-user-1-1234567890.secret-token");
+      },
+    });
+    await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    await emitter.flush();
+
+    assertEquals(
+      sink.events[0].action,
+      admitted ? "auth.login.completed" : "auth.login.denied",
+    );
+    assertEquals(sink.events[0].principalUsername, "user-one");
+    assertEquals(sink.events[0].principalEmail, "user@example.com");
+    assertEquals(minted, admitted ? ["user-one"] : []);
+  }
+});
+
+Deno.test("handleDeviceAuth: a login without a provider username falls back to the configured name (swamp-club#3076)", async () => {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const deps = makeMockDeps({
+    auditEmitter: emitter,
+    resolvedUserNames: { "user-1": "configured-admin" },
+  });
+  await handleDeviceAuth(
+    postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+    deps,
+  );
+  await emitter.flush();
+
+  assertEquals(sink.events[0].principalUsername, "configured-admin");
+  assertEquals(sink.events[0].principalEmail, "user@example.com");
+});
+
 Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.expired on expired_token", async () => {
   const sink = createCollectingSink();
   const emitter = new AuditEmitter([sink]);

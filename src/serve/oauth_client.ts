@@ -41,6 +41,8 @@ export interface OAuthUserInfo {
   readonly sub: string;
   readonly email: string;
   readonly name?: string;
+  /** The provider's `preferred_username` claim, when it sends one. */
+  readonly username?: string;
   readonly collectives: string[];
   readonly groups: string[];
 }
@@ -185,6 +187,10 @@ export async function getUserInfo(
     sub: data.sub,
     email: data.email,
     name: data.name,
+    ...(typeof data.preferred_username === "string" &&
+        data.preferred_username
+      ? { username: data.preferred_username }
+      : {}),
     collectives,
     groups,
   };
