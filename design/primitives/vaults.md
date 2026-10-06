@@ -600,7 +600,8 @@ lines while an inch mark (`5"`) ends with its line. A single-quoted span that
 opens at a token boundary and closes on the same line is skipped, so quotes in
 shell code such as `tr -d '"'` open nothing; a reference inside one stays bare.
 Mid-word apostrophes (`don't`) are prose. This is a heuristic: a stray quote at a
-token boundary (`he said "ok`) still reads as an open string, and `$"…"` strings
+token boundary (`he said "ok`) still reads as an open string, a single quote
+attached mid-word (`-F'"'`) shields nothing on its own line, and `$"…"` strings
 and single-quoted strings spanning lines are not modelled. To hand a secret to a
 generated script reliably, export it into the script's environment instead of
 splicing it into the script text:

@@ -688,6 +688,20 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get use inside single quotes 
   );
 });
 
+Deno.test("VaultSecretBag.resolveForShell: a single quote attached mid-word does not shield a double quote on the same here-document line", () => {
+  // Known limit (swamp-club#3106): -F'"' starts no single-quoted span, so its
+  // double quote opens a string for the rest of that line only.
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  assertEquals(
+    bag.resolveForShell(
+      `cat <<EOF > gen.sh\nawk -F'"' -v k=${s} f\nset -- ${s}\nEOF`,
+    )
+      .command,
+    `cat <<EOF > gen.sh\nawk -F'"' -v k=\${__SWAMP_VAULT_0} f\nset -- "\${__SWAMP_VAULT_0}"\nEOF`,
+  );
+});
+
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
   const bag = new VaultSecretBag();
   const data = bag.addDataSecret("from-data");
