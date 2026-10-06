@@ -30,6 +30,8 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { containsExpression } from "../../domain/expressions/expression_parser.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
@@ -424,24 +426,30 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             name,
             gateWorkflow === this.workflowName
               ? `approval required: "${e.prompt}"`
-              : `approval required in nested workflow ${gateWorkflow}: "${e.prompt}"`,
+              : `approval required in nested workflow ${
+                escapeControlCharacters(gateWorkflow)
+              }: "${e.prompt}"`,
           ),
         );
         writeBlankLine();
         writeOutput(
           this.pipe.line(
             name,
-            `${
-              yellow("To approve:")
-            }  swamp workflow approve ${gateWorkflow} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
+            `${yellow("To approve:")}  swamp workflow approve ${
+              quoteShellWord(gateWorkflow)
+            } ${
+              quoteShellWord(e.stepId)
+            } --run ${e.runId}${this.commandTarget}`,
           ),
         );
         writeOutput(
           this.pipe.line(
             name,
-            `${
-              yellow("To reject:")
-            }   swamp workflow reject ${gateWorkflow} ${e.stepId} --run ${e.runId}${this.commandTarget}`,
+            `${yellow("To reject:")}   swamp workflow reject ${
+              quoteShellWord(gateWorkflow)
+            } ${
+              quoteShellWord(e.stepId)
+            } --run ${e.runId}${this.commandTarget}`,
           ),
         );
       },
@@ -761,7 +769,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "system",
             "Suspended",
             STATUS_COLORS.warn,
-            `workflow ${this.workflowName} — awaiting approval on step ${e.stepId}`,
+            `workflow ${
+              escapeControlCharacters(this.workflowName)
+            } — awaiting approval on step ${escapeControlCharacters(e.stepId)}`,
             formatTimestamp(),
           ),
         );
@@ -769,17 +779,19 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         writeOutput(
           this.pipe.line(
             "system",
-            `${
-              yellow("To approve:")
-            }  swamp workflow approve ${this.workflowName} ${e.stepId} --run ${e.run.id}${this.commandTarget}`,
+            `${yellow("To approve:")}  swamp workflow approve ${
+              quoteShellWord(this.workflowName)
+            } ${
+              quoteShellWord(e.stepId)
+            } --run ${e.run.id}${this.commandTarget}`,
           ),
         );
         writeOutput(
           this.pipe.line(
             "system",
-            `${
-              dim("After approval:")
-            }  swamp workflow resume ${this.workflowName} --run ${e.run.id}${this.commandTarget}`,
+            `${dim("After approval:")}  swamp workflow resume ${
+              quoteShellWord(this.workflowName)
+            } --run ${e.run.id}${this.commandTarget}`,
           ),
         );
       },

@@ -22,6 +22,7 @@ import type {
   DetachedNestedRunData,
 } from "../../libswamp/mod.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import type { CommandContext } from "../context.ts";
 import { formatCommandTarget } from "../remote_run.ts";
@@ -96,7 +97,9 @@ export function renderAwaitingParent(
 ): void {
   if (cliCtx.outputMode === "json" || cliCtx.verbosity === "quiet") return;
   writeOutput(
-    `Parent run ${parent.runId} of workflow ${parent.workflowName} waits on this run. Resume it with: ${
+    `Parent run ${parent.runId} of workflow ${
+      escapeControlCharacters(parent.workflowName)
+    } waits on this run. Resume it with: ${
       parentResumeCommand(parent, remote)
     }`,
   );

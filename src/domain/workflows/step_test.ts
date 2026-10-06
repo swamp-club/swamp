@@ -556,3 +556,45 @@ Deno.test("StepSchema: accepts writes field", () => {
   const step2 = Step.create({ name: "deploy-no-writes", task });
   assertEquals(step2.writes, undefined);
 });
+
+Deno.test("Step.create: rejects a name holding a control character, tab or newline", () => {
+  const task = StepTask.model("test-model", "run");
+  for (
+    const name of [
+      "deploy\u001b]0;pwned\u0007",
+      "a\u001bb",
+      "a\tb",
+      "a\nb",
+      "a\u007fb",
+      "a\u009bb",
+    ]
+  ) {
+    const error = assertThrows(() => Step.create({ name, task }));
+    assertStringIncludes(
+      String(error),
+      "Step name must not contain control characters, tab or newline; space is the only whitespace allowed",
+      JSON.stringify(name),
+    );
+  }
+});
+
+Deno.test("Step.create: accepts spaces, Unicode and forEach templates in a name", () => {
+  const task = StepTask.model("test-model", "run");
+  for (
+    const name of ["verify build", "déploiement ✓", "read-${{ self.plate }}"]
+  ) {
+    assertEquals(Step.create({ name, task }).name, name);
+  }
+});
+
+Deno.test("Step.fromData: rejects a persisted step whose name holds a control character", () => {
+  const data: StepInput = {
+    name: "gate\u001b",
+    task: { type: "model_method", modelIdOrName: "m", methodName: "run" },
+  };
+  const error = assertThrows(() => Step.fromData(data));
+  assertStringIncludes(
+    String(error),
+    "Step name must not contain control characters",
+  );
+});

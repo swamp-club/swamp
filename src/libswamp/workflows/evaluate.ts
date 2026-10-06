@@ -70,6 +70,7 @@ import {
   RunSensitiveValues,
   type WrittenReference,
 } from "../../domain/secrets/mod.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import {
   forEachNameWithoutSecrets,
   persistEvaluatedWorkflow,
@@ -410,7 +411,11 @@ async function evaluateWorkflowInternal(
 
         return {
           ...stepData,
-          name: forEachNameWithoutSecrets(expandedName, index, sensitiveValues),
+          // Matches ForEachExpansionService: an item value's control
+          // character is escaped, never a schema failure (swamp-club#3027).
+          name: escapeControlCharacters(
+            forEachNameWithoutSecrets(expandedName, index, sensitiveValues),
+          ),
           task: resolved.task,
           target: resolved.target,
           labels: resolved.labels,

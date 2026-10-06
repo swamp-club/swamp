@@ -18072,3 +18072,64 @@ Deno.test({
     });
   },
 });
+
+Deno.test("guard: a forEach item holding a control character does not fail a model.method() guard (swamp-club#3027)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class FalsyMethodExecutor implements StepExecutor {
+      executedSteps: string[] = [];
+
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+        if (ctx.stepName.startsWith("__guard_")) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new FalsyMethodExecutor();
+
+    const workflow = Workflow.create({
+      name: "foreach-guard-control-char",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "deploy-${{ self.host }}",
+              task: StepTask.model("infra", "create"),
+              forEach: { item: "host", in: "${{ inputs.hosts }}" },
+              guard: '${{ model.method("infra", "exists") }}',
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    // The item value, not the author, puts a newline into the expanded name.
+    const run = await service.execute(workflow.name, {
+      inputs: { hosts: ["a\nb"] },
+    });
+
+    assertEquals(run.status, "succeeded");
+    // Expansion escapes the newline, so the expanded name obeys the authored
+    // rule and the guard's synthetic step passes Step.create.
+    assertEquals(executor.executedSteps, [
+      "job1/__guard_deploy-a\\x0ab",
+      "job1/deploy-a\\x0ab",
+    ]);
+  });
+});

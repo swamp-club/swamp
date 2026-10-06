@@ -453,6 +453,14 @@ the job or step and points to `swamp workflow history logs <id>`
    the template for an older `forEach` record without `forEachTemplate`.
 6. Step names are unique across the workflow and across the stored run. The
    reset helper and the `steps.*` expression context key steps by name alone.
+7. Step and job names hold any printable character, with space as the only
+   whitespace: the schema refuses control characters, tab and newline
+   (`nodeName` in `src/domain/workflows/node_name.ts`, swamp-club#3027).
+   A forEach-expanded name is made printable where the expansion produces it,
+   so a control character in an item value becomes a visible escape rather
+   than a schema failure. Wherever a command hint prints a name,
+   `quoteShellWord` shell-quotes it, and writes a name that still holds a
+   control character (one from an older server) in escaped ANSI-C form.
 
 A retry also passes the structure check. The resolver runs these checks before
 anything starts. Serve therefore refuses before it registers the run or charges

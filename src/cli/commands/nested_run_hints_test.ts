@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   renderAwaitingParent,
   renderDetachedNestedRuns,
@@ -120,4 +120,34 @@ Deno.test("renderAwaitingParent: JSON mode prints nothing", () => {
     renderAwaitingParent(hintTestContext({ outputMode: "json" }), parent)
   );
   assertEquals(lines, []);
+});
+
+Deno.test("renderDetachedNestedRuns: through serve, a workflow name carrying an escape sequence never reaches stdout raw (swamp-club#3027)", () => {
+  const lines = captureStdout(() =>
+    renderDetachedNestedRuns(
+      hintTestContext(),
+      [{ ...detached, workflowName: "child\u001b]0;pwned\u0007" }],
+      { server: "ws://localhost:9090" },
+    )
+  );
+  assertEquals(lines, [
+    `Cancel nested run ${CHILD_RUN_ID} with: swamp workflow cancel $'child\\x1b]0;pwned\\x07' --run ${CHILD_RUN_ID} --server ws://localhost:9090`,
+  ]);
+  assertEquals(lines.join("\n").includes("\u001b"), false);
+});
+
+Deno.test("renderAwaitingParent: through serve, a workflow name carrying a plain ESC never reaches stdout raw", () => {
+  const lines = captureStdout(() =>
+    renderAwaitingParent(
+      hintTestContext(),
+      { ...parent, workflowName: "par\u001bent" },
+      { server: "ws://localhost:9090" },
+    )
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(
+    lines[0],
+    `swamp workflow resume $'par\\x1bent' --run ${PARENT_RUN_ID}`,
+  );
+  assertEquals(lines[0].includes("\u001b"), false);
 });

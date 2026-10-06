@@ -44,6 +44,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowApprovalsResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import type { WorkflowRunId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -138,7 +139,9 @@ export function renderApprovals(
             );
           } else if (!quiet) {
             writeOutput(
-              `  Nested run of ${item.parentRun.workflowName}: once this run finishes, swamp workflow resume ${
+              `  Nested run of ${
+                escapeControlCharacters(item.parentRun.workflowName)
+              }: once this run finishes, swamp workflow resume ${
                 quoteShellWord(item.parentRun.workflowName)
               } --run ${item.parentRun.runId}${target}`,
             );
