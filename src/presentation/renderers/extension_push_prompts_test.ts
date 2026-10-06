@@ -55,7 +55,7 @@ Deno.test("bumpVersionPrompt: names where the version is and that N exits withou
         "Version 2026.10.06.1 of @x/y already exists on channel 'beta'.",
         "  y = publish your local files as 2026.10.06.2 to 'beta'; " +
         "a review report for 2026.10.06.1 does not carry over to 2026.10.06.2",
-        "  N = exit now; nothing is pushed",
+        "  N = exit; nothing is pushed",
       ],
       question: "Bump to 2026.10.06.2 and publish it to 'beta'?",
     },

@@ -269,8 +269,24 @@ Deno.test("extensionPromote: from a manifest, an unpublished version is nothing 
   assertEquals(promoteCalls, 0);
 });
 
-Deno.test("extensionPromote: from a manifest, a version already at or above the target is nothing to promote", async () => {
-  for (const channel of ["stable", "rc"]) {
+Deno.test("extensionPromote: from a manifest, a version already on the target is nothing to promote", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({ version: "2026.06.10.1", channel: "stable" }),
+    promoteExtension: () => Promise.reject(new Error("unreachable")),
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "validation_failed",
+  );
+  assertEquals(
+    error.message,
+    "Nothing to promote: @test/ext@2026.06.10.1 is already on 'stable'.",
+  );
+});
+
+Deno.test("extensionPromote: from a manifest, a version above the target is nothing to promote", async () => {
+  for (const channel of ["stable"]) {
     const deps = fakeDeps({
       findPublishedVersion: () =>
         Promise.resolve({ version: "2026.06.10.1", channel }),

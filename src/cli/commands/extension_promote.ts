@@ -86,10 +86,27 @@ export function resolvePromoteTarget(
   return { kind: "manifest", path: target };
 }
 
+/**
+ * Adds a name hint to a manifest-not-found error. A single argument that is
+ * not `@collective/name` is read as a path, so a mistyped name with its
+ * version left off would otherwise only hear that no manifest exists.
+ */
+export function withExtensionNameHint(error: unknown): unknown {
+  if (
+    error instanceof UserError &&
+    error.message.startsWith("Manifest file not found:")
+  ) {
+    // Same error object, so the paths marked for redaction stay marked.
+    error.message +=
+      "\nIf you meant an extension name, pass @collective/name <version>.";
+  }
+  return error;
+}
+
 export const extensionPromoteCommand = new Command()
   .name("promote")
   .description(
-    "Promote an extension version to a higher release channel (beta→rc, beta→stable, rc→stable)",
+    "Promote an extension version to a higher release channel (beta→rc, beta→stable, rc→stable), by name and version or from a manifest path",
   )
   .example(
     "Promote beta to rc",
@@ -141,12 +158,17 @@ export const extensionPromoteCommand = new Command()
     let version: string;
     const fromManifest = promoteTarget.kind === "manifest";
     if (promoteTarget.kind === "manifest") {
-      const { absoluteManifestPath } = await resolveManifestArgument({
-        argument: promoteTarget.path,
-        cwd: Deno.cwd(),
-        repoDir: resolveRepoDir(options.repoDir),
-        extensionsDir: resolveExtensionsDir(options.extensionsDir),
-      });
+      let absoluteManifestPath: string;
+      try {
+        ({ absoluteManifestPath } = await resolveManifestArgument({
+          argument: promoteTarget.path,
+          cwd: Deno.cwd(),
+          repoDir: resolveRepoDir(options.repoDir),
+          extensionsDir: resolveExtensionsDir(options.extensionsDir),
+        }));
+      } catch (error) {
+        throw withExtensionNameHint(error);
+      }
       const manifest = parseExtensionManifest(
         await Deno.readTextFile(absoluteManifestPath),
       );

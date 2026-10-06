@@ -212,12 +212,12 @@ export async function* extensionPromote(
             ReleaseChannel.create(input.toChannel),
           )
         ) {
+          const where = published.channel === input.toChannel
+            ? `is already on '${input.toChannel}'.`
+            : `is on channel '${published.channel}', which is not below '${input.toChannel}'.`;
           yield {
             kind: "error",
-            error: validationFailed(
-              `Nothing to promote: ${ref} is on channel '${published.channel}', ` +
-                `which is not below '${input.toChannel}'.`,
-            ),
+            error: validationFailed(`Nothing to promote: ${ref} ${where}`),
           };
           return;
         }

@@ -77,7 +77,7 @@ export function bumpVersionPrompt(input: {
       `Version ${input.version} of ${input.name} already exists on channel '${input.existingChannel}'${where}`,
       `  y = publish your local files as ${input.bumpedVersion} to '${input.requestedChannel}'; ` +
       `a review report for ${input.version} does not carry over to ${input.bumpedVersion}`,
-      "  N = exit now; nothing is pushed",
+      "  N = exit; nothing is pushed",
     ],
     question:
       `Bump to ${input.bumpedVersion} and publish it to '${input.requestedChannel}'?`,

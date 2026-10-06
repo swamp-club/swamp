@@ -19,7 +19,10 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
-import { resolvePromoteTarget } from "./extension_promote.ts";
+import {
+  resolvePromoteTarget,
+  withExtensionNameHint,
+} from "./extension_promote.ts";
 
 Deno.test("resolvePromoteTarget: a scoped name with a version is the name form, as before", () => {
   assertEquals(resolvePromoteTarget("@myorg/ext", "2026.06.10.1"), {
@@ -75,4 +78,25 @@ Deno.test("resolvePromoteTarget: --from-channel still works with a name", () => 
     name: "@myorg/ext",
     version: "2026.06.10.1",
   });
+});
+
+Deno.test("withExtensionNameHint: a missing manifest suggests the name form", () => {
+  const error = withExtensionNameHint(
+    new UserError(
+      "Manifest file not found: myorg/ext (looked in /r/myorg/ext)",
+    ),
+  ) as UserError;
+  assertEquals(
+    error.message,
+    "Manifest file not found: myorg/ext (looked in /r/myorg/ext)\n" +
+      "If you meant an extension name, pass @collective/name <version>.",
+  );
+});
+
+Deno.test("withExtensionNameHint: other errors pass through unchanged", () => {
+  const error = new UserError("No manifest.yaml found in /r/ext");
+  assertEquals(
+    (withExtensionNameHint(error) as UserError).message,
+    "No manifest.yaml found in /r/ext",
+  );
 });
