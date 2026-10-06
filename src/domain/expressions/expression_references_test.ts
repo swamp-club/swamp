@@ -21,8 +21,8 @@ import { assertEquals } from "@std/assert";
 import {
   analyzeContentExpressions,
   analyzeExpression,
+  definitionRetargetSourcesChanged,
   expressionsAddedByEdit,
-  plainContentChanged,
 } from "./expression_references.ts";
 
 function targets(cel: string) {
@@ -214,7 +214,7 @@ Deno.test("analyzeContentExpressions: keys each expression by its raw text", () 
         c: "${{ env.HOME }}-${{ env.HOME }}",
       },
     },
-    [{ raw: "1 == 1", celExpression: "1 == 1" }],
+    [{ raw: "1 == 1", celExpression: "1 == 1", path: "assert" }],
   );
   assertEquals(analyzed.map((a) => a.raw).sort(), [
     '${{ data.latest("prod", "x") }}',
@@ -257,15 +257,58 @@ Deno.test("expressionsAddedByEdit: a retarget re-checks only self- or inputs-com
   assertEquals(expressionsAddedByEdit(before, after, false), []);
 });
 
-Deno.test("plainContentChanged: ignores expression text and key order, sees plain values", () => {
+Deno.test("expressionsAddedByEdit: a self-computed expression at a new path is checked", () => {
+  const computed = '${{ data.latest(self.item, "s") }}';
+  const literal = '${{ data.latest("dev", "s") }}';
+  const before = contentOf({ a: computed, b: literal });
+  // The same text copied to another place, where self may differ.
+  const after = contentOf({ a: computed, c: computed, b: literal, d: literal });
   assertEquals(
-    plainContentChanged({ a: "1", b: "2" }, { b: "2", a: "1" }),
-    false,
+    expressionsAddedByEdit(before, after, false).map((e) => e.raw),
+    [computed],
+  );
+});
+
+Deno.test("definitionRetargetSourcesChanged: what self and inputs read, expression text included", () => {
+  const base = {
+    name: "m",
+    tags: {},
+    globalArguments: { target: '${{ "public" }}' },
+    methods: { run: { arguments: { x: "1" } } },
+  };
+  assertEquals(
+    definitionRetargetSourcesChanged(base, {
+      ...base,
+      globalArguments: { target: '${{ "secret" }}' },
+    }),
+    true,
   );
   assertEquals(
-    plainContentChanged({ a: "x ${{ env.A }}" }, { a: "x ${{ env.B }}" }),
+    definitionRetargetSourcesChanged(base, { ...base, tags: { a: "b" } }),
+    true,
+  );
+  // Method arguments are not part of self.
+  assertEquals(
+    definitionRetargetSourcesChanged(base, {
+      ...base,
+      methods: { run: { arguments: { x: "2" } } },
+    }),
     false,
   );
-  assertEquals(plainContentChanged({ a: "x" }, { a: "y" }), true);
-  assertEquals(plainContentChanged({ a: ["x"] }, { a: ["x", "y"] }), true);
+  // Key order is not a change.
+  assertEquals(
+    definitionRetargetSourcesChanged(
+      { ...base, globalArguments: { a: "1", b: "2" } },
+      { ...base, globalArguments: { b: "2", a: "1" } },
+    ),
+    false,
+  );
+});
+
+Deno.test("analyzeExpression: text that does not parse is assumed to read everything", () => {
+  const r = analyzeExpression("env.(");
+  assertEquals(r.dataWide, true);
+  assertEquals(r.usesEnv, true);
+  assertEquals(r.readsSelfOrInputs, true);
+  assertEquals(r.runsComputed, true);
 });

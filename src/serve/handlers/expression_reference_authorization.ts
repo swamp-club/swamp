@@ -92,6 +92,16 @@ export async function authorizeExpressionReferences(
       "data",
       ctx,
     );
+  let allModelsReadable: boolean | undefined;
+  const readsAllModels = () =>
+    allModelsReadable ??= isAuthorizedForAll(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "model",
+      ctx,
+    );
   const distinct = new Set<string>();
   for (const { references } of expressions) {
     for (const t of references.dataTargets) distinct.add(`data:${t}`);
@@ -109,10 +119,15 @@ export async function authorizeExpressionReferences(
       };
     }
     let allowed = true;
-    if (references.dataWide || tooMany) {
+    if (tooMany) {
+      // Past the cap no target is looked up one by one: the expressions are
+      // judged as reading any data, and any model they name.
+      allowed = readsAllData() &&
+        (references.modelTargets.size === 0 || readsAllModels());
+    } else if (references.dataWide) {
       allowed = readsAllData();
     }
-    for (const target of references.dataTargets) {
+    for (const target of tooMany ? [] : references.dataTargets) {
       if (!allowed) break;
       // A namespace prefix names another repository's data, which no
       // definition here describes; judge it as reading any data.
@@ -135,7 +150,7 @@ export async function authorizeExpressionReferences(
           ),
       );
     }
-    for (const target of references.modelTargets) {
+    for (const target of tooMany ? [] : references.modelTargets) {
       if (!allowed) break;
       allowed = await memo(
         checked,
@@ -147,7 +162,8 @@ export async function authorizeExpressionReferences(
     if (!allowed) {
       return {
         message: `Access denied: expression ${shown(raw)} reads data ` +
-          `that is not readable here`,
+          `that is not readable here; ask an admin for read on the data ` +
+          `it references`,
       };
     }
   }
@@ -155,10 +171,10 @@ export async function authorizeExpressionReferences(
 }
 
 /** Longest expression text quoted in a refusal. */
-const MAX_SHOWN = 120;
+export const MAX_SHOWN = 120;
 
 /** `raw` for an error message, shortened past {@link MAX_SHOWN}. */
-function shown(raw: string): string {
+export function shown(raw: string): string {
   const flat = raw.replace(/\s+/g, " ");
   return flat.length > MAX_SHOWN ? `${flat.slice(0, MAX_SHOWN)}…` : flat;
 }

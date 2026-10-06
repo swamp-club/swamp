@@ -853,3 +853,70 @@ Deno.test("serve expressions: every definition sharing a name is judged", async 
     });
   });
 });
+
+Deno.test("serve expressions: changing a global argument's expression retargets what self reads", async () => {
+  await withFixtures(async (f) => {
+    const leak = '${{ data.latest(self.globalArguments.target, "state") }}';
+    await saveWithArgs(f.repo, "dev-x", { target: '${{ "dev-db" }}', leak });
+    // Edit the stored copy, so the expression is the only thing that changes.
+    const target = (await f.repo.repoContext.definitionRepo.findByNameGlobal(
+      "dev-x",
+    ))!.definition;
+    assertRefused(
+      await sendRequest(
+        f.ctx,
+        editRequest(target, {
+          globalArguments: { target: '${{ "prod-db" }}', leak },
+        }),
+      ),
+      "expression swap in a self-read field",
+    );
+  });
+});
+
+Deno.test("serve expressions: a self-reading expression copied to another step is checked there", async () => {
+  await withStepFixtures(async (f) => {
+    const leak = '${{ data.latest(self.e, "state") }}';
+    const flow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "loops",
+        version: 1,
+        jobs: [{
+          name: "main",
+          steps: [
+            {
+              name: "a",
+              forEach: { item: "e", in: '${{ ["dev-db"] }}' },
+              task: {
+                type: "model_method",
+                modelIdOrName: "dev-db",
+                methodName: "noop",
+                inputs: { x: leak },
+              },
+            },
+            {
+              name: "b",
+              forEach: { item: "e", in: '${{ ["prod-db"] }}' },
+              task: {
+                type: "model_method",
+                modelIdOrName: "dev-db",
+                methodName: "noop",
+              },
+            },
+          ],
+        }],
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+    await f.repo.repoContext.workflowRepo.save(flow);
+    assertRefused(
+      await editWorkflow(f.ctx, flow, (data) => {
+        data.jobs[0].steps[1].task = {
+          ...(data.jobs[0].steps[1].task as Record<string, unknown>),
+          inputs: { x: leak },
+        };
+      }),
+      "copied into a step iterating prod-db",
+    );
+  });
+});

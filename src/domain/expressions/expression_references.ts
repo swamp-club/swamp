@@ -35,7 +35,6 @@
 import { type ASTNode, Environment } from "cel-js";
 import { BINDING_MACROS, transformHyphenatedModelRefs } from "./cel_grammar.ts";
 import { extractExpressions } from "./expression_parser.ts";
-import { scanExpressions } from "./expression_scanner.ts";
 
 /**
  * Data accessors whose first argument names the model they read. The other
@@ -105,9 +104,17 @@ export interface ExpressionReferences {
 export interface AnalyzedExpression {
   /** The raw `${{ ... }}` text, as `collectAuthoredExpressions` keys it. */
   readonly raw: string;
+  /** Every path in the content where this text appears. */
+  readonly paths: readonly string[];
   readonly references: ExpressionReferences;
 }
 
+/**
+ * Must parse exactly as the evaluator's environment does
+ * (`src/infrastructure/cel/cel_evaluator.ts`): an expression this reads
+ * differently from evaluation would be authorized on the wrong references.
+ * Text it cannot parse is assumed to read everything.
+ */
 const GRAMMAR = new Environment({
   unlistedVariablesAreDyn: true,
   enableOptionalTypes: true,
@@ -142,6 +149,8 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     // fail closed rather than guess what it reads.
     acc.dataWide = true;
     acc.runsComputed = true;
+    acc.usesEnv = true;
+    acc.readsSelfOrInputs = true;
     return acc;
   }
   visit(ast, new Set(), acc);
@@ -150,74 +159,95 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
 
 /**
  * Analyzes every `${{ }}` expression in content, keyed by raw text as
- * `collectAuthoredExpressions` keys it. `extra` adds bare CEL that is
- * evaluated without `${{ }}` (a workflow assert's `task.expr`).
+ * `collectAuthoredExpressions` keys it, with every path it appears at.
+ * `extra` adds bare CEL that is evaluated without `${{ }}` (a workflow
+ * assert's `task.expr`).
  */
 export function analyzeContentExpressions(
   data: unknown,
-  extra: Iterable<{ raw: string; celExpression: string }> = [],
+  extra: Iterable<{ raw: string; celExpression: string; path: string }> = [],
 ): AnalyzedExpression[] {
-  const seen = new Map<string, AnalyzedExpression>();
-  const add = (raw: string, cel: string) => {
-    if (!seen.has(raw)) {
-      seen.set(raw, { raw, references: analyzeExpression(cel) });
+  const seen = new Map<
+    string,
+    { raw: string; paths: string[]; references: ExpressionReferences }
+  >();
+  const add = (raw: string, cel: string, path: string) => {
+    const found = seen.get(raw);
+    if (found) {
+      found.paths.push(path);
+      return;
     }
+    seen.set(raw, { raw, paths: [path], references: analyzeExpression(cel) });
   };
   for (const expr of extractExpressions(data)) {
-    add(expr.raw, expr.celExpression);
+    add(expr.raw, expr.celExpression, expr.path);
   }
-  for (const expr of extra) add(expr.raw, expr.celExpression);
+  for (const expr of extra) add(expr.raw, expr.celExpression, expr.path);
   return [...seen.values()];
 }
 
 /**
- * The expressions an edit must be authorized for: every expression whose raw
- * text the stored content does not already hold, and, when `retargeted` (the
- * edit changed a value that `self` or `inputs` reads), every stored
- * expression that reads data through `self` or `inputs`, since that value can
- * point it elsewhere (swamp-club#2755). An expression with a literal target is
- * never re-checked, so an edit to an unrelated field of a model that already
- * reads other data is unaffected.
+ * The expressions an edit must be authorized for (swamp-club#2755):
+ *
+ * - every expression whose raw text the stored content does not hold;
+ * - an expression that reads data through a target computed from `self` or
+ *   `inputs`, when it appears at a path where the stored content did not
+ *   have it, since what `self` holds depends on where it is evaluated;
+ * - every such expression, when `retargeted`: the edit changed a value
+ *   `self` or `inputs` reads, expression text included, so a stored target
+ *   computed from it can point elsewhere.
+ *
+ * An expression with a literal target is never re-checked, so an edit to an
+ * unrelated field of a model that already reads other data is unaffected.
  */
 export function expressionsAddedByEdit(
   before: readonly AnalyzedExpression[],
   after: readonly AnalyzedExpression[],
   retargeted: boolean,
 ): AnalyzedExpression[] {
-  const stored = new Set(before.map((e) => e.raw));
-  return after.filter((e) =>
-    !stored.has(e.raw) ||
-    (retargeted && e.references.dataWide && e.references.readsSelfOrInputs)
-  );
-}
-
-/** Whether an edit from `before` to `after` changes any non-expression value. */
-export function plainContentChanged(before: unknown, after: unknown): boolean {
-  return JSON.stringify(withoutExpressions(before)) !==
-    JSON.stringify(withoutExpressions(after));
-}
-
-/** `data` with every `${{ }}` span removed from its strings, keys sorted. */
-function withoutExpressions(data: unknown): unknown {
-  if (typeof data === "string") {
-    let out = "";
-    let from = 0;
-    for (const span of scanExpressions(data)) {
-      out += data.slice(from, span.start);
-      from = span.end;
+  const stored = new Map(before.map((e) => [e.raw, new Set(e.paths)]));
+  return after.filter((e) => {
+    const storedPaths = stored.get(e.raw);
+    if (!storedPaths) return true;
+    if (!e.references.dataWide || !e.references.readsSelfOrInputs) {
+      return false;
     }
-    return out + data.slice(from);
-  }
-  if (Array.isArray(data)) return data.map(withoutExpressions);
-  if (data !== null && typeof data === "object") {
-    // Keys sorted, so reordering a mapping is not a change of value.
-    return Object.fromEntries(
-      Object.entries(data)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, withoutExpressions(v)]),
-    );
-  }
-  return data;
+    return retargeted || e.paths.some((path) => !storedPaths.has(path));
+  });
+}
+
+/**
+ * Whether a definition edit changes what `self` or `inputs` read in its
+ * expressions: its name, version, tags, global arguments or inputs, with
+ * expression text included, since global-argument expressions are evaluated
+ * before `self.globalArguments` is read. Method arguments are not among
+ * them, so editing those alone retargets nothing.
+ */
+export function definitionRetargetSourcesChanged(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): boolean {
+  const sources = (d: Record<string, unknown>) => ({
+    name: d.name ?? null,
+    version: d.version ?? null,
+    tags: d.tags ?? null,
+    globalArguments: d.globalArguments ?? null,
+    inputs: d.inputs ?? null,
+  });
+  return canonicalJson(sources(before)) !== canonicalJson(sources(after));
+}
+
+/** JSON with object keys sorted, so key order is not a change. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, v) =>
+      v !== null && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(
+          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+        : v,
+  );
 }
 
 function isFree(node: ASTNode, name: string, bound: ReadonlySet<string>) {

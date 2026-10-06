@@ -303,7 +303,7 @@ async function authorizeWorkflowEdit(
       ),
       ...expressionRuns,
     ],
-    added.some(({ references }) => references.runsComputed),
+    added.find(({ references }) => references.runsComputed)?.raw,
   );
 }
 

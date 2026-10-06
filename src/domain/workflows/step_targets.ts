@@ -29,6 +29,7 @@ import {
   analyzeContentExpressions,
   type AnalyzedExpression,
   analyzeExpression,
+  canonicalJson,
 } from "../expressions/expression_references.ts";
 import { scanExpressions } from "../expressions/expression_scanner.ts";
 import type { Workflow } from "./workflow.ts";
@@ -91,15 +92,19 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
 export function analyzeWorkflowExpressions(
   workflow: Workflow,
 ): AnalyzedExpression[] {
-  const asserts: { raw: string; celExpression: string }[] = [];
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
+  const asserts: { raw: string; celExpression: string; path: string }[] = [];
+  workflow.jobs.forEach((job, j) =>
+    job.steps.forEach((step, k) => {
       const task = step.task.data;
       if (task.type === "assert") {
-        asserts.push({ raw: task.expr, celExpression: task.expr });
+        asserts.push({
+          raw: task.expr,
+          celExpression: task.expr,
+          path: `jobs[${j}].steps[${k}].task.expr`,
+        });
       }
-    }
-  }
+    })
+  );
   return analyzeContentExpressions(workflow.toData(), asserts);
 }
 
@@ -113,8 +118,8 @@ export function stepRetargetSourcesChanged(
   before: Workflow,
   after: Workflow,
 ): boolean {
-  return canonical(retargetSources(before)) !==
-    canonical(retargetSources(after));
+  return canonicalJson(retargetSources(before)) !==
+    canonicalJson(retargetSources(after));
 }
 
 function retargetSources(workflow: Workflow): unknown {
@@ -128,19 +133,6 @@ function retargetSources(workflow: Workflow): unknown {
       (job.steps ?? []).map((step) => step.forEach ?? null)
     ),
   };
-}
-
-/** JSON with object keys sorted, so key order is not a change. */
-function canonical(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, v) =>
-      v !== null && typeof v === "object" && !Array.isArray(v)
-        ? Object.fromEntries(
-          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-        )
-        : v,
-  );
 }
 
 /** A stable key for comparing targets across two versions of a workflow. */

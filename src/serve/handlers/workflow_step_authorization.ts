@@ -45,6 +45,7 @@ import {
   isAuthorized,
   isAuthorizedForAll,
 } from "./shared.ts";
+import { shown } from "./expression_reference_authorization.ts";
 
 /**
  * Checks each target against `principal`. Returns a refusal message for the
@@ -58,20 +59,21 @@ export async function authorizeStepTargets(
   principal: Principal | null,
   ctx: ConnectionContext,
   targets: readonly StepTarget[],
-  runsComputedModel = false,
+  computedModelRun?: string,
 ): Promise<string | undefined> {
   // An expression that runs a model it computes (`model.method(inputs.m,
   // ...)`) can run any model, as a computed step target can.
   if (
-    runsComputedModel &&
+    computedModelRun !== undefined &&
     !isAuthorized(socket, requestId, principal, "admin", {
       kind: "access",
       name: "*",
       fields: {},
     }, ctx)
   ) {
-    return "Access denied: an expression added here runs a model method " +
-      "it computes, which needs admin";
+    return `Access denied: expression ${
+      shown(computedModelRun)
+    } runs a model method it computes, which needs admin`;
   }
   for (const target of targets) {
     if (!await stepAllowed(socket, requestId, principal, ctx, target)) {

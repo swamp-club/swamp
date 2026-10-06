@@ -726,11 +726,15 @@ from the AST evaluation parses) and
   run inputs it needs `write` on the model run; a run-only caller is refused
   and told to reference env in the definition. `evaluate` and `validate` never
   resolve env, which is resolved only when a method runs.
-- **Retargeting.** A model edit that changes a plain (non-expression) value
-  re-checks stored expressions that read data through a target computed from
-  `self` or `inputs`, so changing `target: dev-db` to `prod-db` under
-  `data.latest(self.globalArguments.target, ...)` is refused. A workflow edit
-  re-checks them only when its inputs or a step's `forEach` change.
+- **Retargeting.** A stored expression that reads data through a target
+  computed from `self` or `inputs` is re-checked when an edit could point it
+  elsewhere: a model edit that changes its name, version, tags, global
+  arguments or inputs (expression text included, since global-argument
+  expressions are evaluated before `self.globalArguments` is read), a workflow
+  edit that changes its inputs or a step's `forEach`, or an edit that places
+  the same text somewhere it was not, where `self` may differ. So changing
+  `target: ${{ "dev-db" }}` to `${{ "prod-db" }}` under
+  `data.latest(self.globalArguments.target, ...)` is refused.
 - **Refusals** name the expression as sent, with the same wording whether the
   target exists or is denied, and are audited like other denials. Auth mode
   `none` and admins are not checked, as everywhere else.
