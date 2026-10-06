@@ -27,19 +27,18 @@ import { hostname } from "node:os";
  * beyond their hostname: every Linux host's root pid namespace has the same
  * id. Callers rely on what it judges being local, as the data catalog is.
  * Falls back to the hostname alone when the namespace cannot be read.
+ *
+ * The namespace is read through libc over FFI: Deno only lets a process read
+ * /proc with --allow-all, which the compiled binary does not have, while
+ * --allow-ffi it does.
  */
 export function processHostIdentity(): string {
   if (cachedHostIdentity === undefined) {
     const host = hostname();
     cachedHostIdentity = host;
     if (Deno.build.os === "linux") {
-      try {
-        cachedHostIdentity = `${host}#${
-          Deno.readLinkSync("/proc/self/ns/pid")
-        }`;
-      } catch {
-        // Hostname alone
-      }
+      const namespace = linuxPidNamespace();
+      if (namespace !== undefined) cachedHostIdentity = `${host}#${namespace}`;
     }
   }
   return cachedHostIdentity;
@@ -79,22 +78,19 @@ export function isProcessDead(pid: number): boolean {
  * another user is not signalled at all (permission denied reads as alive).
  * Linux first checks `/proc/<pid>`, which sends nothing, and only probes
  * with SIGURG when the entry is missing, since `/proc` mounted with
- * `hidepid` hides other users' live processes. A pid reused as a thread id
- * also resolves under `/proc` and reads as alive, which errs on the safe
- * side. Windows uses `tasklist`. Returns `false` (not dead) on any
- * unexpected error.
+ * `hidepid` hides other users' live processes. The check goes through libc
+ * over FFI, as Deno refuses `/proc` without --allow-all; when libc cannot be
+ * loaded the SIGURG probe decides alone. A pid reused as a thread id also
+ * resolves under `/proc` and reads as alive, which errs on the safe side.
+ * Windows uses `tasklist`. Returns `false` (not dead) on any unexpected
+ * error.
  */
 export function isProcessGone(pid: number): boolean {
   if (Deno.build.os === "windows") {
     return isProcessDeadWindows(pid);
   }
-  if (Deno.build.os === "linux") {
-    try {
-      Deno.statSync(`/proc/${pid}`);
-      return false;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) return false;
-    }
+  if (Deno.build.os === "linux" && linuxProcEntryExists(pid)) {
+    return false;
   }
   try {
     Deno.kill(pid, "SIGURG");
@@ -102,6 +98,63 @@ export function isProcessGone(pid: number): boolean {
   } catch (error) {
     return error instanceof Deno.errors.NotFound;
   }
+}
+
+// libc (Linux), for reading /proc past Deno's --allow-all requirement.
+const LINUX_LIBC_SYMBOLS = {
+  access: { parameters: ["buffer", "i32"], result: "i32" },
+  readlink: { parameters: ["buffer", "buffer", "usize"], result: "isize" },
+} as const;
+
+type LinuxLibc = Deno.DynamicLibrary<typeof LINUX_LIBC_SYMBOLS>;
+
+const F_OK = 0;
+/** Ample for a namespace link, which reads like `pid:[4026531836]`. */
+const NAMESPACE_LINK_MAXSIZE = 256;
+
+/** Runs `use` against libc, or returns undefined when it cannot be loaded. */
+function withLinuxLibc<T>(use: (lib: LinuxLibc) => T): T | undefined {
+  let lib: LinuxLibc;
+  try {
+    lib = Deno.dlopen("libc.so.6", LINUX_LIBC_SYMBOLS);
+  } catch {
+    return undefined;
+  }
+  try {
+    return use(lib);
+  } catch {
+    return undefined;
+  } finally {
+    lib.close();
+  }
+}
+
+function cString(value: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(`${value}\0`);
+}
+
+/** Whether `/proc/<pid>` exists; false as well when libc is unavailable. */
+function linuxProcEntryExists(pid: number): boolean {
+  return withLinuxLibc((lib) =>
+    lib.symbols.access(cString(`/proc/${pid}`), F_OK) === 0
+  ) ?? false;
+}
+
+/** This process's pid namespace, or undefined when it cannot be read. */
+function linuxPidNamespace(): string | undefined {
+  return withLinuxLibc((lib) => {
+    const buffer = new Uint8Array(NAMESPACE_LINK_MAXSIZE);
+    const length = Number(
+      lib.symbols.readlink(
+        cString("/proc/self/ns/pid"),
+        buffer,
+        BigInt(NAMESPACE_LINK_MAXSIZE),
+      ),
+    );
+    // A full buffer may be a truncated link; treat it as unreadable.
+    if (length <= 0 || length >= NAMESPACE_LINK_MAXSIZE) return undefined;
+    return new TextDecoder().decode(buffer.subarray(0, length));
+  });
 }
 
 const MIN_RECOMMENDED_NOFILE = 8192;

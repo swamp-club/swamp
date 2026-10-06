@@ -34,9 +34,14 @@ Deno.test("isProcessGone: false for a live process, true for a pid no process ca
   assertEquals(isProcessGone(2147483647), true);
 });
 
-Deno.test("processHostIdentity: is the hostname, plus the pid namespace on Linux when readable", () => {
+Deno.test("isProcessGone: false for a live process of another user", () => {
+  if (Deno.build.os === "windows") return;
+  assertEquals(isProcessGone(1), false);
+});
+
+Deno.test("processHostIdentity: is the hostname, plus the pid namespace on Linux", () => {
   const identity = processHostIdentity();
-  if (Deno.build.os === "linux" && identity !== hostname()) {
+  if (Deno.build.os === "linux") {
     assertStringIncludes(identity, `${hostname()}#pid:[`);
   } else {
     assertEquals(identity, hostname());
