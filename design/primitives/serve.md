@@ -791,8 +791,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   namespace, so a load balancer may route a tab's requests to different
   instances. A record contains the origin plus the server-token name and mint
   timestamp, never its bearer secret; it expires after eight hours, is deleted
-  on logout or a failed token check, and the control plane admits at most 10,000
-  active records. Logout clears the server record and broadcasts a
+  on logout or a permanently failed token check, and the control plane admits
+  at most 10,000 active records through fixed shared slots. A token may retain
+  at most 100 sessions; creating another evicts its oldest session rather than
+  consuming the shared capacity. Logout clears the server record and broadcasts a
   credential-free signal that closes live dashboard sockets in cooperating tabs.
   Successful reauthentication broadcasts the same kind of state change, so
   other tabs reconnect using the replacement cookie rather than retaining an

@@ -31,6 +31,11 @@ function createStore(): ControlPlaneStore {
       records.set(key, data);
       return Promise.resolve();
     },
+    putIfAbsent: (key, data) => {
+      if (records.has(key)) return Promise.resolve(false);
+      records.set(key, data);
+      return Promise.resolve(true);
+    },
     get: (key) => Promise.resolve(records.get(key) ?? null),
     delete: (key) => {
       records.delete(key);
@@ -79,9 +84,36 @@ Deno.test("ControlPlaneDashboardSessionStore: refuses new active sessions at cap
   await store.create(IDENTITY, "https://serve.test");
 
   await assertRejects(
-    () => store.create(IDENTITY, "https://serve.test"),
+    () =>
+      store.create(
+        { ...IDENTITY, tokenName: "another-operator" },
+        "https://serve.test",
+      ),
     DashboardSessionCapacityError,
   );
+});
+
+Deno.test("ControlPlaneDashboardSessionStore: evicts one token's oldest session without exhausting global capacity", async () => {
+  let now = Date.parse("2026-10-06T00:00:00.000Z");
+  const store = new ControlPlaneDashboardSessionStore(createStore(), {
+    now: () => now,
+    capacity: 3,
+    maxSessionsPerToken: 2,
+  });
+  const first = await store.create(IDENTITY, "https://serve.test");
+  now++;
+  const second = await store.create(IDENTITY, "https://serve.test");
+  now++;
+  const third = await store.create(IDENTITY, "https://serve.test");
+
+  assertEquals(await store.get(first.id), null);
+  assertEquals(await store.get(second.id), second);
+  assertEquals(await store.get(third.id), third);
+  const otherTokenSession = await store.create(
+    { ...IDENTITY, tokenName: "another-operator" },
+    "https://serve.test",
+  );
+  assertEquals(await store.get(otherTokenSession.id), otherTokenSession);
 });
 
 Deno.test("ControlPlaneDashboardSessionStore: ignores malformed cookie identifiers", async () => {
