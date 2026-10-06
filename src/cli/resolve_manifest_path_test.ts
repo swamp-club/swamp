@@ -66,23 +66,28 @@ Deno.test("resolveManifestArgument: a relative path resolves against cwd before 
   });
 });
 
-Deno.test("resolveManifestArgument: falls back to --extensions-dir, then the repo dir", async () => {
+Deno.test("resolveManifestArgument: --extensions-dir is tried before cwd, then the repo dir (worktree layout)", async () => {
   await withTempDir(async (dir) => {
-    const inExtensions = await writeManifest(join(dir, "exts", "ext"));
-    const inRepo = await writeManifest(join(dir, "repo", "ext"));
+    // cwd is the main checkout, --extensions-dir the worktree: both hold the
+    // same tracked manifest, and the worktree copy must win.
+    await writeManifest(join(dir, "repo", "ext"));
+    const inWorktree = await writeManifest(
+      join(dir, "repo", "trees", "fb", "ext"),
+    );
     const viaExtensions = await resolveManifestArgument({
-      argument: "ext",
-      cwd: join(dir, "cwd"),
+      argument: join("ext", "manifest.yaml"),
+      cwd: join(dir, "repo"),
       repoDir: join(dir, "repo"),
-      extensionsDir: join(dir, "exts"),
+      extensionsDir: join(dir, "repo", "trees", "fb"),
     });
-    assertPathEquals(viaExtensions.absoluteManifestPath, inExtensions);
+    assertPathEquals(viaExtensions.absoluteManifestPath, inWorktree);
     assertEquals(viaExtensions.base, "extensionsDir");
 
+    const inRepo = await writeManifest(join(dir, "repo2", "ext"));
     const viaRepo = await resolveManifestArgument({
       argument: "ext",
       cwd: join(dir, "cwd"),
-      repoDir: join(dir, "repo"),
+      repoDir: join(dir, "repo2"),
     });
     assertPathEquals(viaRepo.absoluteManifestPath, inRepo);
     assertEquals(viaRepo.base, "repoDir");

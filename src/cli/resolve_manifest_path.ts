@@ -62,8 +62,11 @@ interface Candidate {
  * the manifest file it names (swamp-club#3018, swamp-club#2747).
  *
  * An absolute argument is used as given. A relative argument is tried
- * against the current directory first, then `--extensions-dir` when set,
- * then the repo dir, so a path typed from where the author stands wins and
+ * against `--extensions-dir` when the author set it (the flag names the
+ * tree the extension lives in, and the documented git-worktree setup runs
+ * from the main checkout with the flag at the worktree, so the current
+ * directory must not shadow it), then the current directory, then the repo
+ * dir, so a path typed from where the author stands wins over the repo and
  * scripts that pass repo-relative paths with `--repo-dir` keep working. A
  * candidate matches when it is a file, or a directory holding one of
  * {@link MANIFEST_FILE_NAMES}; the first match wins. Every candidate is
@@ -98,10 +101,10 @@ export async function resolveManifestArgument(
   if (isAbsolute(argument)) {
     addCandidate("absolute");
   } else {
-    addCandidate("cwd", cwd);
     if (extensionsDir !== undefined) {
       addCandidate("extensionsDir", extensionsDir);
     }
+    addCandidate("cwd", cwd);
     addCandidate("repoDir", repoDir);
   }
 

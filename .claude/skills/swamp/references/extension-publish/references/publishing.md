@@ -243,8 +243,8 @@ additionalFiles:
 
 `push`, `quality` and `fmt` accept a manifest file or an extension directory
 (`swamp extension push extensions/models/x` means
-`extensions/models/x/manifest.yaml`), relative to the current directory first,
-then `--extensions-dir`, then the repo dir. Without `--extensions-dir`, the
+`extensions/models/x/manifest.yaml`), relative to `--extensions-dir` when set,
+then the current directory, then the repo dir. Without `--extensions-dir`, the
 extensions root is inferred from the manifest's location (the nearest ancestor
 holding `extensions/` or `.swamp.yaml`) when nothing resolves under the repo
 dir, so a sub-directory extension in the swamp-extensions layout pushes from a

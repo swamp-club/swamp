@@ -256,10 +256,12 @@ function isSameOrUnder(path: string, root: string): boolean {
 }
 
 /**
- * Where the `deno.json` / `package.json` walk up from the manifest stops:
- * the extensions root or the repo dir, whichever contains the manifest, so
- * the walk never leaves the tree the manifest belongs to; the manifest's own
- * directory when neither does.
+ * Where the `deno.json` / `package.json` walk up from the manifest stops.
+ * A manifest inside the repo walks to the repo dir, as it always has, so a
+ * monorepo's root config still applies to an extension pushed with
+ * `--extensions-dir` at a sub-directory. A manifest outside the repo walks
+ * to the extensions root that contains it, never further; the manifest's
+ * own directory when neither contains it.
  */
 export function projectConfigBoundary(
   manifestDir: string,
@@ -269,8 +271,8 @@ export function projectConfigBoundary(
   const dir = resolve(manifestDir);
   const root = resolve(extensionsRoot);
   const repo = resolve(repoDir);
-  if (isSameOrUnder(dir, root)) return root;
   if (isSameOrUnder(dir, repo)) return repo;
+  if (isSameOrUnder(dir, root)) return root;
   return dir;
 }
 
@@ -304,16 +306,20 @@ async function realPathOrNull(path: string): Promise<string | null> {
  * `.swamp.yaml` marker. An in-repo walk stops at the repo dir, so a
  * manifest under `<repo>/extensions/models/x/` yields the repo dir; outside
  * the repo the walk stops at the filesystem root and falls back to the
- * manifest directory.
+ * manifest directory. The user's home directory is never a root, even when
+ * it holds `~/extensions` or a marker: `~/.claude/skills` would otherwise
+ * become a skill candidate again.
  */
 export async function inferExtensionsRoot(
   manifestDir: string,
   repoDir: string,
 ): Promise<string> {
   const repo = resolve(repoDir);
+  const home = homeDirectoryOrNull();
   let current = resolve(manifestDir);
   while (true) {
     if (current === repo) return repo;
+    if (current === home) return resolve(manifestDir);
     if (
       await isDirectory(join(current, "extensions")) ||
       await isFile(join(current, ".swamp.yaml"))
@@ -324,6 +330,11 @@ export async function inferExtensionsRoot(
     if (parent === current) return resolve(manifestDir);
     current = parent;
   }
+}
+
+function homeDirectoryOrNull(): string | null {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  return home ? resolve(home) : null;
 }
 
 /**
@@ -423,23 +434,22 @@ function twoRootsError(
  * extensions root and the repo dir at different real paths. The check is
  * skipped when `--extensions-dir` named the root (the author chose it, and
  * a git worktree holds every tracked file in both trees by design) and when
- * the entry was found next to the manifest under `paths.base: manifest`
- * (neither contested copy is the one packaged). With root == repoDir the two
- * lists coincide and nothing can be ambiguous.
+ * the entry was found in the manifest-relative candidate itself under
+ * `paths.base: manifest` (neither contested copy is the one packaged). With
+ * root == repoDir the two lists coincide and nothing can be ambiguous.
  */
 async function assertSingleRoot(
   lookup: TypedLookup,
   kind: string,
   ref: string,
   foundIn: string,
+  manifestCandidates: readonly string[],
   underRoot: readonly string[],
   underRepo: readonly string[],
   directories = false,
 ): Promise<void> {
   if (lookup.explicitRoot) return;
-  if (lookup.useManifestBase && isSameOrUnder(foundIn, lookup.manifestDir)) {
-    return;
-  }
+  if (manifestCandidates.includes(foundIn)) return;
   const exists = directories ? isDirectory : isFile;
   const firstReal = async (paths: readonly string[]) => {
     for (const path of paths) {
@@ -533,7 +543,7 @@ export async function resolveExtensionFiles(
   const { repoDir, manifestPath, repoContext, logger } = ctx;
 
   // 1. Find and parse the manifest. The argument may be a file or an
-  // extension directory, relative to cwd, --extensions-dir or the repo dir
+  // extension directory, relative to --extensions-dir, cwd or the repo dir
   // (swamp-club#3018); the helper stats every candidate and never reads a
   // directory, and an absolute file path comes back unchanged.
   const { absoluteManifestPath } = await resolveManifestArgument({
@@ -729,6 +739,7 @@ export async function resolveExtensionFiles(
         "Workflow file",
         wfRef,
         foundIn,
+        useManifestBase ? [manifestDir] : [],
         rootWfDirs.map((d) => resolve(d, wfRef)),
         repoWfDirs.map((d) => resolve(d, wfRef)),
       );
@@ -921,11 +932,20 @@ export async function resolveExtensionFiles(
       rel,
     ): rel is string => rel !== undefined);
 
-    if (useManifestBase) {
-      for (const rel of skillRels) addCandidate(resolve(manifestDir, rel));
-    }
-    const rootSkillDirs = skillRels.map((rel) => resolve(extensionsRoot, rel));
-    const repoSkillDirs = skillRels.map((rel) => resolve(repoDir, rel));
+    const manifestSkillDirs = useManifestBase
+      ? skillRels.map((rel) => resolve(manifestDir, rel))
+      : [];
+    for (const dir of manifestSkillDirs) addCandidate(dir);
+    // Belt and braces with inferExtensionsRoot: a home skill directory is
+    // never a candidate, whatever root was chosen.
+    const home = homeDirectoryOrNull();
+    const notHome = (dir: string) =>
+      home === null || !skillRels.some((rel) => resolve(home, rel) === dir);
+    const rootSkillDirs = skillRels.map((rel) => resolve(extensionsRoot, rel))
+      .filter(notHome);
+    const repoSkillDirs = skillRels.map((rel) => resolve(repoDir, rel)).filter(
+      notHome,
+    );
     for (const dir of [...rootSkillDirs, ...repoSkillDirs]) addCandidate(dir);
 
     if (candidateBases.length === 0) {
@@ -969,6 +989,7 @@ export async function resolveExtensionFiles(
         "Skill directory",
         skillName,
         foundIn,
+        manifestSkillDirs,
         rootSkillDirs.map((d) => join(d, skillName)),
         repoSkillDirs.map((d) => join(d, skillName)),
         true,

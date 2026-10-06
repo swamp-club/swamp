@@ -2208,6 +2208,13 @@ Deno.test("projectConfigBoundary: the root or repo dir that contains the manifes
   );
   assertPathEquals(projectConfigBoundary(join(root, "sub"), root, repo), root);
   assertPathEquals(projectConfigBoundary(repo, root, repo), repo);
+  // A monorepo sub-directory root inside the repo: the repo's own deno.json
+  // still applies, so the walk goes up to the repo dir.
+  const inRepoRoot = join(repo, "packages", "foo");
+  assertPathEquals(
+    projectConfigBoundary(join(inRepoRoot, "src"), inRepoRoot, repo),
+    repo,
+  );
   assertPathEquals(
     projectConfigBoundary(join("/", "nowhere", "m"), root, repo),
     join("/", "nowhere", "m"),
@@ -2467,4 +2474,116 @@ Deno.test("inferExtensionsRoot: falls back to the manifest directory outside the
     await Deno.remove(outside, { recursive: true }).catch(() => {});
     await Deno.remove(repo, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("inferExtensionsRoot: never returns the home directory", async () => {
+  const home = await Deno.makeTempDir({ prefix: "swamp-home-root-" });
+  const repo = await Deno.makeTempDir({ prefix: "swamp-repo-" });
+  try {
+    await Deno.mkdir(join(home, "extensions"), { recursive: true });
+    const manifestDir = join(home, "work", "myext");
+    await Deno.mkdir(manifestDir, { recursive: true });
+    const root = await withMockedEnv(
+      { HOME: home, USERPROFILE: home },
+      () => inferExtensionsRoot(manifestDir, repo),
+    );
+    assertPathEquals(root, manifestDir);
+  } finally {
+    await Deno.remove(home, { recursive: true }).catch(() => {});
+    await Deno.remove(repo, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("resolveExtensionFiles: a skills-only manifest under the home directory never packages a home skill", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const home = await Deno.makeTempDir({ prefix: "swamp-home-skills-" });
+    try {
+      // ~/extensions exists, so the upward walk would otherwise pick ~ as
+      // the root and ~/.claude/skills as a candidate.
+      await Deno.mkdir(join(home, "extensions"), { recursive: true });
+      await createSkillDir(join(home, ".claude", "skills"), "home-only");
+      const manifestDir = join(home, "work", "myext");
+      await Deno.mkdir(manifestDir, { recursive: true });
+      const manifestPath = join(manifestDir, "manifest.yaml");
+      await Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/home-skill-only",
+          version: "2026.10.06.1",
+          skills: ["home-only"],
+        }),
+      );
+      const err = await withMockedEnv(
+        { HOME: home, USERPROFILE: home },
+        () =>
+          assertRejects(
+            () =>
+              resolveExtensionFiles({
+                repoDir: dir,
+                manifestPath,
+                repoContext: stubRepoContext,
+                logger,
+              }),
+            UserError,
+          ),
+      );
+      assertStringIncludes(err.message, "Skill directory not found: home-only");
+      assertEquals(
+        err.message.includes(join(home, ".claude", "skills")),
+        false,
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("resolveExtensionFiles: under paths.base manifest a root copy that is not next to the manifest is still checked against the repo dir", async () => {
+  await withTempRepo(async (dir) => {
+    // The inferred root is the manifest dir itself (it holds extensions/),
+    // so <root>/extensions/workflows is under the manifest dir, but it is
+    // not the manifest-relative candidate: a repo copy still conflicts.
+    const ext = join(dir, "ext", "sub");
+    await stageSubDirectoryExtension(ext, "@test/wf-root-vs-repo", {
+      skill: false,
+      workflow: false,
+    });
+    await Deno.mkdir(join(ext, "extensions", "workflows"), { recursive: true });
+    await Deno.writeTextFile(
+      join(ext, "extensions", "workflows", "shared.yaml"),
+      "name: shared-at-root\njobs: {}",
+    );
+    await Deno.mkdir(join(dir, "extensions", "workflows"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "workflows", "shared.yaml"),
+      "name: shared-at-repo\njobs: {}",
+    );
+    const manifestPath = join(ext, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/wf-root-vs-repo",
+        version: "2026.10.06.1",
+        paths: { base: "manifest" },
+        models: ["extensions/models/hello.ts"],
+        workflows: ["shared.yaml"],
+      }),
+    );
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubWorkflowRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      "Workflow file shared.yaml exists under two roots",
+    );
+  });
 });

@@ -938,10 +938,13 @@ SWAMP_EXTENSIONS_DIR=~/repo/trees/feature-branch \
 `resolveManifestArgument` (`src/cli/resolve_manifest_path.ts`) the same way in
 all three (swamp-club#3018, swamp-club#2747):
 
-- An absolute path is used as given. A relative path is tried against the
-  current directory first, then `--extensions-dir` when set, then the repo dir,
-  so a path typed from where the author stands wins and scripts that pass
-  repo-relative paths with `--repo-dir` keep working.
+- An absolute path is used as given. A relative path is tried against
+  `--extensions-dir` when set (the flag names the tree the extension lives in,
+  and the worktree setup above runs from the main checkout with the flag at
+  the worktree, so the current directory must not shadow it), then the current
+  directory, then the repo dir, so a path typed from where the author stands
+  wins over the repo and scripts that pass repo-relative paths with
+  `--repo-dir` keep working.
 - A candidate matches when it is a file, or a directory holding
   `manifest.yaml` (then `manifest.yml`, `manifest.json`); the first match wins.
   `swamp extension push extensions/models/x` and
@@ -960,7 +963,8 @@ additively, so an existing manifest never packages a different set of files:
    upward that holds an `extensions/` directory or a `.swamp.yaml` marker. For
    a manifest inside the repo the walk stops at the repo dir, so
    `<repo>/extensions/models/x/manifest.yaml` yields the repo dir; outside the
-   repo it falls back to the manifest's directory.
+   repo it falls back to the manifest's directory. The home directory is never
+   a root, and a home skill directory is never a skill candidate.
 2. If the inferred root is the repo dir, nothing changes.
 3. Otherwise probe every typed entry under both bases. An entry present under
    both at different real paths is an error naming both paths and the flag.
@@ -968,9 +972,10 @@ additively, so an existing manifest never packages a different set of files:
    (today's behaviour). Only a manifest that resolves nothing under the repo
    dir moves to the inferred root.
 
-The `deno.json` / `package.json` walk up from the manifest stops at whichever
-of the extensions root or the repo dir contains the manifest
-(`projectConfigBoundary`), never above the tree the manifest belongs to.
+The `deno.json` / `package.json` walk up from the manifest stops at the repo
+dir for a manifest inside the repo, as it always has, and at the extensions
+root that contains a manifest outside the repo (`projectConfigBoundary`), never
+above the tree the manifest belongs to.
 
 This is what lets `swamp extension push ~/sc/swamp-extensions/kubernetes` work
 from any swamp repo, and lets a monorepo of sub-directory extensions push each
