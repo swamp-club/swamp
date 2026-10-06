@@ -582,8 +582,11 @@ run: |
   PASSWORD='${{ vault.get(my-vault, DB_PASS) }}'
 ```
 
-swamp warns at execution time when it finds a vault sentinel inside single
-quotes.
+Each occurrence takes the form for the quote context it sits in: bare inside
+double quotes, wrapped in double quotes elsewhere. A secret used more than once
+in different quote contexts is therefore one quoted word at every double-quoted
+use. swamp warns at execution time when any occurrence of a vault sentinel sits
+inside single quotes.
 
 ### Vault Resolution Order
 
@@ -695,8 +698,9 @@ On PowerShell a single-quoted value stays in place, with the same warning (a `se
 unquoted value no longer word-splits or globs, as with `vault.get()`. The
 break-out keeps the value out of swamp's own `sh -c` argv; a program the command
 starts (`sh -c`, `ssh`) still receives it in its own. `vault.get()` sentinels
-keep their existing placement. Values shorter than three characters are not
-recorded, as with the redactor, so they are not protected this way.
+keep their own forms (see Shell Quoting), also placed per occurrence. Values
+shorter than three characters are not recorded, as with the redactor, so they
+are not protected this way.
 
 Everything written to disk holds the vault reference in place of the value:
 evaluated definition and workflow caches, the per-run evaluated workflow, run

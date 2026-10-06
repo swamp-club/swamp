@@ -298,9 +298,13 @@ export class VaultSecretBag {
       // Data-origin sentinels are placed per occurrence and never land
       // unexpanded inside single quotes.
       if (this.dataOrigin.has(sentinel)) continue;
-      const pos = command.indexOf(sentinel);
-      if (pos !== -1 && getQuoteContext(command, pos) === "single") {
-        found.push(sentinel);
+      let pos = command.indexOf(sentinel);
+      while (pos !== -1) {
+        if (getQuoteContext(command, pos) === "single") {
+          found.push(sentinel);
+          break;
+        }
+        pos = command.indexOf(sentinel, pos + sentinel.length);
       }
     }
     return found;
@@ -383,12 +387,12 @@ export class VaultSecretBag {
   }
 
   /**
-   * Replaces sentinels in a command with references built by the callers:
-   * a vault.get sentinel's reference form is chosen once from its first
-   * occurrence (unchanged behavior); a data-origin sentinel's per
-   * occurrence from its POSIX shell context. A `dataRef` of undefined means
-   * no reference can expand there, so the raw value is substituted and the
-   * result reports that a data value is in the command line.
+   * Replaces sentinels in a command with references built by the callers,
+   * per occurrence: a vault.get sentinel's from the quote context it sits
+   * in, a data-origin sentinel's from its POSIX shell context. A `dataRef`
+   * of undefined means no reference can expand there, so the raw value is
+   * substituted and the result reports that a data value is in the command
+   * line.
    */
   private resolveOccurrences<C>(
     command: string,
@@ -421,18 +425,6 @@ export class VaultSecretBag {
     dataOccurrences.forEach((match, i) =>
       contextAt.set(match.index ?? 0, dataContexts[i])
     );
-    const vaultRefs = new Map<string, string>();
-    for (const match of occurrences) {
-      const sentinel = match[0];
-      if (this.dataOrigin.has(sentinel) || vaultRefs.has(sentinel)) continue;
-      vaultRefs.set(
-        sentinel,
-        vaultRef(
-          envNames.get(sentinel)!,
-          getQuoteContext(command, match.index ?? 0),
-        ),
-      );
-    }
 
     let dataInCommandLine = false;
     const referenced = new Set<string>();
@@ -452,7 +444,10 @@ export class VaultSecretBag {
           referenced.add(sentinel);
         }
       } else {
-        result += vaultRefs.get(sentinel)!;
+        result += vaultRef(
+          envNames.get(sentinel)!,
+          getQuoteContext(command, start),
+        );
         referenced.add(sentinel);
       }
       last = start + sentinel.length;

@@ -489,17 +489,48 @@ Deno.test("VaultSecretBag.resolveForShell: a quoted heredoc keeps the data value
   assertEquals(resolved.dataInCommandLine, true);
 });
 
-Deno.test("VaultSecretBag.resolveForShell: vault.get sentinels keep first-occurrence placement", () => {
+Deno.test("VaultSecretBag.resolveForShell: places vault.get references per occurrence", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("two  words *");
+  const ref = "${__SWAMP_VAULT_0}";
+  const cases: [string, string][] = [
+    // Single-quoted first: the double-quoted use still expands as one word.
+    [`b='${s}'; set -- "${s}"`, `b='"${ref}"'; set -- "${ref}"`],
+    // Double-quoted first: the single-quoted use is quoted for its own spot.
+    [`a="${s}"; b='${s}'`, `a="${ref}"; b='"${ref}"'`],
+    // Unquoted first: the double-quoted use is not left unquoted.
+    [`echo ${s} "${s}"`, `echo "${ref}" "${ref}"`],
+    [
+      `echo "${s}" ${s} '${s}' "x${s}y"`,
+      `echo "${ref}" "${ref}" '"${ref}"' "x${ref}y"`,
+    ],
+  ];
+  for (const [command, expected] of cases) {
+    const resolved = bag.resolveForShell(command);
+    assertEquals(resolved.command, expected);
+    assertEquals(resolved.env, { __SWAMP_VAULT_0: "two  words *" });
+  }
+});
+
+Deno.test("VaultSecretBag.resolveForPowerShell: places vault.get references per occurrence", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("two  words *");
+  assertEquals(
+    bag.resolveForPowerShell(`$b='${s}'; Write-Output "${s}"`).command,
+    `$b='"$env:__SWAMP_VAULT_0"'; Write-Output "$env:__SWAMP_VAULT_0"`,
+  );
+  assertEquals(
+    bag.resolveForPowerShell(`Write-Output "${s}" ${s}`).command,
+    `Write-Output "$env:__SWAMP_VAULT_0" "$env:__SWAMP_VAULT_0"`,
+  );
+});
+
+Deno.test("VaultSecretBag.findSingleQuotedSentinels: finds a single-quoted use after a double-quoted one", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("from-vault");
-  const resolved = bag.resolveForShell(`echo '${s}' ${s}`);
-  // Unchanged behavior: the first occurrence decides, and single quotes are
-  // reported by findSingleQuotedSentinels.
-  assertEquals(
-    resolved.command,
-    `echo '"\${__SWAMP_VAULT_0}"' "\${__SWAMP_VAULT_0}"`,
-  );
-  assertEquals(bag.findSingleQuotedSentinels(`echo '${s}'`), [s]);
+  assertEquals(bag.findSingleQuotedSentinels(`a="${s}"; b='${s}'`), [s]);
+  assertEquals(bag.findSingleQuotedSentinels(`echo ${s} '${s}' '${s}'`), [s]);
+  assertEquals(bag.findSingleQuotedSentinels(`echo ${s} "${s}"`), []);
 });
 
 Deno.test("VaultSecretBag.resolveForPowerShell: single-quoted data values stay in place", () => {
