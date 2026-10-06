@@ -802,7 +802,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   origin and set `Secure`; direct TLS deployments do the same from their listener
   configuration.
 
-   After an unexpected close it reconnects with jittered exponential backoff
+  After an unexpected close it reconnects with jittered exponential backoff
   (0.5 s up to 30 s), and retries `/auth/info` the same way while serve is
   unreachable. It returns to login on close `4003`, when a failed reconnect's
   token probe of `/api/v1/health` answers 401 (a browser hides the upgrade's

@@ -68,7 +68,7 @@ export async function resolveDashboardSessionForOrigin(
 
 export type DashboardSessionAuthentication =
   | ({ ok: true } & DashboardSessionIdentity)
-  | { ok: false; response: Response };
+  | { ok: false; response: Response; invalidateSession?: boolean };
 
 export interface DashboardSessionDeps {
   authenticateToken(token: string): Promise<DashboardSessionAuthentication>;
@@ -177,8 +177,8 @@ export async function handleDashboardSession(
     if (session === null) return new Response(null, { status: 401 });
     const result = await deps.authenticateSession(session);
     if (!result.ok) {
-      await deps.sessions.delete(session.id);
-      return new Response(null, { status: 401 });
+      if (result.invalidateSession) await deps.sessions.delete(session.id);
+      return result.response;
     }
     return Response.json({ authenticated: true });
   }

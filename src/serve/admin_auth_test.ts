@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   type AdminAuthDeps,
   authenticateAdmin,
+  authenticateDashboardSessionToken,
   authenticateToken,
   createReadAuthorizer,
 } from "./admin_auth.ts";
@@ -29,6 +30,43 @@ import type {
   AccessResource,
   PolicySnapshotLoader,
 } from "../domain/access/mod.ts";
+import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { DashboardSession } from "./dashboard_session_store.ts";
+
+const DASHBOARD_SESSION: DashboardSession = {
+  id: "a".repeat(64),
+  tokenName: "dashboard-token",
+  tokenCreatedAt: "2026-10-06T00:00:00.000Z",
+  origin: "https://serve.test",
+  createdAt: "2026-10-06T00:00:00.000Z",
+  expiresAt: "2099-01-01T00:00:00.000Z",
+};
+
+function dashboardTokenRepoContext(
+  state: "active" | "revoked" = "active",
+): RepositoryContext {
+  const token = {
+    name: DASHBOARD_SESSION.tokenName,
+    state,
+    principalId: "user:operator",
+    principalEmail: "operator@test",
+    collectives: ["team-a"],
+    groups: ["ops"],
+    createdAt: DASHBOARD_SESSION.tokenCreatedAt,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    vaultName: "tokens",
+    secretKey: "dashboard-token",
+  };
+  const content = new TextEncoder().encode(JSON.stringify(token));
+  return {
+    definitionRepo: {
+      findByName: () => Promise.resolve({ id: "dashboard-token-id" }),
+    },
+    unifiedDataRepo: {
+      getContent: () => Promise.resolve(content),
+    },
+  } as unknown as RepositoryContext;
+}
 
 function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
   return {
@@ -148,6 +186,39 @@ Deno.test("authenticateToken: does not treat a dashboard session cookie as an ad
   const result = await authenticateToken(req, "127.0.0.1", deps);
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.response.status, 401);
+});
+
+Deno.test("authenticateDashboardSessionToken: returns the token mint binding for a valid session", async () => {
+  const result = await authenticateDashboardSessionToken(
+    new Request("https://serve.test/api/v1/health"),
+    freshClientAddr(),
+    makeDeps({ repoContext: dashboardTokenRepoContext() }),
+    DASHBOARD_SESSION,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.authResult.principalId, "user:operator");
+    assertEquals(result.token, {
+      name: "dashboard-token",
+      createdAt: "2026-10-06T00:00:00.000Z",
+    });
+  }
+});
+
+Deno.test("authenticateDashboardSessionToken: marks revoked backing tokens for session invalidation", async () => {
+  const result = await authenticateDashboardSessionToken(
+    new Request("https://serve.test/api/v1/health"),
+    freshClientAddr(),
+    makeDeps({ repoContext: dashboardTokenRepoContext("revoked") }),
+    DASHBOARD_SESSION,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.response.status, 401);
+    assertEquals(result.invalidateSession, true);
+  }
 });
 
 Deno.test("authenticateToken: returns 401 with an invalid token", async () => {

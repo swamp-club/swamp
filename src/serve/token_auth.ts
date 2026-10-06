@@ -258,6 +258,14 @@ export function classifyRedeemError(message: string): TokenAuthRejectionReason {
   return "unknown";
 }
 
+/** Whether a rejected session's backing token can never authenticate again. */
+export function shouldInvalidateDashboardSession(
+  reason: TokenAuthRejectionReason,
+): boolean {
+  return reason === "expired" || reason === "revoked" ||
+    reason === "invalid-principal" || reason === "no-definition";
+}
+
 /**
  * Validates a presented `<name>.<secret>` server token directly against its
  * lifecycle resource. Authentication is read-only; explicit model `redeem`

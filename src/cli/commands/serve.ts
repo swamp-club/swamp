@@ -116,6 +116,7 @@ import {
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
+  shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
 import {
   checkIpBurst,
@@ -5248,6 +5249,9 @@ export const serveCommand = new Command()
       req: Request,
       remoteAddr: string,
     ) => {
+      if (adminAuthDeps.authMode === "none") {
+        return await authenticateToken(req, remoteAddr, adminAuthDeps);
+      }
       const authHeader = req.headers.get("authorization");
       if (authHeader?.startsWith("Bearer ")) {
         return await authenticateToken(req, remoteAddr, adminAuthDeps);
@@ -5276,7 +5280,9 @@ export const serveCommand = new Command()
         adminAuthDeps,
         session,
       );
-      if (!authenticated.ok) await dashboardSessions.delete(session.id);
+      if (!authenticated.ok && authenticated.invalidateSession) {
+        await dashboardSessions.delete(session.id);
+      }
       return authenticated;
     };
     const server = Deno.serve(
@@ -5447,7 +5453,10 @@ export const serveCommand = new Command()
                 auditContext,
               );
             if (!result.ok) {
-              if (dashboardSession !== null) {
+              if (
+                dashboardSession !== null &&
+                shouldInvalidateDashboardSession(result.reason)
+              ) {
                 await dashboardSessions.delete(dashboardSession.id);
               }
               logger.warn(
@@ -5922,99 +5931,106 @@ export const serveCommand = new Command()
             deviceRemoteAddr,
           );
         }
-        const dashboardOrigin = validateDashboardSessionOrigin(
-          req,
-          tlsEnabled,
-          trustProxy,
-        );
-        const dashboardSessionResponse = await handleDashboardSession(req, {
-          secure: dashboardOrigin.secure,
-          originAllowed: (request) => {
-            const allowed = validateDashboardSessionOrigin(
-              request,
-              tlsEnabled,
-              trustProxy,
-            );
-            if (!allowed.allowed) {
-              logger.warn(
-                "Dashboard session request rejected: {reason} from {ip}",
+        if (isDashboardSessionRequest && authConfig.mode !== "none") {
+          const dashboardOrigin = validateDashboardSessionOrigin(
+            req,
+            tlsEnabled,
+            trustProxy,
+          );
+          const dashboardSessionResponse = await handleDashboardSession(req, {
+            secure: dashboardOrigin.secure,
+            originAllowed: (request) => {
+              const allowed = validateDashboardSessionOrigin(
+                request,
+                tlsEnabled,
+                trustProxy,
+              );
+              if (!allowed.allowed) {
+                logger.warn(
+                  "Dashboard session request rejected: {reason} from {ip}",
+                  {
+                    reason: allowed.reason,
+                    ip: dashboardRemoteAddr,
+                  },
+                );
+              }
+              return allowed.allowed;
+            },
+            sessions: dashboardSessions,
+            deviceAuthDeps,
+            authenticateToken: async (token) => {
+              const rlKey = rateLimitKey(token, dashboardRemoteAddr);
+              const rateCheck = checkRateLimit(rlKey);
+              if (!rateCheck.allowed) {
+                return {
+                  ok: false,
+                  response: new Response("Too Many Requests", {
+                    status: 429,
+                    headers: {
+                      "Retry-After": String(rateCheck.retryAfterSeconds),
+                    },
+                  }),
+                };
+              }
+              const result = await authenticateServerToken(
+                token,
+                resolvedRepoDir,
+                repoContext,
                 {
-                  reason: allowed.reason,
-                  ip: dashboardRemoteAddr,
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp: dashboardRemoteAddr,
+                  ingress: "dashboard-session",
                 },
               );
-            }
-            return allowed.allowed;
-          },
-          sessions: dashboardSessions,
-          deviceAuthDeps,
-          authenticateToken: async (token) => {
-            const rlKey = rateLimitKey(token, dashboardRemoteAddr);
-            const rateCheck = checkRateLimit(rlKey);
-            if (!rateCheck.allowed) {
+              if (!result.ok) {
+                return {
+                  ok: false,
+                  response: new Response(`Unauthorized: ${result.reason}`, {
+                    status: 401,
+                  }),
+                };
+              }
+              clearRateLimit(rlKey);
               return {
-                ok: false,
-                response: new Response("Too Many Requests", {
-                  status: 429,
-                  headers: {
-                    "Retry-After": String(rateCheck.retryAfterSeconds),
-                  },
-                }),
+                ok: true,
+                tokenName: result.tokenName,
+                tokenCreatedAt: result.tokenCreatedAt,
               };
-            }
-            const result = await authenticateServerToken(
-              token,
-              resolvedRepoDir,
-              repoContext,
-              {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp: dashboardRemoteAddr,
-                ingress: "dashboard-session",
-              },
-            );
-            if (!result.ok) {
+            },
+            authenticateSession: async (session) => {
+              const result = await authenticateDashboardSession(
+                session,
+                repoContext,
+                {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp: dashboardRemoteAddr,
+                  ingress: "dashboard-session",
+                },
+              );
+              if (!result.ok) {
+                return {
+                  ok: false,
+                  invalidateSession: shouldInvalidateDashboardSession(
+                    result.reason,
+                  ),
+                  response: new Response(`Unauthorized: ${result.reason}`, {
+                    status: 401,
+                  }),
+                };
+              }
               return {
-                ok: false,
-                response: new Response(`Unauthorized: ${result.reason}`, {
-                  status: 401,
-                }),
+                ok: true,
+                tokenName: result.tokenName,
+                tokenCreatedAt: result.tokenCreatedAt,
               };
-            }
-            clearRateLimit(rlKey);
-            return {
-              ok: true,
-              tokenName: result.tokenName,
-              tokenCreatedAt: result.tokenCreatedAt,
-            };
-          },
-          authenticateSession: async (session) => {
-            const result = await authenticateDashboardSession(
-              session,
-              repoContext,
-              {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp: dashboardRemoteAddr,
-                ingress: "dashboard-session",
-              },
-            );
-            if (!result.ok) {
-              return {
-                ok: false,
-                response: new Response(`Unauthorized: ${result.reason}`, {
-                  status: 401,
-                }),
-              };
-            }
-            return {
-              ok: true,
-              tokenName: result.tokenName,
-              tokenCreatedAt: result.tokenCreatedAt,
-            };
-          },
-        });
-        if (dashboardSessionResponse !== null) return dashboardSessionResponse;
+            },
+          });
+          if (dashboardSessionResponse !== null) {
+            return dashboardSessionResponse;
+          }
+        }
 
         if (deviceAuthDeps) {
           const deviceAuthResponse = await handleDeviceAuth(

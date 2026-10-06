@@ -26,6 +26,7 @@ import {
   authenticateDashboardSession,
   authenticateServerToken,
   type ServerTokenAuthResult,
+  shouldInvalidateDashboardSession,
 } from "./token_auth.ts";
 import type { DashboardSession } from "./dashboard_session_store.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
@@ -73,6 +74,11 @@ export type TokenAuthResult =
   }
   | { ok: false; response: Response };
 
+/** Cookie-session result with explicit invalidation semantics for callers. */
+export type DashboardSessionTokenAuthResult =
+  | Extract<TokenAuthResult, { ok: true }>
+  | { ok: false; response: Response; invalidateSession: boolean };
+
 /**
  * Authenticates a request's bearer token with the same rate limits as
  * `authenticateAdmin`, but grants any valid token: it answers only 401 or 429,
@@ -82,7 +88,6 @@ export async function authenticateToken(
   req: Request,
   remoteAddr: string,
   deps: AdminAuthDeps,
-  presentedToken?: string | null,
 ): Promise<TokenAuthResult> {
   const clientAddr = deps.trustProxy
     ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
@@ -114,9 +119,7 @@ export async function authenticateToken(
   }
 
   const authHeader = req.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : presentedToken;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) {
     return {
@@ -179,7 +182,7 @@ export async function authenticateDashboardSessionToken(
   remoteAddr: string,
   deps: AdminAuthDeps,
   session: DashboardSession,
-): Promise<TokenAuthResult> {
+): Promise<DashboardSessionTokenAuthResult> {
   const clientAddr = deps.trustProxy
     ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
     : remoteAddr;
@@ -187,6 +190,7 @@ export async function authenticateDashboardSessionToken(
   if (!ipBurst.allowed) {
     return {
       ok: false,
+      invalidateSession: false,
       response: new Response("Too Many Requests", {
         status: 429,
         headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
@@ -201,6 +205,7 @@ export async function authenticateDashboardSessionToken(
   if (!rateCheck.allowed) {
     return {
       ok: false,
+      invalidateSession: false,
       response: new Response("Too Many Requests", {
         status: 429,
         headers: { "Retry-After": String(rateCheck.retryAfterSeconds) },
@@ -220,6 +225,7 @@ export async function authenticateDashboardSessionToken(
   if (!authResult.ok) {
     return {
       ok: false,
+      invalidateSession: shouldInvalidateDashboardSession(authResult.reason),
       response: new Response(`Unauthorized: ${authResult.reason}`, {
         status: 401,
       }),

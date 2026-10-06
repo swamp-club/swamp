@@ -309,6 +309,49 @@ Deno.test("handleDashboardSession: requires the creating origin to restore a ses
   assertEquals(response?.status, 401);
 });
 
+Deno.test("handleDashboardSession: preserves a session after a transient validation failure", async () => {
+  const deps = createDeps();
+  const create = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      method: "POST",
+      headers: { origin: "https://serve.test" },
+      body: JSON.stringify({ token: "admin.secret" }),
+    }),
+    deps,
+  );
+  const cookie = create?.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+  let rejectOnce = true;
+  const transientDeps = {
+    ...deps,
+    authenticateSession: (session: { tokenName: string }) => {
+      if (rejectOnce) {
+        rejectOnce = false;
+        return Promise.resolve({
+          ok: false as const,
+          response: new Response("Unavailable", { status: 503 }),
+        });
+      }
+      return deps.authenticateSession(session);
+    },
+  };
+
+  const first = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      headers: { cookie, "x-swamp-dashboard-origin": "https://serve.test" },
+    }),
+    transientDeps,
+  );
+  const retry = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      headers: { cookie, "x-swamp-dashboard-origin": "https://serve.test" },
+    }),
+    transientDeps,
+  );
+
+  assertEquals(first?.status, 503);
+  assertEquals(retry?.status, 200);
+});
+
 Deno.test("handleDashboardSession: completes browser OAuth without returning its server token", async () => {
   const deps = createDeps();
   const response = await handleDashboardSession(
