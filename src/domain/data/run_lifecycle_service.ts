@@ -79,6 +79,14 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     private readonly outputRepo: OutputRepository,
     private readonly runSnapshotRepo: RunSnapshotRepository,
     private readonly listRunIds: () => Promise<ReadonlySet<string>>,
+    /**
+     * Removes the signal wait records of the runs a collection deleted, so
+     * an outcome never outlives its run (swamp-club#3093). Absent where the
+     * datastore holds no wait records.
+     */
+    private readonly collectWaitRecords?: (
+      deletedRunIds: readonly string[],
+    ) => Promise<void>,
   ) {}
 
   async gcWorkflowRuns(options: {
@@ -167,6 +175,17 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
             .warn`Run snapshot cleanup failed; leftover snapshots are collected by a later run gc: ${
             error instanceof Error ? error.message : String(error)
           }`;
+        }
+        // As for snapshots: records left behind are swept later.
+        if (!options.dryRun && this.collectWaitRecords) {
+          try {
+            await this.collectWaitRecords(runs.deletedRunIds ?? []);
+          } catch (error) {
+            logger
+              .warn`Signal wait record cleanup failed; leftover records are swept by a later run gc: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
         }
         return [runs, snaps] as const;
       })(),

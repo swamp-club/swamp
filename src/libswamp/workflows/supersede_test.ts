@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import { supersedeSuspendedRuns } from "./supersede.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -352,7 +353,7 @@ Deno.test("supersedeSuspendedRuns: leaves a matching run that waits for a signal
   assertEquals(result.skippedRuns, [{ runId: run.id, waitIds: [waitId] }]);
   assertEquals(saved, []);
   assertEquals(run.status, "suspended");
-  assertEquals(run.getJob("j")!.getStep("s")!.status, "waiting");
+  assertEquals(run.getJob("j")!.getStep("s")!.status, "waiting_signal");
 });
 
 Deno.test("supersedeSuspendedRuns: leaves a run whose wait is past its deadline, so a resume can still fail its step", async () => {
@@ -385,7 +386,8 @@ Deno.test("supersedeSuspendedRuns: decides the skip on the run as stored under i
   // Listed while it waited; signalled before the claim was taken.
   const { run: listed } = createWaitingRun(wf, {}, new Date());
   const current = WorkflowRun.fromData(listed.toData());
-  current.getJob("j")!.getStep("s")!.acceptSignal({}, "ada", new Date());
+  const signalled = current.getJob("j")!.getStep("s")!;
+  signalled.applyWaitOutcome(acceptedOutcomeFor(signalled.signalWait!, {}));
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(

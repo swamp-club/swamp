@@ -87,6 +87,14 @@ const logger = getLogger(["swamp", "persistence", "workflow-run-index"]);
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private readonly baseDir: string;
 
+  /**
+   * Runs before a run is written, whoever saves it. Used for what must
+   * hold of every saved run but lives outside its record: a run saved as
+   * ended first closes its signal waits (swamp-club#3093). A failure stops
+   * the save.
+   */
+  beforeSave?: (run: WorkflowRun) => Promise<void>;
+
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
@@ -566,6 +574,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    await this.beforeSave?.(run);
     const path = this.getPath(workflowId, run.id);
     await signalChange(this.markDirty, { kind: "write", path });
 

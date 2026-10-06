@@ -425,7 +425,10 @@ Deno.test({
         createWorkflowId(workflow.id),
         createWorkflowRunId(runId),
       );
-      assertEquals(run?.getJob("main")?.getStep("review")?.status, "waiting");
+      assertEquals(
+        run?.getJob("main")?.getStep("review")?.status,
+        "waiting_signal",
+      );
       assertEquals(
         run?.getJob("main")?.getStep("approve-deploy")?.status,
         "succeeded",

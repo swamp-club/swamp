@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { SignalWaitSupport } from "./signal_wait_store.ts";
+import { findUnsettledWait } from "./signal_wait_cleanup.ts";
 import { UserError } from "../errors.ts";
 import { evaluateApprovalTimeout } from "./approval_timeout.ts";
 import { MAX_WORKFLOW_NESTING_DEPTH, sameRunId } from "./nested_run_ref.ts";
@@ -31,6 +33,12 @@ import type { NestedWaitRef, WorkflowRun } from "./workflow_run.ts";
 export interface NestedRunLinkDeps {
   runRepo: Pick<WorkflowRunRepository, "findById">;
   workflowRepo: Pick<WorkflowRepository, "findById">;
+  /**
+   * Where signal wait records are kept. With it a child's wait is asked of
+   * its outcome; without it, of the child's run record, which still shows
+   * a wait a signal has settled as open until the child is resumed.
+   */
+  signalWaits?: SignalWaitSupport;
 }
 
 /**
@@ -286,7 +294,13 @@ export class NestedRunLink {
     }
 
     // A wait past its deadline is settled by a resume, which fails its step.
-    const openWait = child.findOpenSignalWait(new Date());
+    const openWait = this.deps.signalWaits?.supported
+      ? await findUnsettledWait(
+        this.deps.signalWaits.store,
+        child,
+        new Date(),
+      )
+      : child.findOpenSignalWait(new Date());
     if (openWait) {
       return {
         kind: "signal",

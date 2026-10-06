@@ -16,7 +16,7 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -31,6 +31,15 @@ import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { registrationOf } from "../../domain/workflows/signal_wait_records.ts";
+import {
+  acceptedOutcomeFor,
+  InMemorySignalWaitStore,
+} from "../../domain/workflows/signal_wait_store_test_helpers.ts";
+import {
+  ORPHAN_WAIT_RECORD_GRACE_MS,
+  waitRefOf,
+} from "../../domain/workflows/signal_wait_cleanup.ts";
 
 const SCHEMA = {
   type: "object" as const,
@@ -79,10 +88,20 @@ function waitingRun(
   return run;
 }
 
-function depsOf(runs: WorkflowRun[], now: Date): WorkflowWaitsDeps {
+function depsOf(
+  runs: WorkflowRun[],
+  now: Date,
+  ...store: [InMemorySignalWaitStore | undefined] | []
+): WorkflowWaitsDeps {
+  const waits = store.length === 0 ? new InMemorySignalWaitStore() : store[0];
   return {
     now: () => now,
+    signalWaits: waits
+      ? { supported: true, store: waits }
+      : { supported: false, reason: "no shared store" },
     runRepo: {
+      findById: (_workflowId, runId) =>
+        Promise.resolve(runs.find((run) => run.id === runId) ?? null),
       findGlobalByStatus: (status: string | string[]) => {
         const wanted = Array.isArray(status) ? status : [status];
         return Promise.resolve(
@@ -175,10 +194,9 @@ Deno.test("workflowWaits: lists every wait of every suspended run, soonest deadl
 Deno.test("workflowWaits: leaves out gates, settled waits and runs that are not suspended, and lists an unreadable wait apart", async () => {
   const gateOnly = waitingRun(workflowNamed("gate-only"), {});
   const settled = waitingRun(workflowNamed("settled"), { review: T0 });
-  settled.getJob("main")!.getStep("review")!.acceptSignal(
-    { verdict: "ship" },
-    "ada",
-    T0,
+  const settledStep = settled.getJob("main")!.getStep("review")!;
+  settledStep.applyWaitOutcome(
+    acceptedOutcomeFor(settledStep.signalWait!, { verdict: "ship" }),
   );
   const cancelled = waitingRun(workflowNamed("cancelled"), { review: T0 });
   cancelled.endAsCancelled("operator");
@@ -197,6 +215,142 @@ Deno.test("workflowWaits: leaves out gates, settled waits and runs that are not 
     stepName: "review",
     nextCommand: `swamp workflow resume broken --run ${broken.id}`,
   }]);
+});
+
+Deno.test("workflowWaits: a wait a signal settled is not listed, though its step still waits in the run record", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const step = run.getJob("main")!.getStep("review")!;
+  const waits = new InMemorySignalWaitStore();
+  await waits.settle(
+    acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+      runId: run.id,
+    }),
+  );
+
+  assertEquals(await list(depsOf([run], T1, waits)), []);
+  assertEquals(step.status, "waiting_signal");
+});
+
+Deno.test("workflowWaits: registers a wait a run holds without a registration, and settles an expired one as timed out", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+  const waits = new InMemorySignalWaitStore();
+
+  await list(depsOf([run], T1, waits));
+
+  const registration = await waits.findRegistration(wait.id);
+  assert(registration.kind === "found");
+  assertEquals(registration.record.runId, run.id);
+  assertEquals(registration.record.stepName, "review");
+  assertEquals(waits.outcomes.size, 0);
+
+  const [expired] = await list(
+    depsOf([run], new Date("2026-01-01T00:01:00.001Z"), waits),
+  );
+  assertEquals(expired.expired, true);
+  const outcome = await waits.findOutcome(wait.id);
+  assert(outcome.kind === "found");
+  assertEquals(outcome.record.kind, "timed_out");
+});
+
+Deno.test("workflowWaits: lists a registered wait whose run record is not on this host", async () => {
+  const workflow = workflowNamed("release");
+  const run = waitingRun(workflow, { review: T0 });
+  const step = run.getJob("main")!.getStep("review")!;
+  const waits = new InMemorySignalWaitStore();
+  await waits.register(
+    registrationOf(
+      {
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+        runId: run.id,
+        jobName: "main",
+        stepName: "review",
+      },
+      step.signalWait!,
+      T0,
+    ),
+  );
+
+  const listed = await list(depsOf([], T1, waits));
+
+  assertEquals(listed.map((w) => [w.waitId, w.runId, w.stepName]), [
+    [step.signalWait!.id, run.id, "review"],
+  ]);
+  assertEquals(listed[0].waitingSince, T0.toISOString());
+});
+
+Deno.test("workflowWaits: sweeps the registration of a run that ended, and of a run long gone, and keeps one that may not be synced yet", async () => {
+  const waits = new InMemorySignalWaitStore();
+  const register = async (run: WorkflowRun) => {
+    const step = run.getJob("main")!.getStep("review")!;
+    await waits.register(
+      registrationOf(
+        {
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          runId: run.id,
+          jobName: "main",
+          stepName: "review",
+        },
+        step.signalWait!,
+        T0,
+      ),
+    );
+    return waitRefOf(run, step)!.waitId;
+  };
+  const ended = waitingRun(workflowNamed("ended"), { review: T0 });
+  const endedWait = await register(ended);
+  ended.endAsCancelled("operator");
+  const unsynced = waitingRun(workflowNamed("unsynced"), { review: T0 });
+  const unsyncedWait = await register(unsynced);
+
+  // Just past the deadline: the missing run may only be unsynced.
+  const soon = new Date("2026-01-01T00:02:00.000Z");
+  const listed = await list(depsOf([ended], soon, waits));
+  assertEquals(listed.map((w) => w.waitId), [unsyncedWait]);
+  assertEquals((await waits.findRegistration(endedWait)).kind, "absent");
+  // The ended run's wait was closed, so a late signal is answered closed.
+  const closed = await waits.findOutcome(endedWait);
+  assert(closed.kind === "found");
+  assertEquals(closed.record.kind, "cancelled");
+
+  // Past the deadline by the grace period: nobody answers that wait now.
+  const later = new Date(
+    new Date("2026-01-01T00:01:00.000Z").getTime() +
+      ORPHAN_WAIT_RECORD_GRACE_MS + 1,
+  );
+  assertEquals(await list(depsOf([ended], later, waits)), []);
+  assertEquals((await waits.findRegistration(unsyncedWait)).kind, "absent");
+  assertEquals((await waits.findOutcome(unsyncedWait)).kind, "absent");
+  // The outcome of the run that exists lives as long as the run.
+  assertEquals((await waits.findOutcome(endedWait)).kind, "found");
+});
+
+Deno.test("workflowWaits: an outcome that cannot be read is listed apart, with the resume that fails its step", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+  const waits = new InMemorySignalWaitStore();
+  waits.outcomes.set(wait.id, new TextEncoder().encode("{"));
+
+  const deps = depsOf([run], T1, waits);
+
+  assertEquals(await list(deps), []);
+  assertEquals((await listUnreadable(deps)).map((w) => w.nextCommand), [
+    `swamp workflow resume release --run ${run.id}`,
+  ]);
+});
+
+Deno.test("workflowWaits: without a wait store it lists what run records hold and writes nothing", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+
+  const open = await list(depsOf([run], T1, undefined));
+  assertEquals(open.map((w) => w.expired), [false]);
+
+  const expired = await list(
+    depsOf([run], new Date("2026-01-01T00:01:00.001Z"), undefined),
+  );
+  assertEquals(expired.map((w) => w.expired), [true]);
 });
 
 Deno.test("workflowWaits: no suspended runs lists nothing", async () => {

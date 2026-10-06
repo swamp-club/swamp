@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { assertControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
@@ -349,4 +350,44 @@ Deno.test("FileSystemControlPlaneStore: rejects empty key", async () => {
       PathTraversalError,
     );
   });
+});
+
+Deno.test("FileSystemControlPlaneStore: meets the control-plane store contract, across handles on one directory", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-cp-conformance-" });
+  try {
+    await assertControlPlaneStoreConformance(
+      () => new FileSystemControlPlaneStore(dir),
+      { concurrency: 16 },
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("FileSystemControlPlaneStore: putIfAbsent leaves no staging file behind, whether it wins or loses", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-cp-staging-" });
+  try {
+    const store = new FileSystemControlPlaneStore(dir);
+    const data = new TextEncoder().encode("record");
+
+    assertEquals(await store.putIfAbsent("claims/job", data), true);
+    assertEquals(await store.putIfAbsent("claims/job", data), false);
+
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(join(dir, "_control", "claims"))) {
+      names.push(entry.name);
+    }
+    assertEquals(names, ["job"]);
+    assertEquals(await store.list("claims/"), ["claims/job"]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

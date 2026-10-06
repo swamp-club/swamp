@@ -391,8 +391,9 @@ workflow's run finishes through serve, serve also resumes the parent waiting on
 it, under the parent's own policy, if the approver may approve the parent.
 
 A run with a `wait_for_signal` step still waiting is never auto-resumed, whether
-the wait is open or past its deadline. Signals are delivered only by the local
-`swamp workflow signal`; resume the run by hand afterwards.
+the wait is open, signalled or past its deadline. Signals are delivered only by
+`swamp workflow signal`, run against the same datastore; resume the run by hand
+afterwards.
 
 ## When to Use What
 

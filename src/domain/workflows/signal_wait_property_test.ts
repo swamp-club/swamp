@@ -74,7 +74,14 @@ Deno.test("SignalWait: any wait survives repeated round-trips unchanged (propert
       fc.string({ minLength: 1, maxLength: 12 }),
       (timeout, settle, submittedBy) => {
         const open = SignalWait.open(VERDICT, timeout, NOW);
-        const wait = settle ? open.settle(submittedBy, NOW) : open;
+        const wait = settle
+          ? open.settledWith({
+            id: crypto.randomUUID(),
+            waitId: open.id,
+            receivedAt: NOW.toISOString(),
+            submittedBy,
+          })
+          : open;
 
         const once = SignalWait.fromData(wait.toData());
         const twice = SignalWait.fromData(once.toData());

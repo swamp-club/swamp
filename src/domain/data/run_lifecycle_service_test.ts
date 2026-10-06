@@ -399,3 +399,58 @@ Deno.test("gcAll: a failing snapshot pass still reports the runs collected", asy
   assertEquals(result.workflowRunsDeleted, 2);
   assertEquals(result.snapshotsDeleted, 0);
 });
+
+Deno.test("gcAll: removes the signal wait records of the runs it deleted, and of none on a dry run", async () => {
+  const collected: string[][] = [];
+  const serviceFor = () =>
+    new DefaultRunLifecycleService(
+      createMockWorkflowRunRepo({
+        deleted: 2,
+        bytesReclaimed: 10,
+        deletedRunIds: ["run-a", "run-b"],
+      }),
+      createMockOutputRepo({ deleted: 0, bytesReclaimed: 0 }),
+      createMockSnapshotRepo(),
+      () => Promise.resolve(new Set()),
+      (deletedRunIds) => {
+        collected.push([...deletedRunIds]);
+        return Promise.resolve();
+      },
+    );
+
+  await serviceFor().gcAll({
+    workflowRunRetentionDays: 7,
+    outputRetentionDays: 7,
+    dryRun: true,
+  });
+  assertEquals(collected, []);
+
+  await serviceFor().gcAll({
+    workflowRunRetentionDays: 7,
+    outputRetentionDays: 7,
+    dryRun: false,
+  });
+  assertEquals(collected, [["run-a", "run-b"]]);
+});
+
+Deno.test("gcAll: a failing wait record cleanup does not fail a run collection that already happened", async () => {
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo({
+      deleted: 1,
+      bytesReclaimed: 10,
+      deletedRunIds: ["run-a"],
+    }),
+    createMockOutputRepo({ deleted: 0, bytesReclaimed: 0 }),
+    createMockSnapshotRepo(),
+    () => Promise.resolve(new Set()),
+    () => Promise.reject(new Error("store unreachable")),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 7,
+    outputRetentionDays: 7,
+    dryRun: false,
+  });
+
+  assertEquals(result.workflowRunsDeleted, 1);
+});

@@ -2072,6 +2072,7 @@ export async function handleWorkflowDelete(
           ctx.datastoreResolver,
           ctx.repoContext.markDirty,
           ctx.repoContext.workflowRepo,
+          ctx.repoContext.signalWaits,
         );
 
         let result: Record<string, unknown> | undefined;

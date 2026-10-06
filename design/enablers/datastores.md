@@ -499,6 +499,13 @@ capabilities(): SyncCapabilities {
 (makes `sync --push` preview first unless `--yes`/`--confirm`), `controlPlane`
 and `configRefresh`.
 
+**`controlPlane`**: when `true`, the sync service exposes `controlPlaneStore()`
+for small records read and written in the datastore directly. A workflow that
+contains a `wait_for_signal` step runs on a custom datastore only when this is
+advertised and the store implements `putIfAbsent`, since the wait's records must
+be visible to every host at once. `assertControlPlaneStoreConformance` in
+`@swamp-club/swamp-testing` checks a store against that contract.
+
 **`namespacedSync`** (Phase 6): when `true`, the extension handles the
 `namespace` field on `DatastoreSyncOptions`, limiting its index walk and upload
 to `{namespace}/` in the remote. Extensions without it still receive the field

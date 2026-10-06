@@ -124,13 +124,18 @@ Deno.test("unclaimedRuns is named only where another claim already holds", async
   );
 });
 
-/** The production files that load, change and save a run under its claim. */
+/**
+ * The production files that load, change and save a run under its claim.
+ *
+ * `workflow signal` is not one of them (swamp-club#3093): it creates the
+ * wait's outcome record and never writes a run, so it has nothing to claim.
+ * `integration/signal_wait_records_rules_test.ts` holds it to that.
+ */
 const CLAIMED_PINNED = [
   "src/cli/commands/workflow_cancel.ts",
   "src/domain/workflows/execution_service.ts",
   "src/libswamp/workflows/approve.ts",
   "src/libswamp/workflows/reject.ts",
-  "src/libswamp/workflows/signal.ts",
   "src/libswamp/workflows/supersede.ts",
 ];
 

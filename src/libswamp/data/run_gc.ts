@@ -17,6 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type {
+  SignalWaitStore,
+  SignalWaitSupport,
+} from "../../domain/workflows/signal_wait_store.ts";
+import {
+  removeWaitRecordsOfRuns,
+  sweepWaitRecords,
+} from "../../domain/workflows/signal_wait_cleanup.ts";
+import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import {
   DEFAULT_OUTPUT_RETENTION_DAYS,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
@@ -111,10 +124,33 @@ export interface RunGcDeps {
   }) => Promise<RunGcResult>;
 }
 
+/**
+ * Removes the wait records of the runs just deleted, then sweeps the
+ * records nothing else removed.
+ */
+function waitRecordCollector(
+  store: SignalWaitStore,
+  runRepo: Pick<WorkflowRunRepository, "findById">,
+): (deletedRunIds: readonly string[]) => Promise<void> {
+  return async (deletedRunIds) => {
+    await removeWaitRecordsOfRuns(store, new Set(deletedRunIds));
+    await sweepWaitRecords(
+      store,
+      (workflowId, runId) =>
+        runRepo.findById(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
+      new Date(),
+    );
+  };
+}
+
 export function createRunGcDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   markDirty?: MarkDirtyHook,
+  signalWaits?: SignalWaitSupport,
 ): RunGcDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -139,6 +175,9 @@ export function createRunGcDeps(
     outputRepo,
     evaluatedWorkflowRepo,
     () => workflowRunRepo.listRunIds(),
+    signalWaits?.supported
+      ? waitRecordCollector(signalWaits.store, workflowRunRepo)
+      : undefined,
   );
   return {
     gcAll: (options) => service.gcAll(options),

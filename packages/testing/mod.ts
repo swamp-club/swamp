@@ -136,6 +136,7 @@ export type {
 } from "./datastore_test_context.ts";
 
 export type {
+  ControlPlaneStore,
   DatastoreHealthResult,
   DatastoreProvider,
   DatastoreSyncOptions,
@@ -167,6 +168,15 @@ export type {
   SyncServiceRoundTripOptions,
   SyncServiceRoundTripResult,
 } from "./datastore_conformance.ts";
+
+export {
+  assertControlPlaneStoreConformance,
+  createInMemoryControlPlaneStore,
+} from "./control_plane_conformance.ts";
+
+export type {
+  ControlPlaneStoreConformanceOptions,
+} from "./control_plane_conformance.ts";
 
 export {
   createInMemoryRemote,

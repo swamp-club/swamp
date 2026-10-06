@@ -50,6 +50,7 @@
  * ```
  */
 
+import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
@@ -414,6 +415,13 @@ export interface RepositoryContext {
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
   autoDefinitionsDir: string;
+  /**
+   * Whether this repository's datastore supports workflow signal waits, with
+   * the store for their records. Set by the code that resolves the
+   * datastore; absent in a context built without one, which then refuses a
+   * wait.
+   */
+  signalWaits?: SignalWaitSupport;
 }
 
 /**

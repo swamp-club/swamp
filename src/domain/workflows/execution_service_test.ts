@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { inMemorySignalWaits } from "./signal_wait_store_test_helpers.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
@@ -18182,17 +18183,24 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
       undefined,
       new CatalogStore(join(tempDir, "_catalog.db")),
     );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
 
     const events: WorkflowExecutionEvent[] = [];
     for await (const event of service.run(workflow.name)) events.push(event);
 
     const suspended = events.at(-1);
     assertEquals(suspended?.kind, "suspended");
+    // The wait was registered where a signal looks for it.
+    assertEquals(
+      (await waits.store.listRegistrations()).map((r) => r.stepName),
+      ["review"],
+    );
     const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
     const job = stored.getJob("job1")!;
     assertEquals(stored.status, "suspended");
     assertEquals(job.status, "running");
-    assertEquals(job.getStep("review")!.status, "waiting");
+    assertEquals(job.getStep("review")!.status, "waiting_signal");
     assertEquals(job.getStep("sibling")!.status, "succeeded");
     assertEquals(job.getStep("after")!.status, "pending");
     assertEquals(executed, ["sibling"]);

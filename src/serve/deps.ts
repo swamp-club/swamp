@@ -23,6 +23,7 @@
  * decoupled from Cliffy options parsing.
  */
 
+import { SIGNAL_WAITS_NOT_CONFIGURED } from "../domain/workflows/signal_wait_store.ts";
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -202,7 +203,7 @@ export async function createWorkflowRunDeps(
         };
       };
       const resolver = new DefaultDatastorePathResolver(dir, datastoreConfig);
-      return new WorkflowExecutionService(
+      const service = new WorkflowExecutionService(
         wfRepo,
         rnRepo,
         dir,
@@ -221,6 +222,9 @@ export async function createWorkflowRunDeps(
         undefined,
         resolver,
       );
+      service.signalWaits = repoContext.signalWaits ??
+        SIGNAL_WAITS_NOT_CONFIGURED;
+      return service;
     },
     catalogStore: repoContext.catalogStore,
     dataRepo: repoContext.unifiedDataRepo,

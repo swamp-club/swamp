@@ -51,13 +51,12 @@ import {
 import {
   parseStoredWait,
   persistedWait,
-  type SignalOutcome,
-  type SignalReceipt,
   type SignalWait,
   type StoredWait,
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "./signal_wait.ts";
+import type { WaitOutcome } from "./signal_wait_records.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -163,6 +162,10 @@ export const StepRunSchema = z.object({
     "running",
     "waiting_approval",
     "waiting",
+    // A wait whose registration and outcome live in the control-plane store
+    // (swamp-club#3093). A binary that predates it cannot parse the status,
+    // so it refuses the run instead of settling the wait from the record.
+    "waiting_signal",
     "succeeded",
     "failed",
     "skipped",
@@ -189,7 +192,8 @@ export const StepRunSchema = z.object({
   // Set when the run ended while this step still waited on its child run,
   // leaving the child suspended on its own.
   detachedNestedRun: z.boolean().optional(),
-  // The wait a `waiting` step holds, or held before it settled. Kept as read
+  // The wait a `waiting_signal` step holds (`waiting` in a run suspended
+  // before swamp-club#3093), or held before it settled. Kept as read
   // and validated in the domain (see parseStoredWait), as nestedRun is.
   wait: z.unknown().optional(),
 });
@@ -209,6 +213,7 @@ export const JobRunSchema = z.object({
     "running",
     "waiting_approval",
     "waiting",
+    "waiting_signal",
     "succeeded",
     "failed",
     "skipped",
@@ -526,7 +531,7 @@ export class StepRun {
    * True while the step is paused on a wait for a signal.
    */
   get isSignalWait(): boolean {
-    return this._status === "waiting";
+    return this._status === "waiting_signal" || this._status === "waiting";
   }
 
   /**
@@ -630,12 +635,12 @@ export class StepRun {
   }
 
   /**
-   * Fails a wait the run's cancellation left unsignalled (`waiting`) with
+   * Fails a wait the run's cancellation left unsignalled with
    * {@link CANCELLED_STEP_ERROR}, marked {@link settledByAbort} like an
    * undecided approval. Any other status is left alone.
    */
   cancelOpenWait(): void {
-    if (this._status !== "waiting") return;
+    if (!this.isSignalWait) return;
     this.fail(CANCELLED_STEP_ERROR);
     this._settledByAbort = true;
   }
@@ -644,68 +649,49 @@ export class StepRun {
    * Marks the step as waiting for a signal on `wait`.
    */
   waitForSignal(wait: SignalWait): void {
-    this._status = "waiting";
+    this._status = "waiting_signal";
     this._resetByResume = false;
     this._wait = { kind: "valid", wait };
   }
 
   /**
-   * Delivers a signal to this step. Only an open, unexpired wait accepts
-   * one, and only with a payload its captured schema allows: the step then
-   * succeeds with the payload and the receipt as its output. A refusal
-   * changes nothing.
+   * Settles this step's wait from its stored outcome, the only way a wait
+   * ends. An accepted signal succeeds the step with the payload and the
+   * receipt as its output; a timeout fails it with
+   * {@link WAIT_TIMEOUT_STEP_ERROR}; a cancel fails it as
+   * {@link cancelOpenWait} does.
+   *
+   * The outcome was read from a store other writers can reach, so its
+   * payload is checked against the schema this step captured before it is
+   * kept. Returns false, changing nothing, when the step is not waiting,
+   * its wait cannot be read, the outcome names another wait, or the payload
+   * is not one the wait accepts.
    */
-  acceptSignal(
-    payload: unknown,
-    submittedBy: string,
-    now: Date,
-  ): SignalOutcome {
+  applyWaitOutcome(outcome: WaitOutcome): boolean {
     const wait = this.signalWait;
-    if (wait?.receipt) {
-      return {
-        accepted: false,
-        refusal: { kind: "already_settled", receipt: { ...wait.receipt } },
-      };
+    if (!this.isSignalWait || !wait || outcome.waitId !== wait.id) {
+      return false;
     }
-    if (this._status !== "waiting" || !wait) {
-      return { accepted: false, refusal: { kind: "not_waiting" } };
+    switch (outcome.kind) {
+      case "accepted": {
+        if (outcome.receipt.waitId !== wait.id) return false;
+        const validation = wait.validatePayload(outcome.payload);
+        if (!validation.valid) return false;
+        this._wait = { kind: "valid", wait: wait.settledWith(outcome.receipt) };
+        this.succeed({
+          type: "wait_for_signal",
+          payload: validation.payload,
+          signal: { ...outcome.receipt },
+        });
+        return true;
+      }
+      case "timed_out":
+        this.fail(WAIT_TIMEOUT_STEP_ERROR);
+        return true;
+      case "cancelled":
+        this.cancelOpenWait();
+        return true;
     }
-    if (wait.isExpired(now)) {
-      return {
-        accepted: false,
-        refusal: { kind: "expired", deadline: wait.deadline },
-      };
-    }
-    const validation = wait.validatePayload(payload);
-    if (!validation.valid) {
-      return {
-        accepted: false,
-        refusal: { kind: "invalid_payload", errors: validation.errors },
-      };
-    }
-    const settled = wait.settle(submittedBy, now);
-    const receipt = settled.receipt as SignalReceipt;
-    this._wait = { kind: "valid", wait: settled };
-    this.succeed({
-      type: "wait_for_signal",
-      payload: validation.payload,
-      signal: { ...receipt },
-    });
-    return { accepted: true, receipt: { ...receipt } };
-  }
-
-  /**
-   * Fails a waiting step whose wait passed its deadline with
-   * {@link WAIT_TIMEOUT_STEP_ERROR}. Returns false, changing nothing, when
-   * the step is not waiting, its wait is still open at `now`, or its wait
-   * cannot be read (see {@link failUnreadableWait}).
-   */
-  timeOutWait(now: Date): boolean {
-    if (this._status !== "waiting") return false;
-    const wait = this.signalWait;
-    if (!wait || !wait.isExpired(now)) return false;
-    this.fail(WAIT_TIMEOUT_STEP_ERROR);
-    return true;
   }
 
   /**
@@ -714,7 +700,19 @@ export class StepRun {
    * deadline to pass. Returns false, changing nothing, for any other step.
    */
   failUnreadableWait(): boolean {
-    if (this._status !== "waiting" || this.signalWait) return false;
+    if (!this.isSignalWait || this.signalWait) return false;
+    this.fail(WAIT_UNREADABLE_STEP_ERROR);
+    return true;
+  }
+
+  /**
+   * Fails a waiting step whose wait holds an outcome that cannot be read or
+   * applied with {@link WAIT_UNREADABLE_STEP_ERROR}. The outcome is written
+   * once, so nothing will ever settle the wait another way. Returns false,
+   * changing nothing, for a step that is not waiting.
+   */
+  failUnusableOutcome(): boolean {
+    if (!this.isSignalWait) return false;
     this.fail(WAIT_UNREADABLE_STEP_ERROR);
     return true;
   }

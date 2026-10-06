@@ -43,6 +43,21 @@ import {
 } from "./workflow_run.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
+  type OwnerLiveness,
+  suspendedRunOwnerStillRuns,
+} from "./orphaned_run_reaper.ts";
+import { registrationOf } from "./signal_wait_records.ts";
+import {
+  SIGNAL_WAITS_NOT_CONFIGURED,
+  type SignalWaitStore,
+  type SignalWaitSupport,
+} from "./signal_wait_store.ts";
+import {
+  applyAcceptedSignals,
+  closeRunWaits,
+  settleReenteredWait,
+} from "./signal_wait_cleanup.ts";
+import {
   MAX_WORKFLOW_NESTING_DEPTH,
   type ParentRunRef,
 } from "./nested_run_ref.ts";
@@ -444,6 +459,13 @@ async function resolveScalarExpression(
     );
   }
   return String(resolved);
+}
+
+/** True when a step of `workflow` waits for a signal. */
+function holdsSignalWait(workflow: Workflow): boolean {
+  return workflow.jobs.some((job) =>
+    job.steps.some((step) => step.task.isWaitForSignal())
+  );
 }
 
 /**
@@ -2689,6 +2711,21 @@ export class WorkflowExecutionService {
    */
   runClaims: WorkflowRunClaims = unclaimedRuns;
 
+  /**
+   * Where the registrations and outcomes of signal waits are kept, or why
+   * this datastore cannot hold them. Defaults to unsupported, so a caller
+   * that wires no store refuses a wait instead of opening one nothing can
+   * signal.
+   */
+  signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
+
+  /**
+   * Whether a process on this host is alive, for refusing a resume while
+   * the run's owner still runs the level it suspended in. Without it, or
+   * without a run tracker, that resume is not refused.
+   */
+  ownerLiveness?: OwnerLiveness;
+
   constructor(
     private readonly workflowRepo: WorkflowRepository,
     private readonly runRepo: WorkflowRunRepository,
@@ -2899,6 +2936,9 @@ export class WorkflowExecutionService {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
         workflow = found;
+        // Refused before anything runs: a wait opened where its records
+        // cannot be shared would accept a signal nothing ever applies.
+        if (holdsSignalWait(found)) this.requireSignalWaits(found.name);
 
         // Provenance for the runtime pass, collected from the workflow as
         // loaded from disk. Taken here rather than from the evaluation below
@@ -3541,8 +3581,32 @@ export class WorkflowExecutionService {
             `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
         );
       }
-      const openWait = existingRun.findOpenSignalWait(new Date());
-      if (openWait) throw new UserError(openSignalWaitMessage(openWait));
+      // The owner saves the record as suspended before the level it
+      // suspended in has drained, and keeps saving it without the claim
+      // until then. Taking the run over now would be saved over.
+      if (
+        this.runTracker && this.ownerLiveness &&
+        suspendedRunOwnerStillRuns(
+          existingRun,
+          this.runTracker,
+          this.ownerLiveness,
+        )
+      ) {
+        throw new UserError(
+          `Run ${runId} has not finished suspending: the process that started it is still running other steps. ` +
+            `Resume it again once they finish.`,
+        );
+      }
+      if (existingRun.findSignalWaits().length > 0) {
+        // The only place a wait changes the run record: each accepted
+        // signal is applied to its step, under the claim.
+        const openWait = await applyAcceptedSignals(
+          this.requireSignalWaits(workflow.name),
+          existingRun,
+          new Date(),
+        );
+        if (openWait) throw new UserError(openSignalWaitMessage(openWait));
+      }
       await this.checkNestedWaitsSettled(existingRun);
     }
 
@@ -3569,6 +3633,11 @@ export class WorkflowExecutionService {
     // cancel sees the live process from the start.
     const owner = { pid: Deno.pid, instanceId: options?.instanceId };
     if (reset) {
+      // A reset clears the wait a step held. Closed first, so a signal for
+      // the old attempt is answered closed and its wait is not listed.
+      if (this.signalWaits.supported) {
+        await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+      }
       existingRun.resetForResumeFrom(reset.steps, reset.tracked);
       existingRun.resumeFromFailed(owner);
     } else {
@@ -4403,8 +4472,14 @@ export class WorkflowExecutionService {
       if (run.status !== "suspended" && !options.signal?.aborted) {
         for (const dropped of jobRun.steps) {
           if (!dropped.isSignalWait) continue;
-          const unreadable = dropped.failUnreadableWait();
-          if (!unreadable && !dropped.timeOutWait(new Date())) continue;
+          if (
+            await settleReenteredWait(
+              this.requireSignalWaits(workflow.name),
+              run,
+              dropped,
+              new Date(),
+            ) === "open"
+          ) continue;
           const allowFailure = job.steps.find((s) =>
             s.name === (dropped.forEachTemplate ?? dropped.stepName)
           )?.allowFailure;
@@ -4799,7 +4874,13 @@ export class WorkflowExecutionService {
       // A re-entered signal wait fails once its deadline has passed, so
       // `failed` handlers run; one still open suspends the run on it again.
       if (reenterSignalWait) {
-        const unreadable = stepRun.failUnreadableWait();
+        const unreadable = stepRun.signalWait === undefined;
+        const settled = await settleReenteredWait(
+          this.requireSignalWaits(workflow.name),
+          run,
+          stepRun,
+          new Date(),
+        );
         if (unreadable) {
           getSwampLogger(["workflow", "resume"]).warn(
             "Step {stepName} of run {runId} held a wait that could not be read, so no signal could reach it. The step failed with {error}.",
@@ -4810,16 +4891,14 @@ export class WorkflowExecutionService {
             },
           );
         }
-        if (unreadable || stepRun.timeOutWait(new Date())) {
+        if (settled === "failed") {
           if (step.allowFailure) stepRun.markAllowedFailure();
           yield {
             kind: "step_failed",
             jobId: job.name,
             stepId: stepName,
             runId: run.id,
-            error: unreadable
-              ? WAIT_UNREADABLE_STEP_ERROR
-              : WAIT_TIMEOUT_STEP_ERROR,
+            error: stepRun.error ?? WAIT_TIMEOUT_STEP_ERROR,
             allowedFailure: step.allowFailure || undefined,
             forEachTemplate,
             forEachIndex,
@@ -4855,7 +4934,23 @@ export class WorkflowExecutionService {
           };
           return;
         }
-        const wait = SignalWait.open(task.schema, task.timeout, new Date());
+        const openedAt = new Date();
+        const wait = SignalWait.open(task.schema, task.timeout, openedAt);
+        // Registered before the step waits, so the wait can be signalled as
+        // soon as its id is known, whatever the run record says by then.
+        await this.requireSignalWaits(workflow.name).register(
+          registrationOf(
+            {
+              workflowId: run.workflowId,
+              workflowName: run.workflowName,
+              runId: run.id,
+              jobName: job.name,
+              stepName,
+            },
+            wait,
+            openedAt,
+          ),
+        );
         stepRun.waitForSignal(wait);
         yield {
           kind: "signal_wait_requested",
@@ -5330,7 +5425,11 @@ export class WorkflowExecutionService {
    */
   private async checkNestedWaitsSettled(run: WorkflowRun): Promise<void> {
     await assertNestedWaitsSettled(
-      { runRepo: this.runRepo, workflowRepo: this.workflowRepo },
+      {
+        runRepo: this.runRepo,
+        workflowRepo: this.workflowRepo,
+        signalWaits: this.signalWaits,
+      },
       run,
     );
   }
@@ -5668,6 +5767,7 @@ export class WorkflowExecutionService {
       this.vaultsDir,
       this.datastoreResolver,
     );
+    childService.signalWaits = this.signalWaits;
 
     let childRun: WorkflowRun | undefined;
     // The child's suspended event is the parent step's outcome, as its
@@ -6339,6 +6439,17 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
+  }
+
+  /**
+   * The store for wait records, or a refusal naming why this datastore
+   * cannot hold them.
+   */
+  private requireSignalWaits(workflowName: string): SignalWaitStore {
+    if (this.signalWaits.supported) return this.signalWaits.store;
+    throw new UserError(
+      `Workflow "${workflowName}" waits for a signal, which this datastore cannot support: ${this.signalWaits.reason}.`,
+    );
   }
 
   /**

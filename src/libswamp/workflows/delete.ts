@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
+import { removeWaitRecordsOfRuns } from "../../domain/workflows/signal_wait_cleanup.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -87,6 +89,11 @@ export interface WorkflowDeleteDeps {
   listRunIds: (workflowId: WorkflowId) => Promise<string[]>;
   /** Deletes the per-run evaluated-workflow snapshots of the given runs. */
   deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
+  /**
+   * Removes the signal wait records of the given runs, so an outcome never
+   * outlives its run. Absent where the datastore holds no wait records.
+   */
+  deleteWaitRecords?: (runIds: readonly string[]) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
   deleteWorkflow: (workflowId: WorkflowId, name?: string) => Promise<void>;
 }
@@ -97,6 +104,7 @@ export function createWorkflowDeleteDeps(
   datastoreResolver?: DatastorePathResolver,
   markDirty?: MarkDirtyHook,
   injectedWorkflowRepo?: WorkflowRepository,
+  signalWaits?: SignalWaitSupport,
 ): WorkflowDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -139,6 +147,11 @@ export function createWorkflowDeleteDeps(
       workflowRunRepo.deleteAllByWorkflowId(workflowId),
     listRunIds: (workflowId) =>
       workflowRunRepo.listRunIdsForWorkflow(workflowId),
+    deleteWaitRecords: signalWaits?.supported
+      ? async (runIds) => {
+        await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+      }
+      : undefined,
     deleteRunSnapshots: async (runIds) => {
       for (const runId of runIds) {
         // listRunIds already filters, but the IDs come from the filesystem;
@@ -229,6 +242,13 @@ export async function* workflowDelete(
 
         ctx.logger.debug`Deleting run snapshots`;
         await deps.deleteRunSnapshots(runIds);
+
+        // After the runs, like the snapshots: records a failure leaves
+        // behind are swept later, and no run is left without its records.
+        if (deps.deleteWaitRecords) {
+          ctx.logger.debug`Deleting signal wait records`;
+          await deps.deleteWaitRecords(runIds);
+        }
 
         // Delete evaluated workflow
         ctx.logger.debug`Deleting evaluated workflow`;
