@@ -4734,10 +4734,18 @@ export const serveCommand = new Command()
           const parsed = ServerTokenSchema.safeParse(record[0].attributes);
           if (!parsed.success) return;
           const updated = { ...parsed.data, collectives, groups };
-          await writeResource(
-            "token",
-            "token-main",
-            updated as unknown as Record<string, unknown>,
+          // In a root unit of work with no push, so the write stages into
+          // it instead of reaching the hook through signalChange's fallback
+          // (swamp-club#3056). Nothing pushes here, as before.
+          await runInRootUnitOfWork(
+            repoContext,
+            { flush: undefined },
+            () =>
+              writeResource(
+                "token",
+                "token-main",
+                updated as unknown as Record<string, unknown>,
+              ),
           );
         },
         revokeToken: async (tokenName) => {
@@ -4772,10 +4780,18 @@ export const serveCommand = new Command()
             state: "revoked" as const,
             revokedAt: new Date().toISOString(),
           };
-          await writeResource(
-            "token",
-            "token-main",
-            revoked as unknown as Record<string, unknown>,
+          // In a root unit of work with no push, so the write stages into
+          // it instead of reaching the hook through signalChange's fallback
+          // (swamp-club#3056). Nothing pushes here, as before.
+          await runInRootUnitOfWork(
+            repoContext,
+            { flush: undefined },
+            () =>
+              writeResource(
+                "token",
+                "token-main",
+                revoked as unknown as Record<string, unknown>,
+              ),
           );
         },
         updateConnectionCollectives: updateCollectivesForPrincipal,

@@ -1958,22 +1958,31 @@ export async function handleModelValidate(
     );
 
     let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      modelValidate(libCtx, deps, {
-        modelIdOrName: model?.idOrName,
-        byId: model?.byId,
-        expectedName: model?.expectedName,
-        include,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
+    // In a root unit of work with no push: model checks receive the hooked
+    // data and definition repositories, so a check that writes stages into
+    // the root instead of reaching the hook through signalChange's fallback
+    // (swamp-club#3056). Nothing pushes here, as before.
+    await runInRootUnitOfWork(
+      ctx.repoContext,
+      { flush: undefined },
+      () =>
+        consumeStream(
+          modelValidate(libCtx, deps, {
+            modelIdOrName: model?.idOrName,
+            byId: model?.byId,
+            expectedName: model?.expectedName,
+            include,
+          }),
+          {
+            resolving: () => {},
+            completed: (e) => {
+              result = e.data as unknown as Record<string, unknown>;
+            },
+            error: (e) => {
+              throw new Error(e.error.message);
+            },
+          },
+        ),
     );
 
     if (controller.signal.aborted) {

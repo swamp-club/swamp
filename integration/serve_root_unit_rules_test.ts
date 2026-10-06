@@ -319,6 +319,8 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",
   "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
+  // model.validate: model checks receive the hooked repositories.
+  "src/serve/handlers/model_handlers.ts: handleModelValidate",
   // The token secret migration, one root per token under that token's name
   // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
   // commands before or after their own root, never inside one.
