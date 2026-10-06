@@ -616,6 +616,18 @@ Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do
   }
 });
 
+Deno.test("VaultSecretBag.resolveForShell: an unbalanced double quote in here-document prose reads as open for the rest of the body", () => {
+  // Deliberate: double quotes count across body lines so a quoted string can
+  // span them; a stray one leaves later references bare, not quoted.
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  assertEquals(
+    bag.resolveForShell(`cat <<EOF\nscreen is 5" wide\nPASS=${s}\nEOF`)
+      .command,
+    `cat <<EOF\nscreen is 5" wide\nPASS=\${__SWAMP_VAULT_0}\nEOF`,
+  );
+});
+
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
   const bag = new VaultSecretBag();
   const data = bag.addDataSecret("from-data");
