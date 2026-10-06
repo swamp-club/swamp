@@ -2330,7 +2330,12 @@ lock directly, for when a crashed process left a lock that has not expired.
   datastores (S3, GCS), `ensureManagedConfigBase` resolves the datastore config
   to derive the cache-relative config path and records it, with its
   provenance, in the module-level registry; see "Extension commands and the
-  chicken-and-egg" below.
+  chicken-and-egg" below. Migrate pulls the `config/` tier before checking the
+  migration sentinel, so a cache that predates another repo's migration sees
+  it (swamp-club#2621). It pushes the migrated files at the root's checkpoint,
+  then writes the sentinel and pushes it as the flush, so the datastore's
+  sentinel means the migration is published; after either push fails, a
+  re-run publishes it (swamp-club#3117).
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
   contamination (the last via the optional `repairNamespaceContamination?()` on
@@ -2783,9 +2788,11 @@ Recommended init container sequence for a stateless pod:
    are not loaded from the remote (swamp-club#2612); step 5 restores them into
    the repo's pulled root.
 4. **`swamp datastore config migrate`**: idempotent. First boot copies local
-   config into the datastore tier and pushes; later boots the sentinel skips the
-   copy. Either way it sets `managedConfig: true` in `.swamp.yaml` if missing,
-   so a repo joining an already-migrated datastore is configured too.
+   config into the datastore tier and pushes; later boots the datastore's
+   sentinel, pulled before the check, skips the copy, and a re-run after a
+   failed push publishes the migration. Either way it sets
+   `managedConfig: true` in `.swamp.yaml` if missing, so a repo joining an
+   already-migrated datastore is configured too.
    On a first boot against an empty remote, step 2 warns that the config tier is
    empty (`empty_config_tier`); this step populates it.
 5. **`swamp extension install`**: restore pulled extensions whose source files

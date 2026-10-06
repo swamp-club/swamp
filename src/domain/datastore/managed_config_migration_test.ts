@@ -24,6 +24,7 @@ import {
   getMigrationSentinelPath,
   isConfigTierPopulated,
   migrateConfigToDatastore,
+  writeMigrationSentinel,
 } from "./managed_config_migration.ts";
 
 async function withTempDir(
@@ -238,7 +239,7 @@ Deno.test("migrateConfigToDatastore: copies only existing sources", async () => 
   });
 });
 
-Deno.test("migrateConfigToDatastore: writes sentinel file after migration", async () => {
+Deno.test("migrateConfigToDatastore: does not write the sentinel", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
     await ensureDir(repoDir);
@@ -251,14 +252,11 @@ Deno.test("migrateConfigToDatastore: writes sentinel file after migration", asyn
       join(repoDir, ".swamp", "pulled-extensions"),
     );
 
-    const stat = await Deno.stat(
-      join(configRoot, "managed-config-migrated.json"),
-    );
-    assertEquals(stat.isFile, true);
+    assertEquals(await isConfigTierPopulated(configRoot), false);
   });
 });
 
-Deno.test("migrateConfigToDatastore: sentinel contains migratedAt and sources", async () => {
+Deno.test("writeMigrationSentinel: writes migratedAt and the migration's sources", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
     await ensureDir(repoDir);
@@ -270,12 +268,13 @@ Deno.test("migrateConfigToDatastore: sentinel contains migratedAt and sources", 
     );
     const pulledSource = join(repoDir, ".swamp", "pulled-extensions");
 
-    await migrateConfigToDatastore(
+    const result = await migrateConfigToDatastore(
       repoDir,
       lockfilePath,
       configRoot,
       pulledSource,
     );
+    await writeMigrationSentinel(configRoot, result.sources);
 
     const sentinel = JSON.parse(
       await Deno.readTextFile(
@@ -292,7 +291,7 @@ Deno.test("migrateConfigToDatastore: sentinel contains migratedAt and sources", 
   });
 });
 
-Deno.test("migrateConfigToDatastore: idempotent — second run returns alreadyMigrated", async () => {
+Deno.test("migrateConfigToDatastore: returns alreadyMigrated once the sentinel is written", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
     await ensureDir(repoDir);
@@ -312,6 +311,17 @@ Deno.test("migrateConfigToDatastore: idempotent — second run returns alreadyMi
     );
     assertEquals(first.alreadyMigrated, false);
     assertEquals(first.copiedModels, true);
+
+    const unpublished = await migrateConfigToDatastore(
+      repoDir,
+      join(repoDir, "nonexistent.json"),
+      configRoot,
+      join(repoDir, ".swamp", "pulled-extensions"),
+    );
+    assertEquals(unpublished.alreadyMigrated, false);
+    assertEquals(unpublished.copiedModels, true);
+
+    await writeMigrationSentinel(configRoot, first.sources);
 
     const second = await migrateConfigToDatastore(
       repoDir,
@@ -428,6 +438,80 @@ Deno.test("migrateConfigToDatastore: leaves install staging out of the pulled-ex
       copied = false;
     }
     assertEquals(copied, false);
+  });
+});
+
+Deno.test({
+  name:
+    "migrateConfigToDatastore: copies again over an earlier copy with a read-only manifest",
+  // Deno.chmod is not supported on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      await ensureDir(repoDir);
+      const configRoot = join(dir, "config");
+      const pulled = join(repoDir, ".swamp", "pulled-extensions");
+      const extension = join(pulled, "@acme", "thing");
+      await ensureDir(extension);
+      await Deno.writeTextFile(join(extension, "manifest.yaml"), "v1\n");
+      await Deno.chmod(join(extension, "manifest.yaml"), 0o444);
+      await Deno.writeTextFile(join(extension, "stale.ts"), "old");
+
+      const migrate = () =>
+        migrateConfigToDatastore(
+          repoDir,
+          join(repoDir, "missing.json"),
+          configRoot,
+          pulled,
+        );
+      // No sentinel is written between the runs, as after a failed push.
+      await migrate();
+      await Deno.remove(join(extension, "stale.ts"));
+      const second = await migrate();
+
+      assertEquals(second.copiedPulledExtensions, true);
+      const copied = join(configRoot, "pulled-extensions", "@acme", "thing");
+      assertEquals(
+        await Deno.readTextFile(join(copied, "manifest.yaml")),
+        "v1\n",
+      );
+      let stale = true;
+      try {
+        await Deno.stat(join(copied, "stale.ts"));
+      } catch {
+        stale = false;
+      }
+      assertEquals(stale, false);
+    });
+  },
+});
+
+Deno.test("migrateConfigToDatastore: keeps other extensions in a scope it copies into", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const configRoot = join(dir, "config");
+    const pulled = join(repoDir, ".swamp", "pulled-extensions");
+    await ensureDir(join(pulled, "@acme", "mine"));
+    await Deno.writeTextFile(join(pulled, "@acme", "mine", "a.ts"), "a");
+    const other = join(configRoot, "pulled-extensions", "@acme", "other");
+    await ensureDir(other);
+    await Deno.writeTextFile(join(other, "b.ts"), "b");
+
+    await migrateConfigToDatastore(
+      repoDir,
+      join(repoDir, "missing.json"),
+      configRoot,
+      pulled,
+    );
+
+    assertEquals(await Deno.readTextFile(join(other, "b.ts")), "b");
+    assertEquals(
+      await Deno.readTextFile(
+        join(configRoot, "pulled-extensions", "@acme", "mine", "a.ts"),
+      ),
+      "a",
+    );
   });
 });
 

@@ -907,6 +907,7 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   // A root's checkpoint (swamp-club#3053): the CLI commands that push
   // mid-command. Serve needs none today.
   "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
+  "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
   // The root running the checkpoint option it was given.
