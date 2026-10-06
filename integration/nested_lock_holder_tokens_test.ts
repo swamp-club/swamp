@@ -99,6 +99,7 @@ async function lockFilesByModel(
 function childRelations(
   childEnv: Record<string, string>,
   locks: Map<string, { owner: LockOwner }>,
+  childHost?: string,
 ): Record<string, LockRelation> {
   const values = new Map(Object.entries(childEnv));
   const store: LockHolderEnvStore = {
@@ -107,7 +108,9 @@ function childRelations(
       values.set(key, value);
     },
   };
-  const child = new LockHolderMarker(store, 1);
+  const child = childHost === undefined
+    ? new LockHolderMarker(store, 1)
+    : new LockHolderMarker(store, 1, () => childHost);
   child.publish();
   const relation = child.lockRelation();
   return Object.fromEntries(
@@ -263,18 +266,24 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
           { [modelA]: "ancestor", [modelB]: "ancestor-other-run" },
         );
 
-        // Without the hand-off, or on another host, it waits on both.
-        for (
-          const env of [
-            nestedEnvOnWorker(undefined, workerPid),
-            nestedEnvOnWorker(lockHolder, workerPid, "another-host"),
-          ]
-        ) {
-          assertEquals(childRelations(env, locks), {
-            [modelA]: "other",
-            [modelB]: "other",
-          });
-        }
+        // Without the hand-off it waits on both.
+        assertEquals(
+          childRelations(nestedEnvOnWorker(undefined, workerPid), locks),
+          { [modelA]: "other", [modelB]: "other" },
+        );
+
+        // A worker on another host sharing the datastore skips the step's
+        // lock on its nonce alone; the orchestrator is no ancestor there, so
+        // its other lock is any other process's (swamp-club#3096).
+        const onAnotherHost = nestedEnvOnWorker(
+          lockHolder,
+          workerPid,
+          "another-host",
+        );
+        assertEquals(
+          childRelations(onAnotherHost, locks, "another-host"),
+          { [modelA]: "ancestor", [modelB]: "other" },
+        );
 
         // The step's lock is released and the model locked again while the
         // nested swamp still runs: the new lock is not the one it may skip.
@@ -285,11 +294,90 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
           childRelations(nestedEnvOnWorker(lockHolder, workerPid), relocked),
           { [modelA]: "ancestor-other-run" },
         );
+        assertEquals(
+          childRelations(onAnotherHost, relocked, "another-host"),
+          { [modelA]: "other" },
+        );
       } finally {
         await lockB.flush();
         await lockA.flush();
       }
     });
+  });
+});
+
+// A swamp whose own shell step started it holds no lock for the step it
+// dispatches, or holds one alongside: the locks handed down to it travel
+// with the dispatch, so a nested swamp on the worker skips those as well
+// (swamp-club#3096).
+Deno.test("nested lock holder tokens: a dispatch hands on the locks handed down to the orchestrator", async () => {
+  await withTempDir(async (repoDir) => {
+    await initRepo(repoDir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      throw new Error("expected a filesystem datastore");
+    }
+    const upstreamModel = crypto.randomUUID();
+    const stepModel = crypto.randomUUID();
+    const otherModel = crypto.randomUUID();
+    const models = [upstreamModel, stepModel, otherModel];
+    const workerPid = Deno.pid + 1;
+    const lockFor = (modelId: string) =>
+      acquireModelLocks(datastoreConfig, [
+        { modelType: "test/nested-lock", modelId },
+      ], repoDir);
+
+    const upstreamLock = await lockFor(upstreamModel);
+    const stepLock = await lockFor(stepModel);
+    const otherLock = await lockFor(otherModel);
+    try {
+      const locks = await lockFilesByModel(datastoreConfig.path, models);
+      // The swamp above the orchestrator named its step's lock for it.
+      const inherited = `${Deno.pid + 2}:${
+        locks.get(upstreamModel)!.owner.nonce
+      }`;
+      await withMockedEnv(
+        { [SWAMP_LOCK_HOLDER_TOKENS]: inherited },
+        async () => {
+          const expected = {
+            [upstreamModel]: "ancestor",
+            [stepModel]: "ancestor",
+            [otherModel]: "other",
+          };
+          const lockHolder = await runUnderModelLocks(
+            stepLock,
+            () => Promise.resolve(processLockHolderMarker.remoteLockHolder()),
+          );
+          assertEquals(
+            childRelations(
+              nestedEnvOnWorker(lockHolder, workerPid, "another-host"),
+              locks,
+              "another-host",
+            ),
+            expected,
+          );
+          // Dispatched from outside any lock scope, it still hands them on.
+          assertEquals(
+            childRelations(
+              nestedEnvOnWorker(
+                processLockHolderMarker.remoteLockHolder(),
+                workerPid,
+                "another-host",
+              ),
+              locks,
+              "another-host",
+            ),
+            { ...expected, [stepModel]: "other" },
+          );
+        },
+      );
+    } finally {
+      await Promise.all([
+        upstreamLock.flush(),
+        stepLock.flush(),
+        otherLock.flush(),
+      ]);
+    }
   });
 });
 
@@ -312,12 +400,13 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
     const models = [stepModel, requestedModel, otherModel];
 
     await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
-      const [stepLock, requestedLock, otherLock] = await Promise.all(
-        models.map((modelId) =>
-          acquireModelLocks(datastoreConfig, [
-            { modelType: "test/nested-lock", modelId },
-          ], repoDir)
-        ),
+      const lockFor = (modelId: string) =>
+        acquireModelLocks(datastoreConfig, [
+          { modelType: "test/nested-lock", modelId },
+        ], repoDir);
+      let stepLock = await lockFor(stepModel);
+      const [requestedLock, otherLock] = await Promise.all(
+        [requestedModel, otherModel].map(lockFor),
       );
       const childEnv = () => ({
         [SWAMP_LOCK_ANCESTOR_PIDS]: String(Deno.pid),
@@ -376,16 +465,22 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
           [otherModel]: "ancestor-other-run",
         });
 
-        // A lock serve does not hold, and a list for another pid, change
-        // nothing. A lock it holds for another run is adopted only when
-        // named: the client is trusted no further than a child's env is.
+        // A nonce no lock file carries changes nothing. The step's nonce
+        // is adopted whichever pid the list names it for: the caller may be
+        // another swamp between the step and the client, or one on another
+        // host (swamp-club#3096). A lock serve holds for another run is
+        // adopted only when named.
         assertEquals(
           await requestedRunChild(`${Deno.pid}:${crypto.randomUUID()}`),
           waitsOnStep,
         );
         assertEquals(
           await requestedRunChild(`${Deno.pid + 1}:${stepNonce}`),
-          waitsOnStep,
+          {
+            [stepModel]: "ancestor",
+            [requestedModel]: "ancestor",
+            [otherModel]: "ancestor-other-run",
+          },
         );
         assertEquals(
           await requestedRunChild(`${Deno.pid}:${otherNonce}`),
@@ -398,7 +493,12 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
 
         finish();
         await Promise.all([step, otherRun]);
-        // The step has ended, so its lock is no longer adopted.
+        // The step has ended and released its lock. A run that outlives the
+        // request still carries the old nonce, which the model's next lock
+        // does not match.
+        await stepLock.flush();
+        stepLock = await lockFor(stepModel);
+        locks = await lockFilesByModel(datastoreConfig.path, models);
         assertEquals(await requestedRunChild(forwarded), waitsOnStep);
       } finally {
         finish();

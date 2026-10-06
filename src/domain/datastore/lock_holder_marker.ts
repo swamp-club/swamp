@@ -31,23 +31,28 @@ export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
 
 /**
  * Every swamp process above a child, comma-separated, oldest first, ending
- * with the one that started it. A nested swamp skips per-model locks held by
- * any of them on this host for the run that started it, since that run holds
- * its lock until the child exits; {@link SWAMP_LOCK_HOLDER_TOKENS} says
- * which locks those are (design/enablers/datastores.md, "Parent-Process Lock
+ * with the one that started it. A nested swamp skips the per-model locks
+ * held for the run that started it, since that run holds its lock until the
+ * child exits; {@link SWAMP_LOCK_HOLDER_TOKENS} says which locks those are.
+ * For one of these pids that names none, it skips every lock that pid holds
+ * on this host (design/enablers/datastores.md, "Parent-Process Lock
  * Awareness").
  */
 export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
 
 /**
- * The per-model locks each swamp above a child holds for the run that
- * started it: comma-separated `<pid>:<nonce>+<nonce>` entries, the nonces
- * being those written to the lock files. A pid with an entry (an empty one
- * when the run holds none) is held to it, so the child still waits on the
- * locks that swamp holds for other runs, such as parallel steps or other
- * `swamp serve` runs. A pid without one is matched on the pid alone. Set per
- * spawn, never in the process env (design/enablers/datastores.md,
- * "Parent-Process Lock Awareness").
+ * The per-model locks held for the run that started a child: comma-separated
+ * `<pid>:<nonce>+<nonce>` entries, the nonces being those written to the
+ * lock files. A listed nonce is the proof: the child skips the lock file
+ * carrying it whichever process on whichever host holds it, so the list
+ * also names locks handed over a worker dispatch or a `--server` request,
+ * whose holder is not above the child. The pid matters only for a swamp
+ * above the child on its host: one with an entry (an empty one when the run
+ * holds none) is held to it, so the child still waits on the locks that
+ * swamp holds for other runs, such as parallel steps or other `swamp serve`
+ * runs, and one without is matched on the pid alone. Set per spawn, never in
+ * the process env (design/enablers/datastores.md, "Parent-Process Lock
+ * Awareness").
  */
 export const SWAMP_LOCK_HOLDER_TOKENS = "SWAMP_LOCK_HOLDER_TOKENS";
 
@@ -58,17 +63,24 @@ export const MAX_LOCK_ANCESTORS = 64;
 export const LOCK_NONCE_PATTERN = /^[A-Za-z0-9-]+$/;
 
 /**
- * The per-model locks an orchestrator holds for a run it dispatches to a
- * remote worker: its pid, its hostname, and those locks' lock-file nonces.
- * A worker on the same host is not a descendant of the orchestrator, so it
- * declares the orchestrator an ancestor of the dispatch runner from this
- * (see {@link withRemoteLockHolder}).
+ * The per-model locks held for a run an orchestrator dispatches to a remote
+ * worker: its pid, its hostname, and the lock-file nonces of the locks it
+ * holds for the run and of those handed down to it. The worker hands the
+ * nonces to the dispatch runner, and declares an orchestrator on its own
+ * host an ancestor of it (see {@link withRemoteLockHolder}).
  */
 export interface RemoteLockHolder {
   readonly pid: number;
   readonly hostname: string;
   readonly lockIds: readonly string[];
 }
+
+/**
+ * The most lock nonces a {@link RemoteLockHolder} carries, which is also the
+ * dispatch schema's bound: a worker refuses a dispatch naming more, so a
+ * longer list is not sent (see {@link LockHolderMarker.remoteLockHolder}).
+ */
+export const MAX_REMOTE_LOCK_IDS = 256;
 
 /**
  * The longest {@link SWAMP_LOCK_HOLDER_TOKENS} value a swamp forwards to a
@@ -90,8 +102,10 @@ export interface LockOwner {
 
 /**
  * How a per-model lock relates to this process, as its drain sees it:
- * - `"ancestor"`: held by a swamp above it for the run that started it,
- *   which keeps it until this process exits, so the drain skips it.
+ * - `"ancestor"`: held for the run that started it, by a swamp above it or
+ *   by one that handed the lock down across a worker dispatch or a
+ *   `--server` request. The holder keeps it until this process exits, so
+ *   the drain skips it.
  * - `"ancestor-other-run"`: held by a swamp above it, but for another run
  *   or step of that swamp, so the drain waits on it.
  * - `"other"`: held by anything else; the drain waits on it.
@@ -126,8 +140,6 @@ export class LockHolderMarker {
   #inherited: Inherited | undefined;
   #holding = false;
   readonly #held = new AsyncLocalStorage<readonly string[]>();
-  /** Each lock nonce a {@link runHolding} scope is open for, with a count. */
-  readonly #live = new Map<string, number>();
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -191,35 +203,17 @@ export class LockHolderMarker {
    * Pass an empty list for work that holds no lock, so its children still
    * wait on every lock this process holds.
    */
-  async runHolding<T>(
-    lockIds: readonly string[],
-    fn: () => Promise<T>,
-  ): Promise<T> {
+  runHolding<T>(lockIds: readonly string[], fn: () => Promise<T>): Promise<T> {
     const outer = this.#held.getStore() ?? [];
-    const own = [...new Set(lockIds)];
-    for (const id of own) {
-      this.#live.set(id, (this.#live.get(id) ?? 0) + 1);
-    }
-    try {
-      return await this.#held.run([...new Set([...outer, ...own])], fn);
-    } finally {
-      for (const id of own) {
-        const count = (this.#live.get(id) ?? 1) - 1;
-        if (count > 0) {
-          this.#live.set(id, count);
-        } else {
-          this.#live.delete(id);
-        }
-      }
-    }
+    return this.#held.run([...new Set([...outer, ...lockIds])], fn);
   }
 
   /**
    * The lock list to send with a run requested from a server: what
-   * {@link childLockEnv} would hand a child. When the server is a swamp
-   * above this process, it can then tell the run's own children about the
-   * locks it holds for the run that started this process, which they cannot
-   * inherit through the request (see {@link runAdopting}). Undefined when
+   * {@link childLockEnv} would hand a child. The server can then tell the
+   * run's own children about the locks held for the run that started this
+   * process, which they cannot inherit through the request (see
+   * {@link runAdopting}). Undefined when
    * there is nothing to send, or when the list is longer than
    * {@link MAX_FORWARDED_LOCK_TOKENS_LENGTH}: the server would refuse the
    * request, so the run goes without it.
@@ -236,16 +230,17 @@ export class LockHolderMarker {
 
   /**
    * Runs `fn`, a run a client requested, as also holding the locks named in
-   * the lock list the client forwarded (see {@link forwardedLockTokens}).
-   * The list is untrusted: only the entry for this process's own pid counts,
-   * and of its nonces only those a {@link runHolding} scope is open for now,
-   * so a client can name no lock this process does not hold. Such a client is
-   * below the run holding them, which is waiting on it. With no such nonce
+   * the lock list the client forwarded (see {@link forwardedLockTokens}):
+   * every well-formed nonce in it, whichever pid its entry names. The holder
+   * may be this process, a swamp between it and the client, or a swamp on
+   * another host, so nothing here can check the client holds them. Knowing
+   * a lock's nonce is the proof; design/enablers/datastores.md,
+   * "Parent-Process Lock Awareness", says what that trusts. With no nonce
    * `fn` runs as called, in no new scope.
    *
-   * A run that outlives the request (a detached one) keeps the nonces after
-   * the calling step releases its lock. That is harmless: every acquisition
-   * writes a new nonce, so a stale one matches no lock file.
+   * A run that outlives the request keeps the nonces after the calling step
+   * releases its lock. That is harmless: every acquisition writes a new
+   * nonce, so a stale one matches no lock file.
    */
   runAdopting<T>(
     forwarded: string | undefined,
@@ -257,8 +252,7 @@ export class LockHolderMarker {
     ) {
       return fn();
     }
-    const adopted = [...(parseTokens(forwarded).get(this.pid) ?? [])]
-      .filter((nonce) => this.#live.has(nonce));
+    const adopted = [...allNonces(parseTokens(forwarded))];
     if (adopted.length === 0) {
       return fn();
     }
@@ -289,39 +283,53 @@ export class LockHolderMarker {
   }
 
   /**
-   * The locks held by the {@link runHolding} scope this is called from, for
-   * a run about to be dispatched to a remote worker. Undefined outside any
-   * scope and when the scope holds no lock, so nothing is handed over.
+   * The locks held for a run about to be dispatched to a remote worker:
+   * those of the {@link runHolding} scope this is called from, and those
+   * handed down to this process, which the worker's runner cannot inherit.
+   * Undefined when there are none, so nothing is handed over. The list can
+   * exceed {@link MAX_REMOTE_LOCK_IDS}; the caller must not send one that
+   * does.
    */
   remoteLockHolder(): RemoteLockHolder | undefined {
-    const held = this.#held.getStore();
-    if (held === undefined || held.length === 0) {
+    const inherited = parseTokens(this.#inheritedOrLive().tokens);
+    inherited.delete(this.pid);
+    const lockIds = [
+      ...new Set([...allNonces(inherited), ...(this.#held.getStore() ?? [])]),
+    ];
+    if (lockIds.length === 0) {
       return undefined;
     }
-    return { pid: this.pid, hostname: this.host(), lockIds: [...held] };
+    return { pid: this.pid, hostname: this.host(), lockIds };
   }
 
   /**
    * A test for how a lock file relates to this process (see
-   * {@link LockRelation}). It is an ancestor's when its pid is an
-   * ancestor's and it was taken on this host. A process on another host
-   * sharing the datastore (e.g. over NFS) can carry the same pid. A lock
-   * with no recorded hostname matches on pid alone. When that ancestor
-   * handed down which locks it holds for this process's run, a lock whose
-   * nonce is not among them is held for another run. Without that list,
-   * or for a lock with no nonce, the pid alone decides.
+   * {@link LockRelation}). A lock whose nonce was handed down is held for
+   * this process's run, whichever process holds it and on whichever host:
+   * a nonce is written only to its lock file and to the hand-down, and a
+   * lock taken again gets a new one. Any other lock is an ancestor's when
+   * its pid is an ancestor's and it was taken on this host. A process on
+   * another host sharing the datastore (e.g. over NFS) can carry the same
+   * pid. A lock with no recorded hostname matches on pid alone. When that
+   * ancestor handed down which locks it holds for this process's run, the
+   * lock is held for another run. Without that list, or for a lock with no
+   * nonce, the pid alone decides.
    *
    * The hostname is read when the test is built, not when the module
    * loads. If the host is renamed between an ancestor taking its lock and
-   * this call (macOS can rename on a network change), the ancestor's lock no
-   * longer matches and is waited on like any other.
+   * this call (macOS can rename on a network change), an ancestor's lock
+   * matched on the pid no longer matches and is waited on like any other.
    */
   lockRelation(): (lock: LockOwner) => LockRelation {
     const inherited = this.#inheritedOrLive();
     const pids = new Set(inheritedChain(inherited, this.pid));
     const tokens = parseTokens(inherited.tokens);
+    const handedDown = allNonces(tokens);
     const host = this.host();
     return (lock) => {
+      if (lock.nonce !== undefined && handedDown.has(lock.nonce)) {
+        return "ancestor";
+      }
       if (
         lock.pid === undefined || !pids.has(lock.pid) ||
         (lock.hostname !== undefined && lock.hostname !== host)
@@ -332,25 +340,18 @@ export class LockHolderMarker {
       if (listed === undefined || lock.nonce === undefined) {
         return "ancestor";
       }
-      return listed.has(lock.nonce) ? "ancestor" : "ancestor-other-run";
+      return "ancestor-other-run";
     };
   }
 
   /**
-   * The nonces of the locks the swamps above this process named as held for
-   * the run that started it. A lock skipped on the pid alone is not among
-   * them: nothing says its holder keeps it until this process exits.
+   * The nonces of the locks handed down to this process as held for the run
+   * that started it, whichever process holds them. A lock skipped on the pid
+   * alone is not among them: nothing says its holder keeps it until this
+   * process exits.
    */
   inheritedLockIds(): ReadonlySet<string> {
-    const inherited = this.#inheritedOrLive();
-    const pids = new Set(inheritedChain(inherited, this.pid));
-    const lockIds = new Set<string>();
-    for (const [pid, nonces] of parseTokens(inherited.tokens)) {
-      if (pids.has(pid)) {
-        for (const nonce of nonces) lockIds.add(nonce);
-      }
-    }
-    return lockIds;
+    return allNonces(parseTokens(this.#inheritedOrLive().tokens));
   }
 
   /**
@@ -371,24 +372,28 @@ export class LockHolderMarker {
 }
 
 /**
- * The env for a dispatch runner on `host`, with the orchestrator that holds
- * `holder`'s locks declared an ancestor: its pid goes at the front of
- * {@link SWAMP_LOCK_ANCESTOR_PIDS} and its locks into
- * {@link SWAMP_LOCK_HOLDER_TOKENS}, so a swamp the dispatched step starts
- * skips those locks and no other lock the orchestrator holds.
+ * The env for a dispatch runner on `host`, with `holder`'s locks handed
+ * down: they go into {@link SWAMP_LOCK_HOLDER_TOKENS} under the
+ * orchestrator's pid, so a swamp the dispatched step starts skips those
+ * locks and no other lock the orchestrator holds. An orchestrator on `host`
+ * is also declared an ancestor, its pid at the front of
+ * {@link SWAMP_LOCK_ANCESTOR_PIDS}, which is what an older swamp under the
+ * runner matches on. One on another host is not: its pid means nothing
+ * here. Should that pid equal an ancestor's on this host that named no
+ * locks, the entry holds that ancestor to this list and its locks are
+ * waited on.
  *
- * Returns `env` unchanged when the orchestrator is on another host, or when
- * the holder carries no usable pid or nonce. `holder` arrives over the
- * network, so it is checked here as well as by the dispatch schema; the pid
- * is never added without its tokens entry, which would match every lock the
- * orchestrator holds.
+ * Returns `env` unchanged when the holder carries no usable pid or nonce.
+ * `holder` arrives over the network, so it is checked here as well as by
+ * the dispatch schema; the pid is never added without its tokens entry,
+ * which would match every lock the orchestrator holds.
  */
 export function withRemoteLockHolder(
   env: Record<string, string>,
   holder: RemoteLockHolder | undefined,
   host: string,
 ): Record<string, string> {
-  if (holder === undefined || holder.hostname !== host) {
+  if (holder === undefined) {
     return env;
   }
   const pid = parsePid(String(holder.pid));
@@ -396,9 +401,6 @@ export function withRemoteLockHolder(
   if (pid === undefined || nonces.length === 0) {
     return env;
   }
-  const chain = (env[SWAMP_LOCK_ANCESTOR_PIDS] ?? "").split(",")
-    .map(parsePid)
-    .filter((entry): entry is number => entry !== undefined && entry !== pid);
   const tokens = parseTokens(env[SWAMP_LOCK_HOLDER_TOKENS]);
   const listed = tokens.get(pid) ?? new Set<string>();
   for (const nonce of nonces) {
@@ -409,6 +411,12 @@ export function withRemoteLockHolder(
   // no later than the tokens do, and the lock is then waited on.
   tokens.delete(pid);
   tokens.set(pid, listed);
+  if (holder.hostname !== host) {
+    return { ...env, [SWAMP_LOCK_HOLDER_TOKENS]: formatTokens(tokens) };
+  }
+  const chain = (env[SWAMP_LOCK_ANCESTOR_PIDS] ?? "").split(",")
+    .map(parsePid)
+    .filter((entry): entry is number => entry !== undefined && entry !== pid);
   return {
     ...env,
     [SWAMP_LOCK_ANCESTOR_PIDS]: [pid, ...chain.slice(-(MAX_LOCK_ANCESTORS - 1))]
@@ -467,6 +475,15 @@ function parseTokens(value: string | undefined): Map<number, Set<string>> {
   return new Map([...entries].slice(-MAX_LOCK_ANCESTORS));
 }
 
+/** Every nonce a parsed {@link SWAMP_LOCK_HOLDER_TOKENS} lists. */
+function allNonces(entries: Map<number, Set<string>>): Set<string> {
+  const nonces = new Set<string>();
+  for (const listed of entries.values()) {
+    for (const nonce of listed) nonces.add(nonce);
+  }
+  return nonces;
+}
+
 function formatTokens(entries: Map<number, Set<string>>): string {
   return [...entries].slice(-MAX_LOCK_ANCESTORS)
     .map(([pid, nonces]) => `${pid}:${[...nonces].join("+")}`)
@@ -488,7 +505,7 @@ export const processLockHolderMarker: LockHolderMarker = new LockHolderMarker();
 /**
  * Runs `fn`, a run a `--server` client requested, as also holding the locks
  * in the lock list the client forwarded, so a swamp the run starts skips the
- * lock of the step that called in (design/enablers/datastores.md,
+ * locks held for the run that called in (design/enablers/datastores.md,
  * "Parent-Process Lock Awareness"). Wrap the whole request, so the run's own
  * scope and any detached launch nest under it. A step run inside it must
  * name its locks: `createStepLockHook` does.

@@ -272,7 +272,9 @@ Deno.test("LockHolderMarker.lockRelation: falls back to the pid for an ancestor 
   assertEquals(relation({ pid: 200, hostname: "h" }), "ancestor");
 });
 
-Deno.test("LockHolderMarker.lockRelation: an entry for a pid that is not an ancestor changes nothing", () => {
+Deno.test("LockHolderMarker.lockRelation: a handed-down nonce is skipped whichever pid and host hold it (swamp-club#3096)", () => {
+  // 400 is not above this process: its lock came over a worker dispatch or
+  // a --server request.
   const env = fakeEnv({
     [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
     [SWAMP_LOCK_HOLDER_TOKENS]: "400:own",
@@ -280,7 +282,39 @@ Deno.test("LockHolderMarker.lockRelation: an entry for a pid that is not an ance
   const relation = new LockHolderMarker(env.store, 300, () => "h")
     .lockRelation();
 
-  assertEquals(relation({ pid: 400, hostname: "h", nonce: "own" }), "other");
+  assertEquals(relation({ pid: 400, hostname: "h", nonce: "own" }), "ancestor");
+  assertEquals(
+    relation({ pid: 400, hostname: "other-host", nonce: "own" }),
+    "ancestor",
+  );
+  assertEquals(relation({ pid: 999, nonce: "own" }), "ancestor");
+  assertEquals(relation({ nonce: "own" }), "ancestor");
+  // The same holder's other locks are not held for this run.
+  assertEquals(
+    relation({ pid: 400, hostname: "h", nonce: "sibling" }),
+    "other",
+  );
+  assertEquals(relation({ pid: 400, hostname: "h" }), "other");
+});
+
+Deno.test("LockHolderMarker.lockRelation: an ancestor's lock listed under another pid is still this run's (swamp-club#3096)", () => {
+  // Serve (100) adopted the nonce of a lock it holds itself from a client
+  // list that named it under the client's parent.
+  const env = fakeEnv({
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
+    [SWAMP_LOCK_HOLDER_TOKENS]: "100:own,400:adopted",
+  });
+  const relation = new LockHolderMarker(env.store, 300, () => "h")
+    .lockRelation();
+
+  assertEquals(
+    relation({ pid: 100, hostname: "h", nonce: "adopted" }),
+    "ancestor",
+  );
+  assertEquals(
+    relation({ pid: 100, hostname: "h", nonce: "sibling" }),
+    "ancestor-other-run",
+  );
 });
 
 Deno.test("LockHolderMarker.lockRelation: ignores malformed entries and nonces", () => {
@@ -439,7 +473,7 @@ Deno.test("LockHolderMarker.childLockEnv: keeps the newest MAX_LOCK_ANCESTORS en
   assertEquals(entries[0], "7:n7");
 });
 
-Deno.test("LockHolderMarker.inheritedLockIds: the locks its ancestors named, and none for a pid that is not an ancestor", () => {
+Deno.test("LockHolderMarker.inheritedLockIds: every lock handed down, whichever pid its entry names", () => {
   const marker = new LockHolderMarker(
     fakeEnv({
       [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
@@ -450,7 +484,7 @@ Deno.test("LockHolderMarker.inheritedLockIds: the locks its ancestors named, and
 
   assertEquals(
     [...marker.inheritedLockIds()].sort(),
-    ["run-a", "run-b", "run-c"],
+    ["run-a", "run-b", "run-c", "run-d"],
   );
 });
 
@@ -476,6 +510,31 @@ Deno.test("LockHolderMarker.remoteLockHolder: names this process and the locks i
     hostname: "host-a",
     lockIds: ["nonce-a", "nonce-b"],
   });
+});
+
+Deno.test("LockHolderMarker.remoteLockHolder: also names the locks handed down to this process (swamp-club#3096)", async () => {
+  const marker = new LockHolderMarker(
+    fakeEnv({
+      [SWAMP_LOCK_ANCESTOR_PIDS]: "100",
+      // An entry for its own pid is a reused pid's, not its own.
+      [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a+up-b,400:up-c,500:stale",
+    }).store,
+    500,
+    () => "host-a",
+  );
+
+  assertEquals(marker.remoteLockHolder(), {
+    pid: 500,
+    hostname: "host-a",
+    lockIds: ["up-a", "up-b", "up-c"],
+  });
+  assertEquals(
+    await marker.runHolding(
+      ["nonce-a", "up-a"],
+      () => Promise.resolve(marker.remoteLockHolder()?.lockIds),
+    ),
+    ["up-a", "up-b", "up-c", "nonce-a"],
+  );
 });
 
 Deno.test("LockHolderMarker.remoteLockHolder: undefined outside a scope and in a scope holding no lock", async () => {
@@ -518,18 +577,37 @@ Deno.test("withRemoteLockHolder: declares a same-host orchestrator an ancestor h
   );
 });
 
-Deno.test("withRemoteLockHolder: leaves the env alone for an orchestrator on another host", () => {
-  const env = { [SWAMP_LOCK_ANCESTOR_PIDS]: "700" };
-
-  assertEquals(
-    withRemoteLockHolder(
-      env,
-      { pid: 500, hostname: "host-b", lockIds: ["nonce-a"] },
-      "host-a",
-    ),
-    env,
+Deno.test("withRemoteLockHolder: hands down the locks of an orchestrator on another host without declaring it an ancestor (swamp-club#3096)", () => {
+  const base = { [SWAMP_LOCK_ANCESTOR_PIDS]: "700", OTHER: "kept" };
+  const env = withRemoteLockHolder(
+    base,
+    { pid: 500, hostname: "host-b", lockIds: ["nonce-a"] },
+    "host-a",
   );
-  assertEquals(withRemoteLockHolder(env, undefined, "host-a"), env);
+
+  assertEquals(env, {
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "700",
+    [SWAMP_LOCK_HOLDER_TOKENS]: "500:nonce-a",
+    OTHER: "kept",
+  });
+
+  // A swamp started under the runner skips that lock and waits on every
+  // other lock the orchestrator holds, and on a local process with its pid.
+  const child = new LockHolderMarker(fakeEnv(env).store, 900, () => "host-a");
+  const relationTo = child.lockRelation();
+  assertEquals(
+    relationTo({ pid: 500, hostname: "host-b", nonce: "nonce-a" }),
+    "ancestor",
+  );
+  assertEquals(
+    relationTo({ pid: 500, hostname: "host-b", nonce: "nonce-b" }),
+    "other",
+  );
+  assertEquals(
+    relationTo({ pid: 500, hostname: "host-a", nonce: "nonce-b" }),
+    "other",
+  );
+  assertEquals(withRemoteLockHolder(base, undefined, "host-a"), base);
 });
 
 Deno.test("withRemoteLockHolder: merges into the chain and tokens the worker inherited", () => {
@@ -631,7 +709,7 @@ Deno.test("LockHolderMarker.forwardedLockTokens: sends a list at the length limi
 const childTokens = (marker: LockHolderMarker): string | undefined =>
   marker.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS];
 
-Deno.test("LockHolderMarker.runAdopting: a run adopts its own pid's forwarded locks while they are held", async () => {
+Deno.test("LockHolderMarker.runAdopting: a run adopts the forwarded locks and holds its own too", async () => {
   const server = new LockHolderMarker(fakeEnv().store, 300);
 
   const tokens = await server.runHolding(["a"], () =>
@@ -642,93 +720,51 @@ Deno.test("LockHolderMarker.runAdopting: a run adopts its own pid's forwarded lo
   assertEquals(tokens, "300:a+b");
 });
 
-/**
- * What a child of a request handler would inherit when the handler adopts
- * `forwarded` while another run of `server` holds `held`. The handler is
- * outside that run's scope, as a serve request is.
- */
-async function adoptedWhileHolding(
+/** What a child of a request handler adopting `forwarded` would inherit. */
+const adopted = (
   server: LockHolderMarker,
-  held: readonly string[],
   forwarded: string | undefined,
-): Promise<string | undefined> {
-  let release = () => {};
-  const blocked = new Promise<void>((resolve) => release = resolve);
-  const run = server.runHolding(held, () => blocked);
-  try {
-    return await server.runAdopting(
-      forwarded,
-      () => Promise.resolve(childTokens(server)),
-    );
-  } finally {
-    release();
-    await run;
-  }
-}
+): Promise<string | undefined> =>
+  server.runAdopting(forwarded, () => Promise.resolve(childTokens(server)));
 
 Deno.test("LockHolderMarker.runAdopting: opens no scope without a usable lock", async () => {
   const server = new LockHolderMarker(fakeEnv().store, 300);
-  const handler = (forwarded: string | undefined) =>
-    adoptedWhileHolding(server, ["a"], forwarded);
 
-  assertEquals(await handler(undefined), undefined);
-  assertEquals(await handler(""), undefined);
-  assertEquals(await handler("not a list"), undefined);
-  assertEquals(await handler("300:"), undefined);
-});
-
-Deno.test("LockHolderMarker.runAdopting: ignores locks it does not hold and other pids' entries", async () => {
-  const server = new LockHolderMarker(fakeEnv().store, 300);
-  const handler = (forwarded: string) =>
-    adoptedWhileHolding(server, ["a"], forwarded);
-
-  assertEquals(await handler("300:a"), "300:a");
-  assertEquals(await handler("300:a+forged"), "300:a");
-  assertEquals(await handler("300:forged"), undefined);
-  assertEquals(await handler("100:a"), undefined);
-  assertEquals(await handler("100:a,300:a,200:a"), "300:a");
+  assertEquals(await adopted(server, undefined), undefined);
+  assertEquals(await adopted(server, ""), undefined);
+  assertEquals(await adopted(server, "not a list"), undefined);
+  assertEquals(await adopted(server, "300:"), undefined);
+  assertEquals(await adopted(server, "100:b@d"), undefined);
   assertEquals(
-    await handler(`300:${"a+".repeat(MAX_FORWARDED_LOCK_TOKENS_LENGTH)}a`),
-    undefined,
-  );
-});
-
-Deno.test("LockHolderMarker.runHolding: a lock stops being adoptable when its scope ends, even by a throw", async () => {
-  const server = new LockHolderMarker(fakeEnv().store, 300);
-  const adoptable = () =>
-    server.runAdopting("300:a", () => Promise.resolve(childTokens(server)));
-
-  let failed = false;
-  try {
-    await server.runHolding(["a"], () => Promise.reject(new Error("boom")));
-  } catch {
-    failed = true;
-  }
-
-  assertEquals(failed, true);
-  assertEquals(await adoptable(), undefined);
-});
-
-Deno.test("LockHolderMarker.runHolding: a lock held by two scopes stays adoptable until both end", async () => {
-  const server = new LockHolderMarker(fakeEnv().store, 300);
-  let release = () => {};
-  const held = new Promise<void>((resolve) => release = resolve);
-  const outer = server.runHolding(["a"], () => held);
-
-  await server.runHolding(["a", "a"], () => Promise.resolve());
-  const whileOuterHeld = await server.runAdopting(
-    "300:a",
-    () => Promise.resolve(childTokens(server)),
-  );
-  release();
-  await outer;
-
-  assertEquals(whileOuterHeld, "300:a");
-  assertEquals(
-    await server.runAdopting(
-      "300:a",
-      () => Promise.resolve(childTokens(server)),
+    await adopted(
+      server,
+      `300:${"a+".repeat(MAX_FORWARDED_LOCK_TOKENS_LENGTH)}a`,
     ),
     undefined,
   );
+});
+
+Deno.test("LockHolderMarker.runAdopting: adopts every nonce the list names, whichever pid holds it (swamp-club#3096)", async () => {
+  // Serve holds none of these: the holders are a local run between the
+  // calling step and the client, and a swamp on another host.
+  const server = new LockHolderMarker(fakeEnv().store, 300);
+
+  assertEquals(await adopted(server, "100:a"), "300:a");
+  assertEquals(await adopted(server, "100:a+b,200:c,300:d"), "300:a+b+c+d");
+  assertEquals(await adopted(server, "100:a+b@d,garbage,200:c"), "300:a+c");
+});
+
+Deno.test("LockHolderMarker.runAdopting: a dispatch from an adopting run carries the adopted locks (swamp-club#3096)", async () => {
+  const server = new LockHolderMarker(fakeEnv().store, 300, () => "host-a");
+
+  const holder = await server.runAdopting(
+    "100:a",
+    () =>
+      server.runHolding(
+        ["b"],
+        () => Promise.resolve(server.remoteLockHolder()),
+      ),
+  );
+
+  assertEquals(holder, { pid: 300, hostname: "host-a", lockIds: ["a", "b"] });
 });

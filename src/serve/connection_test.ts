@@ -4009,9 +4009,14 @@ for (
           `${Deno.pid}:${stepLock}`,
         ]);
         assertEquals(await handled(undefined), [undefined]);
-        assertEquals(await handled(`${Deno.pid}:${crypto.randomUUID()}`), [
-          undefined,
+        // A lock some other swamp holds for the calling run is adopted too:
+        // the nonce is the proof, whichever pid the list names it for
+        // (swamp-club#3096).
+        const upstreamLock = crypto.randomUUID();
+        assertEquals(await handled(`7:${upstreamLock}`), [
+          `${Deno.pid}:${upstreamLock}`,
         ]);
+        assertEquals(await handled("7:not@a-nonce"), [undefined]);
       } finally {
         finish();
         await step;

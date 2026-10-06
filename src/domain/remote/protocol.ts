@@ -31,7 +31,10 @@
  * ride this protocol — they use the HTTP data plane (`src/serve/data_plane.ts`).
  */
 
-import { LOCK_NONCE_PATTERN } from "../datastore/lock_holder_marker.ts";
+import {
+  LOCK_NONCE_PATTERN,
+  MAX_REMOTE_LOCK_IDS,
+} from "../datastore/lock_holder_marker.ts";
 import { errorPaths } from "../errors.ts";
 import { z } from "zod";
 import { SENTINEL_EXACT } from "../vaults/vault_secret_bag.ts";
@@ -256,7 +259,6 @@ export type DispatchExecution = z.infer<typeof DispatchExecutionSchema>;
 /** Bounds on a dispatch's `lockHolder`, which a worker writes to an env. */
 const MAX_LOCK_HOLDER_HOSTNAME_LENGTH = 255;
 const MAX_LOCK_ID_LENGTH = 128;
-const MAX_LOCK_HOLDER_LOCK_IDS = 256;
 
 export const DispatchParamsSchema = z.object({
   /** Unique id for this dispatch; cancel and leases reference it. */
@@ -321,20 +323,19 @@ export const DispatchParamsSchema = z.object({
     dataOrigin: z.boolean(),
   })).optional(),
   /**
-   * The per-model locks the orchestrator holds for this step: its pid, its
-   * hostname and those locks' lock-file nonces. A worker on the same host
-   * declares the orchestrator an ancestor of the dispatch runner from it, so
-   * a swamp the step starts skips the step's own lock
+   * The per-model locks held for this step's run: the orchestrator's pid
+   * and hostname, and the lock-file nonces of the locks it holds for the
+   * step and of those handed down to it. The worker hands the nonces to the
+   * dispatch runner, so a swamp the step starts skips them
    * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
-   * Optional: absent when the step holds no lock, and ignored by older
-   * workers.
+   * Optional: absent when there are none, and ignored by older workers.
    */
   lockHolder: z.object({
     pid: z.number().int().positive().safe(),
     hostname: z.string().min(1).max(MAX_LOCK_HOLDER_HOSTNAME_LENGTH),
     lockIds: z.array(
       z.string().max(MAX_LOCK_ID_LENGTH).regex(LOCK_NONCE_PATTERN),
-    ).max(MAX_LOCK_HOLDER_LOCK_IDS),
+    ).max(MAX_REMOTE_LOCK_IDS),
   }).optional(),
 });
 
