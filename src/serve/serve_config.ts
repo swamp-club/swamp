@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { dirname, join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { Cron } from "croner";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
@@ -302,11 +302,24 @@ const KNOWN_TLS_KEYS = new Set([
 
 const DEFAULT_CONFIG_PATH = ".swamp/serve.yaml";
 
+// A relative serve path (--config, cert-file, key-file) resolves against the
+// repository directory, whether it came from a flag, an env var or serve.yaml,
+// so the same configuration reads the same files wherever serve was started
+// from. An absolute path is returned unchanged.
+export function resolveServePath(
+  repoDir: string,
+  configuredPath: string,
+): string {
+  return resolve(repoDir, configuredPath);
+}
+
 export function loadServeConfig(
   configPath: string | undefined,
   repoDir: string,
 ): ServeConfigFile | null {
-  const path = configPath ?? join(repoDir, DEFAULT_CONFIG_PATH);
+  const path = configPath === undefined
+    ? join(repoDir, DEFAULT_CONFIG_PATH)
+    : resolveServePath(repoDir, configPath);
   const isExplicit = configPath !== undefined;
 
   let content: string;
@@ -938,6 +951,24 @@ export interface MergedServeOptions {
    * that declare no inputs and do not set `autoResume` themselves.
    */
   autoResume: boolean;
+}
+
+// Applies the relative-path rule of resolveServePath to the TLS files, once,
+// on the merged options, so the certificate serve reads and the one it
+// reports to administrators are the same path.
+export function resolveServeTlsPaths(
+  repoDir: string,
+  merged: MergedServeOptions,
+): MergedServeOptions {
+  return {
+    ...merged,
+    certFile: merged.certFile === undefined
+      ? undefined
+      : resolveServePath(repoDir, merged.certFile),
+    keyFile: merged.keyFile === undefined
+      ? undefined
+      : resolveServePath(repoDir, merged.keyFile),
+  };
 }
 
 export function mergeServeOptions(
