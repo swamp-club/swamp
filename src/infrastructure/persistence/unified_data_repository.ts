@@ -845,11 +845,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       size: content.length,
       checksum,
     });
-    // Register the write as pending before any of its files reach disk, so
-    // delete and GC never mistake the new version for a promoted one.
-    this.upsertPendingRow(type, modelId, dataToSave);
-
     try {
+      // Register the write as pending before any of its files reach disk, so
+      // delete and GC never mistake the new version for a promoted one.
+      this.upsertPendingRow(type, modelId, dataToSave);
+
       const metadataPath = this.getMetadataPath(
         type,
         modelId,
@@ -2453,11 +2453,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const names = new Set<string>();
     for (const row of orphans) {
       // Promotion settles the pending row before moving the marker, so a
-      // marker naming this version means it was promoted all the same.
+      // marker naming this version means it was promoted all the same:
+      // finish settling it instead of reclaiming it.
       if (
         await this.readLatestMarker(type, modelId, row.data_name) ===
           row.version
       ) {
+        const data = await this.findByName(
+          type,
+          modelId,
+          row.data_name,
+          row.version,
+        );
+        this.catalogStore.settlePending(
+          this.namespace,
+          type.normalized,
+          modelId,
+          row.data_name,
+          row.version,
+          true,
+        );
+        this.catalogStore.recordLocalWrite();
+        if (data) this.catalogUpsert(type, modelId, data);
         continue;
       }
       const versionDir = this.getPath(

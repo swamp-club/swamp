@@ -72,12 +72,15 @@ export function isProcessDead(pid: number): boolean {
 /**
  * Like {@link isProcessDead}, but never resumes or otherwise disturbs the
  * process it probes, for pids read from persisted data that may since have
- * been reused. Linux checks `/proc/<pid>`, which sends nothing and sees the
- * same pid namespace as this process; a pid reused as a thread id also
- * resolves there and reads as alive, which errs on the safe side. Other POSIX hosts send SIGURG, whose
- * default action is to ignore it; unlike SIGCONT it does not resume a
- * stopped process. Windows uses `tasklist`. Returns `false` (not dead) on
- * any unexpected error.
+ * been reused. POSIX hosts send SIGURG, whose default action is to ignore
+ * it; unlike SIGCONT it does not resume a stopped process, and a process of
+ * another user is not signalled at all (permission denied reads as alive).
+ * Linux first checks `/proc/<pid>`, which sends nothing, and only probes
+ * with SIGURG when the entry is missing, since `/proc` mounted with
+ * `hidepid` hides other users' live processes. A pid reused as a thread id
+ * also resolves under `/proc` and reads as alive, which errs on the safe
+ * side. Windows uses `tasklist`. Returns `false` (not dead) on any
+ * unexpected error.
  */
 export function isProcessGone(pid: number): boolean {
   if (Deno.build.os === "windows") {
@@ -88,7 +91,7 @@ export function isProcessGone(pid: number): boolean {
       Deno.statSync(`/proc/${pid}`);
       return false;
     } catch (error) {
-      return error instanceof Deno.errors.NotFound;
+      if (!(error instanceof Deno.errors.NotFound)) return false;
     }
   }
   try {

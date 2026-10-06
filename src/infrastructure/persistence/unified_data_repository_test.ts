@@ -34,7 +34,7 @@ import { dirname, join } from "@std/path";
 import { hostname } from "node:os";
 import { processHostIdentity } from "../runtime/process.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
-import { CatalogStore } from "./catalog_store.ts";
+import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -2218,7 +2218,7 @@ Deno.test("rollbackVersions: rolling back a first deferred write leaves its data
   });
 });
 
-Deno.test("collectGarbage: does not reclaim a version the latest marker names, even if its row is still pending (swamp-club#2975)", async () => {
+Deno.test("collectGarbage: settles rather than reclaims a pending version the latest marker names (swamp-club#2975)", async () => {
   await withStepRepo(async (repo, catalogStore) => {
     await repo.save(testType, "m1", stepData("s1"), bytes("a"));
     await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
@@ -2233,6 +2233,9 @@ Deno.test("collectGarbage: does not reclaim a version the latest marker names, e
 
     assertEquals(result.versionsRemoved, 0);
     assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2]);
+    assertEquals(outFlags(catalogStore), ["1:0:0", "2:1:1"]);
+    const settled = [...catalogStore.iterate()].find((r) => r.version === 2);
+    assertEquals(settled?.is_pending, 0);
   });
 });
 
@@ -2300,6 +2303,48 @@ Deno.test("saveDeferred: a failed write removes its version and pending row (swa
       () => repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b")),
       Error,
       "No space left on device",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** Fails writing a pending row, as a locked catalog would. */
+class FailingPendingCatalog extends CatalogStore {
+  failPending = false;
+
+  override upsert(row: CatalogRow): void {
+    if (this.failPending && row.is_pending === 1) {
+      throw new Error("database is locked");
+    }
+    super.upsert(row);
+  }
+}
+
+Deno.test("saveDeferred: a failed pending-row write removes the allocated version (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new FailingPendingCatalog(join(dir, "_catalog.db"));
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+    );
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    catalogStore.failPending = true;
+
+    await assertRejects(
+      () => repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b")),
+      Error,
+      "database is locked",
     );
 
     assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
