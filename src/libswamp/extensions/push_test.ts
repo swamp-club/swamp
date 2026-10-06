@@ -2016,3 +2016,55 @@ Deno.test("extensionPushPrepare: an accepted finding in a typed directory beside
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("extensionPushPrepare: an accepted finding in an additional file maps to files/<entry> for the registry even when the manifest directory is the models directory", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "acceptances-" });
+  try {
+    await Deno.mkdir(join(dir, "docs"));
+    const readme = join(dir, "docs", "hosts.md");
+    await Deno.writeTextFile(
+      readme,
+      "<!-- swamp-quality-ignore ipv4-address-literals: lab gateway -->\nGateway: 10.0.0.1\n",
+    );
+    const model = join(dir, "thing.ts");
+    await Deno.writeTextFile(model, "export const thing = 1;\n");
+    const manifest = makeManifest();
+    manifest.additionalFiles = ["docs/hosts.md"];
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [{
+            ruleId: "ipv4-address-literals",
+            file: readme,
+            line: 2,
+            message: "Line 2 contains IPv4 address literals (10.0.0.1)",
+          }],
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      makePrepareInput({
+        manifest,
+        repoDir: dir,
+        manifestDir: dir,
+        modelsDir: dir,
+        allModelFiles: [model],
+        modelEntryPoints: [model],
+        additionalFilePaths: [readme],
+      }),
+    );
+    assertEquals(result.acceptances.accepted[0].file, "docs/hosts.md");
+    assertEquals(
+      result.acceptances.accepted[0].archivePath,
+      "files/docs/hosts.md",
+    );
+    assertEquals(
+      result.contentMetadata?.acceptances?.accepted[0].file,
+      "files/docs/hosts.md",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

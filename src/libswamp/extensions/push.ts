@@ -1474,33 +1474,48 @@ function collapseTestingCompleteness(
 
 /**
  * The path a packaged file has inside the archive, mirroring
- * {@link createArchive}: typed sources under their kind, everything else
- * under `files/` by its path from the manifest's directory. Undefined for a
- * file the archive does not carry, so no local path ever leaves the machine.
+ * {@link createArchive} exactly: additional files and binaries land at
+ * `files/<manifest entry>` by index wherever they sit on disk, include
+ * files under `models/` by their path from the models directory, and typed
+ * sources under their kind. Undefined for a file the archive does not
+ * carry, so no local path ever leaves the machine.
  */
 function archivePathFor(
   input: ExtensionPushPrepareInput,
   file: string,
 ): string | undefined {
+  const fwd = (p: string) => p.replaceAll("\\", "/");
+  const additional = input.additionalFilePaths.indexOf(file);
+  if (additional !== -1 && input.manifest.additionalFiles[additional]) {
+    return `files/${fwd(input.manifest.additionalFiles[additional])}`;
+  }
+  const binary = input.binaryFilePaths.indexOf(file);
+  if (binary !== -1 && input.manifest.binaries[binary]) {
+    return `files/${fwd(input.manifest.binaries[binary])}`;
+  }
   const under = (dir: string): string | undefined => {
     const rel = relative(dir, file);
     return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel)
       ? undefined
-      : rel.replaceAll("\\", "/");
+      : fwd(rel);
   };
-  const typed: Array<[string, string]> = [
-    ["models", input.modelsDir],
-    ["vaults", input.vaultsDir],
-    ["datastores", input.datastoresDir],
-    ["reports", input.reportsDir],
-    ["webhooks", input.webhooksDir],
+  if (input.includeFilePaths.includes(file)) {
+    const rel = under(input.modelsDir);
+    return rel !== undefined ? `models/${rel}` : undefined;
+  }
+  const typed: Array<[string, string[], string]> = [
+    ["models", input.allModelFiles, input.modelsDir],
+    ["vaults", input.allVaultFiles, input.vaultsDir],
+    ["datastores", input.allDatastoreFiles, input.datastoresDir],
+    ["reports", input.allReportFiles, input.reportsDir],
+    ["webhooks", input.allWebhookFiles, input.webhooksDir],
   ];
-  for (const [kind, dir] of typed) {
+  for (const [kind, files, dir] of typed) {
+    if (!files.includes(file)) continue;
     const rel = under(dir);
     if (rel !== undefined) return `${kind}/${rel}`;
   }
-  const rel = under(input.manifestDir);
-  return rel !== undefined ? `files/${rel}` : undefined;
+  return undefined;
 }
 
 /**
