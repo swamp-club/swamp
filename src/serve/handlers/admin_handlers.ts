@@ -168,6 +168,10 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  runRecordFinder,
+  settleInterruptedWorkflowRows,
+} from "../../domain/workflows/orphaned_run_reaper.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
@@ -1844,7 +1848,7 @@ export async function handleRunDoctor(
         async () => {
           // From the records, not the index as it stands: a stale entry would
           // hide the very run being looked for (swamp-club#2518).
-          await ctx.repoContext.workflowRunRepo.rebuildIndexes?.();
+          await ctx.repoContext.workflowRunRepo.verifyIndexes?.();
           const yamlRuns = await ctx.repoContext.workflowRunRepo
             .findGlobalByStatus("running");
 
@@ -1875,6 +1879,26 @@ export async function handleRunDoctor(
     } catch (err: unknown) {
       getSwampLogger(["serve", "run-doctor"]).warn(
         "Failed to scan YAML workflow runs: {error}",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+    }
+  }
+
+  if (payload?.fix) {
+    // Rows this or another reap left interrupted while their record is no
+    // longer running; serve-only deployments have no other sweep
+    // (swamp-club#2917).
+    try {
+      await settleInterruptedWorkflowRows(
+        ctx.runTracker,
+        runRecordFinder(
+          ctx.repoContext.workflowRunRepo,
+          ctx.repoContext.workflowRepo,
+        ),
+      );
+    } catch (err: unknown) {
+      getSwampLogger(["serve", "run-doctor"]).warn(
+        "Failed to settle interrupted workflow run rows: {error}",
         { error: err instanceof Error ? err.message : String(err) },
       );
     }

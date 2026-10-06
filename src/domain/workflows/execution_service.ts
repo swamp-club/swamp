@@ -6301,7 +6301,10 @@ export class WorkflowExecutionService {
       const prior = tracker.findById(run.id);
       if (tracker.reactivate(run.id, Deno.pid, hostname(), instanceId)) {
         const status = prior?.status ?? priorStatus;
-        return () => tracker.complete(run.id, status);
+        // With the prior reason, so a settled row is not unsettled again
+        // (swamp-club#2917).
+        const reason = prior?.cancelReason ?? undefined;
+        return () => tracker.complete(run.id, status, reason);
       }
       if (prior) return () => {};
       tracker.register(ActiveRun.createWorkflowRun({

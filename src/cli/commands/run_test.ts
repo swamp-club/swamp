@@ -46,6 +46,9 @@ import type {
 await initializeLogging({});
 
 const WORKFLOW_ID = "5b0e6c3c-2b7e-4c55-9d43-3c1f2f0e9a11" as WorkflowId;
+// Where the records of a workflow renamed since its runs live.
+const RENAMED_WORKFLOW_ID =
+  "8f6d1e2a-0c4b-4d7e-9a3f-1b2c3d4e5f60" as WorkflowId;
 // Far above any real pid_max, so never a live process.
 const DEAD_PID = 2147483647;
 
@@ -112,15 +115,28 @@ function trackerRow(
   });
 }
 
+type DoctorRunRepository = WorkflowRunRepository & {
+  listWorkflowIds(): Promise<WorkflowId[]>;
+};
+
 /**
- * A run repository over `runs`. `scanned` limits what the recent-record scan
- * returns, as its window does for a run started long ago.
+ * A run repository over `runs`, stored under workflow "wf", and `renamed`,
+ * stored under a workflow no longer named so. `scanned` limits what the
+ * recent-record scan returns, as its window does for a run started long ago.
  */
-function runRepoOf(runs: WorkflowRun[], scanned = runs): {
-  runRepo: WorkflowRunRepository;
+function runRepoOf(
+  runs: WorkflowRun[],
+  scanned = runs,
+  renamed: WorkflowRun[] = [],
+): {
+  runRepo: DoctorRunRepository;
   saved: string[];
 } {
   const saved: string[] = [];
+  const stored = new Map<WorkflowId, WorkflowRun[]>([
+    [WORKFLOW_ID, runs],
+    [RENAMED_WORKFLOW_ID, renamed],
+  ]);
   const runRepo = {
     findGlobalByStatus: (status: string) =>
       Promise.resolve(
@@ -129,13 +145,16 @@ function runRepoOf(runs: WorkflowRun[], scanned = runs): {
           workflowId: WORKFLOW_ID,
         })),
       ),
-    findById: (_wfId: WorkflowId, runId: WorkflowRunId) =>
-      Promise.resolve(runs.find((r) => r.id === (runId as string)) ?? null),
+    findById: (wfId: WorkflowId, runId: WorkflowRunId) =>
+      Promise.resolve(
+        stored.get(wfId)?.find((r) => r.id === (runId as string)) ?? null,
+      ),
+    listWorkflowIds: () => Promise.resolve([...stored.keys()]),
     save: (_wfId: WorkflowId, run: WorkflowRun) => {
       saved.push(run.id);
       return Promise.resolve();
     },
-  } as unknown as WorkflowRunRepository;
+  } as unknown as DoctorRunRepository;
   return { runRepo, saved };
 }
 
@@ -312,6 +331,17 @@ Deno.test(
   }),
 );
 
+/** Records every markSettled call on `tracker` as [id, reason]. */
+function recordSettles(tracker: RunTrackerStore): [string, string][] {
+  const marked: [string, string][] = [];
+  const markSettled = tracker.markSettled.bind(tracker);
+  tracker.markSettled = (id: string, reason: string) => {
+    marked.push([id, reason]);
+    markSettled(id, reason);
+  };
+  return marked;
+}
+
 Deno.test(
   "diagnoseLocalRuns: fix marks an interrupted row settled only once its record is no longer running",
   withTracker(async (tracker) => {
@@ -319,24 +349,23 @@ Deno.test(
     settled.interrupt("server_crash");
     const remote = strandedRun(DEAD_PID);
     const renamed = strandedRun(DEAD_PID);
+    renamed.interrupt("server_crash");
+    const deleted = strandedRun(DEAD_PID);
     for (
       const [run, host] of [
         [settled, hostname()],
         [remote, "some-other-host"],
         [renamed, hostname()],
+        [deleted, hostname()],
       ] as const
     ) {
       tracker.register(trackerRow(run.id, DEAD_PID, "workflow", host));
       tracker.complete(run.id, "interrupted");
     }
-    // The renamed run's record is not found under its row's workflow name.
-    const { runRepo, saved } = runRepoOf([settled, remote], []);
-    const marked: string[] = [];
-    const markSettled = tracker.markSettled.bind(tracker);
-    tracker.markSettled = (id: string, reason: string) => {
-      marked.push(id);
-      markSettled(id, reason);
-    };
+    // The renamed run's record is not under its row's workflow name, and
+    // the deleted run has no record at all.
+    const { runRepo, saved } = runRepoOf([settled, remote], [], [renamed]);
+    const marked = recordSettles(tracker);
 
     const result = await diagnoseLocalRuns(
       tracker,
@@ -347,12 +376,97 @@ Deno.test(
       true,
     );
 
-    // The settled record's row is marked; the remote row's record is still
-    // running on another host, and the renamed run's record is not found.
-    assertEquals(marked, [settled.id]);
+    // The remote row's record is still running on another host.
+    assertEquals(
+      marked.sort(),
+      ([
+        [settled.id, "record_settled"],
+        [renamed.id, "record_settled"],
+        [deleted.id, "record_missing"],
+      ] as [string, string][]).sort(),
+    );
     assertEquals(result.orphanedWorkflowRuns, 0);
     assertEquals(remote.status, "running");
     assertEquals(saved, []);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: fix settles the running record of a renamed workflow's dead owner (swamp-club#2917)",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    const { runRepo, saved } = runRepoOf([], [], [run]);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.orphanedReaped, 1);
+    assertEquals(run.status, "interrupted");
+    assertEquals(saved, [run.id]);
+    assertEquals(tracker.findById(run.id)?.settled, true);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: a settled row's record is not looked up again (swamp-club#2917)",
+  withTracker(async (tracker) => {
+    const run = strandedRun(DEAD_PID);
+    run.interrupt("server_crash");
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.complete(run.id, "interrupted");
+    tracker.markSettled(run.id, "record_settled");
+    const { runRepo } = runRepoOf([run], []);
+    const lookups: string[] = [];
+    const findById = runRepo.findById.bind(runRepo);
+    runRepo.findById = (wfId, runId) => {
+      lookups.push(runId);
+      return findById(wfId, runId);
+    };
+
+    for (const fix of [false, true]) {
+      await diagnoseLocalRuns(
+        tracker,
+        runRepo,
+        workflowRepo,
+        noOutputs,
+        localOwnerLiveness(),
+        fix,
+      );
+    }
+
+    assertEquals(lookups, []);
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: a recent running record behind a settled row is still settled through the scan",
+  withTracker(async (tracker) => {
+    // The row was settled as missing before a pull brought the record back.
+    const run = strandedRun(DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    tracker.complete(run.id, "interrupted");
+    tracker.markSettled(run.id, "record_missing");
+    const { runRepo, saved } = runRepoOf([run]);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      runRepo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.orphanedReaped, 1);
+    assertEquals(run.status, "interrupted");
+    assertEquals(saved, [run.id]);
   }),
 );
 
@@ -438,7 +552,7 @@ Deno.test(
 );
 
 Deno.test(
-  "diagnoseLocalRuns: rebuilds the run index before looking for running records (swamp-club#2518)",
+  "diagnoseLocalRuns: verifies the run index before looking for running records (swamp-club#2518)",
   withTracker(async (tracker) => {
     const run = strandedRun(DEAD_PID);
     tracker.register(trackerRow(run.id, DEAD_PID));
@@ -449,8 +563,8 @@ Deno.test(
       calls.push("scan");
       return scan(status, since);
     };
-    runRepo.rebuildIndexes = () => {
-      calls.push("rebuild");
+    runRepo.verifyIndexes = () => {
+      calls.push("verify");
       return Promise.resolve();
     };
 
@@ -463,6 +577,6 @@ Deno.test(
       false,
     );
 
-    assertEquals(calls, ["rebuild", "scan"]);
+    assertEquals(calls, ["verify", "scan"]);
   }),
 );

@@ -22,7 +22,10 @@ import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
-import type { WorkflowRunRepository } from "./repositories.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "./repositories.ts";
 import {
   createWorkflowRunId,
   type WorkflowId,
@@ -272,6 +275,96 @@ export async function findDeadOwnerRuns(
   return runs.filter((run): run is WorkflowRun =>
     run !== null && runHasDeadOwner(run, runTracker, liveness)
   );
+}
+
+/** A workflow run record and the workflow it is stored under. */
+export interface RunRecord {
+  readonly run: WorkflowRun;
+  readonly workflowId: WorkflowId;
+}
+
+/** The run record reads {@link runRecordFinder} needs. */
+export interface RunRecordStore {
+  findById(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<WorkflowRun | null>;
+  /** Every workflow with a runs directory, whether or not it still exists. */
+  listWorkflowIds(): Promise<WorkflowId[]>;
+}
+
+/**
+ * Finds the run record behind a workflow tracker row: under the workflow
+ * the row names, and failing that under any workflow, so a run of a
+ * workflow since renamed or deleted is still found by its run id. Null only
+ * when no workflow stores it; a read that fails otherwise throws.
+ */
+export function runRecordFinder(
+  runRepo: RunRecordStore,
+  workflowRepo: Pick<WorkflowRepository, "findByName">,
+): (row: ActiveRun) => Promise<RunRecord | null> {
+  return async (row) => {
+    const runId = createWorkflowRunId(row.id);
+    const workflow = row.workflowName
+      ? await workflowRepo.findByName(row.workflowName)
+      : null;
+    if (workflow) {
+      const run = await runRepo.findById(workflow.id, runId);
+      if (run) return { run, workflowId: workflow.id };
+    }
+    // Listed afresh for each miss, never from a snapshot: a record that
+    // arrives meanwhile must not have its row settled as missing. A miss
+    // settles its row, so this is paid once per row.
+    for (const workflowId of await runRepo.listWorkflowIds()) {
+      if (workflowId === workflow?.id) continue;
+      const run = await runRepo.findById(workflowId, runId);
+      if (run) return { run, workflowId };
+    }
+    return null;
+  };
+}
+
+/**
+ * Marks settled every `interrupted` workflow row whose run record no longer
+ * says `running`: `record_settled` when the record finished some other way,
+ * `record_missing` when no workflow stores it any more. Retention can then
+ * purge the row. A row whose record is still `running` is left for the
+ * dead-owner settle, and a row whose record cannot be read is left as it
+ * is. Safe while other swamp processes run: an interrupted row is never
+ * taken back by its owner, and only its record decides. Returns how many
+ * rows were settled (swamp-club#2917).
+ */
+export async function settleInterruptedWorkflowRows(
+  runTracker: RunTrackerRepository,
+  findRecord: (row: ActiveRun) => Promise<RunRecord | null>,
+): Promise<number> {
+  let settled = 0;
+  for (const row of runTracker.findAll()) {
+    if (
+      row.runKind !== "workflow" || row.status !== "interrupted" ||
+      row.settled
+    ) continue;
+    let record: RunRecord | null;
+    try {
+      record = await findRecord(row);
+    } catch (error) {
+      logger.warn(
+        "Could not read the run record of interrupted run {runId}: {error}",
+        {
+          runId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      continue;
+    }
+    if (record?.run.status === "running") continue;
+    runTracker.markSettled(
+      row.id,
+      record ? "record_settled" : "record_missing",
+    );
+    settled++;
+  }
+  return settled;
 }
 
 /** The output repository reads and writes method-run settlement needs. */

@@ -47,6 +47,13 @@ import {
 } from "../instance_heartbeat.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
+import { ActiveRun } from "../../domain/models/active_run.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type {
+  WorkflowId,
+  WorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   collectClusterInstances,
   handleDoctorWorkflows,
@@ -919,4 +926,76 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
   assertEquals(reports, []);
   assertEquals(marks, ["run-1"]);
   assertEquals(settled, ["run-1"]);
+});
+
+Deno.test("handleRunDoctor: fix settles an interrupted row whose renamed workflow's run finished (swamp-club#2917)", async () => {
+  await withTempDir(async (dir) => {
+    const tracker = new RunTrackerStore(join(dir, "run_tracker.db"));
+    try {
+      const workflowId = crypto.randomUUID() as WorkflowId;
+      const run = WorkflowRun.fromData({
+        id: crypto.randomUUID(),
+        workflowId,
+        workflowName: "old-name",
+        status: "succeeded",
+        startedAt: new Date().toISOString(),
+        jobs: [],
+        tags: {},
+      });
+      const now = new Date().toISOString();
+      tracker.register(ActiveRun.fromData({
+        id: run.id,
+        runKind: "workflow",
+        modelType: null,
+        methodName: null,
+        workflowName: "old-name",
+        pid: 2147483647,
+        hostname: "some-host",
+        startedAt: now,
+        heartbeatAt: now,
+        status: "running",
+      }));
+      // Reaped while its owner went on to finish the run.
+      tracker.complete(run.id, "interrupted");
+      const ctx = {
+        repoDir: dir,
+        runTracker: tracker,
+        repoContext: {
+          workflowRunRepo: {
+            findById: (wfId: WorkflowId, runId: WorkflowRunId) =>
+              Promise.resolve(
+                wfId === workflowId && runId === run.id ? run : null,
+              ),
+            listWorkflowIds: () => Promise.resolve([workflowId]),
+          },
+          workflowRepo: { findByName: () => Promise.resolve(null) },
+        },
+        authConfig: {
+          mode: "none" as const,
+          admins: [],
+          allowedCollectives: [],
+          allowedUsers: [],
+          oauthProvider: "",
+          groupsField: "collectives",
+          restrictedModelTypes: [],
+          restrictedCommands: [],
+          approveRequiresExplicitGrant: false,
+        },
+      } as unknown as ConnectionContext;
+
+      await handleRunDoctor(createMockSocket(), ctx, "req-1", {}, null);
+      assertEquals(tracker.findById(run.id)?.settled, false);
+
+      await handleRunDoctor(
+        createMockSocket(),
+        ctx,
+        "req-2",
+        { fix: true },
+        null,
+      );
+      assertEquals(tracker.findById(run.id)?.cancelReason, "record_settled");
+    } finally {
+      tracker.close();
+    }
+  });
 });

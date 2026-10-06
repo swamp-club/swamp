@@ -1075,12 +1075,12 @@ function workflowRow(id: string, kind: "workflow" | "model_method") {
 }
 
 /** Backdates every terminal row past retention, then reopens the store. */
-function reopenAfterRetention(dbPath: string): RunTrackerStore {
+function reopenAfterRetention(dbPath: string, days = 30): RunTrackerStore {
   const db = new DatabaseSync(dbPath);
   try {
     db.prepare(
       "UPDATE active_runs SET completed_at = ? WHERE completed_at IS NOT NULL",
-    ).run(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+    ).run(new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
   } finally {
     db.close();
   }
@@ -1116,6 +1116,34 @@ Deno.test("RunTrackerStore: retention keeps an interrupted workflow or method ro
     assertEquals(reopened.findById("method")?.status, "interrupted");
   } finally {
     reopened.close();
+  }
+});
+
+Deno.test("RunTrackerStore: retention purges an unsettled interrupted row after 90 days (swamp-club#2917)", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("unsettled", "workflow"));
+    store.register(workflowRow("method", "model_method"));
+    store.reapDeadProcessRuns();
+  } finally {
+    store.close();
+  }
+
+  const at89 = reopenAfterRetention(dbPath, 89);
+  try {
+    assertEquals(at89.findAll().map((r) => r.id).sort(), [
+      "method",
+      "unsettled",
+    ]);
+  } finally {
+    at89.close();
+  }
+  const at91 = reopenAfterRetention(dbPath, 91);
+  try {
+    assertEquals(at91.findAll().length, 0);
+  } finally {
+    at91.close();
   }
 });
 
@@ -1186,5 +1214,26 @@ Deno.test("RunTrackerStore: a resumed run killed again is unsettled once more", 
     assertEquals(reopened.findById("run-1")?.status, "interrupted");
   } finally {
     reopened.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a row reads back the reason it was completed or settled with", () => {
+  const dbPath = makeTempDbPath();
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(workflowRow("settled", "workflow"));
+    store.register(workflowRow("cancelled", "workflow"));
+    store.register(workflowRow("running", "workflow"));
+    store.complete("cancelled", "cancelled", "Stop it");
+    store.complete("settled", "interrupted");
+    store.markSettled("settled", "record_settled");
+
+    assertEquals(store.findById("settled")?.cancelReason, "record_settled");
+    assertEquals(store.findById("cancelled")?.cancelReason, "Stop it");
+    assertEquals(store.findById("running")?.cancelReason, null);
+    // Read only: the entity never carries it back into a write.
+    assertEquals("cancelReason" in store.findById("settled")!.toData(), false);
+  } finally {
+    store.close();
   }
 });

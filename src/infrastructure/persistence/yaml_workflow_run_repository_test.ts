@@ -1789,7 +1789,7 @@ Deno.test("findGlobalById: returns the run when its index cannot be repaired", a
   });
 });
 
-Deno.test("rebuildIndexes: corrects entries of records replaced without a save", async () => {
+Deno.test("verifyIndexes: corrects entries of records replaced without a save", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
@@ -1803,20 +1803,20 @@ Deno.test("rebuildIndexes: corrects entries of records replaced without a save",
     await repo.save(workflow.id, run);
     await replaceRecord(repo, workflow.id, run, runningRecord);
 
-    await repo.rebuildIndexes();
+    await repo.verifyIndexes();
 
     const running = await repo.findGlobalByStatus("running");
     assertEquals(running.map((r) => r.run.id), [run.id]);
   });
 });
 
-Deno.test("rebuildIndexes: does nothing when no run was ever saved", async () => {
+Deno.test("verifyIndexes: does nothing when no run was ever saved", async () => {
   await withTempDir(async (dir) => {
-    await new YamlWorkflowRunRepository(dir).rebuildIndexes();
+    await new YamlWorkflowRunRepository(dir).verifyIndexes();
   });
 });
 
-Deno.test("rebuildIndexes: keeps the entry of a run saved while it rebuilds", async () => {
+Deno.test("verifyIndexes: keeps the entry of a run saved while it verifies", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
@@ -1830,7 +1830,7 @@ Deno.test("rebuildIndexes: keeps the entry of a run saved while it rebuilds", as
 
     runs[0].interruptOrphaned("test");
     await Promise.all([
-      repo.rebuildIndexes(),
+      repo.verifyIndexes(),
       repo.save(workflow.id, runs[0]),
     ]);
 
@@ -1865,7 +1865,7 @@ Deno.test("findGlobalById: a read racing a save never leaves the index behind th
   });
 });
 
-Deno.test("rebuildIndexes: a workflow with an unreadable record does not stop the others", async () => {
+Deno.test("verifyIndexes: a workflow with an unreadable record does not stop the others", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const broken = createTestWorkflow();
@@ -1886,11 +1886,170 @@ Deno.test("rebuildIndexes: a workflow with an unreadable record does not stop th
     await repo.save(otherId, run);
     await replaceRecord(repo, otherId, run, runningRecord);
 
-    await repo.rebuildIndexes();
+    await repo.verifyIndexes();
 
     const index = await readRunIndex(
       join(dir, ".swamp", "workflow-runs", otherId),
     );
     assertEquals(index?.entries[run.id]?.status, "running");
+  });
+});
+
+/** Saves `count` running runs of one workflow and returns them. */
+async function saveRunningRuns(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  count: number,
+): Promise<WorkflowRun[]> {
+  const runs: WorkflowRun[] = [];
+  for (let i = 0; i < count; i++) {
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    runs.push(run);
+  }
+  return runs;
+}
+
+Deno.test("verifyIndexes: writes no index whose entries all match their records (swamp-club#3051)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    await saveRunningRuns(repo, workflow, 3);
+    const indexPath = getIndexPath(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    const past = new Date("2020-01-01T00:00:00Z");
+    await Deno.utime(indexPath, past, past);
+    const before = await Deno.readTextFile(indexPath);
+
+    await repo.verifyIndexes();
+
+    assertEquals(
+      (await Deno.stat(indexPath)).mtime?.getTime(),
+      past.getTime(),
+    );
+    assertEquals(await Deno.readTextFile(indexPath), before);
+  });
+});
+
+Deno.test("verifyIndexes: reads and fingerprints entries written without a fingerprint", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveRunningRuns(repo, workflow, 2);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const legacy = await readRunIndex(indexDir);
+    for (const entry of Object.values(legacy?.entries ?? {})) {
+      delete entry.record;
+    }
+    await Deno.writeTextFile(
+      getIndexPath(indexDir),
+      JSON.stringify({ version: legacy?.version, entries: legacy?.entries }),
+    );
+
+    await repo.verifyIndexes();
+
+    const index = await readRunIndex(indexDir);
+    for (const run of runs) {
+      assertEquals(index?.entries[run.id]?.status, "running");
+      assert(index?.entries[run.id]?.record, "entry has a fingerprint");
+    }
+  });
+});
+
+Deno.test("verifyIndexes: treats a malformed fingerprint as none", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const index = await readRunIndex(indexDir);
+    const entries = index?.entries ?? {};
+    entries[run.id] = {
+      ...entries[run.id],
+      status: "succeeded",
+      record: "junk" as unknown as typeof entries[string]["record"],
+    };
+    await Deno.writeTextFile(
+      getIndexPath(indexDir),
+      JSON.stringify({ version: index?.version, entries }),
+    );
+
+    await repo.verifyIndexes();
+
+    const verified = await readRunIndex(indexDir);
+    assertEquals(verified?.entries[run.id]?.status, "running");
+  });
+});
+
+Deno.test("verifyIndexes: catches a record replaced with one of the same size and mtime", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const path = repo.getPath(workflow.id, run.id);
+    const original = await Deno.stat(path);
+    // Without an inode the fingerprint is mtime and size alone (Windows).
+    if (original.ino === null || original.mtime === null) return;
+    const content = await Deno.readTextFile(path);
+    const swapped = content.replace(/^status: running$/m, "status: pending");
+    assertNotEquals(swapped, content);
+    // A replacement written aside and renamed in, as a pull would, with its
+    // mtime set back to the version the index saw.
+    await Deno.writeTextFile(`${path}.tmp`, swapped);
+    await Deno.rename(`${path}.tmp`, path);
+    await Deno.utime(path, original.mtime, original.mtime);
+    assertEquals((await Deno.stat(path)).size, original.size);
+
+    await repo.verifyIndexes();
+
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    assertEquals(index?.entries[run.id]?.status, "pending");
+  });
+});
+
+Deno.test("verifyIndexes: drops the entry of a record that is gone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [kept, removed] = await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(repo.getPath(workflow.id, removed.id));
+
+    await repo.verifyIndexes();
+
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    assertEquals(Object.keys(index?.entries ?? {}), [kept.id]);
+  });
+});
+
+Deno.test("verifyIndexes: keeps the entry a save writes while a replaced record is being verified", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    for (let round = 0; round < 10; round++) {
+      const [run] = await saveRunningRuns(repo, workflow, 1);
+      const runningRecord = await Deno.readTextFile(
+        repo.getPath(workflow.id, run.id),
+      );
+      run.complete();
+      await repo.save(workflow.id, run);
+      await replaceRecord(repo, workflow.id, run, runningRecord);
+
+      // The same run saved again while the record behind the index is read.
+      await Promise.all([
+        repo.verifyIndexes(),
+        repo.save(workflow.id, run),
+      ]);
+
+      const index = await readRunIndex(
+        join(dir, ".swamp", "workflow-runs", workflow.id),
+      );
+      assertEquals(index?.entries[run.id]?.status, "failed");
+    }
   });
 });
