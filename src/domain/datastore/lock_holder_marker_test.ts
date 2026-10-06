@@ -25,6 +25,7 @@ import {
   SWAMP_LOCK_ANCESTOR_PIDS,
   SWAMP_LOCK_HOLDER_PID,
   SWAMP_LOCK_HOLDER_TOKENS,
+  withRemoteLockHolder,
 } from "./lock_holder_marker.ts";
 
 /** A fake env store that never touches the real process env. */
@@ -459,4 +460,131 @@ Deno.test("LockHolderMarker.inheritedLockIds: empty when the ancestors handed do
   );
 
   assertEquals(marker.inheritedLockIds().size, 0);
+});
+
+Deno.test("LockHolderMarker.remoteLockHolder: names this process and the locks its scope holds", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500, () => "host-a");
+
+  const holder = await marker.runHolding(
+    ["nonce-a", "nonce-b"],
+    () => Promise.resolve(marker.remoteLockHolder()),
+  );
+
+  assertEquals(holder, {
+    pid: 500,
+    hostname: "host-a",
+    lockIds: ["nonce-a", "nonce-b"],
+  });
+});
+
+Deno.test("LockHolderMarker.remoteLockHolder: undefined outside a scope and in a scope holding no lock", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500, () => "host-a");
+
+  assertEquals(marker.remoteLockHolder(), undefined);
+  assertEquals(
+    await marker.runHolding(
+      [],
+      () => Promise.resolve(marker.remoteLockHolder()),
+    ),
+    undefined,
+  );
+});
+
+Deno.test("withRemoteLockHolder: declares a same-host orchestrator an ancestor holding only its listed locks", () => {
+  const env = withRemoteLockHolder(
+    { [SWAMP_LOCK_ANCESTOR_PIDS]: "700", OTHER: "kept" },
+    { pid: 500, hostname: "host-a", lockIds: ["nonce-a"] },
+    "host-a",
+  );
+
+  assertEquals(env, {
+    [SWAMP_LOCK_ANCESTOR_PIDS]: "500,700",
+    [SWAMP_LOCK_HOLDER_TOKENS]: "500:nonce-a",
+    OTHER: "kept",
+  });
+
+  // A swamp started under the runner skips that lock and waits on the
+  // orchestrator's others.
+  const child = new LockHolderMarker(fakeEnv(env).store, 900, () => "host-a");
+  const relationTo = child.lockRelation();
+  assertEquals(
+    relationTo({ pid: 500, hostname: "host-a", nonce: "nonce-a" }),
+    "ancestor",
+  );
+  assertEquals(
+    relationTo({ pid: 500, hostname: "host-a", nonce: "nonce-b" }),
+    "ancestor-other-run",
+  );
+});
+
+Deno.test("withRemoteLockHolder: leaves the env alone for an orchestrator on another host", () => {
+  const env = { [SWAMP_LOCK_ANCESTOR_PIDS]: "700" };
+
+  assertEquals(
+    withRemoteLockHolder(
+      env,
+      { pid: 500, hostname: "host-b", lockIds: ["nonce-a"] },
+      "host-a",
+    ),
+    env,
+  );
+  assertEquals(withRemoteLockHolder(env, undefined, "host-a"), env);
+});
+
+Deno.test("withRemoteLockHolder: merges into the chain and tokens the worker inherited", () => {
+  const env = withRemoteLockHolder(
+    {
+      [SWAMP_LOCK_ANCESTOR_PIDS]: "500,700",
+      [SWAMP_LOCK_HOLDER_TOKENS]: "500:nonce-a,600:nonce-z",
+    },
+    { pid: 500, hostname: "host-a", lockIds: ["nonce-b"] },
+    "host-a",
+  );
+
+  assertEquals(env[SWAMP_LOCK_ANCESTOR_PIDS], "500,700");
+  assertEquals(
+    env[SWAMP_LOCK_HOLDER_TOKENS],
+    "600:nonce-z,500:nonce-a+nonce-b",
+  );
+});
+
+Deno.test("withRemoteLockHolder: drops malformed nonces and never adds the pid without a tokens entry", () => {
+  const base = { [SWAMP_LOCK_ANCESTOR_PIDS]: "700" };
+  const holder = { hostname: "host-a" };
+
+  assertEquals(
+    withRemoteLockHolder(
+      base,
+      { ...holder, pid: 500, lockIds: ["ok", "a,1:b", "c+d", ""] },
+      "host-a",
+    )[SWAMP_LOCK_HOLDER_TOKENS],
+    "500:ok",
+  );
+  // No usable nonce, or no usable pid: nothing is handed over.
+  for (
+    const bad of [
+      { ...holder, pid: 500, lockIds: ["a,1:b"] },
+      { ...holder, pid: 500, lockIds: [] },
+      { ...holder, pid: 0, lockIds: ["ok"] },
+      { ...holder, pid: -3, lockIds: ["ok"] },
+      { ...holder, pid: 1.5, lockIds: ["ok"] },
+      { ...holder, pid: Number.NaN, lockIds: ["ok"] },
+    ]
+  ) {
+    assertEquals(withRemoteLockHolder(base, bad, "host-a"), base);
+  }
+});
+
+Deno.test("withRemoteLockHolder: a full chain still names the orchestrator in the runner's env", () => {
+  const full = Array.from({ length: MAX_LOCK_ANCESTORS }, (_, i) => 1000 + i);
+  const env = withRemoteLockHolder(
+    { [SWAMP_LOCK_ANCESTOR_PIDS]: full.join(",") },
+    { pid: 500, hostname: "host-a", lockIds: ["nonce-a"] },
+    "host-a",
+  );
+
+  const chain = env[SWAMP_LOCK_ANCESTOR_PIDS].split(",").map(Number);
+  assertEquals(chain.length, MAX_LOCK_ANCESTORS);
+  assertEquals(chain[0], 500);
+  assertEquals(chain.at(-1), full.at(-1));
 });

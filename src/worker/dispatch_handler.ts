@@ -31,6 +31,11 @@
  * Capacity 1 is byte-for-byte identical to the prior serial behavior.
  */
 
+import { hostname } from "node:os";
+import {
+  type RemoteLockHolder,
+  withRemoteLockHolder,
+} from "../domain/datastore/lock_holder_marker.ts";
 import { traceHeadersToEnv } from "../domain/models/execution_envelope.ts";
 import {
   overlayEnvironment,
@@ -179,21 +184,29 @@ export function buildRunnerBootstrapParams(
  * A runner therefore joins a trace only through its dispatch's trace headers.
  * A `TRACEPARENT` the worker was started with, or one an orchestrator ships,
  * would otherwise put every untraced dispatch into one long-lived trace.
+ *
+ * When the orchestrator on this host holds per-model locks for the step
+ * (`lockHolder`), it is declared an ancestor of the runner, so a swamp the
+ * step starts skips those locks (design/enablers/datastores.md,
+ * "Parent-Process Lock Awareness").
  */
 export function buildRunnerEnvironment(
   workerEnv: Record<string, string>,
   snapshot: Readonly<Record<string, string>>,
   traceHeaders: Readonly<Record<string, string>> | undefined,
+  lockHolder?: RemoteLockHolder,
+  host: string = hostname(),
 ): Record<string, string> {
   // overlayEnvironment applies the snapshot denylist, which covers
   // TRACEPARENT and TRACESTATE, so it drops any an orchestrator ships.
   const env = stripInheritedTraceContext(
     overlayEnvironment(workerEnv, snapshot),
   );
-  // Set directly: traceHeadersToEnv yields only TRACEPARENT and TRACESTATE,
-  // which the denylisted overlay would drop.
+  // Both set directly, since the denylisted overlay would drop them: the
+  // lock holder goes into SWAMP_* variables, and traceHeadersToEnv yields
+  // only TRACEPARENT and TRACESTATE.
   return stripWorkerCredentials({
-    ...env,
+    ...withRemoteLockHolder(env, lockHolder, host),
     ...traceHeadersToEnv(traceHeaders),
   });
 }
@@ -248,6 +261,7 @@ async function handleDispatch(
     Deno.env.toObject(),
     params.environmentSnapshot,
     execution.traceHeaders,
+    params.lockHolder,
   );
 
   const rawParams2 = rawParams as Record<string, unknown>;

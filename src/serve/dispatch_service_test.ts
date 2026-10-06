@@ -620,6 +620,17 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
   assertEquals(result.workerName, "w1");
 });
 
+Deno.test("DispatchService: forwards the step's lock holder, and omits it when the step holds no lock", async () => {
+  const h = createHarness();
+  const lockHolder = { pid: 4242, hostname: "host-a", lockIds: ["nonce-a"] };
+
+  await h.service.executeRemote(stepRequest({ lockHolder }));
+  await h.service.executeRemote(stepRequest());
+
+  assertEquals(h.dispatchCalls[0].params.lockHolder, lockHolder);
+  assertEquals(h.dispatchCalls[1].params.lockHolder, undefined);
+});
+
 Deno.test("DispatchService: records the dispatch's trace headers for the data plane", async () => {
   const h = createHarness();
   let recorded: Readonly<Record<string, string>> | undefined;
