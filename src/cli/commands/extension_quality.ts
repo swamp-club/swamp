@@ -36,6 +36,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
   isPulledExtensionManifest,
   resolveExtensionFiles,
@@ -105,7 +106,13 @@ export const extensionQualityCommand = new Command()
 
       const repoDir = resolveRepoDir(options.repoDir);
       const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-      if (isPulledExtensionManifest(repoDir, manifestPath)) {
+      const { absoluteManifestPath } = await resolveManifestArgument({
+        argument: manifestPath,
+        cwd: Deno.cwd(),
+        repoDir,
+        extensionsDir,
+      });
+      if (isPulledExtensionManifest(repoDir, absoluteManifestPath)) {
         throw new UserError(
           "Cannot run quality on a pulled extension. Pulled extensions are read-only " +
             "copies from the registry. To score a local extension, point at its manifest " +
@@ -120,17 +127,16 @@ export const extensionQualityCommand = new Command()
 
       const resolved = await resolveExtensionFiles({
         repoDir,
-        manifestPath,
+        manifestPath: absoluteManifestPath,
         repoContext,
         logger: cliCtx.logger,
         extensionsDir,
       });
 
-      const absoluteManifestPath = resolve(repoDir, manifestPath);
       const manifestDir = dirname(absoluteManifestPath);
       const denoConfigPath = await findDenoConfig(
         manifestDir,
-        resolve(repoDir),
+        resolved.extensionsRoot,
       );
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });

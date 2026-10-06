@@ -27,6 +27,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
+import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
@@ -331,6 +332,12 @@ export const extensionPushCommand = new Command()
     // 1. Validate repo
     const repoDir = resolveRepoDir(options.repoDir);
     const extensionsDir = resolveExtensionsDir(options.extensionsDir);
+    const { absoluteManifestPath } = await resolveManifestArgument({
+      argument: manifestPath,
+      cwd: Deno.cwd(),
+      repoDir,
+      extensionsDir,
+    });
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,
@@ -339,7 +346,7 @@ export const extensionPushCommand = new Command()
     // 2. Resolve extension files (manifest, models, workflows, additional files)
     const resolved = await resolveExtensionFiles({
       repoDir,
-      manifestPath,
+      manifestPath: absoluteManifestPath,
       repoContext,
       logger: cliCtx.logger,
       extensionsDir,
@@ -382,16 +389,20 @@ export const extensionPushCommand = new Command()
     }
 
     // 2b. Detect project config for project-aware bundling and quality checks.
-    const absoluteManifestPath = resolve(repoDir, manifestPath);
+    // The walk up from the manifest stops at the extensions root, so a
+    // manifest outside the repo never picks up a deno.json above it.
     const manifestDir = dirname(absoluteManifestPath);
-    const denoConfigPath = await findDenoConfig(manifestDir, resolve(repoDir));
+    const denoConfigPath = await findDenoConfig(
+      manifestDir,
+      resolved.extensionsRoot,
+    );
     let packageJsonDir: string | undefined;
     if (denoConfigPath) {
       cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
     } else {
       const candidateDir = await findPackageJson(
         manifestDir,
-        resolve(repoDir),
+        resolved.extensionsRoot,
       );
       if (candidateDir) {
         const allEntryPoints = [

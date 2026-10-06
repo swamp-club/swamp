@@ -477,15 +477,22 @@ push:
   `myext/README.md`).
 
 Workflows honour `paths.base: manifest`: the manifest's own directory is
-searched first, then the repo-root `workflows/` and `extensions/workflows/`
-directories. Under the default `paths.base: typedDir`, only the repo-root
-locations are used.
+searched first, then `workflows/` and `extensions/workflows/` under the
+extensions root (see "Split Extensions Directory" below), then the same two
+under the repo dir. Under the default `paths.base: typedDir`, the extensions
+root and repo dir locations are used; with no `--extensions-dir` and a manifest
+inside the repo they coincide, so the list is the historical one.
 
 Skills honour it too: the manifest's own directory first (e.g.
-`sub/.claude/skills/<name>/`), then the repo-root (project-local) skill
-directory, then the global user-level one. Under `paths.base: typedDir`, only
-repo-root and global are searched. Every enrolled tool's skill directory is
-searched, not only the primary tool's.
+`sub/.claude/skills/<name>/`), then the extensions root's skill directory, then
+the repo-root (project-local) one. Every enrolled tool's skill directory is
+searched, not only the primary tool's. The user's global skill directory
+(`~/.claude/skills/`) is never searched: a skill is not packaged from a locally
+installed copy just because it has the same name (swamp-club#3018).
+
+When a bundled workflow or skill exists under both the extensions root and the
+repo dir at different paths, push refuses with an error naming both, rather
+than silently packaging one of them.
 
 Local source loading also honours `paths.base: manifest`. At startup the loader
 scans every known extension directory for such manifests. If one declares a kind
@@ -916,7 +923,59 @@ SWAMP_EXTENSIONS_DIR=~/repo/trees/feature-branch \
 
 - Local extension source scanning for all 4 kinds (models, vaults, datastores,
   reports)
-- Manifest path resolution in `extension fmt` and `extension push`
+- The extensions root that `extension push`, `quality` and `fmt` resolve a
+  manifest's typed entries, workflows and skills from: swamp appends the
+  configured typed directory (`extensions/models` by default) to it, so the
+  flag names the directory that *contains* `extensions/`, not `extensions/`
+  itself
+- One candidate base for a relative manifest argument (see below)
+
+### The manifest argument
+
+`extension push`, `quality` and `fmt` take a manifest argument, resolved by
+`resolveManifestArgument` (`src/cli/resolve_manifest_path.ts`) the same way in
+all three (swamp-club#3018, swamp-club#2747):
+
+- An absolute path is used as given. A relative path is tried against the
+  current directory first, then `--extensions-dir` when set, then the repo dir,
+  so a path typed from where the author stands wins and scripts that pass
+  repo-relative paths with `--repo-dir` keep working.
+- A candidate matches when it is a file, or a directory holding
+  `manifest.yaml` (then `manifest.yml`, `manifest.json`); the first match wins.
+  `swamp extension push extensions/models/x` and
+  `swamp extension push extensions/models/x/manifest.yaml` are equivalent.
+- Candidates are only ever `stat`ed, so a directory never reaches
+  `readTextFile`. A directory without a manifest fails with
+  `No manifest.yaml found in <dir>`; a path that exists nowhere fails with
+  `Manifest file not found: <argument as typed> (looked in <every candidate>)`.
+
+### Choosing the extensions root without the flag
+
+With no `--extensions-dir`, `resolveExtensionFiles` picks the root
+additively, so an existing manifest never packages a different set of files:
+
+1. Infer a root: the nearest directory from the manifest's own directory
+   upward that holds an `extensions/` directory or a `.swamp.yaml` marker. For
+   a manifest inside the repo the walk stops at the repo dir, so
+   `<repo>/extensions/models/x/manifest.yaml` yields the repo dir; outside the
+   repo it falls back to the manifest's directory.
+2. If the inferred root is the repo dir, nothing changes.
+3. Otherwise probe every typed entry under both bases. An entry present under
+   both at different real paths is an error naming both paths and the flag.
+   If any entry resolves under the repo dir, the repo dir stays the root
+   (today's behaviour). Only a manifest that resolves nothing under the repo
+   dir moves to the inferred root.
+
+This is what lets `swamp extension push ~/sc/swamp-extensions/kubernetes` work
+from any swamp repo, and lets a monorepo of sub-directory extensions push each
+one from its root, while a repo that also keeps a copy of a sub-directory's
+model at `<repo>/extensions/models/` fails loudly instead of silently packaging
+the repo copy.
+
+Every not-found error from the resolver prints the path or paths it looked in
+and ends with the fix: `--extensions-dir <dir>` naming the directory that
+contains `<typed dir>/<entry>`, or `paths.base: manifest`; when the entry sits
+next to the manifest, the error says so.
 
 ### What stays at `--repo-dir`
 

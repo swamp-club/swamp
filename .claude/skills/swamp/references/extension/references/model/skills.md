@@ -104,8 +104,13 @@ Each entry is a skill directory name resolved in priority order:
 
 1. **Manifest-relative** (only when `paths.base: manifest`) — e.g.,
    `sub/.claude/skills/create-story/` where `sub/` is the manifest's directory
-2. **Project-local skill directory** — e.g., `.claude/skills/create-story/`
-3. **Global skill directory** — e.g., `~/.claude/skills/create-story/`
+2. **Extensions root skill directory** — `<--extensions-dir>/.claude/skills/`,
+   or the root inferred from the manifest's location
+3. **Project-local skill directory** — e.g., `.claude/skills/create-story/`
+
+The global skill directory (`~/.claude/skills/`) is never searched: push does
+not package a skill from a locally installed copy by name. A skill found under
+both the extensions root and the repo dir is refused rather than guessed.
 
 In multi-tool repos, all enrolled tools' directories are searched at each
 priority level. The tool determines the skill directory path:

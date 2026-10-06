@@ -27,12 +27,17 @@ import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
+  inferExtensionsRoot,
   isPulledExtensionManifest,
   planWorkflowArchiveNames,
   resolveExtensionFiles,
 } from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../infrastructure/persistence/path_test_helpers.ts";
 
 const logger = getLogger(["test"]);
 
@@ -1494,7 +1499,7 @@ Deno.test("resolveExtensionFiles extensionsDir overrides repo root for typed-key
   });
 });
 
-Deno.test("resolveExtensionFiles without extensionsDir fails for monorepo datastore", async () => {
+Deno.test("resolveExtensionFiles without extensionsDir infers the extensions root for a monorepo datastore (swamp-club#3018)", async () => {
   await withTempRepo(async (dir) => {
     const extSubdir = join(dir, "my-datastore-ext");
     const datastoresDir = join(extSubdir, "extensions", "datastores");
@@ -1515,18 +1520,17 @@ Deno.test("resolveExtensionFiles without extensionsDir fails for monorepo datast
       }),
     );
 
-    const err = await assertRejects(
-      () =>
-        resolveExtensionFiles({
-          repoDir: dir,
-          manifestPath,
-          repoContext: stubRepoContext,
-          logger,
-        }),
-      UserError,
-    );
-    assertStringIncludes(err.message, "Datastore file not found");
-    assertStringIncludes(err.message, "--extensions-dir");
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+    assertEquals(result.extensionsRoot, extSubdir);
+    assertEquals(result.datastoresDir, datastoresDir);
+    assertEquals(result.datastoreEntryPoints, [
+      join(datastoresDir, "my_store.ts"),
+    ]);
   });
 });
 
@@ -1839,4 +1843,509 @@ Deno.test("planWorkflowArchiveNames: a file listed twice is a duplicate entry, n
   assertStringIncludes(err.message, "listed twice");
   assertStringIncludes(err.message, "./deploy.yaml");
   assertStringIncludes(err.message, "deploy.yaml");
+});
+
+// ── extensions root selection, flag coverage and error wording (swamp-club#3018) ──
+
+/**
+ * Stage an extension in the swamp-extensions layout under `root`: a model
+ * at extensions/models/hello.ts, a workflow at
+ * extensions/workflows/hello-wf/workflow.yaml and a skill at
+ * .claude/skills/hello-skill. Returns the manifest path.
+ */
+async function stageSubDirectoryExtension(
+  root: string,
+  name: string,
+  options: { workflow?: boolean; skill?: boolean; model?: boolean } = {},
+): Promise<string> {
+  const { workflow = true, skill = true, model = true } = options;
+  await Deno.mkdir(join(root, "extensions", "models"), { recursive: true });
+  if (model) {
+    await Deno.writeTextFile(
+      join(root, "extensions", "models", "hello.ts"),
+      'export const name = "hello";',
+    );
+  }
+  if (workflow) {
+    await Deno.mkdir(join(root, "extensions", "workflows", "hello-wf"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(root, "extensions", "workflows", "hello-wf", "workflow.yaml"),
+      "name: hello-wf\njobs: {}",
+    );
+  }
+  if (skill) {
+    await createSkillDir(join(root, ".claude", "skills"), "hello-skill");
+  }
+  const manifestPath = join(root, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name,
+      version: "2026.10.06.1",
+      models: ["hello.ts"],
+      ...(workflow ? { workflows: ["hello-wf/workflow.yaml"] } : {}),
+      ...(skill ? { skills: ["hello-skill"] } : {}),
+    }),
+  );
+  return manifestPath;
+}
+
+function assertPackagedWholeExtension(
+  result: Awaited<ReturnType<typeof resolveExtensionFiles>>,
+  root: string,
+): void {
+  assertPathEquals(result.extensionsRoot, root);
+  assertEquals(result.modelEntryPoints, [
+    join(root, "extensions", "models", "hello.ts"),
+  ]);
+  assertEquals(result.workflowFiles.length, 1);
+  assertStringIncludes(
+    result.workflowFiles[0].sourcePath,
+    join("hello-wf", "workflow.yaml"),
+  );
+  assertEquals(result.skillDirs.length, 1);
+  assertPathEquals(
+    result.skillDirs[0].absolutePath,
+    join(root, ".claude", "skills", "hello-skill"),
+  );
+}
+
+Deno.test("resolveExtensionFiles: --extensions-dir covers workflows and skills as it does models (swamp-club#3031)", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(ext, "@test/flag");
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+      extensionsDir: ext,
+    });
+    assertPackagedWholeExtension(result, ext);
+  });
+});
+
+Deno.test("resolveExtensionFiles: an in-repo sub-directory extension resolves without the flag", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(ext, "@test/inrepo");
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+    });
+    assertPackagedWholeExtension(result, ext);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a sibling-checkout extension resolves without the flag", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const sibling = await Deno.makeTempDir({ prefix: "swamp-sibling-ext-" });
+    try {
+      const manifestPath = await stageSubDirectoryExtension(
+        sibling,
+        "@test/sibling",
+      );
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath,
+        repoContext: stubWorkflowRepoContext,
+        logger,
+      });
+      assertPackagedWholeExtension(result, sibling);
+    } finally {
+      await Deno.remove(sibling, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("resolveExtensionFiles: a sub-directory manifest whose model lives under the repo dir keeps the repo dir as root", async () => {
+  await withTempRepo(async (dir) => {
+    // The sub-directory looks like an extension root (it has extensions/),
+    // but the model only exists under the repo dir: today's resolution
+    // must win so the packaged set is unchanged.
+    const ext = join(dir, "ext", "sub");
+    await stageSubDirectoryExtension(ext, "@test/repo-wins", {
+      workflow: false,
+      skill: false,
+      model: false,
+    });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "hello.ts"),
+      'export const name = "hello";',
+    );
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: join(ext, "manifest.yaml"),
+      repoContext: stubRepoContext,
+      logger,
+    });
+    assertPathEquals(result.extensionsRoot, dir);
+    assertEquals(result.modelEntryPoints, [
+      join(dir, "extensions", "models", "hello.ts"),
+    ]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a model present under both the repo dir and the inferred root is an ambiguity error", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    await stageSubDirectoryExtension(ext, "@test/ambiguous", {
+      workflow: false,
+      skill: false,
+    });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "hello.ts"),
+      'export const name = "hello-at-root";',
+    );
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath: join(ext, "manifest.yaml"),
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      "Model file hello.ts exists under two roots",
+    );
+    assertStringIncludes(
+      err.message,
+      join(dir, "extensions", "models", "hello.ts"),
+    );
+    assertStringIncludes(
+      err.message,
+      join(ext, "extensions", "models", "hello.ts"),
+    );
+    assertStringIncludes(err.message, "--extensions-dir");
+    assertStringIncludes(err.message, "paths.base: manifest");
+  });
+});
+
+Deno.test("resolveExtensionFiles: a workflow present under both roots with --extensions-dir is an ambiguity error", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(
+      ext,
+      "@test/wf-both",
+      {
+        skill: false,
+      },
+    );
+    await Deno.mkdir(join(dir, "extensions", "workflows", "hello-wf"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "workflows", "hello-wf", "workflow.yaml"),
+      "name: hello-wf-at-root\njobs: {}",
+    );
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubWorkflowRepoContext,
+          logger,
+          extensionsDir: ext,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      `Workflow file ${
+        join("hello-wf", "workflow.yaml")
+      } exists under two roots`,
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: a skill present under both roots with --extensions-dir is an ambiguity error", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(
+      ext,
+      "@test/skill-both",
+      {
+        workflow: false,
+      },
+    );
+    await createSkillDir(join(dir, ".claude", "skills"), "hello-skill");
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+          extensionsDir: ext,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      "Skill directory hello-skill exists under two roots",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: default in-repo search order for workflows and skills is unchanged", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+    const write = (extra: Record<string, unknown>) =>
+      Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/order",
+          version: "2026.10.06.1",
+          models: ["dummy.ts"],
+          ...extra,
+        }),
+      );
+    await write({ workflows: ["missing.yaml"] });
+    const wfErr = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubWorkflowRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      wfErr.message,
+      `Workflow file not found: missing.yaml (looked in ${
+        join(dir, "workflows")
+      }, ${join(dir, "extensions", "workflows")})`,
+    );
+    await write({ skills: ["missing-skill"] });
+    const skillErr = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      skillErr.message,
+      `Skill directory not found: missing-skill (looked in ${
+        join(dir, ".claude", "skills")
+      })`,
+    );
+    assertStringIncludes(
+      skillErr.message,
+      `Place the skill under ${
+        join(dir, ".claude", "skills", "missing-skill")
+      }`,
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: a skill present only under the home directory no longer resolves", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const home = await Deno.makeTempDir({ prefix: "swamp-home-skills-" });
+    try {
+      await createSkillDir(join(home, ".claude", "skills"), "home-only");
+      await Deno.writeTextFile(
+        join(dir, "extensions", "models", "dummy.ts"),
+        'export const name = "dummy";',
+      );
+      const manifestPath = join(dir, "manifest.yaml");
+      await Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/home-skill",
+          version: "2026.10.06.1",
+          models: ["dummy.ts"],
+          skills: ["home-only"],
+        }),
+      );
+      const err = await withMockedEnv(
+        { HOME: home, USERPROFILE: home },
+        () =>
+          assertRejects(
+            () =>
+              resolveExtensionFiles({
+                repoDir: dir,
+                manifestPath,
+                repoContext: stubRepoContext,
+                logger,
+              }),
+            UserError,
+          ),
+      );
+      assertStringIncludes(err.message, "Skill directory not found: home-only");
+      assertStringIncludes(
+        err.message,
+        "does not package a skill from your home directory",
+      );
+      assertEquals(err.message.includes(home), false);
+    } finally {
+      await Deno.remove(home, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("resolveExtensionFiles: a typed-key miss names the looked-in path, the flag and the setting", async () => {
+  await withTempRepo(async (dir) => {
+    // The appended-path mistake: --extensions-dir pointing at <ext>/extensions.
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(ext, "@test/miss", {
+      workflow: false,
+      skill: false,
+    });
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+          extensionsDir: join(ext, "extensions"),
+        }),
+      UserError,
+    );
+    assertStringIncludes(
+      err.message,
+      `Model file not found: hello.ts (looked in ${
+        join(ext, "extensions", "extensions", "models", "hello.ts")
+      })`,
+    );
+    assertStringIncludes(
+      err.message,
+      `Entries under models resolve from ${
+        join(ext, "extensions", "extensions", "models")
+      }.`,
+    );
+    assertStringIncludes(err.message, "--extensions-dir");
+    assertStringIncludes(err.message, "paths.base: manifest");
+    assertEquals(err.message.includes("exists next to the manifest"), false);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a typed-key miss points at a copy next to the manifest", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "bare");
+    await Deno.mkdir(ext, { recursive: true });
+    await Deno.writeTextFile(
+      join(ext, "hello.ts"),
+      'export const name = "hello";',
+    );
+    const manifestPath = join(ext, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/bare",
+        version: "2026.10.06.1",
+        models: ["hello.ts"],
+      }),
+    );
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Model file not found: hello.ts");
+    assertStringIncludes(
+      err.message,
+      `hello.ts exists next to the manifest at ${
+        join(ext, "hello.ts")
+      }; add paths.base: manifest`,
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: a directory argument and an absolute manifest path resolve the same files", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    const manifestPath = await stageSubDirectoryExtension(
+      ext,
+      "@test/dir-arg",
+      {
+        workflow: false,
+        skill: false,
+      },
+    );
+    const viaDir = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: ext,
+      repoContext: stubRepoContext,
+      logger,
+    });
+    const viaFile = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+    assertPathEquals(viaDir.absoluteManifestPath, manifestPath);
+    assertEquals(viaDir.modelEntryPoints, viaFile.modelEntryPoints);
+  });
+});
+
+Deno.test("inferExtensionsRoot: stops at the repo dir for a manifest under extensions/models", async () => {
+  await withTempRepo(async (dir) => {
+    const manifestDir = join(dir, "extensions", "models", "x");
+    await Deno.mkdir(manifestDir, { recursive: true });
+    assertPathEquals(await inferExtensionsRoot(manifestDir, dir), dir);
+  });
+});
+
+Deno.test("inferExtensionsRoot: picks the nearest ancestor holding extensions/ or .swamp.yaml", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "ext", "sub");
+    await Deno.mkdir(join(ext, "extensions"), { recursive: true });
+    assertPathEquals(await inferExtensionsRoot(ext, dir), ext);
+    assertPathEquals(await inferExtensionsRoot(join(ext, "nested"), dir), ext);
+
+    const marked = join(dir, "marked", "deep");
+    await Deno.mkdir(marked, { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "marked", ".swamp.yaml"),
+      "swampVersion: 0.1.0\n",
+    );
+    assertPathEquals(
+      await inferExtensionsRoot(marked, dir),
+      join(dir, "marked"),
+    );
+  });
+});
+
+Deno.test("inferExtensionsRoot: falls back to the manifest directory outside the repo", async () => {
+  const outside = await Deno.makeTempDir({ prefix: "swamp-outside-" });
+  const repo = await Deno.makeTempDir({ prefix: "swamp-repo-" });
+  try {
+    const bare = join(outside, "bare");
+    await Deno.mkdir(bare, { recursive: true });
+    const root = await inferExtensionsRoot(bare, repo);
+    // Either the bare directory itself, or an ancestor that happens to be
+    // an extension root on this host; never the repo dir.
+    assertEquals(bare.startsWith(root), true);
+    assertEquals(root === repo, false);
+  } finally {
+    await Deno.remove(outside, { recursive: true }).catch(() => {});
+    await Deno.remove(repo, { recursive: true }).catch(() => {});
+  }
 });
