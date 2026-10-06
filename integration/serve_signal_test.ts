@@ -953,3 +953,60 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve signal over HTTP: audit events name the user the token's login identified",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const w = await suspendOnWait(repo);
+      const audit: AuditEvent[] = [];
+      const identity = { username: "zed", email: "zed@example.test" };
+      const withIdentity = (ctx: ConnectionContext): SignalHttpDeps => ({
+        ctx,
+        authenticate: () =>
+          Promise.resolve({
+            ok: true as const,
+            principalId: "user:caller",
+            collectives: [],
+            groups: [],
+            tokenName: "caller-token",
+            tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+            oauthIdentity: identity,
+          }),
+      });
+      const send = (ctx: ConnectionContext) =>
+        handleSignalHttpRequest(
+          new Request(`http://serve.test/api/v1/signal/${w.waitId}`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${TOKEN}` },
+            body: JSON.stringify({ payload: { verdict: "ship" } }),
+          }),
+          w.waitId,
+          "198.51.100.9",
+          withIdentity(ctx),
+        );
+
+      // Refused first, then delivered: the denial, the delivery and both
+      // response events carry the identity.
+      const denied = await send(
+        ctxWith(repo, [workflowGrant(["read"], "@other/*")], { audit }),
+      );
+      assertEquals(denied.status, 404);
+      await denied.body?.cancel();
+      const delivered = await send(
+        ctxWith(repo, [workflowGrant(["signal"])], { audit }),
+      );
+      assertEquals(delivered.status, 200);
+      await delivered.body?.cancel();
+
+      assertEquals(audit.length, 4, JSON.stringify(audit.map((e) => e.action)));
+      for (const event of audit) {
+        assertEquals(event.principalUsername, identity.username, event.action);
+        assertEquals(event.principalEmail, identity.email, event.action);
+      }
+    });
+  },
+});

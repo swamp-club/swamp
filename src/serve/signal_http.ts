@@ -24,7 +24,8 @@
  * {@link deliverSignalForCaller}, shared with the `workflow.signal` request.
  */
 
-import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
+import { parsePrincipal } from "../domain/access/principal.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { SIGNAL_PAYLOAD_MAX_BYTES } from "../domain/workflows/signal_wait.ts";
@@ -151,6 +152,7 @@ export async function handleSignalHttpRequest(
       collectives: auth.collectives,
       groups: auth.groups,
       sourceIp,
+      loginIdentity: auth.oauthIdentity,
     };
   }
 
@@ -214,7 +216,7 @@ export async function handleSignalHttpRequest(
     waitId,
     payload: (body as { payload: unknown }).payload,
   });
-  emitResponseAudit(ctx, caller.principal, sourceIp, requestId, waitId, result);
+  emitResponseAudit(ctx, caller, requestId, waitId, result);
 
   const { status, ...rest } = result;
   return Response.json({ status, ...rest }, { status: STATUS[status] });
@@ -227,13 +229,13 @@ export async function handleSignalHttpRequest(
  */
 function emitResponseAudit(
   ctx: ConnectionContext,
-  principal: Principal | null,
-  sourceIp: string,
+  caller: AccessCaller,
   requestId: string,
   waitId: string,
   result: SignalDeliveryResult,
 ): void {
   if (!ctx.auditEmitter) return;
+  const { principal, sourceIp } = caller;
   const outcome: AuditOutcome = result.status === "delivered"
     ? "success"
     : "failure";
@@ -250,6 +252,11 @@ function emitResponseAudit(
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
+    actor: resolveActorIdentity(
+      principal,
+      ctx.resolvedUserNames,
+      caller.loginIdentity,
+    ),
     sourceIp,
     requestId,
     detail: result.status === "delivered" ? undefined : result.status,

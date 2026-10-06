@@ -38,6 +38,7 @@ import {
 } from "../libswamp/mod.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { principalToString } from "../domain/access/principal.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { SIGNAL_PAYLOAD_MAX_BYTES } from "../domain/workflows/signal_wait.ts";
 import type { SignalReceipt } from "../domain/workflows/signal_wait.ts";
@@ -336,6 +337,11 @@ function emitDelivered(
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
+    actor: resolveActorIdentity(
+      principal,
+      ctx.resolvedUserNames,
+      caller.loginIdentity,
+    ),
     sourceIp: caller.sourceIp,
     requestId,
     detail:
