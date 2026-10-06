@@ -24,6 +24,7 @@ import {
   isAbsolute,
   join,
   resolve,
+  SEPARATOR,
 } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -46,6 +47,7 @@ import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { resolveWebhooksDir } from "./resolve_webhooks_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
+import { resolveManifestArgument } from "./resolve_manifest_path.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -58,6 +60,14 @@ export interface ResolveExtensionFilesContext {
 export interface ResolvedExtensionFiles {
   manifest: ExtensionManifest;
   absoluteManifestPath: string;
+  /**
+   * The extensions root: the directory swamp appends `extensions/<kind>`
+   * (the configured typed directories) to. `--extensions-dir` when given,
+   * else chosen by {@link selectExtensionsRoot}. Commands bound their
+   * `deno.json` walk-up here so a manifest outside the repo never walks to
+   * the filesystem root.
+   */
+  extensionsRoot: string;
   /**
    * Effective base for `models` and `include`. Equals the configured
    * `modelsDir` from the repo marker under `paths.base: typedDir`
@@ -202,6 +212,309 @@ export function planWorkflowArchiveNames(
   return planned;
 }
 
+/** Manifest fields whose entries resolve from a typed directory. */
+type TypedField =
+  | "models"
+  | "vaults"
+  | "datastores"
+  | "reports"
+  | "webhooks"
+  | "include";
+
+const TYPED_KIND: Record<TypedField, string> = {
+  models: "Model file",
+  vaults: "Vault file",
+  datastores: "Datastore file",
+  reports: "Report file",
+  webhooks: "Webhook file",
+  include: "Include file",
+};
+
+/** What a typed-key lookup needs to find a file and to explain a miss. */
+interface TypedLookup {
+  extensionsRoot: string;
+  /** True when `--extensions-dir` named the root; the author chose it. */
+  explicitRoot: boolean;
+  manifestDir: string;
+  /** Configured typed directory per field, relative to the root. */
+  typedDirs: Record<TypedField, string>;
+  useManifestBase: boolean;
+}
+
+interface SelectExtensionsRootOptions {
+  repoDir: string;
+  manifestDir: string;
+  explicitRoot: string | undefined;
+  manifest: ExtensionManifest;
+  typedDirs: Record<TypedField, string>;
+  useManifestBase: boolean;
+  logger: Logger;
+}
+
+function isSameOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(root + SEPARATOR);
+}
+
+/**
+ * Where the `deno.json` / `package.json` walk up from the manifest stops.
+ * A manifest inside the repo walks to the repo dir, as it always has, so a
+ * monorepo's root config still applies to an extension pushed with
+ * `--extensions-dir` at a sub-directory. A manifest outside the repo walks
+ * to the extensions root that contains it, never further; the manifest's
+ * own directory when neither contains it.
+ */
+export function projectConfigBoundary(
+  manifestDir: string,
+  extensionsRoot: string,
+  repoDir: string,
+): string {
+  const dir = resolve(manifestDir);
+  const root = resolve(extensionsRoot);
+  const repo = resolve(repoDir);
+  if (isSameOrUnder(dir, repo)) return repo;
+  if (isSameOrUnder(dir, root)) return root;
+  return dir;
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    return false;
+  }
+}
+
+async function realPathOrNull(path: string): Promise<string | null> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The nearest directory, from the manifest's own directory upward, that
+ * looks like an extension root: it holds an `extensions/` directory or a
+ * `.swamp.yaml` marker. An in-repo walk stops at the repo dir, so a
+ * manifest under `<repo>/extensions/models/x/` yields the repo dir; outside
+ * the repo the walk stops at the filesystem root and falls back to the
+ * manifest directory. The user's home directory is never a root, even when
+ * it holds `~/extensions` or a marker: `~/.claude/skills` would otherwise
+ * become a skill candidate again.
+ */
+export async function inferExtensionsRoot(
+  manifestDir: string,
+  repoDir: string,
+): Promise<string> {
+  const repo = resolve(repoDir);
+  const home = homeDirectoryOrNull();
+  let current = resolve(manifestDir);
+  while (true) {
+    if (current === repo) return repo;
+    if (current === home) return resolve(manifestDir);
+    if (
+      await isDirectory(join(current, "extensions")) ||
+      await isFile(join(current, ".swamp.yaml"))
+    ) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) return resolve(manifestDir);
+    current = parent;
+  }
+}
+
+function homeDirectoryOrNull(): string | null {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  return home ? resolve(home) : null;
+}
+
+/**
+ * Choose the extensions root, strictly additively (swamp-club#3018):
+ *
+ * - `--extensions-dir` wins outright, as it always has.
+ * - Otherwise the root is inferred from the manifest's location
+ *   ({@link inferExtensionsRoot}). When that is the repo dir, nothing
+ *   changes.
+ * - When it differs, the typed entries are probed under both. An entry
+ *   present under both at different real paths is an error: the archive
+ *   would silently come from one of two places. Otherwise, if any entry
+ *   resolves under the repo dir, the repo dir stays the root, so every
+ *   manifest that resolved before still resolves identically; only a
+ *   manifest that found nothing under the repo dir moves to the inferred
+ *   root.
+ *
+ * Under `paths.base: manifest` the typed entries resolve next to the
+ * manifest regardless, so the inferred root is used as-is; it only adds
+ * workflow and skill candidates after the manifest directory.
+ *
+ * The inferred root needs none of the `--extensions-dir` preflight in
+ * mod.ts: it is an existing directory by construction, and an in-repo walk
+ * can only yield the repo dir or an ancestor of the manifest, never a
+ * directory under `.swamp/`, because a manifest there is a pulled extension
+ * and refused earlier.
+ */
+async function selectExtensionsRoot(
+  options: SelectExtensionsRootOptions,
+): Promise<string> {
+  const { repoDir, manifestDir, manifest, typedDirs, logger } = options;
+  if (options.explicitRoot !== undefined) {
+    logger.debug`Extensions root ${options.explicitRoot} from --extensions-dir`;
+    return options.explicitRoot;
+  }
+  const inferred = await inferExtensionsRoot(manifestDir, repoDir);
+  const repo = resolve(repoDir);
+  if (inferred === repo) {
+    logger.debug`Extensions root ${repo} (repo dir)`;
+    return repo;
+  }
+  if (options.useManifestBase) {
+    logger
+      .debug`Extensions root ${inferred} inferred from the manifest (paths.base: manifest)`;
+    return inferred;
+  }
+
+  let anyUnderRepo = false;
+  const fields: TypedField[] = [
+    "models",
+    "vaults",
+    "datastores",
+    "reports",
+    "webhooks",
+    "include",
+  ];
+  for (const field of fields) {
+    for (const ref of manifest[field]) {
+      const underRepo = resolve(repo, typedDirs[field], ref);
+      const underInferred = resolve(inferred, typedDirs[field], ref);
+      const repoReal = await realPathOrNull(underRepo);
+      const inferredReal = await realPathOrNull(underInferred);
+      if (
+        repoReal !== null && inferredReal !== null && repoReal !== inferredReal
+      ) {
+        throw twoRootsError(TYPED_KIND[field], ref, underRepo, underInferred);
+      }
+      if (repoReal !== null) anyUnderRepo = true;
+    }
+  }
+  if (anyUnderRepo) {
+    logger
+      .debug`Extensions root ${repo} (repo dir; typed entries resolve there)`;
+    return repo;
+  }
+  logger.debug`Extensions root ${inferred} inferred from the manifest location`;
+  return inferred;
+}
+
+function twoRootsError(
+  kind: string,
+  ref: string,
+  repoPath: string,
+  rootPath: string,
+): UserError {
+  return markErrorPaths(
+    new UserError(
+      `${kind} ${ref} exists under two roots: ${repoPath} and ${rootPath}. ` +
+        `Pass --extensions-dir <dir> to choose the root, or add paths.base: manifest to resolve ${ref} next to the manifest.`,
+    ),
+    [ref, repoPath, rootPath],
+  );
+}
+
+/**
+ * Refuse a bundled entry (workflow or skill) found under both the inferred
+ * extensions root and the repo dir at different real paths. The check is
+ * skipped when `--extensions-dir` named the root (the author chose it, and
+ * a git worktree holds every tracked file in both trees by design) and when
+ * the entry was found in the manifest-relative candidate itself under
+ * `paths.base: manifest` (neither contested copy is the one packaged). With
+ * root == repoDir the two lists coincide and nothing can be ambiguous.
+ */
+async function assertSingleRoot(
+  lookup: TypedLookup,
+  kind: string,
+  ref: string,
+  foundIn: string,
+  manifestCandidates: readonly string[],
+  underRoot: readonly string[],
+  underRepo: readonly string[],
+  directories = false,
+): Promise<void> {
+  if (lookup.explicitRoot) return;
+  if (manifestCandidates.includes(foundIn)) return;
+  const exists = directories ? isDirectory : isFile;
+  const firstReal = async (paths: readonly string[]) => {
+    for (const path of paths) {
+      if (await exists(path)) return { path, real: await realPathOrNull(path) };
+    }
+    return null;
+  };
+  const root = await firstReal(underRoot);
+  const repo = await firstReal(underRepo);
+  if (root && repo && root.real !== repo.real) {
+    throw twoRootsError(kind, ref, repo.path, root.path);
+  }
+}
+
+/** The sentence naming the flag or setting that fixes a typed-key miss. */
+function bundledHint(
+  lookup: TypedLookup,
+  field: string,
+  typedDir: string,
+  ref: string,
+): string {
+  if (lookup.useManifestBase) {
+    return `\nWith paths.base: manifest, entries under ${field} resolve next to the manifest; place ${ref} there, or remove paths.base to resolve from the extensions root.`;
+  }
+  return `\nEntries under ${field} resolve from ${
+    resolve(lookup.extensionsRoot, typedDir)
+  }. Pass --extensions-dir <dir> naming the directory that contains ${
+    join(typedDir, ref)
+  }, or add paths.base: manifest to resolve ${ref} next to the manifest.`;
+}
+
+/** A further line when the missing entry sits next to the manifest. */
+async function nextToManifestHint(
+  lookup: TypedLookup,
+  ref: string,
+): Promise<string> {
+  if (lookup.useManifestBase) return "";
+  const nextTo = resolve(lookup.manifestDir, ref);
+  if (!(await isFile(nextTo))) return "";
+  return `\n${ref} exists next to the manifest at ${nextTo}; add paths.base: manifest to package it from there.`;
+}
+
+/** Resolve one typed-key entry under `base`, or explain where it was sought. */
+async function findTypedEntry(
+  lookup: TypedLookup,
+  field: TypedField,
+  base: string,
+  ref: string,
+): Promise<string> {
+  const path = resolve(base, ref);
+  try {
+    await Deno.stat(path);
+    return path;
+  } catch {
+    throw markErrorPaths(
+      new UserError(
+        `${TYPED_KIND[field]} not found: ${ref} (looked in ${path})` +
+          bundledHint(lookup, field, lookup.typedDirs[field], ref) +
+          await nextToManifestHint(lookup, ref),
+      ),
+      [ref, path, lookup.extensionsRoot, lookup.manifestDir],
+    );
+  }
+}
+
 export function isPulledExtensionManifest(
   repoDir: string,
   manifestPath: string,
@@ -228,42 +541,20 @@ export async function resolveExtensionFiles(
   ctx: ResolveExtensionFilesContext,
 ): Promise<ResolvedExtensionFiles> {
   const { repoDir, manifestPath, repoContext, logger } = ctx;
-  const extensionsDir = ctx.extensionsDir ?? repoDir;
 
-  const ext = extname(manifestPath).toLowerCase();
-  if (ext === ".ts" || ext === ".js") {
-    throw markErrorPaths(
-      new UserError(
-        `Expected a manifest path but got a TypeScript/JavaScript file: ${manifestPath}\n` +
-          "Pass the manifest directory or manifest.yaml path instead.\n\n" +
-          "Example:\n" +
-          "  swamp extension fmt extensions/models/my-model/manifest.yaml",
-      ),
-      [manifestPath],
-    );
-  }
-
-  // 1. Read and parse manifest
-  const absoluteManifestPath = isAbsolute(manifestPath)
-    ? manifestPath
-    : resolve(extensionsDir, manifestPath);
-
-  let manifestContent: string;
-  try {
-    manifestContent = await Deno.readTextFile(absoluteManifestPath);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      throw markErrorPaths(
-        new UserError(
-          `Manifest file not found: ${absoluteManifestPath}`,
-        ),
-        [absoluteManifestPath],
-      );
-    }
-    throw error;
-  }
-
-  const manifest = parseExtensionManifest(manifestContent);
+  // 1. Find and parse the manifest. The argument may be a file or an
+  // extension directory, relative to --extensions-dir, cwd or the repo dir
+  // (swamp-club#3018); the helper stats every candidate and never reads a
+  // directory, and an absolute file path comes back unchanged.
+  const { absoluteManifestPath } = await resolveManifestArgument({
+    argument: manifestPath,
+    cwd: Deno.cwd(),
+    repoDir,
+    extensionsDir: ctx.extensionsDir,
+  });
+  const manifest = parseExtensionManifest(
+    await Deno.readTextFile(absoluteManifestPath),
+  );
 
   // 1b. Defensive path traversal check (belt-and-suspenders with Zod schema)
   const allManifestPaths = [
@@ -306,21 +597,37 @@ export async function resolveExtensionFiles(
   const marker = await markerRepo.read(repoPath);
   const manifestDir = dirname(absoluteManifestPath);
   const useManifestBase = manifest.paths.base === "manifest";
-  const modelsDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveModelsDir(marker));
-  const vaultsDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveVaultsDir(marker));
-  const datastoresDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveDatastoresDir(marker));
-  const reportsDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveReportsDir(marker));
-  const webhooksDir = useManifestBase
-    ? manifestDir
-    : resolve(extensionsDir, resolveWebhooksDir(marker));
+  const typedDirs: Record<TypedField, string> = {
+    models: resolveModelsDir(marker),
+    vaults: resolveVaultsDir(marker),
+    datastores: resolveDatastoresDir(marker),
+    reports: resolveReportsDir(marker),
+    webhooks: resolveWebhooksDir(marker),
+    include: resolveModelsDir(marker),
+  };
+  const extensionsRoot = await selectExtensionsRoot({
+    repoDir,
+    manifestDir,
+    explicitRoot: ctx.extensionsDir,
+    manifest,
+    typedDirs,
+    useManifestBase,
+    logger,
+  });
+  const typedBase = (field: TypedField): string =>
+    useManifestBase ? manifestDir : resolve(extensionsRoot, typedDirs[field]);
+  const modelsDir = typedBase("models");
+  const vaultsDir = typedBase("vaults");
+  const datastoresDir = typedBase("datastores");
+  const reportsDir = typedBase("reports");
+  const webhooksDir = typedBase("webhooks");
+  const lookup: TypedLookup = {
+    extensionsRoot,
+    explicitRoot: ctx.extensionsDir !== undefined,
+    manifestDir,
+    typedDirs,
+    useManifestBase,
+  };
 
   // 2b. When paths.base=manifest, reject entries that start with their own
   // archive directory prefix — the archive places each typed-key file under
@@ -363,27 +670,12 @@ export async function resolveExtensionFiles(
     }
   }
 
-  const monorepoHint = useManifestBase
-    ? ""
-    : "\nIf your extension is in a monorepo subdirectory, use --extensions-dir " +
-      "to set the resolution base, or add paths.base: manifest to the manifest.";
-
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
   for (const modelRef of manifest.models) {
-    const modelPath = resolve(modelsDir, modelRef);
-    try {
-      await Deno.stat(modelPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Model file not found: ${modelRef} (expected at ${modelPath})` +
-            monorepoHint,
-        ),
-        [modelRef, modelPath],
-      );
-    }
-    modelEntryPoints.push(modelPath);
+    modelEntryPoints.push(
+      await findTypedEntry(lookup, "models", modelsDir, modelRef),
+    );
   }
 
   // 4. Resolve local imports for each model entry point
@@ -401,18 +693,31 @@ export async function resolveExtensionFiles(
         wfCandidateDirs.push(dir);
       }
     };
+    // The extensions root comes before the repo dir so one flag relocates
+    // the whole extension (swamp-club#3031); with root == repoDir the list
+    // is exactly the historical one.
+    const workflowsDir = resolveWorkflowsDir(marker);
     if (useManifestBase) addWfCandidate(manifestDir);
-    addWfCandidate(resolve(repoDir, "workflows"));
-    addWfCandidate(resolve(repoDir, resolveWorkflowsDir(marker)));
+    const rootWfDirs = [
+      resolve(extensionsRoot, "workflows"),
+      resolve(extensionsRoot, workflowsDir),
+    ];
+    const repoWfDirs = [
+      resolve(repoDir, "workflows"),
+      resolve(repoDir, workflowsDir),
+    ];
+    for (const dir of [...rootWfDirs, ...repoWfDirs]) addWfCandidate(dir);
 
     // Validate workflow files exist and resolve symlinks
     const wfEntries: WorkflowManifestEntry[] = [];
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
+      let foundIn = "";
 
       for (const candidateDir of wfCandidateDirs) {
         try {
           realPath = await Deno.realPath(resolve(candidateDir, wfRef));
+          foundIn = candidateDir;
           break;
         } catch { /* not found here */ }
       }
@@ -422,11 +727,22 @@ export async function resolveExtensionFiles(
           new UserError(
             `Workflow file not found: ${wfRef} (looked in ${
               wfCandidateDirs.join(", ")
-            })` + monorepoHint,
+            })` +
+              bundledHint(lookup, "workflows", workflowsDir, wfRef) +
+              await nextToManifestHint(lookup, wfRef),
           ),
-          [wfRef, ...wfCandidateDirs],
+          [wfRef, ...wfCandidateDirs, manifestDir],
         );
       }
+      await assertSingleRoot(
+        lookup,
+        "Workflow file",
+        wfRef,
+        foundIn,
+        useManifestBase ? [manifestDir] : [],
+        rootWfDirs.map((d) => resolve(d, wfRef)),
+        repoWfDirs.map((d) => resolve(d, wfRef)),
+      );
       wfEntries.push({ ref: wfRef, realPath });
     }
 
@@ -508,18 +824,12 @@ export async function resolveExtensionFiles(
   // 6. Collect vault files from manifest
   const vaultEntryPoints: string[] = [];
   for (const vaultRef of manifest.vaults) {
-    const vaultPath = resolve(vaultsDir, vaultRef);
-    try {
-      await Deno.stat(vaultPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Vault file not found: ${vaultRef} (expected at ${vaultPath})` +
-            monorepoHint,
-        ),
-        [vaultRef, vaultPath],
-      );
-    }
+    const vaultPath = await findTypedEntry(
+      lookup,
+      "vaults",
+      vaultsDir,
+      vaultRef,
+    );
     vaultEntryPoints.push(vaultPath);
   }
 
@@ -536,18 +846,12 @@ export async function resolveExtensionFiles(
   // 8. Collect datastore files from manifest
   const datastoreEntryPoints: string[] = [];
   for (const datastoreRef of manifest.datastores) {
-    const datastorePath = resolve(datastoresDir, datastoreRef);
-    try {
-      await Deno.stat(datastorePath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})` +
-            monorepoHint,
-        ),
-        [datastoreRef, datastorePath],
-      );
-    }
+    const datastorePath = await findTypedEntry(
+      lookup,
+      "datastores",
+      datastoresDir,
+      datastoreRef,
+    );
     datastoreEntryPoints.push(datastorePath);
   }
 
@@ -564,18 +868,12 @@ export async function resolveExtensionFiles(
   // 12. Collect report files from manifest
   const reportEntryPoints: string[] = [];
   for (const reportRef of manifest.reports) {
-    const reportPath = resolve(reportsDir, reportRef);
-    try {
-      await Deno.stat(reportPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Report file not found: ${reportRef} (expected at ${reportPath})` +
-            monorepoHint,
-        ),
-        [reportRef, reportPath],
-      );
-    }
+    const reportPath = await findTypedEntry(
+      lookup,
+      "reports",
+      reportsDir,
+      reportRef,
+    );
     reportEntryPoints.push(reportPath);
   }
 
@@ -592,18 +890,12 @@ export async function resolveExtensionFiles(
   // 13a. Collect webhook files from manifest
   const webhookEntryPoints: string[] = [];
   for (const webhookRef of manifest.webhooks) {
-    const webhookPath = resolve(webhooksDir, webhookRef);
-    try {
-      await Deno.stat(webhookPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Webhook file not found: ${webhookRef} (expected at ${webhookPath})` +
-            monorepoHint,
-        ),
-        [webhookRef, webhookPath],
-      );
-    }
+    const webhookPath = await findTypedEntry(
+      lookup,
+      "webhooks",
+      webhooksDir,
+      webhookRef,
+    );
     webhookEntryPoints.push(webhookPath);
   }
 
@@ -622,10 +914,12 @@ export async function resolveExtensionFiles(
   const allSkillFiles: string[] = [];
   if (manifest.skills.length > 0) {
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
-    const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
 
     // Build deduplicated candidate base directories in priority order:
-    // manifest-relative (if paths.base=manifest) > project-local > global
+    // manifest-relative (if paths.base=manifest) > extensions root >
+    // repo dir. The user's home skill directories are deliberately not
+    // searched: a skill is never packaged from a globally installed copy
+    // just because it has the same name (swamp-club#3018).
     const seen = new Set<string>();
     const candidateBases: string[] = [];
     const addCandidate = (dir: string) => {
@@ -634,22 +928,25 @@ export async function resolveExtensionFiles(
         candidateBases.push(dir);
       }
     };
+    const skillRels = tools.map((tool) => SKILL_DIRS[tool]).filter((
+      rel,
+    ): rel is string => rel !== undefined);
 
-    for (const tool of tools) {
-      const rel = SKILL_DIRS[tool];
-      if (!rel) continue;
-      if (useManifestBase) addCandidate(resolve(manifestDir, rel));
-    }
-    for (const tool of tools) {
-      const rel = SKILL_DIRS[tool];
-      if (!rel) continue;
-      addCandidate(resolve(repoDir, rel));
-    }
-    for (const tool of tools) {
-      const rel = SKILL_DIRS[tool];
-      if (!rel || !home) continue;
-      addCandidate(join(home, rel));
-    }
+    const manifestSkillDirs = useManifestBase
+      ? skillRels.map((rel) => resolve(manifestDir, rel))
+      : [];
+    for (const dir of manifestSkillDirs) addCandidate(dir);
+    // Belt and braces with inferExtensionsRoot: a home skill directory is
+    // never a candidate, whatever root was chosen.
+    const home = homeDirectoryOrNull();
+    const notHome = (dir: string) =>
+      home === null || !skillRels.some((rel) => resolve(home, rel) === dir);
+    const rootSkillDirs = skillRels.map((rel) => resolve(extensionsRoot, rel))
+      .filter(notHome);
+    const repoSkillDirs = skillRels.map((rel) => resolve(repoDir, rel)).filter(
+      notHome,
+    );
+    for (const dir of [...rootSkillDirs, ...repoSkillDirs]) addCandidate(dir);
 
     if (candidateBases.length === 0) {
       throw new UserError(
@@ -659,6 +956,7 @@ export async function resolveExtensionFiles(
 
     for (const skillName of manifest.skills) {
       let skillPath: string | null = null;
+      let foundIn = "";
 
       for (const base of candidateBases) {
         const candidate = join(base, skillName);
@@ -666,21 +964,36 @@ export async function resolveExtensionFiles(
           const stat = await Deno.stat(candidate);
           if (stat.isDirectory) {
             skillPath = candidate;
+            foundIn = base;
             break;
           }
         } catch { /* not found here */ }
       }
 
       if (!skillPath) {
+        const skillRel = skillRels[0] ?? SKILL_DIRS.claude;
+        const rootSkillPath = join(extensionsRoot, skillRel, skillName);
         throw markErrorPaths(
           new UserError(
             `Skill directory not found: ${skillName} (looked in ${
               candidateBases.join(", ")
-            })`,
+            })\n` +
+              `Place the skill under ${rootSkillPath}, or next to the manifest under ${skillRel} with paths.base: manifest. ` +
+              `swamp does not package a skill from your home directory by name.`,
           ),
-          [skillName, ...candidateBases],
+          [skillName, ...candidateBases, rootSkillPath],
         );
       }
+      await assertSingleRoot(
+        lookup,
+        "Skill directory",
+        skillName,
+        foundIn,
+        manifestSkillDirs,
+        rootSkillDirs.map((d) => join(d, skillName)),
+        repoSkillDirs.map((d) => join(d, skillName)),
+        true,
+      );
 
       skillDirs.push({ name: skillName, absolutePath: skillPath });
 
@@ -702,18 +1015,9 @@ export async function resolveExtensionFiles(
   // 15. Validate include files (resolved relative to modelsDir)
   const includeFilePaths: string[] = [];
   for (const inc of manifest.include) {
-    const incPath = resolve(modelsDir, inc);
-    try {
-      await Deno.stat(incPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `Include file not found: ${inc} (expected at ${incPath})`,
-        ),
-        [inc, incPath],
-      );
-    }
-    includeFilePaths.push(incPath);
+    includeFilePaths.push(
+      await findTypedEntry(lookup, "include", modelsDir, inc),
+    );
   }
 
   // 15. Validate additional files: uniqueness, symlink rejection, existence.
@@ -741,7 +1045,7 @@ export async function resolveExtensionFiles(
     } catch {
       throw markErrorPaths(
         new UserError(
-          `Additional file not found: ${af} (expected at ${afPath})`,
+          `Additional file not found: ${af} (looked in ${afPath})`,
         ),
         [af, afPath],
       );
@@ -797,7 +1101,7 @@ export async function resolveExtensionFiles(
     } catch {
       throw markErrorPaths(
         new UserError(
-          `Binary file not found: ${bf} (expected at ${bfPath})`,
+          `Binary file not found: ${bf} (looked in ${bfPath})`,
         ),
         [bf, bfPath],
       );
@@ -819,6 +1123,7 @@ export async function resolveExtensionFiles(
   return {
     manifest,
     absoluteManifestPath,
+    extensionsRoot,
     modelsDir,
     modelEntryPoints,
     allModelFiles,

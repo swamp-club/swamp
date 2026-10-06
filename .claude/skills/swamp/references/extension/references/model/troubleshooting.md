@@ -251,6 +251,18 @@ Default behavior is unchanged. See
 [extension-publish references/publishing.md](../../../extension-publish/references/publishing.md#path-resolution--pathsbase)
 for the canonical reference.
 
+The models directory is appended to the **extensions root**: `--extensions-dir`
+when given, else the repo dir, or the directory inferred from the manifest's
+location when nothing resolves under the repo dir. A `Model file not found`,
+`Workflow file not found` or `Skill directory not found` error lists the paths
+it looked in and names the fix: pass `--extensions-dir <dir>` naming the
+directory that _contains_ `extensions/models/<entry>` (not `extensions/`
+itself), or add `paths.base: manifest`. `No manifest.yaml found in <dir>` means
+the directory argument holds no manifest;
+`Manifest file not found: <arg>
+(looked in ...)` lists every base the relative
+argument was tried against.
+
 ## Auto-Resolution Failures
 
 Extensions from trusted collectives (the explicit `trustedCollectives` list in

@@ -32,6 +32,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
   isPulledExtensionManifest,
   resolveExtensionFiles,
@@ -62,7 +63,7 @@ export const extensionFmtCommand = new Command()
   )
   .option(
     "--extensions-dir <dir:string>",
-    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+    "Extensions root: the directory that contains extensions/ (models, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
   )
   .option("--check", "Check only, do not auto-fix")
   .action(async function (options: ExtensionFmtOptions, manifestPath: string) {
@@ -71,7 +72,13 @@ export const extensionFmtCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-    if (isPulledExtensionManifest(repoDir, manifestPath)) {
+    const { absoluteManifestPath } = await resolveManifestArgument({
+      argument: manifestPath,
+      cwd: Deno.cwd(),
+      repoDir,
+      extensionsDir,
+    });
+    if (isPulledExtensionManifest(repoDir, absoluteManifestPath)) {
       throw new UserError(
         "Cannot run fmt on a pulled extension. Pulled extensions are read-only " +
           "copies from the registry. To format a local extension, point at its manifest " +
@@ -92,7 +99,7 @@ export const extensionFmtCommand = new Command()
       additionalFilePaths,
     } = await resolveExtensionFiles({
       repoDir,
-      manifestPath,
+      manifestPath: absoluteManifestPath,
       repoContext,
       logger: cliCtx.logger,
       extensionsDir,
