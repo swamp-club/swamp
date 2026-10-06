@@ -62,6 +62,25 @@ Deno.test("bumpVersionPrompt: names where the version is and that N exits withou
   );
 });
 
+Deno.test("bumpVersionPrompt: on a higher channel, says why promote is not offered", () => {
+  const prompt = bumpVersionPrompt({
+    name: "@x/y",
+    version: "2026.10.06.1",
+    bumpedVersion: "2026.10.06.2",
+    existingChannel: "stable",
+    requestedChannel: "beta",
+  });
+  assertEquals(
+    prompt.details[0],
+    "Version 2026.10.06.1 of @x/y already exists on channel 'stable'; " +
+      "you asked for 'beta', and a version cannot move down a channel.",
+  );
+  assertEquals(
+    prompt.question,
+    "Bump to 2026.10.06.2 and publish it to 'beta'?",
+  );
+});
+
 Deno.test("existingVersionChoicePrompt: offers promote, bump and stop, in that order", () => {
   const prompt = existingVersionChoicePrompt({
     name: "@x/y",

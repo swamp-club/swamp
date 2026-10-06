@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { assertCompletes, assertErrors, collect } from "../testing.ts";
+import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   extensionPromote,
@@ -287,6 +288,30 @@ Deno.test("extensionPromote: from a manifest, a version already at or above the 
       `Nothing to promote: @test/ext@2026.06.10.1 is on channel '${channel}', which is not below 'rc'.`,
     );
   }
+});
+
+Deno.test("extensionPromote: from a manifest, a rejected key on the lookup is not_authenticated", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.reject(
+        new UserError("Not authenticated. Run 'swamp auth login'."),
+      ),
+  });
+  await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "not_authenticated",
+  );
+});
+
+Deno.test("extensionPromote: from a manifest, any other lookup failure keeps its message", async () => {
+  const deps = fakeDeps({
+    findPublishedVersion: () => Promise.reject(new Error("registry down")),
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+    "validation_failed",
+  );
+  assertEquals(error.message, "registry down");
 });
 
 Deno.test("extensionPromote: by name and version, never asks the registry where the version is", async () => {

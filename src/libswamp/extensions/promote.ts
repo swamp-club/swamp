@@ -186,7 +186,14 @@ export async function* extensionPromote(
           const message = error instanceof Error
             ? error.message
             : String(error);
-          yield { kind: "error", error: validationFailed(message) };
+          // Mapped like the promote call below; a missing version is not an
+          // error here (the lookup answers null), so there is no 404 case.
+          const isAuth = error instanceof UserError &&
+            message.includes("Not authenticated");
+          yield {
+            kind: "error",
+            error: isAuth ? notAuthenticated() : validationFailed(message),
+          };
           return;
         }
         const ref = `${input.extensionName}@${input.version}`;

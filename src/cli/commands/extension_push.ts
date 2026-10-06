@@ -662,11 +662,12 @@ export const extensionPushCommand = new Command()
               : "stop";
           }
           if (action === "promote") {
-            cliCtx.logger.info(
-              `Running: ${
-                promoteCommand(manifest.name, existingVersion, requestedChannel)
-              }`,
+            const command = promoteCommand(
+              manifest.name,
+              existingVersion,
+              requestedChannel,
             );
+            cliCtx.logger.info`Running: ${command}`;
             await consumeStream(
               extensionPromote(ctx, createExtensionPromoteDeps(identity), {
                 extensionName: manifest.name,

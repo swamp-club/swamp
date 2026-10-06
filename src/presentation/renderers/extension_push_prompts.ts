@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { placeExistingVersion } from "../../domain/extensions/extension_publish_checks.ts";
+
 /**
  * The wording of the interactive `swamp extension push` prompts. Each prompt
  * says what every answer does, so nobody finds out by being dropped back at
@@ -65,9 +67,14 @@ export function bumpVersionPrompt(input: {
   existingChannel: string;
   requestedChannel: string;
 }): ConfirmationPromptText {
+  const where =
+    placeExistingVersion(input.existingChannel, input.requestedChannel) ===
+        "higher-channel"
+      ? `; you asked for '${input.requestedChannel}', and a version cannot move down a channel.`
+      : ".";
   return {
     details: [
-      `Version ${input.version} of ${input.name} already exists on channel '${input.existingChannel}'.`,
+      `Version ${input.version} of ${input.name} already exists on channel '${input.existingChannel}'${where}`,
       `  y = publish your local files as ${input.bumpedVersion} to '${input.requestedChannel}'; ` +
       `a review report for ${input.version} does not carry over to ${input.bumpedVersion}`,
       "  N = exit now; nothing is pushed",

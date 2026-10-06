@@ -219,8 +219,9 @@ allowed:
 `swamp extension promote path/to/manifest.yaml --channel stable` takes the name
 and version from the manifest, asks the registry which channel the version is
 on, and promotes from there, or fails with "Nothing to promote" when no channel
-below the target carries it. An argument matching `@collective/name` is always
-the name form.
+below the target carries it. `--from-channel` is refused with a manifest, since
+the registry reports the source channel. An argument matching `@collective/name`
+is always the name form.
 
 Promotion changes registry metadata only; the archive is not uploaded again.
 The server then recalculates the latest version per channel. The CLI checks the

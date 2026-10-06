@@ -35,7 +35,13 @@ class LogExtensionPromoteRenderer implements Renderer<ExtensionPromoteEvent> {
       },
       resolved: (e) => {
         logger.info(
-          `Found ${e.name}@${e.version} on channel '${e.fromChannel}'; promoting ${e.fromChannel} → ${e.toChannel}`,
+          "Found {name}@{version} on channel {fromChannel}; promoting {fromChannel} → {toChannel}",
+          {
+            name: e.name,
+            version: e.version,
+            fromChannel: e.fromChannel,
+            toChannel: e.toChannel,
+          },
         );
       },
       completed: (e) => {

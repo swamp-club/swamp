@@ -49,11 +49,13 @@ export type PromoteTarget =
 /**
  * Splits the promote arguments. An `@collective/name` argument is the name,
  * as it always was, and needs a version; anything else is a manifest path or
- * extension directory, whose manifest supplies the version.
+ * extension directory, whose manifest supplies the version and whose channel
+ * the registry reports, so `--from-channel` does not apply to it.
  */
 export function resolvePromoteTarget(
   target: string,
   versionArgument: string | undefined,
+  fromChannel?: string,
 ): PromoteTarget {
   if (isScopedExtensionName(target)) {
     if (versionArgument === undefined) {
@@ -64,8 +66,21 @@ export function resolvePromoteTarget(
     return { kind: "name", name: target, version: versionArgument };
   }
   if (versionArgument !== undefined) {
+    // Two arguments mean the name form, so a name that does not match keeps
+    // the name error it always had.
+    try {
+      validateExtensionName(target);
+    } catch (error) {
+      throw new UserError(
+        `${
+          (error as Error).message
+        } To promote the version a manifest names, pass only the manifest path.`,
+      );
+    }
+  }
+  if (fromChannel !== undefined) {
     throw new UserError(
-      "Pass either a manifest path or <extension> <version>, not both: the version comes from the manifest.",
+      "--from-channel cannot be used with a manifest: the registry reports which channel the version is on.",
     );
   }
   return { kind: "manifest", path: target };
@@ -117,7 +132,11 @@ export const extensionPromoteCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension promote`;
 
-    const promoteTarget = resolvePromoteTarget(target, versionArgument);
+    const promoteTarget = resolvePromoteTarget(
+      target,
+      versionArgument,
+      options.fromChannel as string | undefined,
+    );
     let extension: string;
     let version: string;
     const fromManifest = promoteTarget.kind === "manifest";

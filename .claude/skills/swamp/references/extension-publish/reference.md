@@ -274,10 +274,10 @@ swamp extension promote manifest.yaml --channel stable --json
 With a manifest, promote fails with "Nothing to promote" when the version is on
 no channel, or already on the target channel or above it.
 
-| Option           | Required | Description                                            |
-| ---------------- | -------- | ------------------------------------------------------ |
-| `--channel`      | Yes      | Target channel: `rc` or `stable`                       |
-| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted |
+| Option           | Required | Description                                                                         |
+| ---------------- | -------- | ----------------------------------------------------------------------------------- |
+| `--channel`      | Yes      | Target channel: `rc` or `stable`                                                    |
+| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted; not allowed with a manifest |
 
 Promotion direction must go upward: beta → rc → stable.
 

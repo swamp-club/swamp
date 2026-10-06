@@ -48,10 +48,31 @@ Deno.test("resolvePromoteTarget: a path or directory is a manifest", () => {
   });
 });
 
-Deno.test("resolvePromoteTarget: a manifest with a version is refused", () => {
-  assertThrows(
-    () => resolvePromoteTarget("manifest.yaml", "2026.06.10.1"),
+Deno.test("resolvePromoteTarget: a mistyped name with a version keeps the name error", () => {
+  const error = assertThrows(
+    () => resolvePromoteTarget("myorg/ext", "2026.06.10.1"),
     UserError,
-    "not both",
   );
+  assertEquals(
+    error.message,
+    'Invalid extension name: "myorg/ext". Must match @collective/name pattern ' +
+      "(lowercase, alphanumeric, hyphens, underscores, additional /segments allowed). " +
+      "To promote the version a manifest names, pass only the manifest path.",
+  );
+});
+
+Deno.test("resolvePromoteTarget: --from-channel is refused with a manifest", () => {
+  assertThrows(
+    () => resolvePromoteTarget("manifest.yaml", undefined, "rc"),
+    UserError,
+    "--from-channel cannot be used with a manifest",
+  );
+});
+
+Deno.test("resolvePromoteTarget: --from-channel still works with a name", () => {
+  assertEquals(resolvePromoteTarget("@myorg/ext", "2026.06.10.1", "rc"), {
+    kind: "name",
+    name: "@myorg/ext",
+    version: "2026.06.10.1",
+  });
 });
