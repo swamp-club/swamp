@@ -196,7 +196,7 @@ export function parseAcceptanceDirectives(
     const line = lines[i];
     const found = findDirectiveStart(line, form);
     if (found === undefined) continue;
-    const { at, openerAt, opener } = found;
+    const { at, openerAt } = found;
     const lineNumber = i + 1;
 
     const text = line.slice(openerAt).trim();
@@ -296,7 +296,7 @@ function nextNonBlankLine(lines: string[], i: number): number {
 function findDirectiveStart(
   line: string,
   form: Exclude<CommentForm, "none">,
-): { at: number; openerAt: number; opener: string } | undefined {
+): { at: number; openerAt: number } | undefined {
   const opener = form === "line" ? "//" : "<!--";
   let from = 0;
   while (from < line.length) {
@@ -307,7 +307,7 @@ function findDirectiveStart(
       openerAt !== -1 && !isInsideQuotes(line, openerAt) &&
       line.slice(openerAt + opener.length, at).trim().length === 0
     ) {
-      return { at, openerAt, opener };
+      return { at, openerAt };
     }
     from = at + ACCEPTANCE_DIRECTIVE.length;
   }
