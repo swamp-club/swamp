@@ -379,6 +379,21 @@ Deno.test("validateDashboardSessionOrigin: honors public HTTPS proxy headers", (
   });
 });
 
+Deno.test("validateDashboardSessionOrigin: accepts direct request authority when a proxy omits its protocol header", () => {
+  const request = new Request("http://localhost:9090/auth/dashboard/session", {
+    headers: {
+      host: "localhost:9090",
+      origin: "http://localhost:9090",
+    },
+  });
+
+  assertEquals(validateDashboardSessionOrigin(request, false, true), {
+    allowed: true,
+    origin: "http://localhost:9090",
+    secure: false,
+  });
+});
+
 Deno.test("validateDashboardSessionOrigin: honors a configured public host without proxy headers", () => {
   const request = new Request("http://127.0.0.1:9090/auth/dashboard/session", {
     headers: {
@@ -386,7 +401,7 @@ Deno.test("validateDashboardSessionOrigin: honors a configured public host witho
       origin: "https://swamp.example.test",
     },
   });
-  const result = validateDashboardSessionOrigin(request, false, false, [
+  const result = validateDashboardSessionOrigin(request, false, true, [
     "swamp.example.test",
   ]);
   assertEquals(result, {

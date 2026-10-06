@@ -905,7 +905,7 @@ export function validateDashboardSessionOrigin(
   }
 
   const forwardedProtocol = trustProxy
-    ? forwardedHeaderValue(req, "x-forwarded-proto")?.toLowerCase()
+    ? (forwardedHeaderValue(req, "x-forwarded-proto")?.toLowerCase() ?? null)
     : null;
   if (
     forwardedProtocol !== null && forwardedProtocol !== "http" &&
