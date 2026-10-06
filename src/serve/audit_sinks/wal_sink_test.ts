@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -305,6 +306,73 @@ Deno.test(
     failing = false;
     await sink.flush();
     assertEquals(written, ["first", "second"]);
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
+  }),
+);
+
+Deno.test({
+  name:
+    "WalSink: replay leaves a segment it cannot read in the WAL and queues the rest",
+  ignore: Deno.build.os === "windows",
+  fn: withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.append([makeEvent("first")]);
+    const unreadable = await wal.append([makeEvent("unreadable")]);
+    await wal.append([makeEvent("third")]);
+    await Deno.chmod(join(dir, unreadable), 0o000);
+
+    const downstream = createMockSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    try {
+      assertEquals(await sink.replay(), 2);
+      await sink.flush();
+      assertEquals(
+        downstream.written.map((batch) => batch[0].action),
+        ["first", "third"],
+      );
+      assertEquals(wal.listSegments(), [unreadable]);
+    } finally {
+      await Deno.chmod(join(dir, unreadable), 0o644);
+    }
+    await sink.close();
+  }),
+});
+
+Deno.test(
+  "WalSink: a segment written while replay is reading is delivered once",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.append([makeEvent("orphaned")]);
+
+    const read = wal.readSegment.bind(wal);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => release = resolve);
+    let paused = false;
+    wal.readSegment = async (segmentName: string) => {
+      if (!paused) {
+        paused = true;
+        await gate;
+      }
+      return await read(segmentName);
+    };
+    const downstream = createMockSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    const replaying = sink.replay();
+    await waitFor(() => paused, "replay to start reading");
+    await sink.write([makeEvent("live")]);
+    release();
+    assertEquals(await replaying, 1);
+    await sink.flush();
+
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action).sort(),
+      ["live", "orphaned"],
+    );
     assertEquals(wal.segmentCount, 0);
     await sink.close();
   }),

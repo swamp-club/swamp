@@ -333,7 +333,7 @@ export class WalSink implements AuditSink {
   async replay(): Promise<number> {
     let queuedCount = 0;
 
-    for (const segmentName of this.#wal.listSegments()) {
+    for (const segmentName of [...this.#wal.listSegments()]) {
       let events: AuditEvent[];
       try {
         events = await this.#wal.readSegment(segmentName);

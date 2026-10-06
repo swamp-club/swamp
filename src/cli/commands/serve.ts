@@ -4056,7 +4056,7 @@ export const serveCommand = new Command()
         const replayed = await walSink.replay();
         if (replayed > 0) {
           logger.info(
-            "Queued {count} WAL event(s) from previous session for delivery to the audit stores",
+            "Queued {count} WAL event(s) from previous session for audit store delivery",
             { count: replayed },
           );
         }
