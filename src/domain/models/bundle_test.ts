@@ -283,6 +283,94 @@ Deno.test("rewriteZodImports handles single-quoted specifiers", () => {
   assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
 });
 
+const REAL_ZOD_IMPORT = `import { z } from "npm:zod@4";`;
+const REWRITTEN_ZOD_IMPORT = `const { z } = globalThis.__swamp_zod;`;
+
+// Each entry is a line of JS carrying zod import text as data, not as an
+// import declaration (swamp-club#3072).
+const ZOD_IMPORT_TEXT_AS_DATA: Record<string, string> = {
+  "a template literal": 'export const t = `import { z } from "npm:zod@4";\n`;',
+  "a double-quoted string":
+    `export const t = "import { z } from 'npm:zod@4';";`,
+  "a single-quoted string": `export const t = 'import { z } from "zod";';`,
+  "a line comment": `// import { z } from "npm:zod@4";`,
+  "a block comment": `/* import * as zod from "npm:zod@4"; */`,
+  "a regex literal": `export const t = /import { z } from "zod"/;`,
+  "an aliased import in a template":
+    'export const t = `import { z as z2 } from "npm:zod@4";`;',
+  "a star import in a template":
+    'export const t = `import * as zod from "npm:zod";`;',
+};
+
+for (const [where, line] of Object.entries(ZOD_IMPORT_TEXT_AS_DATA)) {
+  Deno.test(`rewriteZodImports: leaves import text inside ${where} untouched`, () => {
+    const result = rewriteZodImports(`${REAL_ZOD_IMPORT}\n${line}\n`);
+    assertEquals(result, `${REWRITTEN_ZOD_IMPORT}\n${line}\n`);
+  });
+
+  Deno.test(`rewriteZodImports: returns the input unchanged when the only import text is inside ${where}`, () => {
+    const input = `${line}\nexport const n = 1;\n`;
+    assertEquals(rewriteZodImports(input), input);
+  });
+}
+
+Deno.test("rewriteZodImports: rewrites imports that follow other statements", () => {
+  const input = [
+    `import { parse } from "npm:yaml@2";`,
+    `var a = 1;`,
+    `import * as zod from "npm:zod@4";`,
+    `import { z as z2 } from "zod";`,
+    `console.log(a, parse, zod, z2);`,
+  ].join("\n");
+  const expected = [
+    `import { parse } from "npm:yaml@2";`,
+    `var a = 1;`,
+    `const zod = globalThis.__swamp_zod;`,
+    `const { z: z2 } = globalThis.__swamp_zod;`,
+    `console.log(a, parse, zod, z2);`,
+  ].join("\n");
+  assertEquals(rewriteZodImports(input), expected);
+});
+
+Deno.test("rewriteZodImports: is idempotent when import text remains inside a template", () => {
+  const input = REAL_ZOD_IMPORT + "\n" +
+    ZOD_IMPORT_TEXT_AS_DATA["a template literal"];
+  const first = rewriteZodImports(input);
+  assertEquals(rewriteZodImports(first), first);
+});
+
+Deno.test("rewriteZodImports: throws rather than guess when zod import text is in a bundle that does not parse", () => {
+  const input = `${REAL_ZOD_IMPORT}\nconst = ;\n`;
+  assertThrows(
+    () => rewriteZodImports(input),
+    Error,
+    "does not parse as a JavaScript module",
+  );
+});
+
+Deno.test("rewriteZodImports: does not parse a bundle with no zod import text", () => {
+  const input = `const = ;\n`;
+  assertEquals(rewriteZodImports(input), input);
+});
+
+Deno.test("bundleExtension: keeps zod import text inside a template literal", async () => {
+  const template =
+    'import { z } from "npm:zod@4";\nexport const x = z.string();\n';
+  const tsCode = `
+import { z } from "npm:zod@4";
+
+export const TEMPLATE = \`${template}\`;
+export const schema = z.object({ text: z.string() });
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+    const mod = await importBundled(js);
+    assertEquals(mod.TEMPLATE, template);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  });
+});
+
 // --- rejectZodV3Imports unit tests ---
 
 Deno.test("rejectZodV3Imports: throws on zod@3 named import", () => {
@@ -1025,4 +1113,16 @@ Deno.test("isExpectedBundleFailure: returns false for generated imports without 
   } finally {
     await Deno.remove(repoDir, { recursive: true });
   }
+});
+
+Deno.test("rejectZodV3Imports: ignores zod@3 import text inside a template literal", () => {
+  const input = REAL_ZOD_IMPORT +
+    '\nexport const t = `import { z } from "npm:zod@3.23.8";`;\n';
+  rejectZodV3Imports(input);
+});
+
+Deno.test("rejectZodV3Imports: throws on a zod@3 import beside zod@3 text in a template", () => {
+  const input = 'export const t = `import { z } from "npm:zod@3";`;\n' +
+    `import { z } from "npm:zod@3.23.8";\n`;
+  assertThrows(() => rejectZodV3Imports(input), Error, "npm:zod@3.23.8");
 });

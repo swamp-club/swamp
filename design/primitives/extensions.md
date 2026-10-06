@@ -641,6 +641,13 @@ After bundling, `rewriteZodImports` rewrites each externalized zod import to
 rewrite matches `npm:zod@4.x` and bare `"zod"` but excludes zod 3.x, to avoid
 silent runtime breakage.
 
+The rewrite applies to import declarations only. The bundle is parsed to find
+them, so the same text inside a string, template literal, comment or regex
+literal — the output of an extension that generates TypeScript, say — is left
+byte-identical. A bundle that holds zod import text but does not parse is
+rejected rather than rewritten by guesswork. The zod 3.x check is scoped the
+same way.
+
 #### Runtime bundle caching
 
 At runtime, loaders look for cached bundles in `.swamp/bundles/` (or the
