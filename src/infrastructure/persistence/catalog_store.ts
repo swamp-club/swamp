@@ -464,7 +464,10 @@ export class CatalogStore {
       // Not filtered on flags: a superseded model-method row holds neither
       // flag yet still outranks lower step rows, exactly as it does in
       // computeLatestFlags. An unpromoted deferred row counts too; if it is
-      // rolled back, removeVersion recomputes the flags without it.
+      // rolled back, removeVersion recomputes the flags without it. The
+      // removal recompute skips pending rows, so until a pending row settles
+      // a lower row of its step may hold is_step_latest from one path and not
+      // the other; both agree once it is promoted or rolled back.
       const higherInScope = this.db.prepare(
         `SELECT 1 FROM catalog
          WHERE ${groupWhere} AND version > ? AND ${stepScope}
