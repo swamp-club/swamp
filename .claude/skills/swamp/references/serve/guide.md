@@ -100,6 +100,17 @@ grants:
     resource: data:@acme/secrets-*
 ```
 
+Each entry takes `subject` or a `subjects` list, and `resource` or a `resources`
+list (up to 100 each); lists expand to one grant per subject and resource pair:
+
+```yaml
+grants:
+  - subjects: [user:alice, user:bob]
+    effect: allow
+    actions: [read, run]
+    resources: [workflow:*, model:*]
+```
+
 Apply with `swamp access reload --server wss://...`. Reload validates all files
 first — rejects the entire reload if any file is invalid. The reconciler only
 touches `source: file:*` grants; CLI-created grants are independent. Both
