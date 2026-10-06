@@ -35,6 +35,7 @@ import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { stageWritesThenPush } from "./stage_writes_then_push.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 
@@ -151,8 +152,15 @@ export function createGrantWriteCommit(
     withSyncGate(gate, async () => {
       // Paths are not cleared before the unit runs. If an earlier unit threw
       // after writing, its recorded paths are still pending, and this unit's
-      // push carries them with its own.
-      const result = await unit();
+      // push carries them with its own. The unit's writes run in a root unit
+      // of work with no push, so their marks stage into it instead of
+      // reaching the hook through signalChange's fallback (swamp-club#3056);
+      // the push opens its own root once this one has ended.
+      const result = await runInRootUnitOfWork(
+        { markDirty: deps.markDirty },
+        { flush: undefined },
+        unit,
+      );
       await publishGrantWrites(tracking.takeWrittenPaths(), deps);
       return result;
     });

@@ -81,6 +81,7 @@ import {
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
+import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
 await initializeLogging({});
 
@@ -240,7 +241,9 @@ async function withPeers(
         options.managedConfig === true,
       );
     }
-    await fn({ remote, repo });
+    // A hooked write from production code that takes signalChange's hook
+    // fallback fails the test (swamp-club#3056).
+    await withUnscopedWriteGuard(() => fn({ remote, repo }));
   } finally {
     try {
       await flushDatastoreSync();

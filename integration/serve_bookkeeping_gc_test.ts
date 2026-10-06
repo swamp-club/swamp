@@ -66,6 +66,7 @@ import {
   POLLER_ESCALATE_AFTER_SKIPS,
 } from "../src/serve/sync_gate.ts";
 import { workerGcListPredicate } from "../src/serve/worker_gc_service.ts";
+import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
 await initializeLogging({});
 
@@ -279,15 +280,20 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
       ) as DataRecord[])[0].modelId;
 
       events.length = 0;
-      const result = await reapEndedBookkeepingRecords(
-        {
-          query: reaperQuery(ctx),
-          repo: ctx.unifiedDataRepo,
-          syncService: service,
-          syncGate: createSyncGate(),
-          now: () => reapNow,
-        },
-        GRACE_MS,
+      // Each batch's deletes stage into a root unit, not through
+      // signalChange's fallback (swamp-club#3056).
+      const result = await withUnscopedWriteGuard(() =>
+        reapEndedBookkeepingRecords(
+          {
+            query: reaperQuery(ctx),
+            repo: ctx.unifiedDataRepo,
+            markDirty: ctx.markDirty,
+            syncService: service,
+            syncGate: createSyncGate(),
+            now: () => reapNow,
+          },
+          GRACE_MS,
+        )
       );
 
       assertEquals(result, {
@@ -400,6 +406,7 @@ Deno.test("reapEndedBookkeepingRecords: a pull queued mid-sweep never lands betw
         {
           query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
+          markDirty: ctx.markDirty,
           syncService: service,
           syncGate: gate,
           batchSize: 2,
@@ -515,6 +522,7 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
         {
           query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
+          markDirty: ctx.markDirty,
           syncService: service,
           syncGate: createSyncGate(),
           now: () => reapNow,
@@ -580,6 +588,7 @@ Deno.test("reapEndedBookkeepingRecords: an unreadable record body on disk does n
         {
           query: reaperQuery(ctx),
           repo: ctx.unifiedDataRepo,
+          markDirty: ctx.markDirty,
           syncService: service,
           syncGate: createSyncGate(),
           now: () => reapNow,

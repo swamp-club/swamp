@@ -856,6 +856,13 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/workflow_evaluate.ts: workflowEvaluateCommand (x2)",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
+  // Commands that push nothing, in a root with no push, so their saves
+  // stage into it rather than through signalChange's hook fallback
+  // (swamp-club#3056).
+  "src/cli/commands/model_cancel.ts: modelCancelCommand (x2)",
+  "src/cli/commands/run.ts: runDoctorCommand",
+  "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
+  "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
 ];
 
 // Callers of ModelLockResult.flush (push, then release) whose push is not a

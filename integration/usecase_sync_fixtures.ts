@@ -92,6 +92,7 @@ import {
   sendRequest,
   type ServeRepo,
 } from "./serve_request_harness.ts";
+import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
 /** Which composition a row runs through. */
 export type Composition = "cli" | "serve";
@@ -223,22 +224,26 @@ export async function withRowRepos(
       repoDir: repoA,
       outputMode: "json",
     });
-    await fn({
-      remote,
-      repoA,
-      repoB,
-      modelType,
-      a,
-      serveRepo: {
-        repoDir: a.repoDir,
-        repoContext: a.repoContext,
-        datastoreConfig: a.datastoreConfig,
-        datastoreResolver: a
-          .datastoreResolver as ConnectionContext["datastoreResolver"],
+    // A hooked write from production code that takes signalChange's hook
+    // fallback fails the test, seeds included (swamp-club#3056).
+    await withUnscopedWriteGuard(() =>
+      fn({
+        remote,
+        repoA,
+        repoB,
         modelType,
-      },
-      releases,
-    });
+        a,
+        serveRepo: {
+          repoDir: a.repoDir,
+          repoContext: a.repoContext,
+          datastoreConfig: a.datastoreConfig,
+          datastoreResolver: a
+            .datastoreResolver as ConnectionContext["datastoreResolver"],
+          modelType,
+        },
+        releases,
+      })
+    );
   } finally {
     await flushDatastoreSync();
     typeA.dispose();
@@ -749,7 +754,9 @@ export async function captureUnits(
     return unit;
   });
   try {
-    await fn();
+    // A hooked write from production code that takes signalChange's hook
+    // fallback fails the row (swamp-club#3056).
+    await withUnscopedWriteGuard(fn);
   } finally {
     dispose();
   }

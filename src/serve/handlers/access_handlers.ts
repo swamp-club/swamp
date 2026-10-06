@@ -785,9 +785,14 @@ export async function handleAccessReload(
       },
     };
 
-    const reconcileResult = await reconcileAllFileGrants(
-      validEntries,
-      fileGrantStore,
+    // The reconcile writes run in a root unit of work with no push, so their
+    // marks stage into it instead of reaching the hook through
+    // signalChange's fallback (swamp-club#3056). The push below opens its own
+    // root once this one has ended.
+    const reconcileResult = await runInRootUnitOfWork(
+      ctx.repoContext,
+      { flush: undefined },
+      () => reconcileAllFileGrants(validEntries, fileGrantStore),
     );
 
     const fileResultList: AccessReloadFileResult[] = [];

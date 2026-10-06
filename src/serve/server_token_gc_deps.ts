@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { MarkDirtyHook } from "../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   consumeStream,
   createModelDeleteDeps,
@@ -65,6 +67,11 @@ export interface ServerTokenGcDepsInput {
   readonly vaultService: Pick<VaultService, "delete" | "supportsDelete">;
   /** Built over the process's shared repositories and `markDirty` hook. */
   readonly modelDeleteDeps: ModelDeleteDeps;
+  /**
+   * That `markDirty` hook. Each collection runs in a root unit of work over
+   * it, so its deletes stage into the root (swamp-club#3056).
+   */
+  readonly markDirty?: MarkDirtyHook;
   readonly libCtx: LibSwampContext;
   /** Pushes local changes to the remote datastore; absent without one. */
   readonly pushChanged?: () => Promise<void>;
@@ -88,7 +95,7 @@ export function createServerTokenGcRepos(
   datastoreResolver?: DatastorePathResolver,
 ): Pick<
   ServerTokenGcDepsInput,
-  "definitionRepo" | "dataRepo" | "modelDeleteDeps"
+  "definitionRepo" | "dataRepo" | "modelDeleteDeps" | "markDirty"
 > {
   const autoDefRepo = new YamlDefinitionRepository(
     repoDir,
@@ -107,6 +114,7 @@ export function createServerTokenGcRepos(
       repoContext.markDirty,
       autoDefRepo,
     ),
+    markDirty: repoContext.markDirty,
   };
 }
 
@@ -133,6 +141,7 @@ export function createServerTokenGcDeps(
     libCtx,
     pushChanged,
     syncGate,
+    markDirty,
   } = input;
 
   const readToken = async (
@@ -262,7 +271,15 @@ export function createServerTokenGcDeps(
         if (!token || !isEligible(token)) return "skipped";
 
         let touchedLocalFiles = false;
-        try {
+        // The deletes run in a root unit of work whose flush is the push,
+        // on every outcome as the finally it replaced did (swamp-club#3056).
+        return await runInRootUnitOfWork({ markDirty }, {
+          // Push whatever was deleted, even after a partial failure, so no
+          // delete is left uncommitted.
+          flush: async () => {
+            if (touchedLocalFiles) await pushDeletes(pushChanged);
+          },
+        }, async (): Promise<"collected"> => {
           const owner = await definitionRepo.findByName(
             SERVER_TOKEN_MODEL_TYPE,
             token.name,
@@ -302,11 +319,7 @@ export function createServerTokenGcDeps(
           touchedLocalFiles = true;
           await deleteRecords(owner);
           return "collected";
-        } finally {
-          // Push whatever was deleted, even after a partial failure, so no
-          // delete is left uncommitted.
-          if (touchedLocalFiles) await pushDeletes(pushChanged);
-        }
+        });
       }),
   };
 }

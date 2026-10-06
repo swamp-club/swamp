@@ -181,6 +181,10 @@ Deno.test("unscopedWriterKey: keys production callers by file and function only"
     unscopedWriterKey({ file: "integration/x.ts", line: 1, fn: "save" }),
     undefined,
   );
+  assertEquals(
+    unscopedWriterKey({ file: "src/serve/x_test.ts", line: 1, fn: "f" }),
+    undefined,
+  );
   assertEquals(unscopedWriterKey(undefined), undefined);
 });
 

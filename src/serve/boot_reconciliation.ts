@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
 import { PENDING_DISPATCH_MODEL_TYPE } from "../domain/models/worker/pending_dispatch_model.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
@@ -26,7 +27,10 @@ import type { ModelType } from "../domain/models/model_type.ts";
 import { Data } from "../domain/data/data.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncService,
+  MarkDirtyHook,
+} from "../domain/datastore/datastore_sync_service.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
@@ -110,7 +114,23 @@ function writeData(
   return { data, content };
 }
 
-export async function sweepStaleRecords(
+/**
+ * Sweeps stale step leases, pending dispatches and workers in a root unit of
+ * work with no push, so their saves stage into it instead of reaching the
+ * hook through signalChange's fallback (swamp-club#3056). Nothing pushes, as
+ * before.
+ */
+export function sweepStaleRecords(
+  deps: BootReconciliationDeps,
+): Promise<SweepResult> {
+  return runInRootUnitOfWork(
+    deps.repoContext,
+    { flush: undefined },
+    () => sweepStaleRecordsInRoot(deps),
+  );
+}
+
+async function sweepStaleRecordsInRoot(
   deps: BootReconciliationDeps,
 ): Promise<SweepResult> {
   const result: SweepResult = { leases: 0, pendingDispatches: 0, workers: 0 };
@@ -444,6 +464,12 @@ export interface ReconcileRemoteInterruptedRunsDeps {
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   staleTtlMs?: number;
   workflowRunRepo?: WorkflowRunRepository;
+  /**
+   * The mark hook `workflowRunRepo` was built over (`repoContext.markDirty`).
+   * The run saves run in a root unit of work over it with no push
+   * (swamp-club#3056).
+   */
+  markDirty?: MarkDirtyHook;
 }
 
 /**
@@ -536,23 +562,30 @@ export async function reconcileRemoteInterruptedRuns(
   }
 
   if (deps.workflowRunRepo) {
+    const workflowRunRepo = deps.workflowRunRepo;
     try {
-      // Whatever their age: a run resumed long after it started is as
-      // orphaned as a recent one (swamp-club#2518).
-      const yamlRuns = await deps.workflowRunRepo.findGlobalByStatus(
-        "running",
+      await runInRootUnitOfWork(
+        { markDirty: deps.markDirty },
+        { flush: undefined },
+        async () => {
+          // Whatever their age: a run resumed long after it started is as
+          // orphaned as a recent one (swamp-club#2518).
+          const yamlRuns = await workflowRunRepo.findGlobalByStatus(
+            "running",
+          );
+          for (const { run, workflowId } of yamlRuns) {
+            if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
+            if (run.status !== "running") continue;
+            run.interruptOrphaned("remote_instance_dead");
+            await workflowRunRepo.save(workflowId, run);
+            reaped++;
+            logger.warn(
+              "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
+              { runId: run.id, instanceId: run.instanceId },
+            );
+          }
+        },
       );
-      for (const { run, workflowId } of yamlRuns) {
-        if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
-        if (run.status !== "running") continue;
-        run.interruptOrphaned("remote_instance_dead");
-        await deps.workflowRunRepo.save(workflowId, run);
-        reaped++;
-        logger.warn(
-          "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
-          { runId: run.id, instanceId: run.instanceId },
-        );
-      }
     } catch (err: unknown) {
       logger.warn(
         "Failed to reconcile YAML workflow runs: {error}",

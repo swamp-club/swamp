@@ -34,7 +34,10 @@
 
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncService,
+  MarkDirtyHook,
+} from "../domain/datastore/datastore_sync_service.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import {
   isReapableDispatch,
@@ -49,6 +52,7 @@ import {
   STEP_LEASE_MODEL_TYPE,
 } from "../domain/models/worker/step_lease_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { ownNamespaceTerm } from "./namespace_predicate.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
@@ -86,6 +90,12 @@ export interface BookkeepingGcDeps {
     UnifiedDataRepository,
     "namespace" | "getContent" | "listVersions" | "delete"
   >;
+  /**
+   * The mark hook `repo` was built over (`repoContext.markDirty`). Each batch
+   * runs in a root unit of work over it, so the deletes stage into the root
+   * (swamp-club#3056).
+   */
+  readonly markDirty?: MarkDirtyHook;
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   /** Datastore namespace passed to `pushChanged`. */
   readonly syncNamespace?: string;
@@ -228,7 +238,9 @@ async function listCandidates(
 
 /**
  * Deletes one batch locally, then pushes. Must run inside the exclusive sync
- * gate (`withSyncGate`), so the delete and its push are one unit.
+ * gate (`withSyncGate`), so the delete and its push are one unit. The batch
+ * runs in a root unit of work whose flush is the push, on every outcome as
+ * the `finally` it replaced did (swamp-club#3056).
  */
 async function reapBatch(
   deps: BookkeepingGcDeps,
@@ -242,7 +254,19 @@ async function reapBatch(
     failed: 0,
     pushFailed: false,
   };
-  try {
+  await runInRootUnitOfWork({ markDirty: deps.markDirty }, {
+    flush: async () => {
+      // Guarded so a push rejection never masks an error from the loop.
+      try {
+        await deps.syncService?.pushChanged({ namespace: deps.syncNamespace });
+      } catch (error) {
+        outcome.pushFailed = true;
+        logger.warn("Failed to push reaped bookkeeping records: {error}", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  }, async () => {
     for (const candidate of batch) {
       if (isStopping()) break;
       try {
@@ -270,17 +294,7 @@ async function reapBatch(
         });
       }
     }
-  } finally {
-    // Guarded so a push rejection never masks an error from the loop.
-    try {
-      await deps.syncService?.pushChanged({ namespace: deps.syncNamespace });
-    } catch (error) {
-      outcome.pushFailed = true;
-      logger.warn("Failed to push reaped bookkeeping records: {error}", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  });
   logger.debug(
     "Reaped batch of {count} record(s), gate held {heldMs}ms",
     {

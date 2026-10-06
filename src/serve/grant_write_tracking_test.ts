@@ -25,6 +25,11 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_unit_of_work.ts";
 import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
+import {
   createGrantWriteCommit,
   publishGrantWrites,
 } from "./grant_write_tracking.ts";
@@ -234,4 +239,41 @@ Deno.test("createGrantWriteCommit: a unit that throws pushes nothing, rethrows, 
   assertEquals(events, []);
   assertEquals(pending, ["half-written-grant"]);
   assertEquals(gate.exclusiveHeld, false);
+});
+
+Deno.test("createGrantWriteCommit: the unit's writes stage into a root over the same hook, not through the hook fallback (swamp-club#3056)", async () => {
+  const gate = createSyncGate();
+  const { events, deps } = recordingDeps(gate);
+  let pending: string[] = [];
+  const tracking = {
+    takeWrittenPaths() {
+      const paths = pending;
+      pending = [];
+      return paths;
+    },
+  };
+  const commit = createGrantWriteCommit(gate, tracking, deps);
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  try {
+    await commit(async () => {
+      // As a grant store's repository signals before writing.
+      await signalChange(deps.markDirty, {
+        kind: "write",
+        path: "grant-data-dir",
+      });
+      pending.push("grant-data-dir");
+    });
+  } finally {
+    dispose();
+  }
+
+  assertEquals(reports, []);
+  assertEquals(events, [
+    { kind: "mark", path: "grant-data-dir" },
+    { kind: "mark", path: "grant-data-dir" },
+    { kind: "push", namespace: "infra", gateHeld: true },
+  ]);
 });

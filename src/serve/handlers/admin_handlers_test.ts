@@ -34,6 +34,11 @@ import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/d
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { assertPathArrayEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
+import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../../infrastructure/persistence/unit_of_work_scope.ts";
 import type { ConnectionContext } from "./shared.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -47,6 +52,7 @@ import {
   handleDoctorWorkflows,
   handleExtensionList,
   handleExtensionRm,
+  handleRunDoctor,
   handleVaultMigrate,
   redactServeOptions,
 } from "./admin_handlers.ts";
@@ -854,4 +860,63 @@ Deno.test("handleDoctorWorkflows: checks the dirs the server loads workflows fro
       repoContext.catalogStore.close();
     }
   });
+});
+
+Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the repository context's hook (swamp-club#3056)", async () => {
+  const marks: (string | undefined)[] = [];
+  const markDirty = (path?: string) => {
+    marks.push(path);
+    return Promise.resolve();
+  };
+  const settled: string[] = [];
+  const ctx = {
+    instanceId: "self",
+    controlPlaneStore: { get: () => Promise.resolve(null) },
+    runTracker: {
+      findAll: () => [],
+      findStaleRuns: () => [],
+      markSettled: (id: string) => settled.push(id),
+    },
+    repoContext: {
+      markDirty,
+      workflowRunRepo: {
+        findGlobalByStatus: () =>
+          Promise.resolve([{
+            run: {
+              id: "run-1",
+              instanceId: "dead-peer",
+              interruptOrphaned: () => {},
+            },
+            workflowId: "wf-1",
+          }]),
+        // As the run repository signals before it writes.
+        save: () => signalChange(markDirty, { kind: "write", path: "run-1" }),
+      },
+    },
+    authConfig: {
+      mode: "none" as const,
+      admins: [],
+      allowedCollectives: [],
+      allowedUsers: [],
+      oauthProvider: "",
+      groupsField: "collectives",
+      restrictedModelTypes: [],
+      restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
+    },
+  } as unknown as ConnectionContext;
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  try {
+    await handleRunDoctor(createMockSocket(), ctx, "req-doctor", {
+      fix: true,
+    }, null);
+  } finally {
+    dispose();
+  }
+  assertEquals(reports, []);
+  assertEquals(marks, ["run-1"]);
+  assertEquals(settled, ["run-1"]);
 });

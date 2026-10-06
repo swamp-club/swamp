@@ -59,12 +59,16 @@ export const PINNED_UNSCOPED_WRITERS: readonly PinnedUnscopedWriter[] = [];
 
 /**
  * The pin key for a caller (`src/serve/bookkeeping_gc.ts: reapBatch`), or
- * undefined when the caller is not production code.
+ * undefined when the caller is not production code (outside `src/`, or a
+ * test file under it).
  */
 export function unscopedWriterKey(
   caller: UnscopedCaller | undefined,
 ): string | undefined {
-  if (caller === undefined || !caller.file.startsWith("src/")) {
+  if (
+    caller === undefined || !caller.file.startsWith("src/") ||
+    /_test\.tsx?$/.test(caller.file)
+  ) {
     return undefined;
   }
   return `${caller.file}: ${caller.fn ?? "<anonymous>"}`;

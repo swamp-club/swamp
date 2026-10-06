@@ -345,6 +345,7 @@ import {
   createGrantWriteCommit,
   createGrantWriteTracking,
 } from "../../serve/grant_write_tracking.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -3781,24 +3782,33 @@ export const serveCommand = new Command()
     const runningRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
       "running",
     );
-    const reapResult = await reapOrphanedWorkflowRuns(
-      runningRuns,
-      async (wid, r) => {
-        await repoContext.workflowRunRepo.save(wid, r);
-        runTracker.markSettled(r.id, "server_crash");
-      },
-      (runId) => {
-        const tracked = runTracker.findById(runId);
-        return tracked ? { status: tracked.status } : null;
-      },
-      isProcessDead,
-      instanceId,
-      hasRemoteControlPlane
-        ? async (id) => {
-          const data = await controlPlaneStore.get(`heartbeats/${id}`);
-          return data !== null;
-        }
-        : undefined,
+    // The boot reap and the method-run settle below run in root units of
+    // work with no push, so their saves stage into a root instead of reaching
+    // the hook through signalChange's fallback (swamp-club#3056). Nothing
+    // pushes, as before.
+    const reapResult = await runInRootUnitOfWork(
+      repoContext,
+      { flush: undefined },
+      () =>
+        reapOrphanedWorkflowRuns(
+          runningRuns,
+          async (wid, r) => {
+            await repoContext.workflowRunRepo.save(wid, r);
+            runTracker.markSettled(r.id, "server_crash");
+          },
+          (runId) => {
+            const tracked = runTracker.findById(runId);
+            return tracked ? { status: tracked.status } : null;
+          },
+          isProcessDead,
+          instanceId,
+          hasRemoteControlPlane
+            ? async (id) => {
+              const data = await controlPlaneStore.get(`heartbeats/${id}`);
+              return data !== null;
+            }
+            : undefined,
+        ),
     );
     if (reapResult.reaped > 0) {
       logger.warn(
@@ -3813,10 +3823,15 @@ export const serveCommand = new Command()
     // new, so the rows of the process it replaces carry another one.
     // Best-effort: a row left unsettled is kept for `run doctor --fix`.
     try {
-      const settledMethodRuns = await settleDeadOwnerMethodRuns(
-        repoContext.outputRepo,
-        runTracker,
-        localOwnerLiveness(),
+      const settledMethodRuns = await runInRootUnitOfWork(
+        repoContext,
+        { flush: undefined },
+        () =>
+          settleDeadOwnerMethodRuns(
+            repoContext.outputRepo,
+            runTracker,
+            localOwnerLiveness(),
+          ),
       );
       if (settledMethodRuns.length > 0) {
         logger.warn(
@@ -6041,6 +6056,7 @@ export const serveCommand = new Command()
         runTracker,
         staleTtlMs,
         workflowRunRepo: repoContext.workflowRunRepo,
+        markDirty: repoContext.markDirty,
       });
       if (remoteReaped > 0) {
         logger
@@ -6102,6 +6118,7 @@ export const serveCommand = new Command()
             runTracker,
             staleTtlMs,
             workflowRunRepo: repoContext.workflowRunRepo,
+            markDirty: repoContext.markDirty,
           });
           if (reaped > 0) {
             logger
@@ -6379,6 +6396,7 @@ export const serveCommand = new Command()
                 repoContext.dataQueryService,
               ),
               repo: repoContext.unifiedDataRepo,
+              markDirty: repoContext.markDirty,
               syncService,
               syncNamespace: gcSyncNamespace,
               syncGate,

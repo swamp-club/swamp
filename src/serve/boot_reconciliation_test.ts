@@ -36,6 +36,11 @@ import {
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import {
+  signalChange,
+  type UnscopedChange,
+  useUnscopedChangeReporterForTesting,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { HeartbeatRecord } from "./instance_heartbeat.ts";
 import { ActiveRun, type ActiveRunData } from "../domain/models/active_run.ts";
@@ -1792,4 +1797,88 @@ Deno.test("hydrateLocalCache: separate root sync service prevents namespace mism
 
   assertEquals(result.pulled, 0);
   assertEquals(mainBoundNamespace, "my-namespace");
+});
+
+// --- Root units (swamp-club#3056) ---
+
+/** A recording mark hook, and the route-2 reports made while `fn` runs. */
+async function withHookAndReports(
+  fn: (
+    markDirty: (path?: string) => Promise<void>,
+  ) => Promise<void>,
+): Promise<{ marks: (string | undefined)[]; reports: UnscopedChange[] }> {
+  const marks: (string | undefined)[] = [];
+  const reports: UnscopedChange[] = [];
+  const dispose = useUnscopedChangeReporterForTesting((report) => {
+    reports.push(report);
+  });
+  try {
+    await fn((path) => {
+      marks.push(path);
+      return Promise.resolve();
+    });
+  } finally {
+    dispose();
+  }
+  return { marks, reports };
+}
+
+Deno.test("sweepStaleRecords: the saves stage into a root unit over the repository context's hook", async () => {
+  const h = createHarness(
+    new Map([
+      ["swamp/step-lease", [
+        {
+          modelName: "leases",
+          dataName: "data-main",
+          modelType: "swamp/step-lease",
+          attrs: { leaseId: "lease-1", state: "active" },
+        },
+      ]],
+    ]),
+  );
+  const { marks, reports } = await withHookAndReports(async (markDirty) => {
+    const repoContext = h.deps.repoContext as unknown as {
+      markDirty: typeof markDirty;
+      unifiedDataRepo: { save: (...args: unknown[]) => Promise<unknown> };
+    };
+    repoContext.markDirty = markDirty;
+    const save = repoContext.unifiedDataRepo.save;
+    // As the data repository signals before it writes.
+    repoContext.unifiedDataRepo.save = async (...args: unknown[]) => {
+      await signalChange(markDirty, { kind: "write", path: "lease-1" });
+      return await save(...args);
+    };
+    const result = await sweepStaleRecords(h.deps);
+    assertEquals(result.leases, 1);
+  });
+  assertEquals(reports, []);
+  assertEquals(marks, ["lease-1"]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: the YAML run saves stage into a root unit over the given hook", async () => {
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [],
+  );
+  const { marks, reports } = await withHookAndReports(async (markDirty) => {
+    h.deps.markDirty = markDirty;
+    h.deps.workflowRunRepo = {
+      findGlobalByStatus: () =>
+        Promise.resolve([{
+          run: {
+            id: "yaml-run-1",
+            instanceId: "dead-inst",
+            status: "running",
+            interruptOrphaned: () => {},
+          },
+          workflowId: "wf-1",
+        }]),
+      // As the run repository signals before it writes.
+      save: () =>
+        signalChange(markDirty, { kind: "write", path: "yaml-run-1" }),
+    } as unknown as ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+    assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  });
+  assertEquals(reports, []);
+  assertEquals(marks, ["yaml-run-1"]);
 });

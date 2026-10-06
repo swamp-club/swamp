@@ -1114,7 +1114,8 @@ argument of `signalChange`, and under `src/infrastructure/persistence/` only
 first rule scans only the classes in `DATASTORE_TIER_REPOSITORIES`, so a new
 hooked repository must be added to that list. At the end of Phase 1 writes
 still marked through `signalChange`'s hook fallback, because nothing opened a
-scope. Phase 2 removes that fallback once every write path runs inside a scope.
+scope. Phase 2 removes that fallback once every write path runs inside a scope;
+see route-2 reporting below.
 
 **Phase 2: use cases own the unit of work (swamp-club#3025).** Every libswamp
 use case that writes through a datastore-tier repository runs its whole
@@ -1267,6 +1268,39 @@ operation inside a unit of work:
     serve, a push-path call outside a root's flush is pinned in
     `integration/serve_root_unit_rules_test.ts`; `pushChangedToRemote`, the
     push path the handlers' flushes call, is the only one.
+- **Route-2 reporting (swamp-club#3056).** `signalChange`'s hook fallback
+  (route 2: a hooked write with no unit bound to its hook ambient) still marks
+  exactly as before, then reports the write. The report runs after the mark,
+  so it can never stop one.
+  - In production it logs a warning under `["datastore", "unit-of-work"]`,
+    once per call site per process, naming the change and the first stack
+    frame outside `src/infrastructure/persistence/`. The stack is captured
+    only on route 2.
+  - Tests replace the warning through `useUnscopedChangeReporterForTesting`,
+    which only tests may call. `withUnscopedWriteGuard`
+    (`integration/unscoped_write_guard.ts`) fails a test when production
+    code (`src/`, not a test file) writes on route 2, even when the code
+    catches the error and only logs it. Writes made from test code are
+    ignored. The guard wraps every `withRowRepos` test and `captureUnits`
+    run (the use-case characterization, root-unit harness, remote failure,
+    serve root-unit and CLI root-unit tests), and the peer propagation and
+    dirty coverage harnesses.
+  - `PINNED_UNSCOPED_WRITERS` in the guard module lists the production
+    callers still allowed on route 2, each with a reason. It is empty: every
+    route-2 caller found runs in a root. The pushing ones make their push the
+    root's flush: serve bookkeeping GC and server-token GC. The rest run in a
+    root with no flush, which forwards each mark to the hook at once and
+    pushes nothing, as before: the device-auth mint, `access.reload` and the
+    grant commit (their writes, before the root `stageWritesThenPush` already
+    opens for the push), serve boot reconciliation and its continuous tick,
+    `run.doctor`'s fix, worker data-plane writes, and the CLI's
+    `workflow cancel`, `workflow recover`, `model cancel` and `run doctor`.
+  - Hand marks never pass through `signalChange` and are not reported; they
+    stay pinned in `PINNED_MARK_CALL_SITES`.
+  - Route 2 is removed in a follow-up once nothing reports: no route-2
+    warnings in dogfooding, or in the swamp-uat datastore and serve suites run
+    against a release that contains this change, and
+    `PINNED_UNSCOPED_WRITERS` still empty.
 - The CLI (`libSwampContextForRepo` in `src/cli/repo_context.ts`) and serve
   (`handlerLibSwampContext` in `src/serve/handlers/shared.ts`) bind each unit to
   `repoContext.markDirty` itself, through `repoUnitOfWorkFactory`

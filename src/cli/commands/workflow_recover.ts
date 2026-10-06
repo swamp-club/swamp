@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -155,98 +156,103 @@ export const workflowRecoverCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
-      const workflow =
-        await repoContext.workflowRepo.findByName(workflowIdOrName) ??
-          await repoContext.workflowRepo.findById(
-            createWorkflowId(workflowIdOrName),
-          );
-      if (!workflow) {
-        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-      }
-
-      const run = await findRecoverableRun(
-        repoDir,
-        workflow,
-        repoContext.workflowRunRepo,
-        repoContext.outputRepo,
-        options.run as string | undefined,
-        !!options.assessOnly,
-      );
-      if (!run) {
-        throw new UserError(
-          options.run
-            ? `Interrupted run ${options.run} not found`
-            : `No interrupted runs found for workflow "${workflow.name}"`,
-        );
-      }
-
-      const assessment = await assessRecoveryForRun(workflow, run);
-
-      if (options.assessOnly) {
-        if (cliCtx.outputMode === "json") {
-          writeOutput(JSON.stringify(assessment, null, 2));
-        } else {
-          writeOutput(`Recovery assessment for "${workflow.name}":`);
-          writeOutput(`  Run ID: ${run.id}`);
-          writeOutput(`  Can auto-recover: ${assessment.canAutoRecover}`);
-          if (assessment.reason) {
-            writeOutput(`  Reason: ${assessment.reason}`);
-          }
-          // A failed definition check refuses recovery outright, so the
-          // per-step hints would point at flags that cannot help; the reason
-          // already names the way forward.
-          const showStepHints = !assessment.fingerprintMismatch;
-          if (assessment.guardedSteps.length > 0) {
-            writeOutput(
-              `  Guarded steps${showStepHints ? " (auto-recoverable)" : ""}: ${
-                assessment.guardedSteps.join(", ")
-              }`,
+      // In a root unit of work with no push, so the run saves stage into it
+      // instead of reaching the hook through signalChange's fallback
+      // (swamp-club#3056). Nothing pushes, as before.
+      await runCommandInRootUnit(repoContext, { push: undefined }, async () => {
+        const workflow =
+          await repoContext.workflowRepo.findByName(workflowIdOrName) ??
+            await repoContext.workflowRepo.findById(
+              createWorkflowId(workflowIdOrName),
             );
-          }
-          if (assessment.unguardedSteps.length > 0) {
-            writeOutput(
-              `  Unguarded steps${
-                showStepHints ? " (require --acknowledge-unknown)" : ""
-              }: ${assessment.unguardedSteps.join(", ")}`,
-            );
-          }
+        if (!workflow) {
+          throw new UserError(`Workflow not found: ${workflowIdOrName}`);
         }
-        return;
-      }
 
-      if (assessment.fingerprintMismatch) {
-        throw new UserError(assessment.reason!);
-      }
-
-      if (!assessment.canAutoRecover && !options.acknowledgeUnknown) {
-        throw new UserError(
-          `Cannot auto-recover: ${assessment.reason}\n` +
-            `Unguarded steps: ${assessment.unguardedSteps.join(", ")}\n` +
-            `Use --acknowledge-unknown to accept re-execution risk.`,
+        const run = await findRecoverableRun(
+          repoDir,
+          workflow,
+          repoContext.workflowRunRepo,
+          repoContext.outputRepo,
+          options.run as string | undefined,
+          !!options.assessOnly,
         );
-      }
+        if (!run) {
+          throw new UserError(
+            options.run
+              ? `Interrupted run ${options.run} not found`
+              : `No interrupted runs found for workflow "${workflow.name}"`,
+          );
+        }
 
-      run.resetUnknownStepsForRecovery();
-      await repoContext.workflowRunRepo.save(workflow.id, run);
+        const assessment = await assessRecoveryForRun(workflow, run);
 
-      if (cliCtx.outputMode === "json") {
-        writeOutput(JSON.stringify(
-          {
-            recovered: true,
-            runId: run.id,
-            resumeCommand:
-              `swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
-          },
-          null,
-          2,
-        ));
-      } else {
-        writeOutput(
-          `Recovered run ${run.id} — unknown steps reset to pending.`,
-        );
-        writeOutput(
-          `Resume with: swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
-        );
-      }
+        if (options.assessOnly) {
+          if (cliCtx.outputMode === "json") {
+            writeOutput(JSON.stringify(assessment, null, 2));
+          } else {
+            writeOutput(`Recovery assessment for "${workflow.name}":`);
+            writeOutput(`  Run ID: ${run.id}`);
+            writeOutput(`  Can auto-recover: ${assessment.canAutoRecover}`);
+            if (assessment.reason) {
+              writeOutput(`  Reason: ${assessment.reason}`);
+            }
+            // A failed definition check refuses recovery outright, so the
+            // per-step hints would point at flags that cannot help; the reason
+            // already names the way forward.
+            const showStepHints = !assessment.fingerprintMismatch;
+            if (assessment.guardedSteps.length > 0) {
+              writeOutput(
+                `  Guarded steps${
+                  showStepHints ? " (auto-recoverable)" : ""
+                }: ${assessment.guardedSteps.join(", ")}`,
+              );
+            }
+            if (assessment.unguardedSteps.length > 0) {
+              writeOutput(
+                `  Unguarded steps${
+                  showStepHints ? " (require --acknowledge-unknown)" : ""
+                }: ${assessment.unguardedSteps.join(", ")}`,
+              );
+            }
+          }
+          return;
+        }
+
+        if (assessment.fingerprintMismatch) {
+          throw new UserError(assessment.reason!);
+        }
+
+        if (!assessment.canAutoRecover && !options.acknowledgeUnknown) {
+          throw new UserError(
+            `Cannot auto-recover: ${assessment.reason}\n` +
+              `Unguarded steps: ${assessment.unguardedSteps.join(", ")}\n` +
+              `Use --acknowledge-unknown to accept re-execution risk.`,
+          );
+        }
+
+        run.resetUnknownStepsForRecovery();
+        await repoContext.workflowRunRepo.save(workflow.id, run);
+
+        if (cliCtx.outputMode === "json") {
+          writeOutput(JSON.stringify(
+            {
+              recovered: true,
+              runId: run.id,
+              resumeCommand:
+                `swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+            },
+            null,
+            2,
+          ));
+        } else {
+          writeOutput(
+            `Recovered run ${run.id} — unknown steps reset to pending.`,
+          );
+          writeOutput(
+            `Resume with: swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+          );
+        }
+      });
     },
   );

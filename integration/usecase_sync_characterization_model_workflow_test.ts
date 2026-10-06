@@ -705,15 +705,15 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow cancel",
     // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
-    rootUnit: { serve: true },
-    // CLI: the run claim is released and nothing pushes, recorded before
-    // the command adopts a root unit (swamp-club#3056).
+    // pinned to push before the gate exit, as it did before. The CLI runs
+    // its cancel in a root with no push (swamp-club#3056): the run claim is
+    // released and nothing pushes, pinned before it adopted the root.
+    rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["release"], serve: ["push", "release"] },
     // CLI workflow cancel saves the run through repoContext.workflowRunRepo
-    // itself, not through a use case, so the save marks through
-    // signalChange's hook fallback (unit_of_work_scope.ts signalChange in
-    // PINNED_MARK_CALL_SITES). Serve goes through workflowCancelSuspended.
+    // itself, not through a use case, so its mark is staged by the root
+    // rather than a use case's unit. Serve goes through
+    // workflowCancelSuspended.
     outsideUseCase: {
       cli: ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
     },
@@ -738,6 +738,9 @@ const ROWS: AnyRow[] = [
   // (swamp-club#3056). Serve has no equivalent request.
   row({
     name: "workflow recover",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
     syncOrder: { cli: [] },
     // The dead owner's run is settled, then reset for resume: two saves made
     // by the command itself, not a use case.
@@ -763,6 +766,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "run doctor --fix",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
     syncOrder: { cli: [] },
     // The dead owner's method run and workflow run are settled by the
     // command itself, not a use case.
@@ -781,6 +787,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model cancel",
+    // In a root with no push (swamp-club#3056); nothing pushes, pinned
+    // before the command adopted the root.
+    rootUnit: { cli: true },
     syncOrder: { cli: [] },
     // The dead owner's method run is cancelled by the command itself, not a
     // use case.
