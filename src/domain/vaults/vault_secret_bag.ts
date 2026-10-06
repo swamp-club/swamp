@@ -24,6 +24,17 @@ import {
 
 type QuoteContext = "unquoted" | "single" | "double";
 
+/** One sentinel of a {@link VaultSecretBag}, as shipped to a remote worker. */
+export interface SecretBagEntry {
+  sentinel: string;
+  value: string;
+  /** True when the secret reached the step through a data read. */
+  dataOrigin: boolean;
+}
+
+/** Matches exactly one sentinel, as produced by {@link VaultSecretBag}. */
+export const SENTINEL_EXACT = /^__SWAMP_VSEC_[0-9a-f]{8}_\d+__$/;
+
 /** A command with sentinels replaced, and the environment that feeds it. */
 export interface ShellSecretResolution {
   command: string;
@@ -227,6 +238,39 @@ export class VaultSecretBag {
       return result;
     }
     return data;
+  }
+
+  /**
+   * The bag's sentinels with their values, so a remote worker can rebuild
+   * the bag with {@link VaultSecretBag.fromEntries} and deliver the step's
+   * secrets the way a local run does.
+   */
+  toEntries(): SecretBagEntry[] {
+    return [...this.secrets].map(([sentinel, value]) => ({
+      sentinel,
+      value,
+      dataOrigin: this.dataOrigin.has(sentinel),
+    }));
+  }
+
+  /**
+   * Rebuilds a bag from {@link VaultSecretBag.toEntries}, keeping each
+   * sentinel exactly as shipped. Secrets added afterwards get this bag's own
+   * prefix.
+   */
+  static fromEntries(entries: readonly SecretBagEntry[]): VaultSecretBag {
+    const bag = new VaultSecretBag();
+    for (const { sentinel, value, dataOrigin } of entries) {
+      if (!SENTINEL_EXACT.test(sentinel)) {
+        throw new Error("Malformed vault secret sentinel in secret bag entry");
+      }
+      bag.secrets.set(sentinel, value);
+      if (dataOrigin) {
+        bag.dataOrigin.add(sentinel);
+        bag.dataSentinels.set(value, sentinel);
+      }
+    }
+    return bag;
   }
 
   /** Whether this bag contains any secrets. */

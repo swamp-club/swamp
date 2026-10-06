@@ -26,8 +26,13 @@ import {
 import { join } from "@std/path";
 import {
   createRemoteMethodContext,
+  dispatchMethodArgs,
   UnsupportedOnRemoteWorkerError,
 } from "./remote_method_context.ts";
+import { definitionFromExecution } from "./exec_dispatch.ts";
+import { z } from "zod";
+import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
+import type { MethodDefinition } from "../domain/models/model.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
@@ -548,5 +553,83 @@ Deno.test("remote context: readModelData resolves a name once per dispatch, incl
       h.calls.filter((c) => c.method === "resolveModel").length,
       2,
     );
+  });
+});
+
+const SENTINEL = "__SWAMP_VSEC_0a1b2c3d_0__";
+const DATA_SENTINEL = "__SWAMP_VSEC_0a1b2c3d_1__";
+
+function dispatchWithSecretBag(): DispatchParams {
+  const d = dispatch();
+  d.execution.methodArgs = { run: "echo s3cret data-value" };
+  d.unresolvedMethodArgs = { run: `echo ${SENTINEL} ${DATA_SENTINEL}` };
+  d.secretBag = [
+    { sentinel: SENTINEL, value: "s3cret", dataOrigin: false },
+    { sentinel: DATA_SENTINEL, value: "data-value", dataOrigin: true },
+  ];
+  d.secretValues = ["s3cret", "data-value"];
+  return d;
+}
+
+Deno.test("remote context: a shipped secret bag is rebuilt as vaultSecrets (swamp-club#2760)", async () => {
+  await withScratch((dir) => {
+    const h = harness(dir, undefined, undefined, dispatchWithSecretBag());
+    const bag = h.context.vaultSecrets!;
+    assertEquals(bag.toEntries(), dispatchWithSecretBag().secretBag);
+    assertEquals(bag.isDataOrigin(DATA_SENTINEL), true);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: without a shipped bag there are no vaultSecrets", async () => {
+  await withScratch((dir) => {
+    const h = harness(dir);
+    assertEquals(h.context.vaultSecrets, undefined);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("dispatchMethodArgs: unresolved args with a bag, resolved args otherwise", () => {
+  assertEquals(dispatchMethodArgs(dispatchWithSecretBag()), {
+    run: `echo ${SENTINEL} ${DATA_SENTINEL}`,
+  });
+  const noBag = dispatchWithSecretBag();
+  noBag.secretBag = undefined;
+  assertEquals(dispatchMethodArgs(noBag), { run: "echo s3cret data-value" });
+  const emptyBag = dispatchWithSecretBag();
+  emptyBag.secretBag = [];
+  assertEquals(dispatchMethodArgs(emptyBag), { run: "echo s3cret data-value" });
+});
+
+Deno.test("remote context: the worker resolves shipped args as the orchestrator did (swamp-club#2760)", async () => {
+  await withScratch(async (dir) => {
+    const d = dispatchWithSecretBag();
+    const h = harness(dir, undefined, undefined, d);
+    let seenArgs: Record<string, unknown> | undefined;
+    let seenUnresolved: Record<string, unknown> | undefined;
+    const method: MethodDefinition = {
+      description: "records what it receives",
+      arguments: z.object({ run: z.string() }),
+      execute: (args, context) => {
+        seenArgs = args as Record<string, unknown>;
+        seenUnresolved = context.unresolvedMethodArgs;
+        return Promise.resolve({});
+      },
+    };
+    const definition = definitionFromExecution(
+      d.execution,
+      dispatchMethodArgs(d),
+    );
+
+    await new DefaultMethodExecutionService().execute(
+      definition,
+      method,
+      h.context,
+    );
+
+    // A non-shell model gets the plaintext the orchestrator resolved; the
+    // shell model reads the unresolved run and delivers it through env vars.
+    assertEquals(seenArgs?.run, d.execution.methodArgs.run);
+    assertEquals(seenUnresolved?.run, d.unresolvedMethodArgs!.run);
   });
 });

@@ -675,7 +675,10 @@ twice: into a raw copy (expression contexts, coercion, routing) and into the
 copy that executes, where recorded values inside the spliced result become
 sentinels from the step's own `VaultSecretBag`. Authored text around a splice is
 never examined. The bag holds only values spliced into that step, so remote
-dispatch ships nothing from other steps.
+dispatch ships nothing from other steps. A step placed on a remote worker ships
+its bag and unresolved args with the dispatch, and the worker delivers the
+values the same way (see
+[remote execution](../enablers/remote-execution.md#security-and-trust)).
 
 In a `command/shell` step the sentinel becomes an environment-variable
 reference, placed per occurrence by a shell context scanner:

@@ -416,6 +416,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     if (secretBag && !secretBag.isEmpty) {
       secretValues.push(...secretBag.rawValues);
     }
+    // The worker rebuilds the bag from these and resolves the args itself,
+    // so a command/shell step gets its secrets as environment variables
+    // there, as it does locally (swamp-club#2760). The resolved args above
+    // still travel for workers that predate the fields.
+    const secretDelivery = secretBag && !secretBag.isEmpty
+      ? {
+        unresolvedMethodArgs: executionRequest.methodArgs,
+        secretBag: secretBag.toEntries(),
+      }
+      : {};
     if (modelDef.globalArguments) {
       secretValues.push(
         ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
@@ -455,6 +465,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         signal: context.signal,
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
+        ...secretDelivery,
         declaredWrites: context.declaredWrites,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {

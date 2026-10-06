@@ -95,18 +95,39 @@ export function isDeniedEnvVar(name: string): boolean {
 
 /**
  * Capture a shippable snapshot of the given environment, dropping every
- * denylisted variable.
+ * denylisted variable. With an `allow` list (serve's `dispatch-env-allow`),
+ * only the named variables ship, still minus the denylist; an empty list
+ * ships nothing. Names compare case-insensitively, like the denylist.
  */
 export function captureEnvironmentSnapshot(
   env: Record<string, string>,
+  allow?: readonly string[],
 ): EnvironmentSnapshot {
+  const allowed = allow
+    ? new Set(allow.map((name) => name.toUpperCase()))
+    : undefined;
   const snapshot: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
+    if (allowed && !allowed.has(name.toUpperCase())) continue;
     if (!isDeniedEnvVar(name)) {
       snapshot[name] = value;
     }
   }
   return snapshot;
+}
+
+/**
+ * Parse serve's comma-separated `dispatch-env-allow` value. Undefined means
+ * the option is unset (the full snapshot ships); an empty value is an
+ * empty allowlist (nothing ships).
+ */
+export function parseDispatchEnvAllow(
+  raw: string | undefined,
+): readonly string[] | undefined {
+  if (raw === undefined) return undefined;
+  return raw.split(",").map((name) => name.trim()).filter((name) =>
+    name.length > 0
+  );
 }
 
 /**

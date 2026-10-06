@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStrictEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { getQuoteContext } from "./vault_secret_bag.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
@@ -532,4 +532,59 @@ Deno.test("VaultSecretBag.resolveForShell: drops the env entry of a value kept i
     false,
   );
   assertEquals(Object.keys(resolved.env).length, 10);
+});
+
+Deno.test("VaultSecretBag.fromEntries: a rebuilt bag resolves exactly like the original", () => {
+  const original = new VaultSecretBag();
+  const vaultSentinel = original.addSecret("vault-pa$$ word");
+  const dataSentinel = original.addDataSecret("data-secret");
+  const escaped = original.sentinelizeText('{"k":"a\\"b"}', ['a"b']);
+  const command =
+    `echo "${vaultSentinel}" ${dataSentinel} '${vaultSentinel}'\ncat <<'EOF'\n${dataSentinel}\nEOF\necho ${escaped}`;
+
+  const rebuilt = VaultSecretBag.fromEntries(original.toEntries());
+
+  assertEquals(rebuilt.toEntries(), original.toEntries());
+  assertEquals(
+    rebuilt.resolveForShell(command),
+    original.resolveForShell(command),
+  );
+  assertEquals(
+    rebuilt.resolveForPowerShell(command),
+    original.resolveForPowerShell(command),
+  );
+  assertEquals(
+    rebuilt.findSingleQuotedSentinels(command),
+    original.findSingleQuotedSentinels(command),
+  );
+  assertEquals(
+    rebuilt.resolveDeep({ run: command, list: [dataSentinel] }),
+    original.resolveDeep({ run: command, list: [dataSentinel] }),
+  );
+  assertEquals(rebuilt.isDataOrigin(dataSentinel), true);
+  assertEquals(rebuilt.isDataOrigin(vaultSentinel), false);
+});
+
+Deno.test("VaultSecretBag.fromEntries: reuses a shipped data sentinel for the same value", () => {
+  const original = new VaultSecretBag();
+  const sentinel = original.addDataSecret("data-secret");
+  const rebuilt = VaultSecretBag.fromEntries(original.toEntries());
+  assertEquals(rebuilt.addDataSecret("data-secret"), sentinel);
+  assertEquals(rebuilt.toEntries().length, 1);
+});
+
+Deno.test("VaultSecretBag.fromEntries: rejects a malformed sentinel", () => {
+  assertThrows(
+    () =>
+      VaultSecretBag.fromEntries([
+        { sentinel: "$(id)", value: "x", dataOrigin: false },
+      ]),
+    Error,
+    "Malformed vault secret sentinel",
+  );
+});
+
+Deno.test("VaultSecretBag.toEntries: an empty bag has no entries", () => {
+  assertEquals(new VaultSecretBag().toEntries(), []);
+  assertEquals(VaultSecretBag.fromEntries([]).isEmpty, true);
 });

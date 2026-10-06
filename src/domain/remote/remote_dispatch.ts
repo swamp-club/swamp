@@ -33,6 +33,7 @@ import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { StepPlacement } from "./scheduler.ts";
 import type { DispatchOutput, RpcStreamEvent } from "./protocol.ts";
+import type { SecretBagEntry } from "../vaults/vault_secret_bag.ts";
 
 export interface RemoteStepRequest {
   placement: StepPlacement;
@@ -70,6 +71,13 @@ export interface RemoteStepRequest {
    * Extracted from sensitive argument fields on the orchestrator side.
    */
   secretValues?: string[];
+  /**
+   * Method args with vault sentinels intact, shipped with {@link secretBag}
+   * so the worker resolves them itself (see DispatchParams).
+   */
+  unresolvedMethodArgs?: Record<string, unknown>;
+  /** The step's vault secret bag entries. */
+  secretBag?: SecretBagEntry[];
   /**
    * Bypass the scheduler and dispatch directly to the targeted worker.
    * Only used by the fleet verification probe, which must reach workers

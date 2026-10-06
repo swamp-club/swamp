@@ -43,7 +43,10 @@ import {
 } from "../domain/remote/stdio_transport.ts";
 import { createDataPlaneFetch, DataPlaneClient } from "./data_plane_client.ts";
 import { WorkerBundleCache } from "./bundle_cache.ts";
-import { createRemoteMethodContext } from "./remote_method_context.ts";
+import {
+  createRemoteMethodContext,
+  dispatchMethodArgs,
+} from "./remote_method_context.ts";
 import {
   type RunnerBootstrapParams,
   RunnerBootstrapParamsSchema,
@@ -199,8 +202,8 @@ export async function runDispatchRunner(
 
     const methodArgs = dispatch.probeMarker !== undefined &&
         execution.modelType === "swamp/fleet-probe"
-      ? { ...execution.methodArgs, probeMarker: dispatch.probeMarker }
-      : execution.methodArgs;
+      ? { ...dispatchMethodArgs(dispatch), probeMarker: dispatch.probeMarker }
+      : dispatchMethodArgs(dispatch);
 
     const definition = definitionFromExecution(execution, methodArgs);
 

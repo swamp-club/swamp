@@ -1021,3 +1021,70 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
   assertEquals(transitions, ["acquire", "mark_writes", "fail"]);
   gateway.dispose();
 });
+
+Deno.test("DispatchService: forwards the unresolved args and secret bag to the worker (swamp-club#2760)", async () => {
+  const h = createHarness();
+  const sentinel = "__SWAMP_VSEC_0a1b2c3d_0__";
+  const registered: Array<Record<string, unknown>> = [];
+  h.setBehavior((name) => {
+    for (const entry of h.dispatches.forWorker(name)) {
+      registered.push({ ...entry });
+    }
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  await h.service.executeRemote(stepRequest({
+    methodArgs: { run: "echo s3cret" },
+    unresolvedMethodArgs: { run: `echo ${sentinel}` },
+    secretBag: [{ sentinel, value: "s3cret", dataOrigin: false }],
+    secretValues: ["s3cret"],
+  }));
+
+  const params = h.dispatchCalls[0].params;
+  assertEquals(params.execution.methodArgs, { run: "echo s3cret" });
+  assertEquals(params.unresolvedMethodArgs, { run: `echo ${sentinel}` });
+  assertEquals(params.secretBag, [{
+    sentinel,
+    value: "s3cret",
+    dataOrigin: false,
+  }]);
+  // The bag goes to the worker only; the dispatch registry never holds it.
+  assertEquals(registered.length, 1);
+  assertEquals("secretBag" in registered[0], false);
+  assertEquals("unresolvedMethodArgs" in registered[0], false);
+});
+
+Deno.test("DispatchService: dispatch-env-allow limits the shipped snapshot (swamp-club#2791)", async () => {
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    dispatchEnvAllow: [],
+    runModelMethod: () => Promise.resolve(),
+  });
+  const calls: DispatchParams[] = [];
+  service.bindGateway({
+    workers: () => [snapshot({ name: "w1" })],
+    worker: () => snapshot({ name: "w1" }),
+    dispatch: (_name, params) => {
+      calls.push(params);
+      return Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      });
+    },
+  });
+
+  await service.executeRemote(stepRequest());
+
+  // The real process environment, with an empty allowlist: nothing ships.
+  assertEquals(calls[0].environmentSnapshot, {});
+});
