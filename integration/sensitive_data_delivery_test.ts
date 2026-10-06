@@ -46,6 +46,7 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
+import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
@@ -163,13 +164,21 @@ async function runWorkflow(
   repoDir: string,
   workflow: Workflow,
   options: { lastEvaluated?: boolean } = {},
-): Promise<{ status?: string; runId?: string; errors: string[] }> {
+): Promise<
+  {
+    status?: string;
+    runId?: string;
+    errors: string[];
+    events: WorkflowRunEvent[];
+  }
+> {
   await new YamlWorkflowRepository(repoDir).save(workflow);
   const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
     await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
   let status: string | undefined;
   let runId: string | undefined;
   const errors: string[] = [];
+  const events: WorkflowRunEvent[] = [];
   await executeWorkflowWithLocks(
     resolved,
     repoContext,
@@ -180,6 +189,7 @@ async function runWorkflow(
     },
     new AbortController().signal,
     (event: WorkflowRunEvent) => {
+      events.push(event);
       if (event.kind === "started") runId = event.runId;
       if (event.kind === "completed") status = event.run.status;
       if (event.kind === "suspended") status = "suspended";
@@ -191,7 +201,7 @@ async function runWorkflow(
     undefined,
     { syncGate: undefined },
   );
-  return { status, runId, errors };
+  return { status, runId, errors, events };
 }
 
 /** The persisted stdout of the named shell step's latest result. */
@@ -706,6 +716,77 @@ Deno.test(
       assertStringIncludes(stdout, "RESUMED_OK");
       assertEquals(stdout.includes("***"), false, stdout);
       assertEquals(await filesHolding(repoDir, SECRET), []);
+    });
+  },
+);
+
+/** Whether a run raised the warning for a single-quoted vault expression. */
+function warnedSingleQuote(events: WorkflowRunEvent[]): boolean {
+  return events.some((event) =>
+    event.kind === "method_event" &&
+    event.event.type === "vault_single_quote_warning"
+  );
+}
+
+Deno.test(
+  "sensitive data: a vault.get secret used in two quote contexts expands as one word in each",
+  posix,
+  async () => {
+    await withRepo(async (repoDir) => {
+      const value = "two  words *";
+      const vault = await VaultService.fromRepository(repoDir);
+      await vault.put("secrets", "MIXED", value);
+      const expr = "${{ vault.get('secrets', 'MIXED') }}";
+
+      // Single-quoted first: the double-quoted use is still one quoted word.
+      const singleFirst = await runWorkflow(
+        repoDir,
+        reader(
+          "single-first",
+          `echo STEP=single-first; b='${expr}'; set -- "${expr}"; ` +
+            `echo "ARGC=$#"; for x in "$@"; do echo "ARG=[$x]"; done`,
+        ),
+      );
+      assertEquals(
+        singleFirst.status,
+        "succeeded",
+        singleFirst.errors.join("\n"),
+      );
+      const stdout = await shellStdout(repoDir, "single-first");
+      assertStringIncludes(stdout, "ARGC=1");
+      assertStringIncludes(stdout, "ARG=[***]");
+      // Word-splitting would print fragments the redactor cannot match.
+      assertEquals(stdout.includes("words"), false, stdout);
+      assertEquals(warnedSingleQuote(singleFirst.events), true);
+
+      // Double-quoted first: the later single-quoted use is still warned of.
+      const doubleFirst = await runWorkflow(
+        repoDir,
+        reader(
+          "double-first",
+          `echo STEP=double-first; a="${expr}"; b='${expr}'`,
+        ),
+      );
+      assertEquals(
+        doubleFirst.status,
+        "succeeded",
+        doubleFirst.errors.join("\n"),
+      );
+      assertEquals(warnedSingleQuote(doubleFirst.events), true);
+
+      // An apostrophe in a comment between two double-quoted uses changes
+      // neither placement and raises no warning.
+      const commented = await runWorkflow(
+        repoDir,
+        reader(
+          "commented",
+          `echo STEP=commented; set -- "${expr}"\n# don't log it\n` +
+            `set -- "$@" "${expr}"; echo "ARGC=$#"`,
+        ),
+      );
+      assertEquals(commented.status, "succeeded", commented.errors.join("\n"));
+      assertStringIncludes(await shellStdout(repoDir, "commented"), "ARGC=2");
+      assertEquals(warnedSingleQuote(commented.events), false);
     });
   },
 );

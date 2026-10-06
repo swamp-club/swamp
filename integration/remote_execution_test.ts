@@ -731,7 +731,7 @@ function shellStepRequest(
   const bag = new VaultSecretBag();
   const vaultSentinel = bag.addSecret(VAULT_SECRET);
   const dataSentinel = bag.addDataSecret(DATA_SECRET);
-  // Its own secret: the single-quote check looks at a sentinel's first use.
+  // Kept separate so only this secret's single-quoted use raises the warning.
   const quotedSentinel = bag.addSecret("quoted-s3cret-value");
   const unresolved = {
     run: `echo STEP=secrets; ` +
