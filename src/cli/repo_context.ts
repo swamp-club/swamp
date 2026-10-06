@@ -1457,7 +1457,8 @@ export interface PerModelLockScan {
   heldForOtherRuns: ReadonlyArray<{ pid: number; lockPath: string }>;
   /**
    * The nonces of the live locks the scan skipped because a swamp above
-   * this one holds them for the run that started it.
+   * this one named them as held for the run that started it. Locks skipped
+   * on the pid alone are left out.
    */
   skippedLockIds: readonly string[];
   /** Those of `held` whose lock file records a nonce. */
@@ -1512,8 +1513,9 @@ export async function waitForPerModelLocks(
   options: WaitForPerModelLocksOptions = {},
 ): Promise<void> {
   const write = options.progressWriter ?? defaultLockWriter;
-  const relationTo = (options.lockHolderMarker ?? processLockHolderMarker)
-    .lockRelation();
+  const lockHolderMarker = options.lockHolderMarker ?? processLockHolderMarker;
+  const relationTo = lockHolderMarker.lockRelation();
+  const inheritedLockIds = lockHolderMarker.inheritedLockIds();
   const pollIntervalMs = options.pollIntervalMs ?? DRAIN_POLL_INTERVAL_MS;
 
   const findModelLocks = options.findModelLocks ??
@@ -1550,7 +1552,13 @@ export async function waitForPerModelLocks(
             const acquiredAt = new Date(info.acquiredAt).getTime();
             const live = Date.now() - acquiredAt <= info.ttlMs;
             if (relation === "ancestor") {
-              if (live && info.nonce !== undefined) {
+              // A lock skipped on the pid alone may be held for another run
+              // and released while this drain still waits, so it is not
+              // reported as held until this drain exits.
+              if (
+                live && info.nonce !== undefined &&
+                inheritedLockIds.has(info.nonce)
+              ) {
                 skippedLockIds.push(info.nonce);
               }
               continue;

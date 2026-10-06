@@ -436,3 +436,27 @@ Deno.test("LockHolderMarker.childLockEnv: keeps the newest MAX_LOCK_ANCESTORS en
   assertEquals(entries.at(-1), "99999:own");
   assertEquals(entries[0], "7:n7");
 });
+
+Deno.test("LockHolderMarker.inheritedLockIds: the locks its ancestors named, and none for a pid that is not an ancestor", () => {
+  const marker = new LockHolderMarker(
+    fakeEnv({
+      [SWAMP_LOCK_ANCESTOR_PIDS]: "100,200",
+      [SWAMP_LOCK_HOLDER_TOKENS]: "100:run-a+run-b,200:run-c,300:run-d",
+    }).store,
+    500,
+  );
+
+  assertEquals(
+    [...marker.inheritedLockIds()].sort(),
+    ["run-a", "run-b", "run-c"],
+  );
+});
+
+Deno.test("LockHolderMarker.inheritedLockIds: empty when the ancestors handed down no lock list", () => {
+  const marker = new LockHolderMarker(
+    fakeEnv({ [SWAMP_LOCK_ANCESTOR_PIDS]: "100" }).store,
+    500,
+  );
+
+  assertEquals(marker.inheritedLockIds().size, 0);
+});

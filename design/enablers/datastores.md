@@ -2118,8 +2118,10 @@ marker at `{namespace}/drain-waits/{id}.json` under the datastore root
 directory is outside `data/`, so the lock scan never sees it. The marker
 (`DrainWait`, `src/domain/datastore/drain_wait.ts`) lists, by lock-file nonce:
 
-- `skipping`: the live locks the drain skips as an ancestor's, which are held
-  until this drain's process exits;
+- `skipping`: the live locks the drain skips because an ancestor named them
+  in `SWAMP_LOCK_HOLDER_TOKENS`, which are held until this drain's process
+  exits. A lock skipped on the pid alone is left out: it may be held for
+  another run and released first, so it proves no cycle;
 - `waitingOn`: the live locks it waits on.
 
 It also carries the drain's pid, hostname, start time, last refresh and a
@@ -2157,6 +2159,11 @@ run ends and releases its lock. Limits:
   lock stays held and the other drain still times out.
 - A drain running an older swamp publishes no marker, so a cycle that includes
   one ends at the timeout, as before.
+- A drain whose ancestors handed down no lock list (a step lock hook that
+  names no locks, a spawn outside any scope) skips on the pid alone, lists
+  nothing in `skipping` and publishes no marker.
+- A scan that takes close to the 10-second ttl, on a very large datastore,
+  lets markers expire between refreshes, so no cycle is confirmed.
 - Custom datastore locks are not scanned by the drain and are not covered.
 - Reading or writing a marker can fail (a read-only directory, a file held
   open on Windows). The failure is logged at debug and the drain waits as if

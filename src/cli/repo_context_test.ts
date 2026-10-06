@@ -2099,6 +2099,9 @@ Deno.test(
       drainWaits: markers.waits,
       pollIntervalMs: 0,
     });
+
+    assertEquals(markers.published.length, 5);
+    assertEquals(markers.own(), []);
   },
 );
 
@@ -2263,6 +2266,61 @@ Deno.test(
         left.push(entry.name);
       }
       assertEquals(left, []);
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - a lock skipped on the pid alone is not published as held for this drain",
+  async () => {
+    await withTempDir(async (dir) => {
+      // The parent handed down no lock list, so its lock is skipped on the
+      // pid. It may be held for another run and released first, so it must
+      // not let another drain conclude the two wait on each other.
+      await writeModelLock(dir, "parent-model", {
+        pid: 22222,
+        ttlMs: 30_000,
+        nonce: "run-a",
+      });
+      await writeModelLock(dir, "unrelated-model", {
+        pid: 33333,
+        ttlMs: 30_000,
+        nonce: "other",
+      });
+      const markers = fakeDrainWaits(() => [
+        opponentWait({ skipping: ["other"], waitingOn: ["run-a"] }),
+      ]);
+      const messages: string[] = [];
+
+      await withMockedEnv(
+        {
+          [SWAMP_LOCK_HOLDER_PID]: "22222",
+          [SWAMP_LOCK_ANCESTOR_PIDS]: "22222",
+          [SWAMP_LOCK_HOLDER_TOKENS]: undefined,
+        },
+        () =>
+          waitForPerModelLocks(dir, undefined, {
+            pollIntervalMs: 0,
+            drainWaits: markers.waits,
+            // The unrelated run ends once this drain has begun to wait.
+            progressWriter: (message) => {
+              if (messages.push(message) === 1) {
+                Deno.removeSync(
+                  join(
+                    dir,
+                    "data",
+                    "command-shell",
+                    "unrelated-model",
+                    ".lock",
+                  ),
+                );
+              }
+            },
+          }),
+      );
+
+      assertEquals(messages.length, 2);
+      assertEquals(markers.published, []);
     });
   },
 );

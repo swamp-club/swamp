@@ -196,24 +196,38 @@ async function drainUnderParallelRuns(
   runs: Run[],
 ): Promise<Drain[]> {
   const drains: Drain[] = [];
-  for (const [i, run] of runs.entries()) {
-    drains.push(startDrain(datastoreConfig, await childOf(i + 1, run)));
-  }
-  await waitFor(
-    () =>
-      drains.filter((d) => d.outcome !== undefined).length >=
-        runs.length - 1,
-    "all but one nested drain to give way",
-    { timeoutMs: 20_000 },
-  );
-  // A step whose nested command failed ends and releases its lock.
-  for (const [i, drain] of drains.entries()) {
-    if (drain.outcome !== undefined) {
-      await runs[i].release();
+  try {
+    for (const [i, run] of runs.entries()) {
+      drains.push(startDrain(datastoreConfig, await childOf(i + 1, run)));
     }
+    await waitFor(
+      () =>
+        drains.filter((d) => d.outcome !== undefined).length >=
+          runs.length - 1,
+      "all but one nested drain to give way",
+      { timeoutMs: 20_000 },
+    );
+    // A step whose nested command failed ends and releases its lock.
+    for (const [i, drain] of drains.entries()) {
+      if (drain.outcome !== undefined) {
+        await runs[i].release();
+      }
+    }
+    // The drain left waiting finishes without its own run ending.
+    await Promise.all(drains.map((d) => d.done));
+  } finally {
+    await settle(runs, drains);
   }
-  await Promise.all(drains.map((d) => d.done));
   return drains;
+}
+
+/**
+ * Ends every run still going and waits for every drain, so a failed
+ * assertion never leaves a drain polling after its test.
+ */
+async function settle(runs: Run[], drains: Drain[]): Promise<void> {
+  await Promise.all(runs.map((run) => run.release()));
+  await Promise.all(drains.map((drain) => drain.done));
 }
 
 Deno.test("nested drain wait cycle: of two parallel runs' nested commands one gives way and the other proceeds", async () => {
@@ -288,12 +302,15 @@ Deno.test("nested drain wait cycle: a command nested deeper in the same run is w
       const outer = await startRun(datastoreConfig, repoDir);
       const inner = await startRun(datastoreConfig, repoDir);
       const unrelated = await startRun(datastoreConfig, repoDir);
+      const drains: Drain[] = [];
       try {
         const shallow = startDrain(datastoreConfig, await childOf(1, outer));
+        drains.push(shallow);
         const deep = startDrain(
           datastoreConfig,
           await childOf(2, outer, inner),
         );
+        drains.push(deep);
         // Both wait on the unrelated lock; the shallow one also waits on
         // the inner run's lock, which the deep one skips.
         const markersPublished = async () =>
@@ -314,9 +331,7 @@ Deno.test("nested drain wait cycle: a command nested deeper in the same run is w
         assertEquals(shallow.outcome, {});
         assertEquals(await markerFiles(datastoreConfig), []);
       } finally {
-        await Promise.all(
-          [outer, inner, unrelated].map((run) => run.release()),
-        );
+        await settle([outer, inner, unrelated], drains);
       }
     });
   });
