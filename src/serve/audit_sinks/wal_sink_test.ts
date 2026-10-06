@@ -573,6 +573,97 @@ Deno.test(
 );
 
 Deno.test(
+  "WalSink: flush checkpoints a segment queued behind a checkpoint that was already waiting",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir });
+    await wal.initialize();
+    await wal.append([makeEvent("orphaned")]);
+    const downstream = createHangingSink();
+    const sink = new WalSink({ wal, downstream, checkpointIntervalMs: 0 });
+
+    await sink.replay();
+    // The loop is held on the orphaned segment, so the checkpoint replay
+    // queued is still waiting when the live segment is queued behind it.
+    await waitFor(() => downstream.outstanding === 1, "replay delivery");
+    await sink.write([makeEvent("live")]);
+    const flushed = sink.flush();
+
+    downstream.release();
+    await waitFor(
+      () => downstream.written.length === 1 && downstream.outstanding === 1,
+      "live delivery",
+    );
+    downstream.release();
+    await flushed;
+
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["orphaned", "live"],
+    );
+    assertEquals(wal.segmentCount, 0);
+    await sink.close();
+  }),
+);
+
+Deno.test(
+  "WalSink: pruning the queue under a hung downstream keeps the checkpoint delivered segments wait on",
+  withTempDir(async (dir) => {
+    const wal = new AuditWal({ dir, maxWalBytes: 1 });
+    await wal.initialize();
+    const downstream = createHangingSink();
+    let flushes = 0;
+    downstream.flush = () => {
+      flushes++;
+      return Promise.resolve();
+    };
+    const sink = new WalSink({
+      wal,
+      downstream,
+      deliveryWaitMs: 20,
+      checkpointIntervalMs: 0,
+    });
+
+    await sink.write([makeEvent("delivered")]);
+    await waitFor(() => downstream.outstanding === 1, "first delivery");
+    downstream.release();
+    await waitFor(() => downstream.written.length === 1, "first delivered");
+    await sink.write([makeEvent("hung")]);
+    await waitFor(() => downstream.outstanding === 1, "hung delivery");
+
+    // The first flush leaves a checkpoint at the head of the queue. Each
+    // later one queues another behind a segment the size limit then drops,
+    // which is what the prune collapses.
+    await sink.flush();
+    for (let i = 0; i < 10; i++) {
+      await sink.write([makeEvent(`flushed-${i}`)]);
+      await sink.flush();
+    }
+    // With no flush after these, the only checkpoint ahead of the segment
+    // the WAL still holds is the one at the head.
+    for (let i = 0; i < 20; i++) {
+      await sink.write([makeEvent(`queued-${i}`)]);
+    }
+    assertEquals(flushes, 0);
+
+    downstream.release();
+    await waitFor(
+      () => downstream.written.length === 2 && downstream.outstanding === 1,
+      "delivery of the kept segment",
+    );
+    // The head checkpoint ran before the kept segment was sent.
+    assertEquals(flushes, 1);
+
+    downstream.release();
+    await sink.close();
+    assertEquals(
+      downstream.written.map((batch) => batch[0].action),
+      ["delivered", "hung", "queued-19"],
+    );
+    assertEquals(wal.segmentCount, 0);
+  }),
+);
+
+Deno.test(
   "WalSink: behind an AuditEmitter, a hung store does not stall the durable path or duplicate events",
   withTempDir(async (dir) => {
     const wal = new AuditWal({ dir });
