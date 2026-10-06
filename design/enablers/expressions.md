@@ -1137,6 +1137,16 @@ globalArguments:
 
 See [Sensitive Data](#sensitive-data) for more on vaults.
 
+### Over `swamp serve`
+
+Expressions sent to serve are evaluated in the server process, so `env` is the
+server's environment and `data.*` can reach any model. Serve authorizes
+expression text against the principal who supplies it: a writer may only add
+references to data they may read, and `env` in run inputs needs `write` on the
+model, so put `env` references in the definition rather than in `--input`.
+`evaluate` and `validate` never resolve `env`. See
+[Expression references](./access-control.md#expression-references).
+
 ## Extensibility
 
 Extension model methods extend CEL through `ctx.createCelEnvironment()`

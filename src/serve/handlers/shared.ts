@@ -1178,7 +1178,54 @@ export function isAuthorized(
   resource: AccessResource,
   ctx: ConnectionContext,
 ): boolean {
-  const outcome = decideAccess(socket, principal, action, resource, ctx);
+  return auditRefusal(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx),
+  );
+}
+
+/**
+ * {@link isAuthorized} over every resource of `kind`: any deny that applies
+ * to the principal for the kind and action refuses, whatever its pattern, as
+ * {@link authorizeAllOrReject} decides. For a check whose target cannot be
+ * named, such as an expression that computes the model it reads
+ * (swamp-club#2755).
+ */
+export function isAuthorizedForAll(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): boolean {
+  const resource: AccessResource = { kind, name: "*", fields: { name: "*" } };
+  return auditRefusal(
+    socket,
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    decideAccess(socket, principal, action, resource, ctx, true),
+  );
+}
+
+/** Whether `outcome` allows; a refusal is audited, nothing is sent. */
+function auditRefusal(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+  outcome: AccessOutcome,
+): boolean {
   switch (outcome.kind) {
     case "allowed":
       return true;

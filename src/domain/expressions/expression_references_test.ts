@@ -1,0 +1,205 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals } from "@std/assert";
+import {
+  analyzeContentExpressions,
+  analyzeExpression,
+} from "./expression_references.ts";
+
+function targets(cel: string) {
+  const r = analyzeExpression(cel);
+  return {
+    data: [...r.dataTargets].sort(),
+    model: [...r.modelTargets].sort(),
+    dataWide: r.dataWide,
+  };
+}
+
+Deno.test("analyzeExpression: model-scoped data accessors name their model", () => {
+  for (
+    const cel of [
+      'data.latest("prod-db", "result").attributes.stdout',
+      'data.version("prod-db", "result", 2)',
+      'data.listVersions("prod-db", "result")',
+      'data.findBySpec("prod-db", "result")',
+    ]
+  ) {
+    assertEquals(targets(cel), {
+      data: ["prod-db"],
+      model: [],
+      dataWide: false,
+    }, cel);
+  }
+});
+
+Deno.test("analyzeExpression: a namespaced target keeps its prefix", () => {
+  assertEquals(targets('data.latest("ops:prod-db", "x")').data, [
+    "ops:prod-db",
+  ]);
+});
+
+Deno.test("analyzeExpression: a computed model argument reads any data", () => {
+  for (
+    const cel of [
+      'data.latest(inputs.target, "x")',
+      'data.latest("prod-" + "db", "x")',
+      'data.latest(self.globalArguments.target, "x")',
+      'data.latest("", "x")',
+    ]
+  ) {
+    assertEquals(analyzeExpression(cel).dataWide, true, cel);
+  }
+});
+
+Deno.test("analyzeExpression: cross-model accessors read any data", () => {
+  assertEquals(
+    analyzeExpression('data.query("modelName == \\"a\\"")').dataWide,
+    true,
+  );
+  assertEquals(
+    analyzeExpression('data.findByTag("env", "prod")').dataWide,
+    true,
+  );
+});
+
+Deno.test("analyzeExpression: an unknown data accessor fails closed", () => {
+  assertEquals(
+    analyzeExpression('data.somethingNew("prod-db")').dataWide,
+    true,
+  );
+});
+
+Deno.test("analyzeExpression: model map entries by dot, bracket and hyphen", () => {
+  assertEquals(targets("model.prod.resource.state.x"), {
+    data: ["prod"],
+    model: [],
+    dataWide: false,
+  });
+  assertEquals(targets("model.prod-db.resource.state.x").data, ["prod-db"]);
+  assertEquals(targets('model["prod-db"].file.x').data, ["prod-db"]);
+  assertEquals(targets('model[?"prod-db"].resource').data, ["prod-db"]);
+});
+
+Deno.test("analyzeExpression: definition accessors read the model, not its data", () => {
+  assertEquals(targets("model.prod.input.globalArguments.x"), {
+    data: [],
+    model: ["prod"],
+    dataWide: false,
+  });
+  assertEquals(targets("model.prod.definition.name").model, ["prod"]);
+});
+
+Deno.test("analyzeExpression: a whole model entry reads both", () => {
+  assertEquals(targets('model["prod"]'), {
+    data: ["prod"],
+    model: ["prod"],
+    dataWide: false,
+  });
+});
+
+Deno.test("analyzeExpression: the model map with a computed key or whole reads any data", () => {
+  for (
+    const cel of [
+      "model[inputs.target].resource",
+      "model.map(m, m)",
+      "size(model) > 0",
+      'cel.bind(m, model, m["prod"].resource)',
+    ]
+  ) {
+    assertEquals(analyzeExpression(cel).dataWide, true, cel);
+  }
+});
+
+Deno.test("analyzeExpression: an aliased data namespace reads any data", () => {
+  assertEquals(
+    analyzeExpression('cel.bind(d, data, d.latest("prod", "x"))').dataWide,
+    true,
+  );
+});
+
+Deno.test("analyzeExpression: a bound variable shadows a namespace", () => {
+  const r = analyzeExpression("[1].map(data, data + 1)");
+  assertEquals(r.dataWide, false);
+  const env = analyzeExpression('cel.bind(env, "x", env + "y")');
+  assertEquals(env.usesEnv, false);
+});
+
+Deno.test("analyzeExpression: file.contents names its model", () => {
+  assertEquals(targets('file.contents("prod", "log")').data, ["prod"]);
+  assertEquals(
+    analyzeExpression('file.contents(inputs.m, "log")').dataWide,
+    true,
+  );
+});
+
+Deno.test("analyzeExpression: model.method runs a model and reads any data", () => {
+  assertEquals(analyzeExpression('model.method("prod", "get")').dataWide, true);
+});
+
+Deno.test("analyzeExpression: env reads are reported", () => {
+  assertEquals(analyzeExpression("env.AWS_SECRET_ACCESS_KEY").usesEnv, true);
+  assertEquals(analyzeExpression('env["X"] + "y"').usesEnv, true);
+  assertEquals(analyzeExpression("self.name").usesEnv, false);
+});
+
+Deno.test("analyzeExpression: self and inputs reads are reported", () => {
+  assertEquals(
+    analyzeExpression("self.globalArguments.x").readsSelfOrInputs,
+    true,
+  );
+  assertEquals(analyzeExpression("inputs.x").readsSelfOrInputs, true);
+  assertEquals(analyzeExpression('"x"').readsSelfOrInputs, false);
+});
+
+Deno.test("analyzeExpression: nested references are all found", () => {
+  const r = analyzeExpression(
+    'data.latest(data.latest("cfg", "x").attributes.target, "y")',
+  );
+  assertEquals([...r.dataTargets], ["cfg"]);
+  assertEquals(r.dataWide, true);
+});
+
+Deno.test("analyzeExpression: text that does not parse fails closed", () => {
+  assertEquals(analyzeExpression("data.latest(").dataWide, true);
+});
+
+Deno.test("analyzeExpression: a constant reads nothing", () => {
+  const r = analyzeExpression('literal("{{ model.x.resource }}")');
+  assertEquals(r.dataWide, false);
+  assertEquals(r.dataTargets.size, 0);
+});
+
+Deno.test("analyzeContentExpressions: keys each expression by its raw text", () => {
+  const analyzed = analyzeContentExpressions(
+    {
+      globalArguments: {
+        a: '${{ data.latest("prod", "x") }}',
+        b: "plain",
+        c: "${{ env.HOME }}-${{ env.HOME }}",
+      },
+    },
+    [{ raw: "1 == 1", celExpression: "1 == 1" }],
+  );
+  assertEquals(analyzed.map((a) => a.raw).sort(), [
+    '${{ data.latest("prod", "x") }}',
+    "${{ env.HOME }}",
+    "1 == 1",
+  ]);
+});

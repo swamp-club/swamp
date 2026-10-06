@@ -199,6 +199,19 @@ import {
   unresolvedAccessResource,
   workflowAccessResource,
 } from "./resource_resolution.ts";
+import {
+  expressionsAddedByEdit,
+  plainContentChanged,
+} from "../../domain/expressions/expression_references.ts";
+import {
+  analyzeWorkflowExpressions,
+  isComputedStepTarget,
+  readsSelfOrInputs,
+  stepTargetKey,
+  workflowStepTargets,
+} from "../../domain/workflows/step_targets.ts";
+import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
+import { authorizeStepTargets } from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -233,6 +246,50 @@ function resolveWorkflowRequest(
     ctx.repoContext.workflowRepo,
     idOrName,
     workflowsDirFor(ctx.repoDir),
+  );
+}
+
+/**
+ * The refusal for a workflow edit, or undefined when the writer may add
+ * everything it adds: expressions that read only what they may read, and
+ * steps that run only what they may run. A plain-value change re-checks
+ * computed targets that read `self` or `inputs`, since an input default can
+ * retarget them.
+ */
+async function authorizeWorkflowEdit(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+  before: Workflow,
+  after: Workflow,
+): Promise<string | undefined> {
+  const beforeData = before.toData();
+  const afterData = after.toData();
+  const refusal = await authorizeExpressionReferences(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    expressionsAddedByEdit(
+      { data: beforeData, expressions: analyzeWorkflowExpressions(before) },
+      { data: afterData, expressions: analyzeWorkflowExpressions(after) },
+    ),
+    "allowed",
+  );
+  if (refusal) return refusal.message;
+  const stored = new Set(workflowStepTargets(before).map(stepTargetKey));
+  const plainChanged = plainContentChanged(beforeData, afterData);
+  return await authorizeStepTargets(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    workflowStepTargets(after).filter((target) =>
+      !stored.has(stepTargetKey(target)) ||
+      (plainChanged && isComputedStepTarget(target) &&
+        readsSelfOrInputs(target))
+    ),
   );
 }
 
@@ -2187,6 +2244,21 @@ export async function handleWorkflowEdit(
                 name: after.name,
                 fields: workflowAccessFields(after),
               }, ctx).allowed,
+            // The expressions and steps the edit adds are authorized against
+            // this writer; those already stored are not (swamp-club#2755).
+            authorizeContent: async (before, after) => {
+              const refusal = await authorizeWorkflowEdit(
+                socket,
+                requestId,
+                principal,
+                ctx,
+                before,
+                after,
+              );
+              if (refusal === undefined) return true;
+              sendError(socket, requestId, "unauthorized", refusal);
+              return false;
+            },
           }),
           {
             resolving: () => {},
