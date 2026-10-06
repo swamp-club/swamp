@@ -483,9 +483,15 @@ transports to that. What it does, in order:
   read.
 - The wait's registration says which workflow and run it belongs to. The caller
   needs `signal` on that workflow, resolved as a run's workflow is
-  (`CanonicalResources.workflowOwners`). When this instance has the run record,
-  the workflow recorded on the run must equal the registration's; a mismatch
-  means a stored record was altered, and is refused and logged.
+  (`CanonicalResources.workflowOwners`). The registration is trusted for this:
+  it is a plaintext record in a store other writers can reach, and a writer who
+  can alter it can also create the wait's outcome directly, so authorizing on
+  it gives away nothing more. One inconsistency is caught along the way. When
+  this instance finds the run record, the workflow name recorded on the run
+  must equal the registration's, and a signal for a registration whose name was
+  changed is refused and logged. A registration whose workflow ID was changed
+  is not caught: runs are stored per workflow, so the run is looked for under
+  the altered ID, is not found, and there is nothing to compare.
 - **An unknown wait ID and a wait the caller may not signal get the same
   answer**: `not_found` over WebSocket, 404 over HTTP, with one fixed message.
   The denial is audited with the workflow's name; the reply never carries it.

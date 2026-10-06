@@ -111,8 +111,14 @@ async function fixture(name = "release"): Promise<Fixture> {
   const workflows = new Map([[workflow.name, workflow]]);
   const repoContext = {
     workflowRunRepo: {
-      findById: (_workflowId: string, runId: string) =>
-        Promise.resolve(runs.get(runId) ?? null),
+      // Runs are stored per workflow, as in the real repository: a run is
+      // found only under the workflow it belongs to.
+      findById: (workflowId: string, runId: string) => {
+        const found = runs.get(runId);
+        return Promise.resolve(
+          found && found.workflowId === workflowId ? found : null,
+        );
+      },
       findGlobalByStatus: () => {
         throw new Error("serve must not scan run records for a signal");
       },
@@ -231,12 +237,35 @@ Deno.test("deliverSignalForCaller: a refused caller stores nothing", async () =>
   assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
 });
 
-Deno.test("deliverSignalForCaller: a registration naming another workflow than its run is refused", async () => {
+Deno.test("deliverSignalForCaller: a registration whose workflow name was changed is refused", async () => {
   const f = await fixture("restricted");
   const allowed = waitingWorkflow("open");
   f.workflows.set(allowed.name, allowed);
-  // Someone with write access to the store repoints the wait at a workflow
-  // the caller may signal. The run record still says where it belongs.
+  // Someone with write access to the store renames the wait's workflow to
+  // one the caller may signal. The run, found under the unchanged workflow
+  // ID, still records the name it belongs to.
+  const stored = await f.waits.findRegistration(f.waitId);
+  assert(stored.kind === "found");
+  f.waits.registrations.set(
+    f.waitId,
+    encodeWaitRecord({ ...stored.record, workflowName: allowed.name }),
+  );
+  const ctx = f.ctxWith([grantOf(["signal", "read"], "open")]);
+
+  assertEquals(await deliver(ctx, f.waitId), NOT_FOUND);
+  assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
+});
+
+Deno.test("deliverSignalForCaller: a registration whose workflow ID was changed is not detected", async () => {
+  const f = await fixture("restricted");
+  const allowed = waitingWorkflow("open");
+  f.workflows.set(allowed.name, allowed);
+  // The limit of the check above, pinned so it is not mistaken for a
+  // guarantee: with the ID changed too, the run is looked for under the
+  // other workflow and not found, so the registration is all there is to
+  // go on and the caller is authorized against the workflow it names.
+  // Whoever can rewrite a registration can also create the outcome record
+  // directly, so this path gives them nothing they did not have.
   const stored = await f.waits.findRegistration(f.waitId);
   assert(stored.kind === "found");
   f.waits.registrations.set(
@@ -249,8 +278,11 @@ Deno.test("deliverSignalForCaller: a registration naming another workflow than i
   );
   const ctx = f.ctxWith([grantOf(["signal", "read"], "open")]);
 
-  assertEquals(await deliver(ctx, f.waitId), NOT_FOUND);
-  assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
+  const result = await deliver(ctx, f.waitId);
+
+  assert(result.status === "delivered", JSON.stringify(result));
+  assertEquals(result.data.workflowName, "open");
+  assertEquals(result.data.runRecordAvailable, false);
 });
 
 Deno.test("deliverSignalForCaller: without the run record a signal is still delivered, and says so to a reader", async () => {

@@ -176,6 +176,9 @@ export async function deliverSignalForCaller(
 
   let readable = false;
   const authorize = async (wait: SignalWaitSubject): Promise<boolean> => {
+    // Catches a registration whose workflow name was changed. One whose
+    // workflow ID was changed finds no run record, so nothing is compared;
+    // a writer who can do that can also create the outcome directly.
     const recorded = wait.runWorkflow;
     if (
       recorded && (recorded.workflowId !== wait.workflowId ||

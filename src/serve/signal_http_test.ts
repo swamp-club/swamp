@@ -262,3 +262,67 @@ Deno.test("handleSignalHttpRequest: in audit fail-secure mode a signal is refuse
   assertEquals(response.status, 503);
   await response.body?.cancel();
 });
+
+Deno.test("handleSignalHttpRequest: the Bearer scheme is matched in any case and the token is passed as sent", async () => {
+  for (const scheme of ["Bearer", "bearer", "BEARER", "bEaReR"]) {
+    resetRateLimitState();
+    const calls: string[] = [];
+    const response = await handleSignalHttpRequest(
+      new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
+        method: "POST",
+        headers: { authorization: `${scheme} good.secret` },
+        body: "{not json",
+      }),
+      WAIT_ID,
+      "203.0.113.9",
+      deps("token", calls),
+    );
+    // Authenticated: the malformed body, not the token, refuses the request.
+    assertEquals(response.status, 400, scheme);
+    assertEquals(calls, ["good.secret"], scheme);
+    await response.body?.cancel();
+  }
+});
+
+Deno.test("handleSignalHttpRequest: the token's own case is kept", async () => {
+  resetRateLimitState();
+  const calls: string[] = [];
+  const response = await handleSignalHttpRequest(
+    new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
+      method: "POST",
+      headers: { authorization: "bearer Good.Secret" },
+    }),
+    WAIT_ID,
+    "203.0.113.10",
+    deps("token", calls),
+  );
+  assertEquals(response.status, 401);
+  assertEquals(calls, ["Good.Secret"]);
+  await response.body?.cancel();
+});
+
+Deno.test("handleSignalHttpRequest: another scheme, or a Bearer header with no token, is not authenticated", async () => {
+  for (
+    const authorization of [
+      "Basic good.secret",
+      "Bearer ",
+      "Bearer",
+      "good.secret",
+    ]
+  ) {
+    resetRateLimitState();
+    const calls: string[] = [];
+    const response = await handleSignalHttpRequest(
+      new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
+        method: "POST",
+        headers: { authorization },
+      }),
+      WAIT_ID,
+      "203.0.113.11",
+      deps("token", calls),
+    );
+    assertEquals(response.status, 401, authorization);
+    assertEquals(calls, [], authorization);
+    await response.body?.cancel();
+  }
+});

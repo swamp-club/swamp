@@ -98,6 +98,23 @@ const STATUS: Record<SignalDeliveryResult["status"], number> = {
   failed: 500,
 };
 
+const BEARER_PREFIX_LEN = "Bearer ".length;
+
+/**
+ * The token of a `Bearer` authorization header, or null. The scheme is
+ * matched in any case, as HTTP defines it and as the WebSocket upgrade
+ * reads it (`extractWebSocketToken`); the token is returned as sent.
+ */
+function bearerToken(req: Request): string | null {
+  const header = req.headers.get("authorization");
+  if (
+    header === null ||
+    header.slice(0, BEARER_PREFIX_LEN).toLowerCase() !== "bearer "
+  ) return null;
+  const token = header.slice(BEARER_PREFIX_LEN);
+  return token.length > 0 ? token : null;
+}
+
 function tooManyRequests(retryAfterSeconds: number): Response {
   return new Response("Too Many Requests", {
     status: 429,
@@ -132,10 +149,7 @@ export async function handleSignalHttpRequest(
   if (ctx.authConfig.mode !== "none") {
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
-    const authHeader = req.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice(7)
-      : null;
+    const token = bearerToken(req);
     if (!token) {
       return new Response("Unauthorized: token required", { status: 401 });
     }

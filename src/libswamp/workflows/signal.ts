@@ -105,8 +105,10 @@ export interface SignalWaitSubject {
   workflowName?: string;
   runId: string;
   /**
-   * The workflow recorded on the run, when this host has the run record. It
-   * equals the fields above unless a stored record was altered.
+   * The workflow recorded on the run, when this host finds the run record.
+   * The run is looked up under `workflowId`, so the two IDs always agree; the
+   * names differ when the registration's name was altered. A registration
+   * whose workflow ID was altered finds no run, and this is absent.
    */
   runWorkflow?: { workflowId: string; workflowName: string };
 }
