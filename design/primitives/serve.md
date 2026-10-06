@@ -332,6 +332,22 @@ lands either before the re-read or after the unit. The gap is in two places:
 
 Both fail closed: the token has to be minted again.
 
+**OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
+`oauth-client-secret`, `oauth-bootstrap-access-token` and
+`oauth-resolved-admins` in the default user vault. On start, serve lists that
+vault once, moves any of the four that `_token-secrets` lacks, and deletes them
+from the user vault when it supports deletes. When the listing succeeds and
+every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
+the migration never touches the user vault again. A key that is legitimately
+absent, such as the bootstrap access token after an API-key registration,
+therefore costs the migration nothing after the first start. Credential
+resolution, which runs before the migration, still falls back to the user vault
+for a key `_token-secrets` lacks; it asks for the bootstrap access token only
+while `oauth-resolved-admins` is unset. A user vault that
+cannot be listed, or a key that fails to move, leaves the marker unset and the
+next start retries. Once the marker exists, an `oauth-*` item added to the user
+vault is neither moved nor deleted (swamp-club#2471).
+
 **Token secrets key.** By default the AES-256-GCM key that encrypts
 `_token-secrets` is generated on first use and stored beside the ciphertext, at
 `token-secrets/encryption-key` in the same control-plane store. With a remote
