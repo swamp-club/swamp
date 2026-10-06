@@ -2358,3 +2358,55 @@ Deno.test("saveDeferred: a failed pending-row write removes the allocated versio
     }
   }
 });
+
+Deno.test("saveDeferred: a write that reuses a deleted version number is not readable through the latest marker (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo) => {
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.save(testType, "m1", stepData("s1"), bytes("b"));
+    // Only the in-flight v1 is left once v2 is deleted.
+    await repo.delete(testType, "m1", "out", 2);
+
+    const next = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("c"),
+    );
+
+    assertEquals(next.version, 2);
+    assertEquals(await repo.findByName(testType, "m1", "out"), null);
+    assertEquals(repo.findByNameSync(testType, "m1", "out"), null);
+  });
+});
+
+Deno.test("allocateVersion: a failed pending-row write removes the allocated version (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new FailingPendingCatalog(join(dir, "_catalog.db"));
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+    );
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    catalogStore.failPending = true;
+
+    await assertRejects(
+      () =>
+        repo.allocateVersion(testType, "m1", stepData("s1"), {
+          deferred: true,
+        }),
+      Error,
+      "database is locked",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

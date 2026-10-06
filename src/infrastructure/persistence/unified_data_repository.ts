@@ -60,6 +60,13 @@ import {
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
+/**
+ * The latest marker's value when a data name has versions on disk but none
+ * promoted, only in-flight deferred writes. Versions start at 1, so no write
+ * is ever allocated it and reads through the marker find nothing.
+ */
+const NO_PROMOTED_VERSION = 0;
+
 // Re-export domain repository types so existing infra-path importers keep working.
 // New domain code should import directly from src/domain/data/repositories.ts.
 export {
@@ -1082,9 +1089,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           this.catalogUpsert(type, modelId, latestData);
         }
       } else if (onDisk.length > 0) {
-        // Only in-flight deferred writes are left. The marker keeps naming
-        // the deleted version, so reads find nothing instead of falling back
-        // to the highest version on disk; the write's promotion replaces it.
+        // Only in-flight deferred writes are left. Point the marker at
+        // NO_PROMOTED_VERSION, which no write is ever allocated, so reads
+        // find nothing instead of falling back to the highest version on
+        // disk; the write's promotion moves the marker forward again.
+        await this.updateLatestMarker(
+          type,
+          modelId,
+          dataName,
+          NO_PROMOTED_VERSION,
+        );
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -1367,11 +1381,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // A deferred write is registered as pending before its content is
     // streamed in; finalizeVersionDeferred completes the row.
     if (options?.deferred) {
-      this.upsertPendingRow(
-        type,
-        modelId,
-        data.withNewVersion({ version: newVersion, size: 0 }),
-      );
+      try {
+        this.upsertPendingRow(
+          type,
+          modelId,
+          data.withNewVersion({ version: newVersion, size: 0 }),
+        );
+      } catch (error) {
+        // The writer never gets the allocation, so nothing else would roll
+        // the empty version directory back.
+        await this.rollbackVersions([
+          { type, modelId, dataName: data.name, version: newVersion },
+        ]);
+        throw error;
+      }
     }
 
     const contentPath = this.getContentPath(
@@ -2074,8 +2097,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             this.catalogUpsert(type, modelId, latestData);
           }
         } else if (onDisk.length > 0) {
-          // Only in-flight deferred writes are left: leave the marker, as
-          // delete does.
+          // Only in-flight deferred writes are left: as delete does.
+          await this.updateLatestMarker(
+            type,
+            modelId,
+            data.name,
+            NO_PROMOTED_VERSION,
+          );
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
           await this.stage({ kind: "remove", path: dataNameDir });
@@ -2341,11 +2369,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * Removes a data name that has no versions left but still has a latest
-   * marker naming a version that is gone. Deleting the last promoted version
-   * while a deferred write is in flight leaves the marker that way on
-   * purpose; once that write is rolled back too, nothing is left to read. A
-   * name without a marker (a first deferred write rolled back) is left as it
-   * is.
+   * marker. Deleting the last promoted version while a deferred write is in
+   * flight leaves the marker at NO_PROMOTED_VERSION; once that write is
+   * rolled back too, nothing is left to read. A name without a marker (a
+   * first deferred write rolled back) is left as it is.
    */
   private async removeNameLeftWithDanglingMarker(
     type: ModelType,
@@ -2471,7 +2498,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           modelId,
           row.data_name,
           row.version,
-          true,
+          data !== null,
         );
         this.catalogStore.recordLocalWrite();
         if (data) this.catalogUpsert(type, modelId, data);

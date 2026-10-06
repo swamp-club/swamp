@@ -20,11 +20,13 @@ import { hostname } from "node:os";
 
 /**
  * Identifies where this process's pids live, for judging whether a pid
- * another process recorded is still running: the hostname, plus on Linux the
- * pid namespace. Containers that share a hostname (host networking) but not a
- * pid namespace get different identities, so one never reads the other's
- * live pid as dead. Falls back to the hostname alone when the namespace
- * cannot be read.
+ * another process recorded on the same machine is still running: the
+ * hostname, plus on Linux the pid namespace. Containers that share a hostname
+ * (host networking) but not a pid namespace get different identities, so one
+ * never reads the other's live pid as dead. It does not tell machines apart
+ * beyond their hostname: every Linux host's root pid namespace has the same
+ * id. Callers rely on what it judges being local, as the data catalog is.
+ * Falls back to the hostname alone when the namespace cannot be read.
  */
 export function processHostIdentity(): string {
   if (cachedHostIdentity === undefined) {
