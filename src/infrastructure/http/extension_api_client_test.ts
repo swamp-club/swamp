@@ -1230,3 +1230,67 @@ Deno.test("ExtensionApiClient.downloadArchive stops reading a body with no Conte
     await server.shutdown();
   }
 });
+
+Deno.test("ExtensionApiClient.listVersions: sends every channel filter and the page, and reads the list back", async () => {
+  const seen: URL[] = [];
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    seen.push(new URL(req.url));
+    return Response.json({
+      versions: [{ version: "2026.09.16.1", channel: "rc", publishedAt: "" }],
+      meta: { total: 1, page: 2, perPage: 100 },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const result = await client.listVersions("@test/ext", {
+      channel: ["stable", "rc", "beta"],
+      perPage: 100,
+      page: 2,
+    }, "test-key");
+    assertEquals(result.versions[0].channel, "rc");
+    assertEquals(result.meta.total, 1);
+    assertEquals(seen[0].pathname, "/api/v1/extensions/%40test%2Fext/versions");
+    assertEquals(seen[0].searchParams.getAll("channel"), [
+      "stable",
+      "rc",
+      "beta",
+    ]);
+    assertEquals(seen[0].searchParams.get("perPage"), "100");
+    assertEquals(seen[0].searchParams.get("page"), "2");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.listVersions: an unknown extension lists no versions", async () => {
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () => new Response("not found", { status: 404 }),
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const result = await client.listVersions("@test/none");
+    assertEquals(result.versions, []);
+    assertEquals(result.meta.total, 0);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: uses the injected fetch for every request", async () => {
+  const urls: string[] = [];
+  const client = new ExtensionApiClient("https://registry.test", {}, {
+    fetch: (url) => {
+      urls.push(String(url));
+      return Promise.resolve(new Response("", { status: 404 }));
+    },
+  });
+  assertEquals(await client.getLatestVersion("@test/ext"), null);
+  assertEquals(urls, [
+    "https://registry.test/api/v1/extensions/%40test%2Fext/latest",
+  ]);
+});

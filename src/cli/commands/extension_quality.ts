@@ -167,6 +167,7 @@ export const extensionQualityCommand = new Command()
             additionalFilePaths: resolved.additionalFilePaths,
             binaryFilePaths: resolved.binaryFilePaths,
             dryRun: true,
+            registryChecks: "skip",
             denoConfigPath,
           },
           hashInput: {

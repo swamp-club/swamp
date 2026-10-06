@@ -376,6 +376,46 @@ reports:
 5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
 6. **Push**: `swamp extension push manifest.yaml --yes --json`
 
+### What the dry run checks
+
+With credentials present, the dry run runs the registry checks a real push runs,
+read-only, and reports each one in the `dry_run` document's `registryChecks`
+array with the wording the push would fail with:
+
+| Check                   | Passed when                                              |
+| ----------------------- | -------------------------------------------------------- |
+| `authentication`        | the stored key is accepted by the registry               |
+| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry |
+| `collective-membership` | the manifest's collective is one of yours                |
+| `version-exists`        | the manifest version is not published on any channel     |
+
+A `failed` check exits non-zero after the summary. A `not-run` check names the
+missing prerequisite in `message` and `cause`: `no-credentials` leaves the run
+green, since the registry was never asked; `registry-unavailable` exits
+non-zero, since the registry never confirmed what the push needs. The dry run
+never prompts and never writes to the registry.
+
+`apiCalls` lists every HTTP call the run made (registry, OSV, npm) with its
+method, URL and outcome; the log summary says "No API calls were made." only
+when that list is empty. `contentHash` is the hash the adversarial-review report
+path is keyed by.
+
+### Reproducing the CI layout
+
+The content hash labels files by their path relative to the swamp repo dir, so
+the same extension hashes differently from a sibling repo. CI publishes from a
+swamp repo initialised inside the extension directory. To compute the same hash
+locally, run the dry run in that layout:
+
+```bash
+cd path/to/extension          # the directory holding manifest.yaml
+[ -f .swamp.yaml ] || swamp repo init --quiet --tool none
+swamp extension push manifest.yaml --dry-run --json
+```
+
+Compare `contentHash` in the output with the hash CI reports. Any byte change in
+a packaged file, or a version bump, moves the hash.
+
 ### Opportunistic package cache
 
 `swamp extension quality`, `swamp extension push --dry-run`, and
@@ -429,7 +469,8 @@ swamp extension push manifest.yaml --json
 # Push to a prerelease channel (beta or rc)
 swamp extension push manifest.yaml --channel beta --json
 
-# Validate locally without pushing (builds archive, runs safety checks)
+# Validate locally without pushing (builds archive, runs safety checks and
+# the registry checks read-only; lists the API calls it made)
 swamp extension push manifest.yaml --dry-run --json
 
 # Skip all confirmation prompts
@@ -442,7 +483,9 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 ### What Happens During Push
 
 1. **Parse manifest** — validates schema, checks required fields
-2. **Validate collective** — confirms manifest name matches your username
+2. **Registry checks** — authentication, reserved collective, collective
+   membership (the manifest's collective is one of yours) and version exists (on
+   any channel). A dry run reports them; a push stops at the first failure.
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
 4. **Detect project config** — walks up from manifest directory to repo root

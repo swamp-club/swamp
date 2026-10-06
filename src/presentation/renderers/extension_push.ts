@@ -17,10 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  EventHandlers,
-  ExtensionPushEvent,
-  ExtensionPushResolvedData,
+import {
+  type ApiCallRecord,
+  type EventHandlers,
+  type ExtensionPushEvent,
+  type ExtensionPushResolvedData,
+  REGISTRY_CHECK_LABELS,
+  type RegistryCheckResult,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -76,6 +79,12 @@ export interface ExtensionPushDryRunData {
   version: string;
   archiveSize: number;
   visibility: ExtensionPushResolvedData["visibility"];
+  /** The content hash the review report is keyed by. */
+  contentHash: string | undefined;
+  /** Each registry check's verdict, in the order the push runs them. */
+  registryChecks: RegistryCheckResult[];
+  /** Every HTTP call the run made; empty when none was made. */
+  apiCalls: ApiCallRecord[];
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
 }
@@ -339,7 +348,38 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     this.logger.info`Dry run complete for ${data.name}@${data.version}`;
     renderRequestedVisibility(data.visibility);
     this.logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
-    this.logger.info("No API calls were made.");
+    if (data.contentHash) {
+      this.logger.info`Content hash: ${data.contentHash}`;
+    }
+    if (data.registryChecks.length > 0) {
+      this.logger.info("Registry checks:");
+      for (const check of data.registryChecks) {
+        const label = REGISTRY_CHECK_LABELS[check.name];
+        const line = `  ${label}: ${
+          check.status === "not-run" ? "not run" : check.status
+        } — ${check.message}`;
+        if (check.status === "failed") {
+          this.logger.error(line);
+        } else if (check.status === "not-run") {
+          this.logger.warn(line);
+        } else {
+          this.logger.info(line);
+        }
+      }
+    }
+    if (data.apiCalls.length === 0) {
+      this.logger.info("No API calls were made.");
+    } else {
+      this.logger.info`API calls made (${data.apiCalls.length}):`;
+      for (const call of data.apiCalls) {
+        const outcome = call.status !== undefined
+          ? `${call.outcome} (${call.status})`
+          : call.outcome;
+        this.logger.info(
+          `  ${call.service}: ${call.method} ${call.url} ${outcome}`,
+        );
+      }
+    }
     if (data.accepted) {
       this.renderAcceptedWarnings(data.accepted);
     }
@@ -464,11 +504,15 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   renderDryRun(data: ExtensionPushDryRunData): void {
     // The document carries the record alone, under `acceptedWarnings`, and
     // only when something was waived; the waiving flag is a log-mode detail.
-    const { accepted, ...summary } = data;
+    const { accepted, contentHash, registryChecks, apiCalls, ...summary } =
+      data;
     console.log(
       JSON.stringify(
         {
           ...summary,
+          ...(contentHash ? { contentHash } : {}),
+          registryChecks,
+          apiCalls,
           ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
           status: "dry_run",
         },

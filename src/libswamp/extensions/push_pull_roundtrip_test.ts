@@ -94,7 +94,7 @@ function makePrepareDeps(
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getDenoEnv: () => Deno.env.toObject(),
-    getLatestVersion: () => Promise.resolve(null),
+    findPublishedVersion: () => Promise.resolve(null),
     getLatestVersionDetail: () => Promise.resolve(null),
     ...overrides,
   };
@@ -185,6 +185,7 @@ Deno.test(
         ],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();
@@ -286,6 +287,7 @@ Deno.test(
         additionalFilePaths: [join(extDir, "README.md")],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();
@@ -390,6 +392,7 @@ Deno.test(
         additionalFilePaths: [],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();
@@ -467,6 +470,7 @@ Deno.test(
         additionalFilePaths: [],
         binaryFilePaths: [join(src, "bin", "helper")],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();
@@ -544,6 +548,7 @@ Deno.test(
         additionalFilePaths: [],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();
@@ -624,6 +629,7 @@ Deno.test(
         additionalFilePaths: [join(extDir, "README.md")],
         binaryFilePaths: [],
         dryRun: true,
+        registryChecks: "skip",
       };
 
       const ctx = createLibSwampContext();

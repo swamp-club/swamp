@@ -27,6 +27,7 @@ import {
   type ClientIdentity,
   mergeIdentityHeaders,
 } from "./client_identity.ts";
+import type { Fetcher } from "./recording_fetcher.ts";
 import {
   fetchWithRateLimitRetry,
   hasCredential,
@@ -240,7 +241,7 @@ export class ExtensionApiClient {
   constructor(
     private readonly serverUrl: string,
     private readonly identity: ClientIdentity = {},
-    private readonly options: { sleep?: Sleep } = {},
+    private readonly options: { sleep?: Sleep; fetch?: Fetcher } = {},
   ) {}
 
   /**
@@ -838,12 +839,13 @@ export class ExtensionApiClient {
     // Authorization values from callers (e.g. push/yank, getCurrentUser)
     // override the constructor identity.
     const headers = mergeIdentityHeaders(this.identity, init.headers);
+    const doFetch = this.options.fetch ?? globalThis.fetch;
     try {
       // Each attempt gets its own timeout so a Retry-After wait never
       // eats into the next request's budget.
       const res = await fetchWithRateLimitRetry(
         () =>
-          fetch(url, {
+          doFetch(url, {
             ...init,
             headers,
             signal: init.signal ?? AbortSignal.timeout(15_000),
