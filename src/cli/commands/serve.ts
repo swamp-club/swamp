@@ -3728,62 +3728,13 @@ export const serveCommand = new Command()
         }),
       });
 
-      // Migrate OAuth bootstrap secrets from the user's vault to
-      // _token-secrets. These are fixed-name keys that were previously
-      // stored in the user's vault during first-time OAuth setup.
-      const {
-        OAUTH_CLIENT_ID_KEY,
-        OAUTH_CLIENT_SECRET_KEY,
-        OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
-        OAUTH_RESOLVED_ADMINS_KEY,
-      } = await import("../../serve/oauth_registration.ts");
-      const userVaultForMigration =
-        migrationVaultService.getDefaultVaultName() ??
-          migrationVaultService.getVaultNames().find((n) =>
-            n !== TOKEN_SECRETS_VAULT_NAME
-          );
-      if (userVaultForMigration) {
-        for (
-          const key of [
-            OAUTH_CLIENT_ID_KEY,
-            OAUTH_CLIENT_SECRET_KEY,
-            OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
-            OAUTH_RESOLVED_ADMINS_KEY,
-          ]
-        ) {
-          try {
-            const existing = await migrationVaultService.get(
-              TOKEN_SECRETS_VAULT_NAME,
-              key,
-              "serve:oauth-migration",
-            );
-            if (existing) continue;
-          } catch { /* not in _token-secrets yet */ }
-          try {
-            const value = await migrationVaultService.get(
-              userVaultForMigration,
-              key,
-              "serve:oauth-migration",
-            );
-            await migrationVaultService.put(
-              TOKEN_SECRETS_VAULT_NAME,
-              key,
-              value,
-            );
-            if (
-              typeof migrationVaultService.supportsDelete === "function" &&
-              migrationVaultService.supportsDelete(userVaultForMigration)
-            ) {
-              await migrationVaultService.delete(userVaultForMigration, key)
-                .catch(() => {});
-            }
-            logger.info(
-              "Migrated OAuth secret {key} from vault to control-plane store",
-              { key },
-            );
-          } catch { /* key doesn't exist in old vault — skip */ }
-        }
-      }
+      const { migrateOAuthSecrets } = await import(
+        "../../serve/oauth_secret_migration.ts"
+      );
+      await migrateOAuthSecrets(
+        migrationVaultService,
+        TOKEN_SECRETS_VAULT_NAME,
+      );
     }
 
     let heartbeatService: InstanceHeartbeatService | undefined;
