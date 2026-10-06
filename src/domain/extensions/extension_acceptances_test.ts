@@ -20,12 +20,14 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AcceptanceDirective,
+  acceptanceSnippet,
   applyAcceptances,
   commentFormFor,
   invalidAcceptanceFinding,
   MAX_ACCEPTANCE_REASON_LENGTH,
   MAX_DIRECTIVES_PER_FILE,
   parseAcceptanceDirectives,
+  REASON_PLACEHOLDER,
   staleAcceptanceFinding,
   validateAcceptance,
 } from "./extension_acceptances.ts";
@@ -357,4 +359,76 @@ Deno.test("staleAcceptanceFinding: warns at the directive's own location", () =>
   assertEquals(finding.line, 7);
   assertStringIncludes(finding.message, "line 8");
   assertEquals(typeof finding.remediation, "string");
+});
+
+Deno.test("parseAcceptanceDirectives: a snippet pasted verbatim, placeholder and all, is invalid", () => {
+  const parsed = parseAcceptanceDirectives(
+    `x; // swamp-quality-ignore deno-command: ${REASON_PLACEHOLDER}\n`,
+    TS,
+  );
+  assertEquals(parsed.directives, []);
+  assertStringIncludes(parsed.invalid[0].problem, "replace <reason>");
+});
+
+Deno.test("acceptanceSnippet: a site finding in a .ts file is a line comment placed on its line or above", () => {
+  const snippet = acceptanceSnippet(
+    { ruleId: "deno-command", file: "/ext/models/thing.ts", line: 7 },
+    "/ext",
+  );
+  assertEquals(snippet?.text, "// swamp-quality-ignore deno-command: <reason>");
+  assertStringIncludes(snippet?.placement ?? "", "line 7 of models/thing.ts");
+});
+
+Deno.test("acceptanceSnippet: a site finding in Markdown is an HTML comment on the line above", () => {
+  const snippet = acceptanceSnippet(
+    { ruleId: "ipv4-address-literals", file: "/ext/README.md", line: 3 },
+    "/ext",
+  );
+  assertEquals(
+    snippet?.text,
+    "<!-- swamp-quality-ignore ipv4-address-literals: <reason> -->",
+  );
+  assertStringIncludes(snippet?.placement ?? "", "above line 3 of README.md");
+});
+
+Deno.test("acceptanceSnippet: a site finding in a .txt file and an extension finding are sidecar entries", () => {
+  const txt = acceptanceSnippet(
+    { ruleId: "ipv4-address-literals", file: "/ext/docs/hosts.txt", line: 2 },
+    "/ext",
+  );
+  assertStringIncludes(txt?.text ?? "", "- rule: ipv4-address-literals");
+  assertStringIncludes(txt?.text ?? "", "file: docs/hosts.txt");
+  assertStringIncludes(txt?.text ?? "", "reason: <reason>");
+  const ext = acceptanceSnippet(
+    { ruleId: "bare-specifiers", file: "(multiple files)" },
+    "/ext",
+  );
+  assertStringIncludes(ext?.text ?? "", "- rule: bare-specifiers");
+  assertEquals((ext?.text ?? "").includes("file:"), false);
+});
+
+Deno.test("acceptanceSnippet: testing-completeness is a header comment; unacceptable rules have no snippet", () => {
+  const header = acceptanceSnippet(
+    { ruleId: "testing-completeness", file: "/ext/models/thing.ts" },
+    "/ext",
+  );
+  assertEquals(
+    header?.text,
+    "// swamp-quality-ignore testing-completeness: <reason>",
+  );
+  assertStringIncludes(header?.placement ?? "", "top of models/thing.ts");
+  assertEquals(
+    acceptanceSnippet({
+      ruleId: "adversarial-review-report",
+      file: "/tmp/r.json",
+    }, "/ext"),
+    undefined,
+  );
+  assertEquals(
+    acceptanceSnippet(
+      { ruleId: "dynamic-code", file: "/ext/a.ts", line: 1 },
+      "/ext",
+    ),
+    undefined,
+  );
 });

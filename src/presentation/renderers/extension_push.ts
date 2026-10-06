@@ -41,6 +41,10 @@ import type { DependencyTrustIssue } from "../../domain/extensions/extension_dep
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
+import {
+  type FindingsReport,
+  renderFindingsReport,
+} from "./extension_findings_report.ts";
 
 /**
  * A review warning as it appears in the accepted-warnings record: the
@@ -96,12 +100,16 @@ export interface ExtensionPushDryRunData {
   apiCalls: ApiCallRecord[];
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
+  /** The declared acceptances and the For next time advice. */
+  report?: FindingsReport;
 }
 
 /** Per-run inputs for the stream handlers. */
 export interface ExtensionPushHandlerOptions {
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
+  /** The declared acceptances and the For next time advice. */
+  report?: FindingsReport;
 }
 
 /** Extended renderer with methods for the prepare-phase outputs. */
@@ -392,6 +400,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.accepted) {
       this.renderAcceptedWarnings(data.accepted);
     }
+    if (data.report) {
+      renderFindingsReport(this.logger, data.report);
+    }
   }
 
   handlers(
@@ -431,6 +442,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         this.logger.info`${parts.join(", ")}`;
         if (options?.accepted) {
           this.renderAcceptedWarnings(options.accepted);
+        }
+        if (options?.report) {
+          renderFindingsReport(this.logger, options.report);
         }
       },
       error: (e) => {
@@ -513,8 +527,14 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   renderDryRun(data: ExtensionPushDryRunData): void {
     // The document carries the record alone, under `acceptedWarnings`, and
     // only when something was waived; the waiving flag is a log-mode detail.
-    const { accepted, contentHash, registryChecks, apiCalls, ...summary } =
-      data;
+    const {
+      accepted,
+      report,
+      contentHash,
+      registryChecks,
+      apiCalls,
+      ...summary
+    } = data;
     console.log(
       JSON.stringify(
         {
@@ -523,6 +543,7 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
           registryChecks,
           apiCalls,
           ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
+          ...(report ?? {}),
           status: "dry_run",
         },
         null,
@@ -537,9 +558,13 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
-        const summary = options?.accepted
-          ? { ...e.data, acceptedWarnings: options.accepted.warnings }
-          : e.data;
+        const summary = {
+          ...e.data,
+          ...(options?.accepted
+            ? { acceptedWarnings: options.accepted.warnings }
+            : {}),
+          ...(options?.report ?? {}),
+        };
         console.log(JSON.stringify(summary, null, 2));
       },
       error: (e) => {

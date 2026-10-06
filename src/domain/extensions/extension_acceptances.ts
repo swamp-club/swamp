@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname } from "@std/path";
+import { extname, relative } from "@std/path";
 import {
   findRule,
   isAcceptableRule,
@@ -65,6 +65,13 @@ export const MAX_DIRECTIVES_PER_FILE = 50;
 
 /** Rule id grammar: lowercase words joined by hyphens. */
 const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+/**
+ * The placeholder the paste-ready snippets carry in place of a reason. A
+ * directive still carrying it is invalid, so pasting a snippet verbatim
+ * never accepts anything.
+ */
+export const REASON_PLACEHOLDER = "<reason>";
 
 /** What an acceptance names. */
 export type AcceptanceTarget =
@@ -149,6 +156,9 @@ export function validateAcceptance(
   }
   if (reason.length === 0) {
     return "a reason is required after the colon";
+  }
+  if (reason === REASON_PLACEHOLDER) {
+    return `replace ${REASON_PLACEHOLDER} with why this is acceptable`;
   }
   if (reason.length > MAX_ACCEPTANCE_REASON_LENGTH) {
     return `the reason is longer than ${MAX_ACCEPTANCE_REASON_LENGTH} characters`;
@@ -385,4 +395,93 @@ export function staleAcceptanceFinding(
       `Acceptance of ${directive.ruleId} matches nothing: the rule does not fire on ${where}. Remove it.`,
     remediation: remediationFor("stale-acceptance"),
   };
+}
+
+// ── Paste-ready acceptances ───────────────────────────────────────────
+
+/** The text an author pastes to accept a finding, and where it goes. */
+export interface AcceptanceSnippet {
+  /** The comment or sidecar entry, with the reason placeholder. */
+  text: string;
+  /** Where to put it, in words. */
+  placement: string;
+}
+
+/** A finding's file relative to the manifest's directory, with forward slashes. */
+export function fileRelativeToManifest(
+  manifestDir: string,
+  file: string,
+): string {
+  if (file.startsWith("(")) return file;
+  return relative(manifestDir, file).replaceAll("\\", "/");
+}
+
+function sidecarEntry(ruleId: string, file?: string): string {
+  return [
+    "# quality.yaml, beside manifest.yaml",
+    "version: 1",
+    "accept:",
+    `  - rule: ${ruleId}`,
+    ...(file !== undefined ? [`    file: ${file}`] : []),
+    `    reason: ${REASON_PLACEHOLDER}`,
+  ].join("\n");
+}
+
+/**
+ * The exact text to paste to accept a finding, or undefined when the rule
+ * has no acceptance form. `file` is the finding's path as it carries it;
+ * `manifestDir` makes the sidecar paths relative.
+ */
+export function acceptanceSnippet(
+  finding: AcceptableFinding,
+  manifestDir: string,
+): AcceptanceSnippet | undefined {
+  if (!isAcceptableRule(finding.ruleId)) return undefined;
+  const scope = findRule(finding.ruleId)!.scope;
+  const rel = fileRelativeToManifest(manifestDir, finding.file);
+  if (scope === "extension") {
+    return {
+      text: sidecarEntry(finding.ruleId),
+      placement: "in quality.yaml beside manifest.yaml",
+    };
+  }
+  const form = commentFormFor(finding.file);
+  if (scope === "file") {
+    if (form !== "line") {
+      return {
+        text: sidecarEntry(finding.ruleId, rel),
+        placement: "in quality.yaml beside manifest.yaml",
+      };
+    }
+    return {
+      text:
+        `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+      placement: `at the top of ${rel}`,
+    };
+  }
+  const where = finding.line !== undefined
+    ? `on line ${finding.line} of ${rel}, or the line above`
+    : `on the line in ${rel}`;
+  switch (form) {
+    case "line":
+      return {
+        text:
+          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
+        placement: where,
+      };
+    case "html":
+      return {
+        text:
+          `<!-- ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER} -->`,
+        placement: finding.line !== undefined
+          ? `on the line above line ${finding.line} of ${rel}`
+          : `on the line above, in ${rel}`,
+      };
+    case "none":
+      return {
+        text: sidecarEntry(finding.ruleId, rel),
+        placement:
+          `in quality.yaml beside manifest.yaml (${rel} has no comment form; this accepts the rule for the whole file)`,
+      };
+  }
 }
