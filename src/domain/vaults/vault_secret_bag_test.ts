@@ -539,16 +539,29 @@ Deno.test("VaultSecretBag.resolveForShell: an apostrophe in a comment does not c
   assertEquals(resolved.singleQuoted, []);
 });
 
-Deno.test("VaultSecretBag.resolveForShell: vault.get in a here-document body follows the quotes on its own line", () => {
+Deno.test("VaultSecretBag.resolveForShell: vault.get in a here-document body follows the quotes before it", () => {
   const bag = new VaultSecretBag();
   const s = bag.addSecret("v");
   const resolved = bag.resolveForShell(
-    `cat <<EOF\nit's here\n{"k": "${s}"}\nraw ${s}\nEOF\ncat <<'END'\n${s}\nEND`,
+    `cat <<EOF\n{"k": "${s}"}\nraw ${s}\nEOF\ncat <<'END'\n${s}\nEND`,
   );
   assertEquals(
     resolved.command,
-    `cat <<EOF\nit's here\n{"k": "\${__SWAMP_VAULT_0}"}\nraw "\${__SWAMP_VAULT_0}"\nEOF\n` +
+    `cat <<EOF\n{"k": "\${__SWAMP_VAULT_0}"}\nraw "\${__SWAMP_VAULT_0}"\nEOF\n` +
       `cat <<'END'\n"\${__SWAMP_VAULT_0}"\nEND`,
+  );
+  assertEquals(resolved.singleQuoted, []);
+});
+
+Deno.test("VaultSecretBag.resolveForShell: vault.get on a continuation line of a here-document string stays bare", () => {
+  const bag = new VaultSecretBag();
+  const s = bag.addSecret("v");
+  const resolved = bag.resolveForShell(
+    `cat <<EOF > run.sh\necho "line1\n${s}"\nEOF`,
+  );
+  assertEquals(
+    resolved.command,
+    `cat <<EOF > run.sh\necho "line1\n\${__SWAMP_VAULT_0}"\nEOF`,
   );
   assertEquals(resolved.singleQuoted, []);
 });

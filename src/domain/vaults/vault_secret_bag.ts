@@ -55,9 +55,10 @@ export interface ShellSecretResolution {
 
 /**
  * The quote context a vault.get() reference is chosen by, read from the
- * POSIX shell context of its occurrence. In a here-document body, quotes
- * are text, so only the quote characters earlier on the same line count,
- * and a reference there is never reported as single-quoted.
+ * POSIX shell context of its occurrence. In a here-document body the
+ * scanner has no quote context, so the quote characters counted from the
+ * start of the command decide, as before per-occurrence placement; a
+ * reference there is never reported as single-quoted.
  */
 function posixVaultQuote(
   command: string,
@@ -71,15 +72,10 @@ function posixVaultQuote(
     case "ansi-c":
       return "single";
     case "heredoc":
-    case "heredoc-literal": {
-      const line = command.slice(
-        command.lastIndexOf("\n", position - 1) + 1,
-        position,
-      );
-      return getQuoteContext(line, line.length) === "double"
+    case "heredoc-literal":
+      return getQuoteContext(command, position) === "double"
         ? "double"
         : "unquoted";
-    }
     default:
       return "unquoted";
   }
