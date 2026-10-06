@@ -165,6 +165,11 @@ export interface CompilationError {
 export interface ExtensionPushPrepareInput {
   manifest: ExtensionManifest;
   repoDir: string;
+  /**
+   * The manifest's directory. The `quality.yaml` sidecar (declared
+   * acceptances, the generated declaration) is discovered beside it.
+   */
+  manifestDir: string;
   modelsDir: string;
   allModelFiles: string[];
   modelEntryPoints: string[];
@@ -220,6 +225,8 @@ export interface ExtensionPushPrepared {
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
   reviewRulesResult: ReviewRulesResult;
+  /** The `quality.yaml` sidecar beside the manifest, when one exists. */
+  sidecar: { path: string; value: QualitySidecar } | undefined;
   archiveBytes: Uint8Array;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
@@ -405,6 +412,12 @@ import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extension
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import {
+  parseQualitySidecar,
+  QUALITY_SIDECAR_FILENAME,
+  type QualitySidecar,
+  qualitySidecarPath,
+} from "../../domain/extensions/extension_quality_sidecar.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
@@ -807,6 +820,10 @@ export async function extensionPushPrepare(
     }
   }
 
+  // 6a2. The quality sidecar beside the manifest. Read and validated here so
+  // a malformed one blocks like a malformed manifest, before any gate runs.
+  const sidecar = await readQualitySidecar(input.manifestDir);
+
   // 6b. Safety analysis
   // Include files are safety-checked but excluded from quality checks
   // (they may have their own tooling and conventions).
@@ -823,6 +840,7 @@ export async function extensionPushPrepare(
     ...qualityFiles,
     ...input.includeFilePaths,
     ...input.binaryFilePaths,
+    ...(sidecar ? [sidecar.path] : []),
   ];
   const binaryExemptSet = new Set(input.binaryFilePaths);
   const safetyResult = await deps.analyzeExtensionSafety(
@@ -1076,6 +1094,7 @@ export async function extensionPushPrepare(
     safetyWarnings: safetyResult.warnings,
     dependencyTrustResult,
     reviewRulesResult,
+    sidecar,
     archiveBytes,
     manifest: input.manifest,
     contentMetadata,
@@ -1280,6 +1299,45 @@ export async function* extensionPush(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads and validates the `quality.yaml` sidecar beside the manifest.
+ * Returns undefined when there is none; throws a validation error, naming
+ * every problem, when there is one that does not parse.
+ */
+async function readQualitySidecar(
+  manifestDir: string,
+): Promise<{ path: string; value: QualitySidecar } | undefined> {
+  const path = qualitySidecarPath(manifestDir);
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw validationFailed(
+      `Could not read ${QUALITY_SIDECAR_FILENAME}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const parsed = parseQualitySidecar(raw);
+  if (!parsed.ok) {
+    throw validationFailed(
+      `${QUALITY_SIDECAR_FILENAME} beside the manifest is invalid:\n` +
+        parsed.errors.map((e) => `  ${e}`).join("\n"),
+      { sidecarErrors: parsed.errors },
+    );
+  }
+  return { path, value: parsed.sidecar };
+}
 
 function buildResolvedData(
   input: ExtensionPushPrepareInput,
@@ -1611,6 +1669,13 @@ async function createArchive(
         dependencies: input.manifest.dependencies,
       }),
     );
+
+    // The quality sidecar travels at the archive root beside manifest.yaml,
+    // byte for byte, so the registry sees the acceptances as written.
+    const sidecarPath = qualitySidecarPath(input.manifestDir);
+    if (await fileExists(sidecarPath)) {
+      await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
+    }
 
     // Copy model source files
     for (const modelFile of input.allModelFiles) {

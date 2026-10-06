@@ -158,6 +158,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         modelsDir,
         allModelFiles: [join(modelsDir, "echo.ts")],
         modelEntryPoints: [join(modelsDir, "echo.ts")],
@@ -263,6 +264,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         // Resolver under paths.base=manifest sets these to the manifest dir;
         // the test fixture mirrors that contract directly.
         modelsDir: extDir,
@@ -367,6 +369,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         modelsDir: extDir,
         allModelFiles: [join(extDir, "echo.ts")],
         modelEntryPoints: [join(extDir, "echo.ts")],
@@ -448,6 +451,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         modelsDir,
         allModelFiles: [join(modelsDir, "echo.ts")],
         modelEntryPoints: [join(modelsDir, "echo.ts")],
@@ -526,6 +530,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         modelsDir: extDir,
         allModelFiles: [join(extDir, "echo.ts")],
         modelEntryPoints: [join(extDir, "echo.ts")],
@@ -607,6 +612,7 @@ Deno.test(
       const input: ExtensionPushPrepareInput = {
         manifest,
         repoDir: src,
+        manifestDir: src,
         modelsDir: extDir,
         allModelFiles: [join(extDir, "models", "project.ts")],
         modelEntryPoints: [join(extDir, "models", "project.ts")],

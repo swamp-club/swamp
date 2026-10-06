@@ -446,6 +446,7 @@ export const extensionPushCommand = new Command()
     const cacheHashInput = {
       manifest,
       rootDir: repoDir,
+      manifestDir,
       modelFilePaths: allModelFiles,
       vaultFilePaths: allVaultFiles,
       datastoreFilePaths: allDatastoreFiles,
@@ -474,6 +475,7 @@ export const extensionPushCommand = new Command()
       prepared = await extensionPushPrepare(ctx, prepareDeps, {
         manifest,
         repoDir,
+        manifestDir,
         modelsDir,
         allModelFiles,
         modelEntryPoints,
@@ -554,6 +556,7 @@ export const extensionPushCommand = new Command()
                 prepared = await extensionPushPrepare(ctx, prepareDeps, {
                   manifest,
                   repoDir,
+                  manifestDir,
                   modelsDir,
                   allModelFiles,
                   modelEntryPoints,

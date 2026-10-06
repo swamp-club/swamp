@@ -146,6 +146,7 @@ for (const variant of variants) {
       const input: ExtensionPushPrepareInput = {
         manifest: resolved.manifest,
         repoDir: root,
+        manifestDir: root,
         modelsDir: resolved.modelsDir,
         allModelFiles: resolved.allModelFiles,
         modelEntryPoints: resolved.modelEntryPoints,

@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
+import { buildPrepareInput } from "./push_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -100,34 +101,12 @@ function makePrepareInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
 ): ExtensionPushPrepareInput {
   const modelPath = join(repoDir, "models", "echo.ts");
-  return {
-    manifest,
-    repoDir,
-    modelsDir: join(repoDir, "models"),
+  return buildPrepareInput(manifest, repoDir, {
     allModelFiles: [modelPath],
     modelEntryPoints: [modelPath],
-    vaultsDir: join(repoDir, "vaults"),
-    allVaultFiles: [],
-    vaultEntryPoints: [],
-    datastoresDir: join(repoDir, "datastores"),
-    allDatastoreFiles: [],
-    datastoreEntryPoints: [],
-    reportsDir: join(repoDir, "reports"),
-    allReportFiles: [],
-    reportEntryPoints: [],
-    webhooksDir: join(repoDir, "webhooks"),
-    allWebhookFiles: [],
-    webhookEntryPoints: [],
-    workflowFiles: [],
-    skillDirs: [],
-    allSkillFiles: [],
-    includeFilePaths: [],
-    additionalFilePaths: [],
-    binaryFilePaths: [],
-    dryRun: true,
     registryChecks: "skip",
     ...overrides,
-  };
+  });
 }
 
 function makeHashInput(
@@ -138,6 +117,7 @@ function makeHashInput(
   return {
     manifest,
     rootDir: repoDir,
+    manifestDir: repoDir,
     modelFilePaths: [join(repoDir, "models", "echo.ts")],
     vaultFilePaths: [],
     datastoreFilePaths: [],
@@ -418,7 +398,11 @@ Deno.test("extensionQuality: prepare failure yields an error event and does not 
       pushPrepareOverrides: {
         analyzeExtensionSafety: () =>
           Promise.resolve({
-            errors: [{ file: "echo.ts", message: "contains eval()" }],
+            errors: [{
+              ruleId: "dynamic-code",
+              file: "echo.ts",
+              message: "contains eval()",
+            }],
             warnings: [],
           }),
       },

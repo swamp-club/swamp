@@ -126,11 +126,16 @@ export function commentFormFor(file: string): CommentForm {
   }
 }
 
-/** Validates a rule id and reason against the catalog and the caps. */
+/**
+ * Validates a rule id and reason against the catalog and the caps, for an
+ * acceptance declared in a comment, in a sidecar entry with no file (an
+ * extension-scoped rule), or in a sidecar entry naming a file (a site or
+ * file-scoped rule in a file with no comment form).
+ */
 export function validateAcceptance(
   ruleId: string,
   reason: string,
-  where: "comment" | "sidecar",
+  where: "comment" | "sidecar" | "sidecar-file",
 ): string | undefined {
   if (!isKnownRule(ruleId)) {
     return `"${ruleId}" is not a rule id`;
@@ -151,8 +156,13 @@ export function validateAcceptance(
   if (where === "comment" && entry.scope === "extension") {
     return `"${ruleId}" is extension-scoped; declare it in quality.yaml beside the manifest`;
   }
-  if (where === "sidecar" && entry.scope === "site") {
-    return `"${ruleId}" is site-scoped; declare it on the line in the source file`;
+  if (where === "sidecar" && entry.scope !== "extension") {
+    return entry.scope === "site"
+      ? `"${ruleId}" is site-scoped; declare it on the line in the source file, or name a .txt file`
+      : `"${ruleId}" is file-scoped; declare it in the file, or use the generated declaration for a generated package`;
+  }
+  if (where === "sidecar-file" && entry.scope === "extension") {
+    return `"${ruleId}" is extension-scoped and takes no file`;
   }
   return undefined;
 }

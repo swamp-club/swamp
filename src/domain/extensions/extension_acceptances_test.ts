@@ -227,9 +227,17 @@ Deno.test("validateAcceptance: a site-scoped rule in the sidecar is refused", ()
     validateAcceptance("bare-specifiers", "x", "sidecar"),
     undefined,
   );
+  assertStringIncludes(
+    validateAcceptance("testing-completeness", "x", "sidecar")!,
+    "file-scoped",
+  );
   assertEquals(
-    validateAcceptance("testing-completeness", "x", "sidecar"),
+    validateAcceptance("ipv4-address-literals", "x", "sidecar-file"),
     undefined,
+  );
+  assertStringIncludes(
+    validateAcceptance("bare-specifiers", "x", "sidecar-file")!,
+    "takes no file",
   );
 });
 

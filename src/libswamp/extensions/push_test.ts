@@ -34,6 +34,7 @@ import {
   type ExtensionPushPrepareInput,
 } from "./push.ts";
 import { notAuthenticated, type SwampError } from "../errors.ts";
+import { buildPrepareInput } from "./push_test_helpers.ts";
 import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
@@ -69,35 +70,7 @@ function makeManifest(
 function makePrepareInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
 ): ExtensionPushPrepareInput {
-  const dryRun = overrides?.dryRun ?? true;
-  return {
-    manifest: makeManifest(),
-    repoDir: "/tmp/test-repo",
-    modelsDir: "/tmp/test-repo/models",
-    allModelFiles: [],
-    modelEntryPoints: [],
-    vaultsDir: "/tmp/test-repo/vaults",
-    allVaultFiles: [],
-    vaultEntryPoints: [],
-    datastoresDir: "/tmp/test-repo/datastores",
-    allDatastoreFiles: [],
-    datastoreEntryPoints: [],
-    reportsDir: "/tmp/test-repo/reports",
-    allReportFiles: [],
-    reportEntryPoints: [],
-    webhooksDir: "/tmp/test-repo/webhooks",
-    allWebhookFiles: [],
-    webhookEntryPoints: [],
-    workflowFiles: [],
-    skillDirs: [],
-    allSkillFiles: [],
-    includeFilePaths: [],
-    additionalFilePaths: [],
-    binaryFilePaths: [],
-    dryRun,
-    registryChecks: dryRun ? "collect" : "enforce",
-    ...overrides,
-  };
+  return buildPrepareInput(makeManifest(), "/tmp/test-repo", overrides);
 }
 
 function makePrepareDeps(
@@ -1251,4 +1224,61 @@ Deno.test("extensionPushPrepare: accepts an archive exactly at the archive size 
 
   const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
   assertEquals(result.archiveBytes.byteLength, MAX_EXTENSION_ARCHIVE_BYTES);
+});
+
+Deno.test("extensionPushPrepare: a quality.yaml beside the manifest is read and carried on the result", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      join(tmp, "quality.yaml"),
+      "version: 1\ngenerated:\n  by: codegen\n  source: spec.yaml\n  commit: abc\n",
+    );
+    const deps = makePrepareDeps();
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      makePrepareInput({ manifestDir: tmp }),
+    );
+    assertPathEquals(result.sidecar?.path ?? "", join(tmp, "quality.yaml"));
+    assertEquals(result.sidecar?.value.generated, {
+      by: "codegen",
+      source: "spec.yaml",
+      commit: "abc",
+    });
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("extensionPushPrepare: no quality.yaml beside the manifest leaves the result without one", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    makePrepareDeps(),
+    makePrepareInput(),
+  );
+  assertEquals(result.sidecar, undefined);
+});
+
+Deno.test("extensionPushPrepare: an invalid quality.yaml blocks before any gate, naming every problem", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      join(tmp, "quality.yaml"),
+      "version: 1\nignore: [deno-command]\n",
+    );
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        makePrepareInput({ manifestDir: tmp }),
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(error.message, "quality.yaml");
+    const errors = (error.details as Record<string, unknown>).sidecarErrors;
+    assertEquals(Array.isArray(errors), true);
+    assertStringIncludes((errors as string[]).join("\n"), "ignore");
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
 });

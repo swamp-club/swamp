@@ -66,6 +66,7 @@ async function makeHashInput(
   return {
     manifest: makeManifest(),
     rootDir: tmp,
+    manifestDir: tmp,
     modelFilePaths: [model],
     vaultFilePaths: [],
     datastoreFilePaths: [],
@@ -323,5 +324,27 @@ Deno.test("computePackageCacheHash: the CI layout (repo dir is the extension dir
   } finally {
     await Deno.remove(parentA, { recursive: true }).catch(() => {});
     await Deno.remove(parentB, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("computePackageCacheHash: the quality.yaml sidecar beside the manifest joins the hash", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const without = await computePackageCacheHash(await makeHashInput(tmp));
+    await Deno.writeTextFile(
+      join(tmp, "quality.yaml"),
+      "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: scored locally\n",
+    );
+    const withSidecar = await computePackageCacheHash(await makeHashInput(tmp));
+    assertNotEquals(without, withSidecar);
+
+    await Deno.writeTextFile(
+      join(tmp, "quality.yaml"),
+      "version: 1\naccept:\n  - rule: bare-specifiers\n    reason: a different reason\n",
+    );
+    const changed = await computePackageCacheHash(await makeHashInput(tmp));
+    assertNotEquals(withSidecar, changed);
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
 });
