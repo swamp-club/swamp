@@ -53,12 +53,49 @@ export interface ShellSecretResolution {
   singleQuoted: string[];
 }
 
+/** Characters after which a quote starts a here-document string. */
+const TOKEN_BOUNDARY = /[\s=(|;&{[,:]/;
+
+/**
+ * Whether `position` reads as inside a double-quoted string of here-document
+ * text starting at `bodyStart`. Here-document text has no quoting of its own,
+ * so this reads it as the author's script or config would: a double quote
+ * closes an open string anywhere but opens one only at a token boundary, and
+ * a single-quoted span that opens at a token boundary and closes on the same
+ * line is skipped. Mid-word apostrophes and inch marks stay prose.
+ */
+function heredocDoubleQuoted(
+  command: string,
+  bodyStart: number,
+  position: number,
+): boolean {
+  let inDouble = false;
+  for (let i = bodyStart; i < position; i++) {
+    const ch = command[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    const atBoundary = i === 0 || TOKEN_BOUNDARY.test(command[i - 1]);
+    if (ch === '"') {
+      inDouble = inDouble ? false : atBoundary;
+    } else if (ch === "'" && !inDouble && atBoundary) {
+      const close = command.indexOf("'", i + 1);
+      const lineEnd = command.indexOf("\n", i);
+      if (close !== -1 && (lineEnd === -1 || close < lineEnd)) {
+        if (close >= position) return false;
+        i = close;
+      }
+    }
+  }
+  return inDouble;
+}
+
 /**
  * Builds the reader of the quote context a vault.get() reference in
  * `command` is chosen by, from the POSIX shell context of its occurrence.
- * A here-document body has no quoting of its own, so there only unescaped
- * double quotes counted from the start of the body decide: a double-quoted
- * string may span body lines, and apostrophes in prose do not count. A
+ * In a here-document body, {@link heredocDoubleQuoted} reads the text from
+ * the start of the body, so a double-quoted string may span body lines. A
  * reference in a body is never reported as single-quoted.
  */
 function posixVaultQuoter(
@@ -101,14 +138,10 @@ function posixVaultQuoter(
       case "ansi-c":
         return "single";
       case "heredoc":
-      case "heredoc-literal": {
-        let inDouble = false;
-        for (let i = bodyStartOf(position); i < position; i++) {
-          if (command[i] === "\\") i++;
-          else if (command[i] === '"') inDouble = !inDouble;
-        }
-        return inDouble ? "double" : "unquoted";
-      }
+      case "heredoc-literal":
+        return heredocDoubleQuoted(command, bodyStartOf(position), position)
+          ? "double"
+          : "unquoted";
       default:
         return "unquoted";
     }

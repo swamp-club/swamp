@@ -588,9 +588,28 @@ do not count): bare inside double quotes, wrapped in double quotes when
 unquoted. Inside single quotes the reference stays a literal, and swamp warns at
 execution time when any occurrence sits there. A secret used more than once in
 different quote contexts is therefore one quoted word at every double-quoted
-use. In a here-document body only the double quotes from the start of that
-body count, so a double-quoted string may span body lines and apostrophes in
-prose are ignored. PowerShell reads the context from quote characters alone.
+use. PowerShell reads the context from quote characters alone.
+
+A here-document body has no quoting of its own, so swamp reads it from the start
+of the body as the generated script or config would be read: a double quote
+closes an open string anywhere but opens one only at a token boundary (line
+start, whitespace, or one of `= ( | ; & { [ , :`), and a single-quoted span that
+opens at a token boundary and closes on the same line is skipped. A double-quoted
+string may span body lines; apostrophes in prose (`don't`), inch marks (`5"`)
+and quotes in shell code such as `tr -d '"'` do not open strings. This is a
+heuristic. It does not see a string opened mid-word (`foo"bar …"`), `$"…"`
+strings, single-quoted strings spanning lines, or quotes after a backtick or
+`)`. To hand a secret to a generated script reliably, export it into the
+script's environment instead of splicing it into the script text:
+
+```yaml
+run: |
+  export DB_PASS="${{ vault.get(my-vault, DB_PASS) }}"
+  cat <<'EOF' > run.sh
+  psql "postgres://app:$DB_PASS@db/app"
+  EOF
+  sh run.sh
+```
 
 ### Vault Resolution Order
 
