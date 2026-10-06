@@ -166,7 +166,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       sessionGenerationRef.current++;
       controller.abort();
     };
-  }, [restoreSession]);
+  }, [authMode, restoreSession]);
 
   const clearToken = useCallback(() => {
     sessionGenerationRef.current++;

@@ -291,6 +291,7 @@ import {
   authenticateAdmin,
   authenticateDashboardSessionToken,
   authenticateToken,
+  checkDashboardSessionIpBurst,
   createReadAuthorizer,
 } from "../../serve/admin_auth.ts";
 import {
@@ -5281,6 +5282,17 @@ export const serveCommand = new Command()
       if (sessionId === null) {
         return await authenticateToken(req, remoteAddr, adminAuthDeps);
       }
+      const ipBurst = checkDashboardSessionIpBurst(
+        req,
+        remoteAddr,
+        adminAuthDeps,
+      );
+      if (!ipBurst.ok) {
+        return {
+          ok: false as const,
+          response: ipBurst.response,
+        };
+      }
       const session = await resolveDashboardSessionForOrigin(
         sessionId,
         req.headers.get("origin") ??
@@ -5297,7 +5309,7 @@ export const serveCommand = new Command()
       }
       const authenticated = await authenticateDashboardSessionToken(
         req,
-        remoteAddr,
+        ipBurst.clientAddr,
         adminAuthDeps,
         session,
       );

@@ -79,6 +79,35 @@ export type DashboardSessionTokenAuthResult =
   | Extract<TokenAuthResult, { ok: true }>
   | { ok: false; response: Response; invalidateSession: boolean };
 
+export type DashboardSessionIpBurstResult =
+  | { ok: true; clientAddr: string }
+  | { ok: false; response: Response };
+
+/**
+ * Applies the IP burst limit before a dashboard cookie causes any control-plane
+ * lookup. Call this before resolving a dashboard session from its opaque ID.
+ */
+export function checkDashboardSessionIpBurst(
+  req: Request,
+  remoteAddr: string,
+  deps: AdminAuthDeps,
+): DashboardSessionIpBurstResult {
+  const clientAddr = deps.trustProxy
+    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
+    : remoteAddr;
+  const ipBurst = checkIpBurst(clientAddr);
+  if (!ipBurst.allowed) {
+    return {
+      ok: false,
+      response: new Response("Too Many Requests", {
+        status: 429,
+        headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
+      }),
+    };
+  }
+  return { ok: true, clientAddr };
+}
+
 /**
  * Authenticates a request's bearer token with the same rate limits as
  * `authenticateAdmin`, but grants any valid token: it answers only 401 or 429,
@@ -174,29 +203,16 @@ export async function authenticateToken(
 }
 
 /**
- * Authenticates an already origin-validated dashboard session for the two
- * dashboard health transports. Callers must never use this for admin routes.
+ * Authenticates an already origin-validated and burst-limited dashboard session
+ * for the two dashboard health transports. Callers must never use this for
+ * admin routes.
  */
 export async function authenticateDashboardSessionToken(
   req: Request,
-  remoteAddr: string,
+  clientAddr: string,
   deps: AdminAuthDeps,
   session: DashboardSession,
 ): Promise<DashboardSessionTokenAuthResult> {
-  const clientAddr = deps.trustProxy
-    ? (req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? remoteAddr)
-    : remoteAddr;
-  const ipBurst = checkIpBurst(clientAddr);
-  if (!ipBurst.allowed) {
-    return {
-      ok: false,
-      invalidateSession: false,
-      response: new Response("Too Many Requests", {
-        status: 429,
-        headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
-      }),
-    };
-  }
   const rateKey = rateLimitKey(
     `${session.tokenName}.${session.id}`,
     clientAddr,

@@ -44,7 +44,9 @@ export function createDashboardSessionClient(fetchFn: SessionFetch) {
         signal: requestSignal(signal),
       });
       await response.body?.cancel();
-      return response.ok;
+      if (response.status === 401) return false;
+      if (!response.ok) throw new Error("Could not restore dashboard session");
+      return true;
     },
 
     async exchange(token: string): Promise<boolean> {

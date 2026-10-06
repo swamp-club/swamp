@@ -23,6 +23,7 @@ import {
   authenticateAdmin,
   authenticateDashboardSessionToken,
   authenticateToken,
+  checkDashboardSessionIpBurst,
   createReadAuthorizer,
 } from "./admin_auth.ts";
 import type {
@@ -219,6 +220,27 @@ Deno.test("authenticateDashboardSessionToken: marks revoked backing tokens for s
     assertEquals(result.response.status, 401);
     assertEquals(result.invalidateSession, true);
   }
+});
+
+Deno.test("checkDashboardSessionIpBurst: limits unknown dashboard cookie probes before session lookup", () => {
+  const request = new Request("https://serve.test/api/v1/health", {
+    headers: { cookie: `swamp-dashboard-session=${"a".repeat(64)}` },
+  });
+  const clientAddr = freshClientAddr();
+  for (let attempt = 0; attempt < 50; attempt++) {
+    assertEquals(
+      checkDashboardSessionIpBurst(request, clientAddr, makeDeps()).ok,
+      true,
+    );
+  }
+
+  const limited = checkDashboardSessionIpBurst(
+    request,
+    clientAddr,
+    makeDeps(),
+  );
+  assertEquals(limited.ok, false);
+  if (!limited.ok) assertEquals(limited.response.status, 429);
 });
 
 Deno.test("authenticateToken: returns 401 with an invalid token", async () => {

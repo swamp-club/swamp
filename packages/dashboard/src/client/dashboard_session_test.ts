@@ -43,6 +43,18 @@ Deno.test("createDashboardSessionClient: reports an absent or revoked session", 
   assertEquals(await client.restore(), false);
 });
 
+Deno.test("createDashboardSessionClient: retries restoration after a transient response", async () => {
+  const client = createDashboardSessionClient(() =>
+    Promise.resolve(new Response(null, { status: 503 }))
+  );
+
+  await assertRejects(
+    () => client.restore(),
+    Error,
+    "Could not restore dashboard session",
+  );
+});
+
 Deno.test("createDashboardSessionClient: exchanges a manually entered token only with the session endpoint", async () => {
   let seen: RequestInit | undefined;
   const client = createDashboardSessionClient((_input, init) => {
