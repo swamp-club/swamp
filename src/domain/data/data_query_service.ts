@@ -447,8 +447,13 @@ export class DataQueryService {
       row.data_name,
       latest,
     ];
+    // A pending row (an in-flight deferred write) may have no metadata on
+    // disk yet; it is not stale.
     const gone = [
-      ...this.catalogStore.iterateFiltered(higherWhere, higherParams),
+      ...this.catalogStore.iterateFiltered(
+        `${higherWhere} AND is_pending = 0`,
+        higherParams,
+      ),
     ]
       .filter((stale) =>
         !this.dataRepo.findByNameSync(

@@ -806,6 +806,28 @@ export class CatalogStore {
   }
 
   /**
+   * Ends a deferred write's pending state when its promotion begins: clears
+   * the pending mark and writer identity (the flags stay 0 until the caller
+   * promotes the row), or removes the row when `keep` is false.
+   */
+  settlePending(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    version: number,
+    keep: boolean,
+  ): void {
+    const where =
+      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ? AND is_pending = 1";
+    this.db.prepare(
+      keep
+        ? `UPDATE catalog SET is_pending = 0, pending_pid = 0, pending_host = '' WHERE ${where}`
+        : `DELETE FROM catalog WHERE ${where}`,
+    ).run(namespace, typeNormalized, modelId, dataName, version);
+  }
+
+  /**
    * Every pending row (an in-flight deferred write) of one model, across its
    * data names.
    */

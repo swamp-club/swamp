@@ -27,14 +27,23 @@ import { hostname } from "node:os";
  * cannot be read.
  */
 export function processHostIdentity(): string {
-  const host = hostname();
-  if (Deno.build.os !== "linux") return host;
-  try {
-    return `${host}#${Deno.readLinkSync("/proc/self/ns/pid")}`;
-  } catch {
-    return host;
+  if (cachedHostIdentity === undefined) {
+    const host = hostname();
+    cachedHostIdentity = host;
+    if (Deno.build.os === "linux") {
+      try {
+        cachedHostIdentity = `${host}#${
+          Deno.readLinkSync("/proc/self/ns/pid")
+        }`;
+      } catch {
+        // Hostname alone
+      }
+    }
   }
+  return cachedHostIdentity;
 }
+
+let cachedHostIdentity: string | undefined;
 
 /**
  * Check if a process with the given PID is no longer running.
@@ -64,7 +73,8 @@ export function isProcessDead(pid: number): boolean {
  * Like {@link isProcessDead}, but never resumes or otherwise disturbs the
  * process it probes, for pids read from persisted data that may since have
  * been reused. Linux checks `/proc/<pid>`, which sends nothing and sees the
- * same pid namespace as this process. Other POSIX hosts send SIGURG, whose
+ * same pid namespace as this process; a pid reused as a thread id also
+ * resolves there and reads as alive, which errs on the safe side. Other POSIX hosts send SIGURG, whose
  * default action is to ignore it; unlike SIGCONT it does not resume a
  * stopped process. Windows uses `tasklist`. Returns `false` (not dead) on
  * any unexpected error.

@@ -3096,6 +3096,41 @@ Deno.test("getLatestRecord: a version that dropping a deleted row makes latest i
   }
 });
 
+Deno.test("getLatestRecord: the refresh keeps the pending row of an in-flight deferred write that has no metadata yet (swamp-club#2975)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  try {
+    // The marker is on v1. Another repository deleted v3, and v2 is an
+    // in-flight streamed deferred write whose metadata is not written yet.
+    createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest", 1);
+    catalog.upsertNewVersion(makeRow({ version: 1 }));
+    catalog.upsert(
+      makeRow({ version: 2, is_latest: 0, is_pending: 1, pending_pid: 4242 }),
+    );
+    catalog.upsertNewVersion(makeRow({ version: 3 }));
+    catalog.invalidate();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const record = await service.getLatestRecord("ingest", "my-data");
+    assertEquals(record?.version, 1);
+    assertEquals(
+      [...catalog.iterate()]
+        .sort((a, b) => a.version - b.version)
+        .map((r) => `${r.version}:${r.is_latest}:${r.is_pending}`),
+      ["1:1:0", "2:0:1"],
+    );
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("DataQueryService: rolling back a deferred write that a backfill promoted restores every step's latest (swamp-club#2975)", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-backfill-rollback-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));

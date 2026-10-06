@@ -2217,3 +2217,99 @@ Deno.test("rollbackVersions: rolling back a first deferred write leaves its data
     assertEquals(await repo.listVersions(testType, "m1", "out"), []);
   });
 });
+
+Deno.test("collectGarbage: does not reclaim a version the latest marker names, even if its row is still pending (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b"));
+    setPendingWriter(catalogStore, "m1", 2, DEAD_PID);
+    // A promotion that moved the marker before its process died.
+    await Deno.writeTextFile(
+      join(dirname(repo.getPath(testType, "m1", "out", 2)), "latest"),
+      "2",
+    );
+
+    const result = await repo.collectGarbage(testType, "m1");
+
+    assertEquals(result.versionsRemoved, 0);
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1, 2]);
+  });
+});
+
+Deno.test("advanceLatestMarkers: settles the pending row before promoting, and drops it for a version that was never finalized (swamp-club#2975)", async () => {
+  await withStepRepo(async (repo, catalogStore) => {
+    const finished = await repo.saveDeferred(
+      testType,
+      "m1",
+      stepData("s1"),
+      bytes("a"),
+    );
+    const unfinished = await repo.allocateVersion(
+      testType,
+      "m2",
+      stepData("s1"),
+      { deferred: true },
+    );
+
+    await repo.advanceLatestMarkers([
+      finished,
+      {
+        type: testType,
+        modelId: "m2",
+        dataName: "out",
+        version: unfinished.version,
+      },
+    ]);
+
+    const rows = [...catalogStore.iterate()];
+    const m1 = rows.find((r) => r.model_id === "m1");
+    assertEquals(
+      [m1?.is_latest, m1?.is_pending, m1?.pending_pid, m1?.pending_host],
+      [1, 0, 0, ""],
+    );
+    assertEquals(rows.filter((r) => r.model_id === "m2"), []);
+  });
+});
+
+/** Fails the metadata write of one version, as a full disk would. */
+class FailingMetadataRepository extends FileSystemUnifiedDataRepository {
+  failVersion: number | null = null;
+
+  override getMetadataPath(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): string {
+    if (version === this.failVersion) {
+      throw new Error("No space left on device");
+    }
+    return super.getMetadataPath(type, modelId, dataName, version);
+  }
+}
+
+Deno.test("saveDeferred: a failed write removes its version and pending row (swamp-club#2975)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-step-latest-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const repo = new FailingMetadataRepository(dir, undefined, catalogStore);
+    await repo.save(testType, "m1", stepData("s1"), bytes("a"));
+    repo.failVersion = 2;
+
+    await assertRejects(
+      () => repo.saveDeferred(testType, "m1", stepData("s1"), bytes("b")),
+      Error,
+      "No space left on device",
+    );
+
+    assertEquals(await repo.listVersions(testType, "m1", "out"), [1]);
+    assertEquals(outFlags(catalogStore), ["1:1:1"]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

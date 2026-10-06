@@ -849,27 +849,38 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // delete and GC never mistake the new version for a promoted one.
     this.upsertPendingRow(type, modelId, dataToSave);
 
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    const boundary = this.baseDir;
-    await assertSafePath(metadataPath, boundary);
-    const metadata = dataToSave.toData();
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataContent);
+    try {
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      const boundary = this.baseDir;
+      await assertSafePath(metadataPath, boundary);
+      const metadata = dataToSave.toData();
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataContent = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataContent);
 
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    await assertSafePath(contentPath, boundary);
-    await atomicWriteFile(contentPath, content);
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      await assertSafePath(contentPath, boundary);
+      await atomicWriteFile(contentPath, content);
+    } catch (error) {
+      // No receipt reaches the caller, so nothing else would roll this
+      // version back; its pending row would stay under this live process.
+      await this.rollbackVersions([
+        { type, modelId, dataName: data.name, version: newVersion },
+      ]);
+      throw error;
+    }
 
     return { type, modelId, dataName: data.name, version: newVersion };
   }
@@ -1485,13 +1496,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<void> {
     for (const receipt of receipts) {
       try {
-        await this.advanceLatestMarker(
+        const data = await this.findByName(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
           receipt.version,
         );
-        const data = await this.findByName(
+        // Settle the pending row before the marker moves, so a failure or
+        // crash between the two never leaves a version the marker names
+        // looking like an orphan GC may reclaim. A version without metadata
+        // (a writer that never finalized) had no row before deferred writes
+        // were registered early, and gets none.
+        this.catalogStore.settlePending(
+          this.namespace,
+          receipt.type.normalized,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+          data !== null,
+        );
+        this.catalogStore.recordLocalWrite();
+        await this.advanceLatestMarker(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
@@ -2280,6 +2305,41 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * The version the latest marker names, or null when there is no marker.
+   * Unlike {@link getLatestVersion} it never falls back to scanning the
+   * version directories.
+   */
+  private async readLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number | null> {
+    const latestPath = join(
+      this.getDataNameDir(type, modelId, dataName),
+      "latest",
+    );
+    try {
+      const version = parseInt(
+        (await Deno.readTextFile(latestPath)).trim(),
+        10,
+      );
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a text file or not found
+    }
+    try {
+      const version = parseInt(
+        (await Deno.readLink(latestPath)).replace(/\/$/, ""),
+        10,
+      );
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a symlink either
+    }
+    return null;
+  }
+
+  /**
    * Removes a data name that has no versions left but still has a latest
    * marker naming a version that is gone. Deleting the last promoted version
    * while a deferred write is in flight leaves the marker that way on
@@ -2392,6 +2452,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     let bytesReclaimed = 0;
     const names = new Set<string>();
     for (const row of orphans) {
+      // Promotion settles the pending row before moving the marker, so a
+      // marker naming this version means it was promoted all the same.
+      if (
+        await this.readLatestMarker(type, modelId, row.data_name) ===
+          row.version
+      ) {
+        continue;
+      }
       const versionDir = this.getPath(
         type,
         modelId,
@@ -2425,6 +2493,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`Reclaimed orphaned deferred write ${row.data_name} v${row.version} (pid ${row.pending_pid} is gone)`;
     }
+    // Kept inline rather than shared with removeNameLeftWithDanglingMarker:
+    // the write-seams ratchet pins each staged change by call site.
     for (const name of names) {
       if ((await this.listVersions(type, modelId, name)).length > 0) continue;
       const dataNameDir = this.getDataNameDir(type, modelId, name);

@@ -445,7 +445,11 @@ of the process that wrote it. GC (not a dry run) first rolls back each pending
 write of the model whose writer had this process's host identity and is no
 longer alive, since nothing else will promote or roll it back, and removes a
 data name that leaves with no versions. A row from another host or container,
-the current process or a live pid stays in flight.
+the current process or a live pid stays in flight. Promotion clears a row's
+pending mark before it moves the latest marker, and reclaim skips a version the
+marker names, so a promotion that stopped halfway is never reclaimed. If
+writing a deferred version fails, the write removes its own version and pending
+row.
 
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
