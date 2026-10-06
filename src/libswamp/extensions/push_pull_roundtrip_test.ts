@@ -72,7 +72,8 @@ function makePrepareDeps(
         apiKey: "swamp_test",
         username: "testuser",
       }),
-    fetchCollectives: () => Promise.resolve(["testuser"]),
+    fetchCollectives: () =>
+      Promise.resolve({ collectives: ["testuser"], entitlements: undefined }),
     extractContentMetadata: () =>
       Promise.resolve({
         models: [],

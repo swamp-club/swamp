@@ -20,10 +20,15 @@
 import { assertEquals } from "@std/assert";
 import {
   classifyApiCallService,
+  collectiveBillingUrl,
+  type CollectiveEntitlement,
   collectiveOf,
   evaluateCollectiveMembership,
+  evaluatePrivateEntitlement,
   evaluateVersionExists,
+  explainPrivatePublishRefusal,
   registryCheckNotRun,
+  type RegistryCheckResult,
   registryChecksVerdict,
 } from "./extension_publish_checks.ts";
 
@@ -214,4 +219,249 @@ Deno.test("classifyApiCallService: groups by host", () => {
     "other",
   );
   assertEquals(classifyApiCallService("not a url", registry), "other");
+});
+
+// ── Private entitlement ───────────────────────────────────────────────
+
+const SERVER = "https://swamp-club.com";
+const REFUSAL =
+  "Private publication requires a paid plan or an eligible collective trial";
+
+function acme(
+  overrides: Partial<CollectiveEntitlement>,
+): CollectiveEntitlement {
+  return { slug: "acme", plan: "free", planName: "Free", ...overrides };
+}
+
+Deno.test("collectiveBillingUrl: joins the registry origin and the collective's billing path", () => {
+  assertEquals(
+    collectiveBillingUrl(SERVER, "acme"),
+    "https://swamp-club.com/o/acme/billing",
+  );
+  assertEquals(
+    collectiveBillingUrl("https://swamp-club.com/", "acme"),
+    "https://swamp-club.com/o/acme/billing",
+  );
+});
+
+Deno.test("evaluatePrivateEntitlement: a paid plan passes and is named as the registry labels it", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({ plan: "team", planName: "Team" })],
+    serverUrl: SERVER,
+  });
+  assertEquals(result, {
+    name: "private-entitlement",
+    status: "passed",
+    message:
+      'Collective "@acme" is on the Team plan, which allows private extensions.',
+  });
+});
+
+Deno.test("evaluatePrivateEntitlement: a free plan with an active trial passes and names the trial", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({
+      trial: {
+        state: "active",
+        endsAt: "2026-08-19T00:00:00.000Z",
+        daysRemaining: 13,
+      },
+    })],
+    serverUrl: SERVER,
+  });
+  assertEquals(result.status, "passed");
+  assertEquals(
+    result.message,
+    'Collective "@acme" is on the Free plan with an active trial (13 days left, ends 2026-08-19), which allows private extensions.',
+  );
+  const lastDay = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({
+      trial: { state: "active", endsAt: null, daysRemaining: 1 },
+    })],
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    lastDay.message,
+    'Collective "@acme" is on the Free plan with an active trial (1 day left), which allows private extensions.',
+  );
+});
+
+Deno.test("evaluatePrivateEntitlement: a free plan whose trial ended fails with the push's exact message", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({
+      trial: {
+        state: "expired",
+        endsAt: "2026-08-19T00:00:00.000Z",
+        daysRemaining: 0,
+      },
+    })],
+    serverUrl: SERVER,
+  });
+  assertEquals(result, {
+    name: "private-entitlement",
+    status: "failed",
+    message:
+      'Collective "@acme" is on the Free plan and its trial ended on 2026-08-19. ' +
+      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/acme/billing.",
+  });
+});
+
+Deno.test("evaluatePrivateEntitlement: an ended trial without a date is still a failure, with no date invented", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({
+      trial: { state: "expired", endsAt: null, daysRemaining: 0 },
+    })],
+    serverUrl: SERVER,
+  });
+  assertEquals(result.status, "failed");
+  assertEquals(
+    result.message,
+    'Collective "@acme" is on the Free plan and its trial has ended. ' +
+      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/acme/billing.",
+  );
+});
+
+Deno.test("evaluatePrivateEntitlement: a free plan with no trial is undecided, since the registry may start one", () => {
+  for (const trial of [undefined, null] as const) {
+    const result = evaluatePrivateEntitlement({
+      extensionName: "@acme/tool",
+      entitlements: [acme({ trial })],
+      serverUrl: SERVER,
+    });
+    assertEquals(result, {
+      name: "private-entitlement",
+      status: "not-run",
+      cause: "entitlement-undecided",
+      message:
+        'Collective "@acme" is on the Free plan with no trial reported; the registry decides private publication at publish.',
+    });
+  }
+});
+
+Deno.test("evaluatePrivateEntitlement: no entitlement reported is undecided and says so, never naming a plan", () => {
+  const expected: RegistryCheckResult = {
+    name: "private-entitlement",
+    status: "not-run",
+    cause: "entitlement-undecided",
+    message:
+      'the registry did not report entitlement for "@acme"; private publication is decided at publish',
+  };
+  assertEquals(
+    evaluatePrivateEntitlement({
+      extensionName: "@acme/tool",
+      entitlements: undefined,
+      serverUrl: SERVER,
+    }),
+    expected,
+  );
+  assertEquals(
+    evaluatePrivateEntitlement({
+      extensionName: "@acme/tool",
+      entitlements: [acme({ slug: "other" })],
+      serverUrl: SERVER,
+    }),
+    expected,
+  );
+  assertEquals(
+    evaluatePrivateEntitlement({
+      extensionName: "@acme/tool",
+      entitlements: [{ slug: "acme" }],
+      serverUrl: SERVER,
+    }),
+    expected,
+  );
+});
+
+Deno.test("evaluatePrivateEntitlement: a plan without a label falls back to its id", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [{ slug: "acme", plan: "business" }],
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    result.message,
+    'Collective "@acme" is on the business plan, which allows private extensions.',
+  );
+});
+
+Deno.test("registryChecksVerdict: an undecided entitlement leaves the run green", () => {
+  assertEquals(
+    registryChecksVerdict([
+      registryCheckNotRun(
+        "private-entitlement",
+        "entitlement-undecided",
+        "the registry did not report entitlement",
+      ),
+    ]),
+    { ok: true },
+  );
+});
+
+Deno.test("explainPrivatePublishRefusal: the registry's sentence comes first, then what it reported at sign-in", () => {
+  const free = explainPrivatePublishRefusal(REFUSAL, {
+    extensionName: "@acme/tool",
+    entitlement: acme({
+      trial: {
+        state: "expired",
+        endsAt: "2026-08-19T00:00:00.000Z",
+        daysRemaining: 0,
+      },
+    }),
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    free,
+    `${REFUSAL}. At sign-in the registry reported "@acme" on the Free plan; its trial ended on 2026-08-19. ` +
+      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/acme/billing.",
+  );
+  const noTrial = explainPrivatePublishRefusal(`${REFUSAL}.`, {
+    extensionName: "@acme/tool",
+    entitlement: acme({}),
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    noTrial,
+    `${REFUSAL}. At sign-in the registry reported "@acme" on the Free plan with no trial reported. ` +
+      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/acme/billing.",
+  );
+});
+
+Deno.test("explainPrivatePublishRefusal: a paid plan or an active trial is reported without an upgrade pointer", () => {
+  const paid = explainPrivatePublishRefusal(REFUSAL, {
+    extensionName: "@acme/tool",
+    entitlement: acme({ plan: "team", planName: "Team" }),
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    paid,
+    `${REFUSAL}. At sign-in the registry reported "@acme" on the Team plan.`,
+  );
+  const trial = explainPrivatePublishRefusal(REFUSAL, {
+    extensionName: "@acme/tool",
+    entitlement: acme({
+      trial: { state: "active", endsAt: null, daysRemaining: 3 },
+    }),
+    serverUrl: SERVER,
+  });
+  assertEquals(
+    trial,
+    `${REFUSAL}. At sign-in the registry reported "@acme" on the Free plan with an active trial (3 days left).`,
+  );
+});
+
+Deno.test("explainPrivatePublishRefusal: no entitlement reported adds the note and nothing about a plan", () => {
+  for (const entitlement of [undefined, { slug: "acme" }]) {
+    assertEquals(
+      explainPrivatePublishRefusal(REFUSAL, {
+        extensionName: "@acme/tool",
+        entitlement,
+        serverUrl: SERVER,
+      }),
+      `${REFUSAL}. At sign-in the registry did not report entitlement for "@acme".`,
+    );
+  }
 });

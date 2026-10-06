@@ -24,6 +24,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { Logger } from "@logtape/logtape";
 import {
+  type CollectiveLookup,
   createExtensionPushPrepareDeps,
   extensionPush,
   type ExtensionPushExecuteDeps,
@@ -35,6 +36,9 @@ import {
 } from "./push.ts";
 import { notAuthenticated, type SwampError } from "../errors.ts";
 import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
+import { REGISTRY_FORBIDDEN_CODE } from "../../infrastructure/http/extension_api_client.ts";
+import { UserError } from "../../domain/errors.ts";
+import type { CollectiveEntitlement } from "../../domain/extensions/extension_publish_checks.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
@@ -64,6 +68,11 @@ function makeManifest(
     dependencies: [],
     ...overrides,
   };
+}
+
+/** A fetchCollectives answer for a server that reports no entitlement. */
+function lookup(collectives: string[]): CollectiveLookup {
+  return { collectives, entitlements: undefined };
 }
 
 function makePrepareInput(
@@ -110,7 +119,7 @@ function makePrepareDeps(
         apiKey: "swamp_test",
         username: "testuser",
       }),
-    fetchCollectives: () => Promise.resolve(["testuser"]),
+    fetchCollectives: () => Promise.resolve(lookup(["testuser"])),
     extractContentMetadata: () =>
       Promise.resolve({
         models: [],
@@ -417,7 +426,7 @@ Deno.test("extensionPushPrepare: not authenticated throws SwampError", async () 
 
 Deno.test("extensionPushPrepare: invalid collective throws SwampError", async () => {
   const deps = makePrepareDeps({
-    fetchCollectives: () => Promise.resolve(["other-collective"]),
+    fetchCollectives: () => Promise.resolve(lookup(["other-collective"])),
   });
   const input = makePrepareInput({ dryRun: false });
 
@@ -429,7 +438,7 @@ Deno.test("extensionPushPrepare: invalid collective throws SwampError", async ()
 
 Deno.test("extensionPushPrepare: collective token allows matching collective namespace", async () => {
   const deps = makePrepareDeps({
-    fetchCollectives: () => Promise.resolve(["testuser"]),
+    fetchCollectives: () => Promise.resolve(lookup(["testuser"])),
   });
   const input = makePrepareInput({ dryRun: false });
 
@@ -439,7 +448,7 @@ Deno.test("extensionPushPrepare: collective token allows matching collective nam
 
 Deno.test("extensionPushPrepare: collective token rejects mismatched namespace", async () => {
   const deps = makePrepareDeps({
-    fetchCollectives: () => Promise.resolve(["other-org"]),
+    fetchCollectives: () => Promise.resolve(lookup(["other-org"])),
   });
   const input = makePrepareInput({ dryRun: false });
 
@@ -625,7 +634,7 @@ Deno.test("extensionPushPrepare: dry run without credentials lists every check a
     loadCredentials: () => Promise.resolve(null),
     fetchCollectives: () => {
       registryCalls++;
-      return Promise.resolve([]);
+      return Promise.resolve(lookup([]));
     },
     findPublishedVersion: () => {
       registryCalls++;
@@ -669,7 +678,7 @@ Deno.test("extensionPushPrepare: dry run reports a version published on any chan
 Deno.test("extensionPushPrepare: dry run reports a foreign collective as failed and still checks the version", async () => {
   let versionLookups = 0;
   const deps = makePrepareDeps({
-    fetchCollectives: () => Promise.resolve(["other-org"]),
+    fetchCollectives: () => Promise.resolve(lookup(["other-org"])),
     findPublishedVersion: () => {
       versionLookups++;
       return Promise.resolve(null);
@@ -809,7 +818,7 @@ Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts t
     },
     fetchCollectives: () => {
       calls++;
-      return Promise.resolve([]);
+      return Promise.resolve(lookup([]));
     },
     findPublishedVersion: () => {
       calls++;
@@ -824,6 +833,336 @@ Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts t
   );
   assertEquals(calls, 0);
   assertEquals(result.registryChecks, []);
+});
+
+// ── Private entitlement ───────────────────────────────────────────────
+
+const PRIVATE_REFUSAL =
+  "Private publication requires a paid plan or an eligible collective trial";
+const EXPIRED_REFUSAL =
+  'Collective "@testuser" is on the Free plan and its trial ended on 2026-08-19. ' +
+  "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.";
+
+/** The caller's own collective as the registry reports it. */
+function testuserPlan(
+  overrides: Partial<CollectiveEntitlement> = {},
+): CollectiveEntitlement {
+  return { slug: "testuser", plan: "free", planName: "Free", ...overrides };
+}
+
+const EXPIRED = testuserPlan({
+  trial: {
+    state: "expired",
+    endsAt: "2026-08-19T00:00:00.000Z",
+    daysRemaining: 0,
+  },
+});
+const PAID = testuserPlan({ plan: "team", planName: "Team" });
+
+function privateInput(
+  overrides?: Partial<ExtensionPushPrepareInput>,
+): ExtensionPushPrepareInput {
+  return makePrepareInput({
+    manifest: makeManifest({ visibility: "private" }),
+    ...overrides,
+  });
+}
+
+function entitledDeps(
+  entitlements: CollectiveEntitlement[] | undefined,
+  overrides?: Partial<ExtensionPushPrepareDeps>,
+): ExtensionPushPrepareDeps {
+  return makePrepareDeps({
+    fetchCollectives: () =>
+      Promise.resolve({ collectives: ["testuser"], entitlements }),
+    ...overrides,
+  });
+}
+
+Deno.test("extensionPushPrepare: a private dry run adds the entitlement check after membership and passes on a paid plan", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    entitledDeps([PAID]),
+    privateInput(),
+  );
+  assertEquals(
+    result.registryChecks.map((c) => [c.name, c.status]),
+    [
+      ["authentication", "passed"],
+      ["reserved-collective", "passed"],
+      ["collective-membership", "passed"],
+      ["private-entitlement", "passed"],
+      ["version-exists", "passed"],
+    ],
+  );
+  assertEquals(
+    result.registryChecks[3].message,
+    'Collective "@testuser" is on the Team plan, which allows private extensions.',
+  );
+  assertEquals(result.collectiveEntitlement, PAID);
+});
+
+Deno.test("extensionPushPrepare: a private dry run passes on an active trial and names it", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    entitledDeps([testuserPlan({
+      trial: {
+        state: "active",
+        endsAt: "2026-08-19T00:00:00.000Z",
+        daysRemaining: 13,
+      },
+    })]),
+    privateInput(),
+  );
+  const check = result.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "passed");
+  assertEquals(
+    check?.message,
+    'Collective "@testuser" is on the Free plan with an active trial (13 days left, ends 2026-08-19), which allows private extensions.',
+  );
+});
+
+Deno.test("extensionPushPrepare: a private dry run reports an ended trial as failed with the push's message, without throwing", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    entitledDeps([EXPIRED]),
+    privateInput(),
+  );
+  const check = result.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "failed");
+  assertEquals(check?.message, EXPIRED_REFUSAL);
+  assertEquals(result.collectiveEntitlement, EXPIRED);
+});
+
+Deno.test("extensionPushPrepare: a private dry run is undecided on a free plan with no trial and when no entitlement was reported", async () => {
+  const noTrial = await extensionPushPrepare(
+    ctx,
+    entitledDeps([testuserPlan()]),
+    privateInput(),
+  );
+  const undecided = noTrial.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(undecided?.status, "not-run");
+  assertEquals(undecided?.cause, "entitlement-undecided");
+  assertEquals(
+    undecided?.message,
+    'Collective "@testuser" is on the Free plan with no trial reported; the registry decides private publication at publish.',
+  );
+
+  const unreported = await extensionPushPrepare(
+    ctx,
+    entitledDeps(undefined),
+    privateInput(),
+  );
+  const check = unreported.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "not-run");
+  assertEquals(check?.cause, "entitlement-undecided");
+  assertEquals(
+    check?.message,
+    'the registry did not report entitlement for "@testuser"; private publication is decided at publish',
+  );
+  assertEquals(unreported.collectiveEntitlement, undefined);
+});
+
+Deno.test("extensionPushPrepare: public or default intent adds no entitlement check", async () => {
+  for (const visibility of [undefined, "public"] as const) {
+    const result = await extensionPushPrepare(
+      ctx,
+      entitledDeps([EXPIRED]),
+      makePrepareInput({ manifest: makeManifest({ visibility }) }),
+    );
+    assertEquals(
+      result.registryChecks.some((c) => c.name === "private-entitlement"),
+      false,
+    );
+    // The entitlement still rides along for a refusal to explain.
+    assertEquals(result.collectiveEntitlement, EXPIRED);
+  }
+});
+
+Deno.test("extensionPushPrepare: a private dry run lists the entitlement check as not run with the other checks' cause", async () => {
+  const noCredentials = await extensionPushPrepare(
+    ctx,
+    makePrepareDeps({ loadCredentials: () => Promise.resolve(null) }),
+    privateInput(),
+  );
+  assertEquals(
+    noCredentials.registryChecks.map((c) => [c.name, c.cause]),
+    [
+      ["authentication", "no-credentials"],
+      ["reserved-collective", "no-credentials"],
+      ["collective-membership", "no-credentials"],
+      ["private-entitlement", "no-credentials"],
+      ["version-exists", "no-credentials"],
+    ],
+  );
+
+  const rejectedKey = await extensionPushPrepare(
+    ctx,
+    makePrepareDeps({
+      fetchCollectives: () => Promise.reject(notAuthenticated()),
+    }),
+    privateInput(),
+  );
+  const check = rejectedKey.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "not-run");
+  assertEquals(check?.cause, "authentication-failed");
+});
+
+Deno.test("extensionPushPrepare: a private dry run reports the entitlement check as unanswered when whoami did not answer", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    makePrepareDeps({
+      fetchCollectives: () => Promise.reject(new Error("fetch failed")),
+    }),
+    privateInput(),
+  );
+  const check = result.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "not-run");
+  assertEquals(check?.cause, "registry-unavailable");
+  assertEquals(check?.message, "registry did not answer: fetch failed");
+  assertEquals(result.collectiveEntitlement, undefined);
+});
+
+Deno.test("extensionPushPrepare: a private dry run omits the entitlement check for a collective that is not the caller's", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    makePrepareDeps({
+      fetchCollectives: () =>
+        Promise.resolve({
+          collectives: ["other-org"],
+          entitlements: [{ slug: "other-org", plan: "team", planName: "Team" }],
+        }),
+    }),
+    privateInput(),
+  );
+  assertEquals(
+    result.registryChecks.find((c) => c.name === "collective-membership")
+      ?.status,
+    "failed",
+  );
+  assertEquals(
+    result.registryChecks.some((c) => c.name === "private-entitlement"),
+    false,
+  );
+});
+
+Deno.test("extensionPushPrepare: a private push refuses an ended trial before packaging, with the dry run's message", async () => {
+  let bundled = 0;
+  const deps = entitledDeps([EXPIRED], {
+    bundleEntryPoint: () => {
+      bundled++;
+      return Promise.resolve("/* bundled */");
+    },
+  });
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, privateInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertEquals(error.message, EXPIRED_REFUSAL);
+  assertEquals(bundled, 0);
+});
+
+Deno.test("extensionPushPrepare: a private push lets the registry decide an undecided entitlement", async () => {
+  for (const entitlements of [undefined, [testuserPlan()]]) {
+    const result = await extensionPushPrepare(
+      ctx,
+      entitledDeps(entitlements),
+      privateInput({ dryRun: false }),
+    );
+    assertEquals(
+      result.registryChecks.find((c) => c.name === "private-entitlement")
+        ?.cause,
+      "entitlement-undecided",
+    );
+  }
+});
+
+function forbidden(message = PRIVATE_REFUSAL): UserError {
+  return new UserError(message, REGISTRY_FORBIDDEN_CODE);
+}
+
+async function lastError(
+  deps: ExtensionPushExecuteDeps,
+  input: ExtensionPushExecuteInput,
+): Promise<SwampError> {
+  const events = await collect(extensionPush(ctx, deps, input));
+  const last = events[events.length - 1];
+  if (last.kind !== "error") {
+    throw new Error(`expected error, got ${last.kind}`);
+  }
+  return last.error;
+}
+
+Deno.test("extensionPush: a refused private publication carries what the registry reported at sign-in", async () => {
+  const atInitiate = await lastError(
+    makeExecuteDeps({ initiatePush: () => Promise.reject(forbidden()) }),
+    makeExecuteInput({
+      manifest: makeManifest({ visibility: "private" }),
+      collectiveEntitlement: EXPIRED,
+    }),
+  );
+  assertEquals(atInitiate.code, "validation_failed");
+  assertEquals(
+    atInitiate.message,
+    `${PRIVATE_REFUSAL}. At sign-in the registry reported "@testuser" on the Free plan; its trial ended on 2026-08-19. ` +
+      "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.",
+  );
+
+  const atConfirm = await lastError(
+    makeExecuteDeps({ confirmPush: () => Promise.reject(forbidden()) }),
+    makeExecuteInput({
+      manifest: makeManifest({ visibility: "private" }),
+      collectiveEntitlement: PAID,
+    }),
+  );
+  assertEquals(
+    atConfirm.message,
+    `${PRIVATE_REFUSAL}. At sign-in the registry reported "@testuser" on the Team plan.`,
+  );
+});
+
+Deno.test("extensionPush: a refused private publication with no entitlement reported says so and claims nothing about a plan", async () => {
+  const error = await lastError(
+    makeExecuteDeps({ initiatePush: () => Promise.reject(forbidden()) }),
+    makeExecuteInput({ manifest: makeManifest({ visibility: "private" }) }),
+  );
+  assertEquals(
+    error.message,
+    `${PRIVATE_REFUSAL}. At sign-in the registry did not report entitlement for "@testuser".`,
+  );
+});
+
+Deno.test("extensionPush: other failures and public pushes keep the registry's message as it came", async () => {
+  const notForbidden = await lastError(
+    makeExecuteDeps({
+      initiatePush: () => Promise.reject(new UserError("Server unavailable")),
+    }),
+    makeExecuteInput({
+      manifest: makeManifest({ visibility: "private" }),
+      collectiveEntitlement: EXPIRED,
+    }),
+  );
+  assertEquals(notForbidden.message, "Server unavailable");
+
+  const publicPush = await lastError(
+    makeExecuteDeps({
+      initiatePush: () => Promise.reject(forbidden("Forbidden")),
+    }),
+    makeExecuteInput({ collectiveEntitlement: EXPIRED }),
+  );
+  assertEquals(publicPush.message, "Forbidden");
 });
 
 // ── Deps factory tests ────────────────────────────────────────────────
@@ -955,6 +1294,65 @@ Deno.test("createExtensionPushPrepareDeps: fetchCollectives fails authentication
   assertEquals(recorder.calls.map((c) => [c.service, c.outcome]), [
     ["registry", "error"],
   ]);
+});
+
+Deno.test("createExtensionPushPrepareDeps: fetchCollectives reads membership and entitlement from one whoami answer", async () => {
+  const recorder = createApiCallRecorder();
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    recorder,
+    fetch: () =>
+      Promise.resolve(jsonResponse({
+        authenticated: true,
+        username: "seth",
+        organizations: [
+          { slug: "seth", name: "Seth", role: "owner", personal: true },
+          { slug: "acme", name: "Acme", role: "member", personal: false },
+        ],
+        collectiveEntitlements: [
+          { slug: "seth", plan: "free", planName: "Free", trial: null },
+          {
+            slug: "acme",
+            plan: "team",
+            planName: "Team",
+            subscriptionStatus: "active",
+            trial: null,
+          },
+        ],
+      })),
+  });
+  const lookup = await deps.fetchCollectives(REGISTRY, "swamp_key");
+  assertEquals(lookup.collectives, ["seth", "acme"]);
+  // The lookup carries the whole entitlement the server sent, including the
+  // fields the domain type does not name.
+  assertEquals<unknown>(lookup.entitlements, [
+    { slug: "seth", plan: "free", planName: "Free", trial: null },
+    {
+      slug: "acme",
+      plan: "team",
+      planName: "Team",
+      subscriptionStatus: "active",
+      trial: null,
+    },
+  ]);
+  assertEquals(recorder.calls.length, 1);
+
+  const older = createExtensionPushPrepareDeps(undefined, {
+    fetch: () =>
+      Promise.resolve(jsonResponse({
+        authenticated: true,
+        username: "seth",
+        organizations: [{
+          slug: "seth",
+          name: "Seth",
+          role: "owner",
+          personal: true,
+        }],
+      })),
+  });
+  assertEquals(await older.fetchCollectives(REGISTRY, "swamp_key"), {
+    collectives: ["seth"],
+    entitlements: undefined,
+  });
 });
 
 Deno.test("createExtensionPushPrepareDeps: records the npm and OSV calls the trust audit makes, and nothing without npm specifiers", async () => {
