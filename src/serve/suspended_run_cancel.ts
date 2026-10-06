@@ -44,6 +44,7 @@ import {
   settleDeadOwnerMethodRuns,
 } from "../domain/workflows/orphaned_run_reaper.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "workflow-cancel"]);
@@ -102,10 +103,9 @@ function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
  * `onDeadPid` receives the dead owner's pid when the tracker row decided.
  */
 export function ownerGoneDecider(
-  ctx: Pick<
-    ConnectionContext,
-    "activeRunRegistry" | "runTracker" | "controlPlaneStore" | "instanceId"
-  >,
+  ctx:
+    & Pick<ConnectionContext, "activeRunRegistry" | "runTracker" | "instanceId">
+    & { controlPlaneStore?: Pick<ControlPlaneStore, "get"> },
   onDeadPid?: (pid: number) => void,
 ): (run: WorkflowRun) => Promise<RunOwnerVerdict> {
   return async (run) => {
