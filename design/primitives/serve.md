@@ -347,6 +347,34 @@ lands either before the re-read or after the unit. The gap is in two places:
 
 Both fail closed: the token has to be minted again.
 
+**Server token secrets.** Serves before swamp-club#1511 stored each server
+token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
+vault (the default, else the first) and named that vault on the token record.
+On an OAuth-mode start, and from `access token mint` and `rotate`, each such
+token is migrated under its name lock (`src/serve/token_secret_migration.ts`):
+its secret is read, its vault is listed, and an access token the listing holds
+is read too. Both are written to `_token-secrets`, the record is repointed, and
+the user-vault copies are deleted when the vault supports deletes. A secret
+that cannot be read skips the token. A listing that fails, or a listed access
+token that fails to copy, fails the token before the record is repointed, and
+the next run retries. Only a key the listing lacks counts as absent: repointing
+a token whose access token stayed behind would hide it from the collective
+refresh, which reads only `_token-secrets` for such a record, so the token
+would never be refreshed or revoked on a userinfo 401 (swamp-club#3136).
+
+Earlier builds repointed in that case. So once per repo, serve lists the
+default user vault and copies the access token of each active record that
+names `_token-secrets` but lacks it there, under the token's name lock.
+`_token-secrets` is listed too, so a key there that fails to read is not
+overwritten. Token names come from the records, not from the vault's keys.
+When the listing succeeds and every key moves, serve records
+`oauth-access-tokens-recovered` in `_token-secrets` and never lists the vault
+for this again; otherwise the next start retries. A start with no such record
+records the marker without listing. The recovery trusts the user vault's value
+as the migration does, searches only the default user vault (else the first
+user vault), and does not repair a token an older binary sharing the datastore
+half-migrates after the marker exists.
+
 **OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
 `oauth-client-secret`, `oauth-bootstrap-access-token` and
 `oauth-resolved-admins` in the default user vault. On start, serve lists that
@@ -446,7 +474,9 @@ re-fetches each logged-in user's collectives from the provider every
 OAuth login stored an access token for it. The lookup reads `_token-secrets`,
 and reads a user vault only for a token whose record still names one, so a
 manually minted or worker server token costs no user-vault read
-(`src/serve/oauth_access_token_lookup.ts`). See
+(`src/serve/oauth_access_token_lookup.ts`). The token secret migration keeps
+a record naming `_token-secrets` only once its access token is there (see
+**Server token secrets** above). See
 [enablers/access-control.md](../enablers/access-control.md) for principals,
 grants, subjects and the `can-i` request.
 

@@ -3978,8 +3978,11 @@ export const serveCommand = new Command()
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
-      const { createTokenMigrationLockDeps, migrateTokenSecrets } =
-        await import("../../serve/token_secret_migration.ts");
+      const {
+        createTokenMigrationLockDeps,
+        migrateTokenSecrets,
+        recoverOAuthAccessTokens,
+      } = await import("../../serve/token_secret_migration.ts");
       const { createResourceWriter } = await import(
         "../../domain/models/data_writer.ts"
       );
@@ -3987,6 +3990,14 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
+      // The pollers are already running, so each token's pull, write and
+      // push runs under the sync gate as well as its name lock.
+      const migrationLockDeps = createTokenMigrationLockDeps({
+        datastoreConfig,
+        repoContext,
+        syncService,
+        syncGate,
+      });
       await migrateTokenSecrets({
         tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
         vaultService: migrationVaultService,
@@ -4022,14 +4033,18 @@ export const serveCommand = new Command()
             updated as Record<string, unknown>,
           );
         },
-        // The pollers are already running, so each token's pull, write and
-        // push runs under the sync gate as well as its name lock.
-        ...createTokenMigrationLockDeps({
-          datastoreConfig,
-          repoContext,
-          syncService,
-          syncGate,
-        }),
+        ...migrationLockDeps,
+      });
+
+      // Before the first collective refresh and token GC sweep, which read
+      // and delete these keys.
+      await recoverOAuthAccessTokens({
+        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+        vaultService: migrationVaultService,
+        dataQueryService: repoContext.dataQueryService,
+        userVaultName: migrationVaultService.getDefaultVaultName() ??
+          migrationVaultService.getUserVaultNames()[0],
+        ...migrationLockDeps,
       });
 
       const { migrateOAuthSecrets } = await import(
