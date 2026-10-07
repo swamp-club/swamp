@@ -23,6 +23,7 @@ import {
   extractModelVersion,
 } from "./extension_content_extractor.ts";
 import type { RegistryCheckNotRunCause } from "./extension_publish_checks.ts";
+import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 
 /** A quality issue found during checking. */
 export interface QualityIssue {
@@ -454,7 +455,7 @@ export async function checkExtensionQuality(
   }
 
   // Check formatting
-  const baseEnv = denoEnv ?? Deno.env.toObject();
+  const plainEnv = plainDenoEnv(denoEnv ?? Deno.env.toObject());
   const fmtCommand = new Deno.Command(denoPath, {
     args: [
       "fmt",
@@ -464,7 +465,7 @@ export async function checkExtensionQuality(
     ],
     stdout: "piped",
     stderr: "piped",
-    env: { ...baseEnv, NO_COLOR: "1" },
+    env: plainEnv,
   });
   const fmtOutput = await fmtCommand.output();
   if (!fmtOutput.success) {
@@ -479,7 +480,7 @@ export async function checkExtensionQuality(
     args: [...(await extensionLintArgs(denoConfigPath)), ...tsFiles],
     stdout: "piped",
     stderr: "piped",
-    env: { ...baseEnv, NO_COLOR: "1" },
+    env: plainEnv,
   });
   const lintOutput = await lintCommand.output();
   if (!lintOutput.success) {
