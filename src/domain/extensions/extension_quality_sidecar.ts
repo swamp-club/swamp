@@ -48,7 +48,7 @@ import { findRule } from "./extension_rule_catalog.ts";
  * accept:
  *   - rule: ipv4-address-literals  # a site-scoped rule in a .txt file, which has no comment form
  *     file: docs/hosts.txt
- *     reason: documented lab addresses
+ *     reason: documented lab addresses  # optional
  * ```
  *
  * The sidecar cannot accept a site-scoped rule in a file that has a comment
@@ -80,9 +80,9 @@ const GeneratedDeclarationSchema = z.object({
 
 const SidecarAcceptanceSchema = z.object({
   rule: z.string().trim().min(1).max(100),
-  reason: z.string().trim().min(1, "a reason is required").max(
-    MAX_ACCEPTANCE_REASON_LENGTH,
-  ),
+  // Optional; an empty value is a mistake, so omit the key instead.
+  reason: z.string().trim().min(1, "omit reason rather than leave it empty")
+    .max(MAX_ACCEPTANCE_REASON_LENGTH).optional(),
   file: z.string().min(1).max(512).refine(isSafeRelativePath, {
     message:
       "Path must be relative and must not contain '..' components or start with '/'",
@@ -214,7 +214,7 @@ export function sidecarDirectives(
       }
       directives.push({
         ruleId: entry.rule,
-        reason: entry.reason,
+        ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
         target: { kind: "extension" },
         source: "sidecar",
         declaredAt: { file: sidecarPath, line },
@@ -252,7 +252,7 @@ export function sidecarDirectives(
     }
     directives.push({
       ruleId: entry.rule,
-      reason: entry.reason,
+      ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
       target: { kind: "file", file: resolve(manifestDir, entry.file) },
       source: "sidecar",
       declaredAt: { file: sidecarPath, line },

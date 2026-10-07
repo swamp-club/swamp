@@ -31,6 +31,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { displayPath } from "../output/display_path.ts";
 import {
   buildFindingsReport,
   renderFindingsReport,
@@ -39,10 +40,12 @@ import {
 
 /** Per-run inputs for the stream handlers. */
 export interface ExtensionQualityHandlerOptions {
-  /** The manifest's directory; the report's file paths are relative to it. */
+  /** The manifest's directory; the sidecar and declared acceptances are relative to it. */
   manifestDir: string;
-  /** The repository directory, so a file in a typed directory beside the manifest prints as a `../` path. */
+  /** The repository directory; log paths under it print relative to `cwd`. */
   repoDir?: string;
+  /** The directory the author ran the command in; log paths print openable from it. Defaults to the process cwd. */
+  cwd?: string;
 }
 
 /**
@@ -179,6 +182,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
     const logger = getSwampLogger(["extension", "quality"]);
     const manifestDir = options?.manifestDir ?? "";
     const repoDir = options?.repoDir;
+    const cwd = options?.cwd ?? Deno.cwd();
     return {
       packaging: () => {
         logger.info("Packaging extension for quality scoring...");
@@ -258,8 +262,16 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
               acceptances: findings.acceptances,
             },
             manifestDir,
-            repoDir,
           ),
+          {
+            manifestDir,
+            display: (path) =>
+              displayPath(
+                path,
+                cwd,
+                repoDir !== undefined ? [repoDir, manifestDir] : [manifestDir],
+              ),
+          },
         );
         logger.info`Packaged archive: ${archiveSize} bytes`;
         const { gateFailures, excludedFromArchive, registryScorable } = e.data;
@@ -330,7 +342,6 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
     options?: ExtensionQualityHandlerOptions,
   ): EventHandlers<ExtensionQualityEvent> {
     const manifestDir = options?.manifestDir ?? "";
-    const repoDir = options?.repoDir;
     return {
       packaging: () => {},
       cache_hit: () => {},
@@ -374,15 +385,10 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             registryScorable,
             gateFailures,
             excludedFromArchive,
-            warnings: withAcceptance(
-              findings.safetyWarnings,
-              manifestDir,
-              repoDir,
-            ),
+            warnings: withAcceptance(findings.safetyWarnings, manifestDir),
             reviewRuleWarnings: withAcceptance(
               findings.reviewRulesResult.warnings,
               manifestDir,
-              repoDir,
             ),
             ...buildFindingsReport(
               {
@@ -391,7 +397,6 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
                 acceptances: findings.acceptances,
               },
               manifestDir,
-              repoDir,
             ),
           },
           null,

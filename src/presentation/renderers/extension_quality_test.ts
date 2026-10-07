@@ -261,7 +261,7 @@ function completedWithFindings(
   return event;
 }
 
-Deno.test("createExtensionQualityRenderer: json completed carries the warnings with paste text, declaredAcceptances and forNextTime", () => {
+Deno.test("createExtensionQualityRenderer: json completed carries the warnings with their acceptance, declaredAcceptances and unresolvedWarnings", () => {
   const manifestDir = resolve("/ext");
   const renderer = createExtensionQualityRenderer("json");
   const logs = capture(() =>
@@ -270,22 +270,31 @@ Deno.test("createExtensionQualityRenderer: json completed carries the warnings w
     )
   );
   const doc = JSON.parse(logs[0]);
+  const modelB = join(manifestDir, "models", "b.ts");
   assertEquals(doc.warnings.length, 1);
-  assertEquals(
-    doc.warnings[0].acceptance,
-    "// swamp-quality-ignore deno-command: <reason>",
-  );
+  assertEquals(doc.warnings[0].acceptance, {
+    form: "comment",
+    file: modelB,
+    line: 9,
+    position: "same-line",
+    text: "// swamp-quality-ignore deno-command",
+  });
   assertEquals(doc.reviewRuleWarnings[0].ruleId, "stale-acceptance");
   assertEquals("acceptance" in doc.reviewRuleWarnings[0], false);
   assertEquals(
     doc.declaredAcceptances.accepted[0].reason,
     "reference to a Secret",
   );
-  assertEquals(doc.forNextTime.map((e: { file: string }) => e.file), [
-    "models/b.ts",
-    "models/a.ts",
+  assertEquals("forNextTime" in doc, false);
+  assertEquals(doc.unresolvedWarnings.map((e: { file: string }) => e.file), [
+    modelB,
+    join(manifestDir, "models", "a.ts"),
   ]);
-  assertEquals(doc.forNextTime[0].remediation, "prefer primitives");
+  assertEquals(doc.unresolvedWarnings[0].remediation, "prefer primitives");
+  assertEquals(
+    doc.unresolvedWarnings[0].acceptance,
+    doc.warnings[0].acceptance,
+  );
 });
 
 Deno.test("createExtensionQualityRenderer: json completed omits the report fields when there is nothing to report", () => {
@@ -299,30 +308,32 @@ Deno.test("createExtensionQualityRenderer: json completed omits the report field
   assertEquals(doc.warnings, []);
   assertEquals(doc.reviewRuleWarnings, []);
   assertEquals("declaredAcceptances" in doc, false);
-  assertEquals("forNextTime" in doc, false);
+  assertEquals("unresolvedWarnings" in doc, false);
 });
 
-Deno.test("createExtensionQualityRenderer: log completed prints the accepted and For next time blocks", () => {
+Deno.test("createExtensionQualityRenderer: log completed prints the accepted and unresolved blocks, paths openable from cwd", () => {
   const manifestDir = resolve("/ext");
   const renderer = createExtensionQualityRenderer("log");
   const logs = capture(() =>
-    renderer.handlers({ manifestDir }).completed(
+    renderer.handlers({ manifestDir, cwd: manifestDir }).completed(
       completedWithFindings(manifestDir),
     )
   );
   const output = logs.join("\n");
-  assertStringIncludes(output, "Accepted, with reasons:");
+  const a = join("models", "a.ts");
+  assertStringIncludes(output, "Accepted warnings:");
   assertStringIncludes(
     output,
-    "credentials-sensitive-field — models/a.ts:4: reference to a Secret",
+    `credentials-sensitive-field — ${a}:4: reference to a Secret`,
   );
-  assertStringIncludes(output, "For next time:");
-  assertStringIncludes(output, "deno-command — models/b.ts:9:");
+  assertStringIncludes(output, "Unresolved warnings:");
+  assertEquals(output.includes("For next time:"), false);
+  assertStringIncludes(output, `deno-command — ${join("models", "b.ts")}:9:`);
   assertStringIncludes(
     output,
-    "// swamp-quality-ignore deno-command: <reason>",
+    "or accept on the line: // swamp-quality-ignore deno-command",
   );
-  assertStringIncludes(output, "stale-acceptance — models/a.ts:2:");
+  assertStringIncludes(output, `stale-acceptance — ${a}:2:`);
 });
 
 Deno.test("createExtensionQualityRenderer: a failed run names the invalid acceptance before the error, in log and JSON", () => {

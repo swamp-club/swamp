@@ -18,10 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
+import type { Logger } from "@logtape/logtape";
 import {
   buildFindingsReport,
+  renderFindingsReport,
   withAcceptance,
 } from "./extension_findings_report.ts";
 
@@ -52,11 +54,12 @@ const review: ReviewFinding = {
   },
 };
 
-Deno.test("buildFindingsReport: an unaccepted finding becomes advice with a relative path, the first message line, remediation and the paste text", () => {
+Deno.test("buildFindingsReport: an unaccepted finding becomes an unresolved warning with its absolute path, the first message line, remediation and the acceptance", () => {
+  const modelB = join(DIR, "models", "b.ts");
   const report = buildFindingsReport({
     safetyWarnings: [{
       ruleId: "deno-command",
-      file: join(DIR, "models", "b.ts"),
+      file: modelB,
       line: 9,
       message: "Line 9 uses Deno.Command() to spawn subprocesses.",
       remediation: "prefer primitives",
@@ -65,23 +68,51 @@ Deno.test("buildFindingsReport: an unaccepted finding becomes advice with a rela
     acceptances: { accepted: [] },
   }, DIR);
   assertEquals("declaredAcceptances" in report, false);
-  assertEquals(report.forNextTime?.length, 3);
-  const [cmd, field, adversarial] = report.forNextTime!;
-  assertEquals(cmd.file, "models/b.ts");
-  assertEquals(cmd.line, 9);
-  assertEquals(
-    cmd.acceptance,
-    "// swamp-quality-ignore deno-command: <reason>",
-  );
-  assertStringIncludes(cmd.placement ?? "", "line 9 of models/b.ts");
+  assertEquals(report.unresolvedWarnings?.length, 3);
+  const [cmd, field, adversarial] = report.unresolvedWarnings!;
+  assertEquals(cmd, {
+    ruleId: "deno-command",
+    file: modelB,
+    line: 9,
+    message: "Line 9 uses Deno.Command() to spawn subprocesses.",
+    remediation: "prefer primitives",
+    acceptance: {
+      form: "comment",
+      file: modelB,
+      line: 9,
+      position: "same-line",
+      text: "// swamp-quality-ignore deno-command",
+    },
+  });
   assertEquals(field.message, "looks like a secret");
   assertEquals(field.remediation, "mark it sensitive");
-  assertEquals(adversarial.acceptance, undefined);
-  assertEquals(adversarial.placement, undefined);
+  assertEquals("acceptance" in adversarial, false);
   assertEquals(adversarial.remediation, "run the review");
 });
 
-Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands to one entry per remaining file", () => {
+Deno.test("buildFindingsReport: two sidecar findings give two entries for one accept list", () => {
+  const report = buildFindingsReport({
+    safetyWarnings: ["hosts", "lab"].map((name) => ({
+      ruleId: "ipv4-address-literals",
+      file: join(DIR, "docs", `${name}.txt`),
+      line: 1,
+      message: "IPv4 literal",
+    })),
+    reviewWarnings: [],
+    acceptances: { accepted: [] },
+  }, DIR);
+  assertEquals(
+    report.unresolvedWarnings?.map((w) => w.acceptance),
+    ["hosts", "lab"].map((name) => ({
+      form: "sidecar" as const,
+      file: join(DIR, "quality.yaml"),
+      entry: { rule: "ipv4-address-literals", file: `docs/${name}.txt` },
+    })),
+  );
+});
+
+Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands to one entry per remaining file, each with a header acceptance", () => {
+  const files = [join(DIR, "models", "b.ts"), join(DIR, "models", "c.ts")];
   const report = buildFindingsReport({
     safetyWarnings: [],
     reviewWarnings: [{
@@ -90,22 +121,24 @@ Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands
       severity: "medium",
       file: "(2 files)",
       message: "2 of 3 entry points have no sibling test",
-      files: [join(DIR, "models", "b.ts"), join(DIR, "models", "c.ts")],
+      files,
     }],
     acceptances: { accepted: [] },
   }, DIR);
-  assertEquals(report.forNextTime?.map((e) => e.file), [
-    "models/b.ts",
-    "models/c.ts",
-  ]);
-  assertStringIncludes(report.forNextTime?.[0].message ?? "", "No sibling");
-  assertEquals(
-    report.forNextTime?.[0].acceptance,
-    "// swamp-quality-ignore testing-completeness: <reason>",
-  );
+  assertEquals(report.unresolvedWarnings?.map((e) => e.file), files);
   assertStringIncludes(
-    report.forNextTime?.[1].placement ?? "",
-    "top of models/c.ts",
+    report.unresolvedWarnings?.[0].message ?? "",
+    "No sibling",
+  );
+  assertEquals(
+    report.unresolvedWarnings?.map((e) => e.acceptance),
+    files.map((file) => ({
+      form: "comment" as const,
+      file,
+      line: 1,
+      position: "file-header" as const,
+      text: "// swamp-quality-ignore testing-completeness",
+    })),
   );
 });
 
@@ -141,13 +174,98 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
   );
 });
 
-Deno.test("withAcceptance: attaches the paste text to acceptable findings only, leaving the rest untouched", () => {
-  const [field, adversarial] = withAcceptance([secret, review], DIR);
-  assertEquals(
-    field.acceptance,
-    "// swamp-quality-ignore credentials-sensitive-field: <reason>",
+Deno.test("withAcceptance: attaches the acceptance to acceptable findings only, leaving the rest untouched", () => {
+  const collapsed: ReviewFinding = {
+    ruleId: "testing-completeness",
+    dimension: "Testing Completeness",
+    severity: "medium",
+    file: "(2 files)",
+    message: "2 of 3 entry points have no sibling test",
+    files: [join(DIR, "models", "b.ts"), join(DIR, "models", "c.ts")],
+  };
+  const [field, adversarial, many] = withAcceptance(
+    [secret, review, collapsed],
+    DIR,
   );
+  assertEquals(field.acceptance, {
+    form: "comment",
+    file: secret.file,
+    line: 4,
+    position: "same-line",
+    text: "// swamp-quality-ignore credentials-sensitive-field",
+  });
   assertEquals(field.remediation, "mark it sensitive");
   assertEquals("acceptance" in adversarial, false);
   assertEquals(adversarial.skeleton, review.skeleton);
+  // A collapsed finding stands for several files; each takes its own
+  // acceptance in the unresolved warnings.
+  assertEquals("acceptance" in many, false);
+});
+
+Deno.test("renderFindingsReport: one line per option, quoting a sidecar file name that needs it, and no reason when none was given", () => {
+  const lines: string[] = [];
+  const logger = {
+    // LogTape reads a plain string as a template, with braces doubled.
+    info: (message: string) =>
+      lines.push(message.replaceAll("{{", "{").replaceAll("}}", "}")),
+  } as unknown as Logger;
+  renderFindingsReport(logger, {
+    declaredAcceptances: {
+      accepted: [{
+        ruleId: "deno-command",
+        file: "models/a.ts",
+        line: 3,
+        source: "inline",
+        message: "uses Deno.Command",
+      }],
+    },
+    unresolvedWarnings: [{
+      ruleId: "ipv4-address-literals",
+      file: join(DIR, "docs", "a: b.txt"),
+      line: 1,
+      message: "IPv4 literal",
+      acceptance: {
+        form: "sidecar",
+        file: join(DIR, "quality.yaml"),
+        entry: { rule: "ipv4-address-literals", file: "docs/a: b.txt" },
+      },
+    }, {
+      ruleId: "ipv4-address-literals",
+      file: join(DIR, "README.md"),
+      line: 7,
+      message: "IPv4 literal",
+      acceptance: {
+        form: "comment",
+        file: join(DIR, "README.md"),
+        line: 7,
+        position: "line-above",
+        text: "<!-- swamp-quality-ignore ipv4-address-literals -->",
+      },
+    }, {
+      ruleId: "testing-completeness",
+      file: join(DIR, "models", "b.ts"),
+      message: "No sibling test",
+      acceptance: {
+        form: "comment",
+        file: join(DIR, "models", "b.ts"),
+        line: 1,
+        position: "file-header",
+        text: "// swamp-quality-ignore testing-completeness",
+      },
+    }],
+  }, {
+    manifestDir: DIR,
+    display: (path) => relative(DIR, path).replaceAll("\\", "/"),
+  });
+  assertEquals(lines, [
+    "Accepted warnings:",
+    "  deno-command — models/a.ts:3",
+    "Unresolved warnings:",
+    "  ipv4-address-literals — docs/a: b.txt:1: IPv4 literal",
+    "    or accept in quality.yaml: { rule: ipv4-address-literals, file: 'docs/a: b.txt' }",
+    "  ipv4-address-literals — README.md:7: IPv4 literal",
+    "    or accept on the line above: <!-- swamp-quality-ignore ipv4-address-literals -->",
+    "  testing-completeness — models/b.ts: No sibling test",
+    "    or accept at the top of the file: // swamp-quality-ignore testing-completeness",
+  ]);
 });

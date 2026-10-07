@@ -39,8 +39,19 @@ import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
+  type ExtensionPushPrepareInput,
 } from "../src/libswamp/extensions/push.ts";
 import { buildPrepareInput } from "../src/libswamp/extensions/push_test_helpers.ts";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import type {
+  Acceptance,
+  SidecarAcceptanceEntry,
+} from "../src/domain/extensions/extension_acceptances.ts";
+import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
+import {
+  buildFindingsReport,
+  type FindingsReport,
+} from "../src/presentation/renderers/extension_findings_report.ts";
 
 const MANIFEST = [
   "manifestVersion: 1",
@@ -213,5 +224,182 @@ Deno.test("declared acceptances: a sidecar with a traversal path is refused befo
     assertEquals(error.code, "validation_failed");
     assert(error.message.includes("quality.yaml"));
     assertEquals(gatesRan, 0);
+  });
+});
+
+// ── Structured acceptances, applied as an agent would (swamp-club#3107) ──
+
+/** Applies every acceptance in the report to the files, as an agent would: no prose parsed. */
+async function applyAcceptances(report: FindingsReport): Promise<void> {
+  const comments = new Map<
+    string,
+    Extract<Acceptance, { form: "comment" }>[]
+  >();
+  const sidecars = new Map<string, SidecarAcceptanceEntry[]>();
+  for (const warning of report.unresolvedWarnings ?? []) {
+    const acceptance = warning.acceptance;
+    assert(acceptance, `${warning.ruleId} has no acceptance`);
+    if (acceptance.form === "comment") {
+      comments.set(acceptance.file, [
+        ...comments.get(acceptance.file) ?? [],
+        acceptance,
+      ]);
+    } else {
+      sidecars.set(acceptance.file, [
+        ...sidecars.get(acceptance.file) ?? [],
+        acceptance.entry,
+      ]);
+    }
+  }
+  for (const [file, acceptances] of comments) {
+    const lines = (await Deno.readTextFile(file)).split("\n");
+    // Bottom-up, so an inserted line never moves a later edit's line.
+    for (const a of acceptances.toSorted((x, y) => y.line - x.line)) {
+      if (a.position === "same-line") {
+        lines[a.line - 1] = `${lines[a.line - 1]} ${a.text}`;
+      } else {
+        lines.splice(a.line - 1, 0, a.text);
+      }
+    }
+    await Deno.writeTextFile(file, lines.join("\n"));
+  }
+  for (const [file, entries] of sidecars) {
+    // Add to the existing accept list; start the file only when it is absent.
+    const existing = await Deno.readTextFile(file)
+      .then((text) => parseYaml(text) as Record<string, unknown>)
+      .catch((): Record<string, unknown> => ({ version: 1 }));
+    const accept = (existing.accept as unknown[] | undefined) ?? [];
+    await Deno.writeTextFile(
+      file,
+      stringifyYaml({ ...existing, accept: [...accept, ...entries] }),
+    );
+  }
+}
+
+async function withFindingsExtension(
+  fn: (root: string, input: ExtensionPushPrepareInput) => Promise<void>,
+): Promise<void> {
+  await withExtension(async (root) => {
+    const model = join(root, "model.ts");
+    await Deno.writeTextFile(
+      model,
+      [
+        "export const model = { name: 'thing' };",
+        'export const run = () => new Deno.Command("vendor"); // don\'t inline',
+        "",
+      ].join("\n"),
+    );
+    await Deno.mkdir(join(root, "docs"));
+    const readme = join(root, "README.md");
+    await Deno.writeTextFile(
+      readme,
+      "# Thing\n\nGateway: 10.0.0.1\nRouter: 10.0.0.2\n",
+    );
+    const hosts = join(root, "docs", "hosts.txt");
+    const lab = join(root, "docs", "lab.txt");
+    await Deno.writeTextFile(hosts, "10.0.0.3\n");
+    await Deno.writeTextFile(lab, "10.0.0.4\n");
+    const manifest = parseExtensionManifest(
+      MANIFEST +
+        "additionalFiles:\n  - README.md\n  - docs/hosts.txt\n  - docs/lab.txt\n",
+    );
+    const input = buildPrepareInput(manifest, root, {
+      modelsDir: root,
+      allModelFiles: [model],
+      modelEntryPoints: [model],
+      additionalFilePaths: [readme, hosts, lab],
+      registryChecks: "skip",
+    });
+    await fn(root, input);
+  });
+}
+
+function findingsDeps(root: string): ExtensionPushPrepareDeps {
+  return {
+    ...fakeDeps(),
+    analyzeExtensionSafety,
+    checkReviewRules: () =>
+      Promise.resolve({
+        errors: [],
+        warnings: [{
+          ruleId: "testing-completeness",
+          dimension: "Testing Completeness",
+          severity: "medium",
+          file: join(root, "model.ts"),
+          message: "No sibling `_test.ts` found.",
+        }],
+        passed: true,
+      }),
+  };
+}
+
+Deno.test("declared acceptances: every acceptance a dry run reports applies mechanically, and the re-run accepts each finding", async () => {
+  await withFindingsExtension(async (root, input) => {
+    const deps = findingsDeps(root);
+    const first = await extensionPushPrepare(
+      createLibSwampContext(),
+      deps,
+      input,
+    );
+    const report = buildFindingsReport({
+      safetyWarnings: first.safetyWarnings,
+      reviewWarnings: first.reviewRulesResult.warnings,
+      acceptances: first.acceptances,
+    }, root);
+    const forms = (report.unresolvedWarnings ?? []).map((w) =>
+      w.acceptance?.form === "comment"
+        ? `${w.ruleId}:${w.acceptance.position}`
+        : `${w.ruleId}:${w.acceptance?.form}`
+    ).sort();
+    assertEquals(forms, [
+      "deno-command:same-line",
+      "ipv4-address-literals:line-above",
+      "ipv4-address-literals:line-above",
+      "ipv4-address-literals:sidecar",
+      "ipv4-address-literals:sidecar",
+      "testing-completeness:file-header",
+    ]);
+    // Every comment acceptance names its file, line and position.
+    for (const w of report.unresolvedWarnings ?? []) {
+      if (w.acceptance?.form !== "comment") continue;
+      assert(w.acceptance.file.startsWith(root));
+      assertEquals(typeof w.acceptance.line, "number");
+    }
+
+    await applyAcceptances(report);
+
+    const second = await extensionPushPrepare(
+      createLibSwampContext(),
+      deps,
+      input,
+    );
+    // The two sidecar entries merged into one valid quality.yaml.
+    assertEquals(second.sidecar?.value.accept, [
+      { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
+      { rule: "ipv4-address-literals", file: "docs/lab.txt" },
+    ]);
+    assertEquals(second.safetyWarnings, []);
+    assertEquals(second.reviewRulesResult.errors, []);
+    assertEquals(second.reviewRulesResult.warnings, []);
+    assertEquals(second.acceptances.accepted.length, 6);
+    for (const a of second.acceptances.accepted) {
+      assertEquals("reason" in a, false);
+    }
+  });
+});
+
+Deno.test("declared acceptances: an error-level rule with no reason is still a blocking invalid-acceptance", async () => {
+  await withFindingsExtension(async (root, input) => {
+    await Deno.writeTextFile(
+      join(root, "model.ts"),
+      "export const model = { name: 'thing' }; // swamp-quality-ignore dynamic-code\n",
+    );
+    const error = await assertRejects(() =>
+      extensionPushPrepare(createLibSwampContext(), findingsDeps(root), input)
+    ) as { details?: { reviewRuleErrors?: { ruleId: string }[] } };
+    assertEquals(
+      error.details?.reviewRuleErrors?.map((e) => e.ruleId),
+      ["invalid-acceptance"],
+    );
   });
 });

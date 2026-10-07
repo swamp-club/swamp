@@ -564,6 +564,29 @@ Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the ru
   );
 });
 
+Deno.test("analyzeExtensionSafety: a directive with no reason, or after an earlier comment, hides nothing on its line", async () => {
+  const blob = "Q".repeat(120);
+  await withTempFiles(
+    {
+      "a.ts": [
+        `new Deno.Command("sh", { args: ["${blob}"] }); // swamp-quality-ignore deno-command`,
+        `new Deno.Command("sh", { args: ["${blob}"] }); // don't // swamp-quality-ignore deno-command`,
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      const byLine = result.warnings.map((w) => `${w.ruleId}@${w.line}`).sort();
+      assertEquals(byLine, [
+        "base64-run@1",
+        "base64-run@2",
+        "deno-command@1",
+        "deno-command@2",
+      ]);
+    },
+  );
+});
+
 Deno.test("analyzeExtensionSafety: a directive marker inside a string literal hides nothing", async () => {
   const blob = "Q".repeat(120);
   await withTempFiles(

@@ -18,10 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
+import { resolve } from "@std/path";
+import { stringify } from "@std/yaml";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import {
-  acceptanceSnippet,
-  fileRelativeToManifest,
+  type Acceptance,
+  acceptanceFor,
 } from "../../domain/extensions/extension_acceptances.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -29,32 +31,31 @@ import type { DeclaredAcceptances } from "../../libswamp/extensions/push.ts";
 
 /**
  * The findings report that closes a push summary, a dry run and a quality
- * run: what the author already accepted, with reasons, and what is left for
- * next time, each with how to fix it properly and, when the finding is not
- * right for this extension, the exact acceptance to paste. Built from the
- * gated warnings themselves, not from the flag waiver record, so a `--json`
- * run, a dry run and an interactive "y" all get it.
+ * run: what the author already accepted, and the warnings this run did not
+ * resolve, each with how to fix it properly and, when the finding is not
+ * right for this extension, the acceptance that declares it, described as
+ * an edit an agent can apply. Built from the gated warnings themselves, not
+ * from the flag waiver record, so a `--json` run, a dry run and an
+ * interactive "y" all get it.
  */
 
-/** One unaccepted warning, as advice. */
-export interface ForNextTimeEntry {
+/** One warning neither fixed nor accepted. */
+export interface UnresolvedWarning {
   ruleId: string;
-  /** Relative to the manifest's directory with forward slashes; a label such as `(multiple files)` passes through. */
+  /** The finding's absolute path; a label such as `(3 files)` passes through. */
   file: string;
   line?: number;
   message: string;
   /** How to fix the finding properly, from the rule catalog. */
   remediation?: string;
-  /** The exact text to paste to accept the finding; absent when the rule has no acceptance form. */
-  acceptance?: string;
-  /** Where the acceptance goes, in words; present with `acceptance`. */
-  placement?: string;
+  /** The edit that accepts the finding; absent when the rule has no acceptance form. */
+  acceptance?: Acceptance;
 }
 
 /** The two blocks, each present only when it has entries. */
 export interface FindingsReport {
   declaredAcceptances?: DeclaredAcceptances;
-  forNextTime?: ForNextTimeEntry[];
+  unresolvedWarnings?: UnresolvedWarning[];
 }
 
 /** The findings a run gates on, after acceptances. */
@@ -64,60 +65,59 @@ export interface GatedFindings {
   acceptances: DeclaredAcceptances;
 }
 
-/** A finding with its paste-ready acceptance attached, for the JSON warnings documents. */
-export type WithAcceptance<T> = T & { acceptance?: string };
+/** A finding with its acceptance attached, for the JSON warnings documents. */
+export type WithAcceptance<T> = T & { acceptance?: Acceptance };
 
-/** Attaches the paste-ready acceptance to each finding that has one. */
+/**
+ * Attaches the acceptance to each finding that has one. A collapsed
+ * finding standing for several files has none here; the report's
+ * unresolved warnings carry one per file.
+ */
 export function withAcceptance<T extends SafetyIssue | ReviewFinding>(
   findings: T[],
   manifestDir: string,
-  repoDir?: string,
 ): WithAcceptance<T>[] {
   return findings.map((finding) => {
-    const snippet = acceptanceSnippet(finding, manifestDir, repoDir);
-    return snippet ? { ...finding, acceptance: snippet.text } : finding;
+    const acceptance = acceptanceFor(finding, manifestDir);
+    return acceptance ? { ...finding, acceptance } : finding;
   });
 }
 
-function forNextTimeEntry(
+function unresolvedWarning(
   finding: SafetyIssue | ReviewFinding,
   manifestDir: string,
-  repoDir?: string,
-): ForNextTimeEntry {
-  const snippet = acceptanceSnippet(finding, manifestDir, repoDir);
+): UnresolvedWarning {
+  const acceptance = acceptanceFor(finding, manifestDir);
   return {
     ruleId: finding.ruleId,
-    file: fileRelativeToManifest(manifestDir, finding.file, repoDir),
+    file: finding.file,
     ...(finding.line !== undefined ? { line: finding.line } : {}),
     message: finding.message.split("\n")[0],
     ...(finding.remediation !== undefined
       ? { remediation: finding.remediation }
       : {}),
-    ...(snippet
-      ? { acceptance: snippet.text, placement: snippet.placement }
-      : {}),
+    ...(acceptance ? { acceptance } : {}),
   };
 }
 
 /**
  * Builds the report. A collapsed testing-completeness finding expands to one
- * entry per remaining file, so each has its own paste-ready header comment.
+ * entry per remaining file, so each has its own header comment.
  */
 export function buildFindingsReport(
   findings: GatedFindings,
   manifestDir: string,
-  repoDir?: string,
 ): FindingsReport {
-  const forNextTime: ForNextTimeEntry[] = [];
+  const unresolvedWarnings: UnresolvedWarning[] = [];
   for (const w of findings.safetyWarnings) {
-    forNextTime.push(forNextTimeEntry(w, manifestDir, repoDir));
+    unresolvedWarnings.push(unresolvedWarning(w, manifestDir));
   }
   for (const w of findings.reviewWarnings) {
     if (w.files && w.files.length > 0) {
       // One entry per file the collapsed finding stands for, each with the
       // per-file wording so the advice reads per file.
       for (const file of w.files) {
-        forNextTime.push(forNextTimeEntry(
+        unresolvedWarnings.push(unresolvedWarning(
           {
             ...w,
             file,
@@ -125,24 +125,50 @@ export function buildFindingsReport(
               "failure paths with unit tests before publishing.",
           },
           manifestDir,
-          repoDir,
         ));
       }
     } else {
-      forNextTime.push(forNextTimeEntry(w, manifestDir, repoDir));
+      unresolvedWarnings.push(unresolvedWarning(w, manifestDir));
     }
   }
   const hasAcceptances = findings.acceptances.accepted.length > 0 ||
     findings.acceptances.generated !== undefined;
   return {
     ...(hasAcceptances ? { declaredAcceptances: findings.acceptances } : {}),
-    ...(forNextTime.length > 0 ? { forNextTime } : {}),
+    ...(unresolvedWarnings.length > 0 ? { unresolvedWarnings } : {}),
   };
 }
 
 /** The log-mode header strings, anchored by tests and UAT. */
-export const ACCEPTED_HEADER = "Accepted, with reasons:";
-export const FOR_NEXT_TIME_HEADER = "For next time:";
+export const ACCEPTED_HEADER = "Accepted warnings:";
+export const UNRESOLVED_HEADER = "Unresolved warnings:";
+
+/** How the log form prints paths. */
+export interface FindingsReportPaths {
+  /** The manifest's directory, which declared acceptances' files are relative to. */
+  manifestDir: string;
+  /** An absolute path as the author can open it from where they ran the command. */
+  display: (path: string) => string;
+}
+
+/** The acceptance as one line of advice: where it goes, then what to write. */
+function acceptanceAdvice(acceptance: Acceptance): string {
+  if (acceptance.form === "sidecar") {
+    // The YAML stringifier quotes a file name that needs it, so the entry
+    // stays valid YAML whatever the path holds.
+    const entry = stringify(acceptance.entry, { flowLevel: 0 }).trim()
+      .replace(/^\{/, "{ ").replace(/\}$/, " }");
+    return `or accept in quality.yaml: ${entry}`;
+  }
+  switch (acceptance.position) {
+    case "same-line":
+      return `or accept on the line: ${acceptance.text}`;
+    case "line-above":
+      return `or accept on the line above: ${acceptance.text}`;
+    case "file-header":
+      return `or accept at the top of the file: ${acceptance.text}`;
+  }
+}
 
 /**
  * Prints the two blocks in log mode, each only when it has entries. Every
@@ -153,8 +179,13 @@ export const FOR_NEXT_TIME_HEADER = "For next time:";
 export function renderFindingsReport(
   logger: Logger,
   report: FindingsReport,
+  paths: FindingsReportPaths,
 ): void {
   const line = (text: string) => logger.info(escapeLogTemplate(text));
+  const where = (file: string, lineNumber?: number) =>
+    `${file.startsWith("(") ? file : paths.display(file)}${
+      lineNumber !== undefined ? `:${lineNumber}` : ""
+    }`;
   if (report.declaredAcceptances) {
     const { accepted, generated } = report.declaredAcceptances;
     line(ACCEPTED_HEADER);
@@ -164,27 +195,27 @@ export function renderFindingsReport(
       );
     }
     for (const a of accepted) {
-      const where = a.file !== undefined
-        ? `${a.file}${a.line !== undefined ? `:${a.line}` : ""}`
+      const at = a.file !== undefined
+        ? where(resolve(paths.manifestDir, a.file), a.line)
         : "(extension)";
-      line(`  ${a.ruleId} — ${where}: ${a.reason}`);
+      line(
+        `  ${a.ruleId} — ${at}${a.reason !== undefined ? `: ${a.reason}` : ""}`,
+      );
     }
   }
-  if (report.forNextTime) {
-    line(FOR_NEXT_TIME_HEADER);
-    for (const entry of report.forNextTime) {
-      const where = `${entry.file}${
-        entry.line !== undefined ? `:${entry.line}` : ""
-      }`;
-      line(`  ${entry.ruleId} — ${where}: ${entry.message}`);
+  if (report.unresolvedWarnings) {
+    line(UNRESOLVED_HEADER);
+    for (const entry of report.unresolvedWarnings) {
+      line(
+        `  ${entry.ruleId} — ${
+          where(entry.file, entry.line)
+        }: ${entry.message}`,
+      );
       if (entry.remediation) {
         line(`    fix: ${entry.remediation}`);
       }
       if (entry.acceptance) {
-        line(`    or accept it, ${entry.placement}:`);
-        for (const text of entry.acceptance.split("\n")) {
-          line(`      ${text}`);
-        }
+        line(`    ${acceptanceAdvice(entry.acceptance)}`);
       }
     }
   }

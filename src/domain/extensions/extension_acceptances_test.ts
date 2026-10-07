@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import {
   type AcceptanceDirective,
-  acceptanceSnippet,
+  acceptanceFor,
   applyAcceptances,
   commentFormFor,
   directiveSpan,
@@ -29,7 +30,6 @@ import {
   MAX_ACCEPTANCE_REASON_LENGTH,
   MAX_DIRECTIVES_PER_FILE,
   parseAcceptanceDirectives,
-  REASON_PLACEHOLDER,
   staleAcceptanceFinding,
   validateAcceptance,
   withoutDirective,
@@ -298,19 +298,99 @@ Deno.test("parseAcceptanceDirectives: an unclosed Markdown comment is invalid", 
   assertStringIncludes(parsed.invalid[0].problem, "not closed");
 });
 
-Deno.test("parseAcceptanceDirectives: a comment with no reason is invalid", () => {
+Deno.test("parseAcceptanceDirectives: the reason is optional, with or without the colon", () => {
+  for (
+    const line of [
+      "new Deno.Command('ls'); // swamp-quality-ignore deno-command",
+      "new Deno.Command('ls'); // swamp-quality-ignore deno-command:",
+      "new Deno.Command('ls'); // swamp-quality-ignore deno-command :  ",
+    ]
+  ) {
+    const parsed = parseAcceptanceDirectives(`${line}\n`, TS);
+    assertEquals(parsed.invalid, [], line);
+    assertEquals(parsed.directives, [{
+      ruleId: "deno-command",
+      target: { kind: "line", file: TS, line: 1 },
+      source: "inline",
+      declaredAt: { file: TS, line: 1 },
+    }], line);
+  }
+});
+
+Deno.test("parseAcceptanceDirectives: a Markdown comment with no reason accepts the next line", () => {
   const parsed = parseAcceptanceDirectives(
-    "new Deno.Command('ls'); // swamp-quality-ignore deno-command:\n",
+    "<!-- swamp-quality-ignore ipv4-address-literals -->\nGateway: 10.0.0.1\n",
+    MD,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives[0].reason, undefined);
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: MD,
+    line: 2,
+  });
+});
+
+Deno.test("parseAcceptanceDirectives: an error-level rule with no reason is still invalid", () => {
+  const parsed = parseAcceptanceDirectives(
+    "eval(x); // swamp-quality-ignore dynamic-code\n",
     TS,
   );
   assertEquals(parsed.directives, []);
-  assertEquals(parsed.invalid.length, 1);
-  assertStringIncludes(parsed.invalid[0].problem, "reason is required");
-  assertEquals(parsed.invalid[0].line, 1);
   assertStringIncludes(
-    parsed.invalid[0].text,
-    "swamp-quality-ignore deno-command:",
+    parsed.invalid[0].problem,
+    "error-level rule and cannot be accepted",
   );
+});
+
+Deno.test("parseAcceptanceDirectives: text after the rule id without a colon is malformed", () => {
+  const parsed = parseAcceptanceDirectives(
+    "x; // swamp-quality-ignore deno-command because reasons\n",
+    TS,
+  );
+  assertEquals(parsed.directives, []);
+  assertStringIncludes(
+    parsed.invalid[0].problem,
+    'expected "swamp-quality-ignore <rule-id>" or "swamp-quality-ignore <rule-id>: <reason>"',
+  );
+});
+
+Deno.test("parseAcceptanceDirectives: the literal <reason> is reason text like any other", () => {
+  const parsed = parseAcceptanceDirectives(
+    "x; // swamp-quality-ignore deno-command: <reason>\n",
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives[0].reason, "<reason>");
+});
+
+Deno.test("parseAcceptanceDirectives: a directive after an earlier comment holding an apostrophe is recognised", () => {
+  const parsed = parseAcceptanceDirectives(
+    "new Deno.Command(cmd); // don't inline // swamp-quality-ignore deno-command\n",
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: TS,
+    line: 1,
+  });
+});
+
+Deno.test("parseAcceptanceDirectives: the keyword inside a string literal is still no directive, whatever comment-like text precedes it", () => {
+  for (
+    const line of [
+      `const s = "a // b' // swamp-quality-ignore deno-command";`,
+      `const s = 'it // is" // swamp-quality-ignore deno-command';`,
+      "const s = `x // y // swamp-quality-ignore deno-command`;",
+    ]
+  ) {
+    const parsed = parseAcceptanceDirectives(`${line}\n`, TS);
+    assertEquals(parsed.directives, [], line);
+    assertEquals(parsed.invalid, [], line);
+    assertEquals(directiveSpan(line, TS), undefined, line);
+  }
 });
 
 Deno.test("parseAcceptanceDirectives: an error-level rule cannot be accepted", () => {
@@ -370,7 +450,7 @@ Deno.test("parseAcceptanceDirectives: a malformed directive is invalid", () => {
     TS,
   );
   assertEquals(parsed.directives, []);
-  assertStringIncludes(parsed.invalid[0].problem, "<rule-id>: <reason>");
+  assertStringIncludes(parsed.invalid[0].problem, "<rule-id>");
 });
 
 Deno.test("parseAcceptanceDirectives: the keyword outside a comment is not a directive", () => {
@@ -552,89 +632,133 @@ Deno.test("staleAcceptanceFinding: warns at the directive's own location", () =>
   assertEquals(typeof finding.remediation, "string");
 });
 
-Deno.test("parseAcceptanceDirectives: a snippet pasted verbatim, placeholder and all, is invalid", () => {
-  const parsed = parseAcceptanceDirectives(
-    `x; // swamp-quality-ignore deno-command: ${REASON_PLACEHOLDER}\n`,
-    TS,
-  );
-  assertEquals(parsed.directives, []);
-  assertStringIncludes(parsed.invalid[0].problem, "replace <reason>");
-});
-
-Deno.test("acceptanceSnippet: a site finding in a .ts file is a line comment placed on its line or above", () => {
-  const snippet = acceptanceSnippet(
-    { ruleId: "deno-command", file: "/ext/models/thing.ts", line: 7 },
-    "/ext",
-  );
-  assertEquals(snippet?.text, "// swamp-quality-ignore deno-command: <reason>");
-  assertStringIncludes(snippet?.placement ?? "", "line 7 of models/thing.ts");
-});
-
-Deno.test("acceptanceSnippet: a site finding in Markdown is an HTML comment on the line above", () => {
-  const snippet = acceptanceSnippet(
-    { ruleId: "ipv4-address-literals", file: "/ext/README.md", line: 3 },
-    "/ext",
-  );
+Deno.test("acceptanceFor: a site finding in a .ts file is a comment at the end of its own line", () => {
   assertEquals(
-    snippet?.text,
-    "<!-- swamp-quality-ignore ipv4-address-literals: <reason> -->",
-  );
-  assertStringIncludes(snippet?.placement ?? "", "above line 3 of README.md");
-});
-
-Deno.test("acceptanceSnippet: a site finding in a .txt file is a sidecar entry; bare-specifiers has none", () => {
-  const txt = acceptanceSnippet(
-    { ruleId: "ipv4-address-literals", file: "/ext/docs/hosts.txt", line: 2 },
-    "/ext",
-  );
-  assertStringIncludes(txt?.text ?? "", "- rule: ipv4-address-literals");
-  assertStringIncludes(txt?.text ?? "", "file: docs/hosts.txt");
-  assertStringIncludes(txt?.text ?? "", "reason: <reason>");
-  assertEquals(
-    acceptanceSnippet(
-      { ruleId: "bare-specifiers", file: "(multiple files)" },
+    acceptanceFor(
+      { ruleId: "deno-command", file: "/ext/models/thing.ts", line: 7 },
       "/ext",
+    ),
+    {
+      form: "comment",
+      file: "/ext/models/thing.ts",
+      line: 7,
+      position: "same-line",
+      text: "// swamp-quality-ignore deno-command",
+    },
+  );
+});
+
+Deno.test("acceptanceFor: a site finding in Markdown is an HTML comment on the line above", () => {
+  assertEquals(
+    acceptanceFor(
+      { ruleId: "ipv4-address-literals", file: "/ext/README.md", line: 3 },
+      "/ext",
+    ),
+    {
+      form: "comment",
+      file: "/ext/README.md",
+      line: 3,
+      position: "line-above",
+      text: "<!-- swamp-quality-ignore ipv4-address-literals -->",
+    },
+  );
+});
+
+Deno.test("acceptanceFor: a site finding in a .txt file is one sidecar entry naming the file", () => {
+  assertEquals(
+    acceptanceFor(
+      { ruleId: "ipv4-address-literals", file: "/ext/docs/hosts.txt", line: 2 },
+      "/ext",
+    ),
+    {
+      form: "sidecar",
+      file: join("/ext", "quality.yaml"),
+      entry: { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
+    },
+  );
+});
+
+Deno.test("acceptanceFor: a .txt finding outside the manifest's directory has none, since the sidecar cannot name it", () => {
+  assertEquals(
+    acceptanceFor(
+      {
+        ruleId: "ipv4-address-literals",
+        file: "/repo/vaults/hosts.txt",
+        line: 2,
+      },
+      "/repo/extensions/models",
     ),
     undefined,
   );
 });
 
-Deno.test("acceptanceSnippet: testing-completeness is a header comment; unacceptable rules have no snippet", () => {
-  const header = acceptanceSnippet(
-    { ruleId: "testing-completeness", file: "/ext/models/thing.ts" },
-    "/ext",
-  );
+Deno.test("acceptanceFor: testing-completeness is a header comment at line 1", () => {
   assertEquals(
-    header?.text,
-    "// swamp-quality-ignore testing-completeness: <reason>",
+    acceptanceFor(
+      { ruleId: "testing-completeness", file: "/ext/models/thing.ts" },
+      "/ext",
+    ),
+    {
+      form: "comment",
+      file: "/ext/models/thing.ts",
+      line: 1,
+      position: "file-header",
+      text: "// swamp-quality-ignore testing-completeness",
+    },
   );
-  assertStringIncludes(header?.placement ?? "", "top of models/thing.ts");
-  assertEquals(
-    acceptanceSnippet({
-      ruleId: "adversarial-review-report",
-      file: "/tmp/r.json",
-    }, "/ext"),
-    undefined,
-  );
-  assertEquals(
-    acceptanceSnippet(
+});
+
+Deno.test("acceptanceFor: none for unacceptable rules, collapsed findings, and a site finding with no line", () => {
+  for (
+    const finding of [
+      { ruleId: "adversarial-review-report", file: "/tmp/r.json" },
       { ruleId: "dynamic-code", file: "/ext/a.ts", line: 1 },
-      "/ext",
-    ),
-    undefined,
-  );
+      { ruleId: "bare-specifiers", file: "(multiple files)" },
+      { ruleId: "testing-completeness", file: "(2 files)" },
+      { ruleId: "deno-command", file: "/ext/models/thing.ts" },
+    ]
+  ) {
+    assertEquals(acceptanceFor(finding, "/ext"), undefined, finding.ruleId);
+  }
 });
 
-Deno.test("acceptanceSnippet: a collapsed testing-completeness finding takes the header comment for each listed file", () => {
-  const snippet = acceptanceSnippet(
-    { ruleId: "testing-completeness", file: "(2 files)" },
-    "/ext",
-  );
-  assertEquals(
-    snippet?.text,
-    "// swamp-quality-ignore testing-completeness: <reason>",
-  );
-  assertStringIncludes(snippet?.placement ?? "", "each file listed");
+Deno.test("acceptanceFor: every comment acceptance parses back to a directive naming its finding", () => {
+  const cases = [
+    {
+      finding: { ruleId: "deno-command", file: TS, line: 2 },
+      lines: ["a;", "new Deno.Command(x);", "b;"],
+    },
+    {
+      finding: { ruleId: "ipv4-address-literals", file: MD, line: 2 },
+      lines: ["# T", "Gateway: 10.0.0.1"],
+    },
+    {
+      finding: { ruleId: "testing-completeness", file: TS },
+      lines: ["export const x = 1;"],
+    },
+  ];
+  for (const { finding, lines } of cases) {
+    const acceptance = acceptanceFor(finding, "/ext");
+    if (acceptance?.form !== "comment") throw new Error(finding.ruleId);
+    const edited = [...lines];
+    const index = acceptance.line - 1;
+    if (acceptance.position === "same-line") {
+      edited[index] = `${edited[index]} ${acceptance.text}`;
+    } else {
+      edited.splice(index, 0, acceptance.text);
+    }
+    const parsed = parseAcceptanceDirectives(edited.join("\n"), finding.file);
+    assertEquals(parsed.invalid, [], finding.ruleId);
+    // A line inserted above the finding moves it down one, as a re-run
+    // would report it.
+    const moved = acceptance.position === "line-above" &&
+        "line" in finding && finding.line !== undefined
+      ? { ...finding, line: finding.line + 1 }
+      : finding;
+    const applied = applyAcceptances([moved], parsed.directives);
+    assertEquals(applied.remaining, [], finding.ruleId);
+    assertEquals(applied.stale, [], finding.ruleId);
+  }
 });
 
 Deno.test("fileRelativeToManifest: a file outside the manifest directory keeps its absolute path", () => {

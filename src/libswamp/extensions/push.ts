@@ -299,7 +299,7 @@ export interface ExtensionPushPrepared {
   /** The `quality.yaml` sidecar beside the manifest, when one exists. */
   sidecar: { path: string; value: QualitySidecar } | undefined;
   /**
-   * The findings the author declared acceptable, with reasons. The
+   * The findings the author declared acceptable, with any reasons. The
    * `safetyWarnings` and `reviewRulesResult.warnings` above hold only the
    * findings no acceptance covers, so the warnings gate counts those alone.
    */
@@ -1411,7 +1411,8 @@ export interface DeclaredAcceptance {
    */
   archivePath?: string;
   line?: number;
-  reason: string;
+  /** The author's reason; absent when they gave none. */
+  reason?: string;
   source: AcceptanceSource;
   /** The accepted finding's message. */
   message: string;
@@ -1617,7 +1618,7 @@ export async function runQualityFindings(
       }),
       ...(archivePath !== undefined ? { archivePath } : {}),
       ...(a.finding.line !== undefined ? { line: a.finding.line } : {}),
-      reason: a.reason,
+      ...(a.reason !== undefined ? { reason: a.reason } : {}),
       source: a.source,
       message: a.finding.message,
     };
@@ -1745,7 +1746,7 @@ function toContentMetadataAcceptances(
     rule: a.ruleId,
     ...(a.archivePath !== undefined ? { file: a.archivePath } : {}),
     ...(a.line !== undefined ? { line: a.line } : {}),
-    reason: a.reason,
+    ...(a.reason !== undefined ? { reason: a.reason } : {}),
     source: a.source,
   }));
   return {

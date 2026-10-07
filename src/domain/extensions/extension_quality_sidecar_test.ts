@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join, resolve } from "@std/path";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { acceptanceFor } from "./extension_acceptances.ts";
 import {
   generatedReason,
   MAX_SIDECAR_BYTES,
@@ -88,11 +89,24 @@ Deno.test("parseQualitySidecar: unknown keys, a missing version and a wrong vers
   assertStringIncludes(errorsOf("version: 2\n").join("\n"), "version");
 });
 
-Deno.test("parseQualitySidecar: an entry without a reason, a traversal path and an absolute path are refused", () => {
-  assertStringIncludes(
-    errorsOf("version: 1\naccept:\n  - rule: bare-specifiers\n").join("\n"),
-    "reason",
+Deno.test("parseQualitySidecar: the reason is optional, but an empty one is refused", () => {
+  const result = parseQualitySidecar(
+    "version: 1\naccept:\n  - rule: ipv4-address-literals\n    file: docs/hosts.txt\n",
   );
+  assert(result.ok);
+  assertEquals(result.sidecar.accept, [{
+    rule: "ipv4-address-literals",
+    file: "docs/hosts.txt",
+  }]);
+  assertStringIncludes(
+    errorsOf(
+      "version: 1\naccept:\n  - rule: ipv4-address-literals\n    file: docs/hosts.txt\n    reason: ''\n",
+    ).join("\n"),
+    "omit reason",
+  );
+});
+
+Deno.test("parseQualitySidecar: a traversal path and an absolute path are refused", () => {
   assertStringIncludes(
     errorsOf(
       "version: 1\naccept:\n  - rule: ipv4-address-literals\n    file: ../hosts.txt\n    reason: r\n",
@@ -159,7 +173,7 @@ Deno.test("sidecarDirectives: a generated declaration accepts testing-completene
     source: "generated",
     declaredAt: { file: SIDECAR, line: 0 },
   }]);
-  assertStringIncludes(directives[0].reason, "codegen");
+  assertStringIncludes(directives[0].reason ?? "", "codegen");
 });
 
 Deno.test("sidecarDirectives: a .txt file entry for a site-scoped rule becomes a file directive inside the manifest dir", () => {
@@ -179,6 +193,37 @@ Deno.test("sidecarDirectives: a .txt file entry for a site-scoped rule becomes a
   if (directives[0].target.kind === "file") {
     assertPathEquals(directives[0].target.file, join(DIR, "docs", "hosts.txt"));
   }
+});
+
+Deno.test("sidecarDirectives: entries with no reason become directives with no reason", () => {
+  const { directives, invalid } = sidecarDirectives(
+    sidecar({
+      accept: [
+        { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
+        { rule: "ipv4-address-literals", file: "docs/lab.txt" },
+      ],
+    }),
+    SIDECAR,
+    DIR,
+  );
+  assertEquals(invalid, []);
+  assertEquals(directives.length, 2);
+  for (const directive of directives) {
+    assertEquals("reason" in directive, false);
+  }
+});
+
+Deno.test("acceptanceFor and qualitySidecarPath agree on where the sidecar is", () => {
+  const acceptance = acceptanceFor(
+    {
+      ruleId: "ipv4-address-literals",
+      file: join(DIR, "docs", "hosts.txt"),
+      line: 1,
+    },
+    DIR,
+  );
+  assertEquals(acceptance?.form, "sidecar");
+  assertPathEquals(acceptance?.file ?? "", qualitySidecarPath(DIR));
 });
 
 Deno.test("sidecarDirectives: a site-scoped rule without a file is refused", () => {
