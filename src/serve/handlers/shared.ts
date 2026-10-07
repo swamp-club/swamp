@@ -920,6 +920,37 @@ type AccessOutcome =
   };
 
 /**
+ * Who a request is decided for. A WebSocket request's caller is read from
+ * its connection; a request with no connection, such as an HTTP route,
+ * builds one from the token it authenticated with.
+ */
+export interface AccessCaller {
+  readonly principal: Principal | null;
+  readonly collectives: readonly string[];
+  readonly groups: readonly string[];
+  readonly sourceIp: string;
+  /** Who the OAuth provider said the caller is, when their token says. */
+  readonly loginIdentity?: ActorIdentity;
+}
+
+/** Where a refused request came from, for its denial audit event. */
+type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
+
+/** The caller behind a request on this socket. */
+export function accessCallerOf(
+  socket: WebSocket,
+  principal: Principal | null,
+): AccessCaller {
+  return {
+    principal,
+    collectives: connectionCollectives.get(socket) ?? [],
+    groups: connectionGroups.get(socket) ?? [],
+    sourceIp: getConnectionSourceIp(socket),
+    loginIdentity: connectionLoginIdentity.get(socket),
+  };
+}
+
+/**
  * The single access decision behind {@link authorizeOrReject} and
  * {@link isAuthorized}: an explicit grant allows, an explicit deny refuses,
  * and with neither the admin permission decides.
@@ -932,14 +963,31 @@ function decideAccess(
   ctx: ConnectionContext,
   every = false,
 ): AccessOutcome {
+  return decideForCaller(
+    accessCallerOf(socket, principal),
+    action,
+    resource,
+    ctx,
+    every,
+  );
+}
+
+function decideForCaller(
+  caller: AccessCaller,
+  action: Action,
+  resource: AccessResource,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+  every = false,
+): AccessOutcome {
   if (ctx.authConfig.mode === "none") {
     return { kind: "allowed", decision: null };
   }
   if (!ctx.policySnapshotLoader) return { kind: "not_configured" };
+  const { principal } = caller;
   if (!principal) return { kind: "no_principal" };
 
-  const collectives = connectionCollectives.get(socket) ?? [];
-  const groups = connectionGroups.get(socket) ?? [];
+  const collectives = [...caller.collectives];
+  const groups = [...caller.groups];
   const service = ctx.policySnapshotLoader.decisionService;
   const decision = every
     ? service.decideAll(
@@ -1253,9 +1301,51 @@ export function isAuthorizedForAll(
   );
 }
 
+/**
+ * {@link isAuthorized} for a caller with no socket: the same decision, a
+ * refusal audited the same way, and nothing sent.
+ */
+export function isCallerAuthorized(
+  caller: AccessCaller,
+  requestId: string,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  return auditCallerRefusal(
+    caller,
+    requestId,
+    caller.principal,
+    action,
+    resource,
+    ctx,
+    decideForCaller(caller, action, resource, ctx),
+  );
+}
+
 /** Whether `outcome` allows; a refusal is audited, nothing is sent. */
 function auditRefusal(
   socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+  outcome: AccessOutcome,
+): boolean {
+  return auditCallerRefusal(
+    accessCallerOf(socket, principal),
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    outcome,
+  );
+}
+
+function auditCallerRefusal(
+  origin: DenialOrigin,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1267,8 +1357,8 @@ function auditRefusal(
     case "allowed":
       return true;
     case "not_configured":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         principal,
@@ -1280,8 +1370,8 @@ function auditRefusal(
       );
       return false;
     case "no_principal":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         null,
@@ -1293,8 +1383,8 @@ function auditRefusal(
       );
       return false;
     case "refused":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         outcome.principal,
@@ -1335,6 +1425,30 @@ function emitDenial(
   accessDecision: AccessDecision | null,
   groups: readonly string[],
 ): void {
+  emitDenialFrom(
+    accessCallerOf(socket, principal),
+    ctx,
+    requestId,
+    principal,
+    action,
+    resource,
+    detail,
+    accessDecision,
+    groups,
+  );
+}
+
+function emitDenialFrom(
+  origin: DenialOrigin,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  detail: string,
+  accessDecision: AccessDecision | null,
+  groups: readonly string[],
+): void {
   if (!ctx.auditEmitter) return;
   ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
@@ -1347,8 +1461,12 @@ function emitDenial(
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
-    actor: connectionActorIdentity(socket, principal, ctx),
-    sourceIp: getConnectionSourceIp(socket),
+    actor: resolveActorIdentity(
+      principal,
+      ctx.resolvedUserNames,
+      origin.loginIdentity,
+    ),
+    sourceIp: origin.sourceIp,
     requestId,
     detail,
     decision: buildAuditDecision(action, resource, accessDecision, groups),
@@ -1408,14 +1526,26 @@ export function resourceDecider(
   action: Action,
   ctx: ConnectionContext,
 ): (resource: AccessResource) => boolean {
+  return callerResourceDecider(accessCallerOf(socket, principal), action, ctx);
+}
+
+/** {@link resourceDecider} for a caller with no socket. */
+export function callerResourceDecider(
+  caller: AccessCaller,
+  action: Action,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+): (resource: AccessResource) => boolean {
   if (ctx.authConfig.mode === "none") return () => true;
   const loader = ctx.policySnapshotLoader;
+  const { principal } = caller;
   if (!loader || !principal) return () => false;
 
-  const collectives = connectionCollectives.get(socket) ?? [];
-  const groups = connectionGroups.get(socket) ?? [];
   const service = loader.decisionService;
-  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives: [...caller.collectives],
+    groups: [...caller.groups],
+  };
   const adminDecision = service.decide(
     accessPrincipal,
     "admin",

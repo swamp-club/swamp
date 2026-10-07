@@ -22,7 +22,8 @@
  *
  *   1. Only `signal_wait_records.ts` names the two control-plane key
  *      families, `waits/` and `wait-outcomes/`.
- *   2. `workflow signal` never saves a run and never takes a run claim.
+ *   2. `workflow signal` never saves a run and never takes a run claim,
+ *      locally or delivered through `swamp serve` (swamp-club#3094).
  *   3. A run repository's `beforeSave` hook, which closes the waits of a
  *      run saved as ended, is assigned in one place.
  *   4. Every file that builds a WorkflowExecutionService gives it its wait
@@ -118,28 +119,83 @@ Deno.test("only signal_wait_records.ts names the wait key families", async () =>
   );
 });
 
+/**
+ * The files a signal passes through on its way to the outcome record: the
+ * acceptance use case, and serve's delivery function and HTTP route. The
+ * WebSocket handler shares a file with handlers that do save runs, so it is
+ * held to calling the delivery function instead (the next test).
+ */
+const SIGNAL_PATH_FILES = [
+  ["src", "libswamp", "workflows", "signal.ts"],
+  ["src", "serve", "signal_delivery.ts"],
+  ["src", "serve", "signal_http.ts"],
+];
+
 Deno.test("workflow signal never saves a run and never takes a run claim", async () => {
-  const source = await Deno.readTextFile(
-    join(ROOT, "src", "libswamp", "workflows", "signal.ts"),
+  for (const parts of SIGNAL_PATH_FILES) {
+    await assertWritesNoRun(parts);
+  }
+});
+
+Deno.test("both serve transports deliver a signal through deliverSignalForCaller", async () => {
+  const handlers = await Deno.readTextFile(
+    join(ROOT, "src", "serve", "handlers", "workflow_handlers.ts"),
   );
+  const http = await Deno.readTextFile(
+    join(ROOT, "src", "serve", "signal_http.ts"),
+  );
+  for (
+    const [name, source] of [["workflow_handlers.ts", handlers], [
+      "signal_http.ts",
+      http,
+    ]]
+  ) {
+    assertEquals(
+      mentions(source, /\bdeliverSignalForCaller\s*\(/),
+      true,
+      `${name} must deliver a signal through deliverSignalForCaller, the ` +
+        "one place a serve caller is authorized on the wait's workflow.",
+    );
+    assertEquals(
+      mentions(source, /\bworkflowSignal\s*\(/),
+      false,
+      `${name} must not call workflowSignal itself: that would deliver a ` +
+        "signal without the authorization deliverSignalForCaller applies.",
+    );
+  }
+});
+
+async function assertWritesNoRun(parts: string[]): Promise<void> {
+  const source = await Deno.readTextFile(join(ROOT, ...parts));
   assertEquals(
     mentions(source, /\.save\s*\(/),
     false,
-    "workflow signal must not save a run: it is delivered by creating the " +
-      "wait's outcome record, and a resume applies it under the run's claim.",
+    `${parts.join("/")}: workflow signal must not save a run: it is ` +
+      "delivered by creating the wait's outcome record, and a resume " +
+      "applies it under the run's claim.",
   );
   assertEquals(
-    mentions(source, /\bwithClaim\b|\brunClaims\b/),
+    mentions(
+      source,
+      /\bwithClaim\b|\brunClaims\b|\bunclaimedRuns\b|\.reserve\s*\(/,
+    ),
     false,
-    "workflow signal must not take a run claim: it writes no run record.",
+    `${parts.join("/")}: workflow signal must not take a run claim or a ` +
+      "registry reservation: it writes no run record.",
   );
   assertEquals(
     mentions(source, /\bRunTracker|\bownerIs/),
     false,
-    "workflow signal must not ask about the run's owner: nothing the owner " +
-      "saves can erase an outcome record.",
+    `${parts.join("/")}: workflow signal must not ask about the run's ` +
+      "owner: nothing the owner saves can erase an outcome record.",
   );
-});
+  assertEquals(
+    mentions(source, /\bpushChangedToRemote\b|\brunInRootUnitOfWork\b/),
+    false,
+    `${parts.join("/")}: workflow signal must not push: an outcome record ` +
+      "is written straight to the control-plane store.",
+  );
+}
 
 Deno.test("the run repository's save hook is assigned only where a context gets its wait support", async () => {
   assertPinnedSet(

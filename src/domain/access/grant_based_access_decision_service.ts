@@ -92,6 +92,18 @@ export interface GrantBasedAccessDecisionServiceOptions {
    * regardless, so turning this off can only narrow what is allowed.
    */
   readonly runImpliesApprove?: boolean;
+  /**
+   * Whether an allow grant for `run` also satisfies `signal`. Defaults to
+   * true. A deny grant for `run` denies `signal` regardless, so turning this
+   * off can only narrow what is allowed.
+   */
+  readonly runImpliesSignal?: boolean;
+}
+
+/** The actions an allow grant for `run` also satisfies. */
+interface RunImplications {
+  readonly approve: boolean;
+  readonly signal: boolean;
 }
 
 /** An action a grant covers, and whether it is covered only through `run`. */
@@ -106,11 +118,14 @@ type ActionMatch = "direct" | "implied-by-run" | null;
 function grantMatchesAction(
   grant: Grant,
   action: Action,
-  runImpliesApprove: boolean,
+  runImplies: RunImplications,
 ): ActionMatch {
   if (grant.actions.includes(action)) return "direct";
-  if (action === "approve" && grant.actions.includes("run")) {
-    if (grant.effect === "deny" || runImpliesApprove) return "implied-by-run";
+  if (
+    (action === "approve" || action === "signal") &&
+    grant.actions.includes("run")
+  ) {
+    if (grant.effect === "deny" || runImplies[action]) return "implied-by-run";
   }
   return null;
 }
@@ -185,7 +200,7 @@ export const SERVICE_TRIGGER_DEFAULT_GRANT_ID =
 /**
  * The built-in decision for scheduled and webhook runs: a service principal
  * may `run` a workflow unless a deny grant matches. It covers no other action
- * or resource kind, so it never implies `approve`.
+ * or resource kind, so it never implies `approve` or `signal`.
  */
 function serviceTriggerDefault(
   accessPrincipal: AccessPrincipal,
@@ -215,34 +230,42 @@ function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
 
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
-  readonly #runImpliesApprove: boolean;
+  readonly #runImplies: RunImplications;
 
   constructor(
     snapshot: PolicySnapshot,
     options: GrantBasedAccessDecisionServiceOptions = {},
   ) {
     this.#snapshot = snapshot;
-    this.#runImpliesApprove = options.runImpliesApprove ?? true;
+    this.#runImplies = {
+      approve: options.runImpliesApprove ?? true,
+      signal: options.runImpliesSignal ?? true,
+    };
   }
 
   get runImpliesApprove(): boolean {
-    return this.#runImpliesApprove;
+    return this.#runImplies.approve;
+  }
+
+  get runImpliesSignal(): boolean {
+    return this.#runImplies.signal;
   }
 
   /**
    * The actions a grant covers under this service's policy: the grant's own
-   * actions in order, then `approve` when the grant covers it only through
-   * `run`.
+   * actions in order, then `approve` and `signal` when the grant covers them
+   * only through `run`.
    */
   actionsCoveredBy(grant: Grant): ActionCoverage[] {
     const covered: ActionCoverage[] = grant.actions.map((action) => ({
       action,
     }));
-    if (
-      grantMatchesAction(grant, "approve", this.#runImpliesApprove) ===
-        "implied-by-run"
-    ) {
-      covered.push({ action: "approve", impliedBy: "run" });
+    for (const action of ["approve", "signal"] as const) {
+      if (
+        grantMatchesAction(grant, action, this.#runImplies) === "implied-by-run"
+      ) {
+        covered.push({ action, impliedBy: "run" });
+      }
     }
     return covered;
   }
@@ -274,7 +297,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const allows: MatchedGrant[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
-      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      const match = grantMatchesAction(grant, action, this.#runImplies);
       if (!match) continue;
       if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.effect === "deny") {
@@ -362,7 +385,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const allowDecisions: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
-      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      const match = grantMatchesAction(grant, action, this.#runImplies);
       if (!match) continue;
       if (!grantMatchesMethods(grant, resource)) continue;
       if (grant.condition) {
@@ -416,7 +439,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     const principalContext = buildPrincipalContext(principal, localGroups);
     for (const grant of snapshot.grantsForSubjects(subjects)) {
       if (grant.effect !== "deny" || grant.resource.kind !== kind) continue;
-      const match = grantMatchesAction(grant, action, this.#runImpliesApprove);
+      const match = grantMatchesAction(grant, action, this.#runImplies);
       if (!match) continue;
       // A condition is evaluated with no resource fields at all: one that
       // reads any of them — the name included — could hold for some
@@ -454,7 +477,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     for (const grant of candidates) {
       if (grant.effect !== "allow") continue;
       if (grant.resource.kind !== kind) continue;
-      if (!grantMatchesAction(grant, action, this.#runImpliesApprove)) {
+      if (!grantMatchesAction(grant, action, this.#runImplies)) {
         continue;
       }
       return true;

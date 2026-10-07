@@ -24,7 +24,14 @@ export const ActionSchema = z.enum([
   "read",
   "write",
   "approve",
+  "signal",
   "admin",
 ]);
 
 export type Action = z.infer<typeof ActionSchema>;
+
+/**
+ * The actions as help text and error messages list them. Built from the
+ * schema, so a new action cannot be left out of either.
+ */
+export const ACTION_LIST: string = ActionSchema.options.join(", ");

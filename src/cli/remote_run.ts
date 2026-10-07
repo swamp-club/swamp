@@ -358,6 +358,30 @@ function resolveRequestTimeoutMs(): number {
   return DEFAULT_TIMEOUT_MS;
 }
 
+/**
+ * {@link requestServerResponse} for a request type older servers do not
+ * know. Such a server answers `invalid_request`, which says nothing useful
+ * to the user, so it is reported as a server that needs an upgrade. The
+ * caller must send a well-formed request, or its own mistake reads the same.
+ */
+export async function requestNewerServerResponse<T>(
+  feature: string,
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): Promise<T> {
+  try {
+    return await requestServerResponse<T>(options, request);
+  } catch (error) {
+    if (error instanceof UserError && error.code === "invalid_request") {
+      throw new UserError(
+        `The server does not support ${feature}; upgrade swamp on the server.`,
+        "unsupported_by_server",
+      );
+    }
+    throw error;
+  }
+}
+
 export interface RequestResponseOptions {
   server: string;
   token?: string;

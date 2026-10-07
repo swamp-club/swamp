@@ -68,6 +68,7 @@ function makeMockDeps(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
     repoDir: "/tmp/test-repo",
     repoContext: {} as RepositoryContext,

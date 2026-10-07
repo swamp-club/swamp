@@ -222,6 +222,7 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
             restrictedModelTypes: [],
             restrictedCommands: [],
             approveRequiresExplicitGrant: false,
+            signalRequiresExplicitGrant: false,
           },
           auditEmitter: emitter,
           instanceId: "instance-1",

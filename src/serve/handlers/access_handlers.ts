@@ -71,7 +71,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { ActionSchema } from "../../domain/access/action.ts";
+import { ACTION_LIST, ActionSchema } from "../../domain/access/action.ts";
 import {
   parseResourceSelector,
   type ResourceKind,
@@ -425,7 +425,7 @@ export async function handleAccessCheck(
         socket,
         requestId,
         "invalid_action",
-        `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+        `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
       );
       return;
     }
@@ -454,6 +454,7 @@ export async function handleAccessCheck(
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
         approveRequiresExplicitGrant: !service.runImpliesApprove,
+        signalRequiresExplicitGrant: !service.runImpliesSignal,
       },
     });
     return;
@@ -505,7 +506,7 @@ export async function handleAccessCanI(
           socket,
           requestId,
           "invalid_action",
-          `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+          `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
         );
         return;
       }
@@ -538,6 +539,7 @@ export async function handleAccessCanI(
             ...(d.impliedBy ? { impliedBy: d.impliedBy } : {}),
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
         },
       });
     } else {
@@ -558,6 +560,7 @@ export async function handleAccessCanI(
         payload: {
           principal: principalStr,
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
           decisions: grants.flatMap((g) =>
             service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
               action: a,

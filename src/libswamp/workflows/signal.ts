@@ -86,6 +86,66 @@ export interface WorkflowSignalInput {
   payload: unknown;
   /** Who sent it. Defaults to the OS user, as a local approval's decider. */
   submittedBy?: string;
+  /**
+   * Decides whether the caller may signal the wait, once it is known which
+   * workflow and run the wait belongs to. It is asked before anything is
+   * stored and before any answer that names the workflow, the run, the step
+   * or an earlier signal. When it refuses, or when the wait cannot be placed
+   * at all, the answer is the one an unknown wait ID gets. The local command
+   * passes none: it does no authorization.
+   */
+  authorize?: (wait: SignalWaitSubject) => Promise<boolean>;
+}
+
+/** What a wait belongs to, as far as the stored records say. */
+export interface SignalWaitSubject {
+  waitId: string;
+  workflowId: string;
+  /**
+   * Absent when only the wait's outcome is left, which does not name it, and
+   * this host has no record of the run to take the name from.
+   */
+  workflowName?: string;
+  runId: string;
+  /**
+   * The workflow recorded on the run, when this host finds the run record.
+   * The run is looked up under `workflowId`, so the two IDs always agree; the
+   * names differ when the registration's name was altered. A registration
+   * whose workflow ID was altered finds no run, and this is absent.
+   */
+  runWorkflow?: { workflowId: string; workflowName: string };
+}
+
+/** Why a signal was not delivered, in the `refusal` field of the error's details. */
+export type SignalRefusalKind =
+  | "unknown"
+  | "expired"
+  | "invalid_payload"
+  | "already_settled"
+  | "closed"
+  | "unreadable"
+  | "unsupported";
+
+const SIGNAL_REFUSAL_KINDS: ReadonlySet<string> = new Set<SignalRefusalKind>([
+  "unknown",
+  "expired",
+  "invalid_payload",
+  "already_settled",
+  "closed",
+  "unreadable",
+  "unsupported",
+]);
+
+/** The refusal an error from {@link workflowSignal} carries, if it is one. */
+export function signalRefusalKind(
+  error: SwampError,
+): SignalRefusalKind | undefined {
+  const details = error.details;
+  if (typeof details !== "object" || details === null) return undefined;
+  const refusal = (details as { refusal?: unknown }).refusal;
+  return typeof refusal === "string" && SIGNAL_REFUSAL_KINDS.has(refusal)
+    ? refusal as SignalRefusalKind
+    : undefined;
 }
 
 export interface WorkflowSignalDeps {
@@ -101,6 +161,13 @@ export interface WorkflowSignalDeps {
   signalWaits: SignalWaitSupport;
   /** The time the deadline is compared against. Defaults to the current time. */
   now?: () => Date;
+  /**
+   * Whether a wait with no readable registration is looked for in the run
+   * records. Defaults to true. A caller that answers requests from outside
+   * turns it off, so one request cannot make it read every run; such a wait
+   * is then answered as unknown until `workflow waits` registers it.
+   */
+  scanRunRecords?: boolean;
 }
 
 export function createWorkflowSignalDeps(
@@ -177,8 +244,35 @@ function whereOf(place: WaitPlace): string {
   }" (run ${printable(place.runId)})`;
 }
 
+function refused(
+  kind: SignalRefusalKind,
+  message: string,
+  details: Record<string, unknown> = {},
+): SwampError {
+  return validationFailed(message, { ...details, refusal: kind });
+}
+
 function unknownWait(typedId: string): SwampError {
-  return notFound("Signal wait", typedId);
+  const error = notFound("Signal wait", typedId);
+  return {
+    ...error,
+    details: { ...(error.details as object), refusal: "unknown" },
+  };
+}
+
+function expiredAt(typedId: string, deadline: string): SwampError {
+  return refused(
+    "expired",
+    `Wait ${typedId} expired at ${deadline} and no longer accepts a signal.`,
+  );
+}
+
+function closedBeforeSignal(typedId: string): SwampError {
+  return refused(
+    "closed",
+    `Wait ${typedId} was closed before a signal arrived: its run ended, or its step moved on to a new wait. ` +
+      `Run "swamp workflow waits" for the waits still open.`,
+  );
 }
 
 // Messages name the id as it was typed, so telemetry, which redacts the
@@ -191,14 +285,16 @@ function alreadySettled(
 ): SwampError {
   // Who sent it and when stay in the details: the message reaches
   // telemetry, and a username does not belong there.
-  return validationFailed(
+  return refused(
+    "already_settled",
     `Wait ${typedId} is already settled: ${where} received signal ${receipt.id}.`,
     { receipt },
   );
 }
 
 function unreadableRecord(typedId: string): SwampError {
-  return validationFailed(
+  return refused(
+    "unreadable",
     `The stored record of wait ${typedId} cannot be read, so no signal can be delivered to it.`,
   );
 }
@@ -219,7 +315,8 @@ function refusalFor(
     case "accepted":
       return alreadySettled(typedId, where, outcome.receipt);
     case "timed_out":
-      return validationFailed(
+      return refused(
+        "expired",
         `Wait ${typedId} expired at ${outcome.deadline}: ${where} no longer accepts a signal.` +
           (closed
             ? ""
@@ -228,7 +325,8 @@ function refusalFor(
             }`),
       );
     case "cancelled":
-      return validationFailed(
+      return refused(
+        "closed",
         `Wait ${typedId} was closed before a signal arrived: the run of ${where} ended, or the step moved on to a new wait. ` +
           `Run "swamp workflow waits" for the waits still open.`,
       );
@@ -238,7 +336,7 @@ function refusalFor(
 /** The run a wait belongs to, as this host has it. */
 async function runOf(
   deps: WorkflowSignalDeps,
-  place: WaitPlace,
+  place: Pick<WaitPlace, "workflowId" | "runId">,
 ): Promise<WorkflowRun | null> {
   return await deps.runRepo.findById(
     createWorkflowId(place.workflowId),
@@ -308,44 +406,72 @@ async function resolveRegistration(
   store: SignalWaitStore,
   typedId: string,
   waitId: string,
-): Promise<{ registration: WaitRegistration } | { error: SwampError }> {
+  authorize: WorkflowSignalInput["authorize"],
+): Promise<
+  | { registration: WaitRegistration; authorized: boolean }
+  | { error: SwampError }
+> {
   const stored = await store.findRegistration(waitId);
-  if (stored.kind === "found") return { registration: stored.record };
+  // The caller is authorized by `deliver`, which reads the run record first.
+  if (stored.kind === "found") {
+    return { registration: stored.record, authorized: false };
+  }
 
   // No registration, or one that cannot be read: the run record still
   // holds the whole wait, so it is asked, and the registration rebuilt.
-  const held = await locateInRunRecords(deps, waitId);
+  const held = deps.scanRunRecords === false
+    ? undefined
+    : await locateInRunRecords(deps, waitId);
   const outcome = await store.findOutcome(waitId);
   if (!held) {
-    // A settled wait of a run this host does not have: answered from the
-    // outcome alone, which names the run but not the step.
-    if (outcome.kind === "found" && outcome.record.kind === "accepted") {
+    // A settled wait whose registration is gone: answered from the outcome
+    // alone, which names the run but not the step.
+    if (outcome.kind === "found") {
+      // The outcome does not name the workflow, so the run it references is
+      // asked: a workflow renamed since is still authorized under the name
+      // the run recorded. Without the run record only the id is left.
+      const run = authorize ? await runOf(deps, outcome.record) : null;
+      if (
+        authorize && !(await authorize({
+          waitId,
+          workflowId: outcome.record.workflowId,
+          runId: outcome.record.runId,
+          ...(run
+            ? {
+              workflowName: run.workflowName,
+              runWorkflow: {
+                workflowId: run.workflowId,
+                workflowName: run.workflowName,
+              },
+            }
+            : {}),
+        }))
+      ) return { error: unknownWait(typedId) };
+      if (outcome.record.kind === "accepted") {
+        return {
+          error: alreadySettled(
+            typedId,
+            `run ${outcome.record.runId}`,
+            outcome.record.receipt,
+          ),
+        };
+      }
+      if (outcome.record.kind === "timed_out") {
+        return { error: expiredAt(typedId, outcome.record.deadline) };
+      }
       return {
-        error: alreadySettled(
-          typedId,
-          `run ${outcome.record.runId}`,
-          outcome.record.receipt,
-        ),
+        error: stored.kind === "unreadable"
+          ? unreadableRecord(typedId)
+          : closedBeforeSignal(typedId),
       };
     }
-    if (outcome.kind === "found" && outcome.record.kind === "timed_out") {
-      return {
-        error: validationFailed(
-          `Wait ${typedId} expired at ${outcome.record.deadline} and no longer accepts a signal.`,
-        ),
-      };
-    }
+    // Nothing says which workflow the wait belongs to, so a caller that
+    // must be authorized cannot be: it learns nothing about the wait.
     return {
-      error: stored.kind === "unreadable"
-        ? unreadableRecord(typedId)
-        : outcome.kind === "absent"
-        ? unknownWait(typedId)
-        : outcome.kind === "unreadable"
-        ? unreadableRecord(typedId)
-        : validationFailed(
-          `Wait ${typedId} was closed before a signal arrived: its run ended, or its step moved on to a new wait. ` +
-            `Run "swamp workflow waits" for the waits still open.`,
-        ),
+      error:
+        authorize || (stored.kind === "absent" && outcome.kind === "absent")
+          ? unknownWait(typedId)
+          : unreadableRecord(typedId),
     };
   }
 
@@ -357,6 +483,18 @@ async function resolveRegistration(
     jobName,
     stepName: step.stepName,
   };
+  if (
+    authorize && !(await authorize({
+      waitId,
+      workflowId: place.workflowId,
+      workflowName: place.workflowName,
+      runId: place.runId,
+      runWorkflow: {
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+      },
+    }))
+  ) return { error: unknownWait(typedId) };
   if (outcome.kind === "found") {
     return { error: refusalFor(typedId, place, outcome.record, true) };
   }
@@ -369,13 +507,15 @@ async function resolveRegistration(
   }
   if (!step.isSignalWait || !step.signalWait) {
     return {
-      error: validationFailed(
+      error: refused(
+        "closed",
         `Wait ${typedId} is closed: ${whereOf(place)} is ${step.status}` +
           (step.error ? ` (${step.error})` : "") + ".",
       ),
     };
   }
   return {
+    authorized: true,
     registration: await ensureRegistered(
       store,
       registrationOf(
@@ -394,11 +534,33 @@ async function deliver(
   waitId: string,
 ): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
   const typedId = input.waitId;
-  const resolved = await resolveRegistration(deps, store, typedId, waitId);
+  const resolved = await resolveRegistration(
+    deps,
+    store,
+    typedId,
+    waitId,
+    input.authorize,
+  );
   if ("error" in resolved) return resolved;
   const { registration } = resolved;
   const now = deps.now?.() ?? new Date();
   const run = await runOf(deps, registration);
+  if (
+    input.authorize && !resolved.authorized && !(await input.authorize({
+      waitId: registration.waitId,
+      workflowId: registration.workflowId,
+      workflowName: registration.workflowName,
+      runId: registration.runId,
+      ...(run
+        ? {
+          runWorkflow: {
+            workflowId: run.workflowId,
+            workflowName: run.workflowName,
+          },
+        }
+        : {}),
+    }))
+  ) return { error: unknownWait(typedId) };
   // A step never returns to a wait it left. So when the run record here
   // shows the step past this wait, with no outcome stored, something that
   // writes run records directly settled it (a build from before outcome
@@ -412,7 +574,8 @@ async function deliver(
     return {
       error: receipt
         ? alreadySettled(typedId, whereOf(registration), receipt)
-        : validationFailed(
+        : refused(
+          "closed",
           `Wait ${typedId} is closed: ${
             whereOf(registration)
           } is ${left.status}` +
@@ -422,7 +585,8 @@ async function deliver(
   }
   if (stepHoldsUnreadableWait(run, registration)) {
     return {
-      error: validationFailed(
+      error: refused(
+        "unreadable",
         `Wait ${typedId} cannot take a signal: the wait stored on ${
           whereOf(registration)
         } cannot be read. Resume the run to fail the step: ${
@@ -454,7 +618,8 @@ async function deliver(
       const refusal = decision.refusal;
       if (refusal.kind === "invalid_payload") {
         return {
-          error: validationFailed(
+          error: refused(
+            "invalid_payload",
             `Payload refused for wait ${typedId}; the wait stays open:\n` +
               refusal.errors.map((error) => `  - ${error}`).join("\n"),
             { errors: refusal.errors },
@@ -529,7 +694,8 @@ export async function* workflowSignal(
       if (!deps.signalWaits.supported) {
         yield {
           kind: "error",
-          error: validationFailed(
+          error: refused(
+            "unsupported",
             `This datastore cannot support a wait for a signal: ${deps.signalWaits.reason}.`,
           ),
         };

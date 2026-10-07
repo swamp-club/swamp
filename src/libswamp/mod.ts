@@ -381,6 +381,9 @@ export {
 } from "./workflows/approvals.ts";
 export {
   createWorkflowSignalDeps,
+  type SignalRefusalKind,
+  signalRefusalKind,
+  type SignalWaitSubject,
   workflowSignal,
   type WorkflowSignalData,
   type WorkflowSignalDeps,

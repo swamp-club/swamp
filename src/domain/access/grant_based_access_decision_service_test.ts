@@ -1130,10 +1130,12 @@ Deno.test("actionsCoveredBy: appends approve implied by an allow run grant", () 
   const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
   assertEquals(
     service.actionsCoveredBy(makeGrant({ actions: ["run", "read"] })),
-    [{ action: "run" }, { action: "read" }, {
-      action: "approve",
-      impliedBy: "run",
-    }],
+    [
+      { action: "run" },
+      { action: "read" },
+      { action: "approve", impliedBy: "run" },
+      { action: "signal", impliedBy: "run" },
+    ],
   );
 });
 
@@ -1141,7 +1143,10 @@ Deno.test("actionsCoveredBy: does not duplicate an explicit approve", () => {
   const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
   assertEquals(
     service.actionsCoveredBy(makeGrant({ actions: ["run", "approve"] })),
-    [{ action: "run" }, { action: "approve" }],
+    [{ action: "run" }, { action: "approve" }, {
+      action: "signal",
+      impliedBy: "run",
+    }],
   );
 });
 
@@ -1149,7 +1154,10 @@ Deno.test("actionsCoveredBy: omits implied approve for allow grants when runImpl
   const service = strictService([]);
   assertEquals(
     service.actionsCoveredBy(makeGrant({ actions: ["run", "read"] })),
-    [{ action: "run" }, { action: "read" }],
+    [{ action: "run" }, { action: "read" }, {
+      action: "signal",
+      impliedBy: "run",
+    }],
   );
 });
 
@@ -1157,7 +1165,11 @@ Deno.test("actionsCoveredBy: keeps implied approve for deny grants when runImpli
   const service = strictService([]);
   assertEquals(
     service.actionsCoveredBy(makeGrant({ actions: ["run"], effect: "deny" })),
-    [{ action: "run" }, { action: "approve", impliedBy: "run" }],
+    [
+      { action: "run" },
+      { action: "approve", impliedBy: "run" },
+      { action: "signal", impliedBy: "run" },
+    ],
   );
 });
 
@@ -1770,4 +1782,158 @@ Deno.test("explain: reports the admin decision for a read of a control-plane rec
     GRANT_RECORD,
   );
   assertEquals(decisions.map((d) => d.grantId), [adminGrant.id]);
+});
+
+// --- signal: its own action, implied by run unless runImpliesSignal is false ---
+
+function explicitSignalService(
+  grants: Grant[],
+): GrantBasedAccessDecisionService {
+  return new GrantBasedAccessDecisionService(
+    new PolicySnapshot(grants, [], celEvaluator),
+    { runImpliesSignal: false },
+  );
+}
+
+Deno.test("runImpliesSignal: defaults to true", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(service.runImpliesSignal, true);
+});
+
+Deno.test("decide: signal-only grant allows signal and nothing else", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["signal"] })], [], celEvaluator),
+  );
+  const result = service.decide(
+    makePrincipal("adam"),
+    "signal",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.impliedBy, undefined);
+  for (const action of ["run", "read", "write", "approve", "admin"] as const) {
+    assertEquals(
+      service.decide(makePrincipal("adam"), action, makeResource()),
+      null,
+    );
+  }
+});
+
+Deno.test("decide: run grant implies signal, marked impliedBy run", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["run"] })], [], celEvaluator),
+  );
+  const result = service.decide(
+    makePrincipal("adam"),
+    "signal",
+    makeResource(),
+  );
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.impliedBy, "run");
+});
+
+Deno.test("decide: approve grant does not imply signal", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["approve"] })], [], celEvaluator),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "signal", makeResource()),
+    null,
+  );
+});
+
+Deno.test("decide: run grant does not imply signal when runImpliesSignal is false", () => {
+  const service = explicitSignalService([makeGrant({ actions: ["run"] })]);
+  assertEquals(service.runImpliesSignal, false);
+  assertEquals(
+    service.decide(makePrincipal("adam"), "signal", makeResource()),
+    null,
+  );
+  // The approve implication is a separate setting.
+  assertEquals(
+    service.decide(makePrincipal("adam"), "approve", makeResource())?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: runImpliesApprove false leaves the signal implication on", () => {
+  const service = strictService([makeGrant({ actions: ["run"] })]);
+  assertEquals(
+    service.decide(makePrincipal("adam"), "signal", makeResource())?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: deny on run denies signal even with an explicit signal grant", () => {
+  for (
+    const service of [
+      explicitSignalService([
+        makeGrant({ actions: ["signal"], effect: "allow" }),
+        makeGrant({ actions: ["run"], effect: "deny" }),
+      ]),
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(
+          [
+            makeGrant({ actions: ["signal"], effect: "allow" }),
+            makeGrant({ actions: ["run"], effect: "deny" }),
+          ],
+          [],
+          celEvaluator,
+        ),
+      ),
+    ]
+  ) {
+    const result = service.decide(
+      makePrincipal("adam"),
+      "signal",
+      makeResource(),
+    );
+    assertEquals(result?.effect, "deny");
+    assertEquals(result?.impliedBy, "run");
+  }
+});
+
+Deno.test("actionsCoveredBy: omits implied signal for allow grants when runImpliesSignal is false", () => {
+  const service = explicitSignalService([]);
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["run"] })),
+    [{ action: "run" }, { action: "approve", impliedBy: "run" }],
+  );
+});
+
+Deno.test("hasAnyGrantForKind: run implies signal unless runImpliesSignal is false", () => {
+  const grants = [
+    makeGrant({
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "@acme/*" },
+    }),
+  ];
+  assertEquals(
+    new GrantBasedAccessDecisionService(
+      new PolicySnapshot(grants, [], celEvaluator),
+    ).hasAnyGrantForKind(makePrincipal("adam"), "signal", "workflow"),
+    true,
+  );
+  assertEquals(
+    explicitSignalService(grants).hasAnyGrantForKind(
+      makePrincipal("adam"),
+      "signal",
+      "workflow",
+    ),
+    false,
+  );
+});
+
+Deno.test("decide: a service principal gets no signal from the trigger default", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  const principal = {
+    principal: { kind: "service" as const, id: "scheduler" },
+    collectives: [],
+    groups: [],
+  };
+  assertEquals(
+    service.decide(principal, "run", makeResource())?.effect,
+    "allow",
+  );
+  assertEquals(service.decide(principal, "signal", makeResource()), null);
 });

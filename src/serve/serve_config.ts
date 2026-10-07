@@ -78,6 +78,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   dashboard: "SWAMP_DASHBOARD",
   autoResume: "SWAMP_AUTO_RESUME",
   approveRequiresExplicitGrant: "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
+  signalRequiresExplicitGrant: "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -118,6 +119,7 @@ export interface ServeConfigFile {
     "restricted-commands"?: string[];
     "group-refresh-interval"?: string;
     "approve-requires-explicit-grant"?: boolean;
+    "signal-requires-explicit-grant"?: boolean;
   };
   tls?: {
     "cert-file"?: string;
@@ -294,6 +296,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "restricted-commands",
   "group-refresh-interval",
   "approve-requires-explicit-grant",
+  "signal-requires-explicit-grant",
 ]);
 
 const KNOWN_TLS_KEYS = new Set([
@@ -567,16 +570,19 @@ function validateConfigValues(
         );
       }
     }
-    const approveRequiresExplicitGrant =
-      authObj["approve-requires-explicit-grant"];
-    if (
-      approveRequiresExplicitGrant !== undefined &&
-      typeof approveRequiresExplicitGrant !== "boolean"
+    for (
+      const name of [
+        "approve-requires-explicit-grant",
+        "signal-requires-explicit-grant",
+      ]
     ) {
-      throw configError(
-        path,
-        `Invalid auth.approve-requires-explicit-grant in ${path}: expected boolean, got ${typeof approveRequiresExplicitGrant}`,
-      );
+      const value = authObj[name];
+      if (value !== undefined && typeof value !== "boolean") {
+        throw configError(
+          path,
+          `Invalid auth.${name} in ${path}: expected boolean, got ${typeof value}`,
+        );
+      }
     }
   }
 
@@ -942,6 +948,11 @@ export interface MergedServeOptions {
    * instead of accepting any `run` grant. Off by default.
    */
   approveRequiresExplicitGrant: boolean;
+  /**
+   * Require an explicit `signal` grant to deliver a signal to a workflow's
+   * wait, instead of accepting any `run` grant. Off by default.
+   */
+  signalRequiresExplicitGrant: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
   queueTimeout?: string;
@@ -1382,6 +1393,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const signalRequiresExplicitGrant = resolveBoolean(
+    "signal-requires-explicit-grant",
+    cliOptions.signalRequiresExplicitGrant as boolean,
+    config?.auth?.["signal-requires-explicit-grant"],
+    false,
+  );
+
   const dashboard = resolveBoolean(
     "dashboard",
     cliOptions.dashboard as boolean,
@@ -1430,6 +1448,7 @@ export function mergeServeOptions(
     restrictedCommands,
     groupRefreshInterval,
     approveRequiresExplicitGrant,
+    signalRequiresExplicitGrant,
     trustProxy,
     wsIdleTimeout,
     queueTimeout,

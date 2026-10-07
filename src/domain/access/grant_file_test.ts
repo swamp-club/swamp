@@ -1118,3 +1118,16 @@ grants:
     message: "Duplicate grant entry (same as entry 1)",
   }]);
 });
+
+Deno.test("parseGrantFile: accepts a grant for signal alone", () => {
+  const content = `
+grants:
+  - subject: "user:release-callback"
+    effect: allow
+    actions: [signal]
+    resource: "workflow:release"
+`;
+  const result = parseGrantFile("callbacks.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(result.entries[0].actions, ["signal"]);
+});

@@ -338,3 +338,17 @@ Deno.test("buildServeAuthConfig: approveRequiresExplicitGrant passes through", (
   });
   assertEquals(config.approveRequiresExplicitGrant, true);
 });
+
+Deno.test("buildServeAuthConfig: signalRequiresExplicitGrant defaults to false", () => {
+  const config = buildServeAuthConfig({});
+  assertEquals(config.signalRequiresExplicitGrant, false);
+});
+
+Deno.test("buildServeAuthConfig: signalRequiresExplicitGrant passes through", () => {
+  const config = buildServeAuthConfig({
+    authMode: "token",
+    admins: "user:admin",
+    signalRequiresExplicitGrant: true,
+  });
+  assertEquals(config.signalRequiresExplicitGrant, true);
+});

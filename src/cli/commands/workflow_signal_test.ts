@@ -20,7 +20,11 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import type { WorkflowSignalData } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
-import { parseSignalPayload, renderSignalResult } from "./workflow_signal.ts";
+import {
+  parseSignalPayload,
+  renderRemoteSignalResult,
+  renderSignalResult,
+} from "./workflow_signal.ts";
 
 const RUN_ID = "8603d973-24ca-4f36-9c04-7b7c39a4a41a";
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
@@ -133,4 +137,58 @@ Deno.test("renderSignalResult: the resume command carries the repository target,
     )
   );
   assertEquals(JSON.parse(json[0]).resumeCommand, resume);
+});
+
+Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume is still needed and names no run", () => {
+  const data = { waitId: WAIT_ID, signal: signalled().signal };
+  const lines = captureStdout(() =>
+    renderRemoteSignalResult(hintTestContext(), data, "http://swamp.test")
+  );
+  assertEquals(lines, [
+    "The signal takes effect when the run is next resumed, by someone who may resume it.",
+  ]);
+  assertEquals(
+    captureStdout(() =>
+      renderRemoteSignalResult(
+        hintTestContext({ verbosity: "quiet" }),
+        data,
+        "http://swamp.test",
+      )
+    ),
+    [],
+  );
+
+  const json = captureStdout(() =>
+    renderRemoteSignalResult(
+      hintTestContext({ outputMode: "json" }),
+      data,
+      "http://swamp.test",
+    )
+  );
+  assertEquals(JSON.parse(json.join("")), data);
+});
+
+Deno.test("renderRemoteSignalResult: a full reply prints the resume command with the server", () => {
+  const lines = captureStdout(() =>
+    renderRemoteSignalResult(
+      hintTestContext(),
+      signalled(),
+      "http://swamp.test",
+    )
+  );
+  assertEquals(lines, [
+    `After the signal: swamp workflow resume release --run ${RUN_ID} --server http://swamp.test`,
+  ]);
+
+  const json = captureStdout(() =>
+    renderRemoteSignalResult(
+      hintTestContext({ outputMode: "json" }),
+      signalled(),
+      "http://swamp.test",
+    )
+  );
+  assertEquals(
+    JSON.parse(json.join("")).resumeCommand,
+    `swamp workflow resume release --run ${RUN_ID} --server http://swamp.test`,
+  );
 });

@@ -43,7 +43,7 @@ means denied.
 | ---------- | --------------------------------------------------------------------------------------------- |
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`, `service:scheduler`, `service:webhook` |
 | Effects    | `allow`, `deny` (deny wins)                                                                   |
-| Actions    | `run`, `read`, `write`, `approve`, `admin`                                                    |
+| Actions    | `run`, `read`, `write`, `approve`, `signal`, `admin`                                          |
 | Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `access:*`                                       |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                          |
 
@@ -61,6 +61,48 @@ start serve with `--approve-requires-explicit-grant` (config
 `auth.approve-requires-explicit-grant`): only grants that name `approve` then
 count. A deny on `run` still denies `approve`. `swamp access can-i` marks
 approvals that come from a `run` grant as `[implied by run]`.
+
+`signal` delivers a signal to a `wait_for_signal` step and nothing else: a
+principal with only `signal` cannot run, approve, resume, read or list. Grant it
+alone to a callback system or to a person who answers waits without running the
+workflow. A `run` grant also permits `signal` unless serve runs with
+`--signal-requires-explicit-grant` (config
+`auth.signal-requires-explicit-grant`). A deny on `run` still denies `signal`.
+
+## Signals Through Serve
+
+```bash
+# CLI, against a server
+swamp workflow waits --server wss://...          # needs read on the workflow
+swamp workflow signal <waitId> --payload '{"verdict":"ship"}' --server wss://...
+
+# HTTP, for a system with a token and a wait ID
+curl -X POST https://<host>/api/v1/signal/<waitId> \
+  -H "Authorization: Bearer <name>.<secret>" \
+  -d '{"payload":{"verdict":"ship"}}'
+```
+
+| HTTP status | Meaning                                                     |
+| ----------- | ----------------------------------------------------------- |
+| 200         | Delivered; the body carries the receipt                     |
+| 404         | No such wait, or the token may not signal it (same answer)  |
+| 422         | Payload refused; `errors` lists why and the wait stays open |
+| 409         | Already settled                                             |
+| 410         | Expired, or closed before a signal arrived                  |
+| 401 / 429   | No valid token / rate limited (plain-text body)             |
+| 400 / 413   | Body is not `{"payload": ...}` JSON / body too large        |
+| 403 / 503   | `workflow.signal` is admin-only here / audit cannot record  |
+| 501 / 500   | Datastore cannot hold waits / stored record unreadable      |
+
+The reply names the workflow, run and step only for a caller who may also `read`
+the workflow. The receipt's `submittedBy` is the token's principal. A signal
+does not resume the run: resume it afterwards (`swamp workflow resume`). A 200
+means the wait took the signal, not that the run will use it: a cancel at the
+same moment still ends the run. Many signals at once on one token can be
+answered 429; retry.
+
+Upgrade every host on the datastore before creating a grant that names `signal`:
+an older build drops such a grant whole, including a deny.
 
 ## CLI Grant Management
 
@@ -402,9 +444,8 @@ workflow's run finishes through serve, serve also resumes the parent waiting on
 it, under the parent's own policy, if the approver may approve the parent.
 
 A run with a `wait_for_signal` step still waiting is never auto-resumed, whether
-the wait is open, signalled or past its deadline. Signals are delivered only by
-`swamp workflow signal`, run against the same datastore; resume the run by hand
-afterwards.
+the wait is open, signalled or past its deadline. After a signal, delivered
+locally or through serve (see "Signals Through Serve"), resume the run by hand.
 
 ## When to Use What
 
