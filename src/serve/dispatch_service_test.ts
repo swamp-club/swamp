@@ -795,6 +795,30 @@ Deno.test("executeRemote: forwards the worker's console capture when the dispatc
   );
 });
 
+Deno.test("executeRemote: a listener that throws on console output does not fail the dispatch (swamp-club#3080)", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: ["first", "second"],
+      durationMs: 3,
+    })
+  );
+  let calls = 0;
+  const result = await h.service.executeRemote(stepRequest({
+    onEvent: (event) => {
+      if (event.kind !== "method_event") return;
+      calls++;
+      throw new Error("client went away");
+    },
+  }));
+
+  assertEquals(result.workerName, "w1");
+  assertEquals(calls, 1);
+  assertEquals(h.transitions.at(-1)?.methodName, "complete");
+});
+
 // --- Worker affinity ---
 
 Deno.test("executeRemote: affinity pins subsequent steps to the same worker", async () => {

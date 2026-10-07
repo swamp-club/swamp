@@ -177,14 +177,15 @@ function remoteLockHolderFor(
  * Writes an output line a worker streamed back through the run logger, so a
  * remote step's run log holds what a local step's does (swamp-club#3080).
  * A worker supplies the event, so it is checked here rather than trusted: a
- * line is split on newlines so it cannot pass for several records, and an
+ * line is split on every line separator so it cannot pass for several
+ * records, and an
  * unrecognised level falls back to the stream.
  */
 function logRemoteOutput(logger: Logger, event: unknown): void {
   if (typeof event !== "object" || event === null) return;
   const { type, line, stream, level } = event as Record<string, unknown>;
   if (type !== "output" || typeof line !== "string") return;
-  const parts = line.split(/\r?\n/);
+  const parts = line.split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/);
   // A trailing newline is the end of the last line, not an empty one after it.
   if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
   for (const part of parts) {

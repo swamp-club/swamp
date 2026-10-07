@@ -721,7 +721,9 @@ Lines the method wrote to the console on the worker come back in the dispatch
 result's `logs`; `DispatchService` turns them into `output` events too, for a
 failed dispatch as well as a successful one. They arrive only once the dispatch
 returns, so a step's console lines follow all of its streamed lines in the log
-rather than interleaving with them. The event is worker-supplied, so
+rather than interleaving with them. The worker scrubs both with its own
+`SecretRedactor` before they leave, because it alone knows the secrets a method
+learns while it runs. The event is worker-supplied, so
 the orchestrator checks its shape and splits a multi-line `line` into one
 record per line.
 

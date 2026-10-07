@@ -4240,6 +4240,28 @@ Deno.test("executeWorkflow - remote output is escaped and split so one event can
   ]);
 });
 
+Deno.test("executeWorkflow - remote output is split on every line separator (swamp-club#3080)", async () => {
+  const { logged } = await remoteOutputFor([
+    {
+      type: "output",
+      line: "a\rb\r\nc\u2028d\u2029e\vf\fg\u0085h",
+      stream: "stdout",
+      level: "info",
+    },
+  ]);
+
+  assertEquals(logged.map(([, message]) => message), [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+  ]);
+});
+
 Deno.test("executeWorkflow - a malformed remote event is not logged (swamp-club#3080)", async () => {
   const { logged } = await remoteOutputFor([
     null,
