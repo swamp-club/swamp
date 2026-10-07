@@ -325,6 +325,31 @@ Deno.test("buildServeAuthConfig: restrictedModelTypes parses and normalizes type
   ]);
 });
 
+Deno.test("buildServeAuthConfig: restrictedModelTypes drops the leading @ from every spelling", () => {
+  const config = buildServeAuthConfig({
+    restrictedModelTypes: "@exp/probe, exp/other, @Exp::Third, @@exp/fourth",
+  });
+  assertEquals(config.restrictedModelTypes, [
+    "exp/probe",
+    "exp/other",
+    "exp/third",
+    "exp/fourth",
+  ]);
+});
+
+Deno.test("buildServeAuthConfig: a restrictedModelTypes entry that names no type is refused", () => {
+  for (const entry of ["@", "::", "@/"]) {
+    assertThrows(
+      () =>
+        buildServeAuthConfig({
+          restrictedModelTypes: `command/shell, ${entry}`,
+        }),
+      UserError,
+      `Invalid restricted-model-types entry "${entry}"`,
+    );
+  }
+});
+
 Deno.test("buildServeAuthConfig: approveRequiresExplicitGrant defaults to false", () => {
   const config = buildServeAuthConfig({});
   assertEquals(config.approveRequiresExplicitGrant, false);

@@ -43,6 +43,7 @@ import {
   emitSystemAuditEvent,
   filterByResources,
   isAccessModelType,
+  isAdminOnlyModelType,
   isAuthorized,
   isAuthorizedForAll,
   LibSwampStreamError,
@@ -1525,6 +1526,76 @@ Deno.test("isAccessModelType: every control-plane type, bare or @-prefixed, is a
 Deno.test("isAccessModelType: a blank or separator-only typeArg fails the request", () => {
   for (const typeArg of ["::", "/", " "]) {
     assertThrows(() => isAccessModelType(typeArg, undefined));
+  }
+});
+
+Deno.test("isAccessModelType: odd spellings of a control-plane type are admin-only", () => {
+  for (const type of [" @swamp/grant", "@@swamp/group", "@/@swamp/worker"]) {
+    assertEquals(isAccessModelType(type, undefined), true, type);
+  }
+});
+
+// --- isAdminOnlyModelType (swamp-club#3129) ---------------------------------
+
+const REQUESTED_SPELLINGS = [
+  "@exp/probe",
+  "exp/probe",
+  " @exp/probe",
+  "@@exp/probe",
+  "@/@exp/probe",
+  "@Exp::Probe",
+];
+
+Deno.test("isAdminOnlyModelType: either list spelling restricts every requested spelling", () => {
+  for (const listed of ["@exp/probe", "exp/probe", "@Exp::Probe"]) {
+    for (const requested of REQUESTED_SPELLINGS) {
+      assertEquals(
+        isAdminOnlyModelType(requested, undefined, [listed]),
+        true,
+        `listed ${listed}, requested ${requested}`,
+      );
+    }
+  }
+});
+
+Deno.test("isAdminOnlyModelType: either list spelling restricts the stored type", () => {
+  for (const listed of ["@exp/probe", "exp/probe", "@Exp::Probe"]) {
+    for (const stored of ["@exp/probe", "exp/probe"]) {
+      assertEquals(
+        isAdminOnlyModelType(undefined, stored, [listed]),
+        true,
+        `listed ${listed}, stored ${stored}`,
+      );
+    }
+  }
+});
+
+Deno.test("isAdminOnlyModelType: a built-in requested with an @ is restricted by its bare entry", () => {
+  assertEquals(
+    isAdminOnlyModelType("@command/shell", undefined, ["command/shell"]),
+    true,
+  );
+  assertEquals(
+    isAdminOnlyModelType(undefined, "command/shell", ["@command/shell"]),
+    true,
+  );
+});
+
+Deno.test("isAdminOnlyModelType: other types stay unrestricted", () => {
+  assertEquals(
+    isAdminOnlyModelType("@exp/other", "@exp/other", ["@exp/probe"]),
+    false,
+  );
+  assertEquals(isAdminOnlyModelType("@exp/probe", "@exp/probe", []), false);
+});
+
+Deno.test("isAdminOnlyModelType: a requested type that names no type fails the request", () => {
+  for (const typeArg of ["@", "::", "@/"]) {
+    assertThrows(
+      () => isAdminOnlyModelType(typeArg, undefined, ["exp/probe"]),
+      Error,
+      "Invalid model type",
+    );
   }
 });
 

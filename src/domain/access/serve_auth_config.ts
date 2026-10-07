@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
-import { ModelType } from "../models/model_type.ts";
+import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import { parseSubject } from "./subject.ts";
 
 export type AuthMode = "none" | "token" | "oauth";
@@ -31,6 +31,11 @@ export interface ServeAuthConfig {
   oauthProvider: string;
   oauthClientId?: string;
   groupsField: string;
+  /**
+   * Model types that need admin authority to create or run, each held as its
+   * normalizeModelTypeName key (no leading `@`), so `@exp/probe` and
+   * `exp/probe` name the same entry (swamp-club#3129).
+   */
   restrictedModelTypes: string[];
   restrictedCommands: string[];
   /**
@@ -67,7 +72,12 @@ export interface ServeAuthConfigInput {
   signalRequiresExplicitGrant?: boolean;
 }
 
-function parseCommaSeparated(value: string | undefined): string[] {
+/**
+ * Splits a comma-separated option value into trimmed, non-empty entries. The
+ * serve config file's lists reach here joined with commas, so serve and
+ * `serve check-config` split entries the same way.
+ */
+export function parseCommaSeparated(value: string | undefined): string[] {
   if (!value) return [];
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
@@ -116,7 +126,15 @@ export function buildServeAuthConfig(
   const groupsField = input.groupsField ?? DEFAULT_GROUPS_FIELD;
   const restrictedModelTypes = parseCommaSeparated(
     input.restrictedModelTypes,
-  ).map((t) => ModelType.create(t).normalized);
+  ).map((entry) => {
+    const key = normalizeModelTypeName(entry);
+    if (key === null) {
+      throw new UserError(
+        `Invalid restricted-model-types entry "${entry}": it names no model type`,
+      );
+    }
+    return key;
+  });
   const restrictedCommands = parseCommaSeparated(input.restrictedCommands);
 
   if (admins.length > 0) {
