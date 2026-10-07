@@ -20,7 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { DoctorWorkflowsReport } from "../../libswamp/mod.ts";
+import type { DoctorWorkflowsReport } from "../../libswamp/workflows/doctor.ts";
 import { createWorkflowDoctorRenderer } from "./workflow_doctor.ts";
 
 await initializeLogging({});

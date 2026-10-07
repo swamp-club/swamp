@@ -23,12 +23,12 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createSourceListDeps,
   sourceList,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/sources/list.ts";
 import { createSourceListRenderer } from "../../presentation/renderers/extension_source_list.ts";
 
 // deno-lint-ignore no-explicit-any

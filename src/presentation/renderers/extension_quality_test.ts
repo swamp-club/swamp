@@ -29,8 +29,8 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type {
   ExtensionQualityData,
   ExtensionQualityEvent,
-  LocalGateFailure,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/quality.ts";
+import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
 import type { RubricScore } from "../../domain/extensions/extension_rubric_scorer.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { UserError } from "../../domain/errors.ts";

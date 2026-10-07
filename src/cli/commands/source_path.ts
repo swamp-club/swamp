@@ -19,12 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createSourcePathDeps,
   sourcePath,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/source/path.ts";
 import { createSourcePathRenderer } from "../../presentation/renderers/source_path.ts";
 
 // deno-lint-ignore no-explicit-any

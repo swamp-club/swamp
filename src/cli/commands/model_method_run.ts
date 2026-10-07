@@ -59,7 +59,7 @@ import {
   parseStdinContent,
 } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
-import { parseTags } from "../../libswamp/mod.ts";
+import { parseTags } from "../../libswamp/data/search.ts";
 import { join } from "@std/path";
 import {
   SWAMP_SUBDIRS,
@@ -71,12 +71,12 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
 import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   modelMethodRun,
   type ModelMethodRunDeps,
   type ModelMethodRunEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/run.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
   CA_CERT_DESCRIPTION,

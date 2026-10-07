@@ -36,14 +36,13 @@ import {
 } from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createServerTokenRevokeDeps,
   serverTokenRevoke,
   type ServerTokenRevokeData,
   type ServerTokenRevokeEvent,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_revoke.ts";
 import { renderServerTokenRevoke } from "../../presentation/output/access_token_output.ts";
 import {
   requestServerResponse,

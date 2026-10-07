@@ -58,21 +58,29 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createWorkflowApprovalsDeps,
-  createWorkflowApproveDeps,
-  createWorkflowCancelSuspendedDeps,
-  createWorkflowRejectDeps,
-  supersedeSuspendedRuns,
   workflowApprovals,
   type WorkflowApprovalsData,
+} from "../src/libswamp/workflows/approvals.ts";
+import {
+  createWorkflowApproveDeps,
   workflowApprove,
   type WorkflowApproveData,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  createWorkflowCancelSuspendedDeps,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedData,
+} from "../src/libswamp/workflows/cancel_suspended.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
   type WorkflowRejectData,
+} from "../src/libswamp/workflows/reject.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
+import {
   workflowRunSearch,
   type WorkflowRunSearchItem,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/run_search.ts";
 import { nestedWaitView } from "../src/libswamp/workflows/history_get.ts";
 
 import "../src/domain/models/models.ts";

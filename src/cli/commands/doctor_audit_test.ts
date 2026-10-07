@@ -20,7 +20,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
-import { NoToolConfiguredError } from "../../libswamp/mod.ts";
+import { NoToolConfiguredError } from "../../domain/audit/doctor/check.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

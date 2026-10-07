@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim } from "@std/fmt/colors";
-import type { EventHandlers, WorkflowCreateEvent } from "../../libswamp/mod.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { WorkflowCreateEvent } from "../../libswamp/workflows/create.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

@@ -37,12 +37,9 @@ import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
-import {
-  collect,
-  createLibSwampContext,
-  dataQuery,
-  type DataQueryEvent,
-} from "../src/libswamp/mod.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { dataQuery, type DataQueryEvent } from "../src/libswamp/data/query.ts";
 
 await initializeLogging({});
 

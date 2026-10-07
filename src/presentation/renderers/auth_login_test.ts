@@ -19,8 +19,8 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import type { AuthLoginEvent } from "../../libswamp/mod.ts";
-import { consumeStream } from "../../libswamp/mod.ts";
+import type { AuthLoginEvent } from "../../libswamp/auth/login.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
   type AuthLoginNextStepsOptions,
   createAuthLoginRenderer,

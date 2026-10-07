@@ -29,12 +29,12 @@ import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { assertPathArrayEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import {
-  collect,
   doctorWorkflowDirs,
   doctorWorkflows,
   type DoctorWorkflowsEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/doctor.ts";
 
 function workflowYaml(name: string, taskType = "model_method"): string {
   return `id: "${crypto.randomUUID()}"

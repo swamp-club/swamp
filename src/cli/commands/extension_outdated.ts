@@ -34,10 +34,10 @@ import {
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   createExtensionUpdateDeps,
-  createLibSwampContext,
   extensionUpdate,
-  result,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/update.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { result } from "../../libswamp/stream.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import type { ExtensionUpdateStatus } from "../../domain/extensions/extension_update_service.ts";
 import {

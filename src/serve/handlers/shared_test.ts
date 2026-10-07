@@ -25,7 +25,7 @@ import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
-import { notFound, validationFailed } from "../../libswamp/mod.ts";
+import { notFound, validationFailed } from "../../libswamp/errors.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,

@@ -49,14 +49,14 @@ import {
   isPartialId,
   matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  createLibSwampContext,
   modelOutputGet,
   type ModelOutputGetData,
   type ModelOutputGetDeps,
   type OutputInfo,
-  resolveOutputReference,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/output_get.ts";
+import { resolveOutputReference } from "../../libswamp/models/output_reference.ts";
 
 const IDS = Array.from({ length: 6 }, () => crypto.randomUUID());
 

@@ -32,13 +32,13 @@ import {
 } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { pushGlobalLockAtEnd } from "../../infrastructure/persistence/push_paths.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkflowEvaluateDeps,
   workflowEvaluate,
   type WorkflowEvaluateAllData,
   type WorkflowEvaluateItemData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/evaluate.ts";
 import { createWorkflowEvaluateRenderer } from "../../presentation/renderers/workflow_evaluate.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";

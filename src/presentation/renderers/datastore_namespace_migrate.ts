@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, yellow } from "@std/fmt/colors";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
-  EventHandlers,
   NamespaceMigrateEvent,
   NamespaceMigratePreviewData,
   NamespaceMigrateWarningData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/namespace_migrate.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

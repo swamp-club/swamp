@@ -38,11 +38,11 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createWorkflowEvaluateDeps,
   workflowEvaluate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/evaluate.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { handleWorkflowApprovals } from "../src/serve/handlers/workflow_handlers.ts";

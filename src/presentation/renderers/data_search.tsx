@@ -23,8 +23,8 @@ import { Box, Text } from "ink";
 import type {
   DataSearchEvent,
   DataSearchItem,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/search.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

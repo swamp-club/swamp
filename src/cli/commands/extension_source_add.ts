@@ -23,15 +23,12 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  createSourceAddDeps,
-  EXTENSION_KINDS,
-  sourceAdd,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { createSourceAddDeps, sourceAdd } from "../../libswamp/sources/add.ts";
+import { EXTENSION_KINDS } from "../../domain/repo/swamp_sources.ts";
 import { createSourceModifyRenderer } from "../../presentation/renderers/extension_source_modify.ts";
-import type { ExtensionKind } from "../../libswamp/mod.ts";
+import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";

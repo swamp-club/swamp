@@ -19,12 +19,12 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import {
-  type AuthWhoamiEvent,
-  consumeStream,
-  type WhoamiCollectiveEntitlement,
-  type WhoamiIdentity,
-} from "../../libswamp/mod.ts";
+import type {
+  AuthWhoamiEvent,
+  WhoamiCollectiveEntitlement,
+  WhoamiIdentity,
+} from "../../libswamp/auth/whoami.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import { createAuthWhoamiRenderer } from "./auth_whoami.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

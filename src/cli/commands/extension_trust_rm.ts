@@ -23,12 +23,12 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createTrustRmDeps,
   trustRm,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/trust_rm.ts";
 import { createTrustModifyRenderer } from "../../presentation/renderers/trust_modify.ts";
 
 // deno-lint-ignore no-explicit-any

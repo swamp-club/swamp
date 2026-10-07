@@ -24,7 +24,7 @@ import {
   serializeEvent,
   serializeSwampError,
 } from "./serializer.ts";
-import type { SwampError } from "../libswamp/mod.ts";
+import type { SwampError } from "../libswamp/errors.ts";
 
 // ── serializeSwampError ─────────────────────────────────────────────────
 

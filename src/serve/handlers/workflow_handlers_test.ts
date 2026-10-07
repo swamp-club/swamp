@@ -50,7 +50,7 @@ import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_l
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { ServeConfigFile } from "../serve_config.ts";
-import type { TriggerOverride } from "../../libswamp/mod.ts";
+import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
 import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";

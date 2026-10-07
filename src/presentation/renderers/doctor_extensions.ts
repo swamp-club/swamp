@@ -20,15 +20,15 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import {
   DOCTOR_REGISTRY_ORDER,
-  type DoctorAggregateReport,
   type DoctorExtensionsEvent,
   type DoctorOverallStatus,
   type DoctorRegistryName,
   type DoctorRegistryResult,
-  type EventHandlers,
-  type RepairReport,
-  ROW_STATE_TAGS,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/doctor.ts";
+import type { DoctorAggregateReport } from "../../libswamp/extensions/doctor_aggregate.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { RepairReport } from "../../libswamp/extensions/doctor_repair.ts";
+import { ROW_STATE_TAGS } from "../../domain/extensions/row_state.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";

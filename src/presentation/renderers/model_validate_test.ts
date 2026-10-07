@@ -19,8 +19,8 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { ModelValidateEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { ModelValidateEvent } from "../../libswamp/models/validate.ts";
 import { createModelValidateRenderer } from "./model_validate.ts";
 import { UserError } from "../../domain/errors.ts";
 

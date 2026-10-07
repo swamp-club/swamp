@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  inviteLink,
-  type InviteLinkDeps,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { inviteLink, type InviteLinkDeps } from "../../libswamp/invite/link.ts";
 import { createInviteLinkRenderer } from "../../presentation/renderers/invite_link.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";

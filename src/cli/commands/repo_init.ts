@@ -19,16 +19,16 @@
 
 import { type ArgumentValue, Command, StringType } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createRepoInitDeps,
   createRepoUpgradeDeps,
-  type ExtensionInstallDeps,
   repoInit,
   repoUpgrade,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/repo/init.ts";
+import type { ExtensionInstallDeps } from "../../libswamp/extensions/install.ts";
+import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createRepoInitRenderer,

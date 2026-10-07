@@ -54,16 +54,18 @@ import {
   createWorkflowRunClaims,
   createWorkflowRunLock,
 } from "../src/cli/repo_context.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createWorkflowApproveDeps,
-  createWorkflowRejectDeps,
-  supersedeSuspendedRuns,
   workflowApprove,
   type WorkflowApproveEvent,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
   type WorkflowRejectEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/reject.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import "../src/domain/models/models.ts";
 

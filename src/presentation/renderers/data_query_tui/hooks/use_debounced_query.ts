@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useRef, useState } from "react";
+import { createLibSwampContext } from "../../../../libswamp/context.ts";
 import {
-  createLibSwampContext,
   dataQuery,
   type DataQueryDeps,
-  type DataRecord,
   type ProjectedData,
-} from "../../../../libswamp/mod.ts";
+} from "../../../../libswamp/data/query.ts";
+import type { DataRecord } from "../../../../domain/data/data_record.ts";
 
 export interface QueryState {
   results: DataRecord[];

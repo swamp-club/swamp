@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ExtensionListEntry } from "../../libswamp/mod.ts";
+import type { ExtensionListEntry } from "../../libswamp/extensions/list.ts";
 import {
   extensionCacheKey,
   type ExtensionUpdateCheckMap,

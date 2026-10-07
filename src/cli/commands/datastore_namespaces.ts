@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   datastoreNamespaceList,
   type NamespaceListData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/namespace_list.ts";
 import {
   createNamespaceListRenderer,
 } from "../../presentation/renderers/datastore_namespace_list.ts";

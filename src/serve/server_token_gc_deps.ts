@@ -20,16 +20,15 @@
 import type { MarkDirtyHook } from "../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { consumeStream, withDefaults } from "../libswamp/stream.ts";
 import {
-  consumeStream,
   createModelDeleteDeps,
-  type LibSwampContext,
   modelDelete,
   type ModelDeleteDeps,
   type ModelDeleteEvent,
-  type SwampError,
-  withDefaults,
-} from "../libswamp/mod.ts";
+} from "../libswamp/models/delete.ts";
+import type { LibSwampContext } from "../libswamp/context.ts";
+import type { SwampError } from "../libswamp/errors.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";

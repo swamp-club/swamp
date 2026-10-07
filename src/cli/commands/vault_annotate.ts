@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createVaultAnnotateDeps,
   vaultAnnotate,
   type VaultAnnotateData,
   type VaultAnnotateInput,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/vaults/annotate.ts";
 import { createVaultAnnotateRenderer } from "../../presentation/renderers/vault_annotate.ts";
 import {
   createContext,

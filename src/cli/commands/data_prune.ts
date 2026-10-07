@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDataPruneDeps,
   dataPrune,
   type DataPruneData,
   dataPrunePreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/prune.ts";
 import {
   createDataPruneRenderer,
   renderDataPruneCancelled,

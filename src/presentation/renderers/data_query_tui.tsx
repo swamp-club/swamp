@@ -20,7 +20,10 @@
 // deno-lint-ignore verbatim-module-syntax
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
-import type { DataQueryData, DataQueryDeps } from "../../libswamp/mod.ts";
+import type {
+  DataQueryData,
+  DataQueryDeps,
+} from "../../libswamp/data/query.ts";
 import { suppressInkTtyErrors } from "../output/ink_lifecycle.ts";
 import { useTerminalSize } from "../output/hooks/useTerminalSize.ts";
 import { BrandLine } from "./components/picker_borders.tsx";

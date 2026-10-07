@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   datastoreTypeSearch,
   type DatastoreTypeSearchDeps,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/type_search.ts";
 import { createDatastoreTypeSearchRenderer } from "../../presentation/renderers/datastore_type_search.tsx";
 import {
   createContext,

@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createMigrateIndexDeps,
   datastoreMigrateIndex,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/migrate_index.ts";
 import { createDatastoreMigrateIndexRenderer } from "../../presentation/renderers/datastore_migrate_index.ts";
 import {
   createContext,

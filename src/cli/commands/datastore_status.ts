@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDatastoreStatusDeps,
-  createLibSwampContext,
   datastoreStatus,
   type DatastoreStatusData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/status.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createDatastoreStatusRenderer } from "../../presentation/renderers/datastore_status.ts";
 import {
   createContext,

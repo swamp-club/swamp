@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { ExtensionListEntry } from "../../libswamp/mod.ts";
+import type { ExtensionListEntry } from "../../libswamp/extensions/list.ts";
 import type {
   ExtensionUpdateCheckMap,
   ExtensionUpdateCheckRepository,

@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  issueEdit,
-  type IssueEditDeps,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { issueEdit, type IssueEditDeps } from "../../libswamp/issues/edit.ts";
 import {
   renderIssueCancelled,
   renderRedactionNotice,

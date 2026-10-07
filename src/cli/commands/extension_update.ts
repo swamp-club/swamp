@@ -34,17 +34,19 @@ import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionUpdateDeps,
-  createLibSwampContext,
   extensionUpdate,
-  type ExtensionUpdateResult,
+} from "../../libswamp/extensions/update.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import type { ExtensionUpdateResult } from "../../domain/extensions/extension_update_service.ts";
+import {
   type LockfileTransaction,
-  UpgradeExtensionService,
-  warnLegacyExtensionLayout,
   withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/managed_lockfile_transaction.ts";
+import { UpgradeExtensionService } from "../../libswamp/extensions/upgrade_extension_service.ts";
+import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";

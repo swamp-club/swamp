@@ -18,14 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertArrayIncludes, assertEquals, assertExists } from "@std/assert";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
   createVaultCreateDeps,
-  repoInit,
   vaultCreate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/create.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";

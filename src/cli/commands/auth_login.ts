@@ -18,13 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import {
-  authLogin,
-  consumeStream,
-  createAuthLoginDeps,
-  createLibSwampContext,
-} from "../../libswamp/mod.ts";
-import type { AuthLoginInput } from "../../libswamp/mod.ts";
+import { authLogin, createAuthLoginDeps } from "../../libswamp/auth/login.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import type { AuthLoginInput } from "../../libswamp/auth/login.ts";
 import { createAuthLoginRenderer } from "../../presentation/renderers/auth_login.ts";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";

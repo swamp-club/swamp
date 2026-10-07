@@ -33,7 +33,10 @@ import {
 import { splitServerToken } from "../../serve/token_auth.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { bold, dim, green, yellow } from "@std/fmt/colors";
-import { createServerLoginDeps, serverLogin } from "../../libswamp/mod.ts";
+import {
+  createServerLoginDeps,
+  serverLogin,
+} from "../../libswamp/auth/server_login.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

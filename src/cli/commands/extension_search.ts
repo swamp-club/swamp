@@ -38,15 +38,15 @@ import {
   type PullContext,
   pullExtension,
 } from "./extension_pull.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   extensionSearch,
   type ExtensionSearchData,
   type ExtensionSearchDeps,
-  warnLegacyExtensionLayout,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/search.ts";
+import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
+import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";

@@ -25,10 +25,12 @@ import { remediationFor } from "../../domain/extensions/extension_rule_catalog.t
 import { evaluateVersionExists } from "../../domain/extensions/extension_publish_checks.ts";
 import type {
   ApiCallRecord,
+  RegistryCheckResult,
+} from "../../domain/extensions/extension_publish_checks.ts";
+import type {
   ExtensionPushEvent,
   ExtensionPushResolvedData,
-  RegistryCheckResult,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/push.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   type AcceptedWarnings,

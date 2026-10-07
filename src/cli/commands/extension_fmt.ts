@@ -19,12 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import { dirname } from "@std/path";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionFmtDeps,
-  createLibSwampContext,
   extensionFmt,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/fmt.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createExtensionFmtRenderer } from "../../presentation/renderers/extension_fmt.ts";
 import {
   createContext,

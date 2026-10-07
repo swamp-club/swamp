@@ -17,12 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import {
-  type EventHandlers,
   extractFirstStepError,
-  type WorkflowRunEvent,
   type WorkflowRunView,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/workflow_run_view.ts";
+import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import {
@@ -36,11 +36,9 @@ import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
-import {
-  type AssertSeverity,
-  severityAtOrAbove,
-  userErrorFromSwampError,
-} from "../../libswamp/mod.ts";
+import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
+import { severityAtOrAbove } from "../../domain/workflows/assert_severity.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
   type DataArtifact,
   type DataBoxOptions,

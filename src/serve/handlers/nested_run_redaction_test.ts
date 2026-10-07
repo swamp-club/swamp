@@ -32,7 +32,7 @@ import {
   NestedRunPendingError,
   type PendingNestedWait,
 } from "../../domain/workflows/nested_run_link.ts";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import type { ConnectionContext } from "./shared.ts";
 

@@ -21,51 +21,81 @@
  * Workflow-domain request handlers (workflow.* verbs).
  */
 
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkflowApprovalsDeps,
-  createWorkflowApproveDeps,
-  createWorkflowCreateDeps,
-  createWorkflowDeleteDeps,
-  createWorkflowEditDeps,
-  createWorkflowEvaluateDeps,
-  createWorkflowGetDeps,
-  createWorkflowHistoryGetDeps,
-  createWorkflowHistoryLogsDeps,
-  createWorkflowRejectDeps,
-  createWorkflowValidateDeps,
-  createWorkflowWaitsDeps,
-  type DetachedNestedRunData,
-  mapWorkflowExecutionEvent,
-  resolveRunReference,
   workflowApprovals,
   type WorkflowApprovalsEvent,
+} from "../../libswamp/workflows/approvals.ts";
+import {
+  createWorkflowApproveDeps,
   workflowApprove,
   type WorkflowApproveData,
+} from "../../libswamp/workflows/approve.ts";
+import {
+  createWorkflowCreateDeps,
   workflowCreate,
+} from "../../libswamp/workflows/create.ts";
+import {
+  createWorkflowDeleteDeps,
   workflowDelete,
+} from "../../libswamp/workflows/delete.ts";
+import {
+  createWorkflowEditDeps,
   workflowEdit,
   type WorkflowEditTarget,
+} from "../../libswamp/workflows/edit.ts";
+import {
+  createWorkflowEvaluateDeps,
   workflowEvaluate,
+} from "../../libswamp/workflows/evaluate.ts";
+import {
+  createWorkflowGetDeps,
   workflowGet,
+} from "../../libswamp/workflows/get.ts";
+import {
+  createWorkflowHistoryGetDeps,
   workflowHistoryGet,
+} from "../../libswamp/workflows/history_get.ts";
+import {
+  createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
-  workflowHistorySearch,
-  type WorkflowHistorySearchDeps,
+} from "../../libswamp/workflows/history_logs.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
   type WorkflowRejectData,
-  type WorkflowRunEvent,
-  workflowRunSearch,
-  type WorkflowRunSearchDeps,
-  workflowSchema,
-  workflowsDirFor,
-  workflowSearch,
-  type WorkflowSearchDeps,
+} from "../../libswamp/workflows/reject.ts";
+import {
+  createWorkflowValidateDeps,
   workflowValidate,
+} from "../../libswamp/workflows/validate.ts";
+import {
+  createWorkflowWaitsDeps,
   workflowWaits,
   type WorkflowWaitsData,
   type WorkflowWaitsEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/waits.ts";
+import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
+import {
+  mapWorkflowExecutionEvent,
+  type WorkflowRunEvent,
+} from "../../libswamp/workflows/run.ts";
+import { resolveRunReference } from "../../libswamp/workflows/run_reference.ts";
+import {
+  workflowHistorySearch,
+  type WorkflowHistorySearchDeps,
+} from "../../libswamp/workflows/history_search.ts";
+import {
+  workflowRunSearch,
+  type WorkflowRunSearchDeps,
+} from "../../libswamp/workflows/run_search.ts";
+import { workflowSchema } from "../../libswamp/workflows/schema.ts";
+import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
+import {
+  workflowSearch,
+  type WorkflowSearchDeps,
+} from "../../libswamp/workflows/search.ts";
 import {
   createStepLockHook,
   createWorkflowRunDeps,
@@ -186,8 +216,8 @@ import {
   validateTriggerOverrideEntry,
   writeServeConfigFile,
 } from "../serve_config.ts";
-import type { TriggerOverride } from "../../libswamp/mod.ts";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {

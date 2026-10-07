@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  issueGet,
-  type IssueGetDeps,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { issueGet, type IssueGetDeps } from "../../libswamp/issues/get.ts";
 import { createIssueGetRenderer } from "../../presentation/renderers/issue_get.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";

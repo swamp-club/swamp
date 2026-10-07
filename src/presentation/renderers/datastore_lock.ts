@@ -21,8 +21,8 @@ import type {
   DatastoreLockReleaseEvent,
   DatastoreLockStatusData,
   DatastoreLockStatusEvent,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/lock.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

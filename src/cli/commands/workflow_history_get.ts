@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
-  type WorkflowRunView,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/history_get.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import { createWorkflowHistoryGetRenderer } from "../../presentation/renderers/workflow_history_get.ts";
 import {
   createContext,

@@ -36,7 +36,7 @@ import {
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
 import { RunEventBuffer } from "./run_event_buffer.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
-import type { CancelTargetWorkflow } from "../libswamp/mod.ts";
+import type { CancelTargetWorkflow } from "../libswamp/workflows/cancel_suspended.ts";
 import { Workflow } from "../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";

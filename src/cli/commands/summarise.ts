@@ -24,14 +24,14 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { parseDuration } from "../../libswamp/mod.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createSummariseDeps,
   summarise,
   type SummariseData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/summary/summarise.ts";
 import { createSummariseRenderer } from "../../presentation/renderers/summarise.ts";
 import { UserError } from "../../domain/errors.ts";
 import {

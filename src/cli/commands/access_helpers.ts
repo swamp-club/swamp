@@ -34,7 +34,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import type { ModelMethodRunDeps } from "../../libswamp/mod.ts";
+import type { ModelMethodRunDeps } from "../../libswamp/models/run.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   parseResourceSelector,

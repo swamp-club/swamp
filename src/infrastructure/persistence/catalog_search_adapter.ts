@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { CatalogRow, CatalogStore } from "./catalog_store.ts";
-import type { DataSearchItem } from "../../libswamp/mod.ts";
+import type { DataSearchItem } from "../../libswamp/data/search.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 
 function catalogRowToSearchItem(row: CatalogRow): DataSearchItem {

@@ -23,46 +23,73 @@
 
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createModelCreateDeps,
-  createModelDeleteDeps,
-  createModelEditDeps,
-  createModelEvaluateDeps,
-  createModelGetDeps,
-  createModelMethodDescribeDeps,
-  createModelMethodHistoryLogsDeps,
-  createModelOutputDataDeps,
-  createModelOutputGetDeps,
-  createModelOutputLogsDeps,
-  createModelValidateDeps,
-  createTypeDescribeDeps,
-  isSwampError,
   modelCreate,
+} from "../../libswamp/models/create.ts";
+import {
+  createModelDeleteDeps,
   modelDelete,
   modelDeletePreview,
+} from "../../libswamp/models/delete.ts";
+import {
+  createModelEditDeps,
   modelEdit,
   type ModelEditTarget,
+} from "../../libswamp/models/edit.ts";
+import {
+  createModelEvaluateDeps,
   modelEvaluate,
-  modelGet,
+} from "../../libswamp/models/evaluate.ts";
+import { createModelGetDeps, modelGet } from "../../libswamp/models/get.ts";
+import {
+  createModelMethodDescribeDeps,
   modelMethodDescribe,
+} from "../../libswamp/models/method_describe.ts";
+import {
+  createModelMethodHistoryLogsDeps,
   modelMethodHistoryLogs,
-  modelMethodRun,
+} from "../../libswamp/models/method_history_logs.ts";
+import {
+  createModelOutputDataDeps,
   modelOutputData,
+} from "../../libswamp/models/output_data.ts";
+import {
+  createModelOutputGetDeps,
   modelOutputGet,
+} from "../../libswamp/models/output_get.ts";
+import {
+  createModelOutputLogsDeps,
   modelOutputLogs,
+} from "../../libswamp/models/output_logs.ts";
+import {
+  createModelValidateDeps,
+  modelValidate,
+} from "../../libswamp/models/validate.ts";
+import {
+  createTypeDescribeDeps,
+  typeDescribe,
+} from "../../libswamp/types/describe.ts";
+import { isSwampError } from "../../libswamp/errors.ts";
+import { modelMethodRun } from "../../libswamp/models/run.ts";
+import {
   modelOutputSearch,
   type ModelOutputSearchDeps,
   type ModelOutputSearchItem,
+} from "../../libswamp/models/output_search.ts";
+import {
   modelSearch,
   type ModelSearchDeps,
-  modelValidate,
+} from "../../libswamp/models/search.ts";
+import {
   resolveOutputIdReference,
   resolveOutputReference,
-  typeDescribe,
+} from "../../libswamp/models/output_reference.ts";
+import {
   typeSearch,
   type TypeSearchDeps,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/types/search.ts";
 import { createModelMethodRunDeps } from "../deps.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { createCommandTelemetry } from "../telemetry.ts";

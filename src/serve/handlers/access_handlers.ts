@@ -110,18 +110,23 @@ import {
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createServerTokenCreateDeps,
-  createServerTokenListDeps,
-  createServerTokenRevokeDeps,
-  createServerTokenRotateDeps,
   serverTokenCreate,
+} from "../../libswamp/access/token_create.ts";
+import {
+  createServerTokenListDeps,
   serverTokenList,
+} from "../../libswamp/access/token_list.ts";
+import {
+  createServerTokenRevokeDeps,
   serverTokenRevoke,
+} from "../../libswamp/access/token_revoke.ts";
+import {
+  createServerTokenRotateDeps,
   serverTokenRotate,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_rotate.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,

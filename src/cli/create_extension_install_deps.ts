@@ -24,11 +24,9 @@ import { resolveUniqueLocalSkillsDirs } from "../domain/repo/skill_dirs.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import { loadIdentity } from "./load_identity.ts";
-import {
-  type ExtensionInstallDeps,
-  LockfileRepository,
-  resolveServerUrl,
-} from "../libswamp/mod.ts";
+import type { ExtensionInstallDeps } from "../libswamp/extensions/install.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import { resolveServerUrl } from "../libswamp/extensions/pull.ts";
 import { resolveManagedLockfileForWrite } from "./repo_context.ts";
 
 /**

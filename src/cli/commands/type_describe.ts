@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createTypeDescribeDeps,
   typeDescribe,
   type TypeDescribeData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/types/describe.ts";
 import { createTypeDescribeRenderer } from "../../presentation/renderers/type_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -42,7 +42,7 @@ export {
   buildDataOutputSpecs,
   toMethodDescribeData,
   zodToJsonSchema,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/types/schema_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

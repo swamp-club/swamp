@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/scheduled_execution.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";

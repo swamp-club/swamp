@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertStringIncludes } from "@std/assert";
-import type { WorkflowGetData } from "../../libswamp/mod.ts";
+import type { WorkflowGetData } from "../../libswamp/workflows/get.ts";
 import { renderWorkflowGraph } from "./workflow_graph.ts";
 
 const singleJobWorkflow: WorkflowGetData = {

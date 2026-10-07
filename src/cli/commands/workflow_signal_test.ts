@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import type { WorkflowSignalData } from "../../libswamp/mod.ts";
+import type { WorkflowSignalData } from "../../libswamp/workflows/signal.ts";
 import { UserError } from "../../domain/errors.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {

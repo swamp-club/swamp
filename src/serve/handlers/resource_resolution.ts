@@ -50,12 +50,12 @@ import {
   findWorkflowById,
   findWorkflowByIdOrName,
 } from "../../domain/workflows/workflow_lookup.ts";
-import {
-  findBrokenWorkflow,
-  type OutputIdReference,
-  type OutputReference,
-  type RunReference,
-} from "../../libswamp/mod.ts";
+import { findBrokenWorkflow } from "../../libswamp/workflows/broken_workflow.ts";
+import type {
+  OutputIdReference,
+  OutputReference,
+} from "../../libswamp/models/output_reference.ts";
+import type { RunReference } from "../../libswamp/workflows/run_reference.ts";
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {

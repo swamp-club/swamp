@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import type { ModelGetData } from "../../libswamp/models/get.ts";
 import type {
-  ModelGetData,
   ModelSearchData,
   ModelSearchItem,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/search.ts";
 import {
   createModelSearchRenderer,
   type ModelPreviewFetcher,

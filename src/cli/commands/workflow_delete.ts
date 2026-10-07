@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkflowDeleteDeps,
   workflowDelete,
   type WorkflowDeleteData,
   workflowDeletePreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/delete.ts";
 import {
   createWorkflowDeleteRenderer,
   renderWorkflowDeleteCancelled,

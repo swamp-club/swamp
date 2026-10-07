@@ -36,15 +36,14 @@ import {
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createServerTokenRotateDeps,
-  parseDuration,
   serverTokenRotate,
   type ServerTokenRotateData,
   type ServerTokenRotateEvent,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_rotate.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
 import { renderServerTokenRotate } from "../../presentation/output/access_token_output.ts";
 import {
   requestServerResponse,

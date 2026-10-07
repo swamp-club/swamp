@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DatastoreSyncEvent, EventHandlers } from "../../libswamp/mod.ts";
+import type { DatastoreSyncEvent } from "../../libswamp/datastores/sync.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

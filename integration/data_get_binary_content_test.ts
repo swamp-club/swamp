@@ -35,14 +35,14 @@ import { createFileWriterFactory } from "../src/domain/models/data_writer.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import {
-  collect,
   createDataGetDeps,
-  createLibSwampContext,
   dataGet,
   type DataGetData,
   type DataGetEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/data/get.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 
 // A 67-byte 1x1 grayscale PNG. 0x89 and several other bytes are not valid
 // UTF-8.

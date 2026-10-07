@@ -44,12 +44,12 @@ import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
-  type WorkflowRunView,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/history_get.ts";
+import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 

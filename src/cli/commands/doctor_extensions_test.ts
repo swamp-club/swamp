@@ -27,7 +27,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { rescanSkippedFor, runRepull } from "./doctor_extensions.ts";
-import { ManagedLockfileUnpublishedError } from "../../libswamp/mod.ts";
+import { ManagedLockfileUnpublishedError } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

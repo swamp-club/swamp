@@ -23,9 +23,10 @@ requirements. Use the `ddd` skill to review for domain-driven design principles.
 5. **Bugs and edge cases** — are there logic errors, off-by-one mistakes, or
    unhandled scenarios?
 
-Pay special attention to the libswamp import boundary: CLI commands and
-presentation renderers must import from `src/libswamp/mod.ts` — never from
-internal module paths.
+Pay special attention to the libswamp import boundary: `src/libswamp/mod.ts`
+lists the public surface and is never imported. CLI commands, serve handlers and
+presentation renderers import each name from the libswamp file that defines it,
+and only names that `mod.ts` exports from that file.
 
 ## Severity Classification
 

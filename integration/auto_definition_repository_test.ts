@@ -28,16 +28,14 @@ import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createModelDeleteDeps,
-  createModelEditDeps,
-  createModelGetDeps,
   modelDelete,
   modelDeletePreview,
-  modelEdit,
-  modelGet,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/delete.ts";
+import { createModelEditDeps, modelEdit } from "../src/libswamp/models/edit.ts";
+import { createModelGetDeps, modelGet } from "../src/libswamp/models/get.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import {

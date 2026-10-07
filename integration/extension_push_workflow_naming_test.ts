@@ -29,12 +29,12 @@ import { getLogger } from "@logtape/logtape";
 import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { extractTarGz } from "../src/infrastructure/archive/tar_archive.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/extensions/push.ts";
 
 const logger = getLogger(["test"]);
 

@@ -43,7 +43,7 @@ import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   choosePulledDatastoreDirsOnDisk,
   enumeratePulledExtensionDirs,
-} from "../libswamp/mod.ts";
+} from "../libswamp/extensions/enumerate_pulled.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import {
   bufferStartupWarnings,
@@ -120,7 +120,7 @@ import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_run
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
-import { ReconcileFromDiskService } from "../libswamp/mod.ts";
+import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -1786,7 +1786,7 @@ export function resolveTelemetryEndpoint(
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
 
-import { resolveTrustedCollectives } from "../libswamp/mod.ts";
+import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
 
 /**
  * Initialize the telemetry service for this invocation.

@@ -31,11 +31,9 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
-import {
-  createLibSwampContext,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-} from "../libswamp/mod.ts";
+import { createLibSwampContext } from "../libswamp/context.ts";
+import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../libswamp/models/run.ts";
 import {
   ChannelClosedError,
   RpcChannel,

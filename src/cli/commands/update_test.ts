@@ -23,7 +23,8 @@ import { UpdateService } from "../../domain/update/update_service.ts";
 import { Platform } from "../../domain/update/platform.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { consumeStream, type UpdateCheckEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { UpdateCheckEvent } from "../../libswamp/update/check.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});

@@ -25,13 +25,11 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type {
-  ServerTokenCreateData,
-  ServerTokenListData,
-  ServerTokenRevealData,
-  ServerTokenRevokeData,
-  ServerTokenRotateData,
-} from "../../libswamp/mod.ts";
+import type { ServerTokenCreateData } from "../../libswamp/access/token_create.ts";
+import type { ServerTokenListData } from "../../libswamp/access/token_list.ts";
+import type { ServerTokenRevealData } from "../../libswamp/access/token_reveal.ts";
+import type { ServerTokenRevokeData } from "../../libswamp/access/token_revoke.ts";
+import type { ServerTokenRotateData } from "../../libswamp/access/token_rotate.ts";
 import type { OutputMode } from "./output.ts";
 
 const checkmark = "✓";

@@ -21,8 +21,8 @@ import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorVaultsData,
   DoctorVaultsEvent,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/doctor_vaults.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";

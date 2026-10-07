@@ -21,41 +21,61 @@
  * Vault-domain request handlers (vault.* verbs).
  */
 
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createVaultAnnotateDeps,
-  createVaultAuditTrailDeps,
-  createVaultCreateDeps,
-  createVaultDeleteDeps,
-  createVaultDescribeDeps,
-  createVaultEditDeps,
-  createVaultGetDeps,
-  createVaultInspectDeps,
-  createVaultListKeysDeps,
-  createVaultPutDeps,
-  createVaultReadSecretDeps,
-  findVaultByNameOrId,
-  isSwampError,
-  type SwampError,
   vaultAnnotate,
+} from "../../libswamp/vaults/annotate.ts";
+import {
+  createVaultAuditTrailDeps,
   vaultAuditTrail,
+} from "../../libswamp/vaults/audit_trail.ts";
+import {
+  createVaultCreateDeps,
   vaultCreate,
+} from "../../libswamp/vaults/create.ts";
+import {
+  createVaultDeleteDeps,
   vaultDelete,
   vaultDeletePreview,
+} from "../../libswamp/vaults/delete.ts";
+import {
+  createVaultDescribeDeps,
   vaultDescribe,
+} from "../../libswamp/vaults/describe.ts";
+import {
+  createVaultEditDeps,
+  findVaultByNameOrId,
   vaultEdit,
   type VaultEditConfigInfo,
-  vaultGet,
+} from "../../libswamp/vaults/edit.ts";
+import { createVaultGetDeps, vaultGet } from "../../libswamp/vaults/get.ts";
+import {
+  createVaultInspectDeps,
   vaultInspect,
+} from "../../libswamp/vaults/inspect.ts";
+import {
+  createVaultListKeysDeps,
   vaultListKeys,
+} from "../../libswamp/vaults/list_keys.ts";
+import {
+  createVaultPutDeps,
   vaultPut,
   vaultPutPreview,
+} from "../../libswamp/vaults/put.ts";
+import {
+  createVaultReadSecretDeps,
   vaultReadSecret,
+} from "../../libswamp/vaults/read_secret.ts";
+import { isSwampError, type SwampError } from "../../libswamp/errors.ts";
+import {
   vaultSearch,
   type VaultSearchDeps,
+} from "../../libswamp/vaults/search.ts";
+import {
   vaultTypeSearch,
   type VaultTypeSearchDeps,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/vaults/type_search.ts";
 import type {
   VaultAnnotatePayload,
   VaultAuditTrailPayload,

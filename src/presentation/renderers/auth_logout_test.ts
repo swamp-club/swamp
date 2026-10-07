@@ -19,11 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import {
-  type AuthLogoutData,
-  type AuthLogoutEvent,
-  consumeStream,
-} from "../../libswamp/mod.ts";
+import type {
+  AuthLogoutData,
+  AuthLogoutEvent,
+} from "../../libswamp/auth/logout.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import { createAuthLogoutRenderer } from "./auth_logout.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

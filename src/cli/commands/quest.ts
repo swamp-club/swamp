@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  questPass,
-  type QuestPassDeps,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { questPass, type QuestPassDeps } from "../../libswamp/quest/pass.ts";
 import {
   createQuestPassRenderer,
   QUEST_TAGLINE,

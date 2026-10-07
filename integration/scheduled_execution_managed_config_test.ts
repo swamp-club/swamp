@@ -31,7 +31,7 @@ import {
   resetManagedConfigRegistry,
 } from "../src/infrastructure/persistence/paths.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
-import { ScheduledExecutionService } from "../src/libswamp/mod.ts";
+import { ScheduledExecutionService } from "../src/libswamp/workflows/scheduled_execution.ts";
 
 function workflowYaml(id: string, name: string, schedule?: string): string {
   const trigger = schedule ? `trigger:\n  schedule: "${schedule}"\n` : "";

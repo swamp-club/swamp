@@ -24,15 +24,15 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkflowValidateDeps,
-  workflowsDirFor,
   workflowValidate,
   type WorkflowValidateAllData,
   type WorkflowValidateData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/validate.ts";
+import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {

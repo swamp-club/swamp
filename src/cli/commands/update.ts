@@ -21,12 +21,12 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { VERSION } from "./version.ts";
 import { Platform } from "../../domain/update/platform.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createUpdateCheckDeps,
   updateCheck,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/update/check.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";

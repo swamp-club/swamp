@@ -19,11 +19,9 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import type {
-  AuthTokenCreateData,
-  AuthTokenListData,
-  AuthTokenRevokeData,
-} from "../../libswamp/mod.ts";
+import type { AuthTokenCreateData } from "../../libswamp/auth/token_create.ts";
+import type { AuthTokenListData } from "../../libswamp/auth/token_list.ts";
+import type { AuthTokenRevokeData } from "../../libswamp/auth/token_revoke.ts";
 import {
   renderAuthTokenCreate,
   renderAuthTokenList,
