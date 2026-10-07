@@ -87,13 +87,22 @@ export class ControlPlaneContinuationClaimStore
   }
 }
 
-/** How long after its last heartbeat a serve instance counts as dead. */
+/**
+ * How long after its last heartbeat a serve instance counts as dead, when
+ * its heartbeat does not say.
+ */
 export const CONTINUATION_HOLDER_STALE_MS = 90_000;
+
+/** The longest stale TTL a heartbeat is believed about: one day. */
+const HOLDER_STALE_MAX_MS = 86_400_000;
 
 /**
  * What the heartbeats in `store` say of a claim's holder. A serve instance
  * is alive while its heartbeat is recent and dead once it is stale or gone;
- * nothing is known of any other holder, which writes no heartbeat.
+ * nothing is known of any other holder, which writes no heartbeat. Stale is
+ * judged by the TTL the instance published in its heartbeat, so a local
+ * command and a peer agree with the instance's own settings; `staleMs` is
+ * for a heartbeat that names none.
  */
 export function heartbeatLiveness(
   store: ControlPlaneStore,
@@ -118,8 +127,13 @@ export function heartbeatLiveness(
       const record = JSON.parse(new TextDecoder().decode(bytes));
       const at = new Date(record?.heartbeatAt).getTime();
       if (Number.isNaN(at)) return "dead";
+      const published = record?.staleTtlMs;
+      const ttl = typeof published === "number" && published > 0 &&
+          published <= HOLDER_STALE_MAX_MS
+        ? published
+        : staleMs;
       const now = (options.now?.() ?? new Date()).getTime();
-      return now - at > staleMs ? "dead" : "alive";
+      return now - at > ttl ? "dead" : "alive";
     } catch {
       return "dead";
     }

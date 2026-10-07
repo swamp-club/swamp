@@ -874,8 +874,10 @@ export async function continueSettledRun(
   if (!workflow || workflow.name !== resolution.name) {
     return skip("skipped", "workflow_not_found");
   }
+  // Not reported: with auto-resume off, a settled run left suspended is
+  // what its owner asked for, as it is after an approval.
   if (!workflow.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)) {
-    return skip("skipped", "policy");
+    return false;
   }
 
   // An early look, so a run a peer has consumed is not registered and

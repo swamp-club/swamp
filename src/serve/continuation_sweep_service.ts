@@ -134,7 +134,7 @@ export class ContinuationSweepService {
       "Starting continuation sweep (interval: {interval}s)",
       { interval: this.#deps.intervalMs / 1000 },
     );
-    this.runOnce().finally(() => this.#scheduleNext());
+    void this.#passThenSchedule();
   }
 
   /** Stops the schedule and waits for a pass in flight. */
@@ -177,11 +177,17 @@ export class ContinuationSweepService {
     }
   }
 
+  /** One pass, then the next one's timer. Never rejects: a pass does not. */
+  async #passThenSchedule(): Promise<void> {
+    await this.runOnce();
+    this.#scheduleNext();
+  }
+
   #scheduleNext(): void {
     if (this.#disposed) return;
     this.#timer = runDetached(() =>
       setTimeout(() => {
-        this.runOnce().finally(() => this.#scheduleNext());
+        void this.#passThenSchedule();
       }, this.#deps.intervalMs)
     );
     Deno.unrefTimer(this.#timer);

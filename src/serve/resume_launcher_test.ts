@@ -1034,7 +1034,7 @@ Deno.test("continueSettledRun: launches an approved run whose auto-resume launch
   await registry.registered[0].completion;
 });
 
-Deno.test("continueSettledRun: a policy that is off is audited once per suspension, not on every pass", async () => {
+Deno.test("continueSettledRun: a run whose policy is off is left alone without a word", async () => {
   const workflow = waitingWorkflow(false);
   const { run, wait } = makeWaitingRun(workflow);
   const { ctx, registry, audit, waits } = continuationHarness([workflow], [
@@ -1049,8 +1049,7 @@ Deno.test("continueSettledRun: a policy that is off is audited once per suspensi
     assertEquals(await continueSettledRun(ctx, target, SWEEP), false);
   }
   assertEquals(registry.registered.length, 0);
-  assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_skipped"]);
-  assertStringIncludes(audit[0].detail ?? "", "reason=policy");
+  assertEquals(audit, []);
 });
 
 Deno.test("continueSettledRun: a suspension another holder has is left alone without a word", async () => {

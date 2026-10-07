@@ -961,9 +961,10 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the
 workflow to have `swamp serve` resume the run by itself once every gate is
-approved and every `wait_for_signal` step has an outcome. An approval or signal
-through serve resumes it at once; one given by a local command is picked up
-within `--continuation-sweep-interval` (default 30s).
+approved and every `wait_for_signal` step has an outcome. The approval or signal
+through serve that settles the run resumes it at once; a local signal is picked
+up within `--continuation-sweep-interval` (default 30s), and so is a local
+approval on a filesystem datastore (on S3 or GCS, approve with `--server`).
 `swamp serve --auto-resume` turns this on for workflows that declare **no**
 `inputs` and leave `autoResume` unset. A workflow with inputs must opt in
 itself, because it may rely on resume-time `--input`, and `autoResume: false`

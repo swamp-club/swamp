@@ -498,10 +498,16 @@ response reports `autoResumed: true` when serve resumed the run. When a nested
 workflow's run finishes through serve, serve also resumes the parent waiting on
 it, under the parent's own policy, if the approver may approve the parent.
 
-The instance that takes an approval or a signal resumes the run at once. A sweep
-at boot and every `--continuation-sweep-interval` (env
+The instance that takes the approval or signal that settles a run resumes it at
+once. A sweep at boot and every `--continuation-sweep-interval` (env
 `SWAMP_CONTINUATION_SWEEP_INTERVAL`) retries a launch that was lost and picks up
-runs approved or signalled by a local command. Things to know:
+runs signalled by a local command. Things to know:
+
+- A local `workflow approve` is picked up by the sweep on a filesystem
+  datastore. On S3 or GCS serve does not see it until it restarts: approve with
+  `--server`, or resume manually.
+- A run with both gates and signal waits is resumed by the sweep, not at once,
+  when an approval is what settles it.
 
 - A `signal` or `approve` grant releases the rest of the run. Nothing else is
   authorized at the resume, and no inputs can be supplied.
@@ -512,8 +518,9 @@ runs approved or signalled by a local command. Things to know:
   `swamp workflow resume` command for it.
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
-  reason (`policy`, `global_cap`, ...). `held_by_local_command` means a local
-  `workflow resume` died before it started the run: resume it manually.
+  reason (`global_cap`, ...). A run whose auto-resume policy is off is left
+  alone with no event. `held_by_local_command` means a local `workflow resume`
+  died before it started the run: resume it manually.
 - Several serve instances on one datastore resume a run once. On S3 or GCS,
   upgrade every host before relying on the sweep, and expect a run whose
   instance died to wait until an instance restarts.

@@ -446,7 +446,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "continuation: a run whose workflow turns auto-resume off stays suspended, with one audited reason",
+    "continuation: a run whose workflow turns auto-resume off stays suspended, and nothing is reported",
   ...opts,
   fn: async () => {
     await withFixture(async (f) => {
@@ -462,8 +462,7 @@ Deno.test({
 
       assertEquals(f.executions(), 0);
       assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
-      assertEquals(actions(a), ["workflow.auto_resume_skipped"]);
-      assertStringIncludes(a.audit[0].detail ?? "", "reason=policy");
+      assertEquals(actions(a), []);
     });
   },
 });

@@ -33,6 +33,12 @@ export interface HeartbeatRecord {
   startedAt: string;
   heartbeatAt: string;
   address?: string;
+  /**
+   * How long after `heartbeatAt` this instance asks to be counted dead. A
+   * reader that cannot know the instance's settings, such as a local
+   * command, goes by it.
+   */
+  staleTtlMs?: number;
 }
 
 export class InstanceHeartbeatService {
@@ -43,12 +49,13 @@ export class InstanceHeartbeatService {
   readonly #startedAt: string;
   readonly #intervalMs: number;
   readonly #address: string | undefined;
+  readonly #staleTtlMs: number | undefined;
   #timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     store: ControlPlaneStore,
     instanceId: string,
-    options?: { intervalMs?: number; address?: string },
+    options?: { intervalMs?: number; address?: string; staleTtlMs?: number },
   ) {
     this.#store = store;
     this.#instanceId = instanceId;
@@ -57,6 +64,7 @@ export class InstanceHeartbeatService {
     this.#startedAt = new Date().toISOString();
     this.#intervalMs = options?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.#address = options?.address;
+    this.#staleTtlMs = options?.staleTtlMs;
   }
 
   get instanceId(): string {
@@ -100,6 +108,9 @@ export class InstanceHeartbeatService {
       startedAt: this.#startedAt,
       heartbeatAt: new Date().toISOString(),
       ...(this.#address !== undefined ? { address: this.#address } : {}),
+      ...(this.#staleTtlMs !== undefined
+        ? { staleTtlMs: this.#staleTtlMs }
+        : {}),
     };
     await this.#store.put(
       `heartbeats/${this.#instanceId}`,

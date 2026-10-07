@@ -212,7 +212,14 @@ has to be cancelled, or, when serve started it, the change reverted.
 The resume that follows an approval at once needs the approval to go through
 serve (the dashboard, or `swamp workflow approve --server`). A local
 `swamp workflow approve` on the same repository launches nothing itself; the
-continuation sweep finds the run on its next pass. A suspended run with every
+continuation sweep finds the run on its next pass. That holds on a
+filesystem datastore. On a synced one an approval changes the run record,
+which serve does not pull after boot, so a local approval is seen only by the
+instance it was made beside, or after a restart; a local signal is seen
+everywhere, since outcomes are read from the control-plane store. An
+approval through serve on a run that also waits for a signal launches nothing
+either (`allGatesDecided` requires no signal waits); the sweep continues that
+run once its waits are settled. A suspended run with every
 gate decided carries the derived `awaitingResume: true`, so the run index and
 `workflow.run.search` can list it.
 
@@ -238,7 +245,8 @@ for a signal has an outcome of any kind. `continueSettledRun`
   runs in the background: it reads every suspended run, and serve does not
   hold its readiness on that. The sweep is
   what retries a launch lost to a full registry, a shutdown or a crash, and
-  what continues a run signalled or approved by a local command. On its first
+  what continues a run signalled, or on a filesystem datastore approved, by a
+  local command. On its first
   boot after an upgrade it therefore launches every run that was already
   settled and left suspended, when the workflow's policy allows.
 
@@ -252,12 +260,14 @@ why a workflow that declares inputs must opt in itself, and why
 inputs and leaves `autoResume` unset.
 
 A run the launcher cannot continue stays suspended. Each reason is logged and
-audited once per suspension, as `workflow.auto_resume_skipped` (the policy is
-off, the workflow is gone, a local command left its claim behind) or
+audited once per suspension, as `workflow.auto_resume_skipped` (the workflow
+is gone, a local command left its claim behind) or
 `workflow.auto_resume_failed` (the registry refused, the workflow changed
 shape, the claims could not be read, the resume failed), and the next pass
 tries again. A resume that finds the run no longer suspended, or its claim
 held by another, lost a race to a peer or a person and is not reported.
+Neither is a run whose auto-resume policy is off: left suspended is what its
+owner asked for.
 
 A claim left by a local `workflow resume` that died before saving the run is
 never replaced by serve, which cannot tell a dead local command from a live
@@ -311,7 +321,9 @@ record atomically has no claims, and a resume there takes none.
 Every resume serve starts by itself takes its claim as an automatic one, the
 auto-resume after an approval and the resume of a parent included: none of
 them replaces the claim of a holder it cannot prove dead. A serve holder is
-dead once its heartbeat is older than `--stale-ttl`.
+dead once its heartbeat is older than its own `--stale-ttl`, which it
+publishes in the heartbeat so that a peer or a local command with other
+settings judges it the same way.
 
 Serve registers the resume before it saves the run as `running`, so a search
 right after an approval can still list the run as suspended and awaiting

@@ -131,3 +131,32 @@ Deno.test("heartbeatLiveness: nothing is known of a holder that is not a serve i
     );
   });
 });
+
+Deno.test("heartbeatLiveness: an instance is judged by the stale TTL its heartbeat publishes, when that is believable", async () => {
+  await withStore(async (control) => {
+    const beat = (ageMs: number, staleTtlMs: unknown) =>
+      control.put(
+        "heartbeats/a",
+        new TextEncoder().encode(JSON.stringify({
+          instanceId: "a",
+          heartbeatAt: new Date(NOW.getTime() - ageMs).toISOString(),
+          staleTtlMs,
+        })),
+      );
+    const liveness = heartbeatLiveness(control, {
+      staleMs: 1000,
+      now: () => NOW,
+    });
+
+    // A slow-beating instance is alive past the reader's own default.
+    await beat(5000, 10_000);
+    assertEquals(await liveness(serveHolder("a")), "alive");
+    await beat(10_001, 10_000);
+    assertEquals(await liveness(serveHolder("a")), "dead");
+    // A TTL that is not a positive number of at most a day is not believed.
+    for (const ttl of [0, -1, "10000", 86_400_001]) {
+      await beat(5000, ttl);
+      assertEquals(await liveness(serveHolder("a")), "dead", String(ttl));
+    }
+  });
+});

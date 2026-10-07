@@ -6802,6 +6802,7 @@ export const serveCommand = new Command()
         {
           ...(heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : {}),
           address: serveAddress,
+          staleTtlMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         },
       );
       await heartbeatService.start();
