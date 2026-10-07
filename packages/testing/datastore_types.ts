@@ -33,6 +33,7 @@ export interface LockInfo {
   acquiredAt: string;
   ttlMs: number;
   nonce?: string;
+  holderUnknown?: true;
 }
 
 /** Configuration for lock behavior. */

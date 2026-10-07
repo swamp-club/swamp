@@ -230,6 +230,58 @@ Deno.test("datastoreLockRelease: nonce mismatch (holder changed)", async () => {
   );
 });
 
+Deno.test("datastoreLockRelease: lock being written is not force-released", async () => {
+  let forceReleaseCalls = 0;
+  const deps = makeReleaseDeps({
+    inspectLock: () =>
+      Promise.resolve({
+        holder: "unknown (lock file is being written)",
+        hostname: "unknown",
+        pid: 0,
+        acquiredAt: new Date().toISOString(),
+        ttlMs: 30000,
+        holderUnknown: true,
+      }),
+    forceRelease: () => {
+      forceReleaseCalls++;
+      return Promise.resolve(false);
+    },
+  });
+
+  await assertCompletes<DatastoreLockReleaseEvent>(
+    datastoreLockRelease(createLibSwampContext(), deps, {}),
+    {
+      kind: "completed",
+      data: {
+        released: false,
+        reason: "lock is being written by its holder — retry shortly",
+      },
+    },
+  );
+  assertEquals(forceReleaseCalls, 0);
+});
+
+Deno.test("datastoreLockRelease: old-format lock with no nonce still reaches forceRelease", async () => {
+  const { nonce: _nonce, ...oldFormat } = sampleLockInfo;
+  let forceReleaseCalls = 0;
+  const deps = makeReleaseDeps({
+    inspectLock: () => Promise.resolve(oldFormat),
+    forceRelease: () => {
+      forceReleaseCalls++;
+      return Promise.resolve(true);
+    },
+  });
+
+  await assertCompletes<DatastoreLockReleaseEvent>(
+    datastoreLockRelease(createLibSwampContext(), deps, {}),
+    {
+      kind: "completed",
+      data: { released: true, previousHolder: oldFormat },
+    },
+  );
+  assertEquals(forceReleaseCalls, 1);
+});
+
 // ── parseModelLockKey ──────────────────────────────────────────────────
 
 Deno.test("parseModelLockKey: simple model type", () => {

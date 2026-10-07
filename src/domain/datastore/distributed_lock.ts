@@ -41,6 +41,13 @@ export interface LockInfo {
   ttlMs: number;
   /** Unique identifier for this lock acquisition (fencing token). */
   nonce?: string;
+  /**
+   * Set when the lock is held but its holder could not be read, because
+   * the holder is still writing the lock. `holder`, `hostname` and `pid`
+   * are placeholders, there is no `nonce`, and the lock cannot be
+   * force-released until it can be read.
+   */
+  holderUnknown?: true;
 }
 
 /** Configuration for lock behavior. */
