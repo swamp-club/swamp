@@ -52,6 +52,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
+import { isHiddenFromWorker } from "./worker_control_plane_visibility.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -368,6 +369,17 @@ export class DataPlane {
     if (!Number.isInteger(version) || version < 1) {
       return errorResponse(400, `Invalid version '${rawVersion}'`);
     }
+    const notFound = () =>
+      errorResponse(404, `No data '${dataName}' version ${version}`);
+
+    // Control-plane record bytes are never served to a worker (except the
+    // fleet probe reading its own). Judged before the lookup and the ETag
+    // branch, and answered as a missing record, so the response says
+    // nothing about whether such a record exists (swamp-club#3129).
+    const dispatch = dispatchId
+      ? this.#options.dispatches.forDispatch(workerName, dispatchId)
+      : soleDispatch(this.#options.dispatches.forWorker(workerName));
+    if (isHiddenFromWorker(type.normalized, dispatch)) return notFound();
 
     const repo = this.#repoForWorker(workerName, dispatchId);
     const data = await repo.findByName(
@@ -376,9 +388,7 @@ export class DataPlane {
       dataName,
       version,
     );
-    if (data === null) {
-      return errorResponse(404, `No data '${dataName}' version ${version}`);
-    }
+    if (data === null) return notFound();
 
     // A (dataId, version) pair is immutable forever — a strong ETag lets the
     // worker (and any intermediary) cache it unconditionally.

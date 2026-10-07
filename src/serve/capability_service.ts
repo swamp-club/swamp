@@ -34,7 +34,11 @@ import { createDataId } from "../domain/data/data_id.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
-import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import {
+  type DefinitionLookupResult,
+  findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
+} from "../domain/models/model_lookup.ts";
 import { createModelOutputId } from "../domain/models/model_output.ts";
 import { createDefinitionId } from "../domain/definitions/definition.ts";
 import {
@@ -66,18 +70,12 @@ import type {
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { jsonSafeClone } from "./serializer.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
-import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
-import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
+import { SERVER_TOKEN_SECRET_KEY_PREFIX } from "../domain/models/access/server_token_model.ts";
+import { WORKER_TOKEN_SECRET_KEY_PREFIX } from "../domain/models/worker/enrollment_token_model.ts";
 import {
-  SERVER_TOKEN_MODEL_TYPE,
-  SERVER_TOKEN_SECRET_KEY_PREFIX,
-} from "../domain/models/access/server_token_model.ts";
-import {
-  ENROLLMENT_TOKEN_MODEL_TYPE,
-  WORKER_TOKEN_SECRET_KEY_PREFIX,
-} from "../domain/models/worker/enrollment_token_model.ts";
-import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
-import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
+  isHiddenFromWorker,
+  workerHiddenStoredTypes,
+} from "./worker_control_plane_visibility.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 
 const capLogger = getSwampLogger(["serve", "capability"]);
@@ -95,15 +93,6 @@ const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
   "oauth-access-token-",
   "oauth-bootstrap-access-token",
   "oauth-resolved-admins",
-];
-
-const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
-  GRANT_MODEL_TYPE.normalized,
-  GROUP_MODEL_TYPE.normalized,
-  SERVER_TOKEN_MODEL_TYPE.normalized,
-  ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
-  WORKER_MODEL_TYPE.normalized,
-  STEP_LEASE_MODEL_TYPE.normalized,
 ];
 
 const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;
@@ -211,6 +200,51 @@ export class CapabilityService {
     );
   }
 
+  /**
+   * The dispatch a read belongs to, for deciding which control-plane records
+   * it may see. Never throws: a worker with no dispatch, or with several and
+   * no dispatchId, gets null, and every control-plane type is then hidden.
+   */
+  #visibleDispatch(
+    workerName: string,
+    dispatchId: string | undefined,
+  ): ActiveDispatch | null {
+    try {
+      return this.#resolveDispatch(workerName, dispatchId, "read");
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * findDefinitionByIdOrName, skipping definitions hidden from the worker.
+   * The usual lookup returns the first match across types, so a
+   * control-plane record named like a user model would shadow it; when the
+   * first match is hidden, look again among the visible ones, primary
+   * definitions before auto-definitions, then by id.
+   */
+  async #findVisibleDefinition(
+    idOrName: string,
+    dispatch: ActiveDispatch | null,
+  ): Promise<DefinitionLookupResult | null> {
+    const definitionRepo = this.#repoContext.definitionRepo;
+    const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
+    if (!found || !isHiddenFromWorker(found.type.normalized, dispatch)) {
+      return found;
+    }
+    const visible = (entry: DefinitionLookupResult) =>
+      !isHiddenFromWorker(entry.type.normalized, dispatch);
+    const all = definitionRepo.findAllIncludingAutoGlobal
+      ? await definitionRepo.findAllIncludingAutoGlobal()
+      : await definitionRepo.findAllGlobal();
+    const byName = all.find((entry) =>
+      entry.definition.name === idOrName && visible(entry)
+    );
+    if (byName) return byName;
+    const byId = await findDefinitionsByIdGlobal(definitionRepo, idOrName);
+    return byId.find(visible) ?? null;
+  }
+
   #repoForWorker(
     workerName: string,
     dispatchId?: string,
@@ -291,8 +325,9 @@ export class CapabilityService {
     if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
       throw new Error("Query predicate exceeds maximum length");
     }
+    let dispatch: ActiveDispatch | null = null;
     if (this.#dispatches) {
-      const dispatch = this.#resolveDispatch(
+      dispatch = this.#resolveDispatch(
         workerName,
         params.dispatchId,
         "queryData",
@@ -303,21 +338,27 @@ export class CapabilityService {
         );
       }
     }
+    // Control-plane records are left out of the query itself, before any
+    // limit, so a broad predicate returns the rest rather than failing. The
+    // exclusion is set here, after the worker's options, so a worker cannot
+    // replace it (swamp-club#3129).
     const records = await this.#repoContext.dataQueryService.query(
       params.predicate,
-      params.options,
+      {
+        ...params.options,
+        excludeModelTypes: workerHiddenStoredTypes(dispatch),
+      },
     );
-    // Post-query filter: remove any records belonging to infrastructure
-    // model types. This is robust against CEL-level bypasses (string
-    // concatenation, variables, ternaries) because it operates on the
-    // resolved modelType of each result, not on the predicate text.
-    const filtered = records.filter((record) => {
+    // Post-query check: a hidden record in the results means the exclusion
+    // above was bypassed. It judges each result's resolved modelType, in any
+    // spelling, not the predicate text, so CEL tricks (string concatenation,
+    // variables, ternaries) cannot get past it.
+    const leaked = records.some((record) => {
       const rec = record as { modelType?: string };
-      if (!rec.modelType) return true;
-      const normalized = ModelType.create(rec.modelType).normalized;
-      return !DENIED_QUERY_MODEL_TYPES.includes(normalized);
+      return rec.modelType !== undefined &&
+        isHiddenFromWorker(rec.modelType, dispatch);
     });
-    if (filtered.length < records.length) {
+    if (leaked) {
       throw new Error(
         "Query matched access-control or infrastructure model data which is not permitted from workers",
       );
@@ -329,6 +370,14 @@ export class CapabilityService {
     workerName: string,
     params: ListVersionsParams & { dispatchId?: string },
   ): Promise<number[]> {
+    if (
+      isHiddenFromWorker(
+        params.modelType,
+        this.#visibleDispatch(workerName, params.dispatchId),
+      )
+    ) {
+      return Promise.resolve([]);
+    }
     const repo = this.#repoForWorker(workerName, params.dispatchId);
     return repo.listVersions(
       ModelType.create(params.modelType),
@@ -494,7 +543,18 @@ export class CapabilityService {
     return { ok: true };
   }
 
-  async readDefinition(params: ReadDefinitionParams): Promise<unknown> {
+  async readDefinition(
+    workerName: string,
+    params: ReadDefinitionParams & { dispatchId?: string },
+  ): Promise<unknown> {
+    if (
+      isHiddenFromWorker(
+        params.definitionType,
+        this.#visibleDispatch(workerName, params.dispatchId),
+      )
+    ) {
+      return { found: false, definition: null };
+    }
     const type = ModelType.create(params.definitionType);
     const definition = await this.#repoContext.definitionRepo.findByName(
       type,
@@ -503,7 +563,21 @@ export class CapabilityService {
     return jsonSafeClone({ found: definition !== null, definition });
   }
 
-  async readOutput(params: ReadOutputParams): Promise<unknown> {
+  async readOutput(
+    workerName: string,
+    params: ReadOutputParams & { dispatchId?: string },
+  ): Promise<unknown> {
+    const hidden = isHiddenFromWorker(
+      params.modelType,
+      this.#visibleDispatch(workerName, params.dispatchId),
+    );
+    if (hidden) {
+      // The shape each branch returns when nothing is stored.
+      const single = params.outputId !== undefined &&
+          params.methodName !== undefined ||
+        params.definitionId !== undefined && params.latestOnly === true;
+      return { result: single ? null : [] };
+    }
     const type = ModelType.create(params.modelType);
     const outputRepo = this.#repoContext.outputRepo;
     let result: unknown;
@@ -524,10 +598,13 @@ export class CapabilityService {
     return jsonSafeClone({ result });
   }
 
-  async resolveModel(params: ResolveModelParams): Promise<unknown> {
-    const resolved = await findDefinitionByIdOrName(
-      this.#repoContext.definitionRepo,
+  async resolveModel(
+    workerName: string,
+    params: ResolveModelParams & { dispatchId?: string },
+  ): Promise<unknown> {
+    const resolved = await this.#findVisibleDefinition(
       params.modelIdOrName,
+      this.#visibleDispatch(workerName, params.dispatchId),
     );
     if (!resolved) {
       return { found: false };
@@ -650,21 +727,32 @@ export class CapabilityService {
       safe(
         RemoteMethod.readDefinition,
         (params) =>
-          this.readDefinition(ReadDefinitionParamsSchema.parse(params)),
+          this.readDefinition(workerName, {
+            ...ReadDefinitionParamsSchema.parse(params),
+            dispatchId: extractDispatchId(params),
+          }),
       ),
     );
     channel.register(
       RemoteMethod.readOutput,
       safe(
         RemoteMethod.readOutput,
-        (params) => this.readOutput(ReadOutputParamsSchema.parse(params)),
+        (params) =>
+          this.readOutput(workerName, {
+            ...ReadOutputParamsSchema.parse(params),
+            dispatchId: extractDispatchId(params),
+          }),
       ),
     );
     channel.register(
       RemoteMethod.resolveModel,
       safe(
         RemoteMethod.resolveModel,
-        (params) => this.resolveModel(ResolveModelParamsSchema.parse(params)),
+        (params) =>
+          this.resolveModel(workerName, {
+            ...ResolveModelParamsSchema.parse(params),
+            dispatchId: extractDispatchId(params),
+          }),
       ),
     );
   }
