@@ -732,12 +732,14 @@ Deno.test("DispatchService: an attempt that succeeded still fails when its locks
   const h = createHarness();
   const controller = new AbortController();
   const failure = new Error("structural command still working");
+  const endSignals: Array<AbortSignal | undefined> = [];
   const beginLockHandOff: NonNullable<RemoteStepRequest["beginLockHandOff"]> =
     () =>
       Promise.resolve({
         lent: { pid: 4242, hostname: "host-a", lockIds: ["nonce-1"] },
         // The user cancels while the reclaim is waiting, and it times out.
-        end: () => {
+        end: (signal) => {
+          endSignals.push(signal);
           controller.abort();
           return Promise.reject(failure);
         },
@@ -749,6 +751,8 @@ Deno.test("DispatchService: an attempt that succeeded still fails when its locks
     )
   );
   assertEquals(error, failure);
+  // It has a result to write, so its reclaim is not cut short by a cancel.
+  assertEquals(endSignals, [undefined]);
 });
 
 Deno.test("DispatchService: an attempt whose locks cannot be taken back fails the step instead of returning", async () => {

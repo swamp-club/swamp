@@ -146,9 +146,10 @@ export interface LentLocks {
  * writes anything: the run stops waiting on the hop there, so whatever the
  * hop left running must stop skipping the run's locks.
  *
- * Pass {@link end} the signal of the run that began the hand-off. A
- * cancelled run writes nothing, so it re-keys its locks and rejects rather
- * than wait for a structural command still working under them.
+ * Pass {@link end} the run's signal when the hop was cancelled and has
+ * left nothing to write: the end then re-keys the locks and rejects rather
+ * than wait for a structural command still working under them. A hop that
+ * finished has a result to write, so end it with no signal and wait.
  */
 export interface LockHandOff<T> {
   readonly lent: T;

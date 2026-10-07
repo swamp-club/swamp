@@ -883,6 +883,34 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
+  "shellModel.methods.execute: a command that finished before the cancel ends its hand-off with no signal, so its output is kept",
+  async () => {
+    const controller = new AbortController();
+    const { context, getResults } = createTestContext({
+      signal: controller.signal,
+    });
+    const given: Array<AbortSignal | undefined> = [];
+    const locks = {
+      lockIds: () => ["step-lock"],
+      // The cancel arrives while the reclaim is waiting.
+      reclaim: (signal?: AbortSignal) => {
+        given.push(signal);
+        controller.abort();
+        return Promise.resolve();
+      },
+    };
+
+    await processLockHolderMarker.runHolding(
+      locks,
+      () => shellModel.methods.execute.execute({ run: "echo done" }, context),
+    );
+
+    assertEquals(given, [undefined]);
+    assertStringIncludes(getOutputLogContent(getResults()), "done");
+  },
+);
+
+posixOnlyTest(
   "shellModel.methods.execute: a cancelled step whose locks were taken back still writes its result and log",
   async () => {
     const controller = new AbortController();

@@ -5614,6 +5614,31 @@ Deno.test("reclaimModelLocks: a cancel during the wait ends it", async () => {
   });
 });
 
+Deno.test("reclaimModelLocks: a cancelled run reads a global lock caught mid-write again instead of rejecting", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    // What FileLock.inspect reports for a fresh unreadable lock file.
+    const midWrite: LockInfo = {
+      holder: "unknown (lock file is being written)",
+      hostname: "unknown",
+      pid: 0,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: 30_000,
+    };
+    // Once readable, it is a command that skipped none of these locks.
+    const global = globalLockReturning([midWrite, globalInfo(["other"])]);
+
+    await reclaimModelLocks([lock], global, {
+      pollMs: 1,
+      signal: AbortSignal.abort(),
+      progressWriter: () => {},
+    });
+    assertEquals(global.inspects(), 2);
+    await lock.release();
+  });
+});
+
 Deno.test("reclaimModelLocks: a cancelled run with no structural command at work takes its locks back", async () => {
   await withTempDir(async (dir) => {
     const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });

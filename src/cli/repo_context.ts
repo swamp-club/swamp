@@ -2074,7 +2074,7 @@ export interface ReclaimModelLocksOptions {
   isProcessDead?: (pid: number) => boolean;
   /**
    * The signal of the run whose locks these are. Once it aborts, a
-   * structural command still at work is no longer waited on.
+   * structural command known to be still at work is no longer waited on.
    */
   signal?: AbortSignal;
 }
@@ -2104,9 +2104,9 @@ function pollDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
  * nonce it finds re-keyed before it waits on that lock, so the two never
  * wait on each other.
  *
- * A cancelled run writes nothing to the model, so it does not wait: the
- * locks are re-keyed as always, and the wait ends as soon as
- * `options.signal` aborts.
+ * Pass `options.signal` for a run whose hop was cancelled: it has nothing
+ * to write, so it does not wait. The locks are re-keyed as always, and the
+ * wait ends as soon as the signal aborts.
  *
  * @throws {LockTimeoutError} when the structural command is still working
  * under a retired nonce at the timeout. The caller must then write nothing.
@@ -2143,7 +2143,9 @@ export async function reclaimModelLocks(
     const unreadable = info.nonce === undefined && info.pid === 0;
     const skipping = lockSkipping(info);
     if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
-    if (options.signal?.aborted) {
+    // A lock file caught mid-write shows no command at work, so it is read
+    // again even after a cancel.
+    if (!unreadable && options.signal?.aborted) {
       throw new DOMException(
         `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
         "AbortError",
