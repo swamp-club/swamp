@@ -653,13 +653,20 @@ function twoPhasePush(service: DatastoreSyncService): TwoPhasePush | undefined {
 
 type FetchContent = NonNullable<DatastoreSyncService["fetchContent"]>;
 
-/** `fetchContent`, which `DatastoreSyncService` leaves optional. */
+/**
+ * `fetchContent`, which `DatastoreSyncService` leaves optional. Bytes come
+ * back as a plain `Uint8Array`, so a subclass such as Node's `Buffer`
+ * compares equal to the bytes pushed.
+ */
 function fetchContentOf(
   service: DatastoreSyncService,
 ): FetchContent | undefined {
   const fetch = service.fetchContent;
   if (typeof fetch !== "function") return undefined;
-  return (relPath, options) => fetch.call(service, relPath, options);
+  return async (relPath, options) => {
+    const bytes = await fetch.call(service, relPath, options);
+    return bytes instanceof Uint8Array ? new Uint8Array(bytes) : bytes;
+  };
 }
 
 const NO_FETCH_CONTENT = "second.service has no fetchContent";

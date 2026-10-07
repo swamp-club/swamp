@@ -25,6 +25,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { dirname, join, relative, SEPARATOR } from "@std/path";
+import { Buffer } from "node:buffer";
 import {
   assertDatastoreExportConformance,
   assertLockConformance,
@@ -313,6 +314,25 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case
     { name: "fetch-content-namespace", reason },
   ]);
   assertEquals(result.skipped[0].name, "pull-deletes");
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: a fetchContent that returns a Buffer passes every fetch-content case", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => {
+      const { service } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: async (relPath, options) => {
+          const bytes = await service.fetchContent!(relPath, options);
+          return bytes && Buffer.from(bytes);
+        },
+      });
+    }),
+  );
+  assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
+  assertEquals(result.passed.includes("fetch-content"), true);
+  assertEquals(result.passed.includes("fetch-content-error"), true);
+  assertEquals(result.passed.includes("fetch-content-namespace"), true);
 });
 
 Deno.test("assertSyncServiceRoundTripConformance: skips fetch-content-namespace for a fixture that names no namespace", async () => {
