@@ -20,6 +20,8 @@
 export {
   ALWAYS_LOCAL_SUBDIRS,
   classifyInRepoConfig,
+  type ConfigTierConflict,
+  type ConfigTierMerge,
   type CustomDatastoreConfig,
   type DatastoreConfig,
   type DatastoreConfigData,
@@ -32,6 +34,7 @@ export {
   isAlwaysLocal,
   isCustomDatastoreConfig,
   mergeSetupDatastoreBlock,
+  planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
   resolveSyncTimeoutMs,
   SETUP_PRESERVED_DATASTORE_KEYS,

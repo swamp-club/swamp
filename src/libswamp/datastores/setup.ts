@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import {
   classifyInRepoConfig,
+  type ConfigTierConflict,
   type DatastoreConfigData,
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
@@ -28,6 +29,8 @@ import {
   inRepoConfigMigrationSkips,
   type InRepoConfigRole,
   mergeSetupDatastoreBlock,
+  planConfigTierMerge,
+  PULLED_EXTENSIONS_SUBDIR,
   SYNC_TIMEOUT_ENV_VAR,
 } from "../../domain/datastore/datastore_config.ts";
 import {
@@ -96,6 +99,18 @@ export type DatastoreSetupWarningData =
     code: "empty_config_tier";
     message: string;
     configTierPath: string;
+  }
+  | {
+    /**
+     * The datastore already had a config tier, so local config files that
+     * differ from it were not uploaded and stay in the repo
+     * (swamp-club#2844).
+     */
+    code: "remote_config_tier_kept";
+    message: string;
+    /** Paths relative to `localConfigPath`. */
+    keptPaths: string[];
+    localConfigPath: string;
   };
 
 /**
@@ -175,6 +190,15 @@ export interface DatastoreSetupDeps {
    * the repo uses before setup switches it (swamp-club#2837).
    */
   resolveInRepoConfigRole: (repoDir: string) => Promise<InRepoConfigRole>;
+  /**
+   * Lists the files of the in-repo config tier at `localConfigDir`, other
+   * than pulled extension sources, that already exist under
+   * `destConfigDir`, and whether each differs (swamp-club#2844).
+   */
+  listConfigTierConflicts: (
+    localConfigDir: string,
+    destConfigDir: string,
+  ) => Promise<ConfigTierConflict[]>;
   /**
    * Inspects the config tier of the datastore `.swamp.yaml` names. Setup
    * calls it after rewriting `.swamp.yaml`, so it sees the new datastore
@@ -275,33 +299,41 @@ export async function* datastoreSetupFilesystem(
           );
         }
 
-        ctx.logger.debug`Migrating data to ${input.datastorePath}...`;
-        const config = {
-          type: "filesystem" as const,
-          path: input.datastorePath,
-        };
-        const result = await deps.migrateData(
-          sourceDir,
-          input.datastorePath,
-          config,
-          migrationSkips,
-        );
-        filesCopied = result.filesCopied;
-        bytesCopied = result.bytesCopied;
-        directoriesMigrated = result.directoriesMigrated;
-        for (const error of result.errors) errors.push(error);
-
-        // Verify migration
-        const verification = await deps.verifyMigration(
-          sourceDir,
-          input.datastorePath,
-          config,
-          migrationSkips,
-        );
-        if (!verification.valid) {
-          errors.push(
-            `Migration verification: source has ${verification.sourceCount} files, destination has ${verification.destCount}`,
+        // Setup onto the migration source itself (e.g. --path .swamp) has
+        // nothing to move. Copying would fail on every open file, and with
+        // no failures cleanup would delete the datastore (swamp-club#3162).
+        if (await isSamePath(sourceDir, input.datastorePath)) {
+          ctx.logger
+            .debug`Datastore path ${input.datastorePath} is the migration source; nothing to migrate`;
+        } else {
+          ctx.logger.debug`Migrating data to ${input.datastorePath}...`;
+          const config = {
+            type: "filesystem" as const,
+            path: input.datastorePath,
+          };
+          const result = await deps.migrateData(
+            sourceDir,
+            input.datastorePath,
+            config,
+            migrationSkips,
           );
+          filesCopied = result.filesCopied;
+          bytesCopied = result.bytesCopied;
+          directoriesMigrated = result.directoriesMigrated;
+          for (const error of result.errors) errors.push(error);
+
+          // Verify migration
+          const verification = await deps.verifyMigration(
+            sourceDir,
+            input.datastorePath,
+            config,
+            migrationSkips,
+          );
+          if (!verification.valid) {
+            errors.push(
+              `Migration verification: source has ${verification.sourceCount} files, destination has ${verification.destCount}`,
+            );
+          }
         }
       }
 
@@ -535,59 +567,109 @@ export async function* datastoreSetupExtension(
         }
         | undefined;
       let migrationSkips: readonly string[] = [];
+      let cleanupKeeps: readonly string[] = [];
+      let keptConfigPaths: string[] = [];
+      const sourceDir = `${input.repoDir}/.swamp`;
 
       if (!input.skipMigration && syncService) {
         yield { kind: "migrating" };
-
-        const sourceDir = `${input.repoDir}/.swamp`;
 
         // Under managedConfig the repo's .swamp/config is either the config
         // tier or instance-local state (pulled extension sources, the
         // transitional lockfile). Instance-local state must never reach the
         // cache: the push below would upload it over the remote config tier
         // (swamp-club#2837).
-        migrationSkips = inRepoConfigMigrationSkips(
-          await deps.resolveInRepoConfigRole(input.repoDir),
-        );
+        const role = await deps.resolveInRepoConfigRole(input.repoDir);
+        migrationSkips = inRepoConfigMigrationSkips(role);
+        cleanupKeeps = migrationSkips;
 
         // Migrate local .swamp/ data to cache path (namespace-scoped when set)
         const migrationDest = ns ? join(cachePath, ns) : cachePath;
-        const config = { type: "filesystem" as const, path: migrationDest };
-        const result = await deps.migrateData(
-          sourceDir,
-          migrationDest,
-          config,
-          migrationSkips,
-        );
-        for (const error of result.errors) errors.push(error);
-        if (result.errors.length > 0) onlyTimeouts = false;
-        filesCopied = result.filesCopied;
-        migrationResult = result;
 
-        // Push cache to remote via sync service. Always pass namespace
-        // so the extension scopes the push to {namespace}/ on the remote.
-        if (result.filesCopied > 0) {
-          ctx.logger.debug`Pushing data to remote datastore...`;
+        // An in-repo tier may be joining a datastore whose remote already
+        // holds the team's config tier. Pull that tier first so the push
+        // below never overwrites it: the remote copy wins on every path
+        // both hold (swamp-club#2844). Any failure here, a timeout
+        // included, stops setup before anything moves or .swamp.yaml
+        // changes; committing the new datastore without the migration
+        // would leave a retry classifying the tier as instance-local.
+        if (role === "tier") {
+          await deps.ensureDir(migrationDest);
           try {
             await runBoundedSync(
               input.type,
-              "push",
+              "pull",
               timeoutMs,
               (signal) =>
-                syncService.pushChanged({
+                syncService.pullChanged({
                   signal,
                   namespace: ns,
+                  subdirs: ["config"],
+                  ...(input.hydrationStrategy === "lazy"
+                    ? { metadataOnly: true }
+                    : {}),
                 }),
             );
-            ctx.logger.debug`Push complete`;
           } catch (error) {
-            if (!(error instanceof SyncTimeoutError)) onlyTimeouts = false;
+            onlyTimeouts = false;
             const { summary } = summarizeSyncError(
-              "push",
+              "pull",
               input.type,
               error,
             );
             errors.push(summary);
+          }
+          if (errors.length === 0) {
+            const merge = planConfigTierMerge(
+              await deps.listConfigTierConflicts(
+                join(sourceDir, "config"),
+                join(migrationDest, "config"),
+              ),
+            );
+            migrationSkips = [...migrationSkips, ...merge.copySkips];
+            cleanupKeeps = [...cleanupKeeps, ...merge.cleanupKeeps];
+            keptConfigPaths = merge.keptPaths;
+          }
+        }
+
+        if (errors.length === 0) {
+          const config = { type: "filesystem" as const, path: migrationDest };
+          const result = await deps.migrateData(
+            sourceDir,
+            migrationDest,
+            config,
+            migrationSkips,
+          );
+          for (const error of result.errors) errors.push(error);
+          if (result.errors.length > 0) onlyTimeouts = false;
+          filesCopied = result.filesCopied;
+          migrationResult = result;
+
+          // Push cache to remote via sync service. Always pass namespace
+          // so the extension scopes the push to {namespace}/ on the remote.
+          if (result.filesCopied > 0) {
+            ctx.logger.debug`Pushing data to remote datastore...`;
+            try {
+              await runBoundedSync(
+                input.type,
+                "push",
+                timeoutMs,
+                (signal) =>
+                  syncService.pushChanged({
+                    signal,
+                    namespace: ns,
+                  }),
+              );
+              ctx.logger.debug`Push complete`;
+            } catch (error) {
+              if (!(error instanceof SyncTimeoutError)) onlyTimeouts = false;
+              const { summary } = summarizeSyncError(
+                "push",
+                input.type,
+                error,
+              );
+              errors.push(summary);
+            }
           }
         }
       }
@@ -651,8 +733,25 @@ export async function* datastoreSetupExtension(
         await deps.cleanupSourceDirs(
           `${input.repoDir}/.swamp`,
           migrationResult.directoriesMigrated,
-          migrationSkips,
+          cleanupKeeps,
         );
+      }
+
+      if (errors.length === 0 && keptConfigPaths.length > 0) {
+        const localConfigPath = join(sourceDir, "config");
+        yield {
+          kind: "warning",
+          data: {
+            code: "remote_config_tier_kept",
+            message:
+              `This datastore already has a config tier, so setup kept it ` +
+              `and did not upload these local config files, which differ ` +
+              `from it: ${keptConfigPaths.join(", ")}. The local copies ` +
+              `are still in ${localConfigPath} for you to reconcile.`,
+            keptPaths: keptConfigPaths,
+            localConfigPath,
+          },
+        };
       }
 
       // Update .swamp.yaml when data movement succeeded OR when only
@@ -761,6 +860,22 @@ export async function* datastoreSetupExtension(
       };
     })(),
   );
+}
+
+/**
+ * Whether two paths name the same directory. Symlinks resolve through
+ * `Deno.realPath` (on macOS /tmp is /private/tmp); a path that cannot be
+ * resolved is compared as given.
+ */
+async function isSamePath(a: string, b: string): Promise<boolean> {
+  const real = async (path: string) => {
+    try {
+      return await Deno.realPath(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  return await real(a) === await real(b);
 }
 
 /**
@@ -967,6 +1082,19 @@ export function createDatastoreSetupDeps(
         swampPath(repoDir, "config"),
       );
     },
+    listConfigTierConflicts: async (
+      localConfigDir: string,
+      destConfigDir: string,
+    ) => {
+      const conflicts: ConfigTierConflict[] = [];
+      await collectConfigTierConflicts(
+        localConfigDir,
+        destConfigDir,
+        "",
+        conflicts,
+      );
+      return conflicts;
+    },
     inspectManagedConfigTier: async (repoDir: string) => {
       const marker = await new RepoMarkerRepository().read(
         RepoPath.create(repoDir),
@@ -984,6 +1112,68 @@ export function createDatastoreSetupDeps(
     },
     collapseEnvVars,
   };
+}
+
+/**
+ * Appends to `out` every file under `localRoot/relDir` that also exists
+ * under `destRoot`, skipping pulled extension sources. The root may be a
+ * symlink; a nested symlink is compared as a file and never descended into,
+ * matching how migration copies it.
+ */
+async function collectConfigTierConflicts(
+  localRoot: string,
+  destRoot: string,
+  relDir: string,
+  out: ConfigTierConflict[],
+): Promise<void> {
+  let entries: Deno.DirEntry[];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(join(localRoot, relDir)));
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const rel = relDir === "" ? entry.name : join(relDir, entry.name);
+    if (rel === PULLED_EXTENSIONS_SUBDIR) continue;
+    if (entry.isDirectory) {
+      await collectConfigTierConflicts(localRoot, destRoot, rel, out);
+      continue;
+    }
+    let dest: Deno.FileInfo;
+    try {
+      dest = await Deno.lstat(join(destRoot, rel));
+    } catch {
+      continue;
+    }
+    out.push({
+      path: rel,
+      differs: await configFileDiffers(
+        join(localRoot, rel),
+        entry.isSymlink,
+        join(destRoot, rel),
+        dest,
+      ),
+    });
+  }
+}
+
+async function configFileDiffers(
+  localPath: string,
+  localIsSymlink: boolean,
+  destPath: string,
+  dest: Deno.FileInfo,
+): Promise<boolean> {
+  if (localIsSymlink || dest.isSymlink) {
+    return !(localIsSymlink && dest.isSymlink &&
+      await Deno.readLink(localPath) === await Deno.readLink(destPath));
+  }
+  if (!dest.isFile) return true;
+  const [local, remote] = await Promise.all([
+    Deno.readFile(localPath),
+    Deno.readFile(destPath),
+  ]);
+  if (local.length !== remote.length) return true;
+  return local.some((byte, i) => byte !== remote[i]);
 }
 
 /**
