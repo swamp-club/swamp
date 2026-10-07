@@ -430,7 +430,7 @@ unaffected.
 
 ## Public API
 
-libswamp operations are standalone `async function*` generators exported from
+libswamp operations are standalone `async function*` generators listed in
 `libswamp/mod.ts`. There is no facade object — each operation is a free function
 that accepts `(ctx: LibSwampContext, deps: Deps, input?: Input)`.
 
@@ -475,7 +475,8 @@ async function* workflowRun(
 
 ### Exports
 
-Everything external consumers need is exported from `libswamp/mod.ts`:
+`libswamp/mod.ts` declares the public surface: every name external consumers
+may use, and the file it comes from.
 
 ```typescript
 // src/libswamp/mod.ts (excerpt — the file is ~1600 lines of re-exports)
@@ -489,9 +490,50 @@ export { assertCompletes, assertErrors, collect } from "./testing.ts";
 // workflowRun / WorkflowRunEvent / WorkflowRunView).
 ```
 
-External consumers (CLI commands, presentation renderers) import exclusively
-from `libswamp/mod.ts` — never from internal module paths. This is enforced
-by the "libswamp encapsulation" rule in `integration/ddd_layer_rules_test.ts`.
+### The barrel is a list, not an import path
+
+Nothing imports `mod.ts`. Every consumer imports each name from the file that
+defines it — the file `mod.ts` re-exports it from:
+
+```typescript
+// yes
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+
+// no — depends on every libswamp module
+import { consumeStream, createLibSwampContext } from "../../libswamp/mod.ts";
+```
+
+An import of the barrel makes the importer depend on all of libswamp (~615
+modules), so every command file has nearly the same import graph. With direct
+imports the graph reported by `deno info --json <file>` is what the file
+really uses, which is what lets a change be mapped to the commands it can
+affect.
+
+`mod.ts` keeps its other job: it is the allow-list. Two rules in
+`integration/ddd_layer_rules_test.ts` ("libswamp surface") enforce this, both
+at zero and both covering test files:
+
+1. **Surface.** `src/cli/` and `src/presentation/` may import a name from a
+   file under `src/libswamp/` only if `mod.ts` exports that name from that
+   file. A namespace, default, side-effect or dynamic import of a libswamp
+   file is refused, because it takes the whole module and cannot be checked
+   name by name. To use something that is not listed, add it to `mod.ts`
+   first — that is the act of making it public.
+2. **Honest graph.** Nothing in the repository imports `mod.ts`. The one
+   pinned exception is `src/libswamp/mod_test.ts`, which exists so the barrel
+   is still type-checked and loaded by the test run now that nothing else
+   reaches it.
+
+Some names in `mod.ts` are re-exported straight from `src/domain/` or
+`src/infrastructure/`. Import those from that file too; the surface rule only
+governs files under `src/libswamp/`, and the layer rules below govern the
+rest.
+
+`deno run unbarrel` (`scripts/unbarrel.ts`) rewrites any import of the barrel
+into direct imports, keeping renames and `type` modifiers; follow it with
+`deno fmt`. It is idempotent, so run it after a merge that brings barrel
+imports back. `deno run unbarrel --check` reports without writing.
 
 ## Example: `swamp auth whoami` with libswamp
 
@@ -673,7 +715,9 @@ async function assertErrors<E extends StreamEvent>(
    real infrastructure.
 3. **Implement the generator** taking `(ctx: LibSwampContext, deps, input)`;
    pass `ctx.signal` to every outbound call.
-4. **Export** the generator, types, and factory from `src/libswamp/mod.ts`.
+4. **List** the generator, types, and factory in `src/libswamp/mod.ts`. The
+   CLI and renderer still import them from your new file; the entry in
+   `mod.ts` is what permits that.
 5. **Write the renderer** in `src/presentation/renderers/` and the CLI command
    that wires them together (see [rendering.md](./rendering.md)).
 6. **Test the generator** with fake deps and `collect` / `assertCompletes` /
@@ -711,8 +755,9 @@ The same file pins the `src/serve/ → src/cli/` edges on the same terms
 (`PINNED_SERVE_CLI_EDGES` — serve borrows a handful of CLI wiring helpers
 that should be hoisted into a shared layer), asserts that
 `src/presentation/` imports no infrastructure other than logging/tracing,
-and enforces that `src/cli/` and `src/presentation/` import libswamp only via
-`mod.ts`. `integration/architecture_boundary_test.ts` pins the mutual
+and enforces that `src/cli/` and `src/presentation/` import from libswamp
+only what `mod.ts` lists, and that nothing imports `mod.ts` itself (see
+[The barrel is a list, not an import path](#the-barrel-is-a-list-not-an-import-path)). `integration/architecture_boundary_test.ts` pins the mutual
 dependencies between bounded contexts. New code is expected to follow the
 dependency rule; the pinned lists exist so the existing violations shrink
 over time and never grow.

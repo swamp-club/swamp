@@ -52,7 +52,7 @@ Every renderer for a given operation implements a shared interface:
 
 ```typescript
 // presentation/renderer.ts
-import type { EventHandlers, StreamEvent } from "../libswamp/mod.ts";
+import type { EventHandlers, StreamEvent } from "../libswamp/stream.ts";
 
 /**
  * A mode-specific object that translates libswamp event streams into
