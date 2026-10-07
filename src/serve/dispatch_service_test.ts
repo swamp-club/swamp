@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  currentVaultAccess,
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
@@ -131,6 +136,8 @@ function createHarness(options?: {
 
   const dispatches = new DispatchRegistry();
   const bundles = new BundleRegistry();
+  /** The vault scope each lease transition ran in. */
+  const transitionScopes: (RunVaultAccess | undefined)[] = [];
   const service = new DispatchService({
     repoDir: "/tmp/unused",
     repoContext: {} as RepositoryContext,
@@ -143,6 +150,7 @@ function createHarness(options?: {
         methodName: input.methodName,
         inputs: input.inputs,
       });
+      transitionScopes.push(currentVaultAccess());
       return Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
@@ -154,6 +162,7 @@ function createHarness(options?: {
     pool,
     dispatchCalls,
     transitions,
+    transitionScopes,
     bundles,
     dispatches,
     setBehavior: (b: DispatchBehavior) => {
@@ -787,6 +796,28 @@ Deno.test("DispatchService: records the dispatch's trace headers for the data pl
     } as Partial<RemoteStepRequest>),
   );
   assertEquals(recorded, { traceparent: "00-abc-def-01" });
+});
+
+Deno.test("DispatchService: a dispatch records the run's vault scope; lease transitions run outside it (swamp-club#2676)", async () => {
+  const h = createHarness();
+  const access = RunVaultAccess.create({ allowedVaults: ["roomcontrol"] });
+  let recorded: RunVaultAccess | undefined;
+  h.setBehavior(() => {
+    recorded = h.dispatches.forWorker("w1")[0]?.vaultAccess;
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await runWithVaultAccess(
+    access,
+    () => h.service.executeRemote(stepRequest()),
+  );
+  assertEquals(recorded, access);
+  assertEquals(h.transitionScopes.length > 0, true);
+  assertEquals(h.transitionScopes.every((s) => s === undefined), true);
 });
 
 Deno.test("DispatchService: worker_draining re-queues instead of failing the run", async () => {

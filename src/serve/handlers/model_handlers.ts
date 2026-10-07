@@ -167,6 +167,8 @@ import {
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
+import { requestRunVaultScope } from "../run_vault_access_policy.ts";
+import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import {
   authorizeReferenceAccess,
@@ -544,6 +546,13 @@ export async function handleModelMethodRun(
     let answeredError: unknown;
     let deregistered = false;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
+    // The run's vault operations are decided for this principal
+    // (swamp-club#2676). Refusals are audited with the request id: this
+    // path has no run id of its own (the detached path below mints one),
+    // and the method run's id is first reported on its completed event,
+    // after any refusal. The request id is the one the caller, its event
+    // stream and the cancel registry know the run by.
+    const vaultAccess = requestRunVaultScope(ctx, socket, principal, requestId);
     const telemetry = createCommandTelemetry(
       {
         modelName: payload.modelIdOrName,
@@ -678,41 +687,46 @@ export async function handleModelMethodRun(
 
             const runMethod = async () => {
               for await (
-                const event of modelMethodRun(libCtx, deps, {
-                  modelIdOrName: target.modelIdOrName,
-                  byId: target.byId,
-                  expectedName: target.expectedName,
-                  methodName: payload.methodName,
-                  inputs: payload.inputs ?? {},
-                  lastEvaluated: payload.lastEvaluated ?? false,
-                  runtimeTags: payload.runtimeTags,
-                  typeArg: payload.typeArg,
-                  definitionName: payload.definitionName,
-                  expectedDefinitionId: target.run
-                    ? target.run.definition?.definition.id ?? null
-                    : undefined,
-                  authorizeResolvedDefinition: (found) =>
-                    resolvedRunAllowed(
-                      socket,
-                      requestId,
-                      principal,
-                      payload.methodName,
-                      found,
-                      ctx,
-                    ),
-                  skipAllReports: payload.skipAllReports || isDirectExecution,
-                  skipReportNames: payload.skipReportNames,
-                  skipReportLabels: payload.skipReportLabels,
-                  reportNames: payload.reportNames,
-                  reportLabels: payload.reportLabels,
-                  skipAllChecks: payload.skipAllChecks,
-                  skipCheckNames: payload.skipCheckNames,
-                  skipCheckLabels: payload.skipCheckLabels,
-                  traceparent: payload.traceparent,
-                  tracestate: payload.tracestate,
-                  initiatedBy,
-                  instanceId: ctx.instanceId,
-                })
+                const event of runGeneratorWithVaultAccess(
+                  vaultAccess?.access,
+                  () =>
+                    modelMethodRun(libCtx, deps, {
+                      modelIdOrName: target.modelIdOrName,
+                      byId: target.byId,
+                      expectedName: target.expectedName,
+                      methodName: payload.methodName,
+                      inputs: payload.inputs ?? {},
+                      lastEvaluated: payload.lastEvaluated ?? false,
+                      runtimeTags: payload.runtimeTags,
+                      typeArg: payload.typeArg,
+                      definitionName: payload.definitionName,
+                      expectedDefinitionId: target.run
+                        ? target.run.definition?.definition.id ?? null
+                        : undefined,
+                      authorizeResolvedDefinition: (found) =>
+                        resolvedRunAllowed(
+                          socket,
+                          requestId,
+                          principal,
+                          payload.methodName,
+                          found,
+                          ctx,
+                        ),
+                      skipAllReports: payload.skipAllReports ||
+                        isDirectExecution,
+                      skipReportNames: payload.skipReportNames,
+                      skipReportLabels: payload.skipReportLabels,
+                      reportNames: payload.reportNames,
+                      reportLabels: payload.reportLabels,
+                      skipAllChecks: payload.skipAllChecks,
+                      skipCheckNames: payload.skipCheckNames,
+                      skipCheckLabels: payload.skipCheckLabels,
+                      traceparent: payload.traceparent,
+                      tracestate: payload.tracestate,
+                      initiatedBy,
+                      instanceId: ctx.instanceId,
+                    }),
+                )
               ) {
                 if (socket.readyState !== WebSocket.OPEN) break;
                 const serialized = serializeEvent(
@@ -806,6 +820,9 @@ export async function handleModelMethodRun(
   const runController = new AbortController();
   const runId: string = crypto.randomUUID();
   const startedAt = new Date();
+  // Captured now, while the socket's memberships are at hand: the run's
+  // vault operations are decided for this principal (swamp-club#2676).
+  const vaultAccess = requestRunVaultScope(ctx, socket, principal, runId);
 
   buffer.push({ kind: "run.accepted", runId });
 
@@ -961,41 +978,46 @@ export async function handleModelMethodRun(
 
             const doRun = async () => {
               for await (
-                const event of modelMethodRun(libCtx, deps, {
-                  modelIdOrName: target.modelIdOrName,
-                  byId: target.byId,
-                  expectedName: target.expectedName,
-                  methodName: payload.methodName,
-                  inputs: payload.inputs ?? {},
-                  lastEvaluated: payload.lastEvaluated ?? false,
-                  runtimeTags: payload.runtimeTags,
-                  typeArg: payload.typeArg,
-                  definitionName: payload.definitionName,
-                  expectedDefinitionId: target.run
-                    ? target.run.definition?.definition.id ?? null
-                    : undefined,
-                  authorizeResolvedDefinition: (found) =>
-                    resolvedRunAllowed(
-                      socket,
-                      requestId,
-                      principal,
-                      payload.methodName,
-                      found,
-                      ctx,
-                    ),
-                  skipAllReports: payload.skipAllReports || isDirectExecution,
-                  skipReportNames: payload.skipReportNames,
-                  skipReportLabels: payload.skipReportLabels,
-                  reportNames: payload.reportNames,
-                  reportLabels: payload.reportLabels,
-                  skipAllChecks: payload.skipAllChecks,
-                  skipCheckNames: payload.skipCheckNames,
-                  skipCheckLabels: payload.skipCheckLabels,
-                  traceparent: payload.traceparent,
-                  tracestate: payload.tracestate,
-                  initiatedBy,
-                  instanceId: ctx.instanceId,
-                })
+                const event of runGeneratorWithVaultAccess(
+                  vaultAccess?.access,
+                  () =>
+                    modelMethodRun(libCtx, deps, {
+                      modelIdOrName: target.modelIdOrName,
+                      byId: target.byId,
+                      expectedName: target.expectedName,
+                      methodName: payload.methodName,
+                      inputs: payload.inputs ?? {},
+                      lastEvaluated: payload.lastEvaluated ?? false,
+                      runtimeTags: payload.runtimeTags,
+                      typeArg: payload.typeArg,
+                      definitionName: payload.definitionName,
+                      expectedDefinitionId: target.run
+                        ? target.run.definition?.definition.id ?? null
+                        : undefined,
+                      authorizeResolvedDefinition: (found) =>
+                        resolvedRunAllowed(
+                          socket,
+                          requestId,
+                          principal,
+                          payload.methodName,
+                          found,
+                          ctx,
+                        ),
+                      skipAllReports: payload.skipAllReports ||
+                        isDirectExecution,
+                      skipReportNames: payload.skipReportNames,
+                      skipReportLabels: payload.skipReportLabels,
+                      reportNames: payload.reportNames,
+                      reportLabels: payload.reportLabels,
+                      skipAllChecks: payload.skipAllChecks,
+                      skipCheckNames: payload.skipCheckNames,
+                      skipCheckLabels: payload.skipCheckLabels,
+                      traceparent: payload.traceparent,
+                      tracestate: payload.tracestate,
+                      initiatedBy,
+                      instanceId: ctx.instanceId,
+                    }),
+                )
               ) {
                 const serialized = serializeEvent(
                   event as { kind: string; [key: string]: unknown },

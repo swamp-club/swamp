@@ -101,6 +101,12 @@ import {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../deps.ts";
+import {
+  requestRunVaultScope,
+  resumeRunVaultScope,
+  runVaultScopeContext,
+} from "../run_vault_access_policy.ts";
+import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { isWireEvent, serializeEvent } from "../serializer.ts";
 import type {
@@ -392,6 +398,9 @@ export async function handleWorkflowRun(
   const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
+  // Captured now, while the socket's memberships are at hand: the run's
+  // vault operations are decided for this principal (swamp-club#2676).
+  const vaultAccess = requestRunVaultScope(ctx, socket, principal);
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
@@ -460,7 +469,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       await sending;
       send(socket, { type: "done", id: requestId });
@@ -595,7 +609,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       buffer.finish({ kind: "done" });
     } catch (error) {
@@ -2109,13 +2128,19 @@ export async function handleWorkflowResume(
           const resumeGenerator = async function* (): AsyncGenerator<
             WorkflowRunEvent
           > {
+            // Held to the principal that triggered the run, never the
+            // resumer (swamp-club#2676).
             for await (
-              const event of service.resume(workflowName, run.id, {
-                signal: controller.signal,
-                inputs: resumeInputs,
-                fromStep: payload.from,
-                instanceId: ctx.instanceId,
-              })
+              const event of runGeneratorWithVaultAccess(
+                resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
+                () =>
+                  service.resume(workflowName, run.id, {
+                    signal: controller.signal,
+                    inputs: resumeInputs,
+                    fromStep: payload.from,
+                    instanceId: ctx.instanceId,
+                  }),
+              )
             ) {
               yield mapWorkflowExecutionEvent(event, runRepo);
             }

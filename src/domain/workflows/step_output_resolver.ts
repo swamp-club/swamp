@@ -24,6 +24,7 @@ import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
 } from "../models/data_writer.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { StepRun, WorkflowRun } from "./workflow_run.ts";
 
 /**
@@ -289,7 +290,11 @@ export function createDataRepositoryAttributeReader(
             await options.getVaultService(),
             options.sensitiveValues,
           );
-        } catch {
+        } catch (error) {
+          // A refusal by the run's vault access fails the read like every
+          // other vault path (swamp-club#2676); it is never mistaken for an
+          // unavailable vault.
+          if (error instanceof VaultAccessDeniedError) throw error;
           // Vault unavailable — leave refs unresolved
         }
       }

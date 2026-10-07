@@ -44,7 +44,7 @@ means denied.
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`, `service:scheduler`, `service:webhook` |
 | Effects    | `allow`, `deny` (deny wins)                                                                   |
 | Actions    | `run`, `read`, `write`, `approve`, `signal`, `admin`                                          |
-| Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `access:*`                                       |
+| Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `vault:prod-*`, `access:*`                       |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                          |
 
 Admin on `access:*` implies all actions (superuser).
@@ -157,6 +157,59 @@ Apply with `swamp access reload --server wss://...`. Reload validates all files
 first — rejects the entire reload if any file is invalid. The reconciler only
 touches `source: file:*` grants; CLI-created grants are independent. Both
 `.yaml` and `.yml` are accepted; flat directory only.
+
+## Vault Access
+
+Grant vault access on `vault:<name>` (exact or trailing `*`). Conditions can use
+`name` and `key` (the secret a request names).
+
+```bash
+swamp access grant create --subject group:ops --allow read --on 'vault:prod-*'
+swamp access grant create --subject user:contractor --deny read,write --on vault:payroll
+```
+
+Grants on `data:vault` or `data:<vault name>` are the older form: they still
+admit `vault.*` requests, but do not scope runs. Any deny on `data:vault`,
+`data:<name>` or `vault:<name>` refuses every request on that vault — move
+existing vault denies to `vault:<name>`.
+
+**Upgrade first.** Write vault grants (and workflows with `vaults:`) only once
+every serve replica runs a release that supports them. Older replicas refuse
+grant files containing vault grants at startup, silently ignore stored vault
+grants — denies included — and strip the run's persisted principal, so resumes
+there fail closed.
+
+### Run-time scoping
+
+Vault grants also bound what serve runs can resolve, judged against the
+principal that triggered the run (resumes keep that principal, not the
+approver):
+
+- No vault grant anywhere in the policy: runs resolve vaults as before.
+- A deny-only vault grant blocks just that vault in the principal's runs.
+- Any vault **allow** makes that principal default-deny for vaults on every
+  action. A bot granted `read` on `vault:roomcontrol` reads `roomcontrol`, and
+  its runs are refused `erp` (and every other vault, and every write). Grant
+  every vault a principal needs in the same change.
+- `data` grants play no part at run time. Reserved `_` vaults are refused to
+  every serve run except principals with `admin` on `access:*`.
+- `service:scheduler` / `service:webhook` grants scope every scheduled or
+  webhook run server-wide; bound one workflow with its `vaults:` list instead.
+
+Refusals fail the step before the method runs and are audited (category
+`secrets`, outcome `denied`). `swamp access can-i --on vault:<name>` reports
+both the request decision and whether that principal's runs are restricted.
+
+**Sensitive outputs are vault writes.** A scoped principal needs `read` and
+`write` on the vault its sensitive outputs land in (usually the default vault).
+Keep author secrets out of it: make a dedicated outputs vault the default, or
+set a spec `vaultName` / step `dataOutputOverrides`, and grant the bot
+`read,write` on that vault.
+
+**Not bounded:** a shell step running a nested `swamp` (reads the local repo
+with the run's gate pass) or step code calling provider CLIs with the host's
+credentials. Isolate those with a separate orchestrator or separate provider
+credentials.
 
 ## Groups
 
@@ -455,3 +508,4 @@ locally or through serve (see "Signals Through Serve"), resume the run by hand.
 | Policy for a production deployment | `grants/` directory files |
 | Team on swamp-club                 | `--auth-mode oauth`       |
 | Air-gapped or no swamp-club        | `--auth-mode token`       |
+| Limit which vaults a bot can read  | `allow read vault:<name>` |

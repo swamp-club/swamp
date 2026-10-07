@@ -1924,6 +1924,49 @@ Deno.test("hasAnyGrantForKind: run implies signal unless runImpliesSignal is fal
   );
 });
 
+Deno.test("decide: a vault grant matches vaults by name, never data of the same name (swamp-club#2676)", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "prod-*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([grant], [], celEvaluator),
+  );
+  const vault = (name: string): AccessResource => ({
+    kind: "vault",
+    name,
+    fields: { name },
+  });
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", vault("prod-db"))?.grantId,
+    grant.id,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", vault("dev-db")),
+    null,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "write", vault("prod-db")),
+    null,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", {
+      kind: "data",
+      name: "prod-db",
+      fields: { name: "prod-db", ns: "", tags: {} },
+    }),
+    null,
+  );
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "vault"),
+    true,
+  );
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "data"),
+    false,
+  );
+});
+
 Deno.test("decide: a service principal gets no signal from the trigger default", () => {
   const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
   const principal = {
@@ -1936,4 +1979,29 @@ Deno.test("decide: a service principal gets no signal from the trigger default",
     "allow",
   );
   assertEquals(service.decide(principal, "signal", makeResource()), null);
+});
+
+Deno.test("decide: a vault deny with a key condition decides by the request's key, and an absent key is empty (swamp-club#2676)", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "*" },
+    condition: 'key == "root"',
+  });
+  const allow = makeGrant({
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const decide = (fields: Record<string, unknown>) =>
+    service.decide(makePrincipal("adam"), "read", {
+      kind: "vault",
+      name: "prod-db",
+      fields: { name: "prod-db", ...fields },
+    })?.effect;
+  assertEquals(decide({ key: "root" }), "deny");
+  assertEquals(decide({ key: "api" }), "allow");
+  assertEquals(decide({}), "allow");
 });

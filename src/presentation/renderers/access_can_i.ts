@@ -24,6 +24,8 @@ import {
   impliedApproveListingNote,
   impliedMarker,
   impliedSignalListingNote,
+  runVaultAccessLines,
+  type RunVaultAccessReport,
   signalPolicyNote,
 } from "./access_check.ts";
 
@@ -47,6 +49,8 @@ export interface AccessCanIResult {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; undefined for servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** The run-time vault decision; undefined for servers that predate it. */
+  runVaultAccess?: RunVaultAccessReport;
 }
 
 export interface AccessCanIRenderer {
@@ -80,6 +84,11 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
         } ${result.query!.resource}`,
       );
       if (note) writeOutput(note);
+      const runLines = runVaultAccessLines(result.runVaultAccess);
+      if (runLines.length > 0) {
+        writeOutput("");
+        for (const line of runLines) writeOutput(line);
+      }
       return;
     }
 
@@ -106,6 +115,11 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
     if (note) {
       writeOutput("");
       writeOutput(note);
+    }
+    const runLines = runVaultAccessLines(result.runVaultAccess);
+    if (runLines.length > 0) {
+      writeOutput("");
+      for (const line of runLines) writeOutput(line);
     }
   }
 
@@ -178,6 +192,9 @@ class JsonAccessCanIRenderer implements AccessCanIRenderer {
             effect,
             decisions: result.decisions,
             ...policyField(result),
+            ...(result.runVaultAccess
+              ? { runVaultAccess: result.runVaultAccess }
+              : {}),
           },
           null,
           2,

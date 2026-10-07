@@ -120,6 +120,12 @@ export const WorkflowObjectSchema = z.object({
   affinity: z.boolean().optional(),
   writes: z.boolean().optional(),
   autoResume: z.boolean().optional(),
+  /**
+   * The most vaults any run of this workflow may read or write: a run is
+   * refused every vault operation on a vault not listed, whoever triggers
+   * it. Nested workflows intersect their list with their parent's.
+   */
+  vaults: z.array(z.string().min(1)).optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -182,6 +188,7 @@ export interface CreateWorkflowProps {
   platform?: string;
   queueTimeout?: number;
   autoResume?: boolean;
+  vaults?: string[];
 }
 
 /**
@@ -215,6 +222,8 @@ export class Workflow {
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
     readonly autoResume: boolean | undefined,
+    /** The workflow's `vaults:` allow-list, when it declares one. */
+    readonly vaults: readonly string[] | undefined,
   ) {}
 
   /**
@@ -245,6 +254,7 @@ export class Workflow {
       platform: props.platform,
       queueTimeout: props.queueTimeout,
       autoResume: props.autoResume,
+      vaults: props.vaults,
     };
 
     // Scoped @collective/name is validated by workflowNameBase (in the schema);
@@ -278,6 +288,7 @@ export class Workflow {
       data.platform,
       data.queueTimeout,
       data.autoResume,
+      data.vaults,
     );
   }
 
@@ -306,6 +317,7 @@ export class Workflow {
       validated.platform,
       validated.queueTimeout,
       validated.autoResume,
+      validated.vaults,
     );
   }
 
@@ -423,6 +435,7 @@ export class Workflow {
       platform: this.platform,
       queueTimeout: this.queueTimeout,
       autoResume: this.autoResume,
+      vaults: this.vaults !== undefined ? [...this.vaults] : undefined,
     };
   }
 }

@@ -32,6 +32,7 @@ import type {
   VaultExtractionResult,
 } from "../domain/expressions/vault_reference_extractor.ts";
 import type { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
+import type { RunVaultAccess } from "../domain/vaults/run_vault_access.ts";
 
 export interface ActiveDispatch {
   workerName: string;
@@ -57,6 +58,12 @@ export interface ActiveDispatch {
    * worker's request can never choose the trace its work joins.
    */
   traceHeaders?: Readonly<Record<string, string>>;
+  /**
+   * The vault access of the run that dispatched this work, captured at
+   * dispatch (swamp-club#2676). The capability service and data plane hold
+   * the worker's vault operations for this dispatch to it.
+   */
+  vaultAccess?: RunVaultAccess;
 }
 
 export class DispatchRegistry {

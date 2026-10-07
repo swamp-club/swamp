@@ -26,7 +26,7 @@ import {
   resourceSelectorToString,
 } from "./resource_selector.ts";
 
-const KINDS: ResourceKind[] = ["workflow", "model", "data", "access"];
+const KINDS: ResourceKind[] = ["workflow", "model", "data", "access", "vault"];
 
 const arbKind = fc.constantFrom(...KINDS);
 

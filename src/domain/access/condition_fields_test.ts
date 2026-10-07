@@ -85,11 +85,18 @@ Deno.test("referencedConditionFields: finds fields inside has() and ternaries", 
   );
 });
 
-Deno.test("CONDITION_FIELDS: methodName is the only request field", () => {
+Deno.test("CONDITION_FIELDS: methodName and a vault's key are the only request fields", () => {
   const request = Object.values(CONDITION_FIELDS).flat().filter((f) =>
     f.role === "request"
   ).map((f) => f.name);
-  assertEquals([...new Set(request)], ["methodName"]);
+  assertEquals([...new Set(request)], ["methodName", "key"]);
+});
+
+Deno.test("CONDITION_FIELDS: a vault is decided by its name, with the request's key", () => {
+  assertEquals(
+    CONDITION_FIELDS.vault.map((f) => [f.name, f.role, f.supplied]),
+    [["name", "resource", true], ["key", "request", true]],
+  );
 });
 
 Deno.test("suppliedResourceFields: excludes request and unsupplied fields", () => {
@@ -97,6 +104,7 @@ Deno.test("suppliedResourceFields: excludes request and unsupplied fields", () =
   assertEquals(suppliedResourceFields("data"), ["name", "ns", "tags"]);
   assertEquals(suppliedResourceFields("workflow"), ["name", "tags"]);
   assertEquals(suppliedResourceFields("access"), ["name"]);
+  assertEquals(suppliedResourceFields("vault"), ["name"]);
 });
 
 Deno.test("conditionFieldZeroValue: maps are empty, strings are empty", () => {

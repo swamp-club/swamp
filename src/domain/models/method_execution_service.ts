@@ -42,6 +42,11 @@ import { DataOutputValidationService } from "./data_output_validation_service.ts
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
 import { modelRequiresVault } from "./data_writer.ts";
+import { sensitiveOutputTargets } from "./sensitive_output_vault.ts";
+import {
+  currentVaultAccess,
+  VaultAccessDeniedError,
+} from "../vaults/run_vault_access.ts";
 import {
   coerceMethodArgs,
   getObjectShape,
@@ -232,6 +237,31 @@ function isDataHandleShaped(value: unknown): value is DataHandle {
     typeof handle.name === "string" &&
     typeof handle.version === "number" &&
     typeof handle.tags === "object" && handle.tags !== null;
+}
+
+/**
+ * The refusal of a pre-run vault check, ending in one fix: list the vault in
+ * the workflow when the workflow's `vaults:` list refused, otherwise the
+ * grant advice the refusal gives (or, when it gives none, a grant change).
+ */
+function preRunRefusalHint(
+  error: VaultAccessDeniedError,
+  vaultName: string,
+): string {
+  const inner = /[.!?]$/.test(error.message)
+    ? error.message
+    : `${error.message}.`;
+  if (error.denial.workflow !== undefined) {
+    return `${inner} Add '${vaultName}' to the vaults list of workflow ` +
+      `'${error.denial.workflow}', or point the output at a vault that ` +
+      `list names.`;
+  }
+  if (inner.includes(`add a vault:${vaultName} allow grant`)) {
+    return `${inner} Or point the output at a vault the principal holds.`;
+  }
+  return `${inner} Change the principal's vault:${vaultName} grants so it ` +
+    `may read and write it, or point the output at a vault the principal ` +
+    `holds.`;
 }
 
 /**
@@ -840,6 +870,39 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               `fields but no vault is configured. Create a vault before ` +
               `running this method: swamp vault create <type> <name>`,
           );
+        }
+        // A refusal at the put would land after the method's side effects,
+        // so every vault its sensitive outputs may land in is decided here,
+        // for the write and for the read-back of its reference. A key
+        // generated at write time is not known yet: an outcome that depends
+        // on a grant's key condition is left to the put, which knows it.
+        const access = currentVaultAccess();
+        if (access && context.vaultService) {
+          const targets = sensitiveOutputTargets(
+            modelDef.resources,
+            context.dataOutputOverrides,
+            context.vaultService,
+          );
+          for (const { vaultName, vaultKey } of targets) {
+            for (const action of ["write", "read"] as const) {
+              try {
+                await access.check(
+                  vaultName,
+                  action,
+                  vaultKey,
+                  vaultKey === undefined ? { keyUnknown: true } : undefined,
+                );
+              } catch (error) {
+                if (!(error instanceof VaultAccessDeniedError)) throw error;
+                throw new UserError(
+                  `Model "${currentDefinition.name}" stores sensitive ` +
+                    `output in vault '${vaultName}', which this run may not ` +
+                    `${action}: ${preRunRefusalHint(error, vaultName)}`,
+                  "vault_access_denied",
+                );
+              }
+            }
+          }
         }
       }
 
