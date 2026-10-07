@@ -91,7 +91,15 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _testingCaps: TestingSyncCapabilities | undefined = (
     {} as CanonicalDatastoreSyncService
   ).capabilities?.();
+  // fetchContent has one signature in both packages, in both directions.
+  const _fetchContent: CanonicalDatastoreSyncService["fetchContent"] =
+    sync.fetchContent;
+  const _testingFetchContent: TestingDatastoreSyncService["fetchContent"] = (
+    {} as CanonicalDatastoreSyncService
+  ).fetchContent;
   void [
+    _fetchContent,
+    _testingFetchContent,
     _pull,
     _push,
     _markDirty,

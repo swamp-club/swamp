@@ -73,6 +73,11 @@
  * Experimental: the defaults track today's extension behaviour and will
  * change during the datastore rework.
  *
+ * `fetchContent` returns the committed bytes of one key and touches neither
+ * the cache nor the sidecar. It takes the key as given, so a cache-relative
+ * path that starts with a namespace reads that key, and it rejects a path
+ * that is absolute or has a `..` segment.
+ *
  * Not modelled: namespaces, lazy hydration (`hydrateFile`), the control
  * plane, `previewPush`, model-scoped pulls through `context`, and Windows
  * drive-letter joins. Nor is the window between `preparePush` and
@@ -121,7 +126,12 @@ export interface InMemoryRemoteOptions {
 }
 
 /** A remote operation a failure can be injected into. */
-export type InMemoryRemoteFailure = "push" | "pull" | "prepare" | "commit";
+export type InMemoryRemoteFailure =
+  | "push"
+  | "pull"
+  | "prepare"
+  | "commit"
+  | "fetch";
 
 /** Options for {@link InMemoryRemote.failNext}. */
 export interface FailNextOptions {
@@ -138,8 +148,8 @@ export interface FailNextOptions {
 export interface InMemoryRemoteOpRecord {
   /** The instance name given to `connect`. */
   instance: string;
-  op: "markDirty" | "push" | "pull" | "prepare" | "commit";
-  /** Paths marked, uploaded or downloaded, sorted. */
+  op: "markDirty" | "push" | "pull" | "prepare" | "commit" | "fetch";
+  /** Paths marked, uploaded, downloaded or fetched, sorted. */
   paths: string[];
   /** Paths deleted remotely (push) or locally (pull), sorted. */
   deleted: string[];
@@ -166,6 +176,11 @@ export interface InMemorySyncService extends DatastoreSyncService {
 export interface ConnectOptions {
   /** Name recorded in the op log. Default `instance-<n>`. */
   instance?: string;
+  /**
+   * Whether the service has `fetchContent`. Default true; false leaves the
+   * method out, as an extension that does not implement it would.
+   */
+  fetchContent?: boolean;
 }
 
 /** A remote datastore shared by any number of simulated machines. */
@@ -180,7 +195,7 @@ export interface InMemoryRemote {
     error?: Error,
     options?: FailNextOptions,
   ): void;
-  /** While offline, every push, pull, prepare and commit throws. */
+  /** While offline, every push, pull, prepare, commit and fetch throws. */
   offline(isOffline: boolean): void;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
@@ -293,6 +308,13 @@ function toCacheRelative(relPath: string): string | undefined {
     parts.push(part);
   }
   return parts.join("/");
+}
+
+/** Whether `relPath` is absolute or has a `..` segment (fetchContent rule 5). */
+function couldLeaveDatastore(relPath: string): boolean {
+  return relPath.startsWith("/") || relPath.startsWith("\\") ||
+    /^[A-Za-z]:/.test(relPath) ||
+    relPath.split(/[\\/]/).some((segment) => segment === "..");
 }
 
 async function readLocal(
@@ -750,6 +772,25 @@ export function createInMemoryRemote(
       return Promise.resolve();
     }
 
+    function fetchContent(
+      relPath: string,
+      _options?: DatastoreSyncOptions,
+    ): Promise<Uint8Array | null> {
+      try {
+        if (couldLeaveDatastore(relPath)) {
+          throw new Error(`Path traversal rejected: ${relPath}`);
+        }
+        checkReachable("fetch", instance);
+        const rel = toCacheRelative(relPath) ?? relPath;
+        record({ instance, op: "fetch", paths: [rel], deleted: [] });
+        const bytes = committed.get(rel);
+        // A copy, so a caller that changes it does not change the remote.
+        return Promise.resolve(bytes ? bytes.slice() : null);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+
     return {
       pullChanged,
       pushChanged,
@@ -757,6 +798,7 @@ export function createInMemoryRemote(
       preparePush,
       commitPush,
       capabilities: () => ({ ...capabilities }),
+      ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
     };
   }
 

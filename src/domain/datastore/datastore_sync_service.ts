@@ -289,6 +289,47 @@ export interface DatastoreSyncService {
   ): Promise<boolean>;
 
   /**
+   * Read one file as the remote datastore holds it, without touching the
+   * local cache.
+   *
+   * Resolves to the file's bytes, or `null` when the remote has no such
+   * file. Used where core must compare its cached copy of a file with the
+   * remote one before acting on it: `pullChanged` and `hydrateFile` would
+   * replace the local copy, including one with a change not pushed yet.
+   *
+   * Contract:
+   *
+   * 1. **Nothing is written locally.** No file is created, replaced or
+   *    removed in the cache, and no dirty state or pull watermark changes.
+   * 2. **The remote's bytes, not the cache's.** A local file at `relPath`
+   *    that differs from the remote one is neither returned nor consulted.
+   * 3. **`relPath` is cache-relative** and forward-slash-normalized, as for
+   *    {@link hydrateFile}: it names the remote file that the cache file at
+   *    that path syncs with. With a namespace it starts with `{namespace}/`,
+   *    and the implementation must not add the namespace a second time.
+   * 4. **Namespace from `options`.** `options.namespace` is the namespace of
+   *    the calling repository, as on `pullChanged`. When it is unset or
+   *    empty the datastore has no namespace and `relPath` is read from its
+   *    root.
+   * 5. **A path that could leave the datastore is rejected.** Reject a
+   *    `relPath` that is absolute or has a `..` segment; never resolve it.
+   * 6. **Only a missing file is `null`.** Any other failure rejects, so a
+   *    caller never mistakes an unreachable remote for a deleted file.
+   *    Honor `options.signal` as the other methods do.
+   * 7. **No retained content.** The returned bytes MUST NOT be held in
+   *    instance state: in `swamp serve` the sync service lives as long as
+   *    the process. The whole file is returned in memory, so the method is
+   *    meant for small files such as run records.
+   *
+   * Optional — core treats the method's presence as the capability, and
+   * checks for it before calling.
+   */
+  fetchContent?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<Uint8Array | null>;
+
+  /**
    * Export the local catalog for the given namespace as a flat JSON array
    * at `{namespace}/.catalog-export.json` in the remote datastore.
    *

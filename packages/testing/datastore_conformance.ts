@@ -583,6 +583,11 @@ export interface SyncServiceRoundTripFixture {
    * error. Without it the failed-push case is skipped.
    */
   failNextPush?: () => void;
+  /**
+   * The namespace both services sync, when the backend is bound to one.
+   * Without it the `fetch-content-namespace` case is skipped.
+   */
+  namespace?: string;
   /** Releases the backend and the cache directories. */
   cleanup: () => Promise<void>;
 }
@@ -639,6 +644,19 @@ function twoPhasePush(service: DatastoreSyncService): TwoPhasePush | undefined {
     commitPush: (manifest) => commit.call(service, manifest),
   };
 }
+
+type FetchContent = NonNullable<DatastoreSyncService["fetchContent"]>;
+
+/** `fetchContent`, which `DatastoreSyncService` leaves optional. */
+function fetchContentOf(
+  service: DatastoreSyncService,
+): FetchContent | undefined {
+  const fetch = service.fetchContent;
+  if (typeof fetch !== "function") return undefined;
+  return (relPath, options) => fetch.call(service, relPath, options);
+}
+
+const NO_FETCH_CONTENT = "second.service has no fetchContent";
 
 /** Content with a NUL and high bytes, unique to one run. */
 function sampleBytes(label: string): Uint8Array {
@@ -1018,6 +1036,98 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       );
     },
   },
+  {
+    name: "fetch-content",
+    skip: ({ second }) =>
+      fetchContentOf(second.service) ? undefined : NO_FETCH_CONTENT,
+    run: async ({ first, second }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      const rel = `${ROOT}/fetch-content/raw`;
+      const remoteBytes = sampleBytes("fetch-content-remote");
+      await markAndWrite(first, rel, remoteBytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+
+      assertEquals(
+        await fetchContent(rel),
+        remoteBytes,
+        "fetchContent() must return the bytes first pushed",
+      );
+      await assertAbsent(
+        second,
+        rel,
+        "fetchContent() must not write into the cache",
+      );
+      assertEquals(
+        await fetchContent(`${ROOT}/fetch-content/missing`),
+        null,
+        "fetchContent() of a file the remote lacks must return null",
+      );
+      await assertRejects(
+        () => fetchContent(`${ROOT}/fetch-content/../fetch-content/raw`),
+        Error,
+        undefined,
+        "fetchContent() must reject a relPath with a .. segment",
+      );
+
+      // A local change not pushed yet: the remote's bytes come back, and the
+      // change stays local and stays pending.
+      const localBytes = sampleBytes("fetch-content-local");
+      await markAndWrite(second, rel, localBytes);
+      const mtime = new Date("2001-01-01T00:00:00Z");
+      await Deno.utime(localPath(second.cacheDir, rel), mtime, mtime);
+      assertEquals(
+        await fetchContent(rel),
+        remoteBytes,
+        "fetchContent() must return the remote's bytes, not a differing local file's",
+      );
+      const message = "fetchContent() must not touch a differing local file";
+      await assertHasBytes(second, rel, localBytes, message);
+      const info = await Deno.stat(localPath(second.cacheDir, rel));
+      assertEquals(
+        info.mtime?.getTime(),
+        mtime.getTime(),
+        `${message}: ${rel} was rewritten`,
+      );
+      assertChanged(
+        await second.service.pushChanged(),
+        "second pushChanged() after fetchContent()",
+      );
+      assertEquals(
+        await fetchContent(rel),
+        localBytes,
+        "fetchContent() must not clear a pending push: second's change must reach the remote",
+      );
+    },
+  },
+  {
+    name: "fetch-content-namespace",
+    skip: ({ second, namespace }) => {
+      if (!fetchContentOf(second.service)) return NO_FETCH_CONTENT;
+      return namespace ? undefined : "the fixture names no namespace";
+    },
+    run: async ({ first, second, namespace }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      // Cache-relative, so it starts with the namespace (fetchContent rule 3).
+      const rel = `${namespace}/${ROOT}/fetch-content-namespace/raw`;
+      const bytes = sampleBytes("fetch-content-namespace");
+      await first.service.markDirty({ relPath: rel, namespace });
+      await writeLocal(first.cacheDir, rel, bytes);
+      assertChanged(
+        await first.service.pushChanged({ namespace }),
+        "first pushChanged() with a namespace",
+      );
+      assertEquals(
+        await fetchContent(rel, { namespace }),
+        bytes,
+        "fetchContent() of a cache-relative path must not add the namespace a second time",
+      );
+      await assertAbsent(
+        second,
+        rel,
+        "fetchContent() must not write into the cache",
+      );
+    },
+  },
 ];
 
 /**
@@ -1043,6 +1153,15 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  * - `pull-nothing-new`: a pull with nothing new returns 0 or void and leaves
  *   local bytes and mtimes alone.
  * - `forward-slash-paths`: a forward-slash `relPath` lands at the native path.
+ * - `fetch-content`: `fetchContent` returns the remote's bytes and `null` for
+ *   a missing file, rejects a `..` path, writes nothing into the cache, leaves
+ *   a differing local file alone and keeps its pending push. Skipped when
+ *   `second.service` has no `fetchContent`.
+ * - `fetch-content-namespace`: a cache-relative path that starts with the
+ *   namespace is read without the namespace being added again. Skipped
+ *   without `fetchContent`, and unless the fixture names a `namespace`. It
+ *   has only been run against `createInMemoryRemote`, which treats such a
+ *   path as a plain key.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.

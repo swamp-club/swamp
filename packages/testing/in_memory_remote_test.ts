@@ -714,3 +714,131 @@ Deno.test("pendingPush: a cache with no sidecar plans a full walk that deletes n
     assertEquals(remote.ops(), []);
   });
 });
+
+Deno.test("fetchContent: returns the committed bytes and null for a key the remote lacks", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    const fetched = await b.fetchContent!("data/m/raw");
+    assertEquals(fetched && new TextDecoder().decode(fetched), "v1");
+    assertEquals(await b.fetchContent!("data/m/missing"), null);
+  });
+});
+
+Deno.test("fetchContent: writes nothing to the cache and keeps a pending push", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "remote");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    await b.fetchContent!("data/m/raw");
+    assertEquals(await read(bCache, "data/m/raw"), undefined);
+
+    await write(bCache, "data/m/raw", "local");
+    await b.markDirty({ relPath: "data/m/raw" });
+    const pending = await remote.pendingPush(bCache);
+    const fetched = await b.fetchContent!("data/m/raw");
+
+    assertEquals(fetched && new TextDecoder().decode(fetched), "remote");
+    assertEquals(await read(bCache, "data/m/raw"), "local");
+    assertEquals(await remote.pendingPush(bCache), pending);
+  });
+});
+
+Deno.test("fetchContent: reads an uncommitted prepare's file only after the commit", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    const manifest = await a.preparePush();
+
+    assertEquals(await b.fetchContent!("data/m/raw"), null);
+    await a.commitPush(manifest);
+    const fetched = await b.fetchContent!("data/m/raw");
+    assertEquals(fetched && new TextDecoder().decode(fetched), "v1");
+  });
+});
+
+Deno.test("fetchContent: returns a copy the caller may change", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    const fetched = await b.fetchContent!("data/m/raw");
+    fetched!.fill(0);
+    assertEquals(remoteText(remote, "data/m/raw"), "v1");
+  });
+});
+
+Deno.test("fetchContent: records a fetch op with the normalized path", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    await b.fetchContent!("./data//m/raw");
+    assertEquals(remote.ops().at(-1), {
+      instance: "b",
+      op: "fetch",
+      paths: ["data/m/raw"],
+      deleted: [],
+    });
+  });
+});
+
+Deno.test("fetchContent: rejects a path that is absolute or has a dot-dot segment", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    const before = remote.ops().length;
+    for (
+      const relPath of [
+        "../outside",
+        "data/../raw",
+        "data\\..\\raw",
+        "/data/raw",
+        "\\data\\raw",
+        "C:/data/raw",
+      ]
+    ) {
+      await assertRejects(
+        () => b.fetchContent!(relPath),
+        Error,
+        "Path traversal rejected",
+      );
+    }
+    assertEquals(remote.ops().length, before);
+  });
+});
+
+Deno.test("fetchContent: rejects while offline and on an injected fetch failure", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    remote.offline(true);
+    await assertRejects(() => b.fetchContent!("data/m/raw"), Error, "offline");
+    remote.offline(false);
+
+    remote.failNext("fetch", new Error("fetch broke"));
+    await assertRejects(
+      () => b.fetchContent!("data/m/raw"),
+      Error,
+      "fetch broke",
+    );
+    assertEquals(await b.fetchContent!("data/m/raw"), null);
+  });
+});
+
+Deno.test("fetchContent: is absent when the connect option turns it off", async () => {
+  await withTempDir((dir) => {
+    const remote = createInMemoryRemote();
+    const without = remote.connect(join(dir, "c"), { fetchContent: false });
+    assertEquals(without.fetchContent, undefined);
+    assertEquals(
+      typeof remote.connect(join(dir, "d")).fetchContent,
+      "function",
+    );
+    return Promise.resolve();
+  });
+});
