@@ -115,11 +115,11 @@ IMPORTANT: `src/libswamp/mod.ts` lists libswamp's public surface — it is not a
 import path. Import each name from the libswamp file that defines it (e.g.
 `dataGet` from `src/libswamp/data/get.ts`), never from `mod.ts`: an import of
 the barrel depends on all of libswamp and hides what a file really uses from
-`deno info`. CLI commands and presentation renderers may import a name from a
-libswamp file only if `mod.ts` exports that name from that file — to make a name
-public, add it to `mod.ts`. Only libswamp-internal code (other generators, tests
-in `src/libswamp/`) may import names `mod.ts` does not list. `deno run unbarrel`
-rewrites any barrel import into direct ones.
+`deno info`. CLI commands, presentation renderers and `src/serve/` may import a
+name from a libswamp file only if `mod.ts` exports that name from that file — to
+make a name public, add it to `mod.ts`. Only libswamp-internal code (other
+generators, tests in `src/libswamp/`) may import names `mod.ts` does not list.
+`deno run unbarrel` rewrites any barrel import into direct ones.
 
 ## Testing
 

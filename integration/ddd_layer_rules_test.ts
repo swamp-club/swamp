@@ -285,8 +285,8 @@ Deno.test(
 //
 // Two rules keep both properties:
 //
-//   1. Surface: src/cli/ and src/presentation/ may take a name from a
-//      libswamp file only if mod.ts exports that name from that file.
+//   1. Surface: src/cli/, src/presentation/ and src/serve/ may take a name
+//      from a libswamp file only if mod.ts exports that name from that file.
 //   2. Honest graph: nothing imports mod.ts.
 //
 // Both cover test files too: a test that reaches past the surface pins that
@@ -335,12 +335,12 @@ function surfaceViolations(
 }
 
 Deno.test(
-  "libswamp surface: cli and presentation import only what mod.ts exports",
+  "libswamp surface: cli, presentation and serve import only what mod.ts exports",
   async () => {
     const surface = await libswampSurface();
     const violations: string[] = [];
 
-    for (const layer of ["cli", "presentation"]) {
+    for (const layer of ["cli", "presentation", "serve"]) {
       for await (
         const entry of walk(join(SRC_DIR, layer), {
           exts: [".ts", ".tsx"],
@@ -356,8 +356,8 @@ Deno.test(
     assertEquals(
       violations.length,
       0,
-      `CLI/presentation code may import from a libswamp file only the names\n` +
-        `${LIBSWAMP_BARREL} exports from that file:\n` +
+      `CLI, presentation and serve code may import from a libswamp file only\n` +
+        `the names ${LIBSWAMP_BARREL} exports from that file:\n` +
         `${violations.sort().join("\n")}\n\n` +
         `${LIBSWAMP_BARREL} is the list of what libswamp makes public. A name\n` +
         `missing from it is an internal that is free to move or change.\n` +

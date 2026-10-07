@@ -514,9 +514,9 @@ affect.
 `integration/ddd_layer_rules_test.ts` ("libswamp surface") enforce this, both
 at zero and both covering test files:
 
-1. **Surface.** `src/cli/` and `src/presentation/` may import a name from a
-   file under `src/libswamp/` only if `mod.ts` exports that name from that
-   file. A namespace, default, side-effect or dynamic import of a libswamp
+1. **Surface.** `src/cli/`, `src/presentation/` and `src/serve/` may import a
+   name from a file under `src/libswamp/` only if `mod.ts` exports that name
+   from that file. A namespace, default, side-effect or dynamic import of a libswamp
    file is refused, because it takes the whole module and cannot be checked
    name by name. To use something that is not listed, add it to `mod.ts`
    first — that is the act of making it public.
@@ -755,8 +755,8 @@ The same file pins the `src/serve/ → src/cli/` edges on the same terms
 (`PINNED_SERVE_CLI_EDGES` — serve borrows a handful of CLI wiring helpers
 that should be hoisted into a shared layer), asserts that
 `src/presentation/` imports no infrastructure other than logging/tracing,
-and enforces that `src/cli/` and `src/presentation/` import from libswamp
-only what `mod.ts` lists, and that nothing imports `mod.ts` itself (see
+and enforces that `src/cli/`, `src/presentation/` and `src/serve/` import from
+libswamp only what `mod.ts` lists, and that nothing imports `mod.ts` itself (see
 [The barrel is a list, not an import path](#the-barrel-is-a-list-not-an-import-path)). `integration/architecture_boundary_test.ts` pins the mutual
 dependencies between bounded contexts. New code is expected to follow the
 dependency rule; the pinned lists exist so the existing violations shrink

@@ -24,9 +24,9 @@ requirements. Use the `ddd` skill to review for domain-driven design principles.
    unhandled scenarios?
 
 Pay special attention to the libswamp import boundary: `src/libswamp/mod.ts`
-lists the public surface and is never imported. CLI commands and presentation
-renderers import each name from the libswamp file that defines it, and only
-names that `mod.ts` exports from that file.
+lists the public surface and is never imported. CLI commands, serve handlers and
+presentation renderers import each name from the libswamp file that defines it,
+and only names that `mod.ts` exports from that file.
 
 ## Severity Classification
 
