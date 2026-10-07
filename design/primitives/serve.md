@@ -352,9 +352,11 @@ every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
 the migration never touches the user vault again. A key that is legitimately
 absent, such as the bootstrap access token after an API-key registration,
 therefore costs the migration nothing after the first start. Credential
-resolution, which runs before the migration, still falls back to the user vault
-for a key `_token-secrets` lacks; it asks for the bootstrap access token only
-while `oauth-resolved-admins` is unset. A user vault that
+resolution, which runs before the migration, falls back to the user vault for a
+key `_token-secrets` lacks only while the marker is unset; once it exists, such
+a key is absent and the user vault is not read (swamp-club#3127). Resolution
+asks for the bootstrap access token only while `oauth-resolved-admins` is unset.
+A user vault that
 cannot be listed, or a key that fails to move, leaves the marker unset and the
 next start retries. Once the marker exists, an `oauth-*` item added to the user
 vault is neither moved nor deleted (swamp-club#2471).
@@ -436,7 +438,11 @@ reloads the snapshot on any change
 (`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
-(`src/serve/collective_refresh_service.ts`). See
+(`src/serve/collective_refresh_service.ts`). A token is refreshed only when an
+OAuth login stored an access token for it. The lookup reads `_token-secrets`,
+and reads a user vault only for a token whose record still names one, so a
+manually minted or worker server token costs no user-vault read
+(`src/serve/oauth_access_token_lookup.ts`). See
 [enablers/access-control.md](../enablers/access-control.md) for principals,
 grants, subjects and the `can-i` request.
 

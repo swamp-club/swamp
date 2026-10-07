@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
+  createOAuthSecretReader,
   migrateOAuthSecrets,
   OAUTH_SECRETS_MIGRATED_KEY,
   type OAuthSecretMigrationVaults,
@@ -269,4 +270,79 @@ Deno.test("migrateOAuthSecrets: a marker that cannot be written does not fail th
   await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
 
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
+});
+
+Deno.test("createOAuthSecretReader: returns a key held in _token-secrets without reading the user vault", async () => {
+  const fake = createFakeVaults();
+  seedApiKeyRegisteredServe(fake);
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+  );
+
+  assertEquals(await read(OAUTH_CLIENT_ID_KEY), "client-id");
+  assertEquals(fake.userVaultCalls, []);
+});
+
+Deno.test("createOAuthSecretReader: once the migration is recorded, an absent key is not read from the user vault", async () => {
+  const fake = createFakeVaults();
+  seedApiKeyRegisteredServe(fake);
+  tokenSecrets(fake).set(OAUTH_SECRETS_MIGRATED_KEY, "2026-10-07T00:00:00Z");
+  // The user vault holding the key proves the read is skipped, not missed.
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "late-addition");
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+  );
+
+  assertEquals(await read(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY), null);
+  assertEquals(fake.userVaultCalls, []);
+});
+
+Deno.test("createOAuthSecretReader: before the migration is recorded, falls back to the user vault", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "legacy-secret");
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+  );
+
+  assertEquals(await read(OAUTH_CLIENT_SECRET_KEY), "legacy-secret");
+  assertEquals(await read(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY), null);
+  assertEquals(fake.userVaultCalls, [
+    `get:${OAUTH_CLIENT_SECRET_KEY}`,
+    `get:${OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY}`,
+  ]);
+});
+
+Deno.test("createOAuthSecretReader: with no user vault an absent key is null", async () => {
+  const fake = createFakeVaults({ userVault: null });
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+  );
+
+  assertEquals(await read(OAUTH_CLIENT_ID_KEY), null);
+});
+
+Deno.test("createOAuthSecretReader: looks the migration marker up once across keys", async () => {
+  const fake = createFakeVaults();
+  tokenSecrets(fake).set(OAUTH_SECRETS_MIGRATED_KEY, "2026-10-07T00:00:00Z");
+  let markerReads = 0;
+  const read = createOAuthSecretReader(
+    {
+      ...fake.vaultService,
+      get(vaultName: string, key: string): Promise<string> {
+        if (key === OAUTH_SECRETS_MIGRATED_KEY) markerReads++;
+        return fake.vaultService.get(vaultName, key);
+      },
+    },
+    TOKEN_SECRETS_VAULT_NAME,
+  );
+
+  await read(OAUTH_CLIENT_ID_KEY);
+  await read(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY);
+  await read(OAUTH_RESOLVED_ADMINS_KEY);
+
+  assertEquals(markerReads, 1);
 });

@@ -62,7 +62,7 @@ function makeMockDeps(
 
     listActiveTokens: (): Promise<ActiveTokenInfo[]> => Promise.resolve([]),
 
-    getAccessToken: (_tokenName: string): Promise<string | null> =>
+    getAccessToken: (_token: ActiveTokenInfo): Promise<string | null> =>
       Promise.resolve("stored-access-token"),
 
     updateTokenCollectives: (
@@ -127,6 +127,7 @@ Deno.test("CollectiveRefreshService: updates collectives when groups change", as
         {
           name: "tok-1",
           principalId: "user:u1",
+          vaultName: "_token-secrets",
           collectives: ["old-group"],
           groups: [],
         },
@@ -158,6 +159,7 @@ Deno.test("CollectiveRefreshService: skips update when collectives unchanged", a
       {
         name: "tok-1",
         principalId: "user:u1",
+        vaultName: "_token-secrets",
         collectives: ["team-a"],
         groups: [],
       },
@@ -192,6 +194,7 @@ Deno.test("CollectiveRefreshService: revokes token on 401 from userinfo", async 
           {
             name: "tok-1",
             principalId: "user:u1",
+            vaultName: "_token-secrets",
             collectives: [],
             groups: [],
           },
@@ -219,6 +222,7 @@ Deno.test("CollectiveRefreshService: keeps snapshot on network error", async () 
       {
         name: "tok-1",
         principalId: "user:u1",
+        vaultName: "_token-secrets",
         collectives: ["existing"],
         groups: [],
       },
@@ -241,7 +245,13 @@ Deno.test("CollectiveRefreshService: keeps snapshot on network error", async () 
 Deno.test("CollectiveRefreshService: skips token without stored access token", async () => {
   const cycles = countCycles(() =>
     Promise.resolve([
-      { name: "tok-1", principalId: "user:u1", collectives: [], groups: [] },
+      {
+        name: "tok-1",
+        principalId: "user:u1",
+        vaultName: "_token-secrets",
+        collectives: [],
+        groups: [],
+      },
     ])
   );
   const deps = makeMockDeps({
@@ -287,7 +297,13 @@ Deno.test("CollectiveRefreshService: keeps collectives and groups separate", asy
   const deps = makeMockDeps({
     listActiveTokens: () =>
       Promise.resolve([
-        { name: "tok-1", principalId: "user:u1", collectives: [], groups: [] },
+        {
+          name: "tok-1",
+          principalId: "user:u1",
+          vaultName: "_token-secrets",
+          collectives: [],
+          groups: [],
+        },
       ]),
     getUserInfo: () =>
       Promise.resolve({
@@ -319,20 +335,21 @@ Deno.test("CollectiveRefreshService: keeps collectives and groups separate", asy
   assertEquals(storedGroups, ["group-x", "group-y"]);
 });
 
-Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulates _token-secrets → user vault fallback)", async () => {
-  const accessTokenNames: string[] = [];
+Deno.test("CollectiveRefreshService: passes the token and its vault name to getAccessToken", async () => {
+  const lookedUp: string[] = [];
   const deps = makeMockDeps({
     listActiveTokens: () =>
       Promise.resolve([
         {
           name: "tok-migrated",
           principalId: "user:u1",
+          vaultName: "default",
           collectives: ["old"],
           groups: [],
         },
       ]),
-    getAccessToken: (tokenName: string): Promise<string | null> => {
-      accessTokenNames.push(tokenName);
+    getAccessToken: (token: ActiveTokenInfo): Promise<string | null> => {
+      lookedUp.push(`${token.vaultName}/${token.name}`);
       return Promise.resolve("fallback-access-token");
     },
     getUserInfo: () =>
@@ -354,7 +371,7 @@ Deno.test("CollectiveRefreshService: works with fallback getAccessToken (simulat
 
   // Refresh cycles repeat every intervalMs, so assert which token was read
   // rather than how many cycles fit before dispose.
-  assertEquals(new Set(accessTokenNames), new Set(["tok-migrated"]));
+  assertEquals(new Set(lookedUp), new Set(["default/tok-migrated"]));
   assertEquals(deps.updatedTokens.get("tok-migrated"), ["new"]);
 });
 
@@ -364,6 +381,7 @@ Deno.test("CollectiveRefreshService: skips token when getAccessToken returns nul
       {
         name: "tok-no-access",
         principalId: "user:u1",
+        vaultName: "_token-secrets",
         collectives: ["existing"],
         groups: [],
       },
