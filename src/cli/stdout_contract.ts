@@ -53,11 +53,17 @@
  * the top level (see `buildInviteLinkCommand` in `commands/invite_link.ts`).
  * Both are listed because both are reachable, and a reader who finds only one
  * would reasonably assume the other was considered and excluded.
+ *
+ * `worker exec-dispatch` is the dispatch runner: its stdout carries RPC frames
+ * to the worker. Its log records must also stay off the console, which records
+ * everything written to it as the running method's own output — a method
+ * logger line would then reach the orchestrator twice (swamp-club#3080).
  */
 export const VALUE_ONLY_STDOUT_COMMANDS: readonly (readonly string[])[] = [
   ["invite", "link"],
   ["first-rule"],
   ["vault", "read-secret"],
+  ["worker", "exec-dispatch"],
 ] as const;
 
 /**

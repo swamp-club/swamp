@@ -103,6 +103,11 @@ export function wrapLoggerWithOutput(
             stream: prop === "warn" || prop === "warning" || prop === "error"
               ? "stderr"
               : "stdout",
+            level: prop === "info"
+              ? "info"
+              : prop === "error"
+              ? "error"
+              : "warning",
           });
         };
       }

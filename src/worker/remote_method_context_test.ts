@@ -222,7 +222,7 @@ function harness(
     },
   } as unknown as DataPlaneClient;
 
-  const { context, getHandles } = createRemoteMethodContext({
+  const { context, getHandles, redact } = createRemoteMethodContext({
     channel: worker,
     client,
     dispatch: overrideDispatch ?? dispatch(),
@@ -231,7 +231,7 @@ function harness(
     signal: new AbortController().signal,
     onEvent,
   });
-  return { context, getHandles, calls, lines, contents };
+  return { context, getHandles, redact, calls, lines, contents };
 }
 
 async function withScratch(
@@ -443,6 +443,39 @@ Deno.test("remote context: secretValues populate the redactor", async () => {
     assertEquals(
       h.context.redactor!.redact("output: super-secret-value here"),
       "output: *** here",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: output leaves the worker with secrets scrubbed (swamp-club#3080)", async () => {
+  await withScratch((dir) => {
+    const d = dispatch();
+    d.secretValues = ["super-secret-value"];
+    const events: Record<string, unknown>[] = [];
+    const h = harness(dir, undefined, undefined, d, (e) => events.push(e));
+    // A secret the method learns while it runs is covered too.
+    h.context.redactor!.addSecret("learned-on-the-worker");
+
+    h.context.logger.info("logged super-secret-value");
+    h.context.onEvent!({
+      type: "output",
+      line: "emitted learned-on-the-worker",
+      stream: "stderr",
+    });
+    h.context.onEvent!({
+      type: "vault_single_quote_warning",
+      message: "untouched",
+    });
+
+    assertEquals(events.map((e) => e.line ?? e.message), [
+      "logged ***",
+      "emitted ***",
+      "untouched",
+    ]);
+    assertEquals(
+      h.redact("console learned-on-the-worker"),
+      "console ***",
     );
     return Promise.resolve();
   });

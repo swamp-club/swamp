@@ -491,6 +491,12 @@ export interface RemoteMethodContextResult {
   context: MethodContext;
   /** Handles persisted so far — collected even when the method throws. */
   getHandles: () => DataHandle[];
+  /**
+   * Scrubs text with every secret this dispatch has learned so far. For
+   * output that leaves the worker outside the context, such as the console
+   * capture.
+   */
+  redact: (text: string) => string;
 }
 
 /** Whether the orchestrator shipped the step's secret bag (swamp-club#2760). */
@@ -559,6 +565,21 @@ export function createRemoteMethodContext(
       redactor.addSecret(value);
     }
   }
+  const redact = (text: string) =>
+    redactor.hasSecrets ? redactor.redact(text) : text;
+  // The orchestrator writes output lines to the run log, and its redactor
+  // knows only what it resolved before the dispatch. Secrets the method
+  // learns here (a sensitive field of a resource it reads, say) are known to
+  // this redactor alone, so lines are scrubbed before they leave
+  // (swamp-club#3080).
+  const onEvent: MethodContext["onEvent"] = options.onEvent
+    ? (event) =>
+      options.onEvent!(
+        event.type === "output"
+          ? { ...event, line: redact(event.line) }
+          : event,
+      )
+    : undefined;
 
   const readResource = async (
     instanceName: string,
@@ -672,7 +693,7 @@ export function createRemoteMethodContext(
     definition: execution.definitionMeta,
     methodName: execution.methodName,
     traceHeaders: execution.traceHeaders,
-    logger: wrapLoggerWithOutput(logger, options.onEvent),
+    logger: wrapLoggerWithOutput(logger, onEvent),
     dataRepository,
     definitionRepository,
     outputRepository,
@@ -688,7 +709,7 @@ export function createRemoteMethodContext(
     readModelData,
     queryData,
     createFileWriter: writers.createFileWriter,
-    onEvent: options.onEvent,
+    onEvent,
     extensionFile: (relPath: string) => {
       if (extensionFilesDir === undefined) {
         throw new Error(
@@ -727,5 +748,5 @@ export function createRemoteMethodContext(
       }),
   };
 
-  return { context, getHandles: writers.getHandles };
+  return { context, getHandles: writers.getHandles, redact };
 }

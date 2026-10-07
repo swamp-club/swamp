@@ -711,7 +711,21 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | resource delete    | `DELETE /data/resource`                                                                                                  | h2        |                                                                                                  |
 | file write         | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize`                                    | h2        | `writeLine` is durable per request (live logs)                                                   |
 | extension assets   | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`                                                  | h2        | Cacheable by fingerprint                                                                         |
-| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client                                                             |
+| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client and the run log (below)                                     |
+
+The orchestrator writes a step's output to its run log, wherever the step ran.
+A worker's method logger has no run log to write to, so each line travels as an
+`output` method event and `MethodExecutionService` writes it through the run
+logger at the level the event carries, before passing it on to the client.
+Lines the method wrote to the console on the worker come back in the dispatch
+result's `logs`; `DispatchService` turns them into `output` events too, for a
+failed dispatch as well as a successful one. They arrive only once the dispatch
+returns, so a step's console lines follow all of its streamed lines in the log
+rather than interleaving with them. The worker scrubs both with its own
+`SecretRedactor` before they leave, because it alone knows the secrets a method
+learns while it runs. The event is worker-supplied, so
+the orchestrator checks its shape and splits a multi-line `line` into one
+record per line.
 
 Control-plane records (grants, groups, tokens, workers, leases, pending
 dispatches, fleet probes; `src/domain/models/control_plane_types.ts`) never

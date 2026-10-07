@@ -32,6 +32,18 @@ Deno.test("isValueOnlyStdoutCommand: only the listed commands claim stdout", () 
     true,
   );
 
+  assertEquals(
+    isValueOnlyStdoutCommand({
+      command: "worker",
+      subcommand: "exec-dispatch",
+    }),
+    true,
+  );
+  assertEquals(
+    isValueOnlyStdoutCommand({ command: "worker", subcommand: "connect" }),
+    false,
+  );
+
   // The groups themselves print help, which is prose.
   assertEquals(isValueOnlyStdoutCommand({ command: "invite" }), false);
   assertEquals(isValueOnlyStdoutCommand({ command: "vault" }), false);
