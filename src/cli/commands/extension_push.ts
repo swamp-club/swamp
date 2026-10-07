@@ -459,251 +459,252 @@ export const extensionPushCommand = new Command()
       repoDir,
       manifestDir,
     });
-    const registryChecks = options.dryRun ? "collect" : "enforce";
-    const cache = new ExtensionPackageCache(
-      defaultPackageCacheRoot(repoDir),
-      VERSION,
-    );
-
-    // 3b. Opportunistic package cache lookup — if a prior `swamp
-    // extension quality` run packaged the same source, reuse those
-    // bytes. Cache miss falls back to packaging from scratch.
-    const cacheHashInput = {
-      manifest,
-      rootDir: repoDir,
-      manifestDir,
-      modelFilePaths: allModelFiles,
-      vaultFilePaths: allVaultFiles,
-      datastoreFilePaths: allDatastoreFiles,
-      reportFilePaths: allReportFiles,
-      webhookFilePaths: allWebhookFiles,
-      workflowFilePaths: workflowFiles.map((w) => w.sourcePath),
-      additionalFilePaths,
-      binaryFilePaths,
-      skillFilePaths: resolved.allSkillFiles,
-      includeFilePaths,
-      denoConfigPath,
-      packageJsonPath: undefined,
-    };
-    const cacheHash = await computePackageCacheHash(cacheHashInput);
-    const cached = await cache.get(cacheHash);
-    if (cached) {
-      cliCtx.logger
-        .debug`Reusing cached package ${
-        cacheHash.slice(0, 12)
-      } (${cached.archiveBytes.length} bytes)`;
-    }
-
-    // 4. Run prepare phase
-    let prepared;
+    // Whatever throws from here, a --json run still leaves exactly one
+    // document on stdout: a render that ended the run wrote it, or
+    // renderUnfinished writes it with status failed.
     try {
-      prepared = await extensionPushPrepare(ctx, prepareDeps, {
+      const registryChecks = options.dryRun ? "collect" : "enforce";
+      const cache = new ExtensionPackageCache(
+        defaultPackageCacheRoot(repoDir),
+        VERSION,
+      );
+
+      // 3b. Opportunistic package cache lookup — if a prior `swamp
+      // extension quality` run packaged the same source, reuse those
+      // bytes. Cache miss falls back to packaging from scratch.
+      const cacheHashInput = {
         manifest,
-        repoDir,
+        rootDir: repoDir,
         manifestDir,
-        modelsDir,
-        allModelFiles,
-        modelEntryPoints,
-        vaultsDir,
-        allVaultFiles,
-        vaultEntryPoints,
-        datastoresDir,
-        allDatastoreFiles,
-        datastoreEntryPoints,
-        reportsDir,
-        allReportFiles,
-        reportEntryPoints,
-        webhooksDir,
-        allWebhookFiles,
-        webhookEntryPoints,
-        workflowFiles,
-        skillDirs: resolved.skillDirs,
-        allSkillFiles: resolved.allSkillFiles,
-        includeFilePaths,
+        modelFilePaths: allModelFiles,
+        vaultFilePaths: allVaultFiles,
+        datastoreFilePaths: allDatastoreFiles,
+        reportFilePaths: allReportFiles,
+        webhookFilePaths: allWebhookFiles,
+        workflowFilePaths: workflowFiles.map((w) => w.sourcePath),
         additionalFilePaths,
         binaryFilePaths,
-        dryRun: options.dryRun ?? false,
-        registryChecks,
-        channel: options.channel,
-        releaseNotes: options.releaseNotes,
+        skillFilePaths: resolved.allSkillFiles,
+        includeFilePaths,
         denoConfigPath,
-        packageJsonDir,
-        contentHash: cacheHash,
-        cachedArchive: cached?.archiveBytes,
-      });
-    } catch (error) {
-      // Handle structured errors from the prepare phase with rich rendering
-      if (isSwampError(error)) {
-        const details = error.details as Record<string, unknown> | undefined;
-        if (details?.dependencyTrustErrors) {
-          renderer.renderDependencyTrustErrors(
-            details.dependencyTrustErrors as DependencyTrustIssue[],
-          );
-        } else if (details?.reviewRuleErrors) {
-          renderer.renderReviewRuleErrors(
-            details.reviewRuleErrors as ReviewFinding[],
-          );
-        } else if (details?.safetyErrors) {
-          renderer.renderSafetyErrors(
-            details.safetyErrors as SafetyIssue[],
-          );
-        } else if (details?.upgradeChainErrors) {
-          renderer.renderUpgradeChainErrors(
-            details.upgradeChainErrors as QualityIssue[],
-          );
-        } else if (details?.qualityErrors) {
-          renderer.renderQualityErrors(
-            details.qualityErrors as QualityIssue[],
-          );
-        } else if (details?.compilationErrors) {
-          renderer.renderCompilationErrors(
-            details.compilationErrors as CompilationError[],
-          );
-        } else if (details?.expectedCollective && details?.mismatches) {
-          renderer.renderCollectiveErrors(
-            details.expectedCollective as string,
-            details.mismatches as CollectiveMismatch[],
-          );
-        } else if (details?.existingVersion) {
-          // Version already exists — promote, bump or stop interactively
-          const existingVersion = details.existingVersion as string;
-          const requestedChannel = (details.requestedChannel as
-            | string
-            | undefined) ?? options.channel ?? "stable";
-          const existingChannel =
-            (details.existingChannel as string | undefined) ??
-              requestedChannel;
-          const response = resolveExistingVersionResponse({
-            extensionName: manifest.name,
-            version: existingVersion,
-            checkMessage: error.message,
-            existingChannel,
-            requestedChannel,
-            outputMode: cliCtx.outputMode,
-            yes: options.yes,
-            force: options.force,
-          });
-          if (response.kind === "refuse") {
-            throw new UserError(response.message);
-          }
-          const bumped = CalVer.bump(CalVer.create(existingVersion));
-          const promptInput = {
-            name: manifest.name,
-            version: existingVersion,
-            bumpedVersion: bumped.value,
-            existingChannel,
-            requestedChannel,
-          };
-          let action: "promote" | "bump" | "stop";
-          if (response.kind === "choose") {
-            const prompt = existingVersionChoicePrompt(promptInput);
-            const index = await promptNumberedChoice(
-              prompt.details,
-              prompt.choices.map((c) => c.label),
-            );
-            action = index === null ? "stop" : prompt.choices[index].action;
-          } else {
-            const prompt = bumpVersionPrompt(promptInput);
-            action = await promptConfirmation(prompt.question, prompt.details)
-              ? "bump"
-              : "stop";
-          }
-          if (action === "promote") {
-            const command = promoteCommand(
-              manifest.name,
-              existingVersion,
-              requestedChannel,
-            );
-            cliCtx.logger.info`Running: ${command}`;
-            await consumeStream(
-              extensionPromote(ctx, createExtensionPromoteDeps(identity), {
-                extensionName: manifest.name,
-                version: existingVersion,
-                toChannel: requestedChannel,
-                fromChannel: existingChannel,
-              }),
-              createExtensionPromoteRenderer(cliCtx.outputMode).handlers(),
-            );
-            return;
-          }
-          if (action === "bump") {
-            manifest.version = bumped.value;
-            // The version is part of the content hash, so bumping it
-            // changes the hash and therefore the review-report path.
-            const bumpedHash = await computePackageCacheHash(cacheHashInput);
-            // Re-run prepare with bumped version
-            try {
-              prepared = await extensionPushPrepare(ctx, prepareDeps, {
-                manifest,
-                repoDir,
-                manifestDir,
-                modelsDir,
-                allModelFiles,
-                modelEntryPoints,
-                vaultsDir,
-                allVaultFiles,
-                vaultEntryPoints,
-                datastoresDir,
-                allDatastoreFiles,
-                datastoreEntryPoints,
-                reportsDir,
-                allReportFiles,
-                reportEntryPoints,
-                webhooksDir,
-                allWebhookFiles,
-                webhookEntryPoints,
-                workflowFiles,
-                skillDirs: resolved.skillDirs,
-                allSkillFiles: resolved.allSkillFiles,
-                includeFilePaths,
-                additionalFilePaths,
-                binaryFilePaths,
-                dryRun: options.dryRun ?? false,
-                registryChecks,
-                channel: options.channel,
-                releaseNotes: options.releaseNotes,
-                denoConfigPath,
-                packageJsonDir,
-                contentHash: bumpedHash,
-              });
-            } catch (retryError) {
-              if (isSwampError(retryError)) {
-                throw new UserError(retryError.message);
-              }
-              throw retryError;
-            }
-          } else {
-            renderExtensionPushCancelled(cliCtx.outputMode);
-            return;
-          }
-        }
-        if (!prepared) {
-          throw new UserError(error.message);
-        }
-      } else {
-        throw error;
-      }
-    }
-
-    // 4b. Populate the package cache on a miss. Writing here lets a
-    // subsequent `swamp extension quality` run against the same source
-    // reuse these bytes without repackaging.
-    if (!cached) {
-      try {
-        await cache.put(cacheHash, prepared.archiveBytes, {
-          extensionName: prepared.manifest.name,
-          extensionVersion: prepared.manifest.version,
-          rubricVersion: RUBRIC_VERSION,
-        });
-      } catch (cacheError) {
+        packageJsonPath: undefined,
+      };
+      const cacheHash = await computePackageCacheHash(cacheHashInput);
+      const cached = await cache.get(cacheHash);
+      if (cached) {
         cliCtx.logger
-          .debug`Failed to write package cache (continuing): ${cacheError}`;
+          .debug`Reusing cached package ${
+          cacheHash.slice(0, 12)
+        } (${cached.archiveBytes.length} bytes)`;
       }
-    }
 
-    // From here a --json run has recorded its resolved data, so a throw
-    // must still leave exactly one document on stdout.
-    try {
+      // 4. Run prepare phase
+      let prepared;
+      try {
+        prepared = await extensionPushPrepare(ctx, prepareDeps, {
+          manifest,
+          repoDir,
+          manifestDir,
+          modelsDir,
+          allModelFiles,
+          modelEntryPoints,
+          vaultsDir,
+          allVaultFiles,
+          vaultEntryPoints,
+          datastoresDir,
+          allDatastoreFiles,
+          datastoreEntryPoints,
+          reportsDir,
+          allReportFiles,
+          reportEntryPoints,
+          webhooksDir,
+          allWebhookFiles,
+          webhookEntryPoints,
+          workflowFiles,
+          skillDirs: resolved.skillDirs,
+          allSkillFiles: resolved.allSkillFiles,
+          includeFilePaths,
+          additionalFilePaths,
+          binaryFilePaths,
+          dryRun: options.dryRun ?? false,
+          registryChecks,
+          channel: options.channel,
+          releaseNotes: options.releaseNotes,
+          denoConfigPath,
+          packageJsonDir,
+          contentHash: cacheHash,
+          cachedArchive: cached?.archiveBytes,
+        });
+      } catch (error) {
+        // Handle structured errors from the prepare phase with rich rendering
+        if (isSwampError(error)) {
+          const details = error.details as Record<string, unknown> | undefined;
+          if (details?.dependencyTrustErrors) {
+            renderer.renderDependencyTrustErrors(
+              details.dependencyTrustErrors as DependencyTrustIssue[],
+            );
+          } else if (details?.reviewRuleErrors) {
+            renderer.renderReviewRuleErrors(
+              details.reviewRuleErrors as ReviewFinding[],
+            );
+          } else if (details?.safetyErrors) {
+            renderer.renderSafetyErrors(
+              details.safetyErrors as SafetyIssue[],
+            );
+          } else if (details?.upgradeChainErrors) {
+            renderer.renderUpgradeChainErrors(
+              details.upgradeChainErrors as QualityIssue[],
+            );
+          } else if (details?.qualityErrors) {
+            renderer.renderQualityErrors(
+              details.qualityErrors as QualityIssue[],
+            );
+          } else if (details?.compilationErrors) {
+            renderer.renderCompilationErrors(
+              details.compilationErrors as CompilationError[],
+            );
+          } else if (details?.expectedCollective && details?.mismatches) {
+            renderer.renderCollectiveErrors(
+              details.expectedCollective as string,
+              details.mismatches as CollectiveMismatch[],
+            );
+          } else if (details?.existingVersion) {
+            // Version already exists — promote, bump or stop interactively
+            const existingVersion = details.existingVersion as string;
+            const requestedChannel = (details.requestedChannel as
+              | string
+              | undefined) ?? options.channel ?? "stable";
+            const existingChannel =
+              (details.existingChannel as string | undefined) ??
+                requestedChannel;
+            const response = resolveExistingVersionResponse({
+              extensionName: manifest.name,
+              version: existingVersion,
+              checkMessage: error.message,
+              existingChannel,
+              requestedChannel,
+              outputMode: cliCtx.outputMode,
+              yes: options.yes,
+              force: options.force,
+            });
+            if (response.kind === "refuse") {
+              throw new UserError(response.message);
+            }
+            const bumped = CalVer.bump(CalVer.create(existingVersion));
+            const promptInput = {
+              name: manifest.name,
+              version: existingVersion,
+              bumpedVersion: bumped.value,
+              existingChannel,
+              requestedChannel,
+            };
+            let action: "promote" | "bump" | "stop";
+            if (response.kind === "choose") {
+              const prompt = existingVersionChoicePrompt(promptInput);
+              const index = await promptNumberedChoice(
+                prompt.details,
+                prompt.choices.map((c) => c.label),
+              );
+              action = index === null ? "stop" : prompt.choices[index].action;
+            } else {
+              const prompt = bumpVersionPrompt(promptInput);
+              action = await promptConfirmation(prompt.question, prompt.details)
+                ? "bump"
+                : "stop";
+            }
+            if (action === "promote") {
+              const command = promoteCommand(
+                manifest.name,
+                existingVersion,
+                requestedChannel,
+              );
+              cliCtx.logger.info`Running: ${command}`;
+              await consumeStream(
+                extensionPromote(ctx, createExtensionPromoteDeps(identity), {
+                  extensionName: manifest.name,
+                  version: existingVersion,
+                  toChannel: requestedChannel,
+                  fromChannel: existingChannel,
+                }),
+                createExtensionPromoteRenderer(cliCtx.outputMode).handlers(),
+              );
+              return;
+            }
+            if (action === "bump") {
+              manifest.version = bumped.value;
+              // The version is part of the content hash, so bumping it
+              // changes the hash and therefore the review-report path.
+              const bumpedHash = await computePackageCacheHash(cacheHashInput);
+              // Re-run prepare with bumped version
+              try {
+                prepared = await extensionPushPrepare(ctx, prepareDeps, {
+                  manifest,
+                  repoDir,
+                  manifestDir,
+                  modelsDir,
+                  allModelFiles,
+                  modelEntryPoints,
+                  vaultsDir,
+                  allVaultFiles,
+                  vaultEntryPoints,
+                  datastoresDir,
+                  allDatastoreFiles,
+                  datastoreEntryPoints,
+                  reportsDir,
+                  allReportFiles,
+                  reportEntryPoints,
+                  webhooksDir,
+                  allWebhookFiles,
+                  webhookEntryPoints,
+                  workflowFiles,
+                  skillDirs: resolved.skillDirs,
+                  allSkillFiles: resolved.allSkillFiles,
+                  includeFilePaths,
+                  additionalFilePaths,
+                  binaryFilePaths,
+                  dryRun: options.dryRun ?? false,
+                  registryChecks,
+                  channel: options.channel,
+                  releaseNotes: options.releaseNotes,
+                  denoConfigPath,
+                  packageJsonDir,
+                  contentHash: bumpedHash,
+                });
+              } catch (retryError) {
+                if (isSwampError(retryError)) {
+                  throw new UserError(retryError.message);
+                }
+                throw retryError;
+              }
+            } else {
+              renderExtensionPushCancelled(cliCtx.outputMode);
+              return;
+            }
+          }
+          if (!prepared) {
+            throw new UserError(error.message);
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      // 4b. Populate the package cache on a miss. Writing here lets a
+      // subsequent `swamp extension quality` run against the same source
+      // reuse these bytes without repackaging.
+      if (!cached) {
+        try {
+          await cache.put(cacheHash, prepared.archiveBytes, {
+            extensionName: prepared.manifest.name,
+            extensionVersion: prepared.manifest.version,
+            rubricVersion: RUBRIC_VERSION,
+          });
+        } catch (cacheError) {
+          cliCtx.logger
+            .debug`Failed to write package cache (continuing): ${cacheError}`;
+        }
+      }
+
       // 5. Render resolved data
       renderer.renderResolved(prepared.resolvedData);
 

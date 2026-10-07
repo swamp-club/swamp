@@ -178,9 +178,11 @@ stderr as `{"error": ...}`. Log mode prints a path relative to the current
 directory when the file is under it, or is pushed content (under the repo
 or the manifest's directory) sharing an ancestor below the filesystem root
 with it; anything else, such as the review report under the temp dir,
-prints absolute. When a `--json` run throws after recording its resolved
-data, the command writes the document with status `failed` before the
-error propagates.
+prints absolute. When a `--json` run throws without a render having
+written its document (a version that already exists, a manifest error, an
+unexpected failure), the command writes it with status `failed`, carrying
+`resolved` and `warnings` when they were recorded, before the error
+propagates. Every `--json` run leaves exactly one document on stdout.
 
 `extension quality` packages through the same prepare phase, on a cache hit
 too, but skips the registry checks and makes no registry call. It runs the
