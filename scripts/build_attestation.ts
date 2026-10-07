@@ -40,6 +40,11 @@
  * attestation to be produced by a step of the run it describes, which is a
  * workflow change and deliberately not this one.
  *
+ * `deno` is in `--allow-run` so the script can run `deno info` and the command
+ * index. That is a wide grant — a `deno` child can be started with any flags —
+ * and it is why the two call sites below pass a fixed argument list and the
+ * index runs with no write, net or run permission of its own.
+ *
  * Usage:
  *   deno run --allow-read --allow-env --allow-run=git,swamp,deno \
  *     scripts/build_attestation.ts \
@@ -888,7 +893,7 @@ export function parseCommandIndex(stdout: string): CommandIndex | null {
 }
 
 /** Runs a command to completion, keeping stderr for the failure message. */
-async function run(
+async function runChild(
   command: string,
   args: string[],
   cwd: string,
@@ -925,8 +930,9 @@ async function run(
  * The caller has already shown the checkout is the commit's tree. The change
  * is the commit against its merge base with `origin/main` — the same
  * three-dot diff the review guards filter on, so the list describes the
- * change the reviews examined. Deleted files are left out: a module that is
- * gone is in nobody's closure, and whatever imported it had to change too.
+ * change the reviews examined. Deleted files are listed apart, because they
+ * are in no graph built from this tree; `computeAffectedCommands` says what
+ * each kind of deletion means.
  */
 async function gatherAffectedCommands(
   commit: string,
@@ -940,20 +946,32 @@ async function gatherAffectedCommands(
         "fetch origin/main so the change can be diffed against it",
     };
   }
-  const diff = await capture("git", [
-    "diff",
-    "--name-only",
-    "--diff-filter=d",
-    "-z",
-    diffBase,
-    commit,
-  ]);
-  if (diff === null) {
+  const diffNames = async (filter: string) => {
+    const diff = await capture("git", [
+      "diff",
+      "--name-only",
+      `--diff-filter=${filter}`,
+      "-z",
+      diffBase,
+      commit,
+    ]);
+    return diff === null
+      ? null
+      : diff.split("\0").filter((file) => file !== "");
+  };
+  // Lower case excludes a status, upper case selects it: everything that is
+  // still present, then everything that was removed.
+  const changedFiles = await diffNames("d");
+  const deletedFiles = await diffNames("D");
+  if (changedFiles === null || deletedFiles === null) {
     return { error: `could not diff ${commit} against ${diffBase}` };
   }
-  const changedFiles = diff.split("\0").filter((file) => file !== "");
 
-  const info = await run("deno", ["info", "--json", ENTRY_POINT], repoRoot);
+  const info = await runChild(
+    "deno",
+    ["info", "--json", ENTRY_POINT],
+    repoRoot,
+  );
   if (!info.ok) {
     return {
       error: `deno info ${ENTRY_POINT} failed: ${info.stderr.trim()}`,
@@ -974,7 +992,7 @@ async function gatherAffectedCommands(
       !file.slice(COMMAND_DIR.length).includes("/")
     )
     .sort();
-  const indexed = await run("deno", [
+  const indexed = await runChild("deno", [
     "run",
     "--no-prompt",
     "--unstable-bundle",
@@ -998,6 +1016,7 @@ async function gatherAffectedCommands(
       graph,
       index,
       changedFiles,
+      deletedFiles,
       diffBase,
     }),
   };

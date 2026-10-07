@@ -52,8 +52,18 @@ const arbChanged = fc.subarray([
   "mystery.bin",
 ]);
 
-function compute(graph: ImportGraph, changedFiles: string[]) {
-  return computeAffectedCommands({ graph, index: INDEX, changedFiles, diffBase: "b" });
+function compute(
+  graph: ImportGraph,
+  changedFiles: string[],
+  deletedFiles: string[] = [],
+) {
+  return computeAffectedCommands({
+    graph,
+    index: INDEX,
+    changedFiles,
+    deletedFiles,
+    diffBase: "b",
+  });
 }
 
 Deno.test("computeAffectedCommands: the result is a sorted subset of the index", () => {
@@ -104,6 +114,17 @@ Deno.test("computeAffectedCommands: the order of changed files does not change t
         compute(graph, [...changed].reverse()),
         compute(graph, changed),
       );
+    }),
+    { numRuns: 200 },
+  );
+});
+
+Deno.test("computeAffectedCommands: deleting files never removes a command", () => {
+  fc.assert(
+    fc.property(arbGraph, arbChanged, arbChanged, (graph, changed, deleted) => {
+      const before = compute(graph, changed);
+      const after = compute(graph, changed, deleted);
+      assert(before.commands.every((c) => after.commands.includes(c)));
     }),
     { numRuns: 200 },
   );

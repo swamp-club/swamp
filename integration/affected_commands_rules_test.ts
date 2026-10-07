@@ -47,6 +47,10 @@ const SEPARATE_ENTRY_POINTS: ReadonlySet<string> = new Set([
   "worker_exec_dispatch_entry.ts",
 ]);
 
+// This lists the directory, where the generator lists the command files
+// `deno info main.ts` reports. The two agree while every file here that
+// exports a command is one the CLI imports; a file outside the graph that
+// re-exported a command object would be indexed here and not there.
 async function commandFiles(): Promise<string[]> {
   const files: string[] = [];
   for await (const entry of Deno.readDir(join(ROOT, COMMAND_DIR))) {
@@ -90,25 +94,28 @@ Deno.test("affected commands: each declared unexported root names a real command
 });
 
 /**
- * Root entries that are not part of the repository's tracked layout: git's
- * own directory, dependencies, and the local state `.gitignore` lists.
+ * The top-level entries git tracks, each as a path a rule can be asked about.
+ *
+ * Asked of git rather than read from the directory: a checkout swamp is also
+ * used in grows `vaults/`, `grants/` and other local state at its root, and a
+ * rule about the repository's layout must not pass or fail on that.
  */
-const UNTRACKED_ROOT_ENTRIES: ReadonlySet<string> = new Set([
-  ".envrc",
-  ".git",
-  ".swamp",
-  ".swamp.yaml",
-  "CLAUDE.local.md",
-  "models",
-  "node_modules",
-  "plans",
-  "resources",
-  "sbom.cdx.json",
-  "swamp",
-  "test-repo",
-  "workflows",
-  "workflows-evaluated",
-]);
+async function trackedTopLevelSamples(): Promise<string[]> {
+  const { code, stdout } = await new Deno.Command("git", {
+    args: ["ls-files", "-z"],
+    cwd: ROOT,
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  assertEquals(code, 0, "git ls-files failed");
+  const samples = new Map<string, string>();
+  for (const file of new TextDecoder().decode(stdout).split("\0")) {
+    if (file === "") continue;
+    const top = file.split("/")[0];
+    if (!samples.has(top)) samples.set(top, file);
+  }
+  return [...samples.values()];
+}
 
 Deno.test("affected commands: every top-level path has an explicit rule", async () => {
   // A changed file no rule recognises selects every command. That is the safe
@@ -116,24 +123,17 @@ Deno.test("affected commands: every top-level path has an explicit rule", async 
   // directory: this fails when one appears, so the rule table in
   // scripts/affected_commands.ts is extended on purpose rather than every
   // change under it quietly reporting all commands.
-  const unclassified: string[] = [];
-  let checked = 0;
-  for await (const entry of Deno.readDir(ROOT)) {
-    if (UNTRACKED_ROOT_ENTRIES.has(entry.name)) continue;
-    if (entry.name.startsWith(".vault-")) continue;
+  const samples = (await trackedTopLevelSamples())
     // The module graph itself: files here are looked up in it, not in the
     // rule table.
-    if (entry.name === "src" || entry.name === ENTRY_POINT) continue;
-    checked++;
-    const sample = entry.isDirectory ? `${entry.name}/file` : entry.name;
-    if (classifyOutsideGraph(sample).rule === "unclassified") {
-      unclassified.push(entry.name);
-    }
-  }
+    .filter((file) => !file.startsWith("src/") && file !== ENTRY_POINT);
 
-  assert(checked >= 20, `only ${checked} top-level entries checked`);
+  assert(samples.length >= 20, `only ${samples.length} top-level paths found`);
   assertEquals(
-    unclassified.sort(),
+    samples
+      .filter((file) => classifyOutsideGraph(file).rule === "unclassified")
+      .map((file) => file.split("/")[0])
+      .sort(),
     [],
     "These top-level paths match no rule in scripts/affected_commands.ts, " +
       "so any change under them reports every command as affected. Add " +

@@ -139,19 +139,35 @@ export const COMMAND_DIR = "src/cli/commands/";
 
 /**
  * Files that are in no command's closure and shape every command anyway: the
- * import map, the lockfile, and the two places the runtime version is pinned.
+ * import map, the lockfile, the two places the runtime version is pinned, and
+ * the script that compiles the binary and sets the permissions it runs with.
  */
 const ALL_COMMANDS_FILES: ReadonlySet<string> = new Set([
   "deno.json",
   "deno.lock",
   ".tool-versions",
   "Dockerfile",
+  "scripts/compile.ts",
 ]);
 
 /**
- * Top-level directories whose contents never reach a command: prose, agent
+ * Directories `scripts/compile.ts` embeds in the binary with `--include`, so
+ * a change under them ships to users without any import naming it. Checked
+ * before the no-commands directories, which would otherwise claim them.
+ *
+ * `.claude/skills` is embedded too and is deliberately absent: a skill-only
+ * change was decided to select no command (swamp-club#3145), though `init`
+ * and `repo` install the bundled skills.
+ */
+const BUNDLED_DIRS: readonly string[] = ["packages/dashboard/"];
+
+/**
+ * Top-level directories a change to which selects no command: prose, agent
  * configuration, verification and CI machinery, tests, and packages and
  * extensions published separately from the CLI.
+ *
+ * Only for files outside the module graph. A file under one of these that
+ * the CLI imports is a module, and is looked up in the graph instead.
  */
 const NO_COMMANDS_DIRS: ReadonlySet<string> = new Set([
   ".agents",
@@ -196,6 +212,9 @@ export interface OutsideGraphEffect {
 export function classifyOutsideGraph(path: string): OutsideGraphEffect {
   if (ALL_COMMANDS_FILES.has(path)) {
     return { effect: "all", rule: "build-configuration" };
+  }
+  if (BUNDLED_DIRS.some((dir) => path.startsWith(dir))) {
+    return { effect: "all", rule: "bundled-asset" };
   }
   const segments = path.split("/");
   const name = segments[segments.length - 1];
@@ -258,20 +277,31 @@ function sample<T>(files: T[]): FileSample<T> {
   return { count: files.length, files: files.slice(0, FILE_LIST_LIMIT) };
 }
 
+/** Source a deleted file could only have reached a command through imports. */
+const MODULE_FILE = /\.(tsx?|jsx?|mjs)$/;
+
 /**
  * The commands a set of changed files can affect.
  *
  * Each changed file is either a module in the graph, where it selects the
  * commands whose closure contains it, or it is not, where
  * `classifyOutsideGraph` decides between every command and none.
+ *
+ * `deletedFiles` are files the change removed, which are in no graph built
+ * from the tree after it. A deleted module is skipped: whatever imported it
+ * had to change too, and is selected in its own right. Any other deleted file
+ * is classified like a changed one — removing `deno.lock` or an embedded
+ * asset reaches commands without an import to show for it.
  */
 export function computeAffectedCommands(input: {
   graph: ImportGraph;
   index: CommandIndex;
   changedFiles: readonly string[];
+  deletedFiles?: readonly string[];
   diffBase: string;
 }): AffectedCommands {
   const { graph, index, changedFiles, diffBase } = input;
+  const deletedFiles = input.deletedFiles ?? [];
   const names = Object.keys(index).sort();
 
   const closures = new Map<string, Set<string>>();
@@ -298,6 +328,12 @@ export function computeAffectedCommands(input: {
     if (outside.effect === "all") forcedAll.push({ file, rule: outside.rule });
   }
 
+  for (const file of [...new Set(deletedFiles)].sort()) {
+    if (MODULE_FILE.test(file)) continue;
+    const outside = classifyOutsideGraph(file);
+    if (outside.effect === "all") forcedAll.push({ file, rule: outside.rule });
+  }
+
   const commands = forcedAll.length > 0
     ? names
     : names.filter((name) => affected.has(name));
@@ -317,7 +353,7 @@ export function computeAffectedCommands(input: {
       method: "static-imports",
       diffBase,
       edges: ["code", "type"],
-      changedFiles: new Set(changedFiles).size,
+      changedFiles: new Set([...changedFiles, ...deletedFiles]).size,
     },
   };
 }

@@ -728,11 +728,11 @@ jobs:
               def safe: tostring | gsub("[^A-Za-z0-9 ._/:-]"; "?") | .[0:200];
               .affectedCommands as $a
               | ($a.commands // [] | if type == "array" then . else [] end) as $names
-              | "**\($a.scope // "unknown" | safe)** — \($names | length) of \($a.totalCommands // "?" | safe) \($a.granularity // "" | safe) commands, from \($a.derivation.method // "unknown" | safe) against `\($a.derivation.diffBase // "?" | safe | .[0:8])`",
+              | "`\($a.scope // "unknown" | safe)` — \($names | length) of `\($a.totalCommands // "?" | safe)` `\($a.granularity // "?" | safe)` commands, from `\($a.derivation.method? // "unknown" | safe)` against `\($a.derivation.diffBase? // "?" | safe | .[0:8])`",
                 "",
                 (if ($names | length) > 0 then ($names[0:100] | map("`\(safe)`") | join(" ")) else "_No command selected._" end),
-                (if ($a.forcedAll.count // 0) > 0 then "", "Every command selected by: " + ([$a.forcedAll.files[]? | "`\(.file | safe)` (\(.rule | safe))"] | .[0:10] | join(", ")) else empty end),
-                (if ($a.startupPath.count // 0) > 0 then "", "⚠️ Touches the startup path every command runs (\($a.startupPath.count | safe) file(s)): " + ([$a.startupPath.files[]? | "`\(safe)`"] | .[0:10] | join(", ")) else empty end)
+                (if ($a.forcedAll.count? // 0 | tonumber? // 0) > 0 then "", "Every command selected by: " + ([$a.forcedAll.files[]? | "`\(.file? // "?" | safe)` (`\(.rule? // "?" | safe)`)"] | .[0:10] | join(", ")) else empty end),
+                (if ($a.startupPath.count? // 0 | tonumber? // 0) > 0 then "", "⚠️ Touches the startup path every command runs (`\($a.startupPath.count | safe)` file(s)): " + ([$a.startupPath.files[]? | "`\(safe)`"] | .[0:10] | join(", ")) else empty end)
             ' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
           fi
 

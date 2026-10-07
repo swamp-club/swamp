@@ -113,11 +113,34 @@ Deno.test("closure: does not enter a module stopAt names", () => {
 });
 
 Deno.test("classifyOutsideGraph: build configuration affects every command", () => {
-  for (const file of ["deno.json", "deno.lock", ".tool-versions", "Dockerfile"]) {
+  for (
+    const file of [
+      "deno.json",
+      "deno.lock",
+      ".tool-versions",
+      "Dockerfile",
+      "scripts/compile.ts",
+    ]
+  ) {
     assertEquals(classifyOutsideGraph(file), {
       effect: "all",
       rule: "build-configuration",
     });
+  }
+});
+
+Deno.test("classifyOutsideGraph: what the binary embeds affects every command", () => {
+  for (
+    const file of [
+      "packages/dashboard/src/App.tsx",
+      "packages/dashboard/package.json",
+      "packages/dashboard/src/App_test.tsx",
+    ]
+  ) {
+    assertEquals(classifyOutsideGraph(file), {
+      effect: "all",
+      rule: "bundled-asset",
+    }, file);
   }
 });
 
@@ -222,6 +245,35 @@ Deno.test("computeAffectedCommands: docs and skills select nothing", () => {
   assertEquals(result.commands, []);
   assertEquals(result.scope, "none");
   assertEquals(result.derivation.changedFiles, 2);
+});
+
+Deno.test("computeAffectedCommands: a deleted module selects nothing by itself", () => {
+  const result = computeAffectedCommands({
+    graph: GRAPH,
+    index: INDEX,
+    changedFiles: ["src/lib/vault_lib.ts"],
+    deletedFiles: ["src/lib/gone.ts", "src/ui/gone.tsx"],
+    diffBase: "base-sha",
+  });
+  assertEquals(result.commands, ["vault"]);
+  assertEquals(result.forcedAll.count, 0);
+  assertEquals(result.derivation.changedFiles, 3);
+});
+
+Deno.test("computeAffectedCommands: a deleted file that is not a module is classified like a changed one", () => {
+  const deleted = (deletedFiles: string[]) =>
+    computeAffectedCommands({
+      graph: GRAPH,
+      index: INDEX,
+      changedFiles: [],
+      deletedFiles,
+      diffBase: "base-sha",
+    });
+  assertEquals(deleted([".tool-versions"]).scope, "all");
+  assertEquals(deleted(["src/domain/assets/template.yaml"]).forcedAll.files, [
+    { file: "src/domain/assets/template.yaml", rule: "unclassified" },
+  ]);
+  assertEquals(deleted(["design/old.md"]).scope, "none");
 });
 
 Deno.test("computeAffectedCommands: records how the list was derived", () => {

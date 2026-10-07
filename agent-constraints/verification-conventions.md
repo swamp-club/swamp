@@ -377,13 +377,19 @@ How to read it:
   under it. A root is listed when the module closure of the file that defines
   it contains a changed file, following both `import` and `import type`.
 - **The change is the three-dot diff** against the merge base with
-  `origin/main`, the same one the review guards filter on. Deleted files are
-  left out.
-- **`deno.json`, `deno.lock`, `.tool-versions` and `Dockerfile` select every
-  command**, and so does a changed file no rule recognises. `forcedAll` names
-  the files and the rule.
-- **Docs, skills, tests, CI, verification, `scripts/`, `extensions/` and
-  `packages/` select none.**
+  `origin/main`, the same one the review guards filter on.
+- **A file the CLI imports is looked up in the graph first**, wherever it
+  lives. The rules below are only for files outside it.
+- **`deno.json`, `deno.lock`, `.tool-versions`, `Dockerfile`,
+  `scripts/compile.ts` and `packages/dashboard/` select every command**: they
+  configure or are embedded in the binary. So does a changed file no rule
+  recognises. `forcedAll` names the files and the rule.
+- **Docs, skills, tests, CI, verification, and the rest of `scripts/`,
+  `extensions/` and `packages/` select none.** Skills are a deliberate
+  exception to the embedded rule: the bundled ones ship in the binary, and a
+  skill-only change still selects nothing.
+- **A deleted module is ignored** — what imported it changed too — and any
+  other deleted file is classified like a changed one.
 - **`startupPath` is a separate flag.** It lists changed files that every
   command runs at startup (reachable from `main.ts` without going through a
   command file). It does not widen the list; treat it as "any command could be
