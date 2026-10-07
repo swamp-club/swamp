@@ -363,6 +363,49 @@ export const AttestationStepSchema = z.object({
 
 export type AttestationStepData = z.infer<typeof AttestationStepSchema>;
 
+/**
+ * The CLI commands a change can affect, as `scripts/affected_commands.ts`
+ * computes them from the static import graph at the verified commit.
+ */
+export const AffectedCommandsSchema = z.object({
+  granularity: z.string().describe(
+    "What a name in `commands` stands for. `root` means a top-level command " +
+      "and every subcommand under it.",
+  ),
+  scope: z.enum(["all", "some", "none"]).describe(
+    "Whether the change selects every command, some of them, or none.",
+  ),
+  commands: z.array(z.string()).describe("Affected command names, sorted."),
+  totalCommands: z.number().describe("How many commands there are to select."),
+  startupPath: z.object({
+    count: z.number(),
+    files: z.array(z.string()),
+  }).describe(
+    "Changed files every command runs at startup. Reported beside the list " +
+      "rather than widening it. `files` carries the first few; `count` is " +
+      "the full number.",
+  ),
+  forcedAll: z.object({
+    count: z.number(),
+    files: z.array(z.object({ file: z.string(), rule: z.string() })),
+  }).describe(
+    "Changed files that selected every command outright, and the rule that " +
+      "decided each.",
+  ),
+  derivation: z.object({
+    method: z.string().describe(
+      "`static-imports`: the list follows import statements only. It cannot " +
+        "see extension loading, registries, bundled assets or computed " +
+        "import paths, so an empty list is not proof of no effect.",
+    ),
+    diffBase: z.string().describe("The commit the change was diffed against."),
+    edges: z.array(z.string()).describe("The import edge kinds followed."),
+    changedFiles: z.number(),
+  }).passthrough(),
+}).passthrough();
+
+export type AffectedCommandsData = z.infer<typeof AffectedCommandsSchema>;
+
 export const AttestationSchema = z.object({
   version: z.literal("1").describe(
     "Attestation format version. CI refuses a version it does not know.",
@@ -456,6 +499,12 @@ export const AttestationSchema = z.object({
   runs: z.record(z.string(), z.string()).optional().describe(
     "Workflow run id per verification workflow, so a reader can go back to " +
       "the records this document was projected from.",
+  ),
+
+  affectedCommands: AffectedCommandsSchema.optional().describe(
+    "The CLI commands the change can affect. Optional: attestations written " +
+      "before the generator computed it do not carry it, and CI displays it " +
+      "without checking it.",
   ),
 }).passthrough();
 

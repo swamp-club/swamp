@@ -41,7 +41,7 @@
  * workflow change and deliberately not this one.
  *
  * Usage:
- *   deno run --allow-read --allow-env --allow-run=git,swamp \
+ *   deno run --allow-read --allow-env --allow-run=git,swamp,deno \
  *     scripts/build_attestation.ts \
  *       --run <build-run-id> --run <reviews-run-id> --run <skills-run-id> \
  *       --commit <sha> --branch <name>
@@ -50,6 +50,11 @@
  * three ids may be given in any order. The attestation JSON goes to stdout and
  * nothing else does, so a caller can capture it directly; diagnostics go to
  * stderr.
+ *
+ * Run it from a checkout that is at the commit being attested, with no tracked
+ * file modified. Everything else here is read out of git at that commit, but
+ * the affected-commands list comes from `deno info`, which reads the files on
+ * disk — so the script refuses a checkout that is not the tree it names.
  */
 
 import { parseArgs } from "@std/cli/parse-args";
@@ -60,6 +65,15 @@ import {
   AttestationSchema,
   type AttestationStepData,
 } from "../extensions/models/_lib/schemas.ts";
+import {
+  type AffectedCommands,
+  buildImportGraph,
+  COMMAND_DIR,
+  type CommandIndex,
+  computeAffectedCommands,
+  type DenoInfo,
+  ENTRY_POINT,
+} from "./affected_commands.ts";
 
 /**
  * The verification workflows, in the order the attestation lists their steps.
@@ -160,6 +174,17 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   {
     path: "scripts/build_attestation.ts",
     jsonPath: ["scripts", "build-attestation"],
+  },
+  // The generator imports the first and runs the second, and between them
+  // they decide what `affectedCommands` says. Pinned for the same reason the
+  // generator pins itself.
+  {
+    path: "scripts/affected_commands.ts",
+    jsonPath: ["scripts", "affected-commands"],
+  },
+  {
+    path: "scripts/command_index.ts",
+    jsonPath: ["scripts", "command-index"],
   },
 ];
 
@@ -405,6 +430,11 @@ export interface AttestationEnvironment {
   os: string;
   arch: string;
   now: Date;
+  /**
+   * The commands the change can affect. Computed by the caller, like the
+   * hashes: it comes from the commit's files, not from a run record.
+   */
+  affectedCommands?: AffectedCommands;
 }
 
 /**
@@ -574,6 +604,8 @@ export function buildAttestation(
     },
 
     runs,
+
+    affectedCommands: env.affectedCommands,
   };
 }
 
@@ -800,6 +832,177 @@ function isEmptyDefault(value: unknown): boolean {
     value === undefined || value === "";
 }
 
+// -- Affected commands --------------------------------------------------------
+
+/** How long `deno info` or the command index may take before it is abandoned. */
+const SUBPROCESS_TIMEOUT_MS = 120 * 1000;
+
+/**
+ * Checks that the working tree is the tree the attestation names.
+ *
+ * `head` is the checkout's commit and `status` is `git status --porcelain`
+ * for tracked files. Untracked files are not asked about: one that nothing
+ * tracked imports is not in the module graph, and one that something tracked
+ * was edited to import shows up as that edit.
+ */
+export function checkCheckout(
+  head: string | null,
+  status: string | null,
+  commit: string,
+): string[] {
+  if (!head || status === null) {
+    return ["could not read the state of this checkout from git"];
+  }
+  const errors: string[] = [];
+  if (head !== commit) {
+    errors.push(
+      `this checkout is at ${head}, but this attestation names ${commit}`,
+    );
+  }
+  const modified = status.split("\n").filter((line) => line.trim() !== "");
+  if (modified.length > 0) {
+    errors.push(
+      `this checkout has ${modified.length} modified tracked file(s), so it ` +
+        `is not the tree at ${commit}:\n` +
+        modified.slice(0, 10).map((line) => `  ${line}`).join("\n"),
+    );
+  }
+  return errors;
+}
+
+/** The command index as the subprocess printed it, or null if it is not one. */
+export function parseCommandIndex(stdout: string): CommandIndex | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const entries = Object.entries(parsed);
+    if (entries.length === 0) return null;
+    return entries.every(([, file]) => typeof file === "string")
+      ? parsed as CommandIndex
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Runs a command to completion, keeping stderr for the failure message. */
+async function run(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  try {
+    const { code, stdout, stderr } = await new Deno.Command(command, {
+      args,
+      cwd,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+      env: childEnv(),
+      clearEnv: true,
+      signal: AbortSignal.timeout(SUBPROCESS_TIMEOUT_MS),
+    }).output();
+    const decoder = new TextDecoder();
+    return {
+      ok: code === 0,
+      stdout: decoder.decode(stdout),
+      stderr: decoder.decode(stderr),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Works out which commands the commit can affect, from the files on disk.
+ *
+ * The caller has already shown the checkout is the commit's tree. The change
+ * is the commit against its merge base with `origin/main` — the same
+ * three-dot diff the review guards filter on, so the list describes the
+ * change the reviews examined. Deleted files are left out: a module that is
+ * gone is in nobody's closure, and whatever imported it had to change too.
+ */
+async function gatherAffectedCommands(
+  commit: string,
+  repoRoot: string,
+): Promise<{ affectedCommands: AffectedCommands } | { error: string }> {
+  const diffBase = (await capture("git", ["merge-base", "origin/main", commit]))
+    ?.trim();
+  if (!diffBase) {
+    return {
+      error: `git finds no merge base between origin/main and ${commit}; ` +
+        "fetch origin/main so the change can be diffed against it",
+    };
+  }
+  const diff = await capture("git", [
+    "diff",
+    "--name-only",
+    "--diff-filter=d",
+    "-z",
+    diffBase,
+    commit,
+  ]);
+  if (diff === null) {
+    return { error: `could not diff ${commit} against ${diffBase}` };
+  }
+  const changedFiles = diff.split("\0").filter((file) => file !== "");
+
+  const info = await run("deno", ["info", "--json", ENTRY_POINT], repoRoot);
+  if (!info.ok) {
+    return {
+      error: `deno info ${ENTRY_POINT} failed: ${info.stderr.trim()}`,
+    };
+  }
+  let graph;
+  try {
+    graph = buildImportGraph(JSON.parse(info.stdout) as DenoInfo, repoRoot);
+  } catch {
+    return { error: `deno info ${ENTRY_POINT} did not print a module graph` };
+  }
+
+  // Only command files the CLI already loads are handed over; see
+  // command_index.ts for why the rest of the directory must not be imported.
+  const commandFiles = [...graph.keys()]
+    .filter((file) =>
+      file.startsWith(COMMAND_DIR) &&
+      !file.slice(COMMAND_DIR.length).includes("/")
+    )
+    .sort();
+  const indexed = await run("deno", [
+    "run",
+    "--no-prompt",
+    "--unstable-bundle",
+    "--allow-read",
+    "--allow-env",
+    "--allow-sys",
+    "--allow-ffi",
+    "scripts/command_index.ts",
+    ...commandFiles,
+  ], repoRoot);
+  const index = indexed.ok ? parseCommandIndex(indexed.stdout) : null;
+  if (!index) {
+    return {
+      error: "could not map commands to their files: " +
+        (indexed.stderr.trim() || "the command index was not valid JSON"),
+    };
+  }
+
+  return {
+    affectedCommands: computeAffectedCommands({
+      graph,
+      index,
+      changedFiles,
+      diffBase,
+    }),
+  };
+}
+
 async function fetchRun(id: string): Promise<RunRecord | null> {
   const record = await capture("swamp", [
     "workflow",
@@ -841,6 +1044,25 @@ async function main(): Promise<number> {
   if (!commit) {
     console.error(
       `git cannot resolve ${requestedCommit} to a commit in this repository`,
+    );
+    return 1;
+  }
+
+  // Before anything else is read: the affected-commands list is computed from
+  // the files on disk, so a checkout that has moved on would describe a tree
+  // the attestation does not name.
+  const repoRoot = (await capture("git", ["rev-parse", "--show-toplevel"]))
+    ?.trim();
+  const checkoutErrors = checkCheckout(
+    (await capture("git", ["rev-parse", "HEAD"]))?.trim() ?? null,
+    await capture("git", ["status", "--porcelain", "--untracked-files=no"]),
+    commit,
+  );
+  if (!repoRoot || checkoutErrors.length > 0) {
+    for (const error of checkoutErrors) console.error(error);
+    console.error(
+      "run this from a clean checkout of the verified commit; the list of " +
+        "affected commands is read from the files on disk",
     );
     return 1;
   }
@@ -953,6 +1175,12 @@ async function main(): Promise<number> {
     setIn(configIntegrity, file.jsonPath, await computeChecksum(content));
   }
 
+  const affected = await gatherAffectedCommands(commit, repoRoot);
+  if ("error" in affected) {
+    console.error(affected.error);
+    return 1;
+  }
+
   // Cliffy's version action branches on which spelling was used: `--version`
   // takes `showLongVersion()`, which is the program name plus the version, and
   // `-V` takes `showVersion()`, which is the version alone. Ask for the bare one
@@ -968,6 +1196,7 @@ async function main(): Promise<number> {
     os: Deno.build.os,
     arch: Deno.build.arch,
     now: new Date(),
+    affectedCommands: affected.affectedCommands,
   });
 
   // The generator validates its own output. post_attestation validates it

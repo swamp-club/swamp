@@ -94,9 +94,10 @@ failed" below.
 3. **Present the full verification checklist to the user and wait for their
    confirmation to proceed.** The checklist must show every step from both the
    build and review workflows — status, model, duration, and for reviews the
-   VERDICT and finding count. Include the workflow run file paths so the user
-   can inspect the raw data. See `agent-constraints/verification-conventions.md`
-   for the checklist format.
+   VERDICT and finding count. End it with the attestation's `affectedCommands`:
+   scope, the command names, and the startup-path warning if set. Include the
+   workflow run file paths so the user can inspect the raw data. See
+   `agent-constraints/verification-conventions.md` for the checklist format.
 
    **Stop here and wait.** Do NOT post the attestation or open a PR until the
    user has seen the checklist and explicitly said they are ready to open the
