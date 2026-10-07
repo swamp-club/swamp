@@ -182,7 +182,8 @@ prints absolute. When a `--json` run throws without a render having
 written its document (a version that already exists, a manifest error, an
 unexpected failure), the command writes it with status `failed`, carrying
 `resolved` and `warnings` when they were recorded, before the error
-propagates. Every `--json` run leaves exactly one document on stdout.
+propagates. Every `--json` run that reaches the push command (past flag
+parsing and the account gate) leaves exactly one document on stdout.
 
 `extension quality` packages through the same prepare phase, on a cache hit
 too, but skips the registry checks and makes no registry call. It runs the

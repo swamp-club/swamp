@@ -316,153 +316,161 @@ export const extensionPushCommand = new Command()
     "Suppress warning when version is bumped without upgrade entries",
   )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
-    resolvePublishVisibility(undefined, options.visibility);
-    if (
-      options.channel !== undefined &&
-      !ReleaseChannel.isValid(options.channel)
-    ) {
-      throw new UserError(
-        `Invalid channel: "${options.channel}". Must be one of: beta, rc, stable.`,
-      );
-    }
-    if (options.channel === "stable") {
-      options.channel = undefined;
-    }
-    if (
-      options.versionSuffix !== undefined &&
-      options.versionSuffix !== "epoch"
-    ) {
-      throw new UserError(
-        `Invalid version suffix: "${options.versionSuffix}". Must be "epoch".`,
-      );
-    }
     const cliCtx = createContext(options, ["extension", "push"]);
     cliCtx.logger.debug`Starting extension push`;
-
-    // 1. Validate repo
-    const repoDir = resolveRepoDir(options.repoDir);
-    const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-    const { absoluteManifestPath } = await resolveManifestArgument({
-      argument: manifestPath,
+    // The renderer exists before anything can throw, so a --json run always
+    // leaves exactly one document on stdout: a render that ended the run
+    // wrote it, or renderUnfinished writes it with status failed. Paths are
+    // filled in once the repo and manifest directories are resolved.
+    const renderPaths = {
       cwd: Deno.cwd(),
-      repoDir,
-      extensionsDir,
-    });
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir,
-      outputMode: cliCtx.outputMode,
-    });
-
-    // 2. Resolve extension files (manifest, models, workflows, additional files)
-    const resolved = await resolveExtensionFiles({
-      repoDir,
-      manifestPath: absoluteManifestPath,
-      repoContext,
-      logger: cliCtx.logger,
-      extensionsDir,
-    });
-    const {
-      manifest: sourceManifest,
-      modelsDir,
-      modelEntryPoints,
-      allModelFiles,
-      vaultsDir,
-      vaultEntryPoints,
-      allVaultFiles,
-      datastoresDir,
-      datastoreEntryPoints,
-      allDatastoreFiles,
-      reportsDir,
-      reportEntryPoints,
-      allReportFiles,
-      webhooksDir,
-      webhookEntryPoints,
-      allWebhookFiles,
-      workflowFiles,
-      includeFilePaths,
-      additionalFilePaths,
-      binaryFilePaths,
-    } = resolved;
-    const manifest = {
-      ...sourceManifest,
-      visibility: resolvePublishVisibility(
-        sourceManifest.visibility,
-        options.visibility,
-      ),
+      repoDir: Deno.cwd(),
+      manifestDir: Deno.cwd(),
     };
-
-    // 2a. Override version micro with epoch seconds when requested.
-    if (options.versionSuffix === "epoch") {
-      manifest.version = CalVer.withEpochMicro().value;
-      cliCtx.logger
-        .debug`Version overridden with epoch suffix: ${manifest.version}`;
-    }
-
-    // 2b. Detect project config for project-aware bundling and quality checks.
-    // The walk up from the manifest stops at the extensions root, so a
-    // manifest outside the repo never picks up a deno.json above it.
-    const manifestDir = dirname(absoluteManifestPath);
-    const configBoundary = projectConfigBoundary(
-      manifestDir,
-      resolved.extensionsRoot,
-      repoDir,
+    const renderer = createExtensionPushRenderer(
+      cliCtx.outputMode,
+      renderPaths,
     );
-    const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
-    let packageJsonDir: string | undefined;
-    if (denoConfigPath) {
-      cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
-    } else {
-      const candidateDir = await findPackageJsonDir(
+    try {
+      resolvePublishVisibility(undefined, options.visibility);
+      if (
+        options.channel !== undefined &&
+        !ReleaseChannel.isValid(options.channel)
+      ) {
+        throw new UserError(
+          `Invalid channel: "${options.channel}". Must be one of: beta, rc, stable.`,
+        );
+      }
+      if (options.channel === "stable") {
+        options.channel = undefined;
+      }
+      if (
+        options.versionSuffix !== undefined &&
+        options.versionSuffix !== "epoch"
+      ) {
+        throw new UserError(
+          `Invalid version suffix: "${options.versionSuffix}". Must be "epoch".`,
+        );
+      }
+
+      // 1. Validate repo
+      const repoDir = resolveRepoDir(options.repoDir);
+      const extensionsDir = resolveExtensionsDir(options.extensionsDir);
+      const { absoluteManifestPath } = await resolveManifestArgument({
+        argument: manifestPath,
+        cwd: Deno.cwd(),
+        repoDir,
+        extensionsDir,
+      });
+      const { repoContext } = await requireInitializedRepoReadOnly({
+        repoDir,
+        outputMode: cliCtx.outputMode,
+      });
+
+      // 2. Resolve extension files (manifest, models, workflows, additional files)
+      const resolved = await resolveExtensionFiles({
+        repoDir,
+        manifestPath: absoluteManifestPath,
+        repoContext,
+        logger: cliCtx.logger,
+        extensionsDir,
+      });
+      const {
+        manifest: sourceManifest,
+        modelsDir,
+        modelEntryPoints,
+        allModelFiles,
+        vaultsDir,
+        vaultEntryPoints,
+        allVaultFiles,
+        datastoresDir,
+        datastoreEntryPoints,
+        allDatastoreFiles,
+        reportsDir,
+        reportEntryPoints,
+        allReportFiles,
+        webhooksDir,
+        webhookEntryPoints,
+        allWebhookFiles,
+        workflowFiles,
+        includeFilePaths,
+        additionalFilePaths,
+        binaryFilePaths,
+      } = resolved;
+      const manifest = {
+        ...sourceManifest,
+        visibility: resolvePublishVisibility(
+          sourceManifest.visibility,
+          options.visibility,
+        ),
+      };
+
+      // 2a. Override version micro with epoch seconds when requested.
+      if (options.versionSuffix === "epoch") {
+        manifest.version = CalVer.withEpochMicro().value;
+        cliCtx.logger
+          .debug`Version overridden with epoch suffix: ${manifest.version}`;
+      }
+
+      // 2b. Detect project config for project-aware bundling and quality checks.
+      // The walk up from the manifest stops at the extensions root, so a
+      // manifest outside the repo never picks up a deno.json above it.
+      const manifestDir = dirname(absoluteManifestPath);
+      const configBoundary = projectConfigBoundary(
         manifestDir,
-        configBoundary,
+        resolved.extensionsRoot,
+        repoDir,
       );
-      if (candidateDir) {
-        const allEntryPoints = [
-          ...modelEntryPoints,
-          ...vaultEntryPoints,
-          ...datastoreEntryPoints,
-          ...reportEntryPoints,
-          ...webhookEntryPoints,
-        ];
-        let hasBare = false;
-        for (const ep of allEntryPoints) {
-          const src = await Deno.readTextFile(ep);
-          if (sourceHasBareSpecifiers(src)) {
-            hasBare = true;
-            break;
+      const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
+      let packageJsonDir: string | undefined;
+      if (denoConfigPath) {
+        cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
+      } else {
+        const candidateDir = await findPackageJsonDir(
+          manifestDir,
+          configBoundary,
+        );
+        if (candidateDir) {
+          const allEntryPoints = [
+            ...modelEntryPoints,
+            ...vaultEntryPoints,
+            ...datastoreEntryPoints,
+            ...reportEntryPoints,
+            ...webhookEntryPoints,
+          ];
+          let hasBare = false;
+          for (const ep of allEntryPoints) {
+            const src = await Deno.readTextFile(ep);
+            if (sourceHasBareSpecifiers(src)) {
+              hasBare = true;
+              break;
+            }
+          }
+          if (hasBare) {
+            packageJsonDir = candidateDir;
+            cliCtx.logger
+              .debug`Found package.json project at ${packageJsonDir}`;
+            await requireNodeModules(packageJsonDir);
+          } else {
+            cliCtx.logger
+              .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
           }
         }
-        if (hasBare) {
-          packageJsonDir = candidateDir;
-          cliCtx.logger
-            .debug`Found package.json project at ${packageJsonDir}`;
-          await requireNodeModules(packageJsonDir);
-        } else {
-          cliCtx.logger
-            .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
-        }
       }
-    }
 
-    // 3. Create libswamp context and deps
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const identity = await loadIdentity();
-    // Every HTTP call made before the upload is recorded so the dry-run
-    // summary can list the calls actually made.
-    const apiCalls = createApiCallRecorder();
-    const prepareDeps = createExtensionPushPrepareDeps(identity, {
-      recorder: apiCalls,
-    });
-    // Printed paths open from where the author ran the command.
-    const renderer = createExtensionPushRenderer(cliCtx.outputMode, {
-      cwd: Deno.cwd(),
-      repoDir,
-      manifestDir,
-    });
-    // Whatever throws from here, a --json run still leaves exactly one
-    // document on stdout: a render that ended the run wrote it, or
-    // renderUnfinished writes it with status failed.
-    try {
+      // 3. Create libswamp context and deps
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const identity = await loadIdentity();
+      // Every HTTP call made before the upload is recorded so the dry-run
+      // summary can list the calls actually made.
+      const apiCalls = createApiCallRecorder();
+      const prepareDeps = createExtensionPushPrepareDeps(identity, {
+        recorder: apiCalls,
+      });
+      // Printed paths open from where the author ran the command, now that
+      // the repo and manifest directories are known.
+      renderPaths.repoDir = repoDir;
+      renderPaths.manifestDir = manifestDir;
       const registryChecks = options.dryRun ? "collect" : "enforce";
       const cache = new ExtensionPackageCache(
         defaultPackageCacheRoot(repoDir),
