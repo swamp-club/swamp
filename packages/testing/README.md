@@ -177,7 +177,9 @@ two-phase push. By default it behaves like `@swamp/s3-datastore` and
 - a bare `markDirty()` makes the next push a full walk that deletes nothing;
 - a write that was never marked is never pushed;
 - pulls never delete local files and overwrite locally dirty ones;
-- a pull of a remote that moved drops a pending push.
+- a pull of a remote that moved drops a pending push;
+- a service keeps the namespace of its first pull or push, and rejects a later
+  one with a different namespace.
 
 The source header cites the extension code behind each behaviour.
 
@@ -279,20 +281,21 @@ store lacks it, or whose create is not atomic. Pass
 Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
 and two-phase push. The factory returns two services bound to two different
 cache directories on **one** fresh backend, plus a cleanup. The suite calls it
-once per case (ten fixtures), pulls on both caches, then runs:
+once per case (eleven fixtures), pulls on both caches, then runs:
 
-| Case                      | Asserts                                                                                                          |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `round-trip`              | A path-marked file pushed by `first` pulls on `second` with identical bytes                                      |
-| `push-deletes`            | A marked path that is absent on disk deletes the remote file                                                     |
-| `pull-deletes`            | A pull removes a local file the remote deleted                                                                   |
-| `bulk-mark`               | A bare `markDirty()` pushes every changed file                                                                   |
-| `failed-push-retry`       | A failed push leaves the path dirty, and the next push uploads it                                                |
-| `two-phase`               | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                               |
-| `pull-nothing-new`        | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                      |
-| `forward-slash-paths`     | A forward-slash `relPath` lands at the native path                                                               |
-| `fetch-content`           | `fetchContent` returns the remote's bytes or `null`, rejects `..`, and leaves the cache and a pending push alone |
-| `fetch-content-namespace` | A cache-relative path that starts with the namespace is read without the namespace being added again             |
+| Case                      | Asserts                                                                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `round-trip`              | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                         |
+| `push-deletes`            | A marked path that is absent on disk deletes the remote file                                                                        |
+| `pull-deletes`            | A pull removes a local file the remote deleted                                                                                      |
+| `bulk-mark`               | A bare `markDirty()` pushes every changed file                                                                                      |
+| `failed-push-retry`       | A failed push leaves the path dirty, and the next push uploads it                                                                   |
+| `two-phase`               | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                  |
+| `pull-nothing-new`        | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                         |
+| `forward-slash-paths`     | A forward-slash `relPath` lands at the native path                                                                                  |
+| `fetch-content`           | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone |
+| `fetch-content-error`     | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                     |
+| `fetch-content-namespace` | A cache-relative path that starts with the namespace is read without the namespace being added again                                |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
 resolve to `void` everywhere.
@@ -304,11 +307,15 @@ a reason:
   never delete local files;
 - `failed-push-retry` when the fixture has no `failNextPush`, a hook that makes
   the next `first.service.pushChanged()` fail with a transport error;
-- `fetch-content` and `fetch-content-namespace` when `second.service` has no
-  `fetchContent`;
-- `fetch-content-namespace` unless the fixture sets `namespace` to the namespace
-  both services sync. It has only been run against `createInMemoryRemote`, which
-  treats a namespaced path as a plain key;
+- every `fetch-content` case when `second.service` has no `fetchContent`;
+- `fetch-content-error` when the fixture has no `failNextFetch`, a hook that
+  makes the next `second.service.fetchContent()` fail with a transport error;
+- `fetch-content-namespace` unless the fixture sets `namespace` to a namespace
+  both services can sync. That case passes the namespace to every call it makes,
+  its warm-up pulls included, because the S3 and GCS services keep the namespace
+  of their first pull. It has only been run against `createInMemoryRemote`,
+  which binds a namespace the same way but stores a namespaced path as a plain
+  key;
 - `two-phase` when the service has no `preparePush` and `commitPush`.
 
 A failing case rejects with an error that names it, such as

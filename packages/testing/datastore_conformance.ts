@@ -584,8 +584,14 @@ export interface SyncServiceRoundTripFixture {
    */
   failNextPush?: () => void;
   /**
-   * The namespace both services sync, when the backend is bound to one.
-   * Without it the `fetch-content-namespace` case is skipped.
+   * Makes the next `second.service.fetchContent()` fail with a transport
+   * error. Without it the `fetch-content-error` case is skipped.
+   */
+  failNextFetch?: () => void;
+  /**
+   * A namespace both services can sync. The `fetch-content-namespace` case
+   * passes it to every call it makes, the warm-up pulls included, and is
+   * skipped without it. No other case passes a namespace.
    */
   namespace?: string;
   /** Releases the backend and the cache directories. */
@@ -759,11 +765,22 @@ async function assertAbsent(
   assertEquals(actual, undefined, `${message}: ${relPath} still exists`);
 }
 
-/** Pulls on both instances so each starts from a synced cache. */
-async function warmUp(fixture: SyncServiceRoundTripFixture): Promise<void> {
-  assertCount(await fixture.first.service.pullChanged(), "first pullChanged()");
+/**
+ * Pulls on both instances so each starts from a synced cache. A service
+ * may take its namespace from its first pull and refuse another afterwards,
+ * so a case that syncs a namespace warms up with it.
+ */
+async function warmUp(
+  fixture: SyncServiceRoundTripFixture,
+  namespace: string | undefined,
+): Promise<void> {
+  const options = namespace === undefined ? undefined : { namespace };
   assertCount(
-    await fixture.second.service.pullChanged(),
+    await fixture.first.service.pullChanged(options),
+    "first pullChanged()",
+  );
+  assertCount(
+    await fixture.second.service.pullChanged(options),
     "second pullChanged()",
   );
 }
@@ -779,6 +796,8 @@ interface RoundTripCase {
   skipForOptions?: (options: SyncServiceRoundTripOptions) => string | undefined;
   /** Returns a skip reason that depends on the fixture. */
   skip?: (fixture: SyncServiceRoundTripFixture) => string | undefined;
+  /** Whether the case passes the fixture's namespace to every sync call. */
+  namespaced?: boolean;
   run: (fixture: SyncServiceRoundTripFixture) => Promise<void>;
 }
 
@@ -1068,6 +1087,12 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         undefined,
         "fetchContent() must reject a relPath with a .. segment",
       );
+      await assertRejects(
+        () => fetchContent(`/${rel}`),
+        Error,
+        undefined,
+        "fetchContent() must reject an absolute relPath",
+      );
 
       // A local change not pushed yet: the remote's bytes come back, and the
       // change stays local and stays pending.
@@ -1088,6 +1113,10 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         mtime.getTime(),
         `${message}: ${rel} was rewritten`,
       );
+      // A current mtime again, so a push that compares mtimes still sees the
+      // change.
+      const now = new Date();
+      await Deno.utime(localPath(second.cacheDir, rel), now, now);
       assertChanged(
         await second.service.pushChanged(),
         "second pushChanged() after fetchContent()",
@@ -1100,7 +1129,35 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     },
   },
   {
+    name: "fetch-content-error",
+    skip: ({ second, failNextFetch }) => {
+      if (!fetchContentOf(second.service)) return NO_FETCH_CONTENT;
+      return failNextFetch ? undefined : "the fixture has no failNextFetch";
+    },
+    run: async ({ first, second, failNextFetch }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      const rel = `${ROOT}/fetch-content-error/raw`;
+      const bytes = sampleBytes("fetch-content-error");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+
+      failNextFetch!();
+      await assertRejects(
+        () => fetchContent(rel),
+        Error,
+        undefined,
+        "fetchContent() must reject when the remote cannot be read; null means the file is gone",
+      );
+      assertEquals(
+        await fetchContent(rel),
+        bytes,
+        "fetchContent() after a failed one must return the remote's bytes",
+      );
+    },
+  },
+  {
     name: "fetch-content-namespace",
+    namespaced: true,
     skip: ({ second, namespace }) => {
       if (!fetchContentOf(second.service)) return NO_FETCH_CONTENT;
       return namespace ? undefined : "the fixture names no namespace";
@@ -1154,14 +1211,21 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   local bytes and mtimes alone.
  * - `forward-slash-paths`: a forward-slash `relPath` lands at the native path.
  * - `fetch-content`: `fetchContent` returns the remote's bytes and `null` for
- *   a missing file, rejects a `..` path, writes nothing into the cache, leaves
+ *   a missing file, rejects a `..` or absolute path, writes nothing into the
+ *   cache, leaves
  *   a differing local file alone and keeps its pending push. Skipped when
  *   `second.service` has no `fetchContent`.
+ * - `fetch-content-error`: a `fetchContent` that cannot read the remote
+ *   rejects, never resolving to `null`. Skipped without `fetchContent`, and
+ *   when the fixture has no `failNextFetch`.
  * - `fetch-content-namespace`: a cache-relative path that starts with the
- *   namespace is read without the namespace being added again. Skipped
- *   without `fetchContent`, and unless the fixture names a `namespace`. It
- *   has only been run against `createInMemoryRemote`, which treats such a
- *   path as a plain key.
+ *   namespace is read without the namespace being added again. This case
+ *   passes the fixture's `namespace` to every call, its warm-up pulls
+ *   included, since a service may bind the namespace of its first pull.
+ *   Skipped without `fetchContent`, and unless the fixture names a
+ *   `namespace`. It has only been run against `createInMemoryRemote`, which
+ *   binds a namespace as the S3 and GCS datastores do but stores a
+ *   namespaced path as a plain key.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.
@@ -1251,7 +1315,10 @@ async function runRoundTripCase(
     if (reason !== undefined) {
       result.skipped.push({ name: testCase.name, reason });
     } else {
-      await warmUp(fixture);
+      await warmUp(
+        fixture,
+        testCase.namespaced ? fixture.namespace : undefined,
+      );
       await testCase.run(fixture);
       result.passed.push(testCase.name);
     }

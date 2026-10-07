@@ -73,12 +73,21 @@
  * Experimental: the defaults track today's extension behaviour and will
  * change during the datastore rework.
  *
+ * - A service takes its namespace from the first `pullChanged`, `pushChanged`
+ *   or `preparePush` it runs, and a later one of those with a different
+ *   namespace rejects (S3SYNC:668-686). A service is therefore one
+ *   repository's, for its whole life.
+ *
  * `fetchContent` returns the committed bytes of one key and touches neither
  * the cache nor the sidecar. It takes the key as given, so a cache-relative
  * path that starts with a namespace reads that key, and it rejects a path
  * that is absolute or has a `..` segment.
  *
- * Not modelled: namespaces, lazy hydration (`hydrateFile`), the control
+ * No method looks at `options.signal`, so a test of cancellation needs a
+ * service of its own.
+ *
+ * Not modelled: namespace prefixes (a namespaced path is a plain key and a
+ * push is never limited to one), lazy hydration (`hydrateFile`), the control
  * plane, `previewPush`, model-scoped pulls through `context`, and Windows
  * drive-letter joins. Nor is the window between `preparePush` and
  * `commitPush` in which the extensions have already deleted objects but not
@@ -310,10 +319,12 @@ function toCacheRelative(relPath: string): string | undefined {
   return parts.join("/");
 }
 
-/** Whether `relPath` is absolute or has a `..` segment (fetchContent rule 5). */
+/**
+ * Whether `relPath` is absolute or has a `..` segment (fetchContent rule 5).
+ * A drive letter counts only before a separator, so `a:b/raw` is a name.
+ */
 function couldLeaveDatastore(relPath: string): boolean {
-  return relPath.startsWith("/") || relPath.startsWith("\\") ||
-    /^[A-Za-z]:/.test(relPath) ||
+  return /^([\\/]|[A-Za-z]:[\\/])/.test(relPath) ||
     relPath.split(/[\\/]/).some((segment) => segment === "..");
 }
 
@@ -519,6 +530,23 @@ export function createInMemoryRemote(
     const instance = connectOptions?.instance ?? `instance-${instanceCount}`;
     const key = sidecarKey(cacheDir);
 
+    let namespace: string | undefined;
+    let namespaceBound = false;
+    /** Binds the namespace on first use and refuses a different one after. */
+    const bindNamespace = (ns: string | undefined): void => {
+      if (!namespaceBound) {
+        namespace = ns;
+        namespaceBound = true;
+        return;
+      }
+      if (namespace !== ns) {
+        throw new Error(
+          `Namespace mismatch: bound to ${JSON.stringify(namespace)} ` +
+            `but called with ${JSON.stringify(ns)}`,
+        );
+      }
+    };
+
     const loadSidecar = () => sidecars.get(key);
     const ensureSidecar = (): Sidecar => {
       let sidecar = sidecars.get(key);
@@ -574,8 +602,9 @@ export function createInMemoryRemote(
     }
 
     async function pushChanged(
-      _options?: DatastoreSyncOptions,
+      options?: DatastoreSyncOptions,
     ): Promise<number> {
+      bindNamespace(options?.namespace);
       const sidecar = loadSidecar();
       // The fast path reads only the local sidecar, so it succeeds offline
       // and never reaches an injected failure (S3SYNC:1913-1922).
@@ -621,8 +650,9 @@ export function createInMemoryRemote(
     }
 
     async function preparePush(
-      _options?: DatastoreSyncOptions,
+      options?: DatastoreSyncOptions,
     ): Promise<InMemoryPushManifest> {
+      bindNamespace(options?.namespace);
       const sidecar = loadSidecar();
       if (sidecar && !sidecar.localDirty) {
         record({ instance, op: "prepare", paths: [], deleted: [] });
@@ -683,6 +713,7 @@ export function createInMemoryRemote(
     async function pullChanged(
       options?: DatastoreSyncOptions,
     ): Promise<number> {
+      bindNamespace(options?.namespace);
       checkReachable("pull", instance);
       const subdirs = options?.subdirs ?? [];
       const scoped = subdirs.length > 0;
@@ -777,11 +808,11 @@ export function createInMemoryRemote(
       _options?: DatastoreSyncOptions,
     ): Promise<Uint8Array | null> {
       try {
-        if (couldLeaveDatastore(relPath)) {
+        const rel = toCacheRelative(relPath);
+        if (rel === undefined || couldLeaveDatastore(relPath)) {
           throw new Error(`Path traversal rejected: ${relPath}`);
         }
         checkReachable("fetch", instance);
-        const rel = toCacheRelative(relPath) ?? relPath;
         record({ instance, op: "fetch", paths: [rel], deleted: [] });
         const bytes = committed.get(rel);
         // A copy, so a caller that changes it does not change the remote.

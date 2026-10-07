@@ -842,3 +842,41 @@ Deno.test("fetchContent: is absent when the connect option turns it off", async 
     return Promise.resolve();
   });
 });
+
+Deno.test("fetchContent: reads a name with a colon that is not a drive letter path", async () => {
+  await withTempDir(async (dir) => {
+    const { b } = await twoMachines(dir);
+    assertEquals(await b.fetchContent!("a:b/raw"), null);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a service keeps the namespace of its first pull or push (S3SYNC:668-686)", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const solo = remote.connect(join(dir, "solo"));
+    await solo.pullChanged();
+    await assertRejects(
+      () => solo.pushChanged({ namespace: "team" }),
+      Error,
+      'Namespace mismatch: bound to undefined but called with "team"',
+    );
+    await assertRejects(
+      () => solo.preparePush({ namespace: "team" }),
+      Error,
+      "Namespace mismatch",
+    );
+    assertEquals(await solo.pullChanged(), 0);
+
+    const team = remote.connect(join(dir, "team"));
+    await team.pushChanged({ namespace: "team" });
+    await assertRejects(
+      () => team.pullChanged(),
+      Error,
+      'Namespace mismatch: bound to "team" but called with undefined',
+    );
+    assertEquals(await team.pullChanged({ namespace: "team" }), 0);
+    // markDirty and fetchContent take no part in the binding.
+    await team.markDirty({ relPath: "x", namespace: "other" });
+    assertEquals(await team.fetchContent!("x", { namespace: "other" }), null);
+  });
+});

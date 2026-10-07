@@ -1625,7 +1625,8 @@ The method is optional and has no `SyncCapabilities` flag: core treats its
 presence as the capability. Core does not call it yet; `swamp serve` will, to
 check a run record before it resumes a suspended run by itself
 (swamp-club#3108). `assertSyncServiceRoundTripConformance` checks an
-implementation with its `fetch-content` and `fetch-content-namespace` cases, and
+implementation with its `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases, and
 `createInMemoryRemote` implements the method for tests.
 
 ### Lazy Hydration

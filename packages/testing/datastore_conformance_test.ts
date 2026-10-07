@@ -241,6 +241,9 @@ function inMemoryRemoteFactory(
       failNextPush: withFailureHook
         ? () => remote.failNext("push", undefined, { instance: "first" })
         : undefined,
+      failNextFetch: withFailureHook
+        ? () => remote.failNext("fetch", undefined, { instance: "second" })
+        : undefined,
       namespace: "conformance-ns",
       cleanup: () => removeTempDir(dir),
     };
@@ -258,6 +261,7 @@ const ALL_ROUND_TRIP_CASES = [
   "pull-nothing-new",
   "forward-slash-paths",
   "fetch-content",
+  "fetch-content-error",
   "fetch-content-namespace",
 ];
 
@@ -281,6 +285,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips failed-push-retry withou
   assertEquals(result.skipped.map((s) => s.name), [
     "pull-deletes",
     "failed-push-retry",
+    "fetch-content-error",
   ]);
 });
 
@@ -293,7 +298,7 @@ Deno.test("assertSyncServiceRoundTripConformance: a remote whose pulls delete pa
   assertEquals(result.passed, ALL_ROUND_TRIP_CASES);
 });
 
-Deno.test("assertSyncServiceRoundTripConformance: skips both fetch-content cases for a service without fetchContent", async () => {
+Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case for a service without fetchContent", async () => {
   const result = await assertSyncServiceRoundTripConformance(
     inMemoryRemoteFactory(undefined, true, (fixture) => {
       const { fetchContent: _fetchContent, ...service } =
@@ -304,6 +309,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips both fetch-content cases
   const reason = "second.service has no fetchContent";
   assertEquals(result.skipped.slice(1), [
     { name: "fetch-content", reason },
+    { name: "fetch-content-error", reason },
     { name: "fetch-content-namespace", reason },
   ]);
   assertEquals(result.skipped[0].name, "pull-deletes");
@@ -689,6 +695,25 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
             await Deno.writeFile(path, bytes);
           }
           return bytes;
+        },
+      });
+    },
+  },
+  {
+    caseName: "fetch-content-error",
+    bug: "fetchContent answers null when the remote cannot be read",
+    breakFixture: (fixture) => {
+      const { service } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: async (relPath, options) => {
+          try {
+            return await service.fetchContent!(relPath, options);
+          } catch (error) {
+            // A refused path still rejects, so the earlier case passes.
+            if (String(error).includes("Path traversal")) throw error;
+            return null;
+          }
         },
       });
     },

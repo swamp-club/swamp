@@ -303,5 +303,5 @@ compare a cached file with the remote one before acting on it.
 - Reject a `relPath` that is absolute or has a `..` segment.
 - Do not keep the returned bytes on the service instance.
 
-Check it with the `fetch-content` and `fetch-content-namespace` cases of
-`assertSyncServiceRoundTripConformance`.
+Check it with the `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases of `assertSyncServiceRoundTripConformance`.
