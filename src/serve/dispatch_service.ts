@@ -494,7 +494,10 @@ export class DispatchService {
       outcome = { ok: false, error };
     }
     try {
-      await handOff?.end();
+      // An attempt that failed has nothing to write, so a cancel ends the
+      // wait for a structural command. One that succeeded waits: a cancel
+      // must not discard its result.
+      await handOff?.end(outcome.ok ? undefined : request.signal);
     } catch (error) {
       // The locks could not be taken back, so the step must not write. An
       // attempt that succeeded fails here even when the step was cancelled
@@ -515,7 +518,7 @@ export class DispatchService {
       }
       // A cancelled attempt that failed writes nothing to the model, so the
       // step stays cancelled rather than failing on a structural command it
-      // could not wait out.
+      // did not wait out.
       logger.warn(
         "Could not take back the locks of cancelled step {step}: {error}",
         {
