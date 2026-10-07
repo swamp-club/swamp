@@ -25,6 +25,12 @@ import {
 } from "./expression_references.ts";
 
 const modelName = fc.stringMatching(/^[a-z][a-z0-9]{0,6}(-[a-z0-9]{1,4})?$/);
+/**
+ * CEL does not parse these words as a member name after `model.`, so dot
+ * access to them fails closed (pinned in expression_references_test.ts).
+ */
+const CEL_NON_MEMBER_WORDS = new Set(["in", "true", "false", "null"]);
+const dotAccessibleName = modelName.filter((n) => !CEL_NON_MEMBER_WORDS.has(n));
 const accessor = fc.constantFrom(...MODEL_SCOPED_DATA_ACCESSORS);
 
 /** Expressions that compute a string from something other than a literal. */
@@ -75,7 +81,7 @@ Deno.test("analyzeExpression: whitespace does not change the analysis", () => {
 
 Deno.test("analyzeExpression: hyphenated dot access and bracket access agree", () => {
   fc.assert(
-    fc.property(modelName, (name) => {
+    fc.property(dotAccessibleName, (name) => {
       const dot = analyzeExpression(`model.${name}.resource.spec.x`);
       const bracket = analyzeExpression(`model["${name}"].resource.spec.x`);
       assertEquals([...dot.dataTargets], [name]);
