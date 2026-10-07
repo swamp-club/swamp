@@ -66,6 +66,13 @@
  *   4012-4040).
  * - Internal cache files are never pushed or pulled (S3SYNC:116-128). `.log`
  *   files are synced.
+ * - A service takes its namespace from the first `pullChanged`, `pushChanged`
+ *   or `preparePush` it runs, before it reaches the remote, so one that fails
+ *   still binds it. A later one of those with a different namespace rejects
+ *   (S3SYNC:668-686). A service is therefore one repository's, for its whole
+ *   life. Unlike the extensions, which tell an empty namespace from an unset
+ *   one, the fake treats both as no namespace, as the `fetchContent` contract
+ *   does.
  *
  * Three behaviours that later phases are expected to change can be switched
  * through {@link InMemoryRemoteSemantics}.
@@ -73,7 +80,16 @@
  * Experimental: the defaults track today's extension behaviour and will
  * change during the datastore rework.
  *
- * Not modelled: namespaces, lazy hydration (`hydrateFile`), the control
+ * `fetchContent` returns the committed bytes of one key and touches neither
+ * the cache nor the sidecar. It takes the key as given, so a cache-relative
+ * path that starts with a namespace reads that key, and it rejects a path
+ * that is absolute or has a `..` segment.
+ *
+ * No method looks at `options.signal`, so a test of cancellation needs a
+ * service of its own.
+ *
+ * Not modelled: namespace prefixes (a namespaced path is a plain key and a
+ * push is never limited to one), lazy hydration (`hydrateFile`), the control
  * plane, `previewPush`, model-scoped pulls through `context`, and Windows
  * drive-letter joins. Nor is the window between `preparePush` and
  * `commitPush` in which the extensions have already deleted objects but not
@@ -121,7 +137,12 @@ export interface InMemoryRemoteOptions {
 }
 
 /** A remote operation a failure can be injected into. */
-export type InMemoryRemoteFailure = "push" | "pull" | "prepare" | "commit";
+export type InMemoryRemoteFailure =
+  | "push"
+  | "pull"
+  | "prepare"
+  | "commit"
+  | "fetch";
 
 /** Options for {@link InMemoryRemote.failNext}. */
 export interface FailNextOptions {
@@ -138,8 +159,8 @@ export interface FailNextOptions {
 export interface InMemoryRemoteOpRecord {
   /** The instance name given to `connect`. */
   instance: string;
-  op: "markDirty" | "push" | "pull" | "prepare" | "commit";
-  /** Paths marked, uploaded or downloaded, sorted. */
+  op: "markDirty" | "push" | "pull" | "prepare" | "commit" | "fetch";
+  /** Paths marked, uploaded, downloaded or fetched, sorted. */
   paths: string[];
   /** Paths deleted remotely (push) or locally (pull), sorted. */
   deleted: string[];
@@ -166,6 +187,11 @@ export interface InMemorySyncService extends DatastoreSyncService {
 export interface ConnectOptions {
   /** Name recorded in the op log. Default `instance-<n>`. */
   instance?: string;
+  /**
+   * Whether the service has `fetchContent`. Default true; false leaves the
+   * method out, as an extension that does not implement it would.
+   */
+  fetchContent?: boolean;
 }
 
 /** A remote datastore shared by any number of simulated machines. */
@@ -180,7 +206,7 @@ export interface InMemoryRemote {
     error?: Error,
     options?: FailNextOptions,
   ): void;
-  /** While offline, every push, pull, prepare and commit throws. */
+  /** While offline, every push, pull, prepare, commit and fetch throws. */
   offline(isOffline: boolean): void;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
@@ -293,6 +319,15 @@ function toCacheRelative(relPath: string): string | undefined {
     parts.push(part);
   }
   return parts.join("/");
+}
+
+/**
+ * Whether `relPath` is absolute or has a `..` segment (fetchContent rule 5).
+ * A drive letter counts only before a separator, so `a:b/raw` is a name.
+ */
+function couldLeaveDatastore(relPath: string): boolean {
+  return /^([\\/]|[A-Za-z]:[\\/])/.test(relPath) ||
+    relPath.split(/[\\/]/).some((segment) => segment === "..");
 }
 
 async function readLocal(
@@ -497,6 +532,27 @@ export function createInMemoryRemote(
     const instance = connectOptions?.instance ?? `instance-${instanceCount}`;
     const key = sidecarKey(cacheDir);
 
+    let namespace: string | undefined;
+    let namespaceBound = false;
+    /**
+     * Binds the namespace on first use and refuses a different one after.
+     * An empty namespace is no namespace.
+     */
+    const bindNamespace = (given: string | undefined): void => {
+      const ns = given || undefined;
+      if (!namespaceBound) {
+        namespace = ns;
+        namespaceBound = true;
+        return;
+      }
+      if (namespace !== ns) {
+        throw new Error(
+          `Namespace mismatch: bound to ${JSON.stringify(namespace)} ` +
+            `but called with ${JSON.stringify(ns)}`,
+        );
+      }
+    };
+
     const loadSidecar = () => sidecars.get(key);
     const ensureSidecar = (): Sidecar => {
       let sidecar = sidecars.get(key);
@@ -552,8 +608,9 @@ export function createInMemoryRemote(
     }
 
     async function pushChanged(
-      _options?: DatastoreSyncOptions,
+      options?: DatastoreSyncOptions,
     ): Promise<number> {
+      bindNamespace(options?.namespace);
       const sidecar = loadSidecar();
       // The fast path reads only the local sidecar, so it succeeds offline
       // and never reaches an injected failure (S3SYNC:1913-1922).
@@ -599,8 +656,9 @@ export function createInMemoryRemote(
     }
 
     async function preparePush(
-      _options?: DatastoreSyncOptions,
+      options?: DatastoreSyncOptions,
     ): Promise<InMemoryPushManifest> {
+      bindNamespace(options?.namespace);
       const sidecar = loadSidecar();
       if (sidecar && !sidecar.localDirty) {
         record({ instance, op: "prepare", paths: [], deleted: [] });
@@ -661,6 +719,7 @@ export function createInMemoryRemote(
     async function pullChanged(
       options?: DatastoreSyncOptions,
     ): Promise<number> {
+      bindNamespace(options?.namespace);
       checkReachable("pull", instance);
       const subdirs = options?.subdirs ?? [];
       const scoped = subdirs.length > 0;
@@ -750,6 +809,25 @@ export function createInMemoryRemote(
       return Promise.resolve();
     }
 
+    function fetchContent(
+      relPath: string,
+      _options?: DatastoreSyncOptions,
+    ): Promise<Uint8Array | null> {
+      try {
+        const rel = toCacheRelative(relPath);
+        if (rel === undefined || couldLeaveDatastore(relPath)) {
+          throw new Error(`Path traversal rejected: ${relPath}`);
+        }
+        checkReachable("fetch", instance);
+        record({ instance, op: "fetch", paths: [rel], deleted: [] });
+        const bytes = committed.get(rel);
+        // A copy, so a caller that changes it does not change the remote.
+        return Promise.resolve(bytes ? bytes.slice() : null);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+
     return {
       pullChanged,
       pushChanged,
@@ -757,6 +835,7 @@ export function createInMemoryRemote(
       preparePush,
       commitPush,
       capabilities: () => ({ ...capabilities }),
+      ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
     };
   }
 

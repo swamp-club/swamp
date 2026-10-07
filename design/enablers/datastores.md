@@ -1590,6 +1590,45 @@ leave attributes empty.
 **CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
 foreign catalog metadata from those namespaces.
 
+### Reading one remote file (`fetchContent`)
+
+Every other read in the sync contract replaces the local copy: `pullChanged` and
+`hydrateFile` write into the cache and overwrite a local file that differs from
+the remote, including one with a change not pushed yet. `fetchForeignContent`
+writes nothing, but it always prefixes its key with a namespace and is for
+another namespace's data. `fetchContent` is the read that leaves the cache
+alone, for a caller that has to compare its cached copy of a file with the
+remote one before acting on it (swamp-club#3159):
+
+```typescript
+fetchContent?(relPath: string, options?: DatastoreSyncOptions): Promise<Uint8Array | null>;
+```
+
+- It resolves to the file's bytes, or `null` when the remote has no such file.
+  Any other failure rejects, so a caller never mistakes an unreachable remote
+  for a deleted file.
+- It writes nothing locally: no cache file is created, replaced or removed, and
+  no dirty state or pull watermark changes. A differing local file is neither
+  returned nor consulted, and its pending push stays pending.
+- `relPath` is cache-relative and forward-slash-normalized, as for `hydrateFile`.
+  The cache mirrors the remote layout (see
+  [Namespace prefixing](#namespace-prefixing-giga-swamp)), so with a namespace
+  the path already starts with `{namespace}/` and the implementation must not
+  add it again. `options.namespace` is the calling repository's namespace; when
+  it is unset the datastore has none and the path is read from its root.
+- A `relPath` that is absolute or has a `..` segment is rejected.
+- The returned bytes must not be kept in instance state, since the sync service
+  lives as long as a `swamp serve` process. The whole file is held in memory, so
+  the method is meant for small files such as run records.
+
+The method is optional and has no `SyncCapabilities` flag: core treats its
+presence as the capability. Core does not call it yet; `swamp serve` will, to
+check a run record before it resumes a suspended run by itself
+(swamp-club#3108). `assertSyncServiceRoundTripConformance` checks an
+implementation with its `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases, and
+`createInMemoryRemote` implements the method for tests.
+
 ### Lazy Hydration
 
 With `hydrationStrategy: "lazy"` on a custom datastore, the initial pull fetches
