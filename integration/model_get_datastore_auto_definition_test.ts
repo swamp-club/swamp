@@ -87,7 +87,11 @@ async function saveDefinition(
   return definition;
 }
 
-/** Runs `model get --json` in-process and returns the printed definition. */
+/**
+ * Runs `model get --json` in-process and returns the printed definition.
+ * Captures the JSON by swapping the process-global console.log, which holds
+ * only because Deno runs the tests in a file one at a time.
+ */
 async function modelGetJson(
   repoDir: string,
   modelIdOrName: string,
