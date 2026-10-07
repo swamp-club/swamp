@@ -2522,7 +2522,12 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
 
 1. Checks the target is accessible (writable directory or reachable S3 bucket).
 2. Migrates existing runtime data from `.swamp/` to the new location (skipped
-   with `--skip-migration`).
+   with `--skip-migration`). A filesystem destination whose real path is the
+   migration source (for example `--path .swamp`) has nothing to move: setup
+   skips the copy, the verification and the cleanup, and only writes the
+   datastore block (swamp-club#3162). Without that, the copy fails on files
+   such as `_catalog.db`, and a copy with no failures would let cleanup delete
+   the datastore itself.
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
@@ -2635,6 +2640,33 @@ startup uses):
   because pulled extension sources stay in the repo (swamp-club#2612). If
   `.swamp/config` is a symlink, cleanup leaves the link alone rather than
   deleting the files of its target.
+
+  On an extension setup, the remote may already hold a config tier, for example
+  when a second repo joins a shared datastore that was migrated already. Before
+  anything is copied, setup pulls the remote `config/` into the cache
+  (`subdirs: ["config"]`, the namespace, and `metadataOnly` under lazy
+  hydration) within the setup sync timeout (swamp-club#2844). If that pull
+  fails, timeout included, setup stops: nothing is copied, pushed or cleaned
+  up, and `.swamp.yaml` is not rewritten. This has to cover timeouts, because
+  committing the new datastore without migrating would make a retry classify
+  the tier as instance-local. `listConfigTierConflicts` then lists the local
+  tier files, other than pulled extensions, that already exist in the cache,
+  and `planConfigTierMerge` (`src/domain/datastore/datastore_config.ts`)
+  applies the rule that the remote copy wins:
+  - No clashing file is copied, so none is pushed.
+  - A clashing local copy that differs stays in `.swamp/config`.
+  - An identical copy is cleaned up as usual.
+  - The migration sentinel always differs, so it is never kept or reported.
+  - Local-only files migrate.
+
+  The differing paths are listed in a `remote_config_tier_kept` warning, which
+  appears in `warnings` in JSON output. An extension that ignores `subdirs`
+  pulls everything at this point. That is still correct, only slower.
+
+  The comparison is against the cache, so a retry after a push that failed
+  can find every config file already there and copy nothing. Setup still
+  pushes and cleans up in that case. Two more cases count as differing: a
+  local directory where the cache has a file, and a file that cannot be read.
 - **Instance-local** (the tier is elsewhere, or the current datastore cannot be
   resolved): `.swamp/config` holds only this instance's pulled extension
   sources and the transitional auto-resolve lockfile. Setup leaves it out of

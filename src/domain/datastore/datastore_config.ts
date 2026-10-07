@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join, resolve } from "@std/path";
+import { MIGRATION_SENTINEL } from "./managed_config_migration.ts";
 
 /**
  * Datastore configuration types for configurable runtime data storage.
@@ -311,6 +312,54 @@ export function inRepoConfigMigrationSkips(
     case "instance_local":
       return ["config"];
   }
+}
+
+/**
+ * A file of the in-repo config tier that already exists in the config tier
+ * of the datastore setup is moving to.
+ */
+export interface ConfigTierConflict {
+  /** Path relative to the config tier root. */
+  path: string;
+  /** Whether the local bytes differ from the destination copy. */
+  differs: boolean;
+}
+
+/** How datastore setup merges an in-repo config tier into an existing one. */
+export interface ConfigTierMerge {
+  /** Paths, relative to the migration source, that are not copied. */
+  copySkips: string[];
+  /** Paths, relative to the migration source, that cleanup leaves. */
+  cleanupKeeps: string[];
+  /** Config-relative paths of local copies kept because they differ. */
+  keptPaths: string[];
+}
+
+/**
+ * Merges an in-repo config tier into a destination that already holds one
+ * (swamp-club#2844). The destination copy wins on every path both hold, so
+ * no conflicting file is copied. A local copy that differs stays in the
+ * repo for the user to reconcile; an identical one is cleaned up as usual.
+ * The migration sentinel always differs (it records when and from where
+ * its tier was migrated), so it is never kept or reported.
+ */
+export function planConfigTierMerge(
+  conflicts: readonly ConfigTierConflict[],
+): ConfigTierMerge {
+  const merge: ConfigTierMerge = {
+    copySkips: [],
+    cleanupKeeps: [],
+    keptPaths: [],
+  };
+  for (const conflict of conflicts) {
+    const sourcePath = join("config", conflict.path);
+    merge.copySkips.push(sourcePath);
+    if (conflict.differs && conflict.path !== MIGRATION_SENTINEL) {
+      merge.cleanupKeeps.push(sourcePath);
+      merge.keptPaths.push(conflict.path);
+    }
+  }
+  return merge;
 }
 
 /**

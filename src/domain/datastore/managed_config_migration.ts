@@ -24,7 +24,8 @@ import { isStagingEntryName } from "../extensions/install_journal.ts";
 
 const logger = getLogger(["swamp", "datastore", "managed-config-migration"]);
 
-const MIGRATION_SENTINEL = "managed-config-migrated.json";
+/** The file a config tier holds once a migration into it is published. */
+export const MIGRATION_SENTINEL = "managed-config-migrated.json";
 
 export interface MigrationResult {
   copiedModels: boolean;
