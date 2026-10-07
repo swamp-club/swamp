@@ -3170,36 +3170,18 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const userVaultName = oauthVaultService.getDefaultVaultName() ??
-        oauthVaultService.getVaultNames().find((n) =>
-          n !== TOKEN_SECRETS_VAULT_NAME
-        );
+      const { createOAuthSecretReader } = await import(
+        "../../serve/oauth_secret_migration.ts"
+      );
+      const readOAuthSecret = createOAuthSecretReader(
+        oauthVaultService,
+        TOKEN_SECRETS_VAULT_NAME,
+      );
       let credentials;
       try {
         credentials = await resolveOAuthClientCredentials(
           {
-            getVaultSecret: async (_v, k) => {
-              try {
-                return await oauthVaultService.get(
-                  TOKEN_SECRETS_VAULT_NAME,
-                  k,
-                  "serve:oauth-resolve",
-                );
-              } catch {
-                if (userVaultName) {
-                  try {
-                    return await oauthVaultService.get(
-                      userVaultName,
-                      k,
-                      "serve:oauth-resolve",
-                    );
-                  } catch {
-                    return null;
-                  }
-                }
-                return null;
-              }
-            },
+            getVaultSecret: (_v, k) => readOAuthSecret(k),
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
             registerClient: async (providerUrl, signal) => {
@@ -4838,10 +4820,6 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const userVaultName = vaultService.getDefaultVaultName() ??
-        vaultService.getVaultNames().find((n) =>
-          n !== TOKEN_SECRETS_VAULT_NAME
-        );
 
       const {
         CollectiveRefreshService,
@@ -4849,8 +4827,8 @@ export const serveCommand = new Command()
       const {
         getUserInfo,
       } = await import("../../serve/oauth_client.ts");
-      const { oauthAccessTokenKey } = await import(
-        "../../serve/device_auth_handler.ts"
+      const { lookupOAuthAccessToken } = await import(
+        "../../serve/oauth_access_token_lookup.ts"
       );
 
       collectiveRefreshService = new CollectiveRefreshService({
@@ -4873,34 +4851,14 @@ export const serveCommand = new Command()
             tokens.push({
               name: parsed.data.name,
               principalId: parsed.data.principalId,
+              vaultName: parsed.data.vaultName,
               collectives: parsed.data.collectives,
               groups: parsed.data.groups,
             });
           }
           return tokens;
         },
-        getAccessToken: async (tokenName) => {
-          try {
-            return await vaultService.get(
-              TOKEN_SECRETS_VAULT_NAME,
-              oauthAccessTokenKey(tokenName),
-              "serve:group-refresh",
-            );
-          } catch {
-            if (userVaultName) {
-              try {
-                return await vaultService.get(
-                  userVaultName,
-                  oauthAccessTokenKey(tokenName),
-                  "serve:group-refresh",
-                );
-              } catch {
-                return null;
-              }
-            }
-            return null;
-          }
-        },
+        getAccessToken: (token) => lookupOAuthAccessToken(vaultService, token),
         updateTokenCollectives: async (tokenName, collectives, groups) => {
           const { createResourceWriter } = await import(
             "../../domain/models/data_writer.ts"

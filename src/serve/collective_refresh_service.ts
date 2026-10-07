@@ -37,7 +37,7 @@ export interface CollectiveRefreshDeps {
 
   listActiveTokens(): Promise<ActiveTokenInfo[]>;
 
-  getAccessToken(tokenName: string): Promise<string | null>;
+  getAccessToken(token: ActiveTokenInfo): Promise<string | null>;
 
   updateTokenCollectives(
     tokenName: string,
@@ -59,6 +59,8 @@ export interface CollectiveRefreshDeps {
 export interface ActiveTokenInfo {
   readonly name: string;
   readonly principalId: string;
+  /** Vault the token's secrets live in, from its record. */
+  readonly vaultName: string;
   readonly collectives: string[];
   readonly groups: string[];
 }
@@ -132,7 +134,7 @@ export class CollectiveRefreshService {
   }
 
   async #refreshToken(token: ActiveTokenInfo): Promise<void> {
-    const accessToken = await this.#deps.getAccessToken(token.name);
+    const accessToken = await this.#deps.getAccessToken(token);
     if (!accessToken) return;
 
     try {
