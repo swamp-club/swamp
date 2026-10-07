@@ -748,6 +748,20 @@ because write targets are not declared in vault expressions. The denylist
 `oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
 token-secrets vault by name.
 
+Both verbs, and data-plane writes of sensitive fields, are also held to the
+dispatching run's vault scope (swamp-club#2676; see
+[access-control § Vaults](access-control.md#vaults)). The dispatch captures
+the run's `RunVaultAccess` when the step is dispatched, as it captures trace
+headers, and `CapabilityService` enters it for both `resolveSecret` branches
+(value and annotation) and for `putSecret` (put, `putAnnotation`,
+`deleteAnnotation`); the data plane writes that dispatch's sensitive fields
+inside it. Worker model code is therefore held to the same rule as in-process
+code: the triggering principal's vault grants and the workflow's `vaults:`
+list. Decisions read the current policy, so a revocation applies to later
+calls of a dispatch already running. The data plane builds its vault service
+with the run's `defaultVault` and vault config directory, so a worker's
+sensitive write lands in the vault the pre-run check approved.
+
 The inventory must be complete for correctness. Re-walk it against
 `MethodContext` whenever a context member is added; it is pinned behind the
 negotiated `protocolVersion`. Workers still hold no datastore. Artifact bytes
@@ -1357,7 +1371,7 @@ credentials and extensions onto workers:
   authorizes every data-plane request against the step lease, so it is the
   single point for authorization and audit. Per-step secret
   scoping is the orchestrator refusing a `resolveSecret` outside the step's
-  allowed set. Secrets are resolved on the orchestrator and sent only for the
+  allowed set, or outside the dispatching run's vault scope. Secrets are resolved on the orchestrator and sent only for the
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 

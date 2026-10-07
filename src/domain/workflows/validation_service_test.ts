@@ -2561,3 +2561,89 @@ Deno.test("passes a wait_for_signal schema that is literal or reads inputs only"
     );
   }
 });
+
+// --- vaults list validation ---
+
+function vaultsListWorkflow(
+  vaults: string[] | undefined,
+  inputs: Record<string, unknown>,
+  dataOutputOverrides?: { specName: string; vaultName?: string }[],
+): Workflow {
+  return Workflow.create({
+    name: "vaults-check",
+    ...(vaults ? { vaults } : {}),
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "create", inputs),
+            ...(dataOutputOverrides ? { dataOutputOverrides } : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("validate: reports a static vault.get outside the workflow's vaults list", async () => {
+  const results = await service.validate(vaultsListWorkflow(["roomcontrol"], {
+    a: "${{ vault.get('roomcontrol', 'k') }}",
+    b: "${{ vault.get('erp', 'k') }}",
+    c: "${{ vault.get(inputs.vault, 'k') }}",
+  }));
+  const failed = results.filter((r) => !r.passed);
+  assertEquals(failed.length, 1);
+  assertEquals(
+    failed[0].name,
+    "Vaults the workflow reads are in its vaults list",
+  );
+  assertEquals(failed[0].error?.includes("'erp'"), true);
+  assertEquals(failed[0].error?.includes("'roomcontrol'"), false);
+});
+
+Deno.test("validate: no vaults list reports nothing about vaults", async () => {
+  const results = await service.validate(vaultsListWorkflow(undefined, {
+    b: "${{ vault.get('erp', 'k') }}",
+  }));
+  assertEquals(results.some((r) => r.name.includes("vaults list")), false);
+});
+
+Deno.test("validate: reports a sensitive-output target vault outside the vaults list", async () => {
+  const asked: unknown[] = [];
+  const svc = new DefaultWorkflowValidationService(undefined, undefined, {
+    targetVaults: (step) => {
+      asked.push(step);
+      return Promise.resolve(["outputs", "erp"]);
+    },
+  });
+  const results = await svc.validate(
+    vaultsListWorkflow(["outputs"], {}, [{ specName: "cred" }]),
+  );
+  const failed = results.filter((r) => !r.passed);
+  assertEquals(failed.length, 1);
+  assertEquals(
+    failed[0].name,
+    "Sensitive outputs of step 'step1' in job 'job1' land in its vaults list",
+  );
+  assertEquals(failed[0].error?.includes("'erp'"), true);
+  assertEquals(failed[0].error?.includes("'outputs'"), false);
+  assertEquals(asked.length, 1);
+  const step = asked[0] as {
+    modelIdOrName: string;
+    methodName: string;
+    dataOutputOverrides: { specName: string }[];
+  };
+  assertEquals(step.modelIdOrName, "my-model");
+  assertEquals(step.methodName, "create");
+  assertEquals(step.dataOutputOverrides.map((o) => o.specName), ["cred"]);
+});
+
+Deno.test("validate: sensitive-output targets in the vaults list pass", async () => {
+  const svc = new DefaultWorkflowValidationService(undefined, undefined, {
+    targetVaults: () => Promise.resolve(["outputs"]),
+  });
+  const results = await svc.validate(vaultsListWorkflow(["outputs"], {}));
+  assertEquals(results.every((r) => r.passed), true);
+});

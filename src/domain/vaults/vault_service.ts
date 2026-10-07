@@ -50,6 +50,7 @@ import {
 } from "./vault_audit_entry.ts";
 import type { VaultAuditRepository } from "./vault_audit_repository.ts";
 import { JsonlVaultAuditRepository } from "../../infrastructure/persistence/jsonl_vault_audit_repository.ts";
+import { currentVaultAccess, type VaultAction } from "./run_vault_access.ts";
 
 export interface ProcessRunResult {
   success: boolean;
@@ -62,7 +63,26 @@ export interface VaultRefreshOptions {
 }
 
 /**
+ * Holds a vault operation to the current run vault access scope, if any,
+ * before any provider is touched. Without a scope it does nothing.
+ */
+async function authorizeVaultAction(
+  vaultName: string,
+  action: VaultAction,
+  secretKey?: string,
+): Promise<void> {
+  const access = currentVaultAccess();
+  if (access) await access.check(vaultName, action, secretKey);
+}
+
+/**
  * Service for managing vault providers and resolving vault operations.
+ *
+ * Every per-vault method is held to the run vault access scope
+ * (`run_vault_access.ts`): reads (`get`, `list`, `getAnnotation`,
+ * `getRefreshHook`) and writes (`put`, `delete`, `putAnnotation`,
+ * `deleteAnnotation`, `putRefreshHook`, `deleteRefreshHook`) are decided
+ * before the provider is reached.
  */
 export class VaultService {
   static readonly #globalProviders = new Map<
@@ -233,6 +253,7 @@ export class VaultService {
     secretKey: string,
     callerContext?: string,
   ): Promise<string> {
+    await authorizeVaultAction(vaultName, "read", secretKey);
     const provider = this.requireProvider(vaultName);
 
     if (this.refreshOptions && isVaultRefreshHookProvider(provider)) {
@@ -349,6 +370,7 @@ export class VaultService {
     options?: VaultPutOptions,
     callerContext?: string,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireProvider(vaultName);
     await provider.put(secretKey, secretValue, options);
     await this.recordAuditEntry("put", vaultName, secretKey, callerContext);
@@ -359,6 +381,7 @@ export class VaultService {
     secretKey: string,
     callerContext?: string,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireDeleteProvider(vaultName);
     await provider.delete(secretKey);
     await this.recordAuditEntry("delete", vaultName, secretKey, callerContext);
@@ -398,6 +421,7 @@ export class VaultService {
    * Returns only key names, not values.
    */
   async list(vaultName: string): Promise<string[]> {
+    await authorizeVaultAction(vaultName, "read");
     const provider = this.requireProvider(vaultName);
     return await provider.list();
   }
@@ -406,6 +430,7 @@ export class VaultService {
     vaultName: string,
     secretKey: string,
   ): Promise<VaultAnnotation | null> {
+    await authorizeVaultAction(vaultName, "read", secretKey);
     const provider = this.requireAnnotationProvider(vaultName);
     return await provider.getAnnotation(secretKey);
   }
@@ -416,6 +441,7 @@ export class VaultService {
     annotation: VaultAnnotation,
     callerContext?: string,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireAnnotationProvider(vaultName);
     await provider.putAnnotation(secretKey, annotation);
     await this.recordAuditEntry(
@@ -431,6 +457,7 @@ export class VaultService {
     secretKey: string,
     callerContext?: string,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireAnnotationProvider(vaultName);
     await provider.deleteAnnotation(secretKey);
     await this.recordAuditEntry(
@@ -480,6 +507,7 @@ export class VaultService {
     vaultName: string,
     secretKey: string,
   ): Promise<RefreshHook | null> {
+    await authorizeVaultAction(vaultName, "read", secretKey);
     const provider = this.requireRefreshHookProvider(vaultName);
     return await provider.getRefreshHook(secretKey);
   }
@@ -489,6 +517,7 @@ export class VaultService {
     secretKey: string,
     hook: RefreshHook,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireRefreshHookProvider(vaultName);
     await provider.putRefreshHook(secretKey, hook);
   }
@@ -497,6 +526,7 @@ export class VaultService {
     vaultName: string,
     secretKey: string,
   ): Promise<void> {
+    await authorizeVaultAction(vaultName, "write", secretKey);
     const provider = this.requireRefreshHookProvider(vaultName);
     await provider.deleteRefreshHook(secretKey);
   }

@@ -49,6 +49,8 @@ export class PolicySnapshot {
   readonly #grantsBySubject: Map<string, Grant[]>;
   readonly #groupsByPrincipal: Map<string, string[]>;
   readonly #evaluateCondition: ConditionEvaluator;
+  /** Resource kinds some grant names, computed once per snapshot. */
+  readonly #grantKinds: ReadonlySet<ResourceKind>;
 
   constructor(
     grants: readonly Grant[],
@@ -57,6 +59,7 @@ export class PolicySnapshot {
   ) {
     this.#evaluateCondition = evaluateCondition ?? alwaysFalse;
 
+    this.#grantKinds = new Set(grants.map((grant) => grant.resource.kind));
     this.#grantsBySubject = new Map();
     for (const grant of grants) {
       const key = subjectToString(grant.subject);
@@ -91,6 +94,14 @@ export class PolicySnapshot {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether any grant in the snapshot, for any subject, names `kind`
+   * (swamp-club#2676). Computed once when the snapshot is built.
+   */
+  hasGrantOfKind(kind: ResourceKind): boolean {
+    return this.#grantKinds.has(kind);
   }
 
   groupsForPrincipal(principalKey: string): readonly string[] {

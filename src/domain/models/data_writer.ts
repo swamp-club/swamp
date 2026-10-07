@@ -40,6 +40,11 @@ import type {
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
+import { currentVaultAccess } from "../vaults/run_vault_access.ts";
+import {
+  overriddenSpecVaultName,
+  resolveSensitiveOutputVault,
+} from "./sensitive_output_vault.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import {
   extractSensitiveFields,
@@ -436,21 +441,38 @@ export async function processSensitiveResourceData(
     );
   }
 
-  for (const { field, originalValue } of fieldsWithValues) {
-    const targetVault = field.vaultName ?? spec.vaultName ??
-      vaultService.getDefaultVaultName() ?? userVaultNames[0];
-
+  // Every target and key is resolved, and decided under the run's vault
+  // access with the key the put will name, before the first value is stored,
+  // so a refusal (including one from a grant revoked mid-run, or a grant
+  // conditioned on the key) leaves no earlier field's value orphaned.
+  const targets = fieldsWithValues.map(({ field, originalValue }) => {
+    const targetVault = resolveSensitiveOutputVault(
+      { fieldVaultName: field.vaultName, specVaultName: spec.vaultName },
+      vaultService,
+    ) ?? userVaultNames[0];
     if (isReservedVaultName(targetVault)) {
       throw new Error(
         `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
       );
     }
-
     const vaultKey = field.vaultKey ??
       sanitizeVaultKey(
         `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${field.path}`,
       );
+    return { field, originalValue, targetVault, vaultKey };
+  });
+  const access = currentVaultAccess();
+  if (access) {
+    const checked = new Set<string>();
+    for (const { targetVault, vaultKey } of targets) {
+      const pair = `${targetVault}\0${vaultKey}`;
+      if (checked.has(pair)) continue;
+      checked.add(pair);
+      await access.check(targetVault, "write", vaultKey);
+    }
+  }
 
+  for (const { field, originalValue, targetVault, vaultKey } of targets) {
     const stringValue = typeof originalValue === "string"
       ? originalValue
       : JSON.stringify(originalValue);
@@ -638,8 +660,12 @@ export function createResourceWriter(
         if (override.resolvedVarySuffix) {
           instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
-        if (override.vaultName) {
-          effectiveSpec = { ...spec, vaultName: override.vaultName };
+        const vaultName = overriddenSpecVaultName(
+          spec.vaultName,
+          override.vaultName,
+        );
+        if (vaultName !== spec.vaultName) {
+          effectiveSpec = { ...spec, vaultName };
         }
       }
     }

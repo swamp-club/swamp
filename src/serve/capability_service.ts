@@ -39,6 +39,10 @@ import {
   findDefinitionByIdOrName,
   findDefinitionsByIdGlobal,
 } from "../domain/models/model_lookup.ts";
+import {
+  type RunVaultAccess,
+  runWithVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
 import { createModelOutputId } from "../domain/models/model_output.ts";
 import { createDefinitionId } from "../domain/definitions/definition.ts";
 import {
@@ -79,6 +83,14 @@ import {
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 
 const capLogger = getSwampLogger(["serve", "capability"]);
+
+/** Runs `fn` held to `scope`, or unscoped when there is none. */
+function inVaultScope<T>(
+  scope: RunVaultAccess | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return scope ? runWithVaultAccess(scope, fn) : fn();
+}
 
 const SLOW_HANDLER_WARN_MS = 5_000;
 
@@ -469,6 +481,7 @@ export class CapabilityService {
   ): Promise<{ value: unknown }> {
     this.#assertVaultNotDenied(params.vaultName, "resolveSecret");
     this.#assertSecretKeyNotDenied(params.secretKey, "resolveSecret");
+    let scope: RunVaultAccess | undefined;
     if (this.#dispatches) {
       const dispatch = this.#resolveDispatch(
         workerName,
@@ -486,21 +499,26 @@ export class CapabilityService {
         params.secretKey,
         "resolveSecret",
       );
+      scope = dispatch.vaultAccess;
     }
     const vault = await this.#vault();
-    if (params.annotation) {
-      const annotation = await vault.getAnnotation(
+    // Held to the dispatching run's vault scope, as the same read in-process
+    // would be (swamp-club#2676).
+    return await inVaultScope(scope, async () => {
+      if (params.annotation) {
+        const annotation = await vault.getAnnotation(
+          params.vaultName,
+          params.secretKey,
+        );
+        return { value: annotation };
+      }
+      const value = await vault.get(
         params.vaultName,
         params.secretKey,
+        `serve:${workerName}`,
       );
-      return { value: annotation };
-    }
-    const value = await vault.get(
-      params.vaultName,
-      params.secretKey,
-      `serve:${workerName}`,
-    );
-    return { value };
+      return { value };
+    });
   }
 
   async putSecret(
@@ -509,6 +527,7 @@ export class CapabilityService {
   ): Promise<{ ok: boolean }> {
     this.#assertVaultNotDenied(params.vaultName, "putSecret");
     this.#assertSecretKeyNotDenied(params.secretKey, "putSecret");
+    let scope: RunVaultAccess | undefined;
     if (this.#dispatches) {
       const dispatch = this.#resolveDispatch(
         workerName,
@@ -520,29 +539,35 @@ export class CapabilityService {
           `putSecret: worker '${workerName}' has no active dispatch`,
         );
       }
+      scope = dispatch.vaultAccess;
     }
     const vault = await this.#vault();
-    if (params.deleteAnnotation) {
-      await vault.deleteAnnotation(params.vaultName, params.secretKey);
+    const secretValue = params.secretValue;
+    // Held to the dispatching run's vault scope, as the same write
+    // in-process would be (swamp-club#2676).
+    return await inVaultScope(scope, async () => {
+      if (params.deleteAnnotation) {
+        await vault.deleteAnnotation(params.vaultName, params.secretKey);
+        return { ok: true };
+      }
+      if (params.annotation !== undefined) {
+        await vault.putAnnotation(
+          params.vaultName,
+          params.secretKey,
+          params.annotation as unknown as Parameters<
+            VaultService["putAnnotation"]
+          >[2],
+        );
+        return { ok: true };
+      }
+      if (secretValue === undefined) {
+        throw new Error(
+          "putSecret requires secretValue, annotation, or deleteAnnotation",
+        );
+      }
+      await vault.put(params.vaultName, params.secretKey, secretValue);
       return { ok: true };
-    }
-    if (params.annotation !== undefined) {
-      await vault.putAnnotation(
-        params.vaultName,
-        params.secretKey,
-        params.annotation as unknown as Parameters<
-          VaultService["putAnnotation"]
-        >[2],
-      );
-      return { ok: true };
-    }
-    if (params.secretValue === undefined) {
-      throw new Error(
-        "putSecret requires secretValue, annotation, or deleteAnnotation",
-      );
-    }
-    await vault.put(params.vaultName, params.secretKey, params.secretValue);
-    return { ok: true };
+    });
   }
 
   async readDefinition(

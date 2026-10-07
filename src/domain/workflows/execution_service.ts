@@ -255,6 +255,11 @@ import {
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 import { minOf } from "../array_extrema.ts";
+import {
+  currentVaultAccess,
+  runGeneratorWithVaultAccess,
+  RunVaultAccess,
+} from "../vaults/run_vault_access.ts";
 
 /** Parent-scope roots a deferred expression may read; anything else is scope-free. */
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
@@ -543,7 +548,51 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
-function mergeDataOutputOverrides(
+/** The outcome of the one workflow lookup a run makes. */
+type RunWorkflowLookup =
+  | { readonly workflow: Workflow | null }
+  | { readonly error: unknown };
+
+/**
+ * The vault access a workflow's `vaults:` list holds its runs to, or
+ * `undefined` when it declares none. Entered inside the scope a nested run
+ * starts from, so a child's list intersects with its parent's.
+ */
+function workflowVaultAccess(
+  workflow: Workflow | undefined,
+): RunVaultAccess | undefined {
+  if (workflow?.vaults === undefined) return undefined;
+  return RunVaultAccess.create({
+    allowedVaults: workflow.vaults,
+    allowListSource: workflow.name,
+  });
+}
+
+/**
+ * The vault access a resume of `run` is held to: the workflow's current
+ * `vaults:` list and the list the run recorded at run start, both. An edit
+ * to the workflow can narrow a suspended run but never widen it. A run that
+ * recorded no list (none applied, or it predates the record) is held to the
+ * current list alone.
+ */
+function resumeVaultAccess(
+  workflow: Workflow,
+  run: WorkflowRun,
+): RunVaultAccess | undefined {
+  const current = workflowVaultAccess(workflow);
+  if (run.allowedVaults === undefined) return current;
+  const recorded = RunVaultAccess.create({
+    allowedVaults: run.allowedVaults,
+    allowListSource: workflow.name,
+  });
+  return current ? current.narrowedBy(recorded) : recorded;
+}
+
+/**
+ * A step's data output overrides layered over its definition's `resources`
+ * overrides: a step override replaces the definition's for the same spec.
+ */
+export function mergeDataOutputOverrides(
   definitionResources: ResourceOverrides | undefined,
   stepOverrides: DataOutputOverride[] | undefined,
 ): DataOutputOverride[] | undefined {
@@ -2902,10 +2951,44 @@ export class WorkflowExecutionService {
     const runSpan = getTracer().startSpan("swamp.workflow.run", {
       attributes: { "workflow.name": idOrName },
     });
+    // Looked up once, at the first step under the run's span, so the run
+    // is held to the vaults list of the workflow it executes. The run reuses
+    // this lookup and never looks the workflow up again: a failed or empty
+    // lookup is reported inside the run as before, so no workflow ever runs
+    // without its vaults list.
+    let lookup: RunWorkflowLookup = { workflow: null };
     yield* bindGeneratorToSpan(
       runSpan,
-      this.runInSpan(runSpan, idOrName, options),
+      runGeneratorWithVaultAccess(
+        async () => {
+          try {
+            lookup = {
+              workflow: await this.findRunWorkflow(idOrName, options),
+            };
+          } catch (error) {
+            lookup = { error };
+          }
+          return workflowVaultAccess(
+            "workflow" in lookup ? lookup.workflow ?? undefined : undefined,
+          );
+        },
+        () => this.runInSpan(runSpan, idOrName, lookup, options),
+      ),
     );
+  }
+
+  /** Finds the workflow {@link run} executes, by id or by name. */
+  private async findRunWorkflow(
+    idOrName: string,
+    options?: { byId?: boolean; expectedName?: string },
+  ): Promise<Workflow | null> {
+    return options?.byId
+      ? await findWorkflowById(
+        this.workflowRepo,
+        idOrName,
+        options.expectedName,
+      )
+      : await this.lookupWorkflow(idOrName);
   }
 
   /**
@@ -2915,6 +2998,7 @@ export class WorkflowExecutionService {
   private async *runInSpan(
     runSpan: Span,
     idOrName: string,
+    lookup: RunWorkflowLookup,
     options?: Parameters<WorkflowExecutionService["run"]>[1],
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -2946,14 +3030,10 @@ export class WorkflowExecutionService {
         new RunSensitiveValues(secretRedactor);
 
       try {
-        // Look up workflow
-        const found = options?.byId
-          ? await findWorkflowById(
-            this.workflowRepo,
-            idOrName,
-            options.expectedName,
-          )
-          : await this.lookupWorkflow(idOrName);
+        // The workflow run() looked up, whose vaults list this run is held
+        // to; a failed lookup is reported here, as part of the run.
+        if ("error" in lookup) throw lookup.error;
+        const found = lookup.workflow;
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
@@ -3095,6 +3175,18 @@ export class WorkflowExecutionService {
           options?.triggerSource,
         );
         this.startedRunIds.add(run.id);
+        // A serve run records who triggered it, so a resume is held to that
+        // principal's vault access, not the resumer's (swamp-club#2676).
+        const triggeringPrincipal = currentVaultAccess()?.triggeringPrincipal;
+        if (triggeringPrincipal) {
+          run.recordTriggeringPrincipal(triggeringPrincipal);
+        }
+        // The vaults list in force (a parent's included) is recorded, so a
+        // resume can be narrowed by an edit to the workflow but never widened.
+        const allowedVaults = currentVaultAccess()?.allowedVaults;
+        if (allowedVaults !== undefined) {
+          run.recordAllowedVaults(allowedVaults);
+        }
         run.attachSensitiveValues(sensitiveValues);
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
@@ -3740,7 +3832,6 @@ export class WorkflowExecutionService {
     if (!workflow) {
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
-
     // Read once so a run that does not exist is refused before anything is
     // claimed, and the claim is taken on the stored run's own id.
     const located = await this.runRepo.findById(
@@ -3750,6 +3841,29 @@ export class WorkflowExecutionService {
     if (!located) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // A resume is held to the workflow's vaults list as a run is, and to the
+    // list the run recorded when it started.
+    yield* runGeneratorWithVaultAccess(
+      resumeVaultAccess(workflow, located),
+      () =>
+        this.resumeWorkflow(
+          workflow,
+          located,
+          workflowIdOrName,
+          runId,
+          options,
+        ),
+    );
+  }
+
+  /** Body of {@link resume}, once the workflow and run are found. */
+  private async *resumeWorkflow(
+    workflow: Workflow,
+    located: WorkflowRun,
+    workflowIdOrName: string,
+    runId: string,
+    options?: Parameters<WorkflowExecutionService["resume"]>[2],
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // A resume can reach a wait for the first time. The store is opened
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.

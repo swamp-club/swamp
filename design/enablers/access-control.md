@@ -293,6 +293,7 @@ A resource selector has the form `<kind>:<pattern>`:
 | `model`    | `model.method.run`, `model.create`   |
 | `data`     | `data.get`, `data.query`             |
 | `access`   | Grant and group management, and the records the control plane stores as model data (see [Control-plane records](#control-plane-records)) |
+| `vault`    | `vault.*` requests, and vault operations during serve runs (see [Vaults](#vaults)) |
 
 Patterns support a trailing `*` wildcard:
 
@@ -410,8 +411,8 @@ The exception is a name no definition had at the check: if a concurrent run
 created it since, the run adopts it when the caller may run that definition,
 judged the same way (swamp-club#2672). Because
 a direct run can rewrite an existing definition's global arguments, it takes
-that definition's model lock whatever the method's kind. The
-name vaults are authorized under is tracked by swamp-club#2676.
+that definition's model lock whatever the method's kind. Vaults are
+authorized by name as described in [Vaults](#vaults).
 
 Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
 `integration/serve_id_deny_conformance_test.ts`, which covers every request
@@ -537,6 +538,7 @@ resource kind:
 | `model`       | `name`, `modelType`, `tags`, `collective`, `methodName`      |
 | `data`        | `name`, `ns`, `tags`, `owner`                                |
 | `access`      | `name`                                                       |
+| `vault`       | `name`, `key`                                                |
 
 Every kind can also use `principal.sub`, `principal.groups` and
 `principal.collectives`.
@@ -546,7 +548,8 @@ validation and the runtime evaluator. `methodName` is a request field: only
 method requests (a method run, its cancel and attach, output and method-run
 items) carry it, and a request without one evaluates it as `""`, so a condition
 on it simply does not match; a grant's `methods` list is matched the same way
-as before. `collective` and `owner` are declared but serve does not supply them
+as before. A vault's `key` is a request field too: the secret a request names
+(`put`, `read-secret`, `delete`, ...), `""` on one that names none. `collective` and `owner` are declared but serve does not supply them
 yet: a deny that references them refuses every request of its kind, an allow
 never matches, and loading the policy logs a warning naming each such grant.
 
@@ -628,8 +631,9 @@ resources is authorized as `*` (swamp-club#2675):
   owner the caller may read as `data`, and a named `--model` or `--workflow` is
   authorized first. The ambiguity error of `report.get` lists only readable
   owners.
-- `vault.audit-trail` without a vault keeps only the entries of vaults the
-  caller may read by name; the limit applies after filtering.
+- `vault.audit-trail` without a vault, and `vault.search`, keep only the
+  vaults the caller may read under the request rule in [Vaults](#vaults); the
+  limit applies after filtering.
 - `data.gc`, `data.prune`, `run.gc` and `summarise` reach every resource and
   cannot be narrowed, so they need the action on every resource of each kind
   they touch: any deny grant that applies to the caller for the kind and action
@@ -646,7 +650,8 @@ decide nothing.
 Endpoints that return only type definitions or schemas (`model.type.search`,
 `model.type.describe`, `workflow.schema`, `report.type.search`,
 `report.describe`, `vault.type.search`) need at least one `read` grant for the
-kind, or check the kind itself, and do not filter per item.
+kind, or check the kind itself, and do not filter per item. For the vault
+endpoints a `read` grant on `data` or on `vault` counts.
 
 Implementation: `filterByResources`, `resourceDecider`, `authorizeAnyOrReject`
 and `authorizeAllOrReject` in `src/serve/handlers/shared.ts`;
@@ -723,12 +728,223 @@ Implementation: `src/domain/models/control_plane_types.ts`,
 `integration/control_plane_types_rules_test.ts` fails when a built-in
 `swamp/*` model type is missing from the list.
 
+## Vaults
+
+A vault is a resource of its own kind, `vault:<name>` (swamp-club#2676). The
+pattern matches the vault's name with the usual selector rules, so
+`vault:prod-*` covers `prod-db` and `prod-api` and nothing else. Conditions see
+`name` and the request field `key` (see
+[Condition evaluation](#condition-evaluation)).
+
+Vault access is decided at two points, by two rules. A `vault.*` request needs
+an allow, as every request does. A vault operation inside a serve run is
+allowed until the triggering principal is scoped, because runs read vaults
+unchecked before the vault kind existed and making them default-deny would
+break every existing run.
+
+|                    | Request rule (`vault.*` requests)                                          | Run-time rule (vault operations in a serve run)                                         |
+| ------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Refused by         | a deny for the action on `data:vault`, `data:<name>` or `vault:<name>`     | a reserved vault, unless `admin` on `access:*`; a deny for the action on `vault:<name>` |
+| Admitted by        | the check that predates the vault kind, or an allow on `vault:<name>`¹     | anything, until the principal holds a vault allow; then only an allow on `vault:<name>` |
+| No matching grant  | refused                                                                    | allowed, unless the principal is vault-scoped                                           |
+| `data` grants      | count                                                                      | play no part                                                                            |
+
+¹ Not for `put` with refresh options, which only the older check admits (see
+[Request rule](#request-rule)).
+
+### Request rule
+
+Every vault request is authorized on `vault:<name>` with its own action:
+`get`, `describe`, `inspect`, `list-keys`, `read-secret` and `audit-trail` are
+`read`; `put`, `delete`, `annotate`, `create` and `edit` (rename and repair
+included) are `write`; `put` with refresh options and `migrate` are `admin`.
+For a vault named N:
+
+1. A deny for the action that matches `data:vault`, `data:N` or `vault:N`
+   refuses.
+2. Otherwise the check that predates the vault kind runs unchanged:
+   `data:vault`, the vault's own name under `data`, or `admin` on `model` for
+   `migrate`, admin fallback included. If it allows, the request proceeds.
+3. Otherwise an allow for the action on `vault:N` admits it — except `put`
+   with refresh options, which only step 2 admits: a refresh hook is a shell
+   command serve runs on its host on later reads, so it needs `admin` on
+   `data:vault`, never just `admin` on one vault.
+4. Otherwise the request gets the same refusal as before the vault kind.
+
+A refused caller is refused before any vault is looked up. `vault.get` and
+`vault.describe` authorize the name or id as sent, then resolve it and act
+only on the vault they authorized; a vault whose id or name differs by then is
+not found. `vault.search` and `vault.audit-trail` without a vault keep each
+vault the rule above would allow, and admit a caller whose only read grants
+are vault grants. A vault grant never reaches another vault, and a `read`
+grant never allows a `write`.
+
+Implementation: `authorizeVaultOrReject`, `admitVaultListingOrReject` and
+`vaultListingDecider` in `src/serve/handlers/shared.ts`;
+`src/serve/handlers/vault_handlers.ts`.
+
+### Run-time rule
+
+During a serve run every vault operation is judged against the principal that
+triggered the run: `vault.get(...)` expressions in definitions, workflows and
+method inputs, method code using `context.vaultService`, sensitive outputs and
+their read-back, and data queries that resolve vault references. `get`, `list`,
+annotation and refresh-hook reads are `read`; `put`, `delete`, and annotation
+and refresh-hook changes are `write`. For vault N and action A:
+
+1. **Reserved vaults** (`_`-prefixed, such as `_token-secrets`) are refused in
+   every serve run unless the principal holds `admin` on `access:*`, whatever
+   other grants exist. No run needs them; before this rule any run, including
+   a run-only caller's method inputs, could read `_token-secrets`.
+2. **Inert without vault grants.** While the policy holds no grant of the
+   vault kind, the operation is allowed, so a deployment without vault grants
+   resolves vaults exactly as before.
+3. **Deny.** A vault deny for A that matches N refuses.
+4. **Scoped.** If any vault allow, for any action, applies to the principal —
+   directly, through a local group or through an IdP group — the principal is
+   vault-scoped for every action: the operation is allowed only when an allow
+   for A matches N.
+5. Otherwise the operation is allowed.
+
+So a deny-only grant blocks just the denied vault, and a principal granted
+`read` on `vault:roomcontrol` can read only `roomcontrol` in its runs, and
+write nowhere. A principal holding `admin` on `access:*` is never scoped by
+step 4 and is still refused by an explicit vault deny. `data` grants play no
+part at run time: `deny read data:prod-db` does not stop a run reading the
+vault `prod-db`.
+
+Writing the first vault grant activates the rule for the whole server.
+Principals with only deny grants lose the denied vaults; a principal given any
+vault allow becomes default-deny for vaults, so a CI token granted one vault
+loses every other vault it used. Grant every vault such a principal needs in
+the same change.
+
+A refusal happens before the provider is touched. It fails the step with a
+message naming the vault and the principal, never a value, and is audited as a
+`secrets` denial (see `design/enablers/serve-audit.md`).
+
+**Decision inputs.** The policy is read on every operation, so grant reloads
+and revocations apply mid-run. The principal's memberships are captured once
+at run start: a server-token principal from its token record, re-validated
+behind a short cache, so a revoked token's runs lose vault access within that
+time rather than at once; an OAuth principal with its session's IdP groups and
+collectives, so group changes apply from its next run; a service principal
+with local groups only, as trigger authorization does.
+
+**Resumes.** A workflow run persists its triggering principal (kind, id and
+token binding) and that membership snapshot. Every resume — approve-then-resume,
+a parent's auto-resume, detached or attached — is scoped by the persisted
+principal and snapshot, never by the approver or the resumer, who is still
+authorized to resume as before. A run triggered from a server-token session
+stays bound to that token: live and on resume, the token record is
+re-validated, so once the token is revoked, re-minted or deleted every vault
+operation is refused while the policy holds any vault grant. Expiry alone does
+not cut a run off, since it was authorized when it started; token GC deletes
+an expired token after its grace period (one hour by default), and from then
+on it is refused. A run started from an OAuth session records no token
+binding: its short-lived login token is never re-checked, and the run keeps
+the identity and memberships captured at its start. The memberships are always
+the persisted snapshot. A resumed run with no persisted snapshot
+(started on an older release, or saved by an older replica, which strips the
+field) refuses every vault operation once the policy holds any vault grant,
+and logs why; with no vault grant it runs as before. Resume or cancel
+suspended runs from older releases before writing the first vault grant.
+Method runs are never resumed.
+
+**Trigger principals.** Scheduled runs act as `service:scheduler` and webhook
+runs as `service:webhook`, so a vault grant on either scopes every scheduled or
+webhook run on the server. To bound one workflow, use its `vaults:` list.
+
+**Workflow `vaults:` list.** A workflow may declare the most vaults any of its
+runs may read or write. It applies to local runs too, nested workflows
+intersect with their parent's list, and it is checked alongside the principal
+rule, so either can refuse. A run records the list in force at run start, and
+a resume is held to that recorded list and the workflow's current one, so an
+edit to the workflow can narrow a suspended run but never widen it. See
+`design/primitives/workflows.md`.
+
+**Sensitive outputs** get no exemption. Storing a sensitive field and every
+read-back of its reference are vault operations on the vault the field lands
+in (field `vaultName`, a step's `dataOutputOverrides` `vaultName`, the spec's
+`vaultName`, `defaultVault`, then the first user vault), so a scoped principal
+needs `read` and `write` on that vault. Because a refused store would land after
+the method's side effects, a mutating method with sensitive outputs has every
+target vault decided for both actions before it runs, and is refused up front
+with a message naming the vault and one fix: list the vault in the workflow's
+`vaults:` list when that list refused, otherwise change the principal's
+`vault:<name>` grants — or point the output at a vault it may use. Grant
+conditions on `key` are honoured when the value is stored: the store decides
+every field with the key it is stored under before storing any of them, so a
+refusal leaves no field's value behind. The up-front check decides with a
+field's own `vaultKey` when it sets one; a key generated at write time (from
+the instance name) is not known yet, so the up-front check refuses only what
+it can decide without the key and leaves a refusal that depends on a `key`
+condition to the store. Keep author secrets out of the
+default vault: make a dedicated outputs vault the default, or route outputs
+with a spec `vaultName` or a step's `dataOutputOverrides`, and grant scoped
+principals `read` and `write` on it. Granting a default vault that also holds
+author secrets reopens them.
+
+**Workers.** Secret reads and writes a worker makes for a dispatched step are
+held to the dispatching run's scope (see
+`design/enablers/remote-execution.md`).
+
+**What it does not bound.** A shell step that runs a nested `swamp` reads the
+local repository with the run's gate pass, and step code that calls a
+provider's CLI uses the host's credentials; neither is bounded by vault
+grants. Where a principal must not reach a vault, isolate it with a separate
+orchestrator or separate provider credentials per trust boundary. Local CLI
+runs are bounded only by a workflow's `vaults:` list.
+
+Implementation: `src/domain/vaults/run_vault_access.ts` (the run's scope,
+entered on `AsyncLocalStorage` and checked by `VaultService` on every
+per-vault method), `src/domain/models/sensitive_output_vault.ts` (the one
+target-vault resolver), `src/serve/run_vault_access_policy.ts`.
+
+### Explaining vault decisions
+
+`access.can-i` and `access.check` resolve a concrete `vault:<name>` to the
+vault and explain it with its fields; a wildcard is explained as a check on
+the kind. For a concrete vault they also report the run-time decision for that
+principal: whether vault operations in its runs are restricted, and by which
+grant. On a trigger principal they note that its scope applies to every
+scheduled or webhook run. The run-time decision uses the same memberships as
+the request explanation: the caller's own session for a self-check; for another
+subject (`access.check` with a different `subject`), only the IdP groups and
+collectives the request supplies in its `groups` and `collectives` fields.
+Without supplied groups the server knows none for another user, so the reason
+says IdP-group memberships are not included and an `idp-group:` grant is not
+reflected.
+
+### Compatibility
+
+- **Behaviour change: data denies on vaults.** A deny on `data:vault` or
+  `data:<vault name>` now refuses every request on the vault, whichever name
+  the request was checked under before. Move vault denies to `vault:<name>`;
+  a `data` deny has no effect on runs.
+- **Behaviour change: reserved vaults.** Serve runs can no longer read
+  reserved vaults, except for principals with `admin` on `access:*`.
+- **Upgrade first.** Write vault grants, or workflows that set `vaults:`, only
+  once every serve replica on the datastore runs a release that supports them.
+  An older replica refuses to start on a grant file holding a vault grant,
+  silently ignores stored vault grants (denies included, so it enforces none of
+  them), rejects a workflow file that sets `vaults:`, and strips the persisted
+  triggering principal from runs it saves, which makes their resumes fail
+  closed once vault grants exist.
+- Grant files written before this release cannot contain vault grants, so for
+  them the only request-time change is the data-deny tightening above, and the
+  run-time rule stays inert.
+
 ## Workflow execution context
 
 On a `workflow.run` request, the handler checks that the principal has `run` on
 `workflow:<name>`. If so, the workflow runs, including every model method call
 in its steps, with no further checks. The workflow is the unit of authorization:
 the caller may run all of it or none of it.
+
+Vault operations are the exception: once the policy holds a vault grant, each
+one in the run is judged against the triggering principal by the run-time rule
+in [Vaults](#vaults).
 
 The reason is that the operator who wrote the workflow chose which models it
 calls, and a `run` grant delegates that choice. Per-model grants would force
@@ -799,19 +1015,25 @@ from the AST evaluation parses) and
   run inputs it needs `write` on the model run; a run-only caller is refused
   and told to reference env in the definition. `evaluate` and `validate` never
   resolve env, which is resolved only when a method runs.
-- **Vault secrets.** A `vault.get(...)` expression is an author's capability
-  and is not checked against grants on any serve path (swamp-club#3086); the
-  analyzer records no vault reference, so `authorizeExpressionReferences`
-  never sees one. This is the expression function, not the `vault.get` serve
-  request, which needs `read` on `data:vault`. A writer, holding `write` on
-  the model or workflow, may use any vault secret in what they author. Unlike
-  env, a `vault.get(...)` expression is also allowed in model method run
-  inputs to any caller, since run-only callers such as CI tokens pass secrets
-  that way; the value reaches the method and is masked in output. So `write`
-  on workflows or models, and `run` on a model whose method can surface its
-  inputs, include access to the repo's vault secrets; grant them on that
-  basis. Workflow run inputs are inert and never resolve a `vault.get(...)`
-  expression. Per-vault scoping is swamp-club#2676.
+- **Vault secrets.** A `vault.get(...)` expression is not checked when it is
+  saved: the analyzer records no vault reference, so
+  `authorizeExpressionReferences` never sees one (swamp-club#3086). It is
+  judged when a serve run resolves it, by the run-time rule in
+  [Vaults](#vaults), against the vault grants of the principal that triggered
+  the run. This is the expression function, not the `vault.get` serve request,
+  which the request rule decides. While the policy holds no vault grant the
+  run-time rule is inert and the expression stays an author's capability: a
+  writer, holding `write` on the model or workflow, may use any vault secret in
+  what they author. Unlike env, a `vault.get(...)` expression is also allowed
+  in model method run inputs to any caller, since run-only callers such as CI
+  tokens pass secrets that way; the value reaches the method and is masked in
+  output. So without vault grants, `write` on workflows or models, and `run` on
+  a model whose method can surface its inputs, include access to the repo's
+  vault secrets. To bound a principal, grant it `vault:<name>`: once it holds
+  any vault allow its runs reach only the vaults it is granted. Reserved vaults
+  are never readable by a serve run, except to principals with `admin` on
+  `access:*`. Workflow run inputs are inert and never resolve a
+  `vault.get(...)` expression.
 - **Retargeting.** A stored expression that reads data through a target
   computed from `self` or `inputs` is re-checked when an edit could point it
   elsewhere: a model edit that changes its name, version, tags, global
@@ -843,8 +1065,10 @@ What this does not cover, by design:
   argument when runners shouldn't choose the model.
 - The check runs when text is saved. Expressions stored before this check
   existed are not re-checked.
-- Vault secrets: a `vault.get(...)` expression is not checked on any path;
-  see **Vault secrets** above.
+- Vault secrets: a `vault.get(...)` expression is not checked when saved; a
+  serve run judges it when it resolves, and nothing bounds it outside serve
+  but a workflow's `vaults:` list. See **Vault secrets** above and
+  [Vaults](#vaults).
 
 ## The can-i request
 

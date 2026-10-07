@@ -1325,3 +1325,39 @@ Deno.test("workflowNameViolation: returns the rule a name breaks", () => {
     assertThrows(() => Workflow.create({ name }));
   }
 });
+
+Deno.test("Workflow vaults: round-trips through create, toData and fromData", () => {
+  const workflow = Workflow.create({
+    name: "scoped",
+    jobs: [createTestJob("main")],
+    vaults: ["roomcontrol", "outputs"],
+  });
+  assertEquals(workflow.vaults, ["roomcontrol", "outputs"]);
+  const data = workflow.toData();
+  assertEquals(data.vaults, ["roomcontrol", "outputs"]);
+  assertEquals(Workflow.fromData(data).vaults, ["roomcontrol", "outputs"]);
+});
+
+Deno.test("Workflow vaults: absent when not declared", () => {
+  const workflow = Workflow.create({
+    name: "unscoped",
+    jobs: [createTestJob("main")],
+  });
+  assertEquals(workflow.vaults, undefined);
+  assertEquals(workflow.toData().vaults, undefined);
+});
+
+Deno.test("Workflow vaults: an empty list is kept (allows no vault)", () => {
+  const workflow = Workflow.fromData({
+    ...Workflow.create({ name: "none", jobs: [createTestJob("main")] })
+      .toData(),
+    vaults: [],
+  });
+  assertEquals(workflow.vaults, []);
+});
+
+Deno.test("WorkflowSchema: rejects an empty vault name in vaults", () => {
+  const data = Workflow.create({ name: "bad", jobs: [createTestJob("main")] })
+    .toData();
+  assertThrows(() => Workflow.fromData({ ...data, vaults: [""] }));
+});

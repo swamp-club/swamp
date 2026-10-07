@@ -26,6 +26,10 @@ import {
 import { withServerSpan } from "../infrastructure/tracing/mod.ts";
 import { join } from "@std/path";
 import { z } from "zod";
+import {
+  currentVaultAccess,
+  RunVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
 import { DataPlane, dataPlaneOperation } from "./data_plane.ts";
 import { type ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
@@ -203,6 +207,8 @@ interface Harness {
   bundles: BundleRegistry;
   firstWrites: string[];
   tempDir: string;
+  /** The vault scope each repository save ran in. */
+  scopesAtSave: (RunVaultAccess | undefined)[];
 }
 
 async function withHarness(
@@ -221,6 +227,12 @@ async function withHarness(
         return await save(...args);
       }) as typeof repo.save;
     }
+    const scopesAtSave: (RunVaultAccess | undefined)[] = [];
+    const recordScope = repo.save.bind(repo);
+    repo.save = ((...args: Parameters<typeof repo.save>) => {
+      scopesAtSave.push(currentVaultAccess());
+      return recordScope(...args);
+    }) as typeof repo.save;
     const dispatches = new DispatchRegistry();
     const bundles = new BundleRegistry();
     const firstWrites: string[] = [];
@@ -246,7 +258,15 @@ async function withHarness(
           {} as unknown as import("../domain/vaults/vault_service.ts").VaultService,
         ),
     });
-    await fn({ plane, stored, dispatches, bundles, firstWrites, tempDir });
+    await fn({
+      plane,
+      stored,
+      dispatches,
+      bundles,
+      firstWrites,
+      tempDir,
+      scopesAtSave,
+    });
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
   }
@@ -963,4 +983,25 @@ Deno.test("DataPlane: writes stage into a root unit over the repository context'
   }
   assertEquals(reports, []);
   assertEquals(marks, ["result"]);
+});
+
+Deno.test("DataPlane: a dispatch's writes run in the dispatching run's vault scope (swamp-club#2676)", async () => {
+  await withHarness(async (h) => {
+    const access = RunVaultAccess.create({ allowedVaults: ["roomcontrol"] });
+    h.dispatches.register({ ...activeDispatch(), vaultAccess: access });
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+        }),
+      }),
+    );
+    assertEquals(response?.status, 200);
+    assertEquals(h.scopesAtSave.length, 1);
+    assertEquals(h.scopesAtSave[0]?.allowedVaults, new Set(["roomcontrol"]));
+    assertEquals(currentVaultAccess(), undefined);
+  });
 });

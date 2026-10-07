@@ -35,6 +35,7 @@ import {
 import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -86,10 +87,11 @@ export const workflowValidateCommand = withRemoteOptions(
     return;
   }
 
-  const { repoContext, repoDir } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: cliCtx.outputMode,
-  });
+  const { repoContext, repoDir, marker, vaultsDir } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
   // Hot-load pulled/local extensions so step-input validation can resolve
   // their model types. Without this, pulled extension types are skipped as
@@ -102,6 +104,11 @@ export const workflowValidateCommand = withRemoteOptions(
     repoContext.workflowRepo,
     repoContext.definitionRepo,
     workflowsDirFor(repoDir),
+    () =>
+      VaultService.fromRepository(repoDir, {
+        vaultsDir,
+        defaultVaultName: marker?.defaultVault,
+      }),
   );
 
   const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);

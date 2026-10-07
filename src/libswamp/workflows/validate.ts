@@ -23,7 +23,14 @@ import {
   DefaultWorkflowValidationService,
   type MethodResolution,
   type ModelMethodResolver,
+  type SensitiveOutputVaultResolver,
 } from "../../domain/workflows/validation_service.ts";
+import {
+  sensitiveOutputTargetVaults,
+  type SensitiveOutputVaultConfig,
+} from "../../domain/models/sensitive_output_vault.ts";
+import { inferMethodKind, isMutatingKind } from "../../domain/models/model.ts";
+import { mergeDataOutputOverrides } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -224,11 +231,63 @@ async function resolveByType(
   return { status: "resolved", requiredArgs };
 }
 
+/**
+ * Creates a SensitiveOutputVaultResolver that predicts a step's
+ * sensitive-output vaults with the data writer's resolver, from the model
+ * type's resources, the definition's and step's overrides, and the repo's
+ * vault configuration (loaded once, on first use).
+ */
+function createSensitiveOutputVaultResolver(
+  definitionRepo: YamlDefinitionRepository,
+  loadVaultConfig: () => Promise<SensitiveOutputVaultConfig>,
+): SensitiveOutputVaultResolver {
+  let vaultConfig: Promise<SensitiveOutputVaultConfig> | undefined;
+  return {
+    async targetVaults({ modelIdOrName, methodName, modelType, ...step }) {
+      let type: ModelType;
+      let definitionResources;
+      if (modelType) {
+        type = ModelType.create(modelType);
+      } else {
+        const lookup = await findDefinitionByIdOrName(
+          definitionRepo,
+          modelIdOrName,
+        );
+        if (!lookup) return undefined;
+        type = lookup.type;
+        definitionResources = lookup.definition.resources;
+      }
+      const modelDef = await resolveModelType(type, getAutoResolver());
+      const method = modelDef?.methods[methodName];
+      if (!modelDef || !method) return undefined;
+      if (!isMutatingKind(inferMethodKind(methodName, method))) {
+        return undefined;
+      }
+      vaultConfig ??= loadVaultConfig();
+      return sensitiveOutputTargetVaults(
+        modelDef.resources,
+        // As the step executor passes them: a step override carries no
+        // vaultName into the run, and replaces the definition's for its spec.
+        mergeDataOutputOverrides(
+          definitionResources,
+          step.dataOutputOverrides.map(({ vaultName: _, ...rest }) => rest),
+        ),
+        await vaultConfig,
+      );
+    },
+  };
+}
+
 /** Wires real infrastructure into WorkflowValidateDeps. */
 export function createWorkflowValidateDeps(
   workflowRepo: WorkflowRepository,
   definitionRepo?: YamlDefinitionRepository,
   workflowsDir?: string,
+  /**
+   * Loads the repo's vault configuration, so validate can report a
+   * sensitive-output target vault missing from a workflow's vaults list.
+   */
+  loadVaultConfig?: () => Promise<SensitiveOutputVaultConfig>,
 ): WorkflowValidateDeps {
   const methodResolver = definitionRepo
     ? createModelMethodResolver(definitionRepo)
@@ -236,6 +295,9 @@ export function createWorkflowValidateDeps(
   const validationService = new DefaultWorkflowValidationService(
     methodResolver,
     definitionRepo ? workflowRepo : undefined,
+    definitionRepo && loadVaultConfig
+      ? createSensitiveOutputVaultResolver(definitionRepo, loadVaultConfig)
+      : undefined,
   );
   return {
     findWorkflowById: (id) => workflowRepo.findById(createWorkflowId(id)),

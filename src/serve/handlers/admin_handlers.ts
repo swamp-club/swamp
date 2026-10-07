@@ -21,6 +21,7 @@
  * Platform-admin request handlers (worker, datastore, extension, doctor, run-tracker, and audit-timeline verbs).
  */
 
+import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -223,6 +224,7 @@ import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
+  authorizeVaultOrReject,
   type ConnectionContext,
   handlerLibSwampContext,
   pushChangedToRemote,
@@ -1306,15 +1308,15 @@ export async function handleVaultMigrate(
     return;
   }
 
+  // Today's check (admin on the model kind) is kept; admin on vault:<name>
+  // also allows, and a deny on any of the vault's names refuses
+  // (swamp-club#2676).
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "admin",
-      kindResource("model"),
-      ctx,
-    ).allowed
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: payload.vaultName,
+      action: "admin",
+      existing: kindResource("model"),
+    }, ctx).allowed
   ) return;
 
   // The root pushes only once the success reply was sent (swamp-club#3035).
@@ -2453,13 +2455,17 @@ export async function handleWorkerPrune(
               force: true,
             }),
 
+          // Control-plane bookkeeping: never held to a run's vault scope
+          // (swamp-club#2676).
           pruneBindings: (tokenName, machineIds) =>
-            modelMethodRun(libCtx, runDeps, {
-              modelIdOrName: tokenName,
-              methodName: "prune_bindings",
-              inputs: { machineIds },
-              lastEvaluated: false,
-            }),
+            runGeneratorWithoutVaultAccess(() =>
+              modelMethodRun(libCtx, runDeps, {
+                modelIdOrName: tokenName,
+                methodName: "prune_bindings",
+                inputs: { machineIds },
+                lastEvaluated: false,
+              })
+            ),
 
           resolveStaleBindings: async (token, remainingWorkerNames) => {
             const remaining = new Set(remainingWorkerNames);

@@ -40,3 +40,13 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 | Migrate backend   | `swamp vault migrate <vault> --to-type <type>`                           |
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).
+
+## Limiting Vault Access
+
+- Over `swamp serve`, grant vault access on `vault:<name>` (e.g.
+  `--allow read --on 'vault:prod-*'`); a vault allow also limits which vaults
+  that principal's runs can resolve. See
+  [../serve/guide.md](../serve/guide.md#vault-access).
+- In a workflow, a top-level `vaults:` list caps the vaults any run may touch,
+  locally too; include the vault sensitive outputs land in. See
+  [../workflow/reference.md](../workflow/reference.md#vaults-allow-list).

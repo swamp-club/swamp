@@ -1601,16 +1601,26 @@ export function paginate<T>(
   return { page: items.slice(start, end), total: items.length };
 }
 
+/**
+ * Admits a request that lists resources of `kind` and filters them per
+ * resource: it passes when the principal holds any allow of the kind for
+ * `action`, or is an admin. With several kinds any of them admits, and a
+ * refusal names the first, so adding a kind leaves the refusal unchanged.
+ */
 export function authorizeAnyOrReject(
   socket: WebSocket,
   requestId: string,
   principal: Principal | null,
   action: Action,
-  kind: ResourceKind,
+  kindOrKinds: ResourceKind | readonly [ResourceKind, ...ResourceKind[]],
   ctx: ConnectionContext,
 ): boolean {
   if (ctx.authConfig.mode === "none") return true;
 
+  const kinds: readonly ResourceKind[] = typeof kindOrKinds === "string"
+    ? [kindOrKinds]
+    : kindOrKinds;
+  const kind = kinds[0];
   const resource: AccessResource = { kind, name: "*", fields: {} };
 
   if (!ctx.policySnapshotLoader) {
@@ -1660,7 +1670,9 @@ export function authorizeAnyOrReject(
   const service = ctx.policySnapshotLoader.decisionService;
   const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
 
-  if (service.hasAnyGrantForKind(accessPrincipal, action, kind)) return true;
+  if (
+    kinds.some((k) => service.hasAnyGrantForKind(accessPrincipal, action, k))
+  ) return true;
 
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1688,6 +1700,317 @@ export function authorizeAnyOrReject(
     groups,
   );
   return false;
+}
+
+/**
+ * The data resource a vault is authorized as by the checks that predate the
+ * vault kind: `data:vault` for the whole set of vaults, or `data:<name>` for
+ * one. Its fields are complete — a vault has no tags or namespace — so a
+ * conditional data deny decides on it rather than failing closed
+ * (swamp-club#2675).
+ */
+export function vaultAccessResource(name: string): AccessResource {
+  return { kind: "data", name, fields: { name, ns: "", tags: {} } };
+}
+
+/**
+ * The vault resource `vault:<name>` (swamp-club#2676). `key` is the secret a
+ * request names; without one a `key` condition sees "".
+ */
+export function vaultKindResource(name: string, key?: string): AccessResource {
+  return {
+    kind: "vault",
+    name,
+    fields: { name, ...(key !== undefined ? { key } : {}) },
+  };
+}
+
+/** A request on one vault, as {@link authorizeVaultOrReject} decides it. */
+export interface VaultRequest {
+  /** The name of the vault the request acts on. */
+  readonly vaultName: string;
+  readonly action: Action;
+  /**
+   * The resource the request was authorized as before the vault kind
+   * existed (`data:vault`, `data:<name>` or `model` kind for migrate). It
+   * is still decided first and unchanged, and its refusal is the reply when
+   * nothing else allows.
+   */
+  readonly existing: AccessResource;
+  /** The secret key the request names, for a vault grant's `key` field. */
+  readonly key?: string;
+  /**
+   * False when only today's check may admit the request: a `vault:<name>`
+   * allow does not, though a deny on any name of the vault still refuses.
+   * For requests whose effect reaches beyond the vault, such as setting a
+   * refresh hook that serve runs as a shell command. Defaults to true.
+   */
+  readonly vaultGrantAdmits?: boolean;
+}
+
+/** The result of a vault decision, and which check admitted it. */
+export interface VaultAuthorizationResult extends AuthorizationResult {
+  /**
+   * `vault` when only a `vault:<name>` grant admitted the request, so the
+   * handler must not reveal anything beyond that one vault.
+   */
+  readonly admittedBy?: "existing" | "vault";
+}
+
+interface VaultOutcome {
+  readonly outcome: AccessOutcome;
+  /** The resource the outcome is reported against. */
+  readonly resource: AccessResource;
+  readonly admittedBy?: "existing" | "vault";
+}
+
+function accessPrincipalOf(
+  socket: WebSocket,
+  principal: Principal,
+): AccessPrincipal {
+  return {
+    principal,
+    collectives: connectionCollectives.get(socket) ?? [],
+    groups: connectionGroups.get(socket) ?? [],
+  };
+}
+
+/**
+ * The names a deny on a vault may use: `data:vault`, `data:<name>` and
+ * `vault:<name>`. Any of them refuses every request on the vault.
+ */
+function vaultDenyResources(
+  vaultName: string,
+  key: string | undefined,
+): AccessResource[] {
+  return [
+    vaultAccessResource("vault"),
+    vaultAccessResource(vaultName),
+    vaultKindResource(vaultName, key),
+  ];
+}
+
+function sameResource(a: AccessResource, b: AccessResource): boolean {
+  return a.kind === b.kind && a.name === b.name;
+}
+
+/**
+ * The decision behind {@link authorizeVaultOrReject}. Today's check runs
+ * first and unchanged; an explicit deny on today's resource is today's
+ * refusal. A deny on any other name of the vault refuses a request that
+ * today's check or a `vault:<name>` allow would admit. Otherwise today's
+ * allow (admin fallback included) admits, then a `vault:<name>` allow. A
+ * request neither admits gets today's refusal unchanged, whatever else
+ * denies it.
+ */
+function decideVaultRequest(
+  socket: WebSocket,
+  principal: Principal | null,
+  request: VaultRequest,
+  ctx: ConnectionContext,
+): VaultOutcome {
+  const existing = decideAccess(
+    socket,
+    principal,
+    request.action,
+    request.existing,
+    ctx,
+  );
+  const todays: VaultOutcome = {
+    outcome: existing,
+    resource: request.existing,
+  };
+  if (ctx.authConfig.mode === "none") {
+    return { ...todays, admittedBy: "existing" };
+  }
+  if (existing.kind === "not_configured" || existing.kind === "no_principal") {
+    return todays;
+  }
+  if (existing.kind === "refused" && existing.decision?.effect === "deny") {
+    return todays;
+  }
+  // A policy and a principal are present past the checks above.
+  const loader = ctx.policySnapshotLoader!;
+  const subject = principal!;
+  const service = loader.decisionService;
+  const accessPrincipal = accessPrincipalOf(socket, subject);
+  let denied: VaultOutcome | null = null;
+  let vaultAllow: AccessDecision | null = null;
+  for (const resource of vaultDenyResources(request.vaultName, request.key)) {
+    if (sameResource(resource, request.existing)) continue;
+    const decision = service.decide(accessPrincipal, request.action, resource);
+    if (decision && decision.effect === "deny") {
+      denied ??= {
+        outcome: {
+          kind: "refused",
+          principal: subject,
+          decision,
+          groups: accessPrincipal.groups,
+        },
+        resource,
+      };
+    } else if (resource.kind === "vault" && decision) {
+      vaultAllow = decision;
+    }
+  }
+  if (existing.kind === "allowed") {
+    return denied ?? { ...todays, admittedBy: "existing" };
+  }
+  if (!vaultAllow || request.vaultGrantAdmits === false) return todays;
+  return denied ?? {
+    outcome: { kind: "allowed", decision: vaultAllow },
+    resource: vaultKindResource(request.vaultName, request.key),
+    admittedBy: "vault",
+  };
+}
+
+/**
+ * Authorizes a request on one vault (swamp-club#2676). A deny that matches
+ * `data:vault`, `data:<name>` or `vault:<name>` for the request's action
+ * refuses it. Otherwise it is allowed when today's check allows — unchanged,
+ * admin fallback included — or a `vault:<name>` grant allows (unless the
+ * request sets `vaultGrantAdmits: false`). Anything else gets today's
+ * refusal, reply and audit unchanged.
+ */
+export function authorizeVaultOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  request: VaultRequest,
+  ctx: ConnectionContext,
+): VaultAuthorizationResult {
+  const decided = decideVaultRequest(socket, principal, request, ctx);
+  const result = replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    request.action,
+    decided.resource,
+    ctx,
+    decided.outcome,
+  );
+  return result.allowed
+    ? { ...result, admittedBy: decided.admittedBy }
+    : result;
+}
+
+/**
+ * Whether a request whose vault is named by name or id may go on to look it
+ * up. A caller today's check allows may; so may one holding any vault-kind
+ * allow for the action, since the vault it names may be one of its own.
+ * Every other caller gets today's refusal before any lookup. The request
+ * must still be authorized with {@link authorizeVaultOrReject} once the
+ * vault's name is known.
+ */
+export function admitVaultLookupOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  existing: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  const outcome = decideAccess(socket, principal, action, existing, ctx);
+  if (
+    outcome.kind === "refused" && outcome.decision === null && principal &&
+    ctx.policySnapshotLoader &&
+    ctx.policySnapshotLoader.decisionService.hasAnyGrantForKind(
+      accessPrincipalOf(socket, principal),
+      action,
+      "vault",
+    )
+  ) return true;
+  return replyToOutcome(
+    socket,
+    requestId,
+    principal,
+    action,
+    existing,
+    ctx,
+    outcome,
+  ).allowed;
+}
+
+/** Whether a listing request was admitted, and by which check. */
+export interface VaultListingAdmission {
+  readonly allowed: boolean;
+  /** True when today's check admitted the request for every vault. */
+  readonly existingAllowed: boolean;
+}
+
+/**
+ * Admits a request that lists vaults (vault.search): today's check on
+ * `existing` admits it for every vault; a caller it does not decide is
+ * still admitted when it holds any vault-kind allow for the action, and the
+ * listing is then filtered to its vaults. Any other caller gets today's
+ * refusal.
+ */
+export function admitVaultListingOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  existing: AccessResource,
+  ctx: ConnectionContext,
+): VaultListingAdmission {
+  const outcome = decideAccess(socket, principal, action, existing, ctx);
+  if (outcome.kind === "allowed") {
+    return { allowed: true, existingAllowed: true };
+  }
+  if (
+    outcome.kind === "refused" && outcome.decision === null && principal &&
+    ctx.policySnapshotLoader &&
+    ctx.policySnapshotLoader.decisionService.hasAnyGrantForKind(
+      accessPrincipalOf(socket, principal),
+      action,
+      "vault",
+    )
+  ) return { allowed: true, existingAllowed: false };
+  replyToOutcome(socket, requestId, principal, action, existing, ctx, outcome);
+  return { allowed: false, existingAllowed: false };
+}
+
+/**
+ * A silent per-vault check for listings (swamp-club#2676). A vault is kept
+ * when no deny on `data:vault`, `data:<name>` or `vault:<name>` matches it
+ * for `action`, and `existingAllows` (today's rule for the listing) or a
+ * `vault:<name>` allow admits it. Decisions are cached per name and are not
+ * audited. Everything is kept when authorization is off; nothing when there
+ * is no principal or policy.
+ */
+export function vaultListingDecider(
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  ctx: ConnectionContext,
+  existingAllows: (vaultName: string) => boolean,
+): (vaultName: string) => boolean {
+  if (ctx.authConfig.mode === "none") return () => true;
+  const loader = ctx.policySnapshotLoader;
+  if (!loader || !principal) return () => false;
+  const service = loader.decisionService;
+  const accessPrincipal = accessPrincipalOf(socket, principal);
+  const decided = new Map<string, boolean>();
+  return (vaultName) => {
+    let kept = decided.get(vaultName);
+    if (kept === undefined) {
+      let vaultAllows = false;
+      let denied = false;
+      for (const resource of vaultDenyResources(vaultName, undefined)) {
+        const decision = service.decide(accessPrincipal, action, resource);
+        if (decision && decision.effect === "deny") {
+          denied = true;
+          break;
+        }
+        if (resource.kind === "vault") {
+          vaultAllows = decision !== null && decision.effect === "allow";
+        }
+      }
+      kept = !denied && (existingAllows(vaultName) || vaultAllows);
+      decided.set(vaultName, kept);
+    }
+    return kept;
+  };
 }
 
 export function send(socket: WebSocket, message: ServerMessage): void {

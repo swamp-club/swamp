@@ -78,6 +78,13 @@ export const CONDITION_FIELDS: Readonly<
     field("owner", "map", "resource", false),
   ],
   access: [field("name", "string")],
+  // A vault grant names the vault; `key` is the secret a request names
+  // (put, read-secret, delete, ...), evaluated as "" when it names none, so
+  // a key condition never fails closed on a request without a key.
+  vault: [
+    field("name", "string"),
+    field("key", "string", "request"),
+  ],
 };
 
 /** The zero value a request field is evaluated as when a request lacks it. */

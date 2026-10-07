@@ -54,6 +54,11 @@ import {
 } from "../../serve/suspended_run_cancel.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
 import {
+  runVaultScopeContext,
+  serviceRunVaultScope,
+} from "../../serve/run_vault_access_policy.ts";
+import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
+import {
   auditScheduledEvent,
   auditWebhookEvent,
   createScheduledRunAuthorizer,
@@ -462,6 +467,20 @@ const DISPATCH_ENV_ALLOW_HELP =
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Runs every HTTP request, WebSocket upgrades included, outside any run's
+ * vault scope (swamp-club#2676). Deno can leave the async context of the
+ * last code that ran current when it calls a serve handler (a first-time
+ * dynamic `import()` inside a run does), so without this a request — and
+ * every message on a connection it upgrades — could inherit another run's
+ * scope, and token authentication would be refused the reserved vault.
+ */
+export function unscopedHttpHandler<A extends Deno.Addr>(
+  handler: Deno.ServeHandler<A>,
+): Deno.ServeHandler<A> {
+  return (req, info) => withoutVaultAccess(() => handler(req, info));
+}
 
 const logger = getSwampLogger(["serve"]);
 
@@ -2736,6 +2755,12 @@ export const serveCommand = new Command()
     const dataPlane = new DataPlane({
       repoDir: resolvedRepoDir,
       repoContext,
+      // The same default vault as run deps, so a worker's sensitive write
+      // lands in the vault the pre-run check approved (swamp-club#2676).
+      createVaultService: () =>
+        VaultService.fromRepository(resolvedRepoDir, {
+          defaultVaultName: repoMarker?.defaultVault,
+        }),
       sessions: workerGateway.sessions,
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
@@ -4734,6 +4759,12 @@ export const serveCommand = new Command()
               syncGate,
               triggerSource: "schedule",
               initiatedBy: input.initiatedBy,
+              // A fresh scope per run of the scheduler principal
+              // (swamp-club#2676).
+              vaultAccess: serviceRunVaultScope(
+                runVaultScopeContext(connectionCtx),
+                SCHEDULER_PRINCIPAL,
+              ),
             },
           ),
         pendingRunHook: {
@@ -5148,6 +5179,11 @@ export const serveCommand = new Command()
           triggerAuthorizer,
           connectionCtx,
         ),
+        createVaultAccess: () =>
+          serviceRunVaultScope(
+            runVaultScopeContext(connectionCtx),
+            WEBHOOK_PRINCIPAL,
+          ),
       });
 
       const webhookRejections = new WebhookRejectionCoalescer();
@@ -5463,7 +5499,7 @@ export const serveCommand = new Command()
           }
         },
       },
-      traceHttpRequests(async (req, info) => {
+      unscopedHttpHandler(traceHttpRequests(async (req, info) => {
         const clientAddress = () =>
           trustProxy
             ? (req.headers.get("x-forwarded-for")
@@ -6323,7 +6359,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      }),
+      })),
     );
 
     // Hot-reload: PID file + SIGHUP handler

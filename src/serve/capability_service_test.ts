@@ -26,6 +26,11 @@ import { ModelType } from "../domain/models/model_type.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
 import {
+  currentVaultAccess,
+  RunVaultAccess,
+  VaultAccessDeniedError,
+} from "../domain/vaults/run_vault_access.ts";
+import {
   signalChange,
   type UnscopedChange,
   useUnscopedChangeReporterForTesting,
@@ -982,3 +987,101 @@ Deno.test("readDefinition: an ambiguous dispatch hides control-plane types inste
   }) as { found: boolean };
   assertEquals(scoped.found, true);
 });
+
+// ── dispatching run's vault scope (swamp-club#2676) ─────────────────────
+
+/** A vault service that, as VaultService does, checks the ambient scope. */
+function scopeCheckingVault(): CapabilityService {
+  const checked = (vault: string, action: "read" | "write") =>
+    currentVaultAccess()?.check(vault, action) ?? Promise.resolve();
+  return new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: stubRepoContext(),
+    dispatches: scopedDispatches(),
+    createVaultService: () =>
+      Promise.resolve({
+        get: async (vault: string) => {
+          await checked(vault, "read");
+          return "secret";
+        },
+        getAnnotation: async (vault: string) => {
+          await checked(vault, "read");
+          return null;
+        },
+        put: (vault: string) => checked(vault, "write"),
+        putAnnotation: (vault: string) => checked(vault, "write"),
+        deleteAnnotation: (vault: string) => checked(vault, "write"),
+      } as never),
+  });
+}
+
+function scopedDispatches(): DispatchRegistry {
+  const dispatches = new DispatchRegistry();
+  dispatches.register({
+    workerName: "worker-1",
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    modelDef: {} as never,
+    modelType: ModelType.create("acme/invoices"),
+    modelId: "m-1",
+    methodName: "run",
+    definitionName: "my-invoice",
+    definitionTags: {},
+    vaultAccess: RunVaultAccess.create({ allowedVaults: ["roomcontrol"] }),
+  });
+  return dispatches;
+}
+
+const SCOPED_CALLS: {
+  name: string;
+  call: (s: CapabilityService, vaultName: string) => Promise<unknown>;
+}[] = [
+  {
+    name: "resolveSecret value",
+    call: (s, vaultName) =>
+      s.resolveSecret("worker-1", { vaultName, secretKey: "k" }),
+  },
+  {
+    name: "resolveSecret annotation",
+    call: (s, vaultName) =>
+      s.resolveSecret("worker-1", {
+        vaultName,
+        secretKey: "k",
+        annotation: true,
+      }),
+  },
+  {
+    name: "putSecret put",
+    call: (s, vaultName) =>
+      s.putSecret("worker-1", { vaultName, secretKey: "k", secretValue: "v" }),
+  },
+  {
+    name: "putSecret putAnnotation",
+    call: (s, vaultName) =>
+      s.putSecret("worker-1", {
+        vaultName,
+        secretKey: "k",
+        annotation: {} as never,
+      }),
+  },
+  {
+    name: "putSecret deleteAnnotation",
+    call: (s, vaultName) =>
+      s.putSecret("worker-1", {
+        vaultName,
+        secretKey: "k",
+        deleteAnnotation: true,
+      }),
+  },
+];
+
+for (const { name, call } of SCOPED_CALLS) {
+  Deno.test(`CapabilityService: ${name} is held to the dispatching run's vault scope`, async () => {
+    const service = scopeCheckingVault();
+    await assertRejects(
+      () => call(service, "erp"),
+      VaultAccessDeniedError,
+    );
+    await call(service, "roomcontrol");
+  });
+}

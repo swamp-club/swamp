@@ -64,8 +64,24 @@ Deno.test("parseResourceSelector: rejects invalid kind", () => {
   assertThrows(
     () => parseResourceSelector("secret:my-secret"),
     Error,
-    'expected "workflow", "model", "data", or "access"',
+    'expected "workflow", "model", "data", "access", or "vault"',
   );
+});
+
+Deno.test("parseResourceSelector: accepts the vault kind", () => {
+  assertEquals(parseResourceSelector("vault:prod-*"), {
+    kind: "vault",
+    pattern: "prod-*",
+  });
+});
+
+Deno.test("resourceSelectorMatches: vault pattern matches vault names", () => {
+  const selector = parseResourceSelector("vault:prod-*");
+  assertEquals(resourceSelectorMatches(selector, "prod-db"), true);
+  assertEquals(resourceSelectorMatches(selector, "staging-db"), false);
+  const exact = parseResourceSelector("vault:roomcontrol");
+  assertEquals(resourceSelectorMatches(exact, "roomcontrol"), true);
+  assertEquals(resourceSelectorMatches(exact, "roomcontrol2"), false);
 });
 
 Deno.test("resourceSelectorToString: roundtrips with parseResourceSelector", () => {

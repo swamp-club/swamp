@@ -24,6 +24,7 @@ export const ResourceKindSchema = z.enum([
   "model",
   "data",
   "access",
+  "vault",
 ]);
 
 export type ResourceKind = z.infer<typeof ResourceKindSchema>;
@@ -52,7 +53,7 @@ export function parseResourceSelector(value: string): ResourceSelector {
   const parsed = ResourceKindSchema.safeParse(kind);
   if (!parsed.success) {
     throw new Error(
-      `Invalid resource kind "${kind}": expected "workflow", "model", "data", or "access"`,
+      `Invalid resource kind "${kind}": expected "workflow", "model", "data", "access", or "vault"`,
     );
   }
   const starIndex = pattern.indexOf("*");

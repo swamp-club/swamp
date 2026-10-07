@@ -101,6 +101,8 @@ import {
 } from "../infrastructure/tracing/mod.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
+import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 
 const logger = getSwampLogger(["serve", "deps"]);
 
@@ -453,6 +455,14 @@ export async function executeWorkflowWithLocks(
      */
     triggerSource?: WorkflowTriggerSource;
     initiatedBy?: string;
+    /**
+     * The vault scope of the principal that triggered the run
+     * (swamp-club#2676), entered around the run so every vault operation in
+     * it is decided for that principal. Every serve caller passes it
+     * (pinned by `integration/serve_run_entry_scope_rules_test.ts`);
+     * `undefined` where no policy applies.
+     */
+    vaultAccess?: ServeRunVaultScope;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
@@ -541,7 +551,8 @@ export async function executeWorkflowWithLocks(
   let streamError: string | undefined;
   let streamErrorPaths: string[] = [];
   let finalStatus: string | undefined;
-  const run = async () => {
+  const vaultScope = options.vaultAccess;
+  const consume = async () => {
     for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
       if (event.kind === "error") {
         streamError = event.error.message;
@@ -550,9 +561,20 @@ export async function executeWorkflowWithLocks(
       if (event.kind === "completed" || event.kind === "cancelled") {
         finalStatus = event.run.status;
       }
+      if (
+        vaultScope && event.kind === "started" &&
+        event.parentRunId === undefined
+      ) {
+        vaultScope.runId = event.runId;
+      }
       onEvent(event);
     }
   };
+  // The scope is entered around the loop that drives the run's generator,
+  // so every next() — and with it the run's own code — runs inside it.
+  const run = vaultScope
+    ? () => runWithVaultAccess(vaultScope.access, consume)
+    : consume;
 
   const runTraced = async () => {
     if (input.traceparent) {
