@@ -50,8 +50,8 @@ import {
 
 /**
  * A review warning as it appears in the accepted-warnings record: the
- * finding without its report skeleton or remediation, which the
- * `reviewRuleWarnings` document already carries in full.
+ * finding without its report skeleton or remediation, which
+ * `warnings.review` already carries in full.
  */
 export type AcceptedReviewWarning = Omit<
   ReviewFinding,
@@ -216,7 +216,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
    * LogTape would print a multi-line string as a JS string concatenation.
    */
   private textBlock(level: LogLevelName, text: string, indent: string): void {
-    for (const line of text.replace(/\n+$/, "").split("\n")) {
+    for (const line of text.replace(/(\r?\n)+$/, "").split(/\r?\n/)) {
       this.logger[level](escapeLogTemplate(`${indent}${line}`));
     }
   }

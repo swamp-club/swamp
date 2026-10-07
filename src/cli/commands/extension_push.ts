@@ -208,8 +208,8 @@ export function resolveExistingVersionResponse(input: {
 /**
  * Collects the warnings the gate covers into the record the summary prints
  * when they are accepted. Findings drop their report skeleton and their
- * remediation: the `reviewRuleWarnings` and `warnings` documents already
- * carry them, and repeating them would bury the summary.
+ * remediation: `warnings.review` and `warnings.safety` already carry them,
+ * and repeating them would bury the summary.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];

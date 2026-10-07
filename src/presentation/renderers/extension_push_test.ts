@@ -952,3 +952,16 @@ Deno.test("extensionPushRenderer: log renderUnfinished prints nothing", async ()
   const logs = await capture(() => renderer.renderUnfinished());
   assertEquals(logs, []);
 });
+
+Deno.test("extensionPushRenderer: log prints CRLF output without trailing carriage returns", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() =>
+    renderer.renderUpgradeChainErrors([{
+      check: "lint",
+      output: "first\r\nsecond\r\n",
+    }])
+  );
+  assertEquals(logs.some((line) => line.includes("\r")), false);
+  assertEquals(logs.filter((line) => line.endsWith("  first")).length, 1);
+  assertEquals(logs.filter((line) => line.endsWith("  second")).length, 1);
+});

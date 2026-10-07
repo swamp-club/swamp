@@ -661,7 +661,7 @@ const REVIEW_REPORT_RULE = "adversarial-review-report";
  * {@link REVIEW_REPORT_RULE} — which covers a review that is owed, stale, or
  * incomplete (missing file, name/version mismatch, missing/pending verdicts,
  * parse error) — lets a downstream CI gate keying on
- * `reviewRuleWarnings[].ruleId === "adversarial-review-report"` pass a
+ * `warnings.review[].ruleId === "adversarial-review-report"` pass a
  * completed, hash-matching review regardless of its dimension verdicts, while
  * the honest `issue` note still surfaces under this id. Without the split the
  * two states are indistinguishable and an honest `issue` verdict reads as a
