@@ -1810,6 +1810,16 @@ check-and-create. In solo mode the lockfile is `{datastorePath}/.datastore.lock`
 A background heartbeat rewrites it with a fresh timestamp. Stale locks (where
 `acquiredAt + ttlMs < now`) are removed and the acquire retried.
 
+The heartbeat rewrites the lockfile in place, and a new lockfile exists before
+its content is written, so a reader can find a held lock's file empty or
+partial. A lockfile that exists but cannot be read therefore counts as held
+until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
+is the one definition of that rule: the acquire path backs off, `inspect()`
+returns a placeholder `LockInfo` with an unknown holder and no nonce, and the
+structural drain (`waitForPerModelLocks`) counts the lock as held. Reading
+such a file as no lock would let a writer and a structural command run at the
+same time (swamp-club#3148).
+
 With a `namespace` set, `datastoreGlobalLockOptions` returns
 `{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
 providers (S3, GCS) put the key under `{namespace}/`, at

@@ -75,7 +75,11 @@ import {
   SLOW_LOCK_NAMESPACE_ADVICE,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
-import { FileLock } from "../infrastructure/persistence/file_lock.ts";
+import {
+  DEFAULT_LOCK_TTL_MS,
+  FileLock,
+  readLockFileState,
+} from "../infrastructure/persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import {
   type AtomicControlPlaneStore,
@@ -1730,14 +1734,19 @@ export async function waitForPerModelLocks(
             continue;
           }
           try {
-            const content = await Deno.readTextFile(entry.path);
-            const info = JSON.parse(content) as {
-              acquiredAt: string;
-              ttlMs: number;
-              pid?: number;
-              hostname?: string;
-              nonce?: string;
-            };
+            const state = await readLockFileState(
+              entry.path,
+              DEFAULT_LOCK_TTL_MS,
+            );
+            if (state.kind === "absent") continue;
+            if (state.kind === "unreadable") {
+              // A holder is mid-write (create, or a heartbeat rewrite), so
+              // the lock is held; it cannot say for whom, so it is never
+              // skipped as an ancestor's (swamp-club#3148).
+              if (state.fresh) held++;
+              continue;
+            }
+            const info = state.info;
             // Skip locks held for the run that started this one: those
             // handed down by nonce, or an ancestor swamp's on this host
             // (prevents deadlock when a workflow shell step spawns a nested
@@ -1770,7 +1779,7 @@ export async function waitForPerModelLocks(
               }
             }
           } catch {
-            // Skip unreadable lock files
+            // Skip lock files whose content is not a lock record
           }
         }
       } catch {
