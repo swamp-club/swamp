@@ -5380,3 +5380,36 @@ Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lo
   // Paced by the poll interval after the first confirming scan.
   assert(scans < 30, `expected a paced drain, got ${scans} scans`);
 });
+
+Deno.test("reclaimModelLocks: does not wait on a structural command on this host that has died", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const here = (retired: string): LockInfo => ({
+      ...globalInfo([retired]),
+      hostname: hostname(),
+    });
+
+    // Killed with its hop: its lock file outlives it until the ttl.
+    const dead = globalLockReturning([here(lock.heldNonce!)]);
+    await reclaimModelLocks([lock], dead, {
+      pollMs: 1,
+      progressWriter: () => {},
+      isProcessDead: (pid) => pid === 4242,
+    });
+    assertEquals(dead.inspects(), 1);
+
+    // The same pid on another host says nothing about that process.
+    const elsewhere = globalLockReturning([
+      globalInfo([lock.heldNonce!]),
+      null,
+    ]);
+    await reclaimModelLocks([lock], elsewhere, {
+      pollMs: 1,
+      progressWriter: () => {},
+      isProcessDead: () => true,
+    });
+    assertEquals(elsewhere.inspects(), 2);
+    await lock.release();
+  });
+});

@@ -165,6 +165,12 @@ const HAND_OFF_SITES: Record<string, string[]> = {
     "src/domain/models/method_execution_service.ts",
   ],
   beginLockHandOff: ["src/serve/dispatch_service.ts"],
+  // A `--server` client sends on the list it inherited. It holds no lock
+  // scope of its own, so there is nothing of its own to take back.
+  forwardedLockTokens: [
+    "src/cli/remote_run.ts",
+    "src/domain/datastore/lock_holder_marker.ts",
+  ],
   // Read-only views: the marker's own use, never a hand-down.
   childLockEnv: ["src/domain/datastore/lock_holder_marker.ts"],
   remoteLockHolder: ["src/domain/datastore/lock_holder_marker.ts"],

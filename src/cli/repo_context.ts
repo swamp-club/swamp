@@ -27,6 +27,7 @@
 
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import { hostname } from "node:os";
+import { isProcessDead } from "../infrastructure/runtime/process.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -111,6 +112,7 @@ import {
   lockSkipping,
   LockTimeoutError,
   LockWaitCycleError,
+  MAX_LOCK_SKIPPING,
 } from "../domain/datastore/distributed_lock.ts";
 import {
   type CustomDatastoreConfig,
@@ -1714,7 +1716,8 @@ const DRAIN_POLL_INTERVAL_MS = 1_000;
  * Returns the nonces of the locks its last scan skipped.
  *
  * The test seams in `options` are for tests only — production callers pass
- * at most `progressWriter`. Not exported from any barrel.
+ * at most `progressWriter` and `publishSkipping`. Not exported from any
+ * barrel.
  */
 export async function waitForPerModelLocks(
   datastorePath: string,
@@ -1804,7 +1807,8 @@ export async function waitForPerModelLocks(
   let published: readonly string[] = [];
   const confirm = async (scan: PerModelLockScan): Promise<boolean> => {
     if (options.publishSkipping === undefined) return true;
-    const now = new Set(scan.skippedLockIds);
+    // Capped as the lock file caps it, so a longer list still confirms.
+    const now = new Set(scan.skippedLockIds.slice(0, MAX_LOCK_SKIPPING));
     if (
       now.size === published.length && published.every((id) => now.has(id))
     ) {
@@ -2055,6 +2059,8 @@ export interface ReclaimModelLocksOptions {
   progressWriter?: LockProgressWriter;
   /** The global lock's name in a {@link LockTimeoutError}. */
   displayKey?: string;
+  /** Test seam: whether a process on this host has exited. */
+  isProcessDead?: (pid: number) => boolean;
 }
 
 /**
@@ -2086,12 +2092,16 @@ export async function reclaimModelLocks(
 
   const write = options.progressWriter ?? defaultLockWriter;
   const timeoutMs = options.timeoutMs ?? resolveLockTimeoutMs();
+  const processDead = options.isProcessDead ?? isProcessDead;
   const start = Date.now();
   let announced = false;
   while (true) {
     const info = await globalLock.inspect();
     if (!info) break;
     if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) break;
+    // A structural command killed with its hop (a shell step's timeout
+    // takes the whole process tree) leaves its lock behind until the ttl.
+    if (info.hostname === hostname() && processDead(info.pid)) break;
     const skipping = lockSkipping(info);
     if (!retired.some((nonce) => skipping.has(nonce))) break;
     if (!announced) {

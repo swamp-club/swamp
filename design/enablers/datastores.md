@@ -2210,6 +2210,9 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    `FileLock.publishSkipping`). After re-keying, the holder reads the global
    lock; while it is live and its list names a retired nonce the holder
    waits, re-reading the list on every poll, up to `SWAMP_LOCK_TIMEOUT_MS`.
+   A global lock whose process on this host has died is not waited on: a
+   shell step's timeout kills its command's whole process tree, and the
+   lock file a nested structural command leaves behind lasts until its ttl.
    At the timeout it throws `LockTimeoutError` and the run fails without
    writing. A cancelled dispatch is the exception: it logs the timeout and
    stays cancelled, because a cancelled step writes nothing to the model.
