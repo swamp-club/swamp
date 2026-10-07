@@ -203,16 +203,106 @@ Serve audits the launch as `workflow.auto_resume`, and the approve response
 carries `autoResumed: true`. If the launch is refused or the resume fails,
 serve logs and audits `workflow.auto_resume_failed`, and the run stays
 `suspended`, awaiting resume. The same happens if two sibling gates are
-approved concurrently and neither approval sees the other. A launch refused
+approved concurrently and neither approval sees the other. The continuation
+sweep below then launches it. A launch refused
 because the workflow changed shape since the run is refused before it is
 registered or charged, and a manual resume is refused the same way: that run
 has to be cancelled, or, when serve started it, the change reverted.
 
-Auto-resume needs the approval to go through serve (the dashboard, or
-`swamp workflow approve --server`). A local `swamp workflow approve` on the
-same repository never triggers it. A suspended run with every gate decided
-carries the derived `awaitingResume: true`, so the run index and
+The resume that follows an approval at once needs the approval to go through
+serve (the dashboard, or `swamp workflow approve --server`). A local
+`swamp workflow approve` on the same repository launches nothing itself; the
+continuation sweep finds the run on its next pass. A suspended run with every
+gate decided carries the derived `awaitingResume: true`, so the run index and
 `workflow.run.search` can list it.
+
+**Continuation.** Serve also continues a suspended run nobody is about to
+decide anything more on (swamp-club#3108). `decideContinuation`
+(`src/domain/workflows/run_continuation.ts`) reads the run record together
+with the wait outcome records: the run is suspended, no step is still
+running, no gate is undecided, no step waits on a nested run, and every wait
+for a signal has an outcome of any kind. `continueSettledRun`
+(`src/serve/resume_launcher.ts`) then applies the same
+`Workflow.shouldAutoResume` policy and launches the resume through
+`startDetachedResume`. It is called from two places:
+
+- The instance that accepts a signal calls it once the caller has its reply
+  (`continueAfterSignal` in `src/serve/signal_delivery.ts`), charged to the
+  signaller. When that instance has no record of the run and its datastore is
+  synced, it first fetches the record. Only a record that is missing is
+  fetched: a pull overwrites a local file that differs from the remote, and a
+  record that is here may hold a change not pushed yet.
+- The continuation sweep (`src/serve/continuation_sweep_service.ts`) offers
+  it every suspended run this instance has, at boot and then every
+  `--continuation-sweep-interval` (default 30 s; `0` disables). The sweep is
+  what retries a launch lost to a full registry, a shutdown or a crash, and
+  what continues a run signalled or approved by a local command. On its first
+  boot after an upgrade it therefore launches every run that was already
+  settled and left suspended, when the workflow's policy allows.
+
+Nothing is authorized at the launch. The stored outcome is the authorization,
+as an approval is for its own auto-resume: with auto-resume on, a `signal`
+grant releases the rest of a run that was authorized when it started. A wait
+settled by the local `swamp workflow signal`, or as timed out, releases it
+with no principal at all. No inputs can be supplied on this path, which is
+why a workflow that declares inputs must opt in itself, and why
+`swamp workflow validate` fails a workflow that waits for a signal, declares
+inputs and leaves `autoResume` unset.
+
+A run the launcher cannot continue stays suspended. Each reason is logged and
+audited once per suspension, as `workflow.auto_resume_skipped` (the policy is
+off, the workflow is gone, a local command left its claim behind) or
+`workflow.auto_resume_failed` (the registry refused, the workflow changed
+shape, the claims could not be read, the resume failed), and the next pass
+tries again. A resume that finds the run no longer suspended, or its claim
+held by another, lost a race to a peer or a person and is not reported.
+
+A claim left by a local `workflow resume` that died before saving the run is
+never replaced by serve, which cannot tell a dead local command from a live
+one. Where its run records are current, serve reports such a claim once it is
+a minute old (`held_by_local_command`); a manual resume replaces it.
+
+**Continuation claims.** Two serve instances on one datastore must not both
+resume a run, and on a synced datastore each reads its own cached copy of the
+run record, which can still say `suspended` after a peer resumed the run. The
+run's lock serialises two resumes but does not refresh a copy. So every
+resume of a suspended run, from serve or from `swamp workflow resume`,
+creates a continuation claim inside the run's claim, in `takeOverRun`
+(`src/domain/workflows/continuation_claim.ts`):
+
+- The claim is keyed by the run and a suspension key, a digest of the run
+  record's step statuses, times, wait IDs and gate decisions
+  (`suspensionKeyOf`). Every host derives the same key from the same record,
+  and a copy from before a resume derives the key that resume already
+  claimed.
+- It is created once (`putIfAbsent`) in the control-plane store serve writes
+  its heartbeats to, and kept until the run is deleted. A resume that is
+  restored before anything ran releases it.
+- A claim held by a serve instance with a live heartbeat refuses every other
+  resume, manual ones included, with a message naming the instance. Serve
+  writes a heartbeat only to a remote control plane, so this applies on a
+  synced datastore alone: on a filesystem datastore a serve instance's claim
+  always reads as dead, and the run's lock and its record, which every
+  process there reads directly, are what refuse a second resume. A manual
+  resume replaces any other holder. Serve replaces only a holder known to be
+  dead, and only when its own run records are current: on every pass on a
+  filesystem datastore, and on a synced one only in the boot pass, which
+  follows the boot hydration. A replacement creates the next generation of the
+  claim and never deletes the old one, so two instances that both see a dead
+  holder cannot both take its place.
+
+Serve's resume also takes the run's lock-backed claim, which only
+`swamp workflow resume` took before. On a filesystem datastore that lock and
+the shared run record already give a single resume; the continuation claim is
+what gives it on a synced one.
+
+Limits on a synced datastore: the sweep does not start when the boot
+hydration failed; a run whose latest suspension only a dead instance had, or
+whose claim a dead instance holds, waits until some instance restarts; and
+taking over a dead holder's claim resumes from the stored record, so steps
+that holder ran and never pushed run again, as they do when a person resumes
+a run after a crash. A datastore whose control-plane store cannot create a
+record atomically has no claims, and a resume there takes none.
 
 Serve registers the resume before it saves the run as `running`, so a search
 right after an approval can still list the run as suspended and awaiting
@@ -298,8 +388,13 @@ Rejecting the child therefore needs a parent resume to take effect. In serve,
 once a child's resume or reject ends, the parent is resumed for the same
 caller (`autoResumeParentAfterChild` in `src/serve/resume_launcher.ts`) when
 the parent waits on that exact child and no other, has no gate of its own or
-step still running, its workflow's auto-resume policy is on, and the caller
-still holds the `approve` grant on the parent. That grant is decided again,
+step still running, every wait for a signal of its own has an outcome, its
+workflow's auto-resume policy is on, and the caller still holds a grant on
+the parent: `approve` when the child was continued by an approval, `signal`
+when it was continued by a signal (swamp-club#3108). The continuation sweep
+never resumes a parent that waits on a nested run, since it has no caller to
+decide that grant for, so a child the sweep continued leaves its parent to be
+resumed by hand, and serve logs the command when that child ends. That grant is decided again,
 with no socket, from the caller's server-token record as of the last
 membership refresh (`decideSubjectAccess` in `src/serve/handlers/shared.ts`).
 A parent this instance still drives is awaited first. Each skip is audited as
@@ -650,7 +745,9 @@ message. Serve turns off the run-record fallback described below
 A signal does not change what the run record says. Until the run is resumed its
 step still shows `waiting`, the record's derived `awaitingResume` is unset, and
 `workflow run` keeps the run instead of superseding it. `workflow waits` and the
-signal's own result are where a settled wait shows.
+signal's own result are where a settled wait shows. Serve resumes the run
+itself once its last wait is settled, when the workflow's auto-resume policy
+allows (see "Continuation" under Manual Approval).
 
 **A wait with no usable registration.** When the registration is missing or
 cannot be read, `workflow signal` falls back to scanning run records and
@@ -688,6 +785,14 @@ share a repository with someone who does, so every host must be upgraded before
 the first workflow with a wait is run. It was chosen over keeping the `waiting`
 status, with which the older binary would read these runs and silently discard
 accepted signals.
+
+A binary from before swamp-club#3108 resumes a run without creating its
+continuation claim. On a synced datastore, a serve instance on a newer build
+whose cached copy of that run still says `suspended` then finds no claim and
+resumes it again. Upgrade every host that resumes runs on a shared synced
+datastore, serve instances and local commands alike, before relying on the
+continuation sweep there, or keep it off with `--continuation-sweep-interval 0`
+until they are.
 
 The `signal` access action (swamp-club#3094) has a mixed-build hazard of its
 own: a build from before it drops any stored grant that names `signal`,
@@ -870,6 +975,9 @@ resumed accumulates suspended runs.
 
 **Nested workflows.** A parent waiting on a child that waits for a signal is
 told to signal the child's wait, then resume the child, then resume the parent.
+Through serve with auto-resume on, the signal continues the child, and the
+parent after it when the signaller may also signal the parent (see "Gates
+inside a nested workflow").
 A parent's `steps.<nested>.outputs` holds the child's `model_method` step
 outputs only, so a parent cannot read a child's signal payload.
 
@@ -879,10 +987,11 @@ to start while any of them is still open.
 
 **Limits of this version:**
 
-- Resume is manual, including for runs that `swamp serve` started and signals
-  delivered through it: serve does not auto-resume a run that still has a step
-  waiting for a signal, signalled, open or past its deadline (swamp-club#3108).
-  The local command does no authorization, as local `approve` does none.
+- Without `swamp serve`, or with the workflow's auto-resume policy off, resume
+  is manual. Serve continues a run only once every wait on it has an outcome;
+  it does not settle a wait that is past its deadline (swamp-club#3109), and
+  it never continues one branch while another still waits. The local command
+  does no authorization, as local `approve` does none.
 - A retried signal is answered "already settled". Through serve, the earlier
   receipt is shown only to a caller who may read the workflow, so a caller with
   `signal` alone cannot tell its own delivery from another's. There is no

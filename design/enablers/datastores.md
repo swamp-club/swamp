@@ -452,6 +452,16 @@ Serve runs three background pollers to fix this:
   on one instance was rejected by its peers until they restarted
   (swamp-club#2481).
 
+None of them pulls `workflow-runs/`. A pull overwrites a local file that
+differs from the remote index, and a run saves its record between its pushes
+with no gate held, so a pull landing there would undo a save the next push
+then never sends. An instance's copy of a run it does not drive therefore
+goes stale after boot. Serve's continuation of suspended runs is built for
+that: it never refreshes a run record, and a continuation claim in the
+control-plane store stops an instance with an old copy from resuming a run a
+peer already resumed (see "Continuation claims" in
+[workflows](../primitives/workflows.md)).
+
 All three run every 30 seconds by default (set with `swamp serve
 --datastore-poll-interval`, `SWAMP_DATASTORE_POLL_INTERVAL` or the `serve.yaml`
 key `datastore-poll-interval`; minimum 1 s), starting when a

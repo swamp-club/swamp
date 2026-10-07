@@ -50,6 +50,7 @@
  * ```
  */
 
+import type { ContinuationClaims } from "../../domain/workflows/continuation_claim.ts";
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
@@ -422,6 +423,12 @@ export interface RepositoryContext {
    * wait.
    */
   signalWaits?: SignalWaitSupport;
+  /**
+   * The continuation claims a resume in this repository takes
+   * (swamp-club#3108). Absent where the datastore has no store every host
+   * reads directly; a resume there takes none.
+   */
+  continuationClaims?: ContinuationClaims;
 }
 
 /**

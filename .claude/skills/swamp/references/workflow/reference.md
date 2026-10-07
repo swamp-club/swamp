@@ -893,7 +893,7 @@ it. Use it when a step needs a value, not a yes or no:
 swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
-swamp workflow resume release --run <run-id>
+swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
 - The schema may read `inputs.*` only. `self`, `steps`, `data`, `env` and
@@ -922,11 +922,15 @@ swamp workflow resume release --run <run-id>
 - `resume` refuses while a wait is open. Past the deadline, a signal is refused
   and the next `resume` fails the step with `wait_timeout`, so a `failed`
   dependent runs. `workflow waits` flags such a wait as expired.
-- Resume is always manual, also under `swamp serve`: serve never auto-resumes a
-  run with a step waiting for a signal. `workflow signal` and `workflow waits`
-  take `--server`, and a server also accepts a signal over HTTP; see "Signals
-  Through Serve" in [the serve guide](../serve/guide.md) for the `signal` grant
-  and the route.
+- Without `swamp serve`, resume is manual. Under serve with auto-resume on (see
+  below), the run resumes by itself once every wait on it has an outcome,
+  whether the signal came through serve or from a local command.
+  `workflow signal` and `workflow waits` take `--server`, and a server also
+  accepts a signal over HTTP; see "Signals Through Serve" in
+  [the serve guide](../serve/guide.md) for the `signal` grant and the route.
+- A workflow that waits for a signal **and** declares `inputs` must set
+  `autoResume: true` or `autoResume: false`; `workflow validate` fails it
+  otherwise.
 - A new `workflow run` does not supersede a run that waits for a signal,
   signalled or not; it reports it as kept.
 - A signal is stored beside the run, not in it, and takes effect at the next
@@ -957,12 +961,14 @@ swamp workflow resume release --run <run-id>
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the
 workflow to have `swamp serve` resume the run by itself once every gate is
-approved. The approval must go through serve: the dashboard, or
-`workflow approve --server`. `swamp serve --auto-resume` turns this on for
-workflows that declare **no** `inputs` and leave `autoResume` unset. A workflow
-with inputs must opt in itself, because it may rely on resume-time `--input`,
-and `autoResume: false` opts a workflow out. Do not enable auto-resume on a
-workflow that expects resume inputs: the automatic resume supplies none.
+approved and every `wait_for_signal` step has an outcome. An approval or signal
+through serve resumes it at once; one given by a local command is picked up
+within `--continuation-sweep-interval` (default 30s).
+`swamp serve --auto-resume` turns this on for workflows that declare **no**
+`inputs` and leave `autoResume` unset. A workflow with inputs must opt in
+itself, because it may rely on resume-time `--input`, and `autoResume: false`
+opts a workflow out. Do not enable auto-resume on a workflow that expects resume
+inputs: the automatic resume supplies none.
 
 ```yaml
 name: deploy-prod

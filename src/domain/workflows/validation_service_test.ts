@@ -2647,3 +2647,56 @@ Deno.test("validate: sensitive-output targets in the vaults list pass", async ()
   const results = await svc.validate(vaultsListWorkflow(["outputs"], {}));
   assertEquals(results.every((r) => r.passed), true);
 });
+
+function waitWorkflowWith(
+  options: { inputs?: boolean; autoResume?: boolean; wait?: boolean },
+): Workflow {
+  return Workflow.create({
+    name: "release",
+    ...(options.inputs
+      ? { inputs: { properties: { env: { type: "string" } } } }
+      : {}),
+    ...(options.autoResume !== undefined
+      ? { autoResume: options.autoResume }
+      : {}),
+    jobs: [
+      Job.create({
+        name: "release",
+        steps: [
+          Step.create({
+            name: "review",
+            task: options.wait === false
+              ? StepTask.manualApproval("ok?")
+              : StepTask.waitForSignal(60, { type: "object" }),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("fails a workflow that waits for a signal, declares inputs and leaves autoResume unset", async () => {
+  const results = await service.validate(waitWorkflowWith({ inputs: true }));
+  const result = results.find((r) => r.name === "Auto-resume for signal waits");
+  assertEquals(result?.passed, false);
+  assertEquals(result?.error?.includes("autoResume: true"), true);
+  assertEquals(result?.error?.includes("autoResume: false"), true);
+});
+
+Deno.test("passes a signal wait whose workflow sets autoResume, declares no inputs, or has no wait", async () => {
+  for (
+    const options of [
+      { inputs: true, autoResume: true },
+      { inputs: true, autoResume: false },
+      { inputs: false },
+      { inputs: true, wait: false },
+    ]
+  ) {
+    const results = await service.validate(waitWorkflowWith(options));
+    assertEquals(
+      results.filter((r) => r.name === "Auto-resume for signal waits"),
+      [],
+      JSON.stringify(options),
+    );
+  }
+});

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Workflow } from "./workflow.ts";
-import { WorkflowSchema } from "./workflow.ts";
+import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
@@ -198,6 +198,9 @@ export class DefaultWorkflowValidationService
     // 11. Assert expr must not be wrapped in ${{ }}
     results.push(...this.validateAssertExprNotInterpolated(workflow));
     for (const result of this.validateWaitSchemaExpressions(workflow)) {
+      results.push(result);
+    }
+    for (const result of this.validateWaitAutoResumeDeclared(workflow)) {
       results.push(result);
     }
 
@@ -482,6 +485,34 @@ export class DefaultWorkflowValidationService
       }
     }
     return results;
+  }
+
+  /**
+   * `swamp serve` continues a run once its waits are settled, when the
+   * workflow's auto-resume policy allows (swamp-club#3108). The server
+   * default never applies to a workflow that declares inputs, so one that
+   * waits for a signal and leaves `autoResume` unset would stay suspended
+   * after its signal with nothing saying why. It has to choose.
+   */
+  private validateWaitAutoResumeDeclared(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    if (workflow.autoResume !== undefined) return [];
+    if (!workflowDeclaresInputs(workflow.inputs)) return [];
+    const waits = workflow.jobs.some((job) =>
+      job.steps.some((step) => step.task?.data.type === "wait_for_signal")
+    );
+    if (!waits) return [];
+    return [
+      WorkflowValidationResult.fail(
+        "Auto-resume for signal waits",
+        `the workflow waits for a signal and declares inputs, so it must set ` +
+          `autoResume. Set autoResume: true for swamp serve to continue a run ` +
+          `once its waits are settled, with the inputs the run started with; ` +
+          `set autoResume: false to continue it with swamp workflow resume, ` +
+          `which can supply inputs`,
+      ),
+    ];
   }
 
   private validateSchema(workflow: Workflow): WorkflowValidationResult {

@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import {
   attachSignalWaits,
+  continuationClaimsOver,
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
@@ -450,6 +451,13 @@ import {
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
+import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
+import {
+  ContinuationSweepService,
+  DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
+  sweepContinuations,
+} from "../../serve/continuation_sweep_service.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
@@ -1160,6 +1168,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.datastorePollInterval as string,
     );
   }
+  if (options.continuationSweepInterval) {
+    args.push(
+      "--continuation-sweep-interval",
+      options.continuationSweepInterval as string,
+    );
+  }
   if (options.tokenGcInterval) {
     args.push("--token-gc-interval", options.tokenGcInterval as string);
   }
@@ -1305,6 +1319,24 @@ export function parseDatastorePollInterval(
 }
 
 /**
+ * Parses `--continuation-sweep-interval` into milliseconds. Unset gives the
+ * default; `0` disables the sweep. Whole seconds or larger units, as
+ * `--datastore-poll-interval`.
+ */
+export function parseContinuationSweepInterval(
+  raw: string | undefined,
+): number {
+  if (raw === undefined) return DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS;
+  if (/^0+(s|m|h)?$/i.test(raw.trim())) return 0;
+  if (/^\d+ms$/i.test(raw.trim())) {
+    throw new UserError(
+      `--continuation-sweep-interval must be in whole seconds or larger units (minimum 1s, e.g. 1s, 30s, 1m), or 0 to disable; got ${raw}`,
+    );
+  }
+  return parseTimerDuration(raw, "--continuation-sweep-interval");
+}
+
+/**
  * Whether to warn that `--group-refresh-interval` has no effect. Only an
  * interval the operator supplied (flag, env var or config key) warrants the
  * warning — the unset 4h default must stay silent outside OAuth mode.
@@ -1375,6 +1407,7 @@ export interface ServeStartupSettings {
   shutdownDrainTimeoutMs: number;
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
+  continuationSweepIntervalMs: number;
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
   maxRunsPerPrincipal?: number;
@@ -1448,6 +1481,10 @@ export function resolveServeStartupSettings(
     merged.datastorePollInterval,
   );
 
+  const continuationSweepIntervalMs = parseContinuationSweepInterval(
+    merged.continuationSweepInterval,
+  );
+
   const tokenGcSettings = parseTokenGcSettings(
     merged.tokenGcInterval,
     merged.tokenGcGracePeriod,
@@ -1509,6 +1546,7 @@ export function resolveServeStartupSettings(
     shutdownDrainTimeoutMs,
     hydrationTimeoutMs,
     datastorePollIntervalMs,
+    continuationSweepIntervalMs,
     tokenGcSettings,
     maxConcurrentRuns,
     maxRunsPerPrincipal,
@@ -1685,6 +1723,10 @@ const daemonEnableCommand = new Command()
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
+    "--continuation-sweep-interval <duration:string>",
+    "Continuation sweep interval (default: 30s, 0 disables, env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
+  )
+  .option(
     "--token-gc-interval <duration:string>",
     "Server token GC interval (default: 1h, 0 disables, env: SWAMP_TOKEN_GC_INTERVAL)",
   )
@@ -1737,7 +1779,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--auto-resume",
-    "Resume a suspended run once every approval gate on it is decided. " +
+    "Resume a suspended run once every approval gate on it is decided and every wait for a signal is settled. " +
       "Applies to workflows that declare no inputs; a workflow with inputs " +
       "must set autoResume: true itself, and autoResume: false opts out " +
       "(env: SWAMP_AUTO_RESUME)",
@@ -2443,6 +2485,12 @@ export const serveCommand = new Command()
       "Only effective with a remote datastore or managedConfig (env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
+    "--continuation-sweep-interval <duration:string>",
+    "How often to look for suspended runs that need no further decision and continue them, " +
+      "when their workflow's auto-resume policy allows. " +
+      "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. 0 disables (env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
+  )
+  .option(
     "--token-gc-interval <duration:string>",
     "How often to delete revoked server tokens, and expired ones past the grace period. " +
       "Accepts seconds (3600), explicit units (30s, 1h). Default: 1h. 0 disables (env: SWAMP_TOKEN_GC_INTERVAL)",
@@ -2492,7 +2540,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--auto-resume",
-    "Resume a suspended run once every approval gate on it is decided. " +
+    "Resume a suspended run once every approval gate on it is decided and every wait for a signal is settled. " +
       "Applies to workflows that declare no inputs; a workflow with inputs " +
       "must set autoResume: true itself, and autoResume: false opts out " +
       "(env: SWAMP_AUTO_RESUME)",
@@ -2582,6 +2630,7 @@ export const serveCommand = new Command()
       shutdownDrainTimeoutMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
+      continuationSweepIntervalMs,
       tokenGcSettings,
       maxConcurrentRuns,
       maxRunsPerPrincipal,
@@ -2796,7 +2845,7 @@ export const serveCommand = new Command()
     }
     if (merged.autoResume) {
       logger.info(
-        "Auto-resume enabled — runs resume once every approval gate is decided, for workflows that declare no inputs (a workflow with inputs must set autoResume: true)",
+        "Auto-resume enabled — runs resume once every approval gate is decided and every wait for a signal is settled, for workflows that declare no inputs (a workflow with inputs must set autoResume: true)",
       );
     }
     const dataPlane = new DataPlane({
@@ -3073,6 +3122,10 @@ export const serveCommand = new Command()
     const serveNamespace = isCustomDatastoreConfig(datastoreConfig)
       ? datastoreConfig.namespace
       : undefined;
+    // Whether the run records this instance reads are current as it boots:
+    // always on a filesystem datastore, and on a synced one only when the
+    // boot hydration below pulled without failing (swamp-club#3108).
+    let runRecordsCurrentAtBoot = !isCustomDatastoreConfig(datastoreConfig);
     const MIGRATION_SENTINEL = "migration/root-import-complete";
     if (hasRemoteControlPlane && syncService) {
       // Migration: if a namespace is configured, read root control-plane
@@ -3128,7 +3181,7 @@ export const serveCommand = new Command()
       // retries a failed hydration and then refuses to start rather than
       // serve from a partial cache (swamp-club#3180).
       const hydrationSignal = () => AbortSignal.timeout(hydrationTimeoutMs);
-      await hydrateLocalCache({
+      const hydration = await hydrateLocalCache({
         syncService,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         namespace: serveNamespace,
@@ -3136,6 +3189,7 @@ export const serveCommand = new Command()
           ? { required: { attemptSignal: hydrationSignal } }
           : { signal: hydrationSignal() }),
       });
+      runRecordsCurrentAtBoot = hydration.ok;
 
       if (serveNamespace && rootReadErrors.length > 0) {
         const namespacedStore = syncService.controlPlaneStore!();
@@ -3954,6 +4008,13 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
+    // A resume through this server takes its continuation claims as this
+    // instance, in the store its heartbeat is written to, so a peer can
+    // tell a claim of a live instance from one a dead instance left.
+    repoContext.continuationClaims =
+      isAtomicControlPlaneStore(controlPlaneStore)
+        ? continuationClaimsOver(controlPlaneStore, serveHolder(instanceId))
+        : undefined;
     if (
       authConfig.mode === "oauth" &&
       authConfig.oauthClientId &&
@@ -4070,6 +4131,7 @@ export const serveCommand = new Command()
     let heartbeatService: InstanceHeartbeatService | undefined;
     let workerGcService: WorkerGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
+    let continuationSweepService: ContinuationSweepService | undefined;
 
     logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
@@ -6579,6 +6641,11 @@ export const serveCommand = new Command()
       if (serverTokenGcService) {
         await serverTokenGcService.dispose();
       }
+      // Before the heartbeat stops: a claim taken by a pass in flight must
+      // still be a live instance's.
+      if (continuationSweepService) {
+        await continuationSweepService.dispose();
+      }
       if (heartbeatService) {
         await heartbeatService.stop();
       }
@@ -7092,6 +7159,33 @@ export const serveCommand = new Command()
         }),
       );
       serverTokenGcService.start();
+    }
+
+    // Continuation sweep: continues suspended runs that need no further
+    // decision (swamp-club#3108). It starts last, once the heartbeat is
+    // written and boot reconciliation has settled the runs a dead instance
+    // left running.
+    if (continuationSweepIntervalMs === 0) {
+      logger.info(
+        "Continuation sweep disabled (continuation sweep interval is 0)",
+      );
+    } else if (!runRecordsCurrentAtBoot) {
+      logger.warn(
+        "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
+      );
+    } else {
+      const synced = isCustomDatastoreConfig(datastoreConfig);
+      continuationSweepService = new ContinuationSweepService({
+        intervalMs: continuationSweepIntervalMs,
+        sweep: ({ boot, isStopping }) =>
+          sweepContinuations(connectionCtx, {
+            // A dead holder's claim is replaced only while the run records
+            // are current: after boot they go stale on a synced datastore.
+            takeover: !synced || boot,
+            isStopping,
+          }),
+      });
+      await continuationSweepService.start();
     }
 
     isReady = true;

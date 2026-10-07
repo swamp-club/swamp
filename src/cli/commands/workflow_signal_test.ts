@@ -73,7 +73,7 @@ Deno.test("renderSignalResult: log mode prints the resume command on one line", 
     renderSignalResult(hintTestContext(), signalled())
   );
   assertEquals(lines, [
-    `After the signal: swamp workflow resume release --run ${RUN_ID}`,
+    `swamp serve resumes the run by itself where auto-resume applies. Otherwise: swamp workflow resume release --run ${RUN_ID}`,
   ]);
 });
 
@@ -127,7 +127,9 @@ Deno.test("renderSignalResult: the resume command carries the repository target,
   const log = captureStdout(() =>
     renderSignalResult(hintTestContext(), signalled(), target)
   );
-  assertEquals(log, [`After the signal: ${resume}`]);
+  assertEquals(log, [
+    `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${resume}`,
+  ]);
 
   const json = captureStdout(() =>
     renderSignalResult(
@@ -177,7 +179,7 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
     )
   );
   assertEquals(lines, [
-    `After the signal: swamp workflow resume release --run ${RUN_ID} --server http://swamp.test`,
+    `swamp serve resumes the run by itself where auto-resume applies. Otherwise: swamp workflow resume release --run ${RUN_ID} --server http://swamp.test`,
   ]);
 
   const json = captureStdout(() =>

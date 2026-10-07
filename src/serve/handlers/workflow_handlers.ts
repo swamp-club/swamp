@@ -254,7 +254,10 @@ import {
   workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
-import { deliverSignalForCaller } from "../signal_delivery.ts";
+import {
+  continueAfterSignal,
+  deliverSignalForCaller,
+} from "../signal_delivery.ts";
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
 import {
   authorizeChangedSteps,
@@ -1567,6 +1570,11 @@ export async function handleWorkflowSignal(
         id: requestId,
         payload: { data: result.data },
       });
+      await continueAfterSignal(
+        ctx,
+        result,
+        captureDecisionSubject(socket, principal),
+      );
       return;
     case "not_found":
       sendError(socket, requestId, "not_found", result.message);
@@ -2376,6 +2384,7 @@ export async function handleWorkflowDelete(
           ctx.repoContext.markDirty,
           ctx.repoContext.workflowRepo,
           ctx.repoContext.signalWaits,
+          ctx.repoContext.continuationClaims?.store,
         );
 
         let result: Record<string, unknown> | undefined;

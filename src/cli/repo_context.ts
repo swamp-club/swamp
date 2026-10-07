@@ -85,6 +85,14 @@ import {
 } from "../infrastructure/persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import {
+  ControlPlaneContinuationClaimStore,
+  heartbeatLiveness,
+} from "../infrastructure/persistence/control_plane_continuation_claim_store.ts";
+import {
+  type ContinuationClaims,
+  localHolder,
+} from "../domain/workflows/continuation_claim.ts";
+import {
   type AtomicControlPlaneStore,
   ControlPlaneSignalWaitStore,
   isAtomicControlPlaneStore,
@@ -1201,6 +1209,11 @@ export function requireInitializedRepo(
         runsInDatastore: runsLiveInDatastore(datastoreResolver),
       }),
     );
+    repoContext.continuationClaims = resolveContinuationClaims(
+      datastoreConfig,
+      repoPath.value,
+      syncService,
+    );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
     // next query backfills from the freshly-pulled local cache.
@@ -1379,6 +1392,11 @@ export async function requireInitializedRepoUnlocked(
       runsInDatastore: runsLiveInDatastore(datastoreResolver),
     }),
   );
+  repoContext.continuationClaims = resolveContinuationClaims(
+    datastoreConfig,
+    repoPath.value,
+    syncService,
+  );
 
   return {
     repoDir: repoPath.value,
@@ -1551,6 +1569,67 @@ export function resolveSignalWaitSupport(
     supported: true,
     store: new ControlPlaneSignalWaitStore(remote.store),
     ready: remote.open,
+  };
+}
+
+/**
+ * The continuation claims of a control-plane store, for one holder. What is
+ * known of another holder comes from the serve heartbeats in the same store.
+ */
+export function continuationClaimsOver(
+  store: AtomicControlPlaneStore,
+  holder: string,
+  options?: { staleMs?: number },
+): ContinuationClaims {
+  return {
+    store: new ControlPlaneContinuationClaimStore(store),
+    holder,
+    liveness: heartbeatLiveness(store, options),
+  };
+}
+
+/**
+ * The continuation claims a local command takes when it resumes a run
+ * (swamp-club#3108), in the store `swamp serve` keeps its heartbeats in:
+ *
+ * - A filesystem datastore keeps them under the repository, as serve does
+ *   when its datastore has no control-plane store of its own.
+ * - A custom datastore keeps them in its extension's control-plane store.
+ *   Without one there are no claims, and a resume takes none.
+ */
+export function resolveContinuationClaims(
+  config: DatastoreConfig,
+  repoDir: string,
+  syncService?: DatastoreSyncService,
+): ContinuationClaims | undefined {
+  if (!isCustomDatastoreConfig(config)) {
+    return continuationClaimsOver(
+      new FileSystemControlPlaneStore(swampPath(repoDir)),
+      localHolder(),
+    );
+  }
+  if (
+    !syncService?.capabilities?.().controlPlane ||
+    !syncService.controlPlaneStore
+  ) {
+    return undefined;
+  }
+  const notAtomic =
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`;
+  const remote = lazyRemoteStore(syncService, config.namespace, notAtomic);
+  return {
+    ...continuationClaimsOver(remote.store, localHolder()),
+    usable: async () => {
+      try {
+        await remote.open();
+        return true;
+      } catch (error) {
+        if (error instanceof UserError && error.message === notAtomic) {
+          return false;
+        }
+        throw error;
+      }
+    },
   };
 }
 

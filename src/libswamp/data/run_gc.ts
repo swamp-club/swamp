@@ -25,6 +25,7 @@ import {
   removeWaitRecordsOfRuns,
   sweepWaitRecords,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
+import type { ContinuationClaimStore } from "../../domain/workflows/continuation_claim.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   createWorkflowId,
@@ -132,8 +133,13 @@ function waitRecordCollector(
   store: SignalWaitStore,
   runRepo: Pick<WorkflowRunRepository, "findById">,
   localRunAbsenceIsAuthoritative = false,
+  continuationClaims?: Pick<ContinuationClaimStore, "removeForRun">,
 ): (deletedRunIds: readonly string[]) => Promise<void> {
   return async (deletedRunIds) => {
+    // The continuation claims of a run go with it (swamp-club#3108).
+    for (const runId of deletedRunIds) {
+      await continuationClaims?.removeForRun(runId);
+    }
     await removeWaitRecordsOfRuns(store, new Set(deletedRunIds));
     await sweepWaitRecords(
       store,
@@ -153,6 +159,7 @@ export function createRunGcDeps(
   datastoreResolver?: DatastorePathResolver,
   markDirty?: MarkDirtyHook,
   signalWaits?: SignalWaitSupport,
+  continuationClaims?: Pick<ContinuationClaimStore, "removeForRun">,
 ): RunGcDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -182,6 +189,7 @@ export function createRunGcDeps(
         signalWaits.store,
         workflowRunRepo,
         signalWaits.localRunAbsenceIsAuthoritative,
+        continuationClaims,
       )
       : undefined,
   );

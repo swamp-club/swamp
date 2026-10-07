@@ -22,8 +22,26 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
+  continueSettledRun,
+  noteParkedParent,
+  RUN_NOT_SUSPENDED_CODE,
   startDetachedResume,
 } from "./resume_launcher.ts";
+import {
+  type HolderLiveness,
+  serveHolder,
+  suspensionKeyOf,
+} from "../domain/workflows/continuation_claim.ts";
+import {
+  claimsFor,
+  InMemoryContinuationClaimStore,
+} from "../domain/workflows/continuation_claim_test_helpers.ts";
+import { SignalWait } from "../domain/workflows/signal_wait.ts";
+import {
+  acceptedOutcomeFor,
+  inMemorySignalWaits,
+  type InMemorySignalWaitStore,
+} from "../domain/workflows/signal_wait_store_test_helpers.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
 import {
   type ConnectionContext,
@@ -907,4 +925,449 @@ Deno.test("startDetachedResume: a nested refusal names a grandchild only when ev
   const shown = await refuse(() => true);
   assertStringIncludes(shown, secretRun.id);
   assertEquals(registry.registered.length, 0);
+});
+
+// --- Continuation of a settled run (swamp-club#3108) --------------------------
+
+const WAIT_SCHEMA = {
+  type: "object" as const,
+  additionalProperties: false,
+  required: ["verdict"],
+  properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
+};
+
+function waitingWorkflow(autoResume: boolean | undefined = true): Workflow {
+  return Workflow.create({
+    name: "release",
+    autoResume,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, WAIT_SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** A run suspended on one wait for a signal. */
+function makeWaitingRun(
+  workflow: Workflow,
+): { run: WorkflowRun; wait: SignalWait } {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("review")!;
+  step.start();
+  const wait = SignalWait.open(WAIT_SCHEMA, 60, new Date());
+  step.waitForSignal(wait);
+  run.suspend();
+  return { run, wait };
+}
+
+/** A harness whose datastore holds wait outcomes and continuation claims. */
+function continuationHarness(
+  workflows: Workflow[],
+  runs: WorkflowRun[],
+  holder = serveHolder("a"),
+  liveness: Record<string, HolderLiveness> = {},
+): Harness & {
+  waits: InMemorySignalWaitStore;
+  claims: InMemoryContinuationClaimStore;
+} {
+  const harness = nestedHarness(workflows, runs);
+  const signalWaits = inMemorySignalWaits();
+  const claims = new InMemoryContinuationClaimStore();
+  const repoContext = harness.ctx.repoContext as {
+    signalWaits?: unknown;
+    continuationClaims?: unknown;
+  };
+  repoContext.signalWaits = signalWaits;
+  repoContext.continuationClaims = claimsFor(claims, holder, liveness);
+  return { ...harness, waits: signalWaits.store, claims };
+}
+
+const SWEEP = { kind: "sweep", principalId: null, takeover: false } as const;
+
+Deno.test("continueSettledRun: leaves a run alone until every wait has an outcome, then launches it", async () => {
+  const workflow = waitingWorkflow();
+  const { run, wait } = makeWaitingRun(workflow);
+  const { ctx, registry, audit, waits } = continuationHarness([workflow], [
+    run,
+  ]);
+  const target = { workflowId: workflow.id, runId: run.id };
+
+  assertEquals(await continueSettledRun(ctx, target, SWEEP), false);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+
+  await waits.settle(
+    acceptedOutcomeFor(wait, { verdict: "ship" }, { runId: run.id }),
+  );
+  assertEquals(await continueSettledRun(ctx, target, SWEEP), true);
+  assertEquals(registry.registered.map((r) => r.runId), [run.id]);
+  assertEquals(registry.registered[0].principalId, null);
+  assertEquals(audit[0].action, "workflow.auto_resume");
+  assertStringIncludes(audit[0].detail ?? "", "cause=sweep");
+  await registry.registered[0].completion;
+});
+
+Deno.test("continueSettledRun: launches an approved run whose auto-resume launch was lost", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry } = continuationHarness([workflow], [run]);
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: workflow.id, runId: run.id },
+      { kind: "signal", principalId: "user:ada", takeover: false },
+    ),
+    true,
+  );
+  assertEquals(registry.registered[0].principalId, "user:ada");
+  await registry.registered[0].completion;
+});
+
+Deno.test("continueSettledRun: a policy that is off is audited once per suspension, not on every pass", async () => {
+  const workflow = waitingWorkflow(false);
+  const { run, wait } = makeWaitingRun(workflow);
+  const { ctx, registry, audit, waits } = continuationHarness([workflow], [
+    run,
+  ]);
+  await waits.settle(
+    acceptedOutcomeFor(wait, { verdict: "ship" }, { runId: run.id }),
+  );
+  const target = { workflowId: workflow.id, runId: run.id };
+
+  for (let pass = 0; pass < 3; pass++) {
+    assertEquals(await continueSettledRun(ctx, target, SWEEP), false);
+  }
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_skipped"]);
+  assertStringIncludes(audit[0].detail ?? "", "reason=policy");
+});
+
+Deno.test("continueSettledRun: a suspension another holder has is left alone without a word", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const other = serveHolder("other");
+  for (const liveness of ["alive", "unknown", "dead"] as const) {
+    const { ctx, registry, audit, claims } = continuationHarness(
+      [workflow],
+      [run],
+      serveHolder("a"),
+      { [other]: liveness },
+    );
+    await claims.create({
+      runId: run.id,
+      suspensionKey: await suspensionKeyOf(run),
+      generation: 1,
+      holder: other,
+      claimedAt: new Date().toISOString(),
+    });
+
+    assertEquals(
+      await continueSettledRun(
+        ctx,
+        { workflowId: workflow.id, runId: run.id },
+        SWEEP,
+      ),
+      false,
+      liveness,
+    );
+    assertEquals(registry.registered.length, 0);
+    assertEquals(audit, []);
+  }
+});
+
+Deno.test("continueSettledRun: a dead holder's suspension is launched only by a pass told its records are current", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const dead = serveHolder("dead");
+  const { ctx, registry, claims } = continuationHarness(
+    [workflow],
+    [run],
+    serveHolder("a"),
+    { [dead]: "dead" },
+  );
+  await claims.create({
+    runId: run.id,
+    suspensionKey: await suspensionKeyOf(run),
+    generation: 1,
+    holder: dead,
+    claimedAt: new Date().toISOString(),
+  });
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: workflow.id, runId: run.id },
+      { ...SWEEP, takeover: true },
+    ),
+    true,
+  );
+  await registry.registered[0].completion;
+});
+
+Deno.test("continueSettledRun: never continues a run that waits on a nested run", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx, registry, audit } = continuationHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: parent.id, runId: parentRun.id },
+      { ...SWEEP, takeover: true },
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+});
+
+Deno.test("continueSettledRun: starts nothing once shutdown began", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry } = continuationHarness([workflow], [run]);
+  registry.beginDraining();
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: workflow.id, runId: run.id },
+      SWEEP,
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("autoResumeParentAfterChild: a parent that waits for a signal of its own continues only once that wait has an outcome", async () => {
+  const child = nestedWorkflows(true).child;
+  const parent = Workflow.create({
+    name: "parent",
+    autoResume: true,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "call-child", task: StepTask.workflow("child") }),
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, WAIT_SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+  const { parentRun, childRun } = settledPair(parent, child);
+  // The parent waits on the finished child and on a signal of its own.
+  const review = parentRun.getJob("main")!.getStep("review")!;
+  review.start();
+  const wait = SignalWait.open(WAIT_SCHEMA, 60, new Date());
+  review.waitForSignal(wait);
+  const { ctx, registry, waits } = continuationHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+  const link = { workflowId: child.id, runId: childRun.id };
+
+  assertEquals(
+    await autoResumeParentAfterChild(ctx, link, subject, "signal"),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+
+  await waits.settle(
+    acceptedOutcomeFor(wait, { verdict: "ship" }, { runId: parentRun.id }),
+  );
+  assertEquals(
+    await autoResumeParentAfterChild(ctx, link, subject, "signal"),
+    true,
+  );
+  assertEquals(registry.registered.map((r) => r.runId), [parentRun.id]);
+  await registry.registered[0].completion;
+});
+
+Deno.test("autoResumeParentAfterChild: after a signal the subject must hold signal on the parent", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx, registry, audit } = nestedHarness(
+    [parent, child],
+    [parentRun, childRun],
+    "token",
+  );
+
+  // No token binding, so no grant can be shown: refused and audited.
+  assertEquals(
+    await autoResumeParentAfterChild(
+      ctx,
+      { workflowId: child.id, runId: childRun.id },
+      subject,
+      "signal",
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+  assertStringIncludes(audit[0].detail ?? "", "reason=not_authorized");
+});
+
+Deno.test("startDetachedResume: a run no longer suspended is a lost race only for a resume serve launched by itself", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  run.endAsCancelled();
+  const { ctx, registry } = continuationHarness([workflow], [run]);
+  const request = {
+    workflowIdOrName: workflow.id,
+    byId: true,
+    expectedName: workflow.name,
+    runId: run.id,
+    suspendedOnly: true,
+    principalId: null,
+  };
+
+  const asked = await startDetachedResume(ctx, registry, request);
+  assertEquals(asked.ok ? "" : asked.code, "workflow_resume_failed");
+  const automatic = await startDetachedResume(ctx, registry, {
+    ...request,
+    continuation: { kind: "automatic", takeover: false },
+  });
+  assertEquals(automatic.ok ? "" : automatic.code, RUN_NOT_SUSPENDED_CODE);
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("continueSettledRun: a run a peer resumed between the look and the launch is left alone without a word", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry, audit } = continuationHarness([workflow], [run]);
+  // The launcher reads the run, then the resume reads it again: by then a
+  // peer has taken it.
+  const runRepo = ctx.repoContext.workflowRunRepo as unknown as {
+    findById: (workflowId: string, runId: string) => Promise<WorkflowRun>;
+  };
+  const findById = runRepo.findById;
+  let reads = 0;
+  runRepo.findById = (workflowId, runId) => {
+    if (++reads === 2) run.endAsCancelled();
+    return findById(workflowId, runId);
+  };
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: workflow.id, runId: run.id },
+      { ...SWEEP, takeover: true },
+    ),
+    false,
+  );
+  assertEquals(reads, 2);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+});
+
+Deno.test("continueSettledRun: claims that cannot be read leave the run suspended and are audited once", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry, audit, claims } = continuationHarness([workflow], [
+    run,
+  ]);
+  claims.find = () => Promise.reject(new Error("permission denied"));
+  const target = { workflowId: workflow.id, runId: run.id };
+
+  for (let pass = 0; pass < 3; pass++) {
+    assertEquals(
+      await continueSettledRun(ctx, target, { ...SWEEP, takeover: true }),
+      false,
+    );
+  }
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_failed"]);
+  assertStringIncludes(audit[0].detail ?? "", "code=claim_store_unavailable");
+});
+
+Deno.test("continueSettledRun: a claim a local command left behind is audited once, where the run records are current", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const target = { workflowId: workflow.id, runId: run.id };
+  const minutesAgo = (minutes: number) =>
+    new Date(Date.now() - minutes * 60_000).toISOString();
+
+  for (
+    const [claimedAt, takeover, audited] of [
+      [minutesAgo(10), true, true],
+      // The command may be between its claim and its save.
+      [minutesAgo(0), true, false],
+      // This copy of the run may be behind the command's resume.
+      [minutesAgo(10), false, false],
+    ] as const
+  ) {
+    const { ctx, registry, audit, claims } = continuationHarness(
+      [workflow],
+      [run],
+    );
+    await claims.create({
+      runId: run.id,
+      suspensionKey: await suspensionKeyOf(run),
+      generation: 1,
+      holder: "local:5b0c1f0e-6f0e-4c56-9c56-0d6c3f6f3a11",
+      claimedAt,
+    });
+
+    for (let pass = 0; pass < 2; pass++) {
+      assertEquals(
+        await continueSettledRun(ctx, target, { ...SWEEP, takeover }),
+        false,
+      );
+    }
+    assertEquals(registry.registered.length, 0);
+    assertEquals(
+      audit.map((a) => a.action),
+      audited ? ["workflow.auto_resume_skipped"] : [],
+    );
+    if (audited) {
+      assertStringIncludes(
+        audit[0].detail ?? "",
+        "reason=held_by_local_command",
+      );
+    }
+  }
+});
+
+Deno.test("noteParkedParent: names the parent only of a finished run its parent still waits on", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const { parentRun, childRun } = settledPair(parent, child);
+  const { ctx } = continuationHarness([parent, child], [parentRun, childRun]);
+  assertEquals(await noteParkedParent(ctx, childRun), true);
+  // A run with no parent.
+  assertEquals(await noteParkedParent(ctx, parentRun), false);
+
+  // A child that suspended again has not ended.
+  const again = settledPair(parent, child);
+  const waiting = WorkflowRun.create(child);
+  waiting.recordParentRun({
+    workflowId: parent.id,
+    workflowName: parent.name,
+    runId: again.parentRun.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parent.name],
+  });
+  waiting.start();
+  waiting.suspend();
+  const second = continuationHarness([parent, child], [
+    again.parentRun,
+    waiting,
+  ]);
+  assertEquals(await noteParkedParent(second.ctx, waiting), false);
 });

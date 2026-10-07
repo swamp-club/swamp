@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ContinuationClaimStore } from "../../domain/workflows/continuation_claim.ts";
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 import { removeWaitRecordsOfRuns } from "../../domain/workflows/signal_wait_cleanup.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -105,6 +106,7 @@ export function createWorkflowDeleteDeps(
   markDirty?: MarkDirtyHook,
   injectedWorkflowRepo?: WorkflowRepository,
   signalWaits?: SignalWaitSupport,
+  continuationClaims?: Pick<ContinuationClaimStore, "removeForRun">,
 ): WorkflowDeleteDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -147,9 +149,16 @@ export function createWorkflowDeleteDeps(
       workflowRunRepo.deleteAllByWorkflowId(workflowId),
     listRunIds: (workflowId) =>
       workflowRunRepo.listRunIdsForWorkflow(workflowId),
-    deleteWaitRecords: signalWaits?.supported
+    deleteWaitRecords: signalWaits?.supported || continuationClaims
       ? async (runIds) => {
-        await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+        if (signalWaits?.supported) {
+          await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+        }
+        // The continuation claims of a run go with it (swamp-club#3108).
+        for (const runId of runIds) {
+          if (!isSinglePathSegment(runId)) continue;
+          await continuationClaims?.removeForRun(runId);
+        }
       }
       : undefined,
     deleteRunSnapshots: async (runIds) => {

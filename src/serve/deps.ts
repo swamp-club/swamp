@@ -227,6 +227,11 @@ export async function createWorkflowRunDeps(
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;
+      // A resume takes the run's lock and its suspension's claim, so two
+      // serve instances on one datastore never take over the same run
+      // (swamp-club#3108).
+      service.runClaims = createWorkflowRunClaims(datastoreConfig);
+      service.continuationClaims = repoContext.continuationClaims;
       return service;
     },
     catalogStore: repoContext.catalogStore,

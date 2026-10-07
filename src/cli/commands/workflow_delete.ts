@@ -113,6 +113,7 @@ export const workflowDeleteCommand = withRemoteOptions(
         repoContext.markDirty,
         undefined,
         repoContext.signalWaits,
+        repoContext.continuationClaims?.store,
       );
 
       // Phase 1: Preview

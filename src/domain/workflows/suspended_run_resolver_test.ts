@@ -22,6 +22,7 @@ import {
   nextActionForStatus,
   resolveResumableRun,
   resolveSuspendedRun,
+  RunNotSuspendedError,
 } from "./suspended_run_resolver.ts";
 import { UserError } from "../errors.ts";
 import { Workflow } from "./workflow.ts";
@@ -174,7 +175,7 @@ Deno.test("resolveSuspendedRun: --run rejects non-suspended run", async () => {
 
   const error = await assertRejects(
     () => resolveSuspendedRun(workflowRepo, runRepo, "test-wf", run.id),
-    UserError,
+    RunNotSuspendedError,
     `Run ${run.id} is not suspended (status: succeeded).`,
   );
   assertStringIncludes(error.message, "swamp workflow history test-wf");

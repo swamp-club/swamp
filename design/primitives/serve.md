@@ -89,13 +89,14 @@ it the default file is optional.
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
+| `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
-| `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided |
+| `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided and every wait for a signal is settled |
 | `--detach-runs` | — | `false` | Deprecated, no effect: runs are always detached |
 
 Table notes:
@@ -115,7 +116,8 @@ Table notes:
 - Durations that drive a timer (`--heartbeat-interval`,
   `--reconciliation-interval`, `--group-refresh-interval`,
   `--hydration-timeout`, `--shutdown-drain-timeout`,
-  `--datastore-poll-interval`, `--max-run-duration`)
+  `--datastore-poll-interval`, `--continuation-sweep-interval`,
+  `--max-run-duration`)
   are capped at 2 147 483 647 ms, about 24.8 days (`parseTimerDuration`,
   `src/cli/duration_parser.ts`). Deno fires a longer timer after 1 ms.
 - Without `--hot-reload`, SIGHUP is a shutdown signal
@@ -128,6 +130,14 @@ Table notes:
   read from the parent's workflow, decides whether serve resumes a parent
   once the nested run it waits on finishes ("Gates inside a nested workflow"
   in workflows.md).
+- `--continuation-sweep-interval` sets how often the continuation sweep runs
+  after its pass at boot (`ContinuationSweepService`,
+  `src/serve/continuation_sweep_service.ts`). The sweep continues a suspended
+  run whose gates are all decided and whose waits for a signal are all
+  settled, under the workflow's auto-resume policy, and is what retries a
+  launch that was lost. On a synced datastore it does not start when the boot
+  hydration failed. Two instances never resume the same run: see
+  "Continuation claims" in workflows.md.
 - Once shutdown begins the active-run registry refuses every new run
   (`ActiveRunRegistry.beginDraining`, called first by `runShutdownDrain`), so
   a resume chained after another cannot start on an instance that is going
