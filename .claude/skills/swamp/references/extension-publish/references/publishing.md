@@ -735,8 +735,8 @@ exact comment or sidecar entry to paste and where it goes). In `--json` they are
 `declaredAcceptances` (`{ accepted: [...], generated? }`) and `forNextTime`
 (`[{ ruleId, file, line?, message, remediation?, acceptance?, placement? }]`),
 beside `acceptedWarnings` and omitted when empty; every finding in
-`reviewRuleWarnings` and `warnings` carries `acceptance` and `remediation`. The
-acceptances also travel to the registry in `contentMetadata.acceptances`.
+`warnings.review` and `warnings.safety` carries `acceptance` and `remediation`.
+The acceptances also travel to the registry in `contentMetadata.acceptances`.
 
 ## CalVer Versioning
 

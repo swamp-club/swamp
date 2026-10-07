@@ -627,7 +627,7 @@ function reportCtx(
     extensionName: "@a/b",
     extensionVersion: "1",
     applicableDimensions: dims,
-    skeleton: "{}",
+    skeleton: buildReviewReportSkeleton("@a/b", "1", dims),
     parseErrors,
   };
 }
@@ -643,8 +643,11 @@ Deno.test("evaluateReviewReport: missing report is a warning (prompt), never a h
   // The message is a single, self-sufficient line (no embedded skeleton).
   assertEquals(findings[0].message.includes("\n"), false);
   assert(!findings[0].message.includes("{"));
-  // The skeleton rides on its own field for JSON consumers.
-  assertEquals(findings[0].skeleton, "{}");
+  // The skeleton rides on its own field, as an object, for JSON consumers.
+  assertEquals(
+    findings[0].skeleton,
+    buildReviewReportSkeleton("@a/b", "1", applicableDimensions(["model"])),
+  );
 });
 
 Deno.test("evaluateReviewReport: parse errors surface explicit message with allowed values", () => {
@@ -746,6 +749,18 @@ Deno.test("evaluateReviewReport: a completed review with an issue verdict is dis
   assertEquals(findings.length, 1);
   assertEquals(findings[0].ruleId, "adversarial-review-dimension-issue");
   assertStringIncludes(findings[0].message, "delete swallows 404");
+});
+
+Deno.test("buildReviewReportSkeleton: returns the report object with every dimension pending", () => {
+  const dims = applicableDimensions(["model"]);
+  const skeleton = buildReviewReportSkeleton("@a/b", "2026.10.07.1", dims);
+  assertEquals(skeleton.extension, "@a/b");
+  assertEquals(skeleton.version, "2026.10.07.1");
+  assertEquals(skeleton.reviewedAt, "<ISO-8601 timestamp>");
+  assertEquals(
+    skeleton.dimensions,
+    dims.map((d) => ({ id: d.id, verdict: "pending", note: "" })),
+  );
 });
 
 Deno.test("checkReviewRules: validates report when a report request is supplied", async () => {
@@ -974,7 +989,7 @@ Deno.test("checkReviewRules: the missing-report finding carries the catalog reme
         extensionName: "@a/b",
         extensionVersion: "1",
         applicableDimensions: dims,
-        skeleton: "{}",
+        skeleton: buildReviewReportSkeleton("@a/b", "1", dims),
       },
     },
     DEFAULT_REVIEW_RULES,

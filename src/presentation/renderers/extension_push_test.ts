@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join, SEPARATOR } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { FindingsReport } from "./extension_findings_report.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
@@ -32,6 +33,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   type AcceptedWarnings,
   createExtensionPushRenderer,
+  type ExtensionPushRenderer,
 } from "./extension_push.ts";
 
 await initializeLogging({});
@@ -60,6 +62,14 @@ function resolved(
   };
 }
 
+const ROOT = SEPARATOR === "\\" ? "C:\\" : "/";
+/** The author runs the push from `work`; the repo is a sibling of it. */
+const PATHS = {
+  cwd: join(ROOT, "home", "author", "work"),
+  repoDir: join(ROOT, "home", "author", "repo"),
+  manifestDir: join(ROOT, "home", "author", "repo", "extensions"),
+};
+
 const dryRunBase = {
   name: "@test/ext",
   version: "2026.09.16.1",
@@ -72,34 +82,29 @@ const dryRunBase = {
 
 for (const visibility of ["public", "private", "default"] as const) {
   for (const mode of ["log", "json"] as const) {
-    Deno.test(`extensionPushRenderer: ${mode} preview and dry run show requested ${visibility}`, () => {
-      const logs: string[] = [];
-      const original = console.log;
-      console.log = (message: string) => logs.push(message);
-      try {
-        const renderer = createExtensionPushRenderer(mode);
+    Deno.test(`extensionPushRenderer: ${mode} preview and dry run show requested ${visibility}`, async () => {
+      const renderer = createExtensionPushRenderer(mode, PATHS);
+      const logs = await capture(() => {
         renderer.renderResolved(resolved(visibility));
-        renderer.renderDryRun({
-          ...dryRunBase,
-          visibility,
-        });
-        if (mode === "json") {
-          assertEquals(JSON.parse(logs[0]).visibility, visibility);
-          assertEquals(JSON.parse(logs[1]).visibility, visibility);
-          assertEquals(JSON.parse(logs[1]).status, "dry_run");
-        } else {
-          const expected = visibility === "private"
-            ? "Requested visibility: private"
-            : visibility === "public"
-            ? "Requested visibility: public (registry default; existing visibility preserved)"
-            : "Requested visibility: default (registry decides)";
-          assertEquals(
-            logs.filter((line) => line.includes(expected)).length,
-            2,
-          );
-        }
-      } finally {
-        console.log = original;
+        renderer.renderDryRun({ ...dryRunBase, visibility });
+      });
+      if (mode === "json") {
+        // One document: the resolved extension rides inside the dry run's.
+        assertEquals(logs.length, 1);
+        const doc = JSON.parse(logs[0]);
+        assertEquals(doc.resolved.visibility, visibility);
+        assertEquals(doc.visibility, visibility);
+        assertEquals(doc.status, "dry_run");
+      } else {
+        const expected = visibility === "private"
+          ? "Requested visibility: private"
+          : visibility === "public"
+          ? "Requested visibility: public (registry default; existing visibility preserved)"
+          : "Requested visibility: default (registry decides)";
+        // Printed once, through the extension·push logger (swamp-club#3112).
+        const matching = logs.filter((line) => line.includes(expected));
+        assertEquals(matching.length, 1);
+        assertStringIncludes(matching[0], "extension·push:");
       }
     });
   }
@@ -228,6 +233,7 @@ Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omit
   assertEquals("accepted" in parsed, false);
   assertEquals("waivedBy" in parsed, false);
   assertEquals(Object.keys(parsed), [
+    "status",
     "name",
     "version",
     "archiveSize",
@@ -235,7 +241,6 @@ Deno.test("extensionPushRenderer: JSON dry run carries acceptedWarnings and omit
     "registryChecks",
     "apiCalls",
     "acceptedWarnings",
-    "status",
   ]);
 
   const without = await capture(() => renderer.renderDryRun(base));
@@ -284,7 +289,7 @@ Deno.test("extensionPushRenderer: log completed summary lists accepted warnings,
       .completed(completedEvent)
   );
   const output = logs.join("\n");
-  assertStringIncludes(output, 'Pushed "@test/ext"@"2026.09.16.1"');
+  assertStringIncludes(output, 'Pushed "@test/ext@2026.09.16.1"');
   assertStringIncludes(output, "Accepted 1 warning with --force:");
   assertStringIncludes(output, "models/a.ts");
 });
@@ -354,6 +359,7 @@ Deno.test("extensionPushRenderer: JSON dry run carries contentHash, registryChec
   );
   const parsed = JSON.parse(logs[0]);
   assertEquals(Object.keys(parsed), [
+    "status",
     "name",
     "version",
     "archiveSize",
@@ -361,7 +367,6 @@ Deno.test("extensionPushRenderer: JSON dry run carries contentHash, registryChec
     "contentHash",
     "registryChecks",
     "apiCalls",
-    "status",
   ]);
   assertEquals(parsed.contentHash, "deadbeef");
   assertEquals(parsed.registryChecks, checks);
@@ -601,4 +606,362 @@ Deno.test("extensionPushRenderer: log report prints braces in messages, remediat
   assertStringIncludes(output, "z.object({ apiKey: z.string() })");
   assertStringIncludes(output, ".meta({ sensitive: true })");
   assertEquals(output.includes("undefined"), false);
+});
+
+/** A resolved extension with every list populated, in both label forms. */
+function populated(): ExtensionPushResolvedData {
+  return {
+    ...resolved("default"),
+    description: "First line\nSecond line with {braces}",
+    repository: "https://example.com/ext",
+    releaseNotes: "Fixed a thing",
+    models: [{
+      type: "@test/ext",
+      fileName: join("extensions", "models", "m.ts"),
+      globalArguments: [
+        { name: "text", type: "string", required: true, description: "" },
+        { name: "note", type: "string", required: false, description: "" },
+      ],
+    }],
+    workflowFiles: [join("extensions", "workflows", "w.yaml")],
+    vaults: [
+      {
+        type: "@test/vault",
+        name: "Named",
+        fileName: join("extensions", "vaults", "v.ts"),
+        configFields: [{
+          name: "token",
+          type: "string",
+          required: false,
+          description: "",
+        }],
+      },
+      { type: "@test/vault2", fileName: join("extensions", "vaults", "u.ts") },
+    ],
+    datastores: [{
+      type: "@test/store",
+      fileName: join("extensions", "datastores", "d.ts"),
+      configFields: [{
+        name: "bucket",
+        type: "string",
+        required: true,
+        description: "",
+      }],
+    }],
+    reports: [
+      {
+        name: "@test/ext/summary",
+        scope: "method",
+        fileName: join("extensions", "reports", "r.ts"),
+      },
+      {
+        name: "@test/ext/plain",
+        fileName: join("extensions", "reports", "p.ts"),
+      },
+    ],
+    webhooks: [{
+      type: "@test/hook",
+      name: "Hook",
+      fileName: join("extensions", "webhooks", "h.ts"),
+    }],
+    skills: [{ name: "ext-skill", fileCount: 2 }],
+    additionalFiles: ["README.md"],
+    platforms: ["linux"],
+    labels: ["a", "b"],
+    dependencies: ["@test/dep"],
+  };
+}
+
+const skeleton = {
+  extension: "@test/ext",
+  version: "2026.09.16.1",
+  reviewedAt: "<ISO-8601 timestamp>",
+  dimensions: [{ id: "security", verdict: "pending" as const, note: "" }],
+};
+
+const reviewWarning = {
+  ruleId: "adversarial-review-report",
+  dimension: "Adversarial review",
+  severity: "medium" as const,
+  file: join(ROOT, "tmp", "swamp-extension-review", "r.json"),
+  message: "No adversarial review recorded",
+  skeleton,
+};
+
+const safetyWarning = {
+  ruleId: "deno-command",
+  file: join(PATHS.repoDir, "extensions", "models", "m.ts"),
+  line: 3,
+  message: "uses Deno.Command",
+};
+
+Deno.test("extensionPushRenderer: log output never prints adjacent or empty interpolations (swamp-club#3017, swamp-club#3118)", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(async () => {
+    renderer.renderResolved(populated());
+    renderer.renderReviewRuleWarnings([reviewWarning]);
+    renderer.renderSafetyWarnings([safetyWarning]);
+    renderer.renderDryRun({
+      ...dryRunBase,
+      accepted: { warnings: accepted, waivedBy: "--yes" },
+    });
+    await renderer.handlers().completed(completedEvent);
+  });
+  const output = logs.join("\n");
+  assertEquals(output.includes('""'), false, output);
+  // No LogTape string-concatenation continuation lines.
+  assertEquals(logs.some((line) => line.trimEnd().endsWith('" +')), false);
+
+  assertStringIncludes(output, 'Extension: "@test/ext@2026.09.16.1"');
+  assertStringIncludes(output, '"text": "string"\n');
+  assertStringIncludes(output, '"note": "string" (optional)');
+  assertStringIncludes(output, '"token": "string" (optional)');
+  assertStringIncludes(output, '"bucket": "string"\n');
+  assertStringIncludes(output, '"@test/vault" - "Named" (');
+  assertStringIncludes(output, '"@test/vault2" (');
+  assertStringIncludes(output, '"@test/ext/summary" ["method"] (');
+  assertStringIncludes(output, '"@test/ext/plain" (');
+  assertStringIncludes(output, 'Dry run complete for "@test/ext@2026.09.16.1"');
+  assertStringIncludes(output, 'Pushed "@test/ext@2026.09.16.1"');
+});
+
+Deno.test("extensionPushRenderer: log prints a multi-line description as plain lines, braces verbatim", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => renderer.renderResolved(populated()));
+  const at = logs.findIndex((line) => line.endsWith("Description:"));
+  assertEquals(at >= 0, true);
+  assertEquals(logs[at + 1].endsWith("  First line"), true);
+  assertEquals(logs[at + 2].endsWith("  Second line with {braces}"), true);
+  // A single-line value stays on its label's line.
+  assertStringIncludes(logs.join("\n"), 'Release Notes: "Fixed a thing"');
+});
+
+Deno.test("extensionPushRenderer: log prints quality output one plain line per line", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() =>
+    renderer.renderQualityErrors([{
+      check: "lint",
+      output:
+        "error[require-await]: no await\n  --> a.ts:1:1\nFound 1 problem\n",
+    }])
+  );
+  const output = logs.join("\n");
+  assertEquals(logs.some((line) => line.trimEnd().endsWith('" +')), false);
+  assertStringIncludes(output, "    error[require-await]: no await");
+  assertStringIncludes(output, "      --> a.ts:1:1");
+  assertStringIncludes(output, "    Found 1 problem");
+});
+
+Deno.test("extensionPushRenderer: log prints file paths relative to cwd, absolute when only the root is shared", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => {
+    renderer.renderResolved(populated());
+    renderer.renderReviewRuleWarnings([
+      reviewWarning,
+      { ...reviewWarning, ruleId: "x", file: "(manifest)" },
+    ]);
+    renderer.renderSafetyWarnings([safetyWarning]);
+  });
+  const output = logs.join("\n");
+  const sibling = join("..", "repo", "extensions", "models", "m.ts");
+  assertStringIncludes(output, `"@test/ext" (${JSON.stringify(sibling)})`);
+  assertStringIncludes(output, `${JSON.stringify(`${sibling}:3`)}`);
+  assertStringIncludes(output, JSON.stringify(join("..", "repo", "README.md")));
+  // The review report lives under the temp dir: only the root is shared.
+  assertStringIncludes(output, JSON.stringify(reviewWarning.file));
+  // A pseudo-file is not a path and prints unchanged.
+  assertStringIncludes(output, '"(manifest)"');
+});
+
+Deno.test("extensionPushRenderer: log hides the requested-visibility line below the log level", async () => {
+  try {
+    await initializeLogging({ logLevel: "error", _reset: true });
+    const renderer = createExtensionPushRenderer("log", PATHS);
+    const logs = await capture(() =>
+      renderer.renderResolved(resolved("private"))
+    );
+    assertEquals(
+      logs.some((line) => line.includes("Requested visibility")),
+      false,
+    );
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+});
+
+Deno.test("extensionPushRenderer: JSON dry run is one document with resolved, warnings and status as fields", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() => {
+    renderer.renderResolved(populated());
+    renderer.renderReviewRuleWarnings([reviewWarning]);
+    renderer.renderSafetyWarnings([safetyWarning]);
+    renderer.renderDependencyTrustWarnings([]);
+    renderer.renderVersionDriftWarnings([{ check: "lint", output: "drift" }]);
+    renderer.renderDryRun(dryRunBase);
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(Object.keys(doc).slice(0, 3), [
+    "status",
+    "resolved",
+    "warnings",
+  ]);
+  assertEquals(doc.status, "dry_run");
+  // Empty families are omitted.
+  assertEquals(Object.keys(doc.warnings), ["review", "safety", "versionDrift"]);
+  // The skeleton is a nested object, and the finding keeps its file.
+  assertEquals(doc.warnings.review[0].skeleton, skeleton);
+  assertEquals(doc.warnings.review[0].file, reviewWarning.file);
+  assertEquals(doc.warnings.safety[0], safetyWarning);
+  // Resolved file names are absolute.
+  assertEquals(
+    doc.resolved.models[0].fileName,
+    join(PATHS.repoDir, "extensions", "models", "m.ts"),
+  );
+  assertEquals(doc.resolved.workflowFiles, [
+    join(PATHS.repoDir, "extensions", "workflows", "w.yaml"),
+  ]);
+  assertEquals(doc.resolved.additionalFiles, [
+    join(PATHS.repoDir, "README.md"),
+  ]);
+});
+
+Deno.test("extensionPushRenderer: JSON omits warnings when every family is empty", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() => {
+    renderer.renderResolved(resolved("default"));
+    renderer.renderDryRun(dryRunBase);
+  });
+  assertEquals("warnings" in JSON.parse(logs[0]), false);
+});
+
+Deno.test("extensionPushRenderer: JSON push is one document with status pushed", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(async () => {
+    renderer.renderResolved(resolved("default"));
+    renderer.renderSafetyWarnings([safetyWarning]);
+    await renderer.handlers().completed(completedEvent);
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "pushed");
+  assertEquals(doc.resolved.name, "@test/ext");
+  assertEquals(doc.warnings.safety, [safetyWarning]);
+  assertEquals(doc.extensionId, "ext-123");
+});
+
+Deno.test("extensionPushRenderer: JSON failed push writes its document, then throws", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  let thrown: unknown;
+  const logs = await capture(async () => {
+    renderer.renderResolved(resolved("default"));
+    try {
+      await renderer.handlers().error({
+        kind: "error",
+        error: { code: "push_failed", message: "upload refused" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "failed");
+  assertEquals(doc.resolved.name, "@test/ext");
+  assertEquals((thrown as Error).message, "upload refused");
+});
+
+Deno.test("extensionPushRenderer: JSON blocked prepare is one document naming the error family", async () => {
+  for (
+    const [render, family] of [
+      [
+        (r: ExtensionPushRenderer) => r.renderReviewRuleErrors([reviewWarning]),
+        "review",
+      ],
+      [
+        (r: ExtensionPushRenderer) => r.renderSafetyErrors([safetyWarning]),
+        "safety",
+      ],
+      [
+        (r: ExtensionPushRenderer) =>
+          r.renderQualityErrors([{ check: "lint", output: "x" }]),
+        "quality",
+      ],
+      [
+        (r: ExtensionPushRenderer) =>
+          r.renderUpgradeChainErrors([{ check: "lint", output: "x" }]),
+        "upgradeChain",
+      ],
+      [
+        (r: ExtensionPushRenderer) =>
+          r.renderCompilationErrors([{ file: "a.ts", error: "x" }]),
+        "compilation",
+      ],
+      [
+        (r: ExtensionPushRenderer) => r.renderDependencyTrustErrors([]),
+        "dependencyTrust",
+      ],
+      [
+        (r: ExtensionPushRenderer) => r.renderCollectiveErrors("@test", []),
+        "collective",
+      ],
+    ] as const
+  ) {
+    const renderer = createExtensionPushRenderer("json", PATHS);
+    const logs = await capture(() => render(renderer));
+    assertEquals(logs.length, 1, family);
+    const doc = JSON.parse(logs[0]);
+    assertEquals(doc.status, "blocked");
+    assertEquals(Object.keys(doc.errors), [family]);
+  }
+});
+
+Deno.test("extensionPushRenderer: log prints a file outside the pushed content absolute even when it shares more than the root with cwd", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const report = join(ROOT, "home", "author", "tmp", "review.json");
+  const logs = await capture(() =>
+    renderer.renderReviewRuleWarnings([{ ...reviewWarning, file: report }])
+  );
+  assertStringIncludes(logs.join("\n"), JSON.stringify(report));
+});
+
+Deno.test("extensionPushRenderer: JSON renderUnfinished writes a failed document only when the run wrote none", async () => {
+  const unfinished = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() => {
+    unfinished.renderResolved(resolved("default"));
+    unfinished.renderSafetyWarnings([safetyWarning]);
+    unfinished.renderUnfinished();
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "failed");
+  assertEquals(doc.resolved.name, "@test/ext");
+  assertEquals(doc.warnings.safety, [safetyWarning]);
+
+  const finished = createExtensionPushRenderer("json", PATHS);
+  const after = await capture(() => {
+    finished.renderDryRun(dryRunBase);
+    finished.renderUnfinished();
+  });
+  assertEquals(after.length, 1);
+  assertEquals(JSON.parse(after[0]).status, "dry_run");
+});
+
+Deno.test("extensionPushRenderer: log renderUnfinished prints nothing", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => renderer.renderUnfinished());
+  assertEquals(logs, []);
+});
+
+Deno.test("extensionPushRenderer: log prints CRLF output without trailing carriage returns", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() =>
+    renderer.renderUpgradeChainErrors([{
+      check: "lint",
+      output: "first\r\nsecond\r\n",
+    }])
+  );
+  assertEquals(logs.some((line) => line.includes("\r")), false);
+  assertEquals(logs.filter((line) => line.endsWith("  first")).length, 1);
+  assertEquals(logs.filter((line) => line.endsWith("  second")).length, 1);
 });

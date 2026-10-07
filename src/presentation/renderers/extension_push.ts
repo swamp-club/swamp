@@ -28,10 +28,12 @@ import {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { resolve } from "@std/path";
 import {
+  escapeLogTemplate,
   getSwampLogger,
-  writeOutput,
 } from "../../infrastructure/logging/logger.ts";
+import { displayPath } from "../output/display_path.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   qualityCheckLabel,
@@ -48,8 +50,8 @@ import {
 
 /**
  * A review warning as it appears in the accepted-warnings record: the
- * finding without its report skeleton or remediation, which the
- * `reviewRuleWarnings` document already carries in full.
+ * finding without its report skeleton or remediation, which
+ * `warnings.review` already carries in full.
  */
 export type AcceptedReviewWarning = Omit<
   ReviewFinding,
@@ -131,17 +133,31 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: ExtensionPushDryRunData): void;
+  /**
+   * Called when the run throws. In `--json` mode it writes the run's
+   * document with status `failed` unless a render already wrote one, so
+   * stdout always carries exactly one document; log mode has nothing to add.
+   */
+  renderUnfinished(): void;
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent>;
 }
 
-/** `file:line` when the finding has a line, else the file alone. */
-function fileAndLine(finding: { file: string; line?: number }): string {
-  return finding.line !== undefined
-    ? `${finding.file}:${finding.line}`
-    : finding.file;
+/**
+ * Where the renderer prints paths from: the directory the author ran the
+ * command in, the repo directory the resolved file names are relative to,
+ * and the directory holding the manifest. Files under the repo or the
+ * manifest's directory are the pushed content, which prints relative to
+ * `cwd` (see {@link displayPath}).
+ */
+export interface ExtensionPushRenderPaths {
+  cwd: string;
+  repoDir: string;
+  manifestDir: string;
 }
+
+type LogLevelName = "info" | "warn" | "error";
 
 function acceptedWarningsHeader(accepted: WarningsAcceptance): string {
   const count = accepted.warnings.safety.length +
@@ -156,30 +172,119 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+/** `name@version`, interpolated as one value so it prints as one quoted token. */
+function nameAtVersion(data: { name: string; version: string }): string {
+  return `${data.name}@${data.version}`;
+}
+
+function requestedVisibilityLabel(
+  visibility: ExtensionPushResolvedData["visibility"],
+): string {
+  return visibility === "default"
+    ? "default (registry decides)"
+    : visibility === "public"
+    ? "public (registry default; existing visibility preserved)"
+    : visibility;
+}
+
 class LogExtensionPushRenderer implements ExtensionPushRenderer {
   private logger = getSwampLogger(["extension", "push"]);
 
+  constructor(private readonly paths: ExtensionPushRenderPaths) {}
+
+  /** An absolute path as the author can open it from where they ran push. */
+  private display(path: string): string {
+    return displayPath(path, this.paths.cwd, [
+      this.paths.repoDir,
+      this.paths.manifestDir,
+    ]);
+  }
+
+  /** A resolved file name (repo-relative) as the author can open it. */
+  private resolvedFile(fileName: string): string {
+    return this.display(resolve(this.paths.repoDir, fileName));
+  }
+
+  /** A finding's `file:line`, its file as the author can open it. */
+  private where(finding: { file: string; line?: number }): string {
+    const file = this.display(finding.file);
+    return finding.line !== undefined ? `${file}:${finding.line}` : file;
+  }
+
+  /**
+   * Prints free text one line per log line, verbatim. Interpolated as a value,
+   * LogTape would print a multi-line string as a JS string concatenation.
+   */
+  private textBlock(level: LogLevelName, text: string, indent: string): void {
+    for (const line of text.replace(/(\r?\n)+$/, "").split(/\r?\n/)) {
+      this.logger[level](escapeLogTemplate(`${indent}${line}`));
+    }
+  }
+
+  /**
+   * A multi-line value prints as its label, then its lines; `single` prints
+   * a one-line value on the label's own line.
+   */
+  private labelled(label: string, value: string, single: () => void): void {
+    if (value.includes("\n")) {
+      this.logger.info(escapeLogTemplate(`${label}:`));
+      this.textBlock("info", value, "  ");
+    } else {
+      single();
+    }
+  }
+
+  private fieldLine(field: { name: string; type: string; required: boolean }) {
+    if (field.required) {
+      this.logger.info`      ${field.name}: ${field.type}`;
+    } else {
+      this.logger.info`      ${field.name}: ${field.type} (optional)`;
+    }
+  }
+
+  private namedLine(entry: { type: string; name?: string; fileName: string }) {
+    const file = this.resolvedFile(entry.fileName);
+    if (entry.name) {
+      this.logger.info`  ${entry.type} - ${entry.name} (${file})`;
+    } else {
+      this.logger.info`  ${entry.type} (${file})`;
+    }
+  }
+
   renderResolved(data: ExtensionPushResolvedData): void {
-    this.logger.info`Extension: ${data.name}@${data.version}`;
-    renderRequestedVisibility(data.visibility);
+    this.logger.info`Extension: ${nameAtVersion(data)}`;
+    this.logger.info(
+      escapeLogTemplate(
+        `Requested visibility: ${requestedVisibilityLabel(data.visibility)}`,
+      ),
+    );
     if (data.description) {
-      this.logger.info`Description: ${data.description}`;
+      const description = data.description;
+      this.labelled(
+        "Description",
+        description,
+        () => this.logger.info`Description: ${description}`,
+      );
     }
     if (data.repository) {
       this.logger.info`Repository: ${data.repository}`;
     }
     if (data.releaseNotes) {
-      this.logger.info`Release Notes: ${data.releaseNotes}`;
+      const releaseNotes = data.releaseNotes;
+      this.labelled(
+        "Release Notes",
+        releaseNotes,
+        () => this.logger.info`Release Notes: ${releaseNotes}`,
+      );
     }
     if (data.models.length > 0) {
       this.logger.info`Models (${data.models.length}):`;
       for (const m of data.models) {
-        this.logger.info`  ${m.type} (${m.fileName})`;
+        this.logger.info`  ${m.type} (${this.resolvedFile(m.fileName)})`;
         if (m.globalArguments && m.globalArguments.length > 0) {
           this.logger.info`    Global Arguments:`;
           for (const arg of m.globalArguments) {
-            const opt = arg.required ? "" : " (optional)";
-            this.logger.info`      ${arg.name}: ${arg.type}${opt}`;
+            this.fieldLine(arg);
           }
         }
       }
@@ -187,19 +292,17 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.workflowFiles.length > 0) {
       this.logger.info`Workflows (${data.workflowFiles.length}):`;
       for (const f of data.workflowFiles) {
-        this.logger.info`  ${f}`;
+        this.logger.info`  ${this.resolvedFile(f)}`;
       }
     }
     if (data.vaults.length > 0) {
       this.logger.info`Vaults (${data.vaults.length}):`;
       for (const v of data.vaults) {
-        const nameLabel = v.name ? ` - ${v.name}` : "";
-        this.logger.info`  ${v.type}${nameLabel} (${v.fileName})`;
+        this.namedLine(v);
         if (v.configFields && v.configFields.length > 0) {
           this.logger.info`    Config Fields:`;
           for (const field of v.configFields) {
-            const opt = field.required ? "" : " (optional)";
-            this.logger.info`      ${field.name}: ${field.type}${opt}`;
+            this.fieldLine(field);
           }
         }
       }
@@ -207,13 +310,11 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.datastores.length > 0) {
       this.logger.info`Datastores (${data.datastores.length}):`;
       for (const d of data.datastores) {
-        const nameLabel = d.name ? ` - ${d.name}` : "";
-        this.logger.info`  ${d.type}${nameLabel} (${d.fileName})`;
+        this.namedLine(d);
         if (d.configFields && d.configFields.length > 0) {
           this.logger.info`    Config Fields:`;
           for (const field of d.configFields) {
-            const opt = field.required ? "" : " (optional)";
-            this.logger.info`      ${field.name}: ${field.type}${opt}`;
+            this.fieldLine(field);
           }
         }
       }
@@ -221,15 +322,18 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.reports.length > 0) {
       this.logger.info`Reports (${data.reports.length}):`;
       for (const r of data.reports) {
-        const scopeLabel = r.scope ? ` [${r.scope}]` : "";
-        this.logger.info`  ${r.name}${scopeLabel} (${r.fileName})`;
+        const file = this.resolvedFile(r.fileName);
+        if (r.scope) {
+          this.logger.info`  ${r.name} [${r.scope}] (${file})`;
+        } else {
+          this.logger.info`  ${r.name} (${file})`;
+        }
       }
     }
     if (data.webhooks.length > 0) {
       this.logger.info`Webhooks (${data.webhooks.length}):`;
       for (const w of data.webhooks) {
-        const nameLabel = w.name ? ` - ${w.name}` : "";
-        this.logger.info`  ${w.type}${nameLabel} (${w.fileName})`;
+        this.namedLine(w);
       }
     }
     if (data.skills.length > 0) {
@@ -241,7 +345,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.additionalFiles.length > 0) {
       this.logger.info`Additional files (${data.additionalFiles.length}):`;
       for (const f of data.additionalFiles) {
-        this.logger.info`  ${f}`;
+        this.logger.info`  ${this.resolvedFile(f)}`;
       }
     }
     if (data.platforms.length > 0) {
@@ -278,7 +382,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       // skeleton) stays in the JSON output.
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${this.where(w)}: ${summary}`;
     }
   }
 
@@ -287,23 +391,21 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     for (const e of errors) {
       const summary = e.message.split("\n")[0];
       this.logger
-        .error`  [${e.severity}] ${e.dimension} — ${
-        fileAndLine(e)
-      }: ${summary}`;
+        .error`  [${e.severity}] ${e.dimension} — ${this.where(e)}: ${summary}`;
     }
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
     this.logger.warn`Safety warnings:`;
     for (const w of warnings) {
-      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
+      this.logger.warn`  ${this.where(w)}: ${w.message}`;
     }
   }
 
   renderSafetyErrors(errors: SafetyIssue[]): void {
     this.logger.error`Safety errors (push blocked):`;
     for (const e of errors) {
-      this.logger.error`  ${fileAndLine(e)}: ${e.message}`;
+      this.logger.error`  ${this.where(e)}: ${e.message}`;
     }
   }
 
@@ -324,7 +426,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     for (const issue of issues) {
       const label = qualityCheckLabel(issue.check);
       this.logger.error`  ${label} issues:`;
-      this.logger.error`${issue.output}`;
+      this.textBlock("error", issue.output, "    ");
     }
     this.logger
       .error`Run 'swamp extension fmt <manifest-path>' to fix these issues.`;
@@ -333,46 +435,51 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   renderUpgradeChainErrors(issues: QualityIssue[]): void {
     this.logger.error`Upgrade chain validation failed (push blocked):`;
     for (const issue of issues) {
-      this.logger.error`  ${issue.output}`;
+      this.textBlock("error", issue.output, "  ");
     }
   }
 
   renderVersionDriftWarnings(warnings: QualityIssue[]): void {
     this.logger.warn`Version drift warnings (non-blocking):`;
     for (const w of warnings) {
-      this.logger.warn`  ${w.output}`;
+      this.textBlock("warn", w.output, "  ");
     }
   }
 
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void {
     this.logger.warn`Version bump without upgrade entry (non-blocking):`;
     for (const w of warnings) {
-      this.logger.warn`  ${w.output}`;
+      this.textBlock("warn", w.output, "  ");
     }
   }
 
   renderCompilationErrors(errors: CompilationError[]): void {
     this.logger.error`Bundle compilation failed:`;
     for (const r of errors) {
-      this.logger.error`  ${r.file}: ${r.error}`;
+      const file = this.display(r.file);
+      if (r.error.includes("\n")) {
+        this.logger.error`  ${file}:`;
+        this.textBlock("error", r.error, "    ");
+      } else {
+        this.logger.error`  ${file}: ${r.error}`;
+      }
     }
   }
 
   private renderAcceptedWarnings(accepted: WarningsAcceptance): void {
     this.logger.warn(acceptedWarningsHeader(accepted));
     for (const w of accepted.warnings.safety) {
-      this.logger.warn`  ${fileAndLine(w)}: ${w.message}`;
+      this.logger.warn`  ${this.where(w)}: ${w.message}`;
     }
     for (const w of accepted.warnings.review) {
       const summary = w.message.split("\n")[0];
       this.logger
-        .warn`  [${w.severity}] ${w.dimension} — ${fileAndLine(w)}: ${summary}`;
+        .warn`  [${w.severity}] ${w.dimension} — ${this.where(w)}: ${summary}`;
     }
   }
 
   renderDryRun(data: ExtensionPushDryRunData): void {
-    this.logger.info`Dry run complete for ${data.name}@${data.version}`;
-    renderRequestedVisibility(data.visibility);
+    this.logger.info`Dry run complete for ${nameAtVersion(data)}`;
     this.logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     if (data.contentHash) {
       this.logger.info`Content hash: ${data.contentHash}`;
@@ -414,14 +521,15 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
+  renderUnfinished(): void {}
+
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent> {
     return {
       pushing: () => {},
       completed: (e) => {
-        this.logger
-          .info`Pushed ${e.data.name}@${e.data.version}`;
+        this.logger.info`Pushed ${nameAtVersion(e.data)}`;
         this.logger.info`Channel: ${e.data.channel}`;
         this.logger.info`Visibility: ${e.data.visibility}`;
         if (e.data.visibility === "private") {
@@ -463,74 +571,122 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   }
 }
 
+/** How a `--json` run ended, carried as the document's `status`. */
+export type ExtensionPushJsonStatus =
+  | "dry_run"
+  | "pushed"
+  | "failed"
+  | "blocked"
+  | "cancelled";
+
+/**
+ * The `--json` renderer writes one document per run. Every render call
+ * before the end of the run records its part (the resolved extension, each
+ * warning family); the call that ends the run (dry run, push completed or
+ * failed, a blocked prepare) writes the document with those parts as fields.
+ */
 class JsonExtensionPushRenderer implements ExtensionPushRenderer {
-  renderResolved(data: ExtensionPushResolvedData): void {
-    console.log(JSON.stringify(data, null, 2));
-  }
+  private resolved: ExtensionPushResolvedData | undefined;
+  private warnings: Record<string, unknown[]> = {};
+  private emitted = false;
 
-  renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
-    console.log(
-      JSON.stringify({ dependencyTrustWarnings: warnings }, null, 2),
-    );
-  }
+  constructor(private readonly paths: ExtensionPushRenderPaths) {}
 
-  renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void {
-    console.log(JSON.stringify({ dependencyTrustErrors: errors }, null, 2));
-  }
-
-  renderReviewRuleWarnings(warnings: ReviewFinding[]): void {
-    console.log(
-      JSON.stringify({ reviewRuleWarnings: warnings }, null, 2),
-    );
-  }
-
-  renderReviewRuleErrors(errors: ReviewFinding[]): void {
-    console.log(JSON.stringify({ reviewRuleErrors: errors }, null, 2));
-  }
-
-  renderSafetyWarnings(warnings: SafetyIssue[]): void {
-    console.log(JSON.stringify({ warnings }, null, 2));
-  }
-
-  renderSafetyErrors(errors: SafetyIssue[]): void {
-    console.log(JSON.stringify({ errors }, null, 2));
-  }
-
-  renderCollectiveErrors(
-    expectedCollective: string,
-    mismatches: CollectiveMismatch[],
+  private emit(
+    status: ExtensionPushJsonStatus,
+    fields: Record<string, unknown>,
   ): void {
+    this.emitted = true;
+    const hasWarnings = Object.keys(this.warnings).length > 0;
     console.log(
       JSON.stringify(
-        { collectiveErrors: { expectedCollective, mismatches } },
+        {
+          status,
+          ...(this.resolved ? { resolved: this.resolved } : {}),
+          ...(hasWarnings ? { warnings: this.warnings } : {}),
+          ...fields,
+        },
         null,
         2,
       ),
     );
   }
 
+  private warn(family: string, entries: unknown[]): void {
+    if (entries.length > 0) this.warnings[family] = entries;
+  }
+
+  private blocked(family: string, errors: unknown): void {
+    this.emit("blocked", { errors: { [family]: errors } });
+  }
+
+  /** The resolved extension with every file name absolute. */
+  renderResolved(data: ExtensionPushResolvedData): void {
+    const abs = (fileName: string) => resolve(this.paths.repoDir, fileName);
+    this.resolved = {
+      ...data,
+      models: data.models.map((m) => ({ ...m, fileName: abs(m.fileName) })),
+      workflowFiles: data.workflowFiles.map(abs),
+      vaults: data.vaults.map((v) => ({ ...v, fileName: abs(v.fileName) })),
+      datastores: data.datastores.map((d) => ({
+        ...d,
+        fileName: abs(d.fileName),
+      })),
+      reports: data.reports.map((r) => ({ ...r, fileName: abs(r.fileName) })),
+      webhooks: data.webhooks.map((w) => ({ ...w, fileName: abs(w.fileName) })),
+      additionalFiles: data.additionalFiles.map(abs),
+    };
+  }
+
+  renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
+    this.warn("dependencyTrust", warnings);
+  }
+
+  renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void {
+    this.blocked("dependencyTrust", errors);
+  }
+
+  renderReviewRuleWarnings(warnings: ReviewFinding[]): void {
+    this.warn("review", warnings);
+  }
+
+  renderReviewRuleErrors(errors: ReviewFinding[]): void {
+    this.blocked("review", errors);
+  }
+
+  renderSafetyWarnings(warnings: SafetyIssue[]): void {
+    this.warn("safety", warnings);
+  }
+
+  renderSafetyErrors(errors: SafetyIssue[]): void {
+    this.blocked("safety", errors);
+  }
+
+  renderCollectiveErrors(
+    expectedCollective: string,
+    mismatches: CollectiveMismatch[],
+  ): void {
+    this.blocked("collective", { expectedCollective, mismatches });
+  }
+
   renderQualityErrors(issues: QualityIssue[]): void {
-    console.log(JSON.stringify({ qualityErrors: issues }, null, 2));
+    this.blocked("quality", issues);
   }
 
   renderUpgradeChainErrors(issues: QualityIssue[]): void {
-    console.log(JSON.stringify({ upgradeChainErrors: issues }, null, 2));
+    this.blocked("upgradeChain", issues);
   }
 
   renderVersionDriftWarnings(warnings: QualityIssue[]): void {
-    console.log(
-      JSON.stringify({ versionDriftWarnings: warnings }, null, 2),
-    );
+    this.warn("versionDrift", warnings);
   }
 
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void {
-    console.log(
-      JSON.stringify({ versionBumpUpgradeWarnings: warnings }, null, 2),
-    );
+    this.warn("versionBumpUpgrade", warnings);
   }
 
   renderCompilationErrors(errors: CompilationError[]): void {
-    console.log(JSON.stringify({ compilationErrors: errors }, null, 2));
+    this.blocked("compilation", errors);
   }
 
   renderDryRun(data: ExtensionPushDryRunData): void {
@@ -544,21 +700,18 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
       apiCalls,
       ...summary
     } = data;
-    console.log(
-      JSON.stringify(
-        {
-          ...summary,
-          ...(contentHash ? { contentHash } : {}),
-          registryChecks,
-          apiCalls,
-          ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
-          ...(report ?? {}),
-          status: "dry_run",
-        },
-        null,
-        2,
-      ),
-    );
+    this.emit("dry_run", {
+      ...summary,
+      ...(contentHash ? { contentHash } : {}),
+      registryChecks,
+      apiCalls,
+      ...(accepted ? { acceptedWarnings: accepted.warnings } : {}),
+      ...(report ?? {}),
+    });
+  }
+
+  renderUnfinished(): void {
+    if (!this.emitted) this.emit("failed", {});
   }
 
   handlers(
@@ -567,16 +720,18 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
-        const summary = {
+        this.emit("pushed", {
           ...e.data,
           ...(options?.accepted
             ? { acceptedWarnings: options.accepted.warnings }
             : {}),
           ...(options?.report ?? {}),
-        };
-        console.log(JSON.stringify(summary, null, 2));
+        });
       },
       error: (e) => {
+        // The run's document still reaches stdout; the error itself goes to
+        // stderr with every other command's.
+        this.emit("failed", {});
         throw new UserError(e.error.message);
       },
     };
@@ -585,24 +740,18 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
 export function createExtensionPushRenderer(
   mode: OutputMode,
+  paths: ExtensionPushRenderPaths = {
+    cwd: Deno.cwd(),
+    repoDir: Deno.cwd(),
+    manifestDir: Deno.cwd(),
+  },
 ): ExtensionPushRenderer {
   switch (mode) {
     case "json":
-      return new JsonExtensionPushRenderer();
+      return new JsonExtensionPushRenderer(paths);
     case "log":
-      return new LogExtensionPushRenderer();
+      return new LogExtensionPushRenderer(paths);
   }
-}
-
-function renderRequestedVisibility(
-  visibility: ExtensionPushResolvedData["visibility"],
-): void {
-  const label = visibility === "default"
-    ? "default (registry decides)"
-    : visibility === "public"
-    ? "public (registry default; existing visibility preserved)"
-    : visibility;
-  writeOutput(`Requested visibility: ${label}`);
 }
 
 /** Renders cancellation message when user declines a prompt. */

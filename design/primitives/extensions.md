@@ -164,17 +164,37 @@ The dry-run summary lists every HTTP call the run made (the registry for
 whoami, the versions list and the drift lookup; OSV and npm for the
 dependency-trust audit) and says "No API calls were made." only when the list
 is empty. In JSON these are the `registryChecks` and `apiCalls` fields of the
-`dry_run` document, beside `contentHash`. `extension quality` packages
-through the same prepare phase, on a cache hit too, but skips the registry
-checks and makes no registry call. It runs the local gates in `collect`
-mode (`localGates`): each failed gate (content collectives, the
-additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
-upgrade chain, review errors, archive size) is recorded instead of thrown,
-files a check rejected (hidden, symlink, disallowed type, oversized,
-unreadable, disallowed additionalFiles) are left out of the archive (never
-copied into it), and the rubric is scored and printed beside the failures.
-Such an archive is never cached or uploaded. A push enforces: the first
-failure throws.
+`dry_run` document, beside `contentHash`.
+
+`--json` writes one document per run on stdout (swamp-club#3017). The
+renderer records each part as the run produces it and writes the document
+when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
+`cancelled`), `resolved` (file paths absolute), `warnings` grouped by family
+(`safety`, `review`, `dependencyTrust`, `versionDrift`,
+`versionBumpUpgrade`), and the run summary at the top level. A blocked
+prepare carries `errors` keyed by the gate that blocked it instead. The
+review-report skeleton is a nested object on its finding. Errors still go to
+stderr as `{"error": ...}`. Log mode prints a path relative to the current
+directory when the file is under it, or is pushed content (under the repo
+or the manifest's directory) sharing an ancestor below the filesystem root
+with it; anything else, such as the review report under the temp dir,
+prints absolute. When a `--json` run throws without a render having
+written its document (a version that already exists, a manifest error, an
+unexpected failure), the command writes it with status `failed`, carrying
+`resolved` and `warnings` when they were recorded, before the error
+propagates. Every `--json` run that reaches the push command (past flag
+parsing and the account gate) leaves exactly one document on stdout.
+
+`extension quality` packages through the same prepare phase, on a cache hit
+too, but skips the registry checks and makes no registry call. It runs the
+local gates in `collect` mode (`localGates`): each failed gate (content
+collectives, the additionalFiles allowlist, safety, dependency trust,
+skills, fmt/lint, upgrade chain, review errors, archive size) is recorded
+instead of thrown, files a check rejected (hidden, symlink, disallowed type,
+oversized, unreadable, disallowed additionalFiles) are left out of the
+archive (never copied into it), and the rubric is scored and printed beside
+the failures. Such an archive is never cached or uploaded. A push enforces:
+the first failure throws.
 
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
