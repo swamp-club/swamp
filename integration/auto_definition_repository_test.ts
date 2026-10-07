@@ -24,7 +24,7 @@
 // is configured (swamp-club#2382).
 
 import "../src/domain/models/models.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -307,7 +307,8 @@ for (const by of ["uuid", "name"] as const) {
           if (event.kind === "completed") inputPath = event.data.inputPath;
         }
 
-        assertPathEquals(inputPath!, path);
+        assertExists(inputPath);
+        assertPathEquals(inputPath, path);
         assertEquals(await fileExists(path), false);
         assertEquals(
           await fileExists(swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions)),

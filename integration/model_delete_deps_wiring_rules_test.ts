@@ -44,22 +44,26 @@ const PINNED_WITHOUT_DEFINITION_REPO = [
 /** Position of the injectedDefinitionRepo parameter. */
 const DEFINITION_REPO_ARG = 5;
 
-/** Top-level argument count of each `createModelDeleteDeps(...)` call. */
-function callArgCounts(code: string): { line: number; count: number }[] {
+/**
+ * Top-level argument texts of each `createModelDeleteDeps(...)` call. The
+ * splitter tracks bracket depth only, not string literals; no caller passes a
+ * literal containing a comma or bracket, and a miscount fails the test.
+ */
+function callArgs(code: string): { line: number; args: string[] }[] {
   const source = code
     .split("\n")
     .map((line) => isCommentLine(line) ? "" : line)
     .join("\n");
-  const calls: { line: number; count: number }[] = [];
+  const calls: { line: number; args: string[] }[] = [];
   for (const match of source.matchAll(/\bcreateModelDeleteDeps\s*\(/g)) {
+    const args: string[] = [];
     let depth = 0;
-    let count = 0;
     let current = "";
     for (let i = match.index + match[0].length; i < source.length; i++) {
       const ch = source[i];
       if (depth === 0 && ch === ")") break;
       if (depth === 0 && ch === ",") {
-        if (current.trim() !== "") count++;
+        args.push(current.trim());
         current = "";
         continue;
       }
@@ -67,10 +71,10 @@ function callArgCounts(code: string): { line: number; count: number }[] {
       if (")]}".includes(ch)) depth--;
       current += ch;
     }
-    if (current.trim() !== "") count++;
+    if (current.trim() !== "") args.push(current.trim());
     calls.push({
       line: source.slice(0, match.index).split("\n").length - 1,
-      count,
+      args,
     });
   }
   return calls;
@@ -88,9 +92,10 @@ Deno.test("createModelDeleteDeps callers in cli and serve pass the injected defi
     ) {
       const code = await Deno.readTextFile(entry.path);
       const owners = topLevelOwners(code.split("\n"));
-      for (const call of callArgCounts(code)) {
+      for (const call of callArgs(code)) {
         scanned++;
-        if (call.count < DEFINITION_REPO_ARG) {
+        const definitionRepo = call.args[DEFINITION_REPO_ARG - 1];
+        if (definitionRepo === undefined || definitionRepo === "undefined") {
           missing.push(`${repoRelative(entry.path)}: ${owners[call.line]}`);
         }
       }
