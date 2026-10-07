@@ -519,8 +519,10 @@ runs signalled by a local command. Things to know:
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
   reason (`global_cap`, ...). A run whose auto-resume policy is off is left
-  alone with no event. `held_by_local_command` means a local `workflow resume`
-  died before it started the run: resume it manually.
+  alone with no event. A resume that starts and fails is retried with a backoff
+  from 30s up to 15m; fix the cause and run `swamp workflow resume` to skip the
+  wait. `held_by_local_command` means a local `workflow resume` died before it
+  started the run: resume it manually.
 - Several serve instances on one datastore resume a run once. On S3 or GCS,
   upgrade every host before relying on the sweep, and expect a run whose
   instance died to wait until an instance restarts.

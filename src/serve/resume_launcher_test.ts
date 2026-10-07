@@ -22,6 +22,9 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
+  CONTINUATION_BACKOFF_BASE_MS,
+  CONTINUATION_BACKOFF_MAX_MS,
+  continuationRetryAt,
   continueSettledRun,
   noteParkedParent,
   RUN_NOT_SUSPENDED_CODE,
@@ -1370,4 +1373,65 @@ Deno.test("noteParkedParent: names the parent only of a finished run its parent 
     waiting,
   ]);
   assertEquals(await noteParkedParent(second.ctx, waiting), false);
+});
+
+Deno.test("continueSettledRun: a resume that fails and leaves the run suspended is tried again after a backoff that doubles, and reported once", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  // The harness has no datastore to resume against, so every launch fails
+  // and the run stays suspended.
+  const { ctx, registry, audit } = continuationHarness([workflow], [run]);
+  const target = { workflowId: workflow.id, runId: run.id };
+  let clock = 0;
+  const attempt = () =>
+    continueSettledRun(ctx, target, { ...SWEEP, takeover: true }, () => clock);
+  // Waits until launch number `count` has failed and its backoff is set.
+  const failedLaunches = async (count: number, wait: number) => {
+    assertEquals(registry.registered.length, count);
+    await waitFor(
+      () => continuationRetryAt(registry, run.id) === clock + wait,
+      `backoff after launch ${count}`,
+    );
+  };
+
+  assertEquals(await attempt(), true);
+  await failedLaunches(1, CONTINUATION_BACKOFF_BASE_MS);
+
+  // Within the first backoff nothing is launched.
+  clock = CONTINUATION_BACKOFF_BASE_MS - 1;
+  assertEquals(await attempt(), false);
+  assertEquals(registry.registered.length, 1);
+
+  // After it, one more attempt, and the wait doubles.
+  clock = CONTINUATION_BACKOFF_BASE_MS;
+  assertEquals(await attempt(), true);
+  await failedLaunches(2, 2 * CONTINUATION_BACKOFF_BASE_MS);
+  clock += 2 * CONTINUATION_BACKOFF_BASE_MS - 1;
+  assertEquals(await attempt(), false);
+  clock += 1;
+  assertEquals(await attempt(), true);
+  await failedLaunches(3, 4 * CONTINUATION_BACKOFF_BASE_MS);
+
+  // The wait never passes its cap.
+  for (let i = 0; i < 12; i++) {
+    clock += CONTINUATION_BACKOFF_MAX_MS;
+    assertEquals(await attempt(), true, `attempt ${i}`);
+    await failedLaunches(
+      4 + i,
+      Math.min(
+        CONTINUATION_BACKOFF_BASE_MS * 2 ** (3 + i),
+        CONTINUATION_BACKOFF_MAX_MS,
+      ),
+    );
+  }
+  assertEquals(
+    continuationRetryAt(registry, run.id),
+    clock + CONTINUATION_BACKOFF_MAX_MS,
+  );
+
+  // One launch event and one failure event, however many attempts.
+  assertEquals(audit.map((a) => a.action), [
+    "workflow.auto_resume",
+    "workflow.auto_resume_failed",
+  ]);
 });

@@ -760,6 +760,46 @@ function skipMemo(key: object): Map<string, string> {
   return memo;
 }
 
+/**
+ * The resumes of one suspension that failed and left the run suspended, per
+ * serve process. Such a run is still settled, so every pass would launch it
+ * again; each failure doubles the wait before the next attempt instead.
+ */
+interface FailedContinuation {
+  readonly suspensionKey: string;
+  readonly failures: number;
+  readonly retryAt: number;
+}
+const failedContinuations = new WeakMap<
+  object,
+  Map<string, FailedContinuation>
+>();
+
+/** The wait after the first failed resume of a suspension; doubled each time. */
+export const CONTINUATION_BACKOFF_BASE_MS = 30_000;
+/** The longest wait between two resumes of one suspension. */
+export const CONTINUATION_BACKOFF_MAX_MS = 900_000;
+
+function failedContinuationsOf(key: object): Map<string, FailedContinuation> {
+  let failed = failedContinuations.get(key);
+  if (!failed) {
+    failed = new Map();
+    failedContinuations.set(key, failed);
+  }
+  return failed;
+}
+
+/**
+ * When the next resume of `runId` may be launched by `registry`'s instance,
+ * in epoch milliseconds, or undefined for a run not held back.
+ */
+export function continuationRetryAt(
+  registry: ActiveRunRegistry,
+  runId: string,
+): number | undefined {
+  return failedContinuations.get(registry)?.get(runId)?.retryAt;
+}
+
 /** How old a local command's claim is before serve reports it as left behind. */
 const LOCAL_CLAIM_GRACE_MS = 60_000;
 
@@ -820,12 +860,16 @@ export async function noteParkedParent(
  * a run this instance knows is still suspended, which only a manual resume
  * clears. Any other skip or refusal leaves the run suspended and is
  * logged and audited once per suspension and reason; the next pass of the
- * sweep tries again.
+ * sweep tries again. A resume that was launched and failed, leaving the run
+ * suspended, is tried again only after a backoff that doubles with each
+ * failure of that suspension, from {@link CONTINUATION_BACKOFF_BASE_MS} up
+ * to {@link CONTINUATION_BACKOFF_MAX_MS}.
  */
 export async function continueSettledRun(
   ctx: ConnectionContext,
   target: { workflowId: string; runId: string },
   cause: ContinuationCause,
+  now: () => number = Date.now,
 ): Promise<boolean> {
   const registry = ctx.activeRunRegistry;
   if (!registry || registry.draining) return false;
@@ -880,6 +924,15 @@ export async function continueSettledRun(
     return false;
   }
 
+  // A resume of this suspension failed here before: wait out its backoff.
+  const failed = failedContinuationsOf(registry);
+  const earlier = failed.get(run.id);
+  if (earlier && earlier.suspensionKey !== suspensionKey) failed.delete(run.id);
+  const failures = earlier?.suspensionKey === suspensionKey
+    ? earlier.failures
+    : 0;
+  if (failures > 0 && now() < earlier!.retryAt) return false;
+
   // An early look, so a run a peer has consumed is not registered and
   // charged only to be refused. The resume takes the claim itself.
   const claims = ctx.repoContext.continuationClaims;
@@ -927,10 +980,20 @@ export async function continueSettledRun(
     onTerminal: async (terminal) => {
       if (terminal.kind !== "error") {
         memo.delete(run.id);
+        failed.delete(run.id);
         if (cause.subject === undefined) await noteParkedParent(ctx, run);
         return;
       }
       if (BENIGN_REFUSALS.has(terminal.code)) return;
+      if (failed.size >= AUDITED_SKIPS_MAX) failed.clear();
+      failed.set(run.id, {
+        suspensionKey,
+        failures: failures + 1,
+        retryAt: now() + Math.min(
+          CONTINUATION_BACKOFF_BASE_MS * 2 ** failures,
+          CONTINUATION_BACKOFF_MAX_MS,
+        ),
+      });
       skip("failed", terminal.code);
     },
   });
@@ -941,8 +1004,8 @@ export async function continueSettledRun(
   }
 
   // The memo is kept until the resume ends well: one that fails and leaves
-  // the run suspended is launched again by the next pass, and its failure
-  // is reported once.
-  emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
+  // the run suspended is launched again after its backoff, and the launch
+  // and its failure are each reported once.
+  if (failures === 0) emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
   return true;
 }

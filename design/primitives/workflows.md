@@ -269,6 +269,14 @@ held by another, lost a race to a peer or a person and is not reported.
 Neither is a run whose auto-resume policy is off: left suspended is what its
 owner asked for.
 
+A resume that was launched and then failed, leaving the run suspended, is a
+different case from a launch that was refused: the run is still settled, and
+whatever failed is likely to fail again. Serve tries that suspension again
+only after a backoff that doubles with each failure, from 30 s to 15 min, and
+audits the launch and the failure once each. The backoff is kept in memory
+per instance, so a restart or a change to the run's suspension starts it
+over. It does not hold back a manual `swamp workflow resume`.
+
 A claim left by a local `workflow resume` that died before saving the run is
 never replaced by serve, which cannot tell a dead local command from a live
 one. Where its run records are current, serve reports such a claim once it is
