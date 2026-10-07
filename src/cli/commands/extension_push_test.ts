@@ -18,10 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
+import {
+  REGISTRY_FORBIDDEN_CODE,
+  REGISTRY_NOT_AUTHENTICATED_MESSAGE,
+  REGISTRY_TOKEN_SCOPE_CODE,
+} from "../../infrastructure/http/extension_api_client.ts";
+import type { ExtensionPushPrepareDeps } from "../../libswamp/extensions/push.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import type { WarningsWaiver } from "../../presentation/renderers/extension_push.ts";
 import {
   buildAcceptedWarnings,
+  lookupPublishedBaseline,
   resolveExistingVersionResponse,
   resolveWarningsGate,
   resolveWarningsWaiver,
@@ -247,4 +255,149 @@ Deno.test("resolveExistingVersionResponse: --json on another channel refuses wit
     }),
     { kind: "refuse", message: LOWER_CHANNEL_MESSAGE },
   );
+});
+
+type BaselineDeps = Pick<
+  ExtensionPushPrepareDeps,
+  "loadCredentials" | "getLatestVersionDetail"
+>;
+
+const SIGNED_IN: BaselineDeps["loadCredentials"] = () =>
+  Promise.resolve({
+    serverUrl: "https://registry.example",
+    apiKey: "key",
+    username: "alice",
+  });
+
+Deno.test("lookupPublishedBaseline: no credentials is no-credentials, and the registry is not called", async () => {
+  let called = false;
+  const result = await lookupPublishedBaseline({
+    loadCredentials: () => Promise.resolve(null),
+    getLatestVersionDetail: () => {
+      called = true;
+      return Promise.resolve(null);
+    },
+  }, "@alice/ext");
+  assertEquals(result, { kind: "no-credentials" });
+  assertEquals(called, false);
+});
+
+Deno.test("lookupPublishedBaseline: no version in the registry is never-published", async () => {
+  const result = await lookupPublishedBaseline({
+    loadCredentials: SIGNED_IN,
+    getLatestVersionDetail: () => Promise.resolve(null),
+  }, "@alice/ext");
+  assertEquals(result, { kind: "never-published" });
+});
+
+Deno.test("lookupPublishedBaseline: a published version maps to its model versions", async () => {
+  const asked: string[] = [];
+  const result = await lookupPublishedBaseline({
+    loadCredentials: SIGNED_IN,
+    getLatestVersionDetail: (serverUrl, name, apiKey) => {
+      asked.push(serverUrl, name, apiKey);
+      return Promise.resolve({
+        version: "2026.09.28.1",
+        publishedAt: "",
+        contentMetadata: {
+          models: [{
+            fileName: "ssh.ts",
+            type: "@alice/ssh",
+            version: "2026.09.20.1",
+            globalArguments: [],
+            methods: [],
+            resources: [],
+            files: [],
+          }],
+          extensions: [],
+          workflows: [],
+          vaults: [],
+          datastores: [],
+          reports: [],
+          webhooks: [],
+          skills: [],
+        },
+      });
+    },
+  }, "@alice/ext");
+  assertEquals(asked, ["https://registry.example", "@alice/ext", "key"]);
+  assertEquals(result, {
+    kind: "found",
+    state: {
+      manifestVersion: "2026.09.28.1",
+      models: [{ fileName: "ssh.ts", version: "2026.09.20.1" }],
+    },
+  });
+});
+
+Deno.test("lookupPublishedBaseline: a version without content metadata has no models", async () => {
+  const result = await lookupPublishedBaseline({
+    loadCredentials: SIGNED_IN,
+    getLatestVersionDetail: () =>
+      Promise.resolve({
+        version: "2026.09.28.1",
+        publishedAt: "",
+        contentMetadata: null,
+      }),
+  }, "@alice/ext");
+  assertEquals(result, {
+    kind: "found",
+    state: { manifestVersion: "2026.09.28.1", models: [] },
+  });
+});
+
+Deno.test("lookupPublishedBaseline: an unreachable registry is registry-unavailable with its message", async () => {
+  const result = await lookupPublishedBaseline({
+    loadCredentials: SIGNED_IN,
+    getLatestVersionDetail: () =>
+      Promise.reject(
+        new Error(
+          "Could not connect to https://registry.example: fetch failed",
+        ),
+      ),
+  }, "@alice/ext");
+  assertEquals(result, {
+    kind: "registry-unavailable",
+    reason: "Could not connect to https://registry.example: fetch failed",
+  });
+});
+
+Deno.test("lookupPublishedBaseline: failing to load credentials is registry-unavailable, not no-credentials", async () => {
+  const result = await lookupPublishedBaseline({
+    loadCredentials: () => Promise.reject(new Error("auth.json is corrupt")),
+    getLatestVersionDetail: () => Promise.resolve(null),
+  }, "@alice/ext");
+  assertEquals(result, {
+    kind: "registry-unavailable",
+    reason: "auth.json is corrupt",
+  });
+});
+
+Deno.test("lookupPublishedBaseline: an HTTP 500 is registry-unavailable with the status in the reason", async () => {
+  const message =
+    "Extension API error (HTTP 500): boom [https://registry.example/api/v1/extensions/%40alice%2Fext/latest]";
+  const result = await lookupPublishedBaseline({
+    loadCredentials: SIGNED_IN,
+    getLatestVersionDetail: () => Promise.reject(new UserError(message)),
+  }, "@alice/ext");
+  assertEquals(result, { kind: "registry-unavailable", reason: message });
+});
+
+Deno.test("lookupPublishedBaseline: a 401 or 403 from the registry is authentication-failed", async () => {
+  for (
+    const error of [
+      new UserError(REGISTRY_NOT_AUTHENTICATED_MESSAGE),
+      new UserError("Forbidden", REGISTRY_FORBIDDEN_CODE),
+      new UserError("Token lacks required scope", REGISTRY_TOKEN_SCOPE_CODE),
+    ]
+  ) {
+    const result = await lookupPublishedBaseline({
+      loadCredentials: SIGNED_IN,
+      getLatestVersionDetail: () => Promise.reject(error),
+    }, "@alice/ext");
+    assertEquals(result, {
+      kind: "authentication-failed",
+      reason: error.message,
+    });
+  }
 });

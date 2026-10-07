@@ -46,6 +46,9 @@ export type { ClientIdentity };
  */
 export const REGISTRY_FORBIDDEN_CODE = "forbidden";
 export const REGISTRY_TOKEN_SCOPE_CODE = "token_scope";
+/** The message a 401 from the registry API is reported with. */
+export const REGISTRY_NOT_AUTHENTICATED_MESSAGE =
+  "Not authenticated. Run 'swamp auth login' first.";
 
 /** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
@@ -789,9 +792,7 @@ export class ExtensionApiClient {
     const body = await res.text();
 
     if (res.status === 401) {
-      throw new UserError(
-        "Not authenticated. Run 'swamp auth login' first.",
-      );
+      throw new UserError(REGISTRY_NOT_AUTHENTICATED_MESSAGE);
     }
 
     // Parse error message from server if available

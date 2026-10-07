@@ -34,6 +34,11 @@ import {
 } from "../resolve_extension_files.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  REGISTRY_FORBIDDEN_CODE,
+  REGISTRY_NOT_AUTHENTICATED_MESSAGE,
+  REGISTRY_TOKEN_SCOPE_CODE,
+} from "../../infrastructure/http/extension_api_client.ts";
 import { VERSION } from "./version.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
@@ -53,6 +58,7 @@ import {
   createExtensionPushPrepareDeps,
   extensionPush,
   extensionPushPrepare,
+  type ExtensionPushPrepareDeps,
 } from "../../libswamp/extensions/push.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { registryChecksVerdict } from "../../domain/extensions/extension_publish_checks.ts";
@@ -75,7 +81,7 @@ import type { SafetyIssue } from "../../domain/extensions/extension_safety_analy
 import {
   checkVersionBumpWithoutUpgrade,
   checkVersionConsistency,
-  type PublishedExtensionState,
+  type PublishedLookup,
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
@@ -162,6 +168,53 @@ export function resolveWarningsGate(input: {
     return { kind: "proceed" };
   }
   return { kind: "prompt" };
+}
+
+/**
+ * Looks up the extension's last-published version for the version-drift
+ * check. Never throws: missing or rejected credentials and a failed lookup
+ * each become their own outcome, so none is reported as a first publish.
+ */
+export async function lookupPublishedBaseline(
+  deps: Pick<
+    ExtensionPushPrepareDeps,
+    "loadCredentials" | "getLatestVersionDetail"
+  >,
+  extensionName: string,
+): Promise<PublishedLookup> {
+  try {
+    const creds = await deps.loadCredentials();
+    if (!creds) return { kind: "no-credentials" };
+    const latestDetail = await deps.getLatestVersionDetail(
+      creds.serverUrl,
+      extensionName,
+      creds.apiKey,
+    );
+    if (!latestDetail) return { kind: "never-published" };
+    return {
+      kind: "found",
+      state: {
+        manifestVersion: latestDetail.version,
+        models: (latestDetail.contentMetadata?.models ?? []).map((m) => ({
+          fileName: m.fileName,
+          version: m.version,
+        })),
+      },
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return isRegistryAuthError(error)
+      ? { kind: "authentication-failed", reason }
+      : { kind: "registry-unavailable", reason };
+  }
+}
+
+/** A 401 or 403 from the registry API: it refused the stored credentials. */
+function isRegistryAuthError(error: unknown): boolean {
+  if (!(error instanceof UserError)) return false;
+  return error.message === REGISTRY_NOT_AUTHENTICATED_MESSAGE ||
+    error.code === REGISTRY_FORBIDDEN_CODE ||
+    error.code === REGISTRY_TOKEN_SCOPE_CODE;
 }
 
 /** How push answers a version that is already published. */
@@ -784,37 +837,26 @@ export const extensionPushCommand = new Command()
       );
 
       // 6d. Version-drift check (advisory warning only)
-      // Fetch the last-published version from the registry to compare
-      // model versions. Best-effort — if credentials are unavailable or
-      // the extension has never been published, we tell the user.
-      let published: PublishedExtensionState | undefined;
-      try {
-        const creds = await prepareDeps.loadCredentials();
-        if (creds) {
-          const latestDetail = await prepareDeps.getLatestVersionDetail(
-            creds.serverUrl,
-            manifest.name,
-            creds.apiKey,
-          );
-          if (latestDetail) {
-            published = {
-              manifestVersion: latestDetail.version,
-              models: (latestDetail.contentMetadata?.models ?? []).map((m) => ({
-                fileName: m.fileName,
-                version: m.version,
-              })),
-            };
-          }
-        }
-      } catch {
+      // Look up the last-published version in the registry to compare model
+      // versions. Best-effort — when there is nothing to compare against, the
+      // warning says why: never published, no credentials, rejected
+      // credentials, or a failed lookup.
+      const baseline = await lookupPublishedBaseline(
+        prepareDeps,
+        manifest.name,
+      );
+      if (
+        baseline.kind === "authentication-failed" ||
+        baseline.kind === "registry-unavailable"
+      ) {
         cliCtx.logger
-          .debug`Failed to fetch published version for drift check (continuing)`;
+          .debug`Failed to fetch published version for drift check (continuing): ${baseline.reason}`;
       }
 
       const versionIssues = await checkVersionConsistency(
         prepared.manifest.version,
         allModelFiles,
-        published,
+        baseline,
       );
       if (versionIssues.length > 0) {
         renderer.renderVersionDriftWarnings(versionIssues);
@@ -827,8 +869,8 @@ export const extensionPushCommand = new Command()
       // changed.
       if (
         !options.skipUpgradeCheck &&
-        published &&
-        published.manifestVersion !== prepared.manifest.version
+        baseline.kind === "found" &&
+        baseline.state.manifestVersion !== prepared.manifest.version
       ) {
         const upgradeWarnings = await checkVersionBumpWithoutUpgrade(
           allModelFiles,

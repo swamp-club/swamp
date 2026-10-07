@@ -516,7 +516,7 @@ Deno.test("stripCommentsAndStrings blanks template literal text", () => {
 
 // ── checkVersionConsistency tests ────────────────────────────────────
 
-Deno.test("checkVersionConsistency: informs user when no published state", async () => {
+Deno.test("checkVersionConsistency: informs user when the extension was never published", async () => {
   await withTempFiles(
     {
       "model.ts":
@@ -526,11 +526,93 @@ Deno.test("checkVersionConsistency: informs user when no published state", async
       const issues = await checkVersionConsistency(
         "2026.05.22.1",
         paths,
+        { kind: "never-published" },
       );
       assertEquals(issues.length, 1);
       assertEquals(issues[0].check, "version-drift");
       assertStringIncludes(issues[0].output, "unable to check");
       assertStringIncludes(issues[0].output, "no previously published");
+      assertStringIncludes(issues[0].output, "first publish");
+      assertEquals(issues[0].cause, "never-published");
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: an unavailable registry names the failure, not a first publish", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        {
+          kind: "registry-unavailable",
+          reason: "Could not connect to https://swamp-club.com: fetch failed",
+        },
+      );
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-drift");
+      assertEquals(issues[0].cause, "registry-unavailable");
+      assertStringIncludes(
+        issues[0].output,
+        "registry lookup failed: Could not connect to https://swamp-club.com: fetch failed",
+      );
+      assertStringIncludes(issues[0].output, "upgrade check was skipped");
+      assertEquals(issues[0].output.includes("no previously published"), false);
+      assertEquals(issues[0].output.includes("first publish"), false);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: rejected credentials say so, not a first publish", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        {
+          kind: "authentication-failed",
+          reason: "Not authenticated. Run 'swamp auth login' first.",
+        },
+      );
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].cause, "authentication-failed");
+      assertStringIncludes(
+        issues[0].output,
+        "authentication failed: Not authenticated. Run 'swamp auth login' first; the version-bump",
+      );
+      assertStringIncludes(issues[0].output, "upgrade check was skipped");
+      assertEquals(issues[0].output.includes("first publish"), false);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: no credentials says so, not a first publish", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency(
+        "2026.05.22.1",
+        paths,
+        { kind: "no-credentials" },
+      );
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-drift");
+      assertEquals(issues[0].cause, "no-credentials");
+      assertStringIncludes(issues[0].output, "no credentials");
+      assertStringIncludes(issues[0].output, "swamp auth login");
+      assertStringIncludes(issues[0].output, "upgrade check was skipped");
+      assertEquals(issues[0].output.includes("first publish"), false);
     },
   );
 });
@@ -549,7 +631,7 @@ Deno.test("checkVersionConsistency: no warning when versions match published", a
       const issues = await checkVersionConsistency(
         "2026.05.22.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues, []);
     },
@@ -570,11 +652,12 @@ Deno.test("checkVersionConsistency: warns when model version bumped but manifest
       const issues = await checkVersionConsistency(
         "2026.05.22.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues.length, 1);
       assertStringIncludes(issues[0].output, "manifest version");
       assertStringIncludes(issues[0].output, "was not bumped");
+      assertEquals(issues[0].cause, undefined);
     },
   );
 });
@@ -593,7 +676,7 @@ Deno.test("checkVersionConsistency: no warning when both model and manifest bump
       const issues = await checkVersionConsistency(
         "2026.06.01.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues, []);
     },
@@ -619,7 +702,7 @@ Deno.test("checkVersionConsistency: multi-model only detects drift on bumped mod
       const issues = await checkVersionConsistency(
         "2026.05.22.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues.length, 1);
       assertStringIncludes(issues[0].output, "manifest version");
@@ -642,7 +725,7 @@ Deno.test("checkVersionConsistency: metadata-only release produces no warnings",
       const issues = await checkVersionConsistency(
         "2026.06.01.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues, []);
     },
@@ -663,7 +746,7 @@ Deno.test("checkVersionConsistency: new model not in published state is ignored"
       const issues = await checkVersionConsistency(
         "2026.05.22.1",
         paths,
-        published,
+        { kind: "found", state: published },
       );
       assertEquals(issues, []);
     },
@@ -671,7 +754,9 @@ Deno.test("checkVersionConsistency: new model not in published state is ignored"
 });
 
 Deno.test("checkVersionConsistency: empty file list produces no issues", async () => {
-  const issues = await checkVersionConsistency("2026.05.22.1", []);
+  const issues = await checkVersionConsistency("2026.05.22.1", [], {
+    kind: "never-published",
+  });
   assertEquals(issues, []);
 });
 
@@ -680,8 +765,8 @@ Deno.test("checkVersionConsistency: nonexistent files are skipped", async () => 
     "2026.05.22.1",
     ["/tmp/does-not-exist-12345.ts"],
     {
-      manifestVersion: "2026.05.22.1",
-      models: [],
+      kind: "found",
+      state: { manifestVersion: "2026.05.22.1", models: [] },
     },
   );
   assertEquals(issues, []);
@@ -698,8 +783,8 @@ Deno.test("checkVersionConsistency: files without version export are skipped", a
         "2026.05.22.1",
         paths,
         {
-          manifestVersion: "2026.05.22.1",
-          models: [],
+          kind: "found",
+          state: { manifestVersion: "2026.05.22.1", models: [] },
         },
       );
       assertEquals(issues, []);
