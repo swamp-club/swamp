@@ -774,6 +774,30 @@ Deno.test("commentSites: no Markdown line inside a fenced block, through the clo
   assertEquals(commentSites(md, MD, [2, 4, 5, 6]), { 2: "", 6: "  " });
 });
 
+Deno.test("commentSites: no line the parser would read as inside a block comment, even where the tokenizer disagrees", () => {
+  // The parser reads `/*` in a regex literal as an open block comment and
+  // ignores directives until a `*/`; a comment offered there would do
+  // nothing.
+  const source = [
+    "const re = /[/*]/;", // 1
+    "new Deno.Command(x);", // 2
+    "// */", // 3
+    "new Deno.Command(y);", // 4
+  ].join("\n");
+  assertEquals(commentSites(source, TS, [2, 4]), { 4: "" });
+});
+
+Deno.test("commentSites: no Markdown line inside a multi-line HTML comment", () => {
+  const md = [
+    "<!--", // 1
+    "Gateway: 10.0.0.1", // 2
+    "-->", // 3
+    "Router: 10.0.0.3", // 4
+    "<!-- note --> Host: 10.0.0.4", // 5
+  ].join("\n");
+  assertEquals(commentSites(md, MD, [2, 3, 4, 5]), { 4: "", 5: "" });
+});
+
 Deno.test("acceptanceFor: every comment acceptance, applied bottom-up, accepts its finding, including two on one line", () => {
   const cases = [
     {

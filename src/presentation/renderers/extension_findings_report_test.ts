@@ -24,6 +24,7 @@ import type { ReviewFinding } from "../../domain/extensions/extension_review_rul
 import type { Logger } from "@logtape/logtape";
 import {
   buildFindingsReport,
+  NO_ACCEPTANCE_HERE,
   renderFindingsReport,
   withAcceptance,
 } from "./extension_findings_report.ts";
@@ -218,6 +219,33 @@ Deno.test("buildFindingsReport: a finding on a line no comment can go above keep
     "load it from a file",
   );
   assertEquals("acceptance" in report.unresolvedWarnings![0], false);
+});
+
+Deno.test("renderFindingsReport: an acceptable rule with no acceptance on its line says why, an unacceptable one says nothing", () => {
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) =>
+      lines.push(message.replaceAll("{{", "{").replaceAll("}}", "}")),
+  } as unknown as Logger;
+  renderFindingsReport(logger, {
+    unresolvedWarnings: [
+      { ruleId: "base64-run", file: join(DIR, "a.ts"), line: 5, message: "m" },
+      {
+        ruleId: "adversarial-review-report",
+        file: "/tmp/r.json",
+        message: "n",
+      },
+    ],
+  }, {
+    manifestDir: DIR,
+    display: (path) => path === join(DIR, "a.ts") ? "a.ts" : path,
+  });
+  assertEquals(lines, [
+    "Unresolved warnings:",
+    "  base64-run — a.ts:5: m",
+    `    ${NO_ACCEPTANCE_HERE}`,
+    "  adversarial-review-report — /tmp/r.json: n",
+  ]);
 });
 
 Deno.test("withAcceptance: attaches the acceptance to acceptable findings only, leaving the rest untouched", () => {

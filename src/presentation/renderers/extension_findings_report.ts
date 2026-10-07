@@ -26,6 +26,7 @@ import {
   acceptanceFor,
   type CommentSites,
 } from "../../domain/extensions/extension_acceptances.ts";
+import { isAcceptableRule } from "../../domain/extensions/extension_rule_catalog.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { DeclaredAcceptances } from "../../libswamp/extensions/push.ts";
@@ -152,6 +153,9 @@ export function buildFindingsReport(
 /** The log-mode header strings, anchored by tests and UAT. */
 export const ACCEPTED_HEADER = "Accepted warnings:";
 export const UNRESOLVED_HEADER = "Unresolved warnings:";
+/** Printed under an acceptable rule's warning that has no acceptance on its line. */
+export const NO_ACCEPTANCE_HERE =
+  "cannot be accepted here: the line is inside a string, comment or code block, or the file is outside the manifest's directory";
 
 /** How the log form prints paths. */
 export interface FindingsReportPaths {
@@ -227,6 +231,9 @@ export function renderFindingsReport(
       }
       if (entry.acceptance) {
         line(`    ${acceptanceAdvice(entry.acceptance)}`);
+      } else if (isAcceptableRule(entry.ruleId)) {
+        // The rule takes an acceptance elsewhere; say why not here.
+        line(`    ${NO_ACCEPTANCE_HERE}`);
       }
     }
   }

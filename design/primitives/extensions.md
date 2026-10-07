@@ -1196,8 +1196,12 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   line a comment cannot go above: `commentSites` (computed in
   `runQualityFindings` for each warned line) leaves out the lines that begin
   inside a multi-line string, template literal or block comment (Babel
-  tokens) or a Markdown fence, and every line of a source file that does not
-  parse, since there a comment would be ignored or would change the string.
+  tokens), a Markdown fence or a multi-line HTML comment, any line the
+  directive parser would not read a comment above (it is the judge, so an
+  offered acceptance always takes effect), and every line of a source file
+  that does not parse, since there a comment would be ignored or would
+  change the string. Log mode prints `cannot be accepted here` under such a
+  warning.
   JSON paths are
   absolute (the report is local output, never computed for another machine);
   `entry.file` is manifest-relative because it is written into the sidecar,

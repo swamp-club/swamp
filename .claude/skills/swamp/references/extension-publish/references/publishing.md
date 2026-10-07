@@ -756,8 +756,8 @@ declared acceptance with its reason when one was given, and the generated
 declaration) and `Unresolved warnings:` (each warning neither fixed nor
 accepted, with `fix:` and, when the rule can be accepted, one `or accept ...`
 line). In `--json` they are `declaredAcceptances`
-(`{ accepted: [...],
-generated? }`) and `unresolvedWarnings`
+(`{ accepted: [...], generated? }`, each `file` relative to the manifest's
+directory) and `unresolvedWarnings`
 (`[{ ruleId, file, line?, message, remediation?, acceptance? }]`, `file`
 absolute), beside `acceptedWarnings` and omitted when empty. Every finding in
 `warnings.review` and `warnings.safety` carries `remediation` and the same
@@ -802,8 +802,9 @@ to edit:
 
 A warning with no `acceptance` cannot be declared where it is: its rule has no
 acceptance form, or its line sits inside a multi-line string, template literal,
-block comment or Markdown fence, where a comment would be ignored or would
-change the string. Offer the fix.
+block comment, Markdown fence or HTML comment, where a comment would be ignored
+or would change the string; log mode says `cannot be accepted here`. Offer the
+fix.
 
 After editing source files, run `swamp extension fmt manifest.yaml` so the
 formatting gate passes.

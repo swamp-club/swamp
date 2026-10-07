@@ -634,7 +634,8 @@ export type Acceptance =
     position: AcceptancePosition;
     /**
      * The whole line to insert, indented like the line it goes above, e.g.
-     * `    // swamp-quality-ignore deno-command`.
+     * `    // swamp-quality-ignore deno-command`. A `file-header` comment
+     * goes after a `#!` shebang when the file starts with one.
      */
     text: string;
   }
@@ -693,13 +694,24 @@ export function commentSites(
 ): CommentSites {
   const text = content.split("\n");
   const barriers = new Set<number>();
-  if (commentFormFor(file) === "html") {
+  const form = commentFormFor(file);
+  if (form === "html") {
     let fenced = false;
+    let inComment = false;
     text.forEach((line, i) => {
-      const fence = /^\s*(```|~~~)/.test(line);
-      // The lines after an opening fence, through its closing fence.
-      if (fenced) barriers.add(i + 1);
-      if (fence) fenced = !fenced;
+      // The lines after an opening fence through its closing fence, and
+      // the lines after a multi-line HTML comment opens through the one
+      // that closes it: a comment inserted there would end it early.
+      if (fenced || inComment) barriers.add(i + 1);
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenced = !fenced;
+        return;
+      }
+      if (fenced) return;
+      const open = line.lastIndexOf("<!--");
+      const close = line.lastIndexOf("-->");
+      if (open !== -1 && open > close) inComment = true;
+      else if (inComment && close !== -1) inComment = false;
     });
   } else {
     let spans: {
@@ -736,9 +748,41 @@ export function commentSites(
   const sites: CommentSites = {};
   for (const line of lines) {
     if (line < 1 || line > text.length || barriers.has(line)) continue;
-    sites[line] = /^[ \t]*/.exec(text[line - 1])![0];
+    const indent = /^[ \t]*/.exec(text[line - 1])![0];
+    if (!parserReadsDirectiveAbove(text, file, line, indent)) continue;
+    sites[line] = indent;
   }
   return sites;
+}
+
+/**
+ * True when a directive inserted above `line` is one the parser reads and
+ * aims at that line. The parser's own line heuristics (a `/*` it reads as
+ * an open block comment, a fence) can disagree with the tokenizer, and an
+ * offered acceptance must take effect.
+ */
+function parserReadsDirectiveAbove(
+  text: string[],
+  file: string,
+  line: number,
+  indent: string,
+): boolean {
+  // Any acceptable site rule serves; the parser's placement does not depend
+  // on which one it is.
+  const probe = `${ACCEPTANCE_DIRECTIVE} deno-command`;
+  const directive = commentFormFor(file) === "html"
+    ? `${indent}<!-- ${probe} -->`
+    : `${indent}// ${probe}`;
+  const edited = [
+    ...text.slice(0, line - 1),
+    directive,
+    ...text.slice(line - 1),
+  ];
+  const parsed = parseAcceptanceDirectives(edited.join("\n"), file);
+  return parsed.directives.some((d) =>
+    d.declaredAt.line === line && d.target.kind === "line" &&
+    d.target.line === line + 1
+  );
 }
 
 /**
@@ -756,9 +800,10 @@ export function acceptanceFor(
   sites: Readonly<Record<string, CommentSites>>,
 ): Acceptance | undefined {
   if (!isAcceptableRule(finding.ruleId)) return undefined;
-  if (finding.file.startsWith("(")) return undefined;
   const scope = findRule(finding.ruleId)!.scope;
   const sidecarFile = join(manifestDir, SIDECAR_FILENAME);
+  // An extension-scoped finding names no file (its file is a label such as
+  // `(multiple files)`); the sidecar entry covers the extension.
   if (scope === "extension") {
     return {
       form: "sidecar",
@@ -766,6 +811,7 @@ export function acceptanceFor(
       entry: { rule: finding.ruleId },
     };
   }
+  if (finding.file.startsWith("(")) return undefined;
   const form = commentFormFor(finding.file);
   const directive = `${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}`;
   if (scope === "file") {
