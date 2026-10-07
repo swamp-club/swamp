@@ -486,9 +486,19 @@ version in the registry to catch a common mistake:
 The check fetches the last-published version's metadata from the registry. This
 works on any machine with registry credentials — no local state is required.
 
-When the extension has never been published (first publish), the check reports
-that it cannot verify version drift rather than silently skipping. This is
-informational, not an error.
+When there is nothing to compare against, the check says why rather than
+silently skipping. Each such warning carries a `cause` in `--json`:
+
+| `cause`                 | When                                     | Message says                                                            |
+| ----------------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| `never-published`       | the registry has no version (first push) | "no previously published version found ... (expected on first publish)" |
+| `no-credentials`        | not signed in                            | "no credentials; run 'swamp auth login' to sign in"                     |
+| `authentication-failed` | the registry rejected the key (401/403)  | "authentication failed: <reason>"                                       |
+| `registry-unavailable`  | no network, a 5xx, any other failure     | "registry lookup failed: <reason>" (names the HTTP status)              |
+
+Only `never-published` means a first publish; the others are transient or
+credential problems, and note that the version-bump upgrade check was skipped
+too. A real drift finding has no `cause`. None of these block the push.
 
 The version-drift check is **not** run during `swamp extension fmt` — it
 requires registry access that the fmt command does not use.
@@ -561,9 +571,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    is present, the import map governs dependency resolution.
 10. **Version-drift check** — advisory check comparing current model versions
     against the last-published version in the registry. Warns when a model
-    version was bumped but the manifest `version` was not. If the extension has
-    never been published, reports that the check could not run rather than
-    silently skipping. See "Version-Drift Check" below.
+    version was bumped but the manifest `version` was not. When it cannot
+    compare — never published, no credentials, or a failed registry lookup — it
+    reports which, rather than silently skipping. See "Version-Drift Check"
+    below.
 11. **Version check** — verifies version doesn't already exist (offers to bump)
 12. **Build archive** — creates tar.gz with all content types and their bundles
 13. **Upload** — three-phase push: initiate, upload archive, confirm
