@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { buildServeAuthConfig } from "./serve_auth_config.ts";
+import {
+  buildServeAuthConfig,
+  findIneffectiveRestrictions,
+} from "./serve_auth_config.ts";
 import { UserError } from "../errors.ts";
 
 Deno.test("buildServeAuthConfig: mode none with no flags succeeds", () => {
@@ -376,4 +379,51 @@ Deno.test("buildServeAuthConfig: signalRequiresExplicitGrant passes through", ()
     signalRequiresExplicitGrant: true,
   });
   assertEquals(config.signalRequiresExplicitGrant, true);
+});
+
+const REQUEST_TYPES = new Set(["vault.put", "extension.install"]);
+
+Deno.test("findIneffectiveRestrictions: reports an entry that names no model type", () => {
+  const found = findIneffectiveRestrictions({
+    restrictedModelTypes: "command/shell, @, ::",
+    requestTypes: REQUEST_TYPES,
+  });
+  assertEquals(found.map((f) => [f.entry, f.reason]), [
+    ["@", "no-type"],
+    ["::", "no-type"],
+  ]);
+});
+
+Deno.test("findIneffectiveRestrictions: reports a bare entry naming no registered type in either spelling", () => {
+  const registered = new Set(["command/shell", "@exp/probe", "local/bare"]);
+  const found = findIneffectiveRestrictions({
+    restrictedModelTypes:
+      "command/shell, exp/probe, local/bare, comand/shell, @not/installed",
+    requestTypes: REQUEST_TYPES,
+    isKnownModelType: (type) => registered.has(type),
+  });
+  assertEquals(found.map((f) => [f.entry, f.reason]), [
+    ["comand/shell", "unknown-type"],
+  ]);
+});
+
+Deno.test("findIneffectiveRestrictions: skips the registry check without a type lookup", () => {
+  assertEquals(
+    findIneffectiveRestrictions({
+      restrictedModelTypes: "comand/shell",
+      requestTypes: REQUEST_TYPES,
+    }),
+    [],
+  );
+});
+
+Deno.test("findIneffectiveRestrictions: reports a restricted command that is not a request type", () => {
+  const found = findIneffectiveRestrictions({
+    restrictedCommands: "vault.put, vault.putt, Extension.Install",
+    requestTypes: REQUEST_TYPES,
+  });
+  assertEquals(found.map((f) => [f.option, f.entry, f.reason]), [
+    ["restricted-commands", "vault.putt", "unknown-command"],
+    ["restricted-commands", "Extension.Install", "unknown-command"],
+  ]);
 });

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim, green, red } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AccessListCheckEntry } from "../../serve/oauth_access_list_resolution.ts";
 import type { OutputMode } from "./output.ts";
@@ -39,6 +39,12 @@ export interface ServeCheckConfigData {
   readonly refusal?: string;
   /** Set when serve.yaml has a token-secrets block. */
   readonly tokenSecretsKey?: TokenSecretsKeyCheck;
+  /**
+   * Advisory: restriction entries that restrict nothing as written, such as
+   * a `restricted-commands` name that is not a server command. They do not
+   * fail the check.
+   */
+  readonly restrictionWarnings?: readonly string[];
 }
 
 /** Whether the external token secrets key resolves. Never holds the key. */
@@ -103,11 +109,20 @@ export function renderServeCheckConfig(
         `${cyan("Allowed collectives:")} ${data.allowedCollectives.join(", ")}`,
       );
     }
+  }
 
-    if (data.refusal !== undefined) {
-      lines.push("");
-      lines.push(`${red(CROSS)} ${red("swamp serve would refuse to start:")}`);
-      lines.push(`  ${data.refusal}`);
+  if (data.refusal !== undefined) {
+    lines.push("");
+    lines.push(`${red(CROSS)} ${red("swamp serve would refuse to start:")}`);
+    lines.push(`  ${data.refusal}`);
+  }
+
+  const warnings = data.restrictionWarnings ?? [];
+  if (warnings.length > 0) {
+    lines.push("");
+    lines.push(cyan("Restriction warnings:"));
+    for (const warning of warnings) {
+      lines.push(`  ${yellow("!")} ${warning}`);
     }
   }
 

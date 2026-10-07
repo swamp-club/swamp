@@ -194,3 +194,80 @@ export function buildServeAuthConfig(
     signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
   };
 }
+
+/** A restriction entry that cannot restrict anything as written. */
+export interface IneffectiveRestriction {
+  readonly option: "restricted-model-types" | "restricted-commands";
+  readonly entry: string;
+  /**
+   * `no-type`: the entry names no model type at all (`@`, `::`); serve
+   * refuses to start. `unknown-type`: a bare entry naming no registered
+   * type, likely misspelled or missing its `@`. `unknown-command`: not a
+   * server request type; commands match exactly.
+   */
+  readonly reason: "no-type" | "unknown-type" | "unknown-command";
+  readonly message: string;
+}
+
+export interface IneffectiveRestrictionInput {
+  /** The comma-separated values as merged from flags and serve.yaml. */
+  readonly restrictedModelTypes?: string;
+  readonly restrictedCommands?: string;
+  /** The server request type names `restricted-commands` is matched against. */
+  readonly requestTypes: ReadonlySet<string>;
+  /**
+   * Whether a model type is registered. Omitted where the registry is not
+   * loaded (`serve check-config`), which skips the `unknown-type` check.
+   */
+  readonly isKnownModelType?: (type: string) => boolean;
+}
+
+/**
+ * Finds restriction entries that can never match, so serve and
+ * `serve check-config` can say so instead of silently restricting nothing.
+ * An entry with a leading `@` is not checked against the registry: an
+ * extension type can be installed or auto-resolved after startup.
+ */
+export function findIneffectiveRestrictions(
+  input: IneffectiveRestrictionInput,
+): IneffectiveRestriction[] {
+  const found: IneffectiveRestriction[] = [];
+  for (const entry of parseCommaSeparated(input.restrictedModelTypes)) {
+    const key = normalizeModelTypeName(entry);
+    if (key === null) {
+      found.push({
+        option: "restricted-model-types",
+        entry,
+        reason: "no-type",
+        message:
+          `Invalid restricted-model-types entry "${entry}": it names no model type`,
+      });
+      continue;
+    }
+    const isKnown = input.isKnownModelType;
+    if (
+      isKnown !== undefined && !entry.startsWith("@") &&
+      !isKnown(key) && !isKnown(`@${key}`)
+    ) {
+      found.push({
+        option: "restricted-model-types",
+        entry,
+        reason: "unknown-type",
+        message:
+          `restricted-model-types entry "${entry}" names no registered model type — check the spelling, or write an extension type as @${key}`,
+      });
+    }
+  }
+  for (const entry of parseCommaSeparated(input.restrictedCommands)) {
+    if (!input.requestTypes.has(entry)) {
+      found.push({
+        option: "restricted-commands",
+        entry,
+        reason: "unknown-command",
+        message:
+          `restricted-commands entry "${entry}" is not a server command and restricts nothing — command names match exactly`,
+      });
+    }
+  }
+  return found;
+}
