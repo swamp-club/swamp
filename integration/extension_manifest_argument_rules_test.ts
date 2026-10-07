@@ -87,3 +87,40 @@ Deno.test("manifest-argument rules: each manifest command resolves its argument 
     );
   }
 });
+
+/**
+ * Each manifest command's first consumer of the resolved files. Resolution
+ * validates every manifest entry (a directory in additionalFiles, binaries or
+ * include is a validation error, swamp-club#3119), so it must run first for
+ * the three commands to give one answer.
+ */
+const FIRST_CONSUMER: Record<string, string> = {
+  "src/cli/commands/extension_fmt.ts": "extensionFmt(",
+  "src/cli/commands/extension_push.ts": "computePackageCacheHash(",
+  "src/cli/commands/extension_quality.ts": "extensionQuality(",
+};
+
+Deno.test("manifest-argument rules: each manifest command resolves its files before it consumes them", async () => {
+  assertEquals(
+    Object.keys(FIRST_CONSUMER).sort(),
+    [...MANIFEST_COMMANDS].sort(),
+    "every manifest command must name its first consumer in FIRST_CONSUMER",
+  );
+  for (const rel of MANIFEST_COMMANDS) {
+    const source = await Deno.readTextFile(
+      join(import.meta.dirname!, "..", rel),
+    );
+    const resolveAt = source.indexOf("resolveExtensionFiles(");
+    const consumeAt = source.indexOf(FIRST_CONSUMER[rel]);
+    assertEquals(
+      consumeAt !== -1,
+      true,
+      `${rel} no longer calls ${FIRST_CONSUMER[rel]}`,
+    );
+    assertEquals(
+      resolveAt !== -1 && resolveAt < consumeAt,
+      true,
+      `${rel} must call resolveExtensionFiles before ${FIRST_CONSUMER[rel]}`,
+    );
+  }
+});

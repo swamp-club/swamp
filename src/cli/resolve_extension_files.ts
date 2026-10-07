@@ -539,6 +539,27 @@ async function nextToManifestHint(
   return `\n${ref} exists next to the manifest at ${nextTo}; add paths.base: manifest to package it from there.`;
 }
 
+/**
+ * Reject a manifest file entry that is not a regular file. Packaging hashes
+ * and copies each entry as a file, so a directory would otherwise crash
+ * there with IsADirectory instead of failing here with the entry's name.
+ */
+function assertRegularFile(
+  label: string,
+  field: string,
+  entry: string,
+  path: string,
+  info: Deno.FileInfo,
+): void {
+  if (info.isFile) return;
+  const message = info.isDirectory
+    ? `${label} is a directory: ${entry} (at ${path}). ${field} lists ` +
+      `files, not directories; list each file under ${entry}/ individually.`
+    : `${label} is not a regular file: ${entry} (at ${path}). ${field} ` +
+      `lists regular files only.`;
+  throw markErrorPaths(new UserError(message), [entry, path]);
+}
+
 /** Resolve one typed-key entry under `base`, or explain where it was sought. */
 async function findTypedEntry(
   lookup: TypedLookup,
@@ -1062,9 +1083,16 @@ export async function resolveExtensionFiles(
   // 15. Validate include files (resolved relative to modelsDir)
   const includeFilePaths: string[] = [];
   for (const inc of manifest.include) {
-    includeFilePaths.push(
-      await findTypedEntry(lookup, "include", modelsDir, inc),
+    const incPath = await findTypedEntry(lookup, "include", modelsDir, inc);
+    // stat, not lstat: findTypedEntry follows symlinks for include entries.
+    assertRegularFile(
+      "Include file",
+      "include",
+      inc,
+      incPath,
+      await Deno.stat(incPath),
     );
+    includeFilePaths.push(incPath);
   }
 
   // 15. Validate additional files: uniqueness, symlink rejection, existence.
@@ -1108,6 +1136,13 @@ export async function resolveExtensionFiles(
         [af, afPath],
       );
     }
+    assertRegularFile(
+      "Additional file",
+      "additionalFiles",
+      af,
+      afPath,
+      info,
+    );
     additionalFilePaths.push(afPath);
   }
 
@@ -1164,6 +1199,7 @@ export async function resolveExtensionFiles(
         [bf, bfPath],
       );
     }
+    assertRegularFile("Binary file", "binaries", bf, bfPath, info);
     binaryFilePaths.push(bfPath);
   }
 
