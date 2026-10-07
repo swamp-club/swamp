@@ -19,25 +19,52 @@
 
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
-import type { TokenSecretMigrationDeps } from "./token_secret_migration.ts";
-import { migrateTokenSecrets } from "./token_secret_migration.ts";
+import type {
+  OAuthAccessTokenRecoveryDeps,
+  TokenSecretMigrationDeps,
+} from "./token_secret_migration.ts";
+import {
+  migrateTokenSecrets,
+  OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+  recoverOAuthAccessTokens,
+} from "./token_secret_migration.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import { lookupOAuthAccessToken } from "./oauth_access_token_lookup.ts";
+import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 await initializeLogging({});
 
+/**
+ * An in-memory vault. Each fault set names a call that rejects: `vault/key`
+ * for get and put, the vault name for list. `calls` records every call.
+ */
 function createMockVault(): {
   secrets: Map<string, Map<string, string>>;
   vaultService: TokenSecretMigrationDeps["vaultService"];
+  faults: { get: Set<string>; put: Set<string>; list: Set<string> };
+  calls: string[];
 } {
   const secrets = new Map<string, Map<string, string>>();
+  const faults = {
+    get: new Set<string>(),
+    put: new Set<string>(),
+    list: new Set<string>(),
+  };
+  const calls: string[] = [];
   return {
     secrets,
+    faults,
+    calls,
     vaultService: {
       get(
         vaultName: string,
         key: string,
         _caller?: string,
       ): Promise<string> {
+        calls.push(`get:${vaultName}/${key}`);
+        if (faults.get.has(`${vaultName}/${key}`)) {
+          return Promise.reject(new Error("vault unavailable"));
+        }
         const vault = secrets.get(vaultName);
         if (!vault || !vault.has(key)) {
           return Promise.reject(
@@ -47,14 +74,26 @@ function createMockVault(): {
         return Promise.resolve(vault.get(key)!);
       },
       put(vaultName: string, key: string, value: string): Promise<void> {
+        calls.push(`put:${vaultName}/${key}`);
+        if (faults.put.has(`${vaultName}/${key}`)) {
+          return Promise.reject(new Error("vault unavailable"));
+        }
         if (!secrets.has(vaultName)) secrets.set(vaultName, new Map());
         secrets.get(vaultName)!.set(key, value);
         return Promise.resolve();
+      },
+      list(vaultName: string): Promise<string[]> {
+        calls.push(`list:${vaultName}`);
+        if (faults.list.has(vaultName)) {
+          return Promise.reject(new Error("vault unavailable"));
+        }
+        return Promise.resolve([...(secrets.get(vaultName)?.keys() ?? [])]);
       },
       supportsDelete(_vaultName: string): boolean {
         return true;
       },
       delete(vaultName: string, key: string): Promise<void> {
+        calls.push(`delete:${vaultName}/${key}`);
         secrets.get(vaultName)?.delete(key);
         return Promise.resolve();
       },
@@ -419,4 +458,311 @@ Deno.test("migrateTokenSecrets: a token whose lock cannot be taken fails alone",
 
   assertEquals(result, { migrated: 1, skipped: 0, failed: 1 });
   assertEquals(secrets.get("user-vault")?.has("server-token-legacy"), true);
+});
+
+/** A legacy token holding both secrets in the user vault. */
+function oauthLegacyVault() {
+  const mock = createMockVault();
+  mock.secrets.set(
+    "user-vault",
+    new Map([
+      ["server-token-legacy", "server-secret"],
+      ["oauth-access-token-legacy", "access-token"],
+    ]),
+  );
+  return mock;
+}
+
+Deno.test("migrateTokenSecrets: keeps a token on its vault when copying its OAuth access token fails", async () => {
+  for (
+    const fault of [
+      { get: "user-vault/oauth-access-token-legacy" },
+      { put: `${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-legacy` },
+      { list: "user-vault" },
+    ]
+  ) {
+    const { secrets, vaultService, faults } = oauthLegacyVault();
+    if (fault.get) faults.get.add(fault.get);
+    if (fault.put) faults.put.add(fault.put);
+    if (fault.list) faults.list.add(fault.list);
+    const records = [legacyRecord()];
+    let updates = 0;
+    const deps = {
+      tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+      vaultService,
+      dataQueryService: createMockDataQuery(records),
+      ...unchangedRecordLockDeps(records),
+      updateTokenVaultName: () => {
+        updates++;
+        return Promise.resolve();
+      },
+    };
+
+    const result = await migrateTokenSecrets(deps);
+
+    assertEquals(result, { migrated: 0, skipped: 0, failed: 1 });
+    assertEquals(updates, 0);
+    assertEquals(
+      secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has("oauth-access-token-legacy") ??
+        false,
+      false,
+    );
+    assertEquals(
+      secrets.get("user-vault")?.get("server-token-legacy"),
+      "server-secret",
+    );
+    assertEquals(
+      secrets.get("user-vault")?.get("oauth-access-token-legacy"),
+      "access-token",
+    );
+
+    // The next start, with the vault healthy again, moves both keys.
+    faults.get.clear();
+    faults.put.clear();
+    faults.list.clear();
+    assertEquals(await migrateTokenSecrets(deps), {
+      migrated: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    assertEquals(updates, 1);
+    assertEquals(
+      secrets.get(TOKEN_SECRETS_VAULT_NAME)?.get("oauth-access-token-legacy"),
+      "access-token",
+    );
+  }
+});
+
+Deno.test("migrateTokenSecrets: still skips a token whose server secret cannot be read, without listing its vault", async () => {
+  const { vaultService, faults, calls } = createMockVault();
+  faults.list.add("user-vault");
+  const records = [legacyRecord()];
+
+  const result = await migrateTokenSecrets({
+    tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+    vaultService,
+    dataQueryService: createMockDataQuery(records),
+    ...unchangedRecordLockDeps(records),
+    updateTokenVaultName: () => Promise.resolve(),
+  });
+
+  assertEquals(result, { migrated: 0, skipped: 1, failed: 0 });
+  assertEquals(calls.includes("list:user-vault"), false);
+});
+
+/** A record an older migration repointed without its OAuth access token. */
+function halfMigratedRecord(overrides: Record<string, unknown> = {}) {
+  return legacyRecord({ vaultName: TOKEN_SECRETS_VAULT_NAME, ...overrides });
+}
+
+function recoveryDeps(
+  vaultService: TokenSecretMigrationDeps["vaultService"],
+  records: { attributes: Record<string, unknown> }[],
+): OAuthAccessTokenRecoveryDeps {
+  return {
+    tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+    vaultService,
+    dataQueryService: createMockDataQuery(records),
+    userVaultName: "user-vault",
+    ...unchangedRecordLockDeps(records),
+  };
+}
+
+Deno.test("recoverOAuthAccessTokens: copies an access token left in the user vault and records the marker", async () => {
+  const { secrets, vaultService } = createMockVault();
+  secrets.set(
+    "user-vault",
+    new Map([["oauth-access-token-legacy", "access-token"]]),
+  );
+  const record = halfMigratedRecord();
+  const token = { name: "legacy", vaultName: TOKEN_SECRETS_VAULT_NAME };
+  assertEquals(await lookupOAuthAccessToken(vaultService, token), null);
+
+  const result = await recoverOAuthAccessTokens(
+    recoveryDeps(vaultService, [record]),
+  );
+
+  assertEquals(result, { recovered: 1, failed: 0 });
+  assertEquals(
+    await lookupOAuthAccessToken(vaultService, token),
+    "access-token",
+  );
+  assertEquals(
+    secrets.get("user-vault")?.has("oauth-access-token-legacy"),
+    false,
+  );
+  assertEquals(
+    secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has(
+      OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+    ),
+    true,
+  );
+});
+
+Deno.test("recoverOAuthAccessTokens: once the marker is recorded, never lists the user vault", async () => {
+  const { secrets, vaultService, calls } = createMockVault();
+  secrets.set(
+    "user-vault",
+    new Map([["oauth-access-token-legacy", "access-token"]]),
+  );
+  secrets.set(
+    TOKEN_SECRETS_VAULT_NAME,
+    new Map([[OAUTH_ACCESS_TOKENS_RECOVERED_KEY, "2026-10-07T00:00:00.000Z"]]),
+  );
+
+  const result = await recoverOAuthAccessTokens(
+    recoveryDeps(vaultService, [halfMigratedRecord()]),
+  );
+
+  assertEquals(result, { recovered: 0, failed: 0 });
+  assertEquals(calls.some((c) => c.includes("user-vault")), false);
+});
+
+Deno.test("recoverOAuthAccessTokens: with no active record in _token-secrets, records the marker without listing", async () => {
+  const { secrets, vaultService, calls } = createMockVault();
+  secrets.set(
+    "user-vault",
+    new Map([
+      ["oauth-access-token-legacy", "a"],
+      ["oauth-access-token-gone", "b"],
+    ]),
+  );
+  const records = [
+    legacyRecord(),
+    halfMigratedRecord({ name: "gone", state: "revoked" }),
+  ];
+
+  const result = await recoverOAuthAccessTokens(
+    recoveryDeps(vaultService, records),
+  );
+
+  assertEquals(result, { recovered: 0, failed: 0 });
+  assertEquals(calls.some((c) => c.includes("user-vault")), false);
+  assertEquals(secrets.get("user-vault")?.size, 2);
+  assertEquals(
+    secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has(
+      OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+    ),
+    true,
+  );
+});
+
+Deno.test("recoverOAuthAccessTokens: a listing or copy failure leaves the marker unset for the next start", async () => {
+  for (
+    const fault of [
+      { list: "user-vault" },
+      { get: "user-vault/oauth-access-token-legacy" },
+      { put: `${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-legacy` },
+    ]
+  ) {
+    const { secrets, vaultService, faults } = createMockVault();
+    secrets.set(
+      "user-vault",
+      new Map([["oauth-access-token-legacy", "access-token"]]),
+    );
+    if (fault.get) faults.get.add(fault.get);
+    if (fault.put) faults.put.add(fault.put);
+    if (fault.list) faults.list.add(fault.list);
+    const deps = recoveryDeps(vaultService, [halfMigratedRecord()]);
+
+    const result = await recoverOAuthAccessTokens(deps);
+
+    assertEquals(result, { recovered: 0, failed: fault.list ? 0 : 1 });
+    assertEquals(
+      secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has(
+        OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+      ) ?? false,
+      false,
+    );
+    assertEquals(
+      secrets.get("user-vault")?.get("oauth-access-token-legacy"),
+      "access-token",
+    );
+
+    faults.get.clear();
+    faults.put.clear();
+    faults.list.clear();
+    assertEquals(await recoverOAuthAccessTokens(deps), {
+      recovered: 1,
+      failed: 0,
+    });
+  }
+});
+
+Deno.test("recoverOAuthAccessTokens: leaves keys alone unless the record still lacks them under the lock", async () => {
+  const { secrets, vaultService } = createMockVault();
+  secrets.set(
+    "user-vault",
+    new Map([
+      ["oauth-access-token-present", "old"],
+      ["oauth-access-token-rotated", "old"],
+      ["oauth-access-token-gone", "old"],
+      ["oauth-access-token-revoked", "old"],
+      ["oauth-access-token-stray", "old"],
+    ]),
+  );
+  secrets.set(
+    TOKEN_SECRETS_VAULT_NAME,
+    new Map([["oauth-access-token-present", "current"]]),
+  );
+  const records = [
+    halfMigratedRecord({ name: "present" }),
+    halfMigratedRecord({ name: "rotated" }),
+    halfMigratedRecord({ name: "gone" }),
+    halfMigratedRecord({ name: "revoked" }),
+  ];
+  const underLock: Record<string, Record<string, unknown> | null> = {
+    present: records[0].attributes,
+    rotated: halfMigratedRecord({
+      name: "rotated",
+      createdAt: "2026-01-15T00:00:00.000Z",
+    }).attributes,
+    gone: null,
+    revoked: halfMigratedRecord({ name: "revoked", state: "revoked" })
+      .attributes,
+  };
+  const locked: string[] = [];
+
+  const result = await recoverOAuthAccessTokens({
+    ...recoveryDeps(vaultService, records),
+    withTokenLock: (name, fn) => {
+      locked.push(name);
+      return fn();
+    },
+    readTokenRecord: (name) => Promise.resolve(underLock[name]),
+  });
+
+  assertEquals(result, { recovered: 0, failed: 0 });
+  assertEquals(locked, ["present", "rotated", "gone", "revoked"]);
+  assertEquals(
+    secrets.get(TOKEN_SECRETS_VAULT_NAME)?.get("oauth-access-token-present"),
+    "current",
+  );
+  for (const name of ["rotated", "gone", "revoked", "stray"]) {
+    assertEquals(
+      secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has(`oauth-access-token-${name}`),
+      false,
+    );
+  }
+  assertEquals(secrets.get("user-vault")?.size, 5);
+});
+
+Deno.test("recoverOAuthAccessTokens: without a user vault, does nothing and records no marker", async () => {
+  const { secrets, vaultService, calls } = createMockVault();
+
+  const result = await recoverOAuthAccessTokens({
+    ...recoveryDeps(vaultService, [halfMigratedRecord()]),
+    userVaultName: undefined,
+  });
+
+  assertEquals(result, { recovered: 0, failed: 0 });
+  assertEquals(calls.some((c) => c.startsWith("list:")), false);
+  assertEquals(secrets.has(TOKEN_SECRETS_VAULT_NAME), false);
+});
+
+Deno.test("recoverOAuthAccessTokens: the marker is not a per-token access token key", () => {
+  assertEquals(
+    OAUTH_ACCESS_TOKENS_RECOVERED_KEY.startsWith(oauthAccessTokenKey("")),
+    false,
+  );
 });
