@@ -157,10 +157,9 @@ manifest); `declaredAcceptances` lists what the extension already accepts. Offer
 the user the fix first and the acceptance only when the finding is not right for
 this extension; never paste the `<reason>` placeholder as is.
 
-To get the same `contentHash` CI's publish computes, run the dry run in CI's
-layout: `cd` into the extension directory, `swamp repo init --quiet --tool none`
-if there is no `.swamp.yaml` there, then
-`swamp extension push manifest.yaml --dry-run --json`. See
+A dry run prints the same `contentHash` CI's publish computes whenever the
+extensions root is the extension directory, including from a sibling swamp repo
+(`swamp extension push path/to/extension --dry-run --json`). See
 [reproducing the CI layout](references/publishing.md#reproducing-the-ci-layout).
 
 If private publication is requested, retain `visibility: private` in the

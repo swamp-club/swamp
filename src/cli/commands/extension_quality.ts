@@ -159,7 +159,7 @@ export const extensionQualityCommand = new Command()
           },
           hashInput: {
             manifest: resolved.manifest,
-            rootDir: repoDir,
+            rootDir: resolved.extensionsRoot,
             manifestDir,
             modelFilePaths: resolved.allModelFiles,
             vaultFilePaths: resolved.allVaultFiles,

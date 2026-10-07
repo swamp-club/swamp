@@ -50,6 +50,11 @@ function encodeHex(bytes: Uint8Array): string {
  * affects the tarball must be represented here. */
 export interface PackageCacheHashInput {
   manifest: ExtensionManifest;
+  /**
+   * The extensions root. Every file is labelled by its path from here, so
+   * the hash is the same wherever the swamp repo sits: pushing from a sibling
+   * repo hashes like publish, which runs inside the extension directory.
+   */
   rootDir: string;
   /**
    * The manifest's directory. The `quality.yaml` sidecar beside it joins the
