@@ -201,11 +201,11 @@ version that wrote each entry and is reused only by that version, because a
 reused archive skips the fmt/lint gate. The version is not part of the hash,
 which also keys the adversarial-review report.
 
-The content hash is layout-bound: files are labelled by their path relative
-to the swamp repo dir, so the same extension hashes differently from a
-sibling repo. CI publishes from a swamp repo initialised inside the extension
-directory; a dry run reproduces that hash only in that layout (see the
-`swamp` skill's publish reference for the recipe).
+The content hash labels files by their path from the extensions root, not
+the swamp repo dir, so it does not depend on where the swamp repo sits. CI
+publishes from a swamp repo initialised inside the extension directory; a dry
+run from a sibling repo, with the root inferred from the manifest or named by
+`--extensions-dir`, hashes the same (see the `swamp` skill's publish reference).
 
 ### Pull
 

@@ -540,7 +540,7 @@ export const extensionPushCommand = new Command()
       // bytes. Cache miss falls back to packaging from scratch.
       const cacheHashInput = {
         manifest,
-        rootDir: repoDir,
+        rootDir: resolved.extensionsRoot,
         manifestDir,
         modelFilePaths: allModelFiles,
         vaultFilePaths: allVaultFiles,

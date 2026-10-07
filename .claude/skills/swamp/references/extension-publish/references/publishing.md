@@ -445,19 +445,24 @@ warning (see [Declaring acceptances](#declaring-acceptances)).
 
 ### Reproducing the CI layout
 
-The content hash labels files by their path relative to the swamp repo dir, so
-the same extension hashes differently from a sibling repo. CI publishes from a
-swamp repo initialised inside the extension directory. To compute the same hash
-locally, run the dry run in that layout:
+The content hash labels files by their path from the extensions root, not from
+the swamp repo dir. CI publishes from a swamp repo initialised inside the
+extension directory, so a dry run reproduces CI's hash whenever the extensions
+root is the extension directory: from inside it, or from a sibling or monorepo
+swamp repo that infers the root from the manifest or names it with
+`--extensions-dir`:
 
 ```bash
-cd path/to/extension          # the directory holding manifest.yaml
-[ -f .swamp.yaml ] || swamp repo init --quiet --tool none
-swamp extension push manifest.yaml --dry-run --json
+swamp extension push path/to/extension --dry-run --json
 ```
 
 Compare `contentHash` in the output with the hash CI reports. Any byte change in
-a packaged file, or a version bump, moves the hash.
+a packaged file, or a version bump, moves the hash. If the hashes differ only by
+layout, the extensions root resolved elsewhere (an extension whose typed entries
+resolve under the swamp repo dir keeps the repo dir as its root): pass
+`--extensions-dir path/to/extension`, or run the dry run inside the extension
+directory (`swamp repo init --quiet --tool none` there first if it has no
+`.swamp.yaml`).
 
 ### Opportunistic package cache
 
