@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  type LentLocks,
   LOCK_NONCE_PATTERN,
   type LockHolderEnvStore,
   LockHolderMarker,
@@ -285,6 +286,80 @@ Deno.test("LockHolderMarker.forwardedLockTokens: never returns a list over the l
           forwarded === undefined ||
             forwarded.length <= MAX_FORWARDED_LOCK_TOKENS_LENGTH,
         );
+      },
+    ),
+  );
+});
+
+// One step of a run that nests lock scopes and starts hops in them.
+type HandOffOp =
+  | { kind: "open" }
+  | { kind: "close" }
+  | { kind: "begin" }
+  | { kind: "end"; pick: number };
+
+const handOffOpArb: fc.Arbitrary<HandOffOp> = fc.oneof(
+  fc.constant<HandOffOp>({ kind: "open" }),
+  fc.constant<HandOffOp>({ kind: "close" }),
+  fc.constant<HandOffOp>({ kind: "begin" }),
+  fc.nat(16).map((pick): HandOffOp => ({ kind: "end", pick })),
+);
+
+Deno.test("LockHolderMarker property: a scope reclaims exactly when its live hand-offs return to zero", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(handOffOpArb, { maxLength: 40 }),
+      async (ops) => {
+        const marker = new LockHolderMarker(envStore({}), CHILD_PID);
+        // Per scope: the hand-offs live in it or under it, and how often
+        // it has reclaimed against how often its count returned to zero.
+        const live: number[] = [];
+        const reclaimed: number[] = [];
+        const expected: number[] = [];
+        const hops: Array<{ scopes: number[]; end: () => Promise<void> }> = [];
+
+        const run = async (at: number, stack: number[]): Promise<number> => {
+          while (at < ops.length) {
+            const op = ops[at++];
+            if (op.kind === "open") {
+              const scope = live.length;
+              live.push(0);
+              reclaimed.push(0);
+              expected.push(0);
+              const locks: LentLocks = {
+                lockIds: () => [`lock-${scope}-${reclaimed[scope]}`],
+                reclaim: () => {
+                  // Never under a hand-off that is still live.
+                  assertEquals(live[scope], 0);
+                  reclaimed[scope]++;
+                  return Promise.resolve();
+                },
+              };
+              at = await marker.runHolding(
+                locks,
+                () => run(at, [...stack, scope]),
+              );
+            } else if (op.kind === "close") {
+              if (stack.length > 0) return at;
+            } else if (op.kind === "begin") {
+              const hop = await marker.beginChildHandOff();
+              for (const scope of stack) live[scope]++;
+              hops.push({ scopes: stack, end: hop.end });
+            } else if (hops.length > 0) {
+              // A hop may end after the scope it began in has returned.
+              const [hop] = hops.splice(op.pick % hops.length, 1);
+              for (const scope of hop.scopes) {
+                live[scope]--;
+                if (live[scope] === 0) expected[scope]++;
+              }
+              await hop.end();
+            }
+          }
+          return at;
+        };
+        await run(0, []);
+
+        assertEquals(reclaimed, expected);
       },
     ),
   );

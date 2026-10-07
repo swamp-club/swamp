@@ -26,6 +26,7 @@
  */
 
 import { UserError } from "../errors.ts";
+import { LOCK_NONCE_PATTERN } from "./lock_holder_marker.ts";
 
 /** Procfile-style metadata stored in the lock. */
 export interface LockInfo {
@@ -39,8 +40,37 @@ export interface LockInfo {
   acquiredAt: string;
   /** Lock duration in ms before considered stale. */
   ttlMs: number;
-  /** Unique identifier for this lock acquisition (fencing token). */
+  /**
+   * Fencing token for the lock. A holder may replace it during a hold (a
+   * re-key), so it names the lock as it is now, not one acquisition.
+   */
   nonce?: string;
+  /**
+   * On a datastore's global lock: the per-model lock nonces the structural
+   * command holding it skipped, and so may be working under. Written by
+   * another process; read it through {@link lockSkipping}.
+   */
+  skipping?: string[];
+}
+
+/** The most nonces a lock's {@link LockInfo.skipping} lists. */
+export const MAX_LOCK_SKIPPING = 1024;
+
+/**
+ * The nonces `info` lists as skipped, or none when the list is missing,
+ * oversized or holds anything that is not a nonce: a lock file is written
+ * by another process, and a holder must never wait on a list it cannot
+ * fully validate.
+ */
+export function lockSkipping(info: LockInfo | null): ReadonlySet<string> {
+  const raw: unknown = info?.skipping;
+  if (
+    !Array.isArray(raw) || raw.length > MAX_LOCK_SKIPPING ||
+    !raw.every((id) => typeof id === "string" && LOCK_NONCE_PATTERN.test(id))
+  ) {
+    return new Set();
+  }
+  return new Set(raw as string[]);
 }
 
 /** Configuration for lock behavior. */

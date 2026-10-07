@@ -21,6 +21,7 @@ import {
   assert,
   assertEquals,
   assertExists,
+  assertNotEquals,
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
@@ -48,6 +49,7 @@ import {
   MODEL_LOCK_MAX_BACKOFF_MS,
   MODEL_LOCK_RETRY_INTERVAL_MS,
   type PerModelLockScan,
+  reclaimModelLocks,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -2450,7 +2452,12 @@ Deno.test(
 
     await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
       assertEquals(
-        await runUnderModelLocks({ heldLockIds: ["n1", "n2"] }, consume),
+        await runUnderModelLocks({
+          lentLocks: {
+            lockIds: () => ["n1", "n2"],
+            reclaim: () => Promise.resolve(),
+          },
+        }, consume),
         [{ [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:n1+n2` }],
       );
       // A non-mutating run takes no lock and still gets a scope.
@@ -5347,5 +5354,292 @@ Deno.test("requireInitializedRepoUnlocked: the default datastore lets the sweep 
     assert(support.supported);
     assertEquals(support.localRunAbsenceIsAuthoritative, true);
     await flushDatastoreSync();
+  });
+});
+
+// ============================================================================
+// Hand-off reclaim (swamp-club#3111)
+// ============================================================================
+
+/** A scan that skips `skipped` and waits on `held` locks. */
+const skippingScan = (
+  skipped: readonly string[],
+  held = 0,
+): PerModelLockScan => ({
+  held,
+  heldForOtherRuns: [],
+  skippedLockIds: skipped,
+  waitedLocks: [],
+});
+
+/** Runs a drain over `scans`, recording scans and published lists in order. */
+async function drainPublishing(scans: PerModelLockScan[]) {
+  const log: string[] = [];
+  let i = 0;
+  const skipped = await waitForPerModelLocks("/unused", undefined, {
+    progressWriter: () => {},
+    pollIntervalMs: 1,
+    drainWaits: {
+      publish: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+      remove: () => Promise.resolve(),
+    },
+    findModelLocks: () => {
+      const scan = scans[Math.min(i++, scans.length - 1)];
+      log.push(`scan held=${scan.held} skip=${scan.skippedLockIds.join("+")}`);
+      return Promise.resolve(scan);
+    },
+    publishSkipping: (lockIds) => {
+      log.push(`publish ${lockIds.join("+")}`);
+      return Promise.resolve();
+    },
+  });
+  return { skipped, log };
+}
+
+Deno.test("waitForPerModelLocks: a drain that skips nothing publishes nothing and scans once", async () => {
+  const { skipped, log } = await drainPublishing([skippingScan([])]);
+  assertEquals(skipped, []);
+  assertEquals(log, ["scan held=0 skip="]);
+});
+
+Deno.test("waitForPerModelLocks: publishes the locks it skips, then confirms them with one more scan", async () => {
+  const { skipped, log } = await drainPublishing([skippingScan(["a", "b"])]);
+  assertEquals(skipped, ["a", "b"]);
+  assertEquals(log, [
+    "scan held=0 skip=a+b",
+    "publish a+b",
+    "scan held=0 skip=a+b",
+  ]);
+});
+
+Deno.test("waitForPerModelLocks: withdraws a re-keyed lock from the list before waiting on it", async () => {
+  const { skipped, log } = await drainPublishing([
+    skippingScan(["a", "b"]),
+    // The holder of b re-keyed it: no longer skipped, now waited on.
+    skippingScan(["a"], 1),
+    skippingScan(["a"], 1),
+    skippingScan(["a"]),
+  ]);
+  assertEquals(skipped, ["a"]);
+  assertEquals(log, [
+    "scan held=0 skip=a+b",
+    "publish a+b",
+    "scan held=1 skip=a",
+    "publish a",
+    "scan held=1 skip=a",
+    "scan held=0 skip=a",
+  ]);
+});
+
+Deno.test("waitForPerModelLocks: without a publisher it returns the skipped locks of its only scan", async () => {
+  let scans = 0;
+  const skipped = await waitForPerModelLocks("/unused", undefined, {
+    findModelLocks: () => {
+      scans++;
+      return Promise.resolve(skippingScan(["a"]));
+    },
+  });
+  assertEquals(skipped, ["a"]);
+  assertEquals(scans, 1);
+});
+
+/** A global lock as `reclaimModelLocks` reads it: one info per inspect. */
+function globalLockReturning(infos: Array<LockInfo | null>) {
+  let inspects = 0;
+  return {
+    inspect: () =>
+      Promise.resolve(infos[Math.min(inspects++, infos.length - 1)]),
+    inspects: () => inspects,
+  };
+}
+
+const globalInfo = (skipping?: string[], ageMs = 0): LockInfo => ({
+  holder: "gc@host",
+  hostname: "host",
+  pid: 4242,
+  acquiredAt: new Date(Date.now() - ageMs).toISOString(),
+  ttlMs: 30_000,
+  nonce: "global-nonce",
+  ...(skipping ? { skipping } : {}),
+});
+
+Deno.test("reclaimModelLocks: re-keys each held lock and proceeds when no structural command is working", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const before = lock.heldNonce;
+    const global = globalLockReturning([null]);
+
+    await reclaimModelLocks([lock], global, { progressWriter: () => {} });
+
+    assertNotEquals(lock.heldNonce, before);
+    assertEquals(global.inspects(), 1);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: holds nothing to re-key, so it never reads the global lock", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    const global = globalLockReturning([globalInfo(["anything"])]);
+    await reclaimModelLocks([lock], global, { progressWriter: () => {} });
+    await reclaimModelLocks([], global, { progressWriter: () => {} });
+    assertEquals(global.inspects(), 0);
+  });
+});
+
+Deno.test("reclaimModelLocks: waits while a structural command lists the retired nonce, until it finishes or withdraws it", async () => {
+  await withTempDir(async (dir) => {
+    for (const ending of [null, globalInfo(["some-other-lock"])]) {
+      const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+      await lock.acquire();
+      const retired = lock.heldNonce!;
+      const working = globalInfo([retired]);
+      const global = globalLockReturning([working, working, ending]);
+      const lines: string[] = [];
+
+      await reclaimModelLocks([lock], global, {
+        pollMs: 1,
+        progressWriter: (line) => lines.push(line),
+      });
+
+      assertEquals(global.inspects(), 3);
+      assertStringIncludes(lines[0], "pid 4242");
+      assertEquals(lines.length, 2);
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("reclaimModelLocks: ignores a structural command that skipped other locks, a malformed list and a stale global lock", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const cases = (retired: string): LockInfo[] => [
+      globalInfo(["some-other-lock"]),
+      globalInfo(),
+      { ...globalInfo(), skipping: [retired, "not a nonce"] },
+      globalInfo([retired], 60_000),
+    ];
+    for (let i = 0; i < 4; i++) {
+      const global = globalLockReturning([cases(lock.heldNonce!)[i]]);
+      await reclaimModelLocks([lock], global, {
+        pollMs: 1,
+        progressWriter: () => {},
+      });
+      assertEquals(global.inspects(), 1);
+    }
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: throws LockTimeoutError when the structural command outlasts the timeout", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const retired = lock.heldNonce!;
+    const global = globalLockReturning([globalInfo([retired])]);
+
+    const error = await assertRejects(
+      () =>
+        reclaimModelLocks([lock], global, {
+          pollMs: 1,
+          timeoutMs: 1,
+          progressWriter: () => {},
+          displayKey: "ns/.datastore.lock",
+        }),
+      LockTimeoutError,
+    );
+    assertStringIncludes(error.message, "ns/.datastore.lock");
+    // The lock is still re-keyed: nothing new can skip it.
+    assertNotEquals(lock.heldNonce, retired);
+    await lock.release();
+  });
+});
+
+Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lock timeout, not in a spin", async () => {
+  let scans = 0;
+  await assertRejects(
+    () =>
+      withMockedEnv(
+        { SWAMP_LOCK_TIMEOUT_MS: "30" },
+        () =>
+          waitForPerModelLocks("/unused", undefined, {
+            progressWriter: () => {},
+            pollIntervalMs: 5,
+            // Nothing is ever held, but the skipped set flips on every scan.
+            findModelLocks: () =>
+              Promise.resolve(skippingScan(scans++ % 2 === 0 ? ["a"] : [])),
+            publishSkipping: () => Promise.resolve(),
+          }),
+      ),
+    LockTimeoutError,
+  );
+  // Paced by the poll interval after the first confirming scan.
+  assert(scans < 30, `expected a paced drain, got ${scans} scans`);
+});
+
+Deno.test("reclaimModelLocks: does not wait on a structural command on this host that has died", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const here = (retired: string): LockInfo => ({
+      ...globalInfo([retired]),
+      hostname: hostname(),
+    });
+
+    // Killed with its hop: its lock file outlives it until the ttl.
+    const dead = globalLockReturning([here(lock.heldNonce!)]);
+    await reclaimModelLocks([lock], dead, {
+      pollMs: 1,
+      progressWriter: () => {},
+      isProcessDead: (pid) => pid === 4242,
+    });
+    assertEquals(dead.inspects(), 1);
+
+    // The same pid on another host says nothing about that process.
+    const elsewhere = globalLockReturning([
+      globalInfo([lock.heldNonce!]),
+      null,
+    ]);
+    await reclaimModelLocks([lock], elsewhere, {
+      pollMs: 1,
+      progressWriter: () => {},
+      isProcessDead: () => true,
+    });
+    assertEquals(elsewhere.inspects(), 2);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: reads a global lock caught mid-write again instead of proceeding", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    // What FileLock.inspect reports for a fresh unreadable lock file.
+    const midWrite: LockInfo = {
+      holder: "unknown (lock file is being written)",
+      hostname: "unknown",
+      pid: 0,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: 30_000,
+    };
+    const retired = lock.heldNonce!;
+    const global = globalLockReturning([
+      midWrite,
+      globalInfo([retired]),
+      null,
+    ]);
+
+    await reclaimModelLocks([lock], global, {
+      pollMs: 1,
+      progressWriter: () => {},
+    });
+
+    // Not taken for a command that skipped nothing: read again, found
+    // working under the retired nonce, and waited out.
+    assertEquals(global.inspects(), 3);
+    await lock.release();
   });
 });

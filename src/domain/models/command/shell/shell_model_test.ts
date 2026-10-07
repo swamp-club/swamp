@@ -778,6 +778,67 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
+  "shellModel.methods.execute takes its run's locks back after the command and before it writes (swamp-club#3111)",
+  async () => {
+    await withMockedEnv(
+      { [SWAMP_LOCK_HOLDER_TOKENS]: undefined },
+      async () => {
+        const { context, getResults } = createTestContext();
+        const writesAtReclaim: number[] = [];
+        let generation = 1;
+        const locks = {
+          lockIds: () => [`step-lock-${generation}`],
+          reclaim: () => {
+            writesAtReclaim.push(getResults().length);
+            generation++;
+            return Promise.resolve();
+          },
+        };
+
+        await processLockHolderMarker.runHolding(
+          locks,
+          () =>
+            shellModel.methods.execute.execute({
+              run: "echo TOKENS=$SWAMP_LOCK_HOLDER_TOKENS",
+            }, context),
+        );
+
+        // The command was lent the nonce the lock had while it ran, and the
+        // lock was re-keyed once, before anything was written.
+        assertStringIncludes(
+          getOutputLogContent(getResults()),
+          `TOKENS=${Deno.pid}:step-lock-1`,
+        );
+        assertEquals(writesAtReclaim, [0]);
+      },
+    );
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute writes nothing when its run's locks cannot be taken back",
+  async () => {
+    const { context, getResults } = createTestContext();
+    const locks = {
+      lockIds: () => ["step-lock"],
+      reclaim: () =>
+        Promise.reject(new Error("structural command still working")),
+    };
+
+    await assertRejects(
+      () =>
+        processLockHolderMarker.runHolding(
+          locks,
+          () => shellModel.methods.execute.execute({ run: "echo hi" }, context),
+        ),
+      Error,
+      "structural command still working",
+    );
+    assertEquals(getResults().length, 0);
+  },
+);
+
+posixOnlyTest(
   "shellModel.methods.execute lets explicit user env override the held locks",
   async () => {
     await withMockedEnv(

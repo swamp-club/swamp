@@ -48,7 +48,9 @@ export interface DrainWait {
   readonly ttlMs: number;
   /**
    * The live locks the drain skips: those a swamp above it holds for the
-   * run that started it, and so keeps until this drain's process exits.
+   * run that started it, and so keeps while that run waits on this drain.
+   * A holder that stops waiting re-keys its lock, and the next scan no
+   * longer lists it here.
    */
   readonly skipping: readonly string[];
   /** The live locks the drain is waiting on. */

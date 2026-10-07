@@ -29,6 +29,7 @@ import {
   modelRegistry,
 } from "./model.ts";
 import {
+  type LockHandOff,
   MAX_REMOTE_LOCK_IDS,
   processLockHolderMarker,
   type RemoteLockHolder,
@@ -157,20 +158,25 @@ export interface MethodExecutionService {
 }
 
 /**
- * The lock holder to send with a dispatch, or none when it names more locks
- * than a worker accepts. The step then runs without it, and a structural
+ * The lock hand-offs of a dispatch built now, one per attempt, bound to the
+ * lock scope this is called from. A run that holds more locks than a worker
+ * accepts lends none: the step then runs without them, and a structural
  * swamp it starts waits on the locks held for the run.
  */
-function remoteLockHolderFor(
+function lockHandOffFor(
   context: Pick<MethodContext, "logger">,
-): RemoteLockHolder | undefined {
-  const holder = processLockHolderMarker.remoteLockHolder();
-  if (holder !== undefined && holder.lockIds.length > MAX_REMOTE_LOCK_IDS) {
+): () => Promise<LockHandOff<RemoteLockHolder | undefined>> {
+  const source = processLockHolderMarker.remoteHandOff();
+  // A re-key replaces nonces one for one, so the count holds for every
+  // attempt and the warning is logged once per step.
+  const held = source.holder()?.lockIds.length ?? 0;
+  if (held > MAX_REMOTE_LOCK_IDS) {
     context.logger
-      .warn`Not handing ${holder.lockIds.length} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
-    return undefined;
+      .warn`Not handing ${held} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
+    return () =>
+      Promise.resolve({ lent: undefined, end: () => Promise.resolve() });
   }
-  return holder;
+  return () => source.begin();
 }
 
 /**
@@ -512,7 +518,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
         ...secretDelivery,
-        lockHolder: remoteLockHolderFor(context),
+        beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: (event: RpcStreamEvent) => {
           if (event.kind === "method_event" && "event" in event) {

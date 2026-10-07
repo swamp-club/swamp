@@ -1810,9 +1810,11 @@ check-and-create. In solo mode the lockfile is `{datastorePath}/.datastore.lock`
 A background heartbeat rewrites it with a fresh timestamp. Stale locks (where
 `acquiredAt + ttlMs < now`) are removed and the acquire retried.
 
-The heartbeat rewrites the lockfile in place, and a new lockfile exists before
-its content is written, so a reader can find a held lock's file empty or
-partial. A lockfile that exists but cannot be read therefore counts as held
+A new lockfile exists before its content is written, and a heartbeat that
+rewrites the lockfile in place (an older swamp's, or the Windows fallback when
+a rename is refused; otherwise the file is replaced whole, see "Hand-offs and
+re-keying") leaves it briefly empty, so a reader can find a held lock's file
+empty or partial. A lockfile that exists but cannot be read therefore counts as held
 until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
 is the one definition of that rule: the acquire path backs off, `inspect()`
 returns a placeholder `LockInfo` with an unknown holder and no nonce, and the
@@ -1962,6 +1964,12 @@ lock before running and releases it in a finally block afterwards. This avoids
 deadlock when a model method starts a subprocess `swamp model method run` on a
 model the parent workflow would otherwise hold.
 
+A run that lent its locks to a shell command or a dispatch takes them back
+when that hop ends, before it writes: it re-keys each lock and waits for a
+structural command still working under the old nonce (see "Hand-offs and
+re-keying" under "Parent-Process Lock Awareness"). This is the one place a
+lock holder waits on the global lock while holding a per-model lock.
+
 Parallel steps on different models lock independently. Parallel steps on the
 same model serialize at the lock, which is correct since concurrent writes to
 one model are unsafe. The coordinator gives each acquisition a unique key (with
@@ -2000,6 +2008,11 @@ writer can:
 `Deno.remove(dataNameDir, { recursive: true })`. The recursive remove races the
 writer's new version subdirectory and fails with ENOTEMPTY (Linux:
 `os error 39`, macOS: `os error 66`), as in swamp-club#234.
+
+The second drain also records, in the global lock's file, the nonces of the
+locks it skips, and ends only on a scan that confirms the recorded list, so a
+holder that takes one of them back waits for this command ("Hand-offs and
+re-keying").
 
 The second drain sees the writer's per-model lock and waits until the writer
 commits or releases on its own recheck before structural work starts. The
@@ -2088,8 +2101,9 @@ whoever knows it can have a nested structural swamp skip that lock.
   authenticates nobody, so there anyone who can reach the port and knows a
   live nonce can have a nested structural swamp under a run they request skip
   that lock, and work on the datastore while the lock's run is still writing.
-- A nonce stops working when its lock is released: every acquisition writes a
-  new one.
+- A nonce stops working when its lock is released, since every acquisition
+  writes a new one, and when the hop it was lent to ends, since the holder
+  then re-keys the lock (see "Hand-offs and re-keying" below).
 
 Locally this gives a client no more than it has, since a shell method's
 explicit env already overrides `SWAMP_LOCK_HOLDER_TOKENS` for its child. What
@@ -2108,8 +2122,9 @@ Before publishing, the marker captures what the process inherited.
 `waitForPerModelLocks` skips a lock file whose `nonce` is listed in
 `SWAMP_LOCK_HOLDER_TOKENS`, whatever its `pid` and `hostname`
 (swamp-club#3096): a nonce is written only to its lock file and to the
-hand-down, and a lock that is released and taken again gets a new one, so a
-listed nonce names one acquisition, held for this run. That is the only rule
+hand-down, and a lock that is released and taken again, or re-keyed when the
+hop it was lent to ends, gets a new one, so a listed nonce names a lock as it
+was lent to this run. That is the only rule
 that holds across a worker dispatch or a `--server` request, where the holder
 is not above the child and may be on another host.
 
@@ -2170,6 +2185,78 @@ dropping anything malformed. If the orchestrator releases the step's lock
 while the runner's child is still running, the nonce matches no lock file and
 nothing is skipped.
 
+##### Hand-offs and re-keying
+
+The skip assumes the holder waits on the nested swamp and writes nothing
+until it exits. That stops being true the moment the hop the lock was lent to
+ends with something still running under it: a shell command that returns
+after leaving a swamp in the background or killing the `--server` client it
+started, a dispatch that is cancelled before the worker has killed its
+runner, a worker that is lost and whose step is dispatched again
+(swamp-club#3111). The holder cannot confirm that what it started is dead. A
+worker kills only the runner process, a partitioned worker confirms nothing,
+and a run requested over `--server` is meant to outlive a dropped socket so
+its client can reattach. So the holder acts on its own lock instead.
+
+A **hand-off** is the period a run lends its locks to one hop. The shell
+model begins one for its command (`LockHolderMarker.beginChildHandOff`) and
+the dispatcher one for each dispatch attempt (`beginLockHandOff` on
+`RemoteStepRequest`, bound to the run's scope by `MethodExecutionService`).
+The hop is given the lock list through the hand-off and no other way
+(`integration/model_lock_scope_rules_test.ts` pins the sites). Whoever begins
+a hand-off awaits its end when the hop returns, however it returns, and
+before the run writes anything.
+
+Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
+`src/cli/repo_context.ts`), in two steps:
+
+1. **Re-key.** `FileLock.rekey()` replaces each lock file with one carrying a
+   fresh nonce. A swamp left over from the hop still lists the retired nonce,
+   which now matches no lock file, so its next drain waits on the lock like
+   any other. A retry after a lost worker is a new hand-off and carries the
+   new nonce.
+2. **Wait out a structural command already at work.** One that skipped the
+   lock before the re-key is past its drain and cannot be stopped by it. The
+   drain a structural command runs under the global lock therefore records
+   the nonces it skips in that lock's file (`LockInfo.skipping`, written by
+   `FileLock.publishSkipping`). After re-keying, the holder reads the global
+   lock; while it is live and its list names a retired nonce the holder
+   waits, re-reading the list on every poll, up to `SWAMP_LOCK_TIMEOUT_MS`.
+   A global lock whose process on this host has died is not waited on: a
+   shell step's timeout kills its command's whole process tree, and the
+   lock file a nested structural command leaves behind lasts until its ttl.
+   At the timeout it throws `LockTimeoutError` and the run fails without
+   writing. A cancelled dispatch is the exception: it logs the timeout and
+   stays cancelled, because a cancelled step writes nothing to the model.
+
+Two orderings make this sound. The drain publishes its list and then scans
+again, ending only on a scan that matches what is already published; the
+holder re-keys and then reads the list. Whichever comes second sees the
+other. And a drain that finds a lock it had listed re-keyed takes the nonce
+out of the list before it waits on that lock, so the drain and the holder
+never wait on each other. A drain that skips nothing publishes nothing and
+scans once, as before.
+
+Scopes count their live hand-offs, including those begun in scopes nested
+under them, and a scope reclaims only the locks its own run took, and only
+when its count returns to zero. A lock is therefore never re-keyed under a
+sibling hop that still skips it. A hand-off that begins while a reclaim is in
+progress waits for it, so no hop is given a nonce about to be retired, and
+fails if that reclaim failed. Nonces a process only passes on (inherited from
+its parent, adopted from a `--server` client, sent on with a dispatch) are
+never re-keyed by it: it does not hold those locks. Their holder re-keys them
+when its own hop ends, and until then it is not writing.
+
+Every rewrite of a held lock file, the heartbeat included, replaces it
+through a temp file and a rename. A reader that catches a lock file partly
+written takes the lock for absent, and the holder's one read of the global
+lock must not land in such a window. `release()` waits for a rewrite already
+under way, so a replace can never land on a lock another process took in
+between. A reader that does catch a lock file mid-write, from an older swamp
+or after the Windows fallback to an in-place rewrite, counts it as held
+(swamp-club#3148); the holder's reclaim then reads the global lock again
+rather than proceed.
+
 Known limits of the run-level match:
 
 - Two parallel steps or runs that each start a nested structural command
@@ -2177,16 +2264,20 @@ Known limits of the run-level match:
   its child exits. One of them fails within a few seconds instead of both
   failing at `SWAMP_LOCK_TIMEOUT_MS`; see "Drain-Wait Markers" below. Still
   run such commands one at a time or in a step of their own.
-- A nested swamp that outlives the hop that started it keeps its nonce list.
-  The skip assumes the holder waits on the nested swamp, which stops being true
-  when a `--server` client is killed without cancelling the run it requested,
-  when a dispatch is cancelled (the orchestrator does not wait for the worker
-  to confirm the runner is dead), or when a worker is lost and its step is
-  dispatched again under the same lock. Until the holder releases that lock, a
-  structural swamp still running under the abandoned run skips it while the
-  holder may be writing (swamp-club#3111). The same holds for a run requested
-  over `--server` that the client stops waiting on while the calling step still
-  holds its lock.
+- Re-keying covers the locks a run took and lent through a hand-off. What it
+  does not cover:
+  - A dispatched runner's writes are carried out by the orchestrator, under
+    the step's lock, while the dispatch is still live. A swamp that the
+    runner's own shell command left in the background keeps skipping that
+    lock until the dispatch ends, because the runner holds no lock to re-key
+    when its command returns.
+  - A lock skipped on the pid alone has no nonce list to fall out of: a step
+    whose hook names no locks, a child an extension started with
+    `Deno.Command`, an older parent.
+  - An older nested swamp publishes no `skipping` list, so a holder cannot
+    see it working and does not wait for it. An older holder never re-keys.
+  - A structural command that outlasts `SWAMP_LOCK_TIMEOUT_MS` fails the run
+    that waits on it, and delays a cancel by up to that long.
 - A lock held for another run of a swamp that is not above the child (the
   orchestrator of a worker on another host, the caller of a `--server` run)
   is waited on like any unrelated lock. When that wait times out the error
@@ -2223,6 +2314,12 @@ it that holds locks, as before this change:
   matches every ancestor on the pid alone. Neither waits on a lock it skipped
   before.
 
+- Re-keying (swamp-club#3111) needs both ends. A holder that predates it
+  keeps its nonce for the whole hold, and a nested swamp of any version skips
+  it as before. A structural command that predates it lists nothing in the
+  global lock, so a newer holder re-keys and proceeds without waiting. Readers
+  that predate `skipping` ignore the field. No case waits where it did not
+  before.
 - A worker that predates `lockHolder` ignores the field, and an orchestrator
   that predates it never sends it. A nested swamp on that worker waits on its
   step's lock, as before.
