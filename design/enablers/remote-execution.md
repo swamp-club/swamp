@@ -711,7 +711,17 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | resource delete    | `DELETE /data/resource`                                                                                                  | h2        |                                                                                                  |
 | file write         | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize`                                    | h2        | `writeLine` is durable per request (live logs)                                                   |
 | extension assets   | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`                                                  | h2        | Cacheable by fingerprint                                                                         |
-| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client                                                             |
+| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client, and `output` events are written to the run log (below)                                                             |
+
+The orchestrator writes a step's output to its run log, wherever the step ran.
+A worker's method logger has no run log to write to, so each line travels as an
+`output` method event and `MethodExecutionService` writes it through the run
+logger at the level the event carries, before passing it on to the client.
+Lines the method wrote to the console on the worker come back in the dispatch
+result's `logs`; `DispatchService` turns them into `output` events too, for a
+failed dispatch as well as a successful one. The event is worker-supplied, so
+the orchestrator checks its shape and splits a multi-line `line` into one
+record per line.
 
 `resolveSecret` checks the infrastructure denylist and an expression-based
 allowlist taken from the dispatched step's args. The allowlist is disabled when

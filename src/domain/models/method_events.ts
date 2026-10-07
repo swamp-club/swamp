@@ -29,6 +29,12 @@ export type MethodExecutionEvent =
     type: "output";
     line: string;
     stream: "stdout" | "stderr";
+    /**
+     * The level the line was logged at. `stream` folds warnings and errors
+     * together, so this keeps the difference. Absent on an event from a
+     * worker that predates it.
+     */
+    level?: "info" | "warning" | "error";
   }
   | {
     type: "vault_secret_stored";

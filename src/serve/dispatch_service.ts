@@ -558,6 +558,15 @@ export class DispatchService {
         signal: request.signal,
         onEvent: request.onEvent,
       });
+      // What the method wrote to the console on the worker travels in the
+      // result, not the stream. Forward it as output so it reaches the run
+      // log whether the dispatch succeeded or failed (swamp-club#3080).
+      for (const line of result.logs) {
+        request.onEvent?.({
+          kind: "method_event",
+          event: { type: "output", line, stream: "stdout", level: "info" },
+        });
+      }
       if (result.status === "error") {
         leaseSettled = true;
         await this.#leaseTransition("fail", {

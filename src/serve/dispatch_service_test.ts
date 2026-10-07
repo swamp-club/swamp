@@ -734,6 +734,67 @@ Deno.test("executeRemote: no target_disconnected event without explicit target",
   assertEquals(disconnectedEvents.length, 0);
 });
 
+Deno.test("executeRemote: forwards the worker's console capture as output events (swamp-club#3080)", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: ["first", "second"],
+      durationMs: 3,
+    })
+  );
+  const events: Array<{ kind: string; [key: string]: unknown }> = [];
+  await h.service.executeRemote(stepRequest({
+    onEvent: (event) => events.push(event),
+  }));
+
+  assertEquals(events.filter((e) => e.kind === "method_event"), [
+    {
+      kind: "method_event",
+      event: { type: "output", line: "first", stream: "stdout", level: "info" },
+    },
+    {
+      kind: "method_event",
+      event: {
+        type: "output",
+        line: "second",
+        stream: "stdout",
+        level: "info",
+      },
+    },
+  ]);
+});
+
+Deno.test("executeRemote: forwards the worker's console capture when the dispatch failed (swamp-club#3080)", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: "boom",
+      outputs: [],
+      logs: ["before the failure"],
+      durationMs: 3,
+    })
+  );
+  const events: Array<{ kind: string; [key: string]: unknown }> = [];
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        onEvent: (event) => events.push(event),
+      })),
+    Error,
+    "boom",
+  );
+
+  assertEquals(
+    events.filter((e) => e.kind === "method_event").map((e) =>
+      (e.event as { line: string }).line
+    ),
+    ["before the failure"],
+  );
+});
+
 // --- Worker affinity ---
 
 Deno.test("executeRemote: affinity pins subsequent steps to the same worker", async () => {

@@ -1025,3 +1025,16 @@ Deno.test("InProcessExecutor: an error result carries the paths the error marked
   assertEquals(result.status, "error");
   assertEquals(result.errorPaths, [path]);
 });
+
+Deno.test("wrapLoggerWithOutput: the event carries the level the line was logged at (swamp-club#3080)", () => {
+  const logger = getLogger(["test", "wrap-level"]);
+  const levels: Array<string | undefined> = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") levels.push(e.level);
+  });
+  wrapped.info("a");
+  wrapped.warn("b");
+  wrapped.warning("c");
+  wrapped.error("d");
+  assertEquals(levels, ["info", "warning", "warning", "error"]);
+});

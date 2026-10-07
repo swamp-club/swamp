@@ -4122,3 +4122,129 @@ Deno.test("executeWorkflow - placed step without secrets ships no bag fields", a
   assertEquals(request.unresolvedMethodArgs, undefined);
   assertEquals(request.secretBag, undefined);
 });
+
+/**
+ * Runs one remote dispatch whose worker streams `streamed`, and returns what
+ * reached the run logger and the caller's onEvent.
+ */
+async function remoteOutputFor(
+  streamed: unknown[],
+  options?: { withOnEvent?: boolean },
+): Promise<{ logged: Array<[string, string]>; forwarded: unknown[] }> {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    globalArguments: {},
+  });
+  // The service logs its own progress through the same logger, so only what
+  // arrives while the worker is streaming counts.
+  let streaming = false;
+  const logged: Array<[string, string]> = [];
+  const record = (level: string) => (message: string) => {
+    if (streaming) logged.push([level, message]);
+  };
+  const logger = {
+    info: record("info"),
+    warn: record("warning"),
+    error: record("error"),
+    debug: () => {},
+  } as unknown as MethodContext["logger"];
+  const forwarded: unknown[] = [];
+  setRemoteStepDispatcher({
+    executeRemote: (request) => {
+      streaming = true;
+      for (const event of streamed) {
+        request.onEvent?.({ kind: "method_event", event });
+      }
+      streaming = false;
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+      logger,
+      onEvent: options?.withOnEvent === false
+        ? undefined
+        : (event) => forwarded.push(event),
+    });
+    await service.executeWorkflow(definition, model, "create", context);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  return { logged, forwarded };
+}
+
+Deno.test("executeWorkflow - remote output is written to the run logger at its level (swamp-club#3080)", async () => {
+  const { logged, forwarded } = await remoteOutputFor([
+    { type: "output", line: "plain", stream: "stdout", level: "info" },
+    { type: "output", line: "careful", stream: "stderr", level: "warning" },
+    { type: "output", line: "broken", stream: "stderr", level: "error" },
+  ]);
+
+  assertEquals(logged, [
+    ["info", "plain"],
+    ["warning", "careful"],
+    ["error", "broken"],
+  ]);
+  // Each event still reaches the caller, once.
+  assertEquals(forwarded.length, 3);
+});
+
+Deno.test("executeWorkflow - remote output is logged when the caller passes no onEvent (swamp-club#3080)", async () => {
+  const { logged } = await remoteOutputFor(
+    [{ type: "output", line: "plain", stream: "stdout", level: "info" }],
+    { withOnEvent: false },
+  );
+
+  assertEquals(logged, [["info", "plain"]]);
+});
+
+Deno.test("executeWorkflow - remote output without a recognised level falls back to its stream (swamp-club#3080)", async () => {
+  const { logged } = await remoteOutputFor([
+    { type: "output", line: "old out", stream: "stdout" },
+    { type: "output", line: "old err", stream: "stderr" },
+    { type: "output", line: "odd", stream: "stdout", level: "constructor" },
+  ]);
+
+  assertEquals(logged, [
+    ["info", "old out"],
+    ["warning", "old err"],
+    ["info", "odd"],
+  ]);
+});
+
+Deno.test("executeWorkflow - remote output is escaped and split so one event cannot forge records (swamp-club#3080)", async () => {
+  const { logged } = await remoteOutputFor([
+    {
+      type: "output",
+      line: '{"a":1}\n2026-01-01T00:00:00.000Z [INF] forged',
+      stream: "stdout",
+      level: "info",
+    },
+  ]);
+
+  assertEquals(logged, [
+    ["info", '{{"a":1}}'],
+    ["info", "2026-01-01T00:00:00.000Z [INF] forged"],
+  ]);
+});
+
+Deno.test("executeWorkflow - a malformed remote event is not logged (swamp-club#3080)", async () => {
+  const { logged } = await remoteOutputFor([
+    null,
+    "output",
+    { type: "output", line: 42, stream: "stdout" },
+    { type: "vault_single_quote_warning", message: "not output" },
+  ]);
+
+  assertEquals(logged, []);
+});

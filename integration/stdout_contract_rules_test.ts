@@ -25,6 +25,7 @@ import { VALUE_ONLY_STDOUT_COMMANDS } from "../src/cli/stdout_contract.ts";
 import { inviteCommand } from "../src/cli/commands/invite.ts";
 import { firstRuleCommand } from "../src/cli/commands/invite_link.ts";
 import { vaultCommand } from "../src/cli/commands/vault.ts";
+import { workerCommand } from "../src/cli/commands/worker.ts";
 
 // Importing the command modules pulls in the CLI command tree, which needs
 // logging initialised and the model barrel loaded before it will construct.
@@ -35,7 +36,7 @@ await initializeLogging({});
 // reason, so reuse it rather than opening a second escape hatch here.
 type Resolvable = AnyCommand & {
   getName(): string;
-  getCommand(name: string): AnyCommand | undefined;
+  getCommand(name: string, hidden?: boolean): AnyCommand | undefined;
 };
 
 /**
@@ -51,6 +52,7 @@ const ROOTS: Record<string, Resolvable> = {
   invite: inviteCommand as unknown as Resolvable,
   vault: vaultCommand as unknown as Resolvable,
   "first-rule": firstRuleCommand as unknown as Resolvable,
+  worker: workerCommand as unknown as Resolvable,
 };
 
 Deno.test("every value-on-stdout registry entry names a registered command", () => {
@@ -77,7 +79,8 @@ Deno.test("every value-on-stdout registry entry names a registered command", () 
       continue;
     }
 
-    if (root.getCommand(subcommand) === undefined) {
+    // Hidden subcommands count: `worker exec-dispatch` is one.
+    if (root.getCommand(subcommand, true) === undefined) {
       unresolved.push(
         `${path.join(" ")} — "${command}" has no subcommand "${subcommand}"`,
       );
