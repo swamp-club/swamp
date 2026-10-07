@@ -64,7 +64,10 @@ Deno.test("FileLock.inspect: any content that is not a lock record reads as held
         fc.string().filter((content) => !isLockRecord(content)),
         async (content) => {
           await Deno.writeTextFile(lockPath, content);
-          assert(await lock.inspect() !== null, "fresh must read as held");
+          const fresh = await lock.inspect();
+          assert(fresh !== null, "fresh must read as held");
+          assertEquals(fresh.holderUnknown, true);
+          assertEquals(fresh.nonce, undefined);
 
           const past = new Date(Date.now() - 10_000);
           await Deno.utime(lockPath, past, past);

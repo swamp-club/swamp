@@ -290,6 +290,7 @@ for (
       assertStringIncludes(info.holder, "unknown");
       assertEquals(info.ttlMs, 60_000);
       assertEquals(info.nonce, undefined);
+      assertEquals(info.holderUnknown, true);
       assertEquals(
         new Date(info.acquiredAt).getTime(),
         (await Deno.stat(lockPath)).mtime?.getTime(),

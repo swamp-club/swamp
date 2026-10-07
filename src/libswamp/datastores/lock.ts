@@ -255,6 +255,19 @@ export async function* datastoreLockRelease(
         return;
       }
 
+      // A lock its holder is still writing has no nonce to fence on, and
+      // forceRelease would report it as a changed holder (swamp-club#3152).
+      if (info.holderUnknown) {
+        yield {
+          kind: "completed",
+          data: {
+            released: false,
+            reason: "lock is being written by its holder — retry shortly",
+          },
+        };
+        return;
+      }
+
       // Re-verify the lock holder hasn't changed between inspect and delete.
       // forceRelease() re-reads the nonce immediately before deleting to
       // minimise the TOCTOU window.

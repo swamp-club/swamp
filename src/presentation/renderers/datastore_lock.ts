@@ -46,8 +46,11 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
   const lines = [
     `${bold("Lock Status:")} ${red("locked")}${scopeLabel}`,
     `  Holder:   ${info.holder}`,
-    `  PID:      ${info.pid}`,
-    `  Hostname: ${info.hostname}`,
+    // A lock caught mid-write names no process or host to print.
+    ...(info.holderUnknown ? [] : [
+      `  PID:      ${info.pid}`,
+      `  Hostname: ${info.hostname}`,
+    ]),
     `  Acquired: ${info.acquiredAt} ${dim(`(${ageSec}s ago)`)}`,
     `  TTL:      ${info.ttlMs}ms`,
     `  Backend:  ${data.datastoreType}`,
