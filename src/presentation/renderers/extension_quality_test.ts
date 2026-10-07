@@ -91,6 +91,7 @@ function completedEvent(
         safetyWarnings: [],
         reviewRulesResult: { errors: [], warnings: [], passed: true },
         acceptances: { accepted: [] },
+        commentSites: {},
       },
       gateFailures: [],
       excludedFromArchive: [],
@@ -257,6 +258,9 @@ function completedWithFindings(
         message: "looks like a secret",
       }],
     },
+    commentSites: {
+      [join(manifestDir, "models", "b.ts")]: { 9: "  " },
+    },
   };
   return event;
 }
@@ -276,8 +280,8 @@ Deno.test("createExtensionQualityRenderer: json completed carries the warnings w
     form: "comment",
     file: modelB,
     line: 9,
-    position: "same-line",
-    text: "// swamp-quality-ignore deno-command",
+    position: "line-above",
+    text: "  // swamp-quality-ignore deno-command",
   });
   assertEquals(doc.reviewRuleWarnings[0].ruleId, "stale-acceptance");
   assertEquals("acceptance" in doc.reviewRuleWarnings[0], false);
@@ -331,7 +335,7 @@ Deno.test("createExtensionQualityRenderer: log completed prints the accepted and
   assertStringIncludes(output, `deno-command — ${join("models", "b.ts")}:9:`);
   assertStringIncludes(
     output,
-    "or accept on the line: // swamp-quality-ignore deno-command",
+    "or accept on the line above: // swamp-quality-ignore deno-command",
   );
   assertStringIncludes(output, `stale-acceptance — ${a}:2:`);
 });

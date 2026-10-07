@@ -24,6 +24,8 @@ import {
   acceptanceFor,
   applyAcceptances,
   commentFormFor,
+  type CommentSites,
+  commentSites,
   directiveSpan,
   fileRelativeToManifest,
   invalidAcceptanceFinding,
@@ -364,26 +366,14 @@ Deno.test("parseAcceptanceDirectives: the literal <reason> is reason text like a
   assertEquals(parsed.directives[0].reason, "<reason>");
 });
 
-Deno.test("parseAcceptanceDirectives: a directive after an earlier comment holding an apostrophe is recognised", () => {
-  const parsed = parseAcceptanceDirectives(
-    "new Deno.Command(cmd); // don't inline // swamp-quality-ignore deno-command\n",
-    TS,
-  );
-  assertEquals(parsed.invalid, []);
-  assertEquals(parsed.directives.length, 1);
-  assertEquals(parsed.directives[0].target, {
-    kind: "line",
-    file: TS,
-    line: 1,
-  });
-});
-
 Deno.test("parseAcceptanceDirectives: the keyword inside a string literal is still no directive, whatever comment-like text precedes it", () => {
   for (
     const line of [
       `const s = "a // b' // swamp-quality-ignore deno-command";`,
       `const s = 'it // is" // swamp-quality-ignore deno-command';`,
       "const s = `x // y // swamp-quality-ignore deno-command`;",
+      `const note = "don't // swamp-quality-ignore deno-command";`,
+      `const url = 'http://x'; const s = "// swamp-quality-ignore deno-command";`,
     ]
   ) {
     const parsed = parseAcceptanceDirectives(`${line}\n`, TS);
@@ -632,17 +622,25 @@ Deno.test("staleAcceptanceFinding: warns at the directive's own location", () =>
   assertEquals(typeof finding.remediation, "string");
 });
 
-Deno.test("acceptanceFor: a site finding in a .ts file is a comment at the end of its own line", () => {
+/** Sites saying lines 1 to 20 of the named files take a comment, unindented. */
+function open(...files: string[]): Record<string, CommentSites> {
+  const lines: CommentSites = {};
+  for (let l = 1; l <= 20; l++) lines[l] = "";
+  return Object.fromEntries(files.map((f) => [f, lines]));
+}
+
+Deno.test("acceptanceFor: a site finding in a .ts file is a line comment on its own line above", () => {
   assertEquals(
     acceptanceFor(
       { ruleId: "deno-command", file: "/ext/models/thing.ts", line: 7 },
       "/ext",
+      open("/ext/models/thing.ts"),
     ),
     {
       form: "comment",
       file: "/ext/models/thing.ts",
       line: 7,
-      position: "same-line",
+      position: "line-above",
       text: "// swamp-quality-ignore deno-command",
     },
   );
@@ -653,6 +651,7 @@ Deno.test("acceptanceFor: a site finding in Markdown is an HTML comment on the l
     acceptanceFor(
       { ruleId: "ipv4-address-literals", file: "/ext/README.md", line: 3 },
       "/ext",
+      open("/ext/README.md"),
     ),
     {
       form: "comment",
@@ -669,6 +668,7 @@ Deno.test("acceptanceFor: a site finding in a .txt file is one sidecar entry nam
     acceptanceFor(
       { ruleId: "ipv4-address-literals", file: "/ext/docs/hosts.txt", line: 2 },
       "/ext",
+      {},
     ),
     {
       form: "sidecar",
@@ -687,16 +687,18 @@ Deno.test("acceptanceFor: a .txt finding outside the manifest's directory has no
         line: 2,
       },
       "/repo/extensions/models",
+      {},
     ),
     undefined,
   );
 });
 
-Deno.test("acceptanceFor: testing-completeness is a header comment at line 1", () => {
+Deno.test("acceptanceFor: testing-completeness is a header comment at line 1, whatever the barriers", () => {
   assertEquals(
     acceptanceFor(
       { ruleId: "testing-completeness", file: "/ext/models/thing.ts" },
       "/ext",
+      {},
     ),
     {
       form: "comment",
@@ -718,46 +720,118 @@ Deno.test("acceptanceFor: none for unacceptable rules, collapsed findings, and a
       { ruleId: "deno-command", file: "/ext/models/thing.ts" },
     ]
   ) {
-    assertEquals(acceptanceFor(finding, "/ext"), undefined, finding.ruleId);
+    assertEquals(
+      acceptanceFor(finding, "/ext", open("/ext/a.ts", "/ext/models/thing.ts")),
+      undefined,
+      finding.ruleId,
+    );
   }
 });
 
-Deno.test("acceptanceFor: every comment acceptance parses back to a directive naming its finding", () => {
+Deno.test("acceptanceFor: none on a line the sites leave out, or in a file they do not name; the text copies the line's indentation", () => {
+  const finding = { ruleId: "base64-run", file: TS, line: 3 };
+  assertEquals(acceptanceFor(finding, "/ext", { [TS]: { 2: "" } }), undefined);
+  assertEquals(acceptanceFor(finding, "/ext", {}), undefined);
+  assertEquals(acceptanceFor(finding, "/ext", { [TS]: { 3: "\t  " } }), {
+    form: "comment",
+    file: TS,
+    line: 3,
+    position: "line-above",
+    text: "\t  // swamp-quality-ignore base64-run",
+  });
+});
+
+Deno.test("commentSites: no line inside a multi-line template literal, string or block comment, each other line with its indentation", () => {
+  const source = [
+    "const a = 1;", // 1
+    "const t = `x", // 2
+    "QQQ", // 3
+    "${a}", // 4
+    "y`;", // 5
+    "/**", // 6
+    " * doc", // 7
+    " */", // 8
+    'const s = "a\\', // 9
+    'b";', // 10
+    "  const b = `one line`;", // 11
+  ].join("\n");
+  assertEquals(
+    commentSites(source, TS, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+    { 1: "", 2: "", 6: "", 9: "", 11: "  " },
+  );
+  assertEquals(commentSites("const x = ;\n", TS, [1]), {});
+});
+
+Deno.test("commentSites: no Markdown line inside a fenced block, through the closing fence", () => {
+  const md = [
+    "# T", // 1
+    "Gateway: 10.0.0.1", // 2
+    "```sh", // 3
+    "curl http://10.0.0.2", // 4
+    "```", // 5
+    "  Router: 10.0.0.3", // 6
+  ].join("\n");
+  assertEquals(commentSites(md, MD, [2, 4, 5, 6]), { 2: "", 6: "  " });
+});
+
+Deno.test("acceptanceFor: every comment acceptance, applied bottom-up, accepts its finding, including two on one line", () => {
   const cases = [
     {
-      finding: { ruleId: "deno-command", file: TS, line: 2 },
-      lines: ["a;", "new Deno.Command(x);", "b;"],
+      file: TS,
+      lines: ["a;", 'new Deno.Command("x", ["QQQ"]);', "b;"],
+      findings: [
+        { ruleId: "deno-command", file: TS, line: 2 },
+        { ruleId: "base64-run", file: TS, line: 2 },
+      ],
     },
     {
-      finding: { ruleId: "ipv4-address-literals", file: MD, line: 2 },
-      lines: ["# T", "Gateway: 10.0.0.1"],
+      file: MD,
+      lines: ["# T", "Gateway: 10.0.0.1", "Router: 10.0.0.2"],
+      findings: [
+        { ruleId: "ipv4-address-literals", file: MD, line: 2 },
+        { ruleId: "ipv4-address-literals", file: MD, line: 3 },
+      ],
     },
     {
-      finding: { ruleId: "testing-completeness", file: TS },
+      file: TS,
       lines: ["export const x = 1;"],
+      findings: [{ ruleId: "testing-completeness", file: TS }],
     },
   ];
-  for (const { finding, lines } of cases) {
-    const acceptance = acceptanceFor(finding, "/ext");
-    if (acceptance?.form !== "comment") throw new Error(finding.ruleId);
+  for (const { file, lines, findings } of cases) {
+    const sites = {
+      [file]: commentSites(
+        lines.join("\n"),
+        file,
+        lines.map((_, i) => i + 1),
+      ),
+    };
+    const acceptances = findings.map((f) => acceptanceFor(f, "/ext", sites));
     const edited = [...lines];
-    const index = acceptance.line - 1;
-    if (acceptance.position === "same-line") {
-      edited[index] = `${edited[index]} ${acceptance.text}`;
-    } else {
-      edited.splice(index, 0, acceptance.text);
+    const ordered = acceptances.map((a, i) => ({ a, i })).sort((x, y) =>
+      (y.a?.form === "comment" ? y.a.line : 0) -
+      (x.a?.form === "comment" ? x.a.line : 0)
+    );
+    for (const { a } of ordered) {
+      if (a?.form !== "comment") throw new Error(file);
+      edited.splice(a.line - 1, 0, a.text);
     }
-    const parsed = parseAcceptanceDirectives(edited.join("\n"), finding.file);
-    assertEquals(parsed.invalid, [], finding.ruleId);
-    // A line inserted above the finding moves it down one, as a re-run
-    // would report it.
-    const moved = acceptance.position === "line-above" &&
-        "line" in finding && finding.line !== undefined
-      ? { ...finding, line: finding.line + 1 }
-      : finding;
-    const applied = applyAcceptances([moved], parsed.directives);
-    assertEquals(applied.remaining, [], finding.ruleId);
-    assertEquals(applied.stale, [], finding.ruleId);
+    const parsed = parseAcceptanceDirectives(edited.join("\n"), file);
+    assertEquals(parsed.invalid, [], file);
+    // Each finding is reported again where its line now sits.
+    const moved = findings.map((f) =>
+      "line" in f && f.line !== undefined
+        ? {
+          ...f,
+          line: f.line +
+            acceptances.filter((a) => a?.form === "comment" && a.line <= f.line)
+              .length,
+        }
+        : f
+    );
+    const applied = applyAcceptances(moved, parsed.directives);
+    assertEquals(applied.remaining, [], file);
+    assertEquals(applied.stale, [], file);
   }
 });
 

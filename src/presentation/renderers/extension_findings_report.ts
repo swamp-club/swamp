@@ -24,6 +24,7 @@ import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import {
   type Acceptance,
   acceptanceFor,
+  type CommentSites,
 } from "../../domain/extensions/extension_acceptances.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -63,6 +64,8 @@ export interface GatedFindings {
   safetyWarnings: SafetyIssue[];
   reviewWarnings: ReviewFinding[];
   acceptances: DeclaredAcceptances;
+  /** The warned lines a comment acceptance can go above, from the quality pass. */
+  commentSites: Readonly<Record<string, CommentSites>>;
 }
 
 /** A finding with its acceptance attached, for the JSON warnings documents. */
@@ -76,9 +79,10 @@ export type WithAcceptance<T> = T & { acceptance?: Acceptance };
 export function withAcceptance<T extends SafetyIssue | ReviewFinding>(
   findings: T[],
   manifestDir: string,
+  sites: Readonly<Record<string, CommentSites>>,
 ): WithAcceptance<T>[] {
   return findings.map((finding) => {
-    const acceptance = acceptanceFor(finding, manifestDir);
+    const acceptance = acceptanceFor(finding, manifestDir, sites);
     return acceptance ? { ...finding, acceptance } : finding;
   });
 }
@@ -86,8 +90,9 @@ export function withAcceptance<T extends SafetyIssue | ReviewFinding>(
 function unresolvedWarning(
   finding: SafetyIssue | ReviewFinding,
   manifestDir: string,
+  sites: Readonly<Record<string, CommentSites>>,
 ): UnresolvedWarning {
-  const acceptance = acceptanceFor(finding, manifestDir);
+  const acceptance = acceptanceFor(finding, manifestDir, sites);
   return {
     ruleId: finding.ruleId,
     file: finding.file,
@@ -110,7 +115,9 @@ export function buildFindingsReport(
 ): FindingsReport {
   const unresolvedWarnings: UnresolvedWarning[] = [];
   for (const w of findings.safetyWarnings) {
-    unresolvedWarnings.push(unresolvedWarning(w, manifestDir));
+    unresolvedWarnings.push(
+      unresolvedWarning(w, manifestDir, findings.commentSites),
+    );
   }
   for (const w of findings.reviewWarnings) {
     if (w.files && w.files.length > 0) {
@@ -125,10 +132,13 @@ export function buildFindingsReport(
               "failure paths with unit tests before publishing.",
           },
           manifestDir,
+          findings.commentSites,
         ));
       }
     } else {
-      unresolvedWarnings.push(unresolvedWarning(w, manifestDir));
+      unresolvedWarnings.push(
+        unresolvedWarning(w, manifestDir, findings.commentSites),
+      );
     }
   }
   const hasAcceptances = findings.acceptances.accepted.length > 0 ||
@@ -160,13 +170,14 @@ function acceptanceAdvice(acceptance: Acceptance): string {
       .replace(/^\{/, "{ ").replace(/\}$/, " }");
     return `or accept in quality.yaml: ${entry}`;
   }
+  // The text carries the indentation of the line it goes above; the advice
+  // shows the comment alone.
+  const comment = acceptance.text.trimStart();
   switch (acceptance.position) {
-    case "same-line":
-      return `or accept on the line: ${acceptance.text}`;
     case "line-above":
-      return `or accept on the line above: ${acceptance.text}`;
+      return `or accept on the line above: ${comment}`;
     case "file-header":
-      return `or accept at the top of the file: ${acceptance.text}`;
+      return `or accept at the top of the file: ${comment}`;
   }
 }
 

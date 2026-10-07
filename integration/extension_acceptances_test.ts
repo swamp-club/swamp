@@ -30,6 +30,7 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
 import { parseExtensionManifest } from "../src/domain/extensions/extension_manifest.ts";
@@ -238,7 +239,7 @@ async function applyAcceptances(report: FindingsReport): Promise<void> {
   const sidecars = new Map<string, SidecarAcceptanceEntry[]>();
   for (const warning of report.unresolvedWarnings ?? []) {
     const acceptance = warning.acceptance;
-    assert(acceptance, `${warning.ruleId} has no acceptance`);
+    if (!acceptance) continue;
     if (acceptance.form === "comment") {
       comments.set(acceptance.file, [
         ...comments.get(acceptance.file) ?? [],
@@ -255,11 +256,7 @@ async function applyAcceptances(report: FindingsReport): Promise<void> {
     const lines = (await Deno.readTextFile(file)).split("\n");
     // Bottom-up, so an inserted line never moves a later edit's line.
     for (const a of acceptances.toSorted((x, y) => y.line - x.line)) {
-      if (a.position === "same-line") {
-        lines[a.line - 1] = `${lines[a.line - 1]} ${a.text}`;
-      } else {
-        lines.splice(a.line - 1, 0, a.text);
-      }
+      lines.splice(a.line - 1, 0, a.text);
     }
     await Deno.writeTextFile(file, lines.join("\n"));
   }
@@ -276,6 +273,8 @@ async function applyAcceptances(report: FindingsReport): Promise<void> {
   }
 }
 
+const BLOB = "Q".repeat(120);
+
 async function withFindingsExtension(
   fn: (root: string, input: ExtensionPushPrepareInput) => Promise<void>,
 ): Promise<void> {
@@ -285,7 +284,15 @@ async function withFindingsExtension(
       model,
       [
         "export const model = { name: 'thing' };",
-        'export const run = () => new Deno.Command("vendor"); // don\'t inline',
+        // Two findings on one indented line: deno-command and base64-run.
+        "export function run() {",
+        `  return new Deno.Command("vendor", { args: ["${BLOB}"] }); // don't inline`,
+        "}",
+        // A base64 run inside a multi-line template literal, where a
+        // comment line would become part of the string.
+        "export const script = `",
+        BLOB,
+        "`;",
         "",
       ].join("\n"),
     );
@@ -293,7 +300,9 @@ async function withFindingsExtension(
     const readme = join(root, "README.md");
     await Deno.writeTextFile(
       readme,
-      "# Thing\n\nGateway: 10.0.0.1\nRouter: 10.0.0.2\n",
+      // The fenced address cannot take an HTML comment: inside the fence it
+      // is code, not a directive.
+      "# Thing\n\nGateway: 10.0.0.1\nRouter: 10.0.0.2\n\n```sh\ncurl http://10.0.0.9\n```\n",
     );
     const hosts = join(root, "docs", "hosts.txt");
     const lab = join(root, "docs", "lab.txt");
@@ -345,19 +354,23 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       safetyWarnings: first.safetyWarnings,
       reviewWarnings: first.reviewRulesResult.warnings,
       acceptances: first.acceptances,
+      commentSites: first.commentSites,
     }, root);
     const forms = (report.unresolvedWarnings ?? []).map((w) =>
       w.acceptance?.form === "comment"
-        ? `${w.ruleId}:${w.acceptance.position}`
-        : `${w.ruleId}:${w.acceptance?.form}`
+        ? `${w.ruleId}:${w.line}:${w.acceptance.position}`
+        : `${w.ruleId}:${w.line}:${w.acceptance?.form ?? "none"}`
     ).sort();
     assertEquals(forms, [
-      "deno-command:same-line",
-      "ipv4-address-literals:line-above",
-      "ipv4-address-literals:line-above",
-      "ipv4-address-literals:sidecar",
-      "ipv4-address-literals:sidecar",
-      "testing-completeness:file-header",
+      "base64-run:3:line-above",
+      "base64-run:6:none",
+      "deno-command:3:line-above",
+      "ipv4-address-literals:1:sidecar",
+      "ipv4-address-literals:1:sidecar",
+      "ipv4-address-literals:3:line-above",
+      "ipv4-address-literals:4:line-above",
+      "ipv4-address-literals:7:none",
+      "testing-completeness:undefined:file-header",
     ]);
     // Every comment acceptance names its file, line and position.
     for (const w of report.unresolvedWarnings ?? []) {
@@ -367,6 +380,18 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
     }
 
     await applyAcceptances(report);
+    // Each inserted comment is indented like the line it names, so the
+    // file stays formatted.
+    const edited = (await Deno.readTextFile(join(root, "model.ts"))).split(
+      "\n",
+    );
+    edited.forEach((line, i) => {
+      if (!line.includes("swamp-quality-ignore") || i === 0) return;
+      const below = edited.slice(i + 1).find((l) =>
+        !l.includes("swamp-quality-ignore")
+      )!;
+      assertEquals(/^\s*/.exec(line)![0], /^\s*/.exec(below)![0], line);
+    });
 
     const second = await extensionPushPrepare(
       createLibSwampContext(),
@@ -378,10 +403,19 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
       { rule: "ipv4-address-literals", file: "docs/lab.txt" },
     ]);
-    assertEquals(second.safetyWarnings, []);
+    // Only the two findings offered no acceptance remain; the template
+    // literal and the fence are unchanged.
+    assertEquals(
+      second.safetyWarnings.map((w) => w.ruleId).sort(),
+      ["base64-run", "ipv4-address-literals"],
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(root, "model.ts")),
+      "export const script = `\n" + BLOB + "\n`;",
+    );
     assertEquals(second.reviewRulesResult.errors, []);
     assertEquals(second.reviewRulesResult.warnings, []);
-    assertEquals(second.acceptances.accepted.length, 6);
+    assertEquals(second.acceptances.accepted.length, 7);
     for (const a of second.acceptances.accepted) {
       assertEquals("reason" in a, false);
     }

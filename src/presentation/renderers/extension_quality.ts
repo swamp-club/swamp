@@ -260,6 +260,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
               safetyWarnings: findings.safetyWarnings,
               reviewWarnings: findings.reviewRulesResult.warnings,
               acceptances: findings.acceptances,
+              commentSites: findings.commentSites,
             },
             manifestDir,
           ),
@@ -385,16 +386,22 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             registryScorable,
             gateFailures,
             excludedFromArchive,
-            warnings: withAcceptance(findings.safetyWarnings, manifestDir),
+            warnings: withAcceptance(
+              findings.safetyWarnings,
+              manifestDir,
+              findings.commentSites,
+            ),
             reviewRuleWarnings: withAcceptance(
               findings.reviewRulesResult.warnings,
               manifestDir,
+              findings.commentSites,
             ),
             ...buildFindingsReport(
               {
                 safetyWarnings: findings.safetyWarnings,
                 reviewWarnings: findings.reviewRulesResult.warnings,
                 acceptances: findings.acceptances,
+                commentSites: findings.commentSites,
               },
               manifestDir,
             ),

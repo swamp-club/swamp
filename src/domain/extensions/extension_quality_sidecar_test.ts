@@ -221,6 +221,7 @@ Deno.test("acceptanceFor and qualitySidecarPath agree on where the sidecar is", 
       line: 1,
     },
     DIR,
+    {},
   );
   assertEquals(acceptance?.form, "sidecar");
   assertPathEquals(acceptance?.file ?? "", qualitySidecarPath(DIR));

@@ -504,7 +504,7 @@ const report: FindingsReport = {
       form: "comment",
       file: MODEL_B,
       line: 9,
-      position: "same-line",
+      position: "line-above",
       text: "// swamp-quality-ignore deno-command",
     },
   }, {
@@ -593,7 +593,7 @@ Deno.test("extensionPushRenderer: log dry run and completed summaries print the 
   assertStringIncludes(output, "    fix: Prefer swamp's own primitives.");
   assertStringIncludes(
     output,
-    "    or accept on the line: // swamp-quality-ignore deno-command",
+    "    or accept on the line above: // swamp-quality-ignore deno-command",
   );
   assertStringIncludes(
     output,
@@ -635,7 +635,7 @@ Deno.test("extensionPushRenderer: log report prints braces in messages, remediat
         form: "comment",
         file: MODEL_B,
         line: 4,
-        position: "same-line",
+        position: "line-above",
         text: "// swamp-quality-ignore credentials-sensitive-field",
       },
     }],

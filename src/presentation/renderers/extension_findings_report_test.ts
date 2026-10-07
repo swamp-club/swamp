@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join, relative, resolve } from "@std/path";
+import type { CommentSites } from "../../domain/extensions/extension_acceptances.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { Logger } from "@logtape/logtape";
 import {
@@ -28,6 +29,16 @@ import {
 } from "./extension_findings_report.ts";
 
 const DIR = resolve("/ext");
+
+/** Lines 1 to 20 of every source file the tests name take a comment, unindented. */
+const OPEN: Record<string, CommentSites> = Object.fromEntries(
+  ["a.ts", "b.ts", "c.ts"].map((name) => [
+    join(DIR, "models", name),
+    Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => [i + 1, ""]),
+    ) as CommentSites,
+  ]),
+);
 
 const secret: ReviewFinding = {
   ruleId: "credentials-sensitive-field",
@@ -66,6 +77,7 @@ Deno.test("buildFindingsReport: an unaccepted finding becomes an unresolved warn
     }],
     reviewWarnings: [secret, review],
     acceptances: { accepted: [] },
+    commentSites: OPEN,
   }, DIR);
   assertEquals("declaredAcceptances" in report, false);
   assertEquals(report.unresolvedWarnings?.length, 3);
@@ -80,7 +92,7 @@ Deno.test("buildFindingsReport: an unaccepted finding becomes an unresolved warn
       form: "comment",
       file: modelB,
       line: 9,
-      position: "same-line",
+      position: "line-above",
       text: "// swamp-quality-ignore deno-command",
     },
   });
@@ -100,6 +112,7 @@ Deno.test("buildFindingsReport: two sidecar findings give two entries for one ac
     })),
     reviewWarnings: [],
     acceptances: { accepted: [] },
+    commentSites: OPEN,
   }, DIR);
   assertEquals(
     report.unresolvedWarnings?.map((w) => w.acceptance),
@@ -124,6 +137,7 @@ Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands
       files,
     }],
     acceptances: { accepted: [] },
+    commentSites: OPEN,
   }, DIR);
   assertEquals(report.unresolvedWarnings?.map((e) => e.file), files);
   assertStringIncludes(
@@ -152,7 +166,12 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
     }],
   };
   const report = buildFindingsReport(
-    { safetyWarnings: [], reviewWarnings: [], acceptances },
+    {
+      safetyWarnings: [],
+      reviewWarnings: [],
+      acceptances,
+      commentSites: {},
+    },
     DIR,
   );
   assertEquals(report, { declaredAcceptances: acceptances });
@@ -163,15 +182,42 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
       accepted: [],
       generated: { by: "codegen", source: "spec", commit: "abc" },
     },
+    commentSites: {},
   }, DIR);
   assertEquals(generatedOnly.declaredAcceptances?.generated?.by, "codegen");
   assertEquals(
     buildFindingsReport(
-      { safetyWarnings: [], reviewWarnings: [], acceptances: { accepted: [] } },
+      {
+        safetyWarnings: [],
+        reviewWarnings: [],
+        acceptances: { accepted: [] },
+        commentSites: {},
+      },
       DIR,
     ),
     {},
   );
+});
+
+Deno.test("buildFindingsReport: a finding on a line no comment can go above keeps its fix but offers no acceptance", () => {
+  const modelB = join(DIR, "models", "b.ts");
+  const report = buildFindingsReport({
+    safetyWarnings: [{
+      ruleId: "base64-run",
+      file: modelB,
+      line: 5,
+      message: "Line 5 has a base64 run",
+      remediation: "load it from a file",
+    }],
+    reviewWarnings: [],
+    acceptances: { accepted: [] },
+    commentSites: { [modelB]: { 4: "", 6: "" } },
+  }, DIR);
+  assertEquals(
+    report.unresolvedWarnings?.[0].remediation,
+    "load it from a file",
+  );
+  assertEquals("acceptance" in report.unresolvedWarnings![0], false);
 });
 
 Deno.test("withAcceptance: attaches the acceptance to acceptable findings only, leaving the rest untouched", () => {
@@ -186,12 +232,13 @@ Deno.test("withAcceptance: attaches the acceptance to acceptable findings only, 
   const [field, adversarial, many] = withAcceptance(
     [secret, review, collapsed],
     DIR,
+    OPEN,
   );
   assertEquals(field.acceptance, {
     form: "comment",
     file: secret.file,
     line: 4,
-    position: "same-line",
+    position: "line-above",
     text: "// swamp-quality-ignore credentials-sensitive-field",
   });
   assertEquals(field.remediation, "mark it sensitive");

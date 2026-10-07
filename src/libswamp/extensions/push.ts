@@ -304,6 +304,8 @@ export interface ExtensionPushPrepared {
    * findings no acceptance covers, so the warnings gate counts those alone.
    */
   acceptances: DeclaredAcceptances;
+  /** The warned lines a comment acceptance can go above, by absolute file (see {@link QualityFindings}). */
+  commentSites: Record<string, CommentSites>;
   archiveBytes: Uint8Array;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
@@ -551,6 +553,8 @@ import {
   type AcceptanceSource,
   applyAcceptances,
   commentFormFor,
+  type CommentSites,
+  commentSites,
   fileRelativeToManifest,
   type InvalidAcceptance,
   invalidAcceptanceFinding,
@@ -1321,6 +1325,7 @@ export async function extensionPushPrepare(
     reviewRulesResult,
     sidecar,
     acceptances: findings.acceptances,
+    commentSites: findings.commentSites,
     archiveBytes,
     manifest: input.manifest,
     contentMetadata,
@@ -1436,6 +1441,12 @@ export interface QualityFindings {
    */
   reviewRulesResult: ReviewRulesResult;
   acceptances: DeclaredAcceptances;
+  /**
+   * The warned lines a comment acceptance can go above, with their
+   * indentation, by absolute file; the findings report offers no comment
+   * acceptance on any other line.
+   */
+  commentSites: Record<string, CommentSites>;
 }
 
 /** Input to {@link runQualityFindings}. */
@@ -1563,6 +1574,14 @@ export async function runQualityFindings(
   // comment form, and the sidecar's entries.
   const directives: AcceptanceDirective[] = [];
   const invalid: InvalidAcceptance[] = [];
+  // The warned lines of each file, where the report may offer a comment.
+  const warned = new Map<string, number[]>();
+  for (const w of [...safetyWarnings, ...reviewRulesResult.warnings]) {
+    if (w.line !== undefined) {
+      warned.set(w.file, [...warned.get(w.file) ?? [], w.line]);
+    }
+  }
+  const commentSitesByFile: Record<string, CommentSites> = {};
   for (const file of files) {
     if (commentFormFor(file) === "none") continue;
     let content: string;
@@ -1570,6 +1589,10 @@ export async function runQualityFindings(
       content = await Deno.readTextFile(file);
     } catch {
       continue;
+    }
+    const warnedLines = warned.get(file);
+    if (warnedLines) {
+      commentSitesByFile[file] = commentSites(content, file, warnedLines);
     }
     const parsed = parseAcceptanceDirectives(content, file);
     for (const d of parsed.directives) directives.push(d);
@@ -1637,6 +1660,7 @@ export async function runQualityFindings(
         ? { generated: sidecar.value.generated }
         : {}),
     },
+    commentSites: commentSitesByFile,
   };
 }
 

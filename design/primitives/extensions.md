@@ -1145,9 +1145,7 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   line, or the one after a single blank line, so a formatter's blank line
   after an HTML comment is harmless; stacked directives share a target.
   Directive text inside a Markdown fenced code block or a source `/* ... */`
-  block is documentation and is not parsed. A `//` after an earlier unquoted
-  `//` comment is inside that comment, so a quote in the earlier comment
-  (`// don't`) does not hide the directive. Text after the rule id with no
+  block is documentation and is not parsed. Text after the rule id with no
   colon, an unknown, error-level or otherwise non-acceptable
   rule (with its remediation), an extension-scoped rule, a `*/` after the directive on its line (a block comment that would
   hide code from the safety scan), or more than 50 directives in a file is a
@@ -1187,14 +1185,21 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   unresolved warning, and each finding in the JSON `warnings` lists, carries
   an `Acceptance` value (`acceptanceFor` in `extension_acceptances.ts`)
   describing the edit, so an agent applies it without parsing prose: a
-  comment `{ form, file, line, position, text }` with `position` one of
-  `same-line` (source files; inserts no line, so no other finding moves),
-  `line-above` (Markdown) or `file-header` (file-scoped, `line` 1), or a
-  sidecar `{ form, file, entry: { rule, file? } }` naming one entry for the
-  `accept` list, so any number of them merge into one valid `quality.yaml`.
-  No acceptance carries a reason, and there is none for a finding the
-  sidecar could not name (a `.txt` file outside the manifest's directory) or
-  a collapsed finding (each listed file takes its own). JSON paths are
+  comment `{ form, file, line, position, text }` with `position`
+  `line-above` (a new line above the finding, so several findings on one
+  line each take a stacked directive; `text` is the whole line, indented
+  like the finding's line so the file stays formatted) or `file-header`
+  (file-scoped, `line` 1), or a sidecar `{ form, file, entry: { rule, file? } }` naming one entry
+  for the `accept` list, so any number of them merge into one valid
+  `quality.yaml`. No acceptance carries a reason. There is none for a
+  finding the sidecar could not name (a `.txt` file outside the manifest's
+  directory), a collapsed finding (each listed file takes its own), or a
+  line a comment cannot go above: `commentSites` (computed in
+  `runQualityFindings` for each warned line) leaves out the lines that begin
+  inside a multi-line string, template literal or block comment (Babel
+  tokens) or a Markdown fence, and every line of a source file that does not
+  parse, since there a comment would be ignored or would change the string.
+  JSON paths are
   absolute (the report is local output, never computed for another machine);
   `entry.file` is manifest-relative because it is written into the sidecar,
   and log mode prints paths openable from the current directory. The

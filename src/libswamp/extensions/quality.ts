@@ -165,6 +165,7 @@ export async function* extensionQuality(
         safetyWarnings: prepared.safetyWarnings,
         reviewRulesResult: prepared.reviewRulesResult,
         acceptances: prepared.acceptances,
+        commentSites: prepared.commentSites,
       };
 
       // A cached archive means every gate passed; never cache one built

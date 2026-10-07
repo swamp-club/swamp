@@ -784,14 +784,22 @@ export const extensionPushCommand = new Command()
       // 6a. Handle review-rule warnings
       if (prepared.reviewRulesResult.warnings.length > 0) {
         renderer.renderReviewRuleWarnings(
-          withAcceptance(prepared.reviewRulesResult.warnings, manifestDir),
+          withAcceptance(
+            prepared.reviewRulesResult.warnings,
+            manifestDir,
+            prepared.commentSites,
+          ),
         );
       }
 
       // 6b. Handle safety warnings
       if (prepared.safetyWarnings.length > 0) {
         renderer.renderSafetyWarnings(
-          withAcceptance(prepared.safetyWarnings, manifestDir),
+          withAcceptance(
+            prepared.safetyWarnings,
+            manifestDir,
+            prepared.commentSites,
+          ),
         );
       }
 
@@ -827,6 +835,7 @@ export const extensionPushCommand = new Command()
           safetyWarnings: prepared.safetyWarnings,
           reviewWarnings: prepared.reviewRulesResult.warnings,
           acceptances: prepared.acceptances,
+          commentSites: prepared.commentSites,
         },
         manifestDir,
       );

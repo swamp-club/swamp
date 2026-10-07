@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { parse } from "@babel/parser";
+import { BABEL_PLUGINS } from "./dynamic_code_detector.ts";
 import { extname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
@@ -390,11 +392,8 @@ function findDirectiveStart(
     if (at === -1) return undefined;
     const openerAt = line.lastIndexOf(opener, at);
     // Quote tracking applies to source lines only: an apostrophe in
-    // Markdown prose must not hide a trailing HTML comment. An opener after
-    // an unquoted `//` is inside that comment, not a string, so an
-    // apostrophe in the earlier comment (`// don't`) does not hide it.
-    const quoted = form === "line" && isInsideQuotes(line, openerAt) &&
-      !lineCommentBefore(line, openerAt);
+    // Markdown prose must not hide a trailing HTML comment.
+    const quoted = form === "line" && isInsideQuotes(line, openerAt);
     if (
       openerAt !== -1 && !quoted &&
       line.slice(openerAt + opener.length, at).trim().length === 0
@@ -602,8 +601,6 @@ export function staleAcceptanceFinding(
 
 /** Where a comment acceptance goes relative to its `line`. */
 export const ACCEPTANCE_POSITIONS = [
-  /** At the end of `line` itself. */
-  "same-line",
   /** On a new line inserted directly above `line`. */
   "line-above",
   /** On a new line inserted at the top of the file (after a shebang); `line` is 1. */
@@ -635,7 +632,10 @@ export type Acceptance =
     /** The 1-based line `position` is relative to. */
     line: number;
     position: AcceptancePosition;
-    /** The comment to insert, e.g. `// swamp-quality-ignore deno-command`. */
+    /**
+     * The whole line to insert, indented like the line it goes above, e.g.
+     * `    // swamp-quality-ignore deno-command`.
+     */
     text: string;
   }
   | {
@@ -675,15 +675,85 @@ export function fileRelativeToManifest(
 }
 
 /**
+ * The warned lines of one file that a comment acceptance can go above, each
+ * with its indentation, which the inserted comment copies so the file stays
+ * formatted. A line is absent when it begins inside a multi-line string,
+ * template literal or block comment in source, or inside a fenced block in
+ * Markdown, where a comment would be ignored as documentation or, in a
+ * string, change what the program does; every line is absent from a source
+ * file that does not parse, since none can be vouched for.
+ */
+export type CommentSites = Record<number, string>;
+
+/** The {@link CommentSites} of `lines` in one file with a comment form. */
+export function commentSites(
+  content: string,
+  file: string,
+  lines: readonly number[],
+): CommentSites {
+  const text = content.split("\n");
+  const barriers = new Set<number>();
+  if (commentFormFor(file) === "html") {
+    let fenced = false;
+    text.forEach((line, i) => {
+      const fence = /^\s*(```|~~~)/.test(line);
+      // The lines after an opening fence, through its closing fence.
+      if (fenced) barriers.add(i + 1);
+      if (fence) fenced = !fenced;
+    });
+  } else {
+    let spans: {
+      loc?: { start: { line: number }; end: { line: number } } | null;
+    }[];
+    try {
+      const parsed = parse(content, {
+        sourceType: "module",
+        plugins: extname(file).toLowerCase().endsWith("x")
+          ? [...BABEL_PLUGINS, "jsx"]
+          : BABEL_PLUGINS,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowImportExportEverywhere: true,
+        allowUndeclaredExports: true,
+        allowNewTargetOutsideFunction: true,
+        allowSuperOutsideMethod: true,
+        errorRecovery: false,
+        tokens: true,
+      });
+      spans = [...(parsed.tokens ?? []), ...(parsed.comments ?? [])];
+    } catch {
+      return {};
+    }
+    // A token or comment spanning lines covers every line after its first.
+    for (const span of spans) {
+      const loc = span.loc;
+      if (!loc) continue;
+      for (let l = loc.start.line + 1; l <= loc.end.line; l++) {
+        barriers.add(l);
+      }
+    }
+  }
+  const sites: CommentSites = {};
+  for (const line of lines) {
+    if (line < 1 || line > text.length || barriers.has(line)) continue;
+    sites[line] = /^[ \t]*/.exec(text[line - 1])![0];
+  }
+  return sites;
+}
+
+/**
  * The acceptance that declares `finding` acceptable, or undefined when it
  * has none: a rule with no acceptance form, a collapsed finding standing for
- * several files (each file takes its own), a site finding with no line, or
- * a file with no comment form outside the manifest's directory, which the
- * sidecar cannot name. `finding.file` is the absolute path findings carry.
+ * several files (each file takes its own), a site finding with no line, a
+ * file with no comment form outside the manifest's directory, which the
+ * sidecar cannot name, or a line a comment cannot go above (absent from
+ * the file's {@link CommentSites} in `sites`). `finding.file` is the
+ * absolute path findings carry.
  */
 export function acceptanceFor(
   finding: AcceptableFinding,
   manifestDir: string,
+  sites: Readonly<Record<string, CommentSites>>,
 ): Acceptance | undefined {
   if (!isAcceptableRule(finding.ruleId)) return undefined;
   if (finding.file.startsWith("(")) return undefined;
@@ -719,21 +789,17 @@ export function acceptanceFor(
     };
   }
   if (finding.line === undefined) return undefined;
-  // A line comment ends the finding's own line, so applying one never moves
-  // another finding's line; Markdown takes its HTML comment on the line above.
-  return form === "line"
-    ? {
-      form: "comment",
-      file: finding.file,
-      line: finding.line,
-      position: "same-line",
-      text: `// ${directive}`,
-    }
-    : {
-      form: "comment",
-      file: finding.file,
-      line: finding.line,
-      position: "line-above",
-      text: `<!-- ${directive} -->`,
-    };
+  const indent = sites[finding.file]?.[finding.line];
+  if (indent === undefined) return undefined;
+  // On its own line above the finding, never at the end of it: several
+  // findings on one line each take a directive, and stacked directives all
+  // name the line below them.
+  return {
+    form: "comment",
+    file: finding.file,
+    line: finding.line,
+    position: "line-above",
+    text: indent +
+      (form === "line" ? `// ${directive}` : `<!-- ${directive} -->`),
+  };
 }

@@ -564,7 +564,7 @@ Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the ru
   );
 });
 
-Deno.test("analyzeExtensionSafety: a directive with no reason, or after an earlier comment, hides nothing on its line", async () => {
+Deno.test("analyzeExtensionSafety: a directive with no reason hides nothing on its line", async () => {
   const blob = "Q".repeat(120);
   await withTempFiles(
     {

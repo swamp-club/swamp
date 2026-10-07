@@ -776,8 +776,8 @@ to edit:
   "form": "comment",
   "file": "/abs/ext/models/b.ts",
   "line": 9,
-  "position": "same-line",
-  "text": "// swamp-quality-ignore deno-command"
+  "position": "line-above",
+  "text": "    // swamp-quality-ignore deno-command"
 }
 ```
 
@@ -789,15 +789,24 @@ to edit:
 }
 ```
 
-- `same-line`: append `<text>` to line `line`.
-- `line-above`: insert `<text>` as a new line before line `line`. Apply these
-  bottom-up within a file, since each insert moves the lines below it.
+- `line-above`: insert `text` verbatim (it is the whole line, indented like line
+  `line`) as a new line before line `line`. Apply these bottom-up within a file,
+  since each insert moves the lines below it; two findings on one line take two
+  stacked lines, which both name that line.
 - `file-header` (`line` is 1): insert `<text>` at the top of the file, after a
   `#!` shebang if there is one.
 - `sidecar`: append `entry` to the `accept` list of the existing `quality.yaml`;
   create the file as `version: 1` plus `accept:` only when it is absent. Never
   write a second `version:` header. `entry.file` is already relative to the
   manifest's directory; an extension-scoped rule has no `file`.
+
+A warning with no `acceptance` cannot be declared where it is: its rule has no
+acceptance form, or its line sits inside a multi-line string, template literal,
+block comment or Markdown fence, where a comment would be ignored or would
+change the string. Offer the fix.
+
+After editing source files, run `swamp extension fmt manifest.yaml` so the
+formatting gate passes.
 
 Add a reason only when the user gives one, after a colon on the comment or as
 `reason:` on the sidecar entry.
