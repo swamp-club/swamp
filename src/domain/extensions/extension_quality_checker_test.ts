@@ -466,6 +466,38 @@ Deno.test("checkExtensionQuality: lint output contains no ANSI escape codes", as
   );
 });
 
+Deno.test("checkExtensionQuality: fmt output contains no ANSI escape codes when the env sets FORCE_COLOR", async () => {
+  await withTempFiles(
+    { "model.ts": "export const x=1;" },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH, undefined, {
+        ...Deno.env.toObject(),
+        FORCE_COLOR: "3",
+      });
+      const fmtIssue = result.issues.find((i) => i.check === "fmt");
+      assertEquals(fmtIssue !== undefined, true);
+      assertEquals(fmtIssue!.output.includes("\x1b["), false);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: lint output contains no ANSI escape codes when the env sets FORCE_COLOR", async () => {
+  await withTempFiles(
+    {
+      "model.ts": "// deno-lint-ignore no-explicit-any\nexport const x = 1;\n",
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH, undefined, {
+        ...Deno.env.toObject(),
+        FORCE_COLOR: "3",
+      });
+      const lintIssue = result.issues.find((i) => i.check === "lint");
+      assertEquals(lintIssue !== undefined, true);
+      assertEquals(lintIssue!.output.includes("\x1b["), false);
+    },
+  );
+});
+
 Deno.test("stripCommentsAndStrings removes single-line comments", () => {
   const result = stripCommentsAndStrings('code(); // import("pkg")');
   assertEquals(result.includes("import"), false);
