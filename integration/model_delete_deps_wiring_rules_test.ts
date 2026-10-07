@@ -34,12 +34,7 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 /** Callers that still omit the injected definition repo. */
-const PINNED_WITHOUT_DEFINITION_REPO = [
-  // Worker prune: swamp-club#3155.
-  "src/cli/commands/serve.ts: serveCommand",
-  "src/cli/commands/worker_prune.ts: workerPruneCommand",
-  "src/serve/handlers/admin_handlers.ts: handleWorkerPrune",
-];
+const PINNED_WITHOUT_DEFINITION_REPO: readonly string[] = [];
 
 /** Position of the injectedDefinitionRepo parameter. */
 const DEFINITION_REPO_ARG = 5;

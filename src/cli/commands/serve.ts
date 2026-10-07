@@ -6909,6 +6909,7 @@ export const serveCommand = new Command()
         datastoreResolver,
         undefined,
         repoContext.markDirty,
+        repoContext.definitionRepo,
       );
 
       const buildPruneDeps = (): WorkerPruneDeps => ({
