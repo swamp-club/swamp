@@ -137,15 +137,14 @@ naming the plan; a free plan with an active trial passes, naming the trial. A
 free plan whose trial has ended fails with the message the push throws:
 `Collective "@acme" is on the Free plan and its trial ended on 2026-08-19.
 Private publication requires a paid plan; upgrade at <registry>/o/acme/billing.`
-Everything else is `not-run` with cause `entitlement-undecided` and leaves the
-push to the registry's decision: a free plan with no trial, because the
-registry's own gate may start the collective's trial at publish, and a registry
-that reports no entitlement at all (an older server). Collective tokens have no
-trial door on the registry, so a token's private push into a free collective
-with no trial reads undecided here and is refused at publish, where the refusal
-explains itself. The check is omitted for a collective that is not the caller's
-(membership is the message that matters) and never runs for public or default
-intent.
+A free plan with no trial fails the same way (`… is on the Free plan and has no
+trial. …`): a trial starts only when its collective is created, never at
+publish (swamp-club#3104). Everything else is `not-run` with cause
+`entitlement-undecided` and leaves the push to the registry's decision: a
+registry that reports no entitlement for the collective (an older server), or
+a trial state this client does not know. The check is omitted for a collective
+that is not the caller's (membership is the message that matters) and never
+runs for public or default intent.
 
 ### Dry run
 

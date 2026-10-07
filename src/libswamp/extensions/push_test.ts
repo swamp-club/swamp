@@ -1024,6 +1024,10 @@ const EXPIRED = testuserPlan({
   },
 });
 const PAID = testuserPlan({ plan: "team", planName: "Team" });
+const NO_TRIAL = testuserPlan({ trial: null });
+const NO_TRIAL_REFUSAL =
+  'Collective "@testuser" is on the Free plan and has no trial. ' +
+  "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.";
 
 function privateInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
@@ -1104,22 +1108,23 @@ Deno.test("extensionPushPrepare: a private dry run reports an ended trial as fai
   assertEquals(result.collectiveEntitlement, EXPIRED);
 });
 
-Deno.test("extensionPushPrepare: a private dry run is undecided on a free plan with no trial and when no entitlement was reported", async () => {
-  const noTrial = await extensionPushPrepare(
-    ctx,
-    entitledDeps([testuserPlan()]),
-    privateInput(),
-  );
-  const undecided = noTrial.registryChecks.find((c) =>
-    c.name === "private-entitlement"
-  );
-  assertEquals(undecided?.status, "not-run");
-  assertEquals(undecided?.cause, "entitlement-undecided");
-  assertEquals(
-    undecided?.message,
-    'Collective "@testuser" is on the Free plan with no trial reported; the registry decides private publication at publish.',
-  );
+Deno.test("extensionPushPrepare: a private dry run reports a free plan with no trial as failed with the push's message, without throwing", async () => {
+  for (const entitlement of [NO_TRIAL, testuserPlan()]) {
+    const result = await extensionPushPrepare(
+      ctx,
+      entitledDeps([entitlement]),
+      privateInput(),
+    );
+    const check = result.registryChecks.find((c) =>
+      c.name === "private-entitlement"
+    );
+    assertEquals(check?.status, "failed");
+    assertEquals(check?.cause, undefined);
+    assertEquals(check?.message, NO_TRIAL_REFUSAL);
+  }
+});
 
+Deno.test("extensionPushPrepare: a private dry run is undecided when no entitlement was reported", async () => {
   const unreported = await extensionPushPrepare(
     ctx,
     entitledDeps(undefined),
@@ -1224,35 +1229,40 @@ Deno.test("extensionPushPrepare: a private dry run omits the entitlement check f
   );
 });
 
-Deno.test("extensionPushPrepare: a private push refuses an ended trial before packaging, with the dry run's message", async () => {
-  let bundled = 0;
-  const deps = entitledDeps([EXPIRED], {
-    bundleEntryPoint: () => {
-      bundled++;
-      return Promise.resolve("/* bundled */");
-    },
-  });
-  const error = await assertRejects(
-    () => extensionPushPrepare(ctx, deps, privateInput({ dryRun: false })),
-  ) as SwampError;
-  assertEquals(error.code, "validation_failed");
-  assertEquals(error.message, EXPIRED_REFUSAL);
-  assertEquals(bundled, 0);
+Deno.test("extensionPushPrepare: a private push refuses an ended trial or no trial before packaging, with the dry run's message", async () => {
+  for (
+    const [entitlement, refusal] of [
+      [EXPIRED, EXPIRED_REFUSAL],
+      [NO_TRIAL, NO_TRIAL_REFUSAL],
+    ] as const
+  ) {
+    let bundled = 0;
+    const deps = entitledDeps([entitlement], {
+      bundleEntryPoint: () => {
+        bundled++;
+        return Promise.resolve("/* bundled */");
+      },
+    });
+    const error = await assertRejects(
+      () => extensionPushPrepare(ctx, deps, privateInput({ dryRun: false })),
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertEquals(error.message, refusal);
+    assertEquals(bundled, 0);
+  }
 });
 
-Deno.test("extensionPushPrepare: a private push lets the registry decide an undecided entitlement", async () => {
-  for (const entitlements of [undefined, [testuserPlan()]]) {
-    const result = await extensionPushPrepare(
-      ctx,
-      entitledDeps(entitlements),
-      privateInput({ dryRun: false }),
-    );
-    assertEquals(
-      result.registryChecks.find((c) => c.name === "private-entitlement")
-        ?.cause,
-      "entitlement-undecided",
-    );
-  }
+Deno.test("extensionPushPrepare: a private push lets the registry decide an unreported entitlement", async () => {
+  const result = await extensionPushPrepare(
+    ctx,
+    entitledDeps(undefined),
+    privateInput({ dryRun: false }),
+  );
+  assertEquals(
+    result.registryChecks.find((c) => c.name === "private-entitlement")
+      ?.cause,
+    "entitlement-undecided",
+  );
 });
 
 function forbidden(message = PRIVATE_REFUSAL): UserError {

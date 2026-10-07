@@ -114,15 +114,13 @@ Deno.test("evaluatePrivateEntitlement: the verdict follows the reported plan and
         assertEquals(result.status, "passed");
       } else if (trialState === "active") {
         assertEquals(result.status, "passed");
-      } else if (trialState === "expired") {
+      } else {
+        // An ended trial and no trial alike: no trial starts at publish.
         assertEquals(result.status, "failed");
         assertStringIncludes(
           result.message,
           collectiveBillingUrl(SERVER, "acme"),
         );
-      } else {
-        assertEquals(result.status, "not-run");
-        assertEquals(result.cause, "entitlement-undecided");
       }
       // Dates are the registry's: only the date part of what it sent.
       const endsAt = entitlement.trial?.endsAt;
