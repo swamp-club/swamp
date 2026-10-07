@@ -915,6 +915,13 @@ hostname. Neither is a credential, and `dispatch-env-allow` does not scope the
 field: it is not part of the snapshot. The field is optional, so
 `REMOTE_PROTOCOL_VERSION` is unchanged.
 
+Each dispatch attempt is its own hand-off of those locks. When an attempt
+returns, is cancelled or loses its worker, `DispatchService` ends the
+hand-off before it retries or rethrows, which re-keys the locks: a retry
+carries new nonces, and a swamp the first runner left behind no longer
+matches and waits. Cancelling a step can therefore wait up to
+`SWAMP_LOCK_TIMEOUT_MS` on a structural command that runner had started.
+
 The supervisor (the worker process) talks to the runner over length-prefixed
 stdio frames (`StdioTransport`), using the same `RpcChannel` as the
 orchestrator–worker control socket. A capability bridge forwards the 9

@@ -27,6 +27,7 @@
 
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import { hostname } from "node:os";
+import { isProcessDead } from "../infrastructure/runtime/process.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -114,8 +115,10 @@ import {
 import {
   type DistributedLock,
   type LockInfo,
+  lockSkipping,
   LockTimeoutError,
   LockWaitCycleError,
+  MAX_LOCK_SKIPPING,
 } from "../domain/datastore/distributed_lock.ts";
 import {
   type CustomDatastoreConfig,
@@ -140,6 +143,7 @@ import type {
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
+  type LentLocks,
   type LockHolderMarker,
   processLockHolderMarker,
 } from "../domain/datastore/lock_holder_marker.ts";
@@ -1117,9 +1121,14 @@ export function requireInitializedRepo(
       // closes the symmetric TOCTOU window — do not remove without
       // updating the lock-lifecycle contract documented in
       // design/enablers/datastores.md.
+      //
+      // The locks this drain skips are listed in the global lock before it
+      // ends, so a holder taking one back from a hop that has ended waits
+      // for this command instead of writing under it.
       await waitForPerModelLocks(
         datastoreConfig.path,
         datastoreConfig.namespace,
+        { publishSkipping: (lockIds) => lock.publishSkipping(lockIds) },
       );
 
       if (datastoreConfig.namespace) {
@@ -1683,6 +1692,12 @@ export interface WaitForPerModelLocksOptions {
   drainWaits?: DrainWaits;
   /** Test seam: how long to pause between scans. */
   pollIntervalMs?: number;
+  /**
+   * Records the nonces of the locks the drain skips; the drain under the
+   * global lock passes that lock's `publishSkipping`. The drain then ends
+   * only on a scan that matches the list already recorded.
+   */
+  publishSkipping?: (lockIds: readonly string[]) => Promise<void>;
 }
 
 const DRAIN_POLL_INTERVAL_MS = 1_000;
@@ -1704,14 +1719,17 @@ const DRAIN_POLL_INTERVAL_MS = 1_000;
  * a `LockWaitCycleError` instead (design/enablers/datastores.md,
  * "Parent-Process Lock Awareness").
  *
+ * Returns the nonces of the locks its last scan skipped.
+ *
  * The test seams in `options` are for tests only — production callers pass
- * at most `progressWriter`. Not exported from any barrel.
+ * at most `progressWriter` and `publishSkipping`. Not exported from any
+ * barrel.
  */
 export async function waitForPerModelLocks(
   datastorePath: string,
   namespace?: string,
   options: WaitForPerModelLocksOptions = {},
-): Promise<void> {
+): Promise<readonly string[]> {
   const write = options.progressWriter ?? defaultLockWriter;
   const lockHolderMarker = options.lockHolderMarker ?? processLockHolderMarker;
   const relationTo = lockHolderMarker.lockRelation();
@@ -1790,41 +1808,82 @@ export async function waitForPerModelLocks(
       return { held, heldForOtherRuns, skippedLockIds, waitedLocks };
     });
 
+  // With a publisher (the drain under the global lock), every change to the
+  // skipped set is published before the drain sleeps or returns, and the
+  // drain ends only on a scan that matches what is already published. A
+  // holder re-keys its lock and then reads the list; this publishes the
+  // list and then reads the lock, so one of them always sees the other. A
+  // lock found re-keyed leaves the list before the drain waits on it, so
+  // the drain and the holder's reclaim never wait on each other.
+  let published: readonly string[] = [];
+  const confirm = async (scan: PerModelLockScan): Promise<boolean> => {
+    if (options.publishSkipping === undefined) return true;
+    // Capped as the lock file caps it, so a longer list still confirms.
+    const now = new Set(scan.skippedLockIds.slice(0, MAX_LOCK_SKIPPING));
+    if (
+      now.size === published.length && published.every((id) => now.has(id))
+    ) {
+      return true;
+    }
+    published = [...now];
+    await options.publishSkipping(published);
+    return false;
+  };
+
   const maxWaitMs = resolveLockTimeoutMs();
   const first = await findModelLocks();
-  if (first.held > 0) {
-    write(
-      yellow(`Waiting for ${first.held} per-model lock(s) to be released...`),
-    );
-    const waitStart = Date.now();
-    const drainWait = new PublishedDrainWait(
-      options.drainWaits ?? new DrainWaitStore(datastorePath, namespace),
-      waitStart,
-    );
-    try {
-      await drainWait.check(first);
-      while (true) {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        const remaining = await findModelLocks();
-        if (remaining.held === 0) break;
-        const elapsed = Date.now() - waitStart;
-        if (elapsed >= maxWaitMs) {
-          throw new LockTimeoutError(
-            "per-model locks",
-            null,
-            elapsed,
-            remaining.heldForOtherRuns.length > 0
-              ? { message: heldForOtherRunsMessage(remaining, elapsed) }
-              : undefined,
-          );
-        }
-        await drainWait.check(remaining);
-      }
-    } finally {
-      await drainWait.withdraw();
-    }
-    write(dim("Per-model locks released"));
+  if (await confirm(first) && first.held === 0) {
+    return first.skippedLockIds;
   }
+  let announced = false;
+  const announce = (scan: PerModelLockScan) => {
+    if (announced || scan.held === 0) return;
+    announced = true;
+    write(
+      yellow(`Waiting for ${scan.held} per-model lock(s) to be released...`),
+    );
+  };
+  announce(first);
+  const waitStart = Date.now();
+  const drainWait = new PublishedDrainWait(
+    options.drainWaits ?? new DrainWaitStore(datastorePath, namespace),
+    waitStart,
+  );
+  let last = first;
+  let rescans = 0;
+  try {
+    await drainWait.check(first);
+    while (true) {
+      // The first list published is confirmed at once; after that every
+      // scan is a poll apart, so a skipped set that keeps changing cannot
+      // spin the drain.
+      if (last.held > 0 || rescans > 0) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+      rescans++;
+      const remaining = await findModelLocks();
+      const confirmed = await confirm(remaining);
+      last = remaining;
+      if (remaining.held === 0 && confirmed) break;
+      announce(remaining);
+      const elapsed = Date.now() - waitStart;
+      if (elapsed >= maxWaitMs) {
+        throw new LockTimeoutError(
+          "per-model locks",
+          null,
+          elapsed,
+          remaining.heldForOtherRuns.length > 0
+            ? { message: heldForOtherRunsMessage(remaining, elapsed) }
+            : undefined,
+        );
+      }
+      await drainWait.check(remaining);
+    }
+  } finally {
+    await drainWait.withdraw();
+  }
+  if (announced) write(dim("Per-model locks released"));
+  return last.skippedLockIds;
 }
 
 /**
@@ -1988,8 +2047,99 @@ export interface ModelLockResult {
    * them, so a swamp it starts skips these locks and no others
    * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). Empty
    * for custom datastore locks, which the drain never scans.
+   *
+   * A snapshot taken when the locks were acquired: a re-key changes the
+   * nonces, so never hand this list to a child. Use {@link lentLocks}.
    */
   heldLockIds: readonly string[];
+  /**
+   * The same locks as a scope lends them: their nonces read live, and the
+   * reclaim that ends a hand-off ({@link reclaimModelLocks}). Pass these to
+   * the scope in place of {@link heldLockIds}, so a swamp left over from a
+   * hop that has ended stops skipping them.
+   */
+  lentLocks: LentLocks;
+}
+
+/** Test seams and settings for {@link reclaimModelLocks}. */
+export interface ReclaimModelLocksOptions {
+  /** How long to wait on a structural command; the lock timeout by default. */
+  timeoutMs?: number;
+  /** How often to re-read the global lock while waiting. */
+  pollMs?: number;
+  progressWriter?: LockProgressWriter;
+  /** The global lock's name in a {@link LockTimeoutError}. */
+  displayKey?: string;
+  /** Test seam: whether a process on this host has exited. */
+  isProcessDead?: (pid: number) => boolean;
+}
+
+/**
+ * Takes per-model locks back from a hop that has ended
+ * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
+ *
+ * Re-keys each lock, so a nested swamp the hop left running no longer
+ * matches it and waits like any other. A structural command that skipped
+ * one of them before the re-key may still be working: it lists the nonces
+ * it skipped in its global lock, so while that list names a retired nonce
+ * this waits, re-reading the list on every poll. The command withdraws a
+ * nonce it finds re-keyed before it waits on that lock, so the two never
+ * wait on each other.
+ *
+ * @throws {LockTimeoutError} when the structural command is still working
+ * under a retired nonce at the timeout. The caller must then write nothing.
+ */
+export async function reclaimModelLocks(
+  locks: readonly FileLock[],
+  globalLock: Pick<DistributedLock, "inspect">,
+  options: ReclaimModelLocksOptions = {},
+): Promise<void> {
+  const retired: string[] = [];
+  for (const lock of locks) {
+    const nonce = await lock.rekey();
+    if (nonce !== undefined) retired.push(nonce);
+  }
+  if (retired.length === 0) return;
+
+  const write = options.progressWriter ?? defaultLockWriter;
+  const timeoutMs = options.timeoutMs ?? resolveLockTimeoutMs();
+  const processDead = options.isProcessDead ?? isProcessDead;
+  const start = Date.now();
+  let announced = false;
+  while (true) {
+    const info = await globalLock.inspect();
+    if (!info) break;
+    if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) break;
+    // A structural command killed with its hop (a shell step's timeout
+    // takes the whole process tree) leaves its lock behind until the ttl.
+    if (info.hostname === hostname() && processDead(info.pid)) break;
+    // A lock file caught mid-write is reported as held with no nonce and
+    // no list (swamp-club#3148); read it again rather than take a working
+    // structural command for one that skipped nothing.
+    const unreadable = info.nonce === undefined && info.pid === 0;
+    const skipping = lockSkipping(info);
+    if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
+    if (!announced && !unreadable) {
+      announced = true;
+      write(
+        yellow(
+          `A structural command held by ${info.holder} (pid ${info.pid}) is still working under a lock this run handed down — waiting for it to finish...`,
+        ),
+      );
+    }
+    const elapsed = Date.now() - start;
+    if (elapsed >= timeoutMs) {
+      throw new LockTimeoutError(
+        options.displayKey ?? ".datastore.lock",
+        info,
+        elapsed,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 500));
+  }
+  if (announced) {
+    write(dim("Structural command finished, proceeding"));
+  }
 }
 
 /** Runs a datastore sync call; see {@link AcquireModelLocksOptions}. */
@@ -2372,10 +2522,23 @@ export async function acquireModelLocks(
     }
   };
 
-  const heldLockIds = heldLocks.flatMap((lock) =>
-    lock instanceof FileLock && lock.heldNonce ? [lock.heldNonce] : []
+  const fileLocks = heldLocks.filter((lock): lock is FileLock =>
+    lock instanceof FileLock
   );
-  return { flush, push, release, synced, heldLockIds };
+  const lockIds = () =>
+    fileLocks.flatMap((lock) => lock.heldNonce ? [lock.heldNonce] : []);
+  const globalLockOptions = datastoreGlobalLockOptions(config);
+  const lentLocks: LentLocks = {
+    lockIds,
+    reclaim: () =>
+      reclaimModelLocks(fileLocks, globalLock, {
+        progressWriter,
+        displayKey: globalLockOptions?.namespace
+          ? `${globalLockOptions.namespace}/.datastore.lock`
+          : ".datastore.lock",
+      }),
+  };
+  return { flush, push, release, synced, heldLockIds: lockIds(), lentLocks };
 }
 
 /**
@@ -2387,10 +2550,10 @@ export async function acquireModelLocks(
  * generator's body runs in the context of whoever iterates it.
  */
 export function runUnderModelLocks<T>(
-  lockResult: Pick<ModelLockResult, "heldLockIds"> | undefined,
+  lockResult: Pick<ModelLockResult, "lentLocks"> | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return processLockHolderMarker.runHolding(lockResult?.heldLockIds ?? [], fn);
+  return processLockHolderMarker.runHolding(lockResult?.lentLocks ?? [], fn);
 }
 
 /**

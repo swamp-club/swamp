@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname, isAbsolute, relative, SEPARATOR } from "@std/path";
+import { parse } from "@babel/parser";
+import { BABEL_PLUGINS } from "./dynamic_code_detector.ts";
+import { extname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
   isAcceptableRule,
@@ -28,17 +30,19 @@ import {
 import type { ReviewFinding } from "./extension_review_rules.ts";
 
 /**
- * Declared acceptances: an author's reasoned judgement that one warning-level
- * finding is acceptable, written where the finding is.
+ * Declared acceptances: an author's judgement that one warning-level finding
+ * is acceptable, written where the finding is and reviewed in the diff.
  *
  * A site-scoped finding (one line in one file) is accepted by a comment on
- * that line, or on the line directly above:
+ * that line, or on the line directly above, with an optional reason after a
+ * colon:
  *
- *     secretName: z.string(), // swamp-quality-ignore credentials-sensitive-field: reference to a Secret, not a secret
+ *     secretName: z.string(), // swamp-quality-ignore credentials-sensitive-field
+ *     secretRef: z.string(), // swamp-quality-ignore credentials-sensitive-field: reference to a Secret, not a secret
  *
  * A file-scoped finding (testing-completeness) is accepted by the same
  * comment anywhere in the file. Markdown files take an HTML comment on the
- * line above (`<!-- swamp-quality-ignore ipv4-address-literals: reason -->`).
+ * line above (`<!-- swamp-quality-ignore ipv4-address-literals -->`).
  * Extension-scoped findings, and site findings in files with no comment
  * form (`.txt`), are accepted by an entry in the `quality.yaml` sidecar
  * beside the manifest (see `extension_quality_sidecar.ts`).
@@ -47,12 +51,13 @@ import type { ReviewFinding } from "./extension_review_rules.ts";
  * rule-wide or file-wide acceptance of a site-scoped rule is not expressible,
  * an error-level rule has no acceptance form, and a directive that matches
  * nothing is itself a warning (`stale-acceptance`). A directive that is
- * malformed, has no reason, or names a rule that cannot be accepted is a
- * blocking finding (`invalid-acceptance`).
+ * malformed or names a rule that cannot be accepted is a blocking finding
+ * (`invalid-acceptance`).
  *
  * The parser reads raw lines. The review rules strip comments before
  * matching, and the safety checks scan every line as written; a directive's
- * reason may not contain a quote, `Deno.Command(` or a base64 run, so a
+ * reason, when given, may not contain a quote, `Deno.Command(` or a base64
+ * run, so a
  * directive cannot trigger the rule it accepts and nothing can hide behind
  * one. Only the long-line count discounts the directive's own text.
  */
@@ -69,13 +74,6 @@ export const MAX_DIRECTIVES_PER_FILE = 50;
 /** Rule id grammar: lowercase words joined by hyphens. */
 const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-/**
- * The placeholder the paste-ready snippets carry in place of a reason. A
- * directive still carrying it is invalid, so pasting a snippet verbatim
- * never accepts anything.
- */
-export const REASON_PLACEHOLDER = "<reason>";
-
 /** What an acceptance names. */
 export type AcceptanceTarget =
   /** One line of one file: a site-scoped finding. */
@@ -91,7 +89,8 @@ export type AcceptanceSource = "inline" | "sidecar" | "generated";
 /** A declared acceptance, parsed from a comment or a sidecar entry. */
 export interface AcceptanceDirective {
   ruleId: string;
-  reason: string;
+  /** Why the author accepts the finding; absent when they gave none. */
+  reason?: string;
   target: AcceptanceTarget;
   source: AcceptanceSource;
   /**
@@ -137,14 +136,14 @@ export function commentFormFor(file: string): CommentForm {
 }
 
 /**
- * Validates a rule id and reason against the catalog and the caps, for an
+ * Validates a rule id and optional reason against the catalog and the caps, for an
  * acceptance declared in a comment, in a sidecar entry with no file (an
  * extension-scoped rule), or in a sidecar entry naming a file (a site or
  * file-scoped rule in a file with no comment form).
  */
 export function validateAcceptance(
   ruleId: string,
-  reason: string,
+  reason: string | undefined,
   where: "comment" | "sidecar" | "sidecar-file",
 ): string | undefined {
   if (!isKnownRule(ruleId)) {
@@ -162,13 +161,9 @@ export function validateAcceptance(
       }`
       : `"${ruleId}" is not a rule that can be accepted`;
   }
-  if (reason.length === 0) {
-    return "a reason is required after the colon";
-  }
-  if (reason === REASON_PLACEHOLDER) {
-    return `replace ${REASON_PLACEHOLDER} with why this is acceptable`;
-  }
-  if (reason.length > MAX_ACCEPTANCE_REASON_LENGTH) {
+  if (
+    reason !== undefined && reason.length > MAX_ACCEPTANCE_REASON_LENGTH
+  ) {
     return `the reason is longer than ${MAX_ACCEPTANCE_REASON_LENGTH} characters`;
   }
   if (where === "comment" && entry.scope === "extension") {
@@ -274,18 +269,21 @@ export function parseAcceptanceDirectives(
       }
       body = body.slice(0, close);
     }
-    const match = /^\s+([^\s:]+)\s*:\s*(.*?)\s*$/.exec(body);
+    // `<rule-id>`, `<rule-id>:` or `<rule-id>: <reason>`. Text after the
+    // rule id without a colon is ambiguous, so it is malformed.
+    const match = /^\s+([^\s:]+)\s*(?::\s*(.*?))?\s*$/.exec(body);
     if (!match) {
       invalid.push({
         file,
         line: lineNumber,
         text,
-        problem: `expected "${ACCEPTANCE_DIRECTIVE} <rule-id>: <reason>"`,
+        problem:
+          `expected "${ACCEPTANCE_DIRECTIVE} <rule-id>" or "${ACCEPTANCE_DIRECTIVE} <rule-id>: <reason>"`,
       });
       continue;
     }
     const ruleId = match[1];
-    const reason = match[2];
+    const reason = match[2] ? match[2] : undefined;
     if (!RULE_ID_PATTERN.test(ruleId)) {
       invalid.push({
         file,
@@ -296,7 +294,9 @@ export function parseAcceptanceDirectives(
       continue;
     }
     const problem = validateAcceptance(ruleId, reason, "comment") ??
-      (form === "line" ? reasonProblemInSource(reason) : undefined);
+      (form === "line" && reason !== undefined
+        ? reasonProblemInSource(reason)
+        : undefined);
     if (problem !== undefined) {
       invalid.push({ file, line: lineNumber, text, problem });
       continue;
@@ -316,7 +316,7 @@ export function parseAcceptanceDirectives(
     }
     directives.push({
       ruleId,
-      reason,
+      ...(reason !== undefined ? { reason } : {}),
       target,
       source: "inline",
       declaredAt: { file, line: lineNumber },
@@ -490,7 +490,8 @@ export interface AcceptableFinding {
 /** A finding together with the acceptance that covers it. */
 export interface AcceptedFinding<T extends AcceptableFinding> {
   finding: T;
-  reason: string;
+  /** The acceptance's reason; absent when the author gave none. */
+  reason?: string;
   source: AcceptanceSource;
   declaredAt: { file: string; line: number };
 }
@@ -499,7 +500,7 @@ export interface AcceptedFinding<T extends AcceptableFinding> {
 export interface AppliedAcceptances<T extends AcceptableFinding> {
   /** Findings no acceptance covers; they stay in the gate. */
   remaining: T[];
-  /** Findings an acceptance covers, with the reason. */
+  /** Findings an acceptance covers, with the reason when one was given. */
   accepted: AcceptedFinding<T>[];
   /** Inline and sidecar acceptances that matched no finding. */
   stale: AcceptanceDirective[];
@@ -547,7 +548,7 @@ export function applyAcceptances<T extends AcceptableFinding>(
     used.add(directive);
     accepted.push({
       finding,
-      reason: directive.reason,
+      ...(directive.reason !== undefined ? { reason: directive.reason } : {}),
       source: directive.source,
       declaredAt: directive.declaredAt,
     });
@@ -596,15 +597,58 @@ export function staleAcceptanceFinding(
   };
 }
 
-// ── Paste-ready acceptances ───────────────────────────────────────────
+// ── Structured acceptances ────────────────────────────────────────────
 
-/** The text an author pastes to accept a finding, and where it goes. */
-export interface AcceptanceSnippet {
-  /** The comment or sidecar entry, with the reason placeholder. */
-  text: string;
-  /** Where to put it, in words. */
-  placement: string;
+/** Where a comment acceptance goes relative to its `line`. */
+export const ACCEPTANCE_POSITIONS = [
+  /** On a new line inserted directly above `line`. */
+  "line-above",
+  /** On a new line inserted at the top of the file (after a shebang); `line` is 1. */
+  "file-header",
+] as const;
+
+/** Where a comment acceptance goes relative to its `line`. */
+export type AcceptancePosition = typeof ACCEPTANCE_POSITIONS[number];
+
+/** One entry for the `accept` list of `quality.yaml`. */
+export interface SidecarAcceptanceEntry {
+  rule: string;
+  /** Relative to the manifest's directory with forward slashes; absent for an extension-scoped rule. */
+  file?: string;
 }
+
+/**
+ * The edit that declares one finding acceptable, described so an agent can
+ * apply it without parsing prose: a comment to insert at a position in a
+ * file, or one entry to add to the `accept` list of the quality sidecar.
+ * Neither carries a reason; the author adds one only when it helps a
+ * reviewer.
+ */
+export type Acceptance =
+  | {
+    form: "comment";
+    /** The absolute path of the file to edit. */
+    file: string;
+    /** The 1-based line `position` is relative to. */
+    line: number;
+    position: AcceptancePosition;
+    /**
+     * The whole line to insert, indented like the line it goes above, e.g.
+     * `    // swamp-quality-ignore deno-command`. A `file-header` comment
+     * goes after a `#!` shebang when the file starts with one.
+     */
+    text: string;
+  }
+  | {
+    form: "sidecar";
+    /** The absolute path of `quality.yaml` beside the manifest, which may not exist yet. */
+    file: string;
+    /** The entry to add to its `accept` list. */
+    entry: SidecarAcceptanceEntry;
+  };
+
+/** The sidecar's file name; `QUALITY_SIDECAR_FILENAME` in `extension_quality_sidecar.ts`, which imports this module. */
+const SIDECAR_FILENAME = "quality.yaml";
 
 function escapesDir(rel: string): boolean {
   return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
@@ -631,77 +675,177 @@ export function fileRelativeToManifest(
   return file;
 }
 
-function sidecarEntry(ruleId: string, file?: string): string {
-  return [
-    "# quality.yaml, beside manifest.yaml",
-    "version: 1",
-    "accept:",
-    `  - rule: ${ruleId}`,
-    ...(file !== undefined ? [`    file: ${file}`] : []),
-    `    reason: ${REASON_PLACEHOLDER}`,
-  ].join("\n");
+/**
+ * The warned lines of one file that a comment acceptance can go above, each
+ * with its indentation, which the inserted comment copies so the file stays
+ * formatted. A line is absent when it begins inside a multi-line string,
+ * template literal or block comment in source, or inside a fenced block in
+ * Markdown, where a comment would be ignored as documentation or, in a
+ * string, change what the program does; every line is absent from a source
+ * file that does not parse, since none can be vouched for.
+ */
+export type CommentSites = Record<number, string>;
+
+/** The {@link CommentSites} of `lines` in one file with a comment form. */
+export function commentSites(
+  content: string,
+  file: string,
+  lines: readonly number[],
+): CommentSites {
+  const text = content.split("\n");
+  const barriers = new Set<number>();
+  const form = commentFormFor(file);
+  if (form === "html") {
+    let fenced = false;
+    let inComment = false;
+    text.forEach((line, i) => {
+      // The lines after an opening fence through its closing fence, and
+      // the lines after a multi-line HTML comment opens through the one
+      // that closes it: a comment inserted there would end it early.
+      if (fenced || inComment) barriers.add(i + 1);
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenced = !fenced;
+        return;
+      }
+      if (fenced) return;
+      const open = line.lastIndexOf("<!--");
+      const close = line.lastIndexOf("-->");
+      if (open !== -1 && open > close) inComment = true;
+      else if (inComment && close !== -1) inComment = false;
+    });
+  } else {
+    let spans: {
+      loc?: { start: { line: number }; end: { line: number } } | null;
+    }[];
+    try {
+      const parsed = parse(content, {
+        sourceType: "module",
+        plugins: extname(file).toLowerCase().endsWith("x")
+          ? [...BABEL_PLUGINS, "jsx"]
+          : BABEL_PLUGINS,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowImportExportEverywhere: true,
+        allowUndeclaredExports: true,
+        allowNewTargetOutsideFunction: true,
+        allowSuperOutsideMethod: true,
+        errorRecovery: false,
+        tokens: true,
+      });
+      spans = [...(parsed.tokens ?? []), ...(parsed.comments ?? [])];
+    } catch {
+      return {};
+    }
+    // A token or comment spanning lines covers every line after its first.
+    for (const span of spans) {
+      const loc = span.loc;
+      if (!loc) continue;
+      for (let l = loc.start.line + 1; l <= loc.end.line; l++) {
+        barriers.add(l);
+      }
+    }
+  }
+  const sites: CommentSites = {};
+  for (const line of lines) {
+    if (line < 1 || line > text.length || barriers.has(line)) continue;
+    const indent = /^[ \t]*/.exec(text[line - 1])![0];
+    if (!parserReadsDirectiveAbove(text, file, line, indent)) continue;
+    sites[line] = indent;
+  }
+  return sites;
 }
 
 /**
- * The exact text to paste to accept a finding, or undefined when the rule
- * has no acceptance form. `file` is the finding's path as it carries it;
- * `manifestDir` makes the sidecar paths relative.
+ * True when a directive inserted above `line` is one the parser reads and
+ * aims at that line. The parser's own line heuristics (a `/*` it reads as
+ * an open block comment, a fence) can disagree with the tokenizer, and an
+ * offered acceptance must take effect.
  */
-export function acceptanceSnippet(
+function parserReadsDirectiveAbove(
+  text: string[],
+  file: string,
+  line: number,
+  indent: string,
+): boolean {
+  // Any acceptable site rule serves; the parser's placement does not depend
+  // on which one it is.
+  const probe = `${ACCEPTANCE_DIRECTIVE} deno-command`;
+  const directive = commentFormFor(file) === "html"
+    ? `${indent}<!-- ${probe} -->`
+    : `${indent}// ${probe}`;
+  const edited = [
+    ...text.slice(0, line - 1),
+    directive,
+    ...text.slice(line - 1),
+  ];
+  const parsed = parseAcceptanceDirectives(edited.join("\n"), file);
+  return parsed.directives.some((d) =>
+    d.declaredAt.line === line && d.target.kind === "line" &&
+    d.target.line === line + 1
+  );
+}
+
+/**
+ * The acceptance that declares `finding` acceptable, or undefined when it
+ * has none: a rule with no acceptance form, a collapsed finding standing for
+ * several files (each file takes its own), a site finding with no line, a
+ * file with no comment form outside the manifest's directory, which the
+ * sidecar cannot name, or a line a comment cannot go above (absent from
+ * the file's {@link CommentSites} in `sites`). `finding.file` is the
+ * absolute path findings carry.
+ */
+export function acceptanceFor(
   finding: AcceptableFinding,
   manifestDir: string,
-  repoDir?: string,
-): AcceptanceSnippet | undefined {
+  sites: Readonly<Record<string, CommentSites>>,
+): Acceptance | undefined {
   if (!isAcceptableRule(finding.ruleId)) return undefined;
   const scope = findRule(finding.ruleId)!.scope;
-  const rel = fileRelativeToManifest(manifestDir, finding.file, repoDir);
+  const sidecarFile = join(manifestDir, SIDECAR_FILENAME);
+  // An extension-scoped finding names no file (its file is a label such as
+  // `(multiple files)`); the sidecar entry covers the extension.
   if (scope === "extension") {
     return {
-      text: sidecarEntry(finding.ruleId),
-      placement: "in quality.yaml beside manifest.yaml",
+      form: "sidecar",
+      file: sidecarFile,
+      entry: { rule: finding.ruleId },
     };
   }
+  if (finding.file.startsWith("(")) return undefined;
   const form = commentFormFor(finding.file);
+  const directive = `${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}`;
   if (scope === "file") {
-    // A file-scoped rule is always accepted in the file itself; a collapsed
-    // finding stands for several files, and the comment goes at the top of
-    // each one it lists.
-    if (finding.file.startsWith("(")) {
-      return {
-        text:
-          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
-        placement: "at the top of each file listed",
-      };
-    }
+    // A file-scoped rule is accepted in the file itself, anywhere in it;
+    // the top is where an author looks for it.
     return {
-      text:
-        `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
-      placement: `at the top of ${rel}`,
+      form: "comment",
+      file: finding.file,
+      line: 1,
+      position: "file-header",
+      text: `// ${directive}`,
     };
   }
-  const where = finding.line !== undefined
-    ? `on line ${finding.line} of ${rel}, or the line above`
-    : `on the line in ${rel}`;
-  switch (form) {
-    case "line":
-      return {
-        text:
-          `// ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER}`,
-        placement: where,
-      };
-    case "html":
-      return {
-        text:
-          `<!-- ${ACCEPTANCE_DIRECTIVE} ${finding.ruleId}: ${REASON_PLACEHOLDER} -->`,
-        placement: finding.line !== undefined
-          ? `on the line above line ${finding.line} of ${rel}`
-          : `on the line above, in ${rel}`,
-      };
-    case "none":
-      return {
-        text: sidecarEntry(finding.ruleId, rel),
-        placement:
-          `in quality.yaml beside manifest.yaml (${rel} has no comment form; this accepts the rule for the whole file)`,
-      };
+  if (form === "none") {
+    const rel = relative(manifestDir, finding.file);
+    if (escapesDir(rel)) return undefined;
+    return {
+      form: "sidecar",
+      file: sidecarFile,
+      entry: { rule: finding.ruleId, file: rel.replaceAll("\\", "/") },
+    };
   }
+  if (finding.line === undefined) return undefined;
+  const indent = sites[finding.file]?.[finding.line];
+  if (indent === undefined) return undefined;
+  // On its own line above the finding, never at the end of it: several
+  // findings on one line each take a directive, and stacked directives all
+  // name the line below them.
+  return {
+    form: "comment",
+    file: finding.file,
+    line: finding.line,
+    position: "line-above",
+    text: indent +
+      (form === "line" ? `// ${directive}` : `<!-- ${directive} -->`),
+  };
 }

@@ -439,9 +439,10 @@ the registry did not send.
 `apiCalls` lists every HTTP call the run made (registry, OSV, npm) with its
 method, URL and outcome; the log summary says "No API calls were made." only
 when that list is empty. `contentHash` is the hash the adversarial-review report
-path is keyed by. `declaredAcceptances` and `forNextTime` close the document:
-what the author accepted, and the paste-ready acceptance for each remaining
-warning (see [Declaring acceptances](#declaring-acceptances)).
+path is keyed by. `declaredAcceptances` and `unresolvedWarnings` close the
+document: what the author accepted, and each remaining warning with its fix and
+the acceptance that would declare it (see
+[Declaring acceptances](#declaring-acceptances)).
 
 ### Reproducing the CI layout
 
@@ -630,12 +631,13 @@ The safety analyzer scans all files before push. Issues are classified as
 (or `--force`) answers that prompt along with the push confirmation; the dry-run
 and push summaries then list what it waived under `acceptedWarnings`, in log and
 JSON output. A warning the author has judged acceptable is better declared where
-it is, with a reason, than waived for the run: see
+it is than waived for the run: see
 [Declaring acceptances](#declaring-acceptances).
 
 Every finding carries a `ruleId` (the ids below), the `file`, the 1-based `line`
 when it has one, a `remediation` (how to fix it properly) and, for a rule that
-can be accepted, the exact `acceptance` text to paste.
+can be accepted, an `acceptance` object describing the edit (see
+[Applying an acceptance](#applying-an-acceptance)).
 
 ### Errors (block push)
 
@@ -676,16 +678,20 @@ Error-level rule ids (`dynamic-code`, `hidden-file`, `file-type`, `symlink`,
 
 ## Declaring acceptances
 
-An acceptance is a reasoned judgement that one warning-level finding is
+An acceptance is the author's decision that one warning-level finding is
 acceptable for this extension. It lives where the finding is, like a lint
 ignore, is reviewed in the pull request with the code, and is reported in
 `quality`, in the push summary and `--json`, and to the registry. Push writes
-nothing: the summaries print the exact text to paste.
+nothing: the summaries describe each acceptance as an edit.
+
+**Offer the fix first.** Add an acceptance only when the user decides the
+finding is not right for this extension. A reason after a colon is optional; ask
+the user for one only when it would help a reviewer.
 
 **Site-scoped rules** (`credentials-sensitive-field`, `schema-strictness`,
 `deno-command`, `base64-run`, `long-line`, `ipv4-address-literals`) take a
 comment on the finding's line, or on the line directly above (one blank line in
-between is allowed; several directives may stack), with a required reason.
+between is allowed; several directives may stack), with an optional reason.
 Directive text inside a fenced code block or a `/* ... */` block is
 documentation and is ignored:
 
@@ -723,7 +729,7 @@ generated: # a codegen package: accepts testing-completeness for every model
 accept:
   - rule: ipv4-address-literals
     file: docs/hosts.txt
-    reason: documented lab addresses
+    reason: documented lab addresses # optional
 ```
 
 Rules, enforced by construction:
@@ -731,28 +737,80 @@ Rules, enforced by construction:
 - An acceptance names one finding by file, rule and line. A new match elsewhere
   still warns. The sidecar refuses site-scoped rules except for `.txt` files,
   and refuses files outside the manifest's directory.
-- A comment with no reason, with the `<reason>` placeholder still in place,
-  naming an unknown, error-level or otherwise non-acceptable rule
-  (`bare-specifiers`, the `adversarial-review-report` family), or more than 50
-  per file, is a blocking `invalid-acceptance` error naming the comment. Reasons
-  are capped at 200 characters, and in source files may not contain a quote
-  character, `Deno.Command(` or a base64 run: the safety checks scan every line
-  as written, so a directive can never trigger or hide a finding.
+- A comment naming an unknown, error-level or otherwise non-acceptable rule
+  (`bare-specifiers`, the `adversarial-review-report` family), text after the
+  rule id with no colon, or more than 50 per file, is a blocking
+  `invalid-acceptance` error naming the comment. A reason, when given, is capped
+  at 200 characters, and in source files may not contain a quote character,
+  `Deno.Command(` or a base64 run: the safety checks scan every line as written,
+  so a directive can never trigger or hide a finding. An empty `reason:` in
+  `quality.yaml` is a schema error; omit the key instead.
 - An acceptance whose rule no longer fires there is a `stale-acceptance` warning
   at the comment, so acceptances do not accumulate.
 - A malformed `quality.yaml` blocks the push before any gate runs, like a
   malformed manifest.
 
 **Reporting.** The dry-run and completed push summaries, and
-`swamp extension quality`, end with two blocks: `Accepted, with reasons:` (each
-declared acceptance, and the generated declaration) and `For next time:` (each
-unaccepted warning with how to fix it and, when the rule can be accepted, the
-exact comment or sidecar entry to paste and where it goes). In `--json` they are
-`declaredAcceptances` (`{ accepted: [...], generated? }`) and `forNextTime`
-(`[{ ruleId, file, line?, message, remediation?, acceptance?, placement? }]`),
-beside `acceptedWarnings` and omitted when empty; every finding in
-`warnings.review` and `warnings.safety` carries `acceptance` and `remediation`.
-The acceptances also travel to the registry in `contentMetadata.acceptances`.
+`swamp extension quality`, end with two blocks: `Accepted warnings:` (each
+declared acceptance with its reason when one was given, and the generated
+declaration) and `Unresolved warnings:` (each warning neither fixed nor
+accepted, with `fix:` and, when the rule can be accepted, one `or accept ...`
+line). In `--json` they are `declaredAcceptances`
+(`{ accepted: [...], generated? }`, each `file` relative to the manifest's
+directory) and `unresolvedWarnings`
+(`[{ ruleId, file, line?, message, remediation?, acceptance? }]`, `file`
+absolute), beside `acceptedWarnings` and omitted when empty. Every finding in
+`warnings.review` and `warnings.safety` carries `remediation` and the same
+`acceptance` object, except a collapsed `testing-completeness` finding, which
+`unresolvedWarnings` expands to one entry per file. The acceptances also travel
+to the registry in `contentMetadata.acceptances` (`reason` omitted when none was
+given).
+
+### Applying an acceptance
+
+Each `acceptance` is an edit, never prose to parse. `file` is the absolute path
+to edit:
+
+```json
+{
+  "form": "comment",
+  "file": "/abs/ext/models/b.ts",
+  "line": 9,
+  "position": "line-above",
+  "text": "    // swamp-quality-ignore deno-command"
+}
+```
+
+```json
+{
+  "form": "sidecar",
+  "file": "/abs/ext/quality.yaml",
+  "entry": { "rule": "ipv4-address-literals", "file": "docs/hosts.txt" }
+}
+```
+
+- `line-above`: insert `text` verbatim (it is the whole line, indented like line
+  `line`) as a new line before line `line`. Apply these bottom-up within a file,
+  since each insert moves the lines below it; two findings on one line take two
+  stacked lines, which both name that line.
+- `file-header` (`line` is 1): insert `<text>` at the top of the file, after a
+  `#!` shebang if there is one.
+- `sidecar`: append `entry` to the `accept` list of the existing `quality.yaml`;
+  create the file as `version: 1` plus `accept:` only when it is absent. Never
+  write a second `version:` header. `entry.file` is already relative to the
+  manifest's directory; an extension-scoped rule has no `file`.
+
+A warning with no `acceptance` cannot be declared where it is: its rule has no
+acceptance form, or its line sits inside a multi-line string, template literal,
+block comment, Markdown fence or HTML comment, where a comment would be ignored
+or would change the string; log mode says `cannot be accepted here`. Offer the
+fix.
+
+After editing source files, run `swamp extension fmt manifest.yaml` so the
+formatting gate passes.
+
+Add a reason only when the user gives one, after a colon on the comment or as
+`reason:` on the sidecar entry.
 
 ## CalVer Versioning
 

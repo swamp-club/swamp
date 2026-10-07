@@ -16493,6 +16493,44 @@ Deno.test("DefaultStepExecutor: parallel steps each hand their children only the
   });
 });
 
+Deno.test("DefaultStepExecutor: a step lends its children the hook's locks, and a hop's end takes them back (swamp-club#3111)", async () => {
+  const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
+    "../datastore/lock_holder_marker.ts"
+  );
+  let generation = 1;
+  let lent: Record<string, string> | undefined;
+  const { error } = await withMockedEnv(
+    { [SWAMP_LOCK_HOLDER_TOKENS]: undefined },
+    () =>
+      runStepUnderLockHook(
+        () => () =>
+          Promise.resolve({
+            flush: () => Promise.resolve(),
+            // Stale on purpose: the scope reads the locks, not this list.
+            heldLockIds: ["stale"],
+            lentLocks: {
+              lockIds: () => [`lock-${generation}`],
+              reclaim: () => {
+                generation++;
+                return Promise.resolve();
+              },
+            },
+          }),
+        "execute",
+        async () => {
+          const hop = await processLockHolderMarker.beginChildHandOff();
+          lent = hop.lent;
+          await hop.end();
+          return {};
+        },
+      ),
+  );
+
+  assertEquals(error, undefined);
+  assertEquals(lent, { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:lock-1` });
+  assertEquals(generation, 2);
+});
+
 Deno.test("DefaultStepExecutor: a step whose hook holds no lock hands its children an empty entry", async () => {
   const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
     "../datastore/lock_holder_marker.ts"

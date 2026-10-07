@@ -106,6 +106,10 @@ async function executeCommand(
   const redact = (text: string) =>
     context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
 
+  // The command is lent the locks held for this run. Begun outside the try
+  // below, which turns a thrown error into a result that is still written.
+  const lockHandOff = await processLockHolderMarker.beginChildHandOff();
+
   try {
     // Resolve vault secrets via environment variables to prevent shell injection.
     // The unresolved run field contains sentinel tokens for vault secrets.
@@ -144,7 +148,7 @@ async function executeCommand(
     // the shared process env holds; explicit user env still wins over both.
     const processEnv = {
       ...createSafeMethodEnv(Deno.env.toObject(), NESTED_SWAMP_ENV_VARS),
-      ...processLockHolderMarker.childLockEnv(),
+      ...lockHandOff.lent,
       ...traceHeadersToEnv(context.traceHeaders),
       ...shellEnv,
     };
@@ -171,6 +175,11 @@ async function executeCommand(
     stderr = redact(rawError);
     exitCode = -1;
   }
+
+  // The command has returned, so this run no longer waits on anything it
+  // left running. Take the locks back before writing under them; a failure
+  // here fails the method with nothing written.
+  await lockHandOff.end();
 
   // Persisted before the exit code is judged, not after. The output is the
   // only account of what the command did, and a command that failed is the one

@@ -787,7 +787,7 @@ export const extensionPushCommand = new Command()
           withAcceptance(
             prepared.reviewRulesResult.warnings,
             manifestDir,
-            repoDir,
+            prepared.commentSites,
           ),
         );
       }
@@ -795,7 +795,11 @@ export const extensionPushCommand = new Command()
       // 6b. Handle safety warnings
       if (prepared.safetyWarnings.length > 0) {
         renderer.renderSafetyWarnings(
-          withAcceptance(prepared.safetyWarnings, manifestDir, repoDir),
+          withAcceptance(
+            prepared.safetyWarnings,
+            manifestDir,
+            prepared.commentSites,
+          ),
         );
       }
 
@@ -831,9 +835,9 @@ export const extensionPushCommand = new Command()
           safetyWarnings: prepared.safetyWarnings,
           reviewWarnings: prepared.reviewRulesResult.warnings,
           acceptances: prepared.acceptances,
+          commentSites: prepared.commentSites,
         },
         manifestDir,
-        repoDir,
       );
 
       // 6d. Version-drift check (advisory warning only)

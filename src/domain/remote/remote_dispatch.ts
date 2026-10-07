@@ -28,7 +28,10 @@
  */
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import type { RemoteLockHolder } from "../datastore/lock_holder_marker.ts";
+import type {
+  LockHandOff,
+  RemoteLockHolder,
+} from "../datastore/lock_holder_marker.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
@@ -80,10 +83,14 @@ export interface RemoteStepRequest {
   /** The step's vault secret bag entries. */
   secretBag?: SecretBagEntry[];
   /**
-   * The per-model locks this process holds for the step, so a swamp the
-   * step starts on a same-host worker skips them.
+   * Begins the hand-off of the per-model locks held for the step to one
+   * dispatch attempt, so a swamp the step starts on the worker skips them.
+   * Call it once per attempt, send what it lends, and await its end when
+   * the attempt returns, is cancelled or loses its worker: the locks are
+   * then re-keyed, so a retry carries new nonces and whatever the attempt
+   * left running stops skipping them.
    */
-  lockHolder?: RemoteLockHolder;
+  beginLockHandOff?: () => Promise<LockHandOff<RemoteLockHolder | undefined>>;
   /**
    * Bypass the scheduler and dispatch directly to the targeted worker.
    * Only used by the fleet verification probe, which must reach workers

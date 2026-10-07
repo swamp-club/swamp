@@ -143,7 +143,8 @@ const TS_WRAPPERS = new Set([
   "ParenthesizedExpression",
 ]);
 
-const PLUGINS: ParserPlugin[] = [
+/** The Babel plugins extension source is parsed with. */
+export const BABEL_PLUGINS: ParserPlugin[] = [
   "typescript",
   "decorators-legacy",
   "explicitResourceManagement",
@@ -170,7 +171,7 @@ function parseSource(source: string): AstNode | null {
   try {
     const file = parse(source, {
       sourceType: "module",
-      plugins: PLUGINS,
+      plugins: BABEL_PLUGINS,
       allowReturnOutsideFunction: true,
       allowAwaitOutsideFunction: true,
       allowImportExportEverywhere: true,
