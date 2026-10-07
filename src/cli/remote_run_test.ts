@@ -2570,76 +2570,99 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name:
-    "requestNewerServerResponse: a server that rejects the request type is reported as needing an upgrade",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    const server = scriptedServer((request, reply) => {
-      reply({
-        type: "error",
-        id: request.id,
-        error: { code: "invalid_request", message: "Invalid request" },
-      });
-    });
-    try {
-      const error = await assertRejects(
-        () =>
-          requestNewerServerResponse(
-            "signals",
-            { server: server.url },
-            { type: "workflow.signal", payload: {} },
-          ),
-        UserError,
-        "does not support signals",
-      );
-      assertEquals(error.code, "unsupported_by_server");
-    } finally {
-      await server.shutdown();
-    }
-  },
+/**
+ * A socket that answers the one request sent on it, in memory: no listener
+ * is bound. It opens when its `onopen` handler is assigned, so it does not
+ * depend on when `requestServerResponse` gets round to assigning it.
+ */
+function answeringSocket(
+  answer: (request: { type: string; id: string }) => Record<string, unknown>,
+): () => WebSocket {
+  return () => {
+    let onopen: (() => void) | null = null;
+    const socket = {
+      binaryType: "blob",
+      onmessage: null as ((event: { data: string }) => void) | null,
+      onerror: null,
+      onclose: null,
+      get onopen() {
+        return onopen;
+      },
+      set onopen(handler: (() => void) | null) {
+        onopen = handler;
+        if (handler) queueMicrotask(handler);
+      },
+      send(data: string) {
+        const reply = JSON.stringify(answer(JSON.parse(data)));
+        queueMicrotask(() => socket.onmessage?.({ data: reply }));
+      },
+      close() {},
+    };
+    return socket as unknown as WebSocket;
+  };
+}
+
+/** Request options for a server that exists only as `answeringSocket`. */
+function inMemoryServer(
+  answer: Parameters<typeof answeringSocket>[0],
+): {
+  server: string;
+  headers: Record<string, string>;
+  createSocket: () => WebSocket;
+} {
+  return {
+    server: "ws://swamp.test",
+    headers: {},
+    createSocket: answeringSocket(answer),
+  };
+}
+
+Deno.test("requestNewerServerResponse: a server that rejects the request type is reported as needing an upgrade", async () => {
+  const error = await assertRejects(
+    () =>
+      requestNewerServerResponse(
+        "signals",
+        inMemoryServer((request) => ({
+          type: "error",
+          id: request.id,
+          error: { code: "invalid_request", message: "Invalid request" },
+        })),
+        { type: "workflow.signal", payload: {} },
+      ),
+    UserError,
+    "does not support signals",
+  );
+  assertEquals(error.code, "unsupported_by_server");
 });
 
-Deno.test({
-  name:
-    "requestNewerServerResponse: any other refusal and a reply pass through unchanged",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    const refusing = scriptedServer((request, reply) => {
-      reply({
-        type: "error",
-        id: request.id,
-        error: { code: "not_found", message: "Signal wait not found" },
-      });
-    });
-    const answering = scriptedServer((request, reply) => {
-      reply({ type: "workflow.waits", id: request.id, payload: { data: 1 } });
-    });
-    try {
-      const error = await assertRejects(
-        () =>
-          requestNewerServerResponse(
-            "signals",
-            { server: refusing.url },
-            { type: "workflow.signal", payload: {} },
-          ),
-        UserError,
-        "Signal wait not found",
-      );
-      assertEquals(error.code, "not_found");
-      assertEquals(
-        await requestNewerServerResponse<{ data: number }>(
-          "listing signal waits",
-          { server: answering.url },
-          { type: "workflow.waits" },
-        ),
-        { data: 1 },
-      );
-    } finally {
-      await refusing.shutdown();
-      await answering.shutdown();
-    }
-  },
+Deno.test("requestNewerServerResponse: any other refusal and a reply pass through unchanged", async () => {
+  const error = await assertRejects(
+    () =>
+      requestNewerServerResponse(
+        "signals",
+        inMemoryServer((request) => ({
+          type: "error",
+          id: request.id,
+          error: { code: "not_found", message: "Signal wait not found" },
+        })),
+        { type: "workflow.signal", payload: {} },
+      ),
+    UserError,
+    "Signal wait not found",
+  );
+  assertEquals(error.code, "not_found");
+
+  const sent: string[] = [];
+  assertEquals(
+    await requestNewerServerResponse<{ data: number }>(
+      "listing signal waits",
+      inMemoryServer((request) => {
+        sent.push(request.type);
+        return { type: "workflow.waits", id: request.id, payload: { data: 1 } };
+      }),
+      { type: "workflow.waits" },
+    ),
+    { data: 1 },
+  );
+  assertEquals(sent, ["workflow.waits"]);
 });
