@@ -173,11 +173,14 @@ export const modelDeleteCommand = withRemoteOptions(
         const ctx = libSwampContextForRepo(repoContext, {
           logger: cliCtx.logger,
         });
+        // The context's definition repo resolves auto-definitions in the
+        // datastore, where a configured datastore keeps them.
         const deps = createModelDeleteDeps(
           repoDir,
           datastoreResolver,
           undefined,
           repoContext.markDirty,
+          repoContext.definitionRepo,
         );
         const force = !!options.force;
 
