@@ -1132,21 +1132,23 @@ That identity (file, rule, line) is what an acceptance names, so a
 rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
 
 - **Inline directive** (`src/domain/extensions/extension_acceptances.ts`):
-  `// swamp-quality-ignore <rule-id>: <reason>` on the finding's line or the
-  line directly above, or `<!-- … -->` on the line above in Markdown; the
+  `// swamp-quality-ignore <rule-id>`, with an optional `: <reason>`, on the
+  finding's line or the line directly above, or `<!-- … -->` on the line above in Markdown; the
   same comment anywhere in a file accepts the file-scoped
   `testing-completeness`. The parser reads raw lines; the review rules strip
   comments, and the safety checks scan every source line as written, so
   nothing can hide behind a directive, on push or on pull. A directive's
-  reason may not contain a quote character, `Deno.Command(` or a base64 run,
+  reason, when given, may not contain a quote character, `Deno.Command(` or a base64 run,
   so a directive cannot trigger the rule it accepts; only the long-line
   count discounts the directive's own text (at most about 230 characters,
   and never a span holding a quote). A standalone directive targets the next
   line, or the one after a single blank line, so a formatter's blank line
   after an HTML comment is harmless; stacked directives share a target.
   Directive text inside a Markdown fenced code block or a source `/* ... */`
-  block is documentation and is not parsed. No reason, the
-  `<reason>` placeholder, an unknown, error-level or otherwise non-acceptable
+  block is documentation and is not parsed. A `//` after an earlier unquoted
+  `//` comment is inside that comment, so a quote in the earlier comment
+  (`// don't`) does not hide the directive. Text after the rule id with no
+  colon, an unknown, error-level or otherwise non-acceptable
   rule (with its remediation), an extension-scoped rule, a `*/` after the directive on its line (a block comment that would
   hide code from the safety scan), or more than 50 directives in a file is a
   blocking `invalid-acceptance` finding naming the comment; reasons are
@@ -1154,7 +1156,8 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
 - **Sidecar** (`src/domain/extensions/extension_quality_sidecar.ts`):
   `quality.yaml` beside `manifest.yaml`, discovered by location only (most
   manifests are regenerated and the manifest schema drops unknown keys
-  silently), strict schema, version 1. It carries extension-scoped
+  silently), strict schema, version 1; an entry's `reason` is optional. It
+  carries extension-scoped
   acceptances (no catalog rule is one today: `bare-specifiers` is not
   acceptable, since the registry cannot score the extension however it is
   justified), a site rule for a `.txt` file (no comment form; file-wide, contained in the manifest's directory) and the `generated`
@@ -1176,15 +1179,29 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   their reasons. `testing-completeness` is accepted per file first, then
   the remaining findings collapse to one per extension carrying the files.
 - **Reporting.** The dry-run, completed and quality summaries close with
-  `Accepted, with reasons:` and `For next time:` (each unaccepted warning
-  with its remediation and the paste-ready acceptance, with a `<reason>`
-  placeholder the parser rejects). In JSON they are `declaredAcceptances` and
-  `forNextTime` beside `acceptedWarnings`, built from the gated warnings, not
-  the waiver record, so a `--json` run, a dry run and an interactive "y" all
-  get them, with files relative to the manifest's directory (a `../` path for
-  a typed directory beside it). The acceptances travel to the registry in
-  `contentMetadata.acceptances` (stored by swamp-club#3095) with files by
-  their archive path (`models/x.ts`, `vaults/v.ts`), never a local one.
+  `Accepted warnings:` and `Unresolved warnings:` (each warning neither fixed
+  nor accepted, with its remediation and one line saying how to accept it).
+  In JSON they are `declaredAcceptances` and `unresolvedWarnings` beside
+  `acceptedWarnings`, built from the gated warnings, not the waiver record, so
+  a `--json` run, a dry run and an interactive "y" all get them. Each
+  unresolved warning, and each finding in the JSON `warnings` lists, carries
+  an `Acceptance` value (`acceptanceFor` in `extension_acceptances.ts`)
+  describing the edit, so an agent applies it without parsing prose: a
+  comment `{ form, file, line, position, text }` with `position` one of
+  `same-line` (source files; inserts no line, so no other finding moves),
+  `line-above` (Markdown) or `file-header` (file-scoped, `line` 1), or a
+  sidecar `{ form, file, entry: { rule, file? } }` naming one entry for the
+  `accept` list, so any number of them merge into one valid `quality.yaml`.
+  No acceptance carries a reason, and there is none for a finding the
+  sidecar could not name (a `.txt` file outside the manifest's directory) or
+  a collapsed finding (each listed file takes its own). JSON paths are
+  absolute (the report is local output, never computed for another machine);
+  `entry.file` is manifest-relative because it is written into the sidecar,
+  and log mode prints paths openable from the current directory. The
+  acceptances travel to the registry in `contentMetadata.acceptances`
+  (stored by swamp-club#3095), `reason` omitted when none was given, with
+  files by their archive path (`models/x.ts`, `vaults/v.ts`), never a local
+  one.
 
 ## Dependencies
 
