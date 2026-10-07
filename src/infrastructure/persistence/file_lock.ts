@@ -38,7 +38,8 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessDead } from "../runtime/process.ts";
 
-const DEFAULT_TTL_MS = 30_000;
+/** TTL of a {@link FileLock} created without a `ttlMs` option. */
+export const DEFAULT_LOCK_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_PATH = ".datastore.lock";
@@ -91,6 +92,43 @@ function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
   };
 }
 
+/** What a lock file on disk means to a reader. */
+export type LockFileState =
+  | { kind: "absent" }
+  | { kind: "readable"; info: LockInfo }
+  /** Exists but is empty, partial or corrupt. */
+  | { kind: "unreadable"; fresh: boolean; mtimeMs: number };
+
+/**
+ * Reads a {@link FileLock} lock file and says what it means.
+ *
+ * A live holder's file is briefly empty between create and write, and empty
+ * or partial during each heartbeat rewrite. So an unreadable file is `fresh`,
+ * and must be counted as held, until it has gone untouched for a full
+ * `ttlMs`: reading it as no lock skips the mutual exclusion the lock is for
+ * (swamp-club#2571, swamp-club#3148).
+ */
+export async function readLockFileState(
+  path: string,
+  ttlMs: number,
+): Promise<LockFileState> {
+  try {
+    const info: unknown = JSON.parse(await Deno.readTextFile(path));
+    if (typeof info === "object" && info !== null) {
+      return { kind: "readable", info: info as LockInfo };
+    }
+  } catch {
+    // Fall through: missing, or present but unreadable
+  }
+  let mtimeMs: number;
+  try {
+    mtimeMs = (await Deno.stat(path)).mtime?.getTime() ?? 0;
+  } catch {
+    return { kind: "absent" };
+  }
+  return { kind: "unreadable", fresh: Date.now() - mtimeMs <= ttlMs, mtimeMs };
+}
+
 /**
  * File-based distributed lock using advisory lockfiles.
  *
@@ -119,7 +157,7 @@ export class FileLock implements DistributedLock {
     this.lockPath = ns
       ? join(basePath, ns, lockFile)
       : join(basePath, lockFile);
-    this.ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
+    this.ttlMs = options?.ttlMs ?? DEFAULT_LOCK_TTL_MS;
     this.retryIntervalMs = options?.retryIntervalMs ??
       DEFAULT_RETRY_INTERVAL_MS;
     this.maxBackoffMs = options?.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
@@ -249,8 +287,22 @@ export class FileLock implements DistributedLock {
     return this.held ? this.nonce : undefined;
   }
 
+  /**
+   * Reads the lock without acquiring it. A lock file its holder is still
+   * writing cannot name that holder, so it is reported as held by an
+   * unknown holder rather than as no lock; it carries no nonce.
+   */
   async inspect(): Promise<LockInfo | null> {
-    return await this.readLockFile();
+    const state = await readLockFileState(this.lockPath, this.ttlMs);
+    if (state.kind === "readable") return state.info;
+    if (state.kind === "absent" || !state.fresh) return null;
+    return {
+      holder: "unknown (lock file is being written)",
+      hostname: "unknown",
+      pid: 0,
+      acquiredAt: new Date(state.mtimeMs).toISOString(),
+      ttlMs: this.ttlMs,
+    };
   }
 
   async forceRelease(expectedNonce: string): Promise<boolean> {
@@ -304,8 +356,10 @@ export class FileLock implements DistributedLock {
   private async clearStaleHolder(): Promise<
     "cleared" | "unreadable" | LockInfo
   > {
-    const existing = await this.readLockFile();
-    if (existing) {
+    const state = await readLockFileState(this.lockPath, this.ttlMs);
+    if (state.kind === "absent") return "cleared"; // Removed meanwhile
+    if (state.kind === "readable") {
+      const existing = state.info;
       const isStale = isProcessDead(existing.pid) ||
         Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
       if (!isStale) return existing;
@@ -321,9 +375,7 @@ export class FileLock implements DistributedLock {
     // between create and write, and during each heartbeat rewrite, so
     // only a file untouched for a full TTL is stale: removing a fresh
     // one lets two holders in at once (swamp-club#2571).
-    const mtime = await this.readLockFileMtime();
-    if (mtime === null) return "cleared"; // Removed meanwhile
-    if (Date.now() - mtime > this.ttlMs) {
+    if (!state.fresh) {
       const logger = getSwampLogger(["datastore", "lock"]);
       logger
         .warn`Removing unreadable lock file ${this.lockPath}`;
@@ -384,15 +436,6 @@ export class FileLock implements DistributedLock {
     if (this.heartbeatId !== undefined) {
       clearInterval(this.heartbeatId);
       this.heartbeatId = undefined;
-    }
-  }
-
-  /** The lock file's mtime in ms, or null when it no longer exists. */
-  private async readLockFileMtime(): Promise<number | null> {
-    try {
-      return (await Deno.stat(this.lockPath)).mtime?.getTime() ?? 0;
-    } catch {
-      return null;
     }
   }
 
