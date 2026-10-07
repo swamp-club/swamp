@@ -1280,10 +1280,7 @@ export async function handleModelGet(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createModelGetDeps(
-      ctx.repoDir,
-      ctx.repoContext.definitionRepo,
-    );
+    const deps = await createModelGetDeps(ctx.repoContext.definitionRepo);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
