@@ -42,8 +42,10 @@
  *
  * `deno` is in `--allow-run` so the script can run `deno info` and the command
  * index. That is a wide grant — a `deno` child can be started with any flags —
- * and it is why the two call sites below pass a fixed argument list and the
- * index runs with no write, net or run permission of its own.
+ * and the index child loads the CLI's modules with `--allow-ffi`, so it is
+ * not sandboxed in any sense that matters. Both call sites pass a fixed
+ * argument list, and what the child runs is this repository's code at the
+ * commit being attested.
  *
  * Usage:
  *   deno run --allow-read --allow-env --allow-run=git,swamp,deno \
@@ -884,12 +886,39 @@ export function parseCommandIndex(stdout: string): CommandIndex | null {
     }
     const entries = Object.entries(parsed);
     if (entries.length === 0) return null;
-    return entries.every(([, file]) => typeof file === "string")
+    return entries.every(([, file]) =>
+        typeof file === "string" && file.startsWith(COMMAND_DIR)
+      )
       ? parsed as CommandIndex
       : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The git arguments that list the files a change touched, NUL-separated.
+ *
+ * `filter` is git's `--diff-filter`: lower case excludes a status, upper case
+ * selects it. Rename detection is switched off, so a moved file is a deletion
+ * of the old path and an addition of the new one. Left on, the old path would
+ * never be classified — and whether it is on is the caller's git
+ * configuration, which must not change what an attestation says.
+ */
+export function diffNamesArgs(
+  filter: string,
+  diffBase: string,
+  commit: string,
+): string[] {
+  return [
+    "diff",
+    "--name-only",
+    "--no-renames",
+    `--diff-filter=${filter}`,
+    "-z",
+    diffBase,
+    commit,
+  ];
 }
 
 /** Runs a command to completion, keeping stderr for the failure message. */
@@ -947,20 +976,15 @@ async function gatherAffectedCommands(
     };
   }
   const diffNames = async (filter: string) => {
-    const diff = await capture("git", [
-      "diff",
-      "--name-only",
-      `--diff-filter=${filter}`,
-      "-z",
-      diffBase,
-      commit,
-    ]);
+    const diff = await capture(
+      "git",
+      diffNamesArgs(filter, diffBase, commit),
+    );
     return diff === null
       ? null
       : diff.split("\0").filter((file) => file !== "");
   };
-  // Lower case excludes a status, upper case selects it: everything that is
-  // still present, then everything that was removed.
+  // Everything that is still present, then everything that was removed.
   const changedFiles = await diffNames("d");
   const deletedFiles = await diffNames("D");
   if (changedFiles === null || deletedFiles === null) {

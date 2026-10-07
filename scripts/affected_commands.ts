@@ -277,8 +277,15 @@ function sample<T>(files: T[]): FileSample<T> {
   return { count: files.length, files: files.slice(0, FILE_LIST_LIMIT) };
 }
 
-/** Source a deleted file could only have reached a command through imports. */
-const MODULE_FILE = /\.(tsx?|jsx?|mjs)$/;
+/**
+ * Whether a deleted file could only have reached a command through imports:
+ * source under `src/`, or the entry point. Source elsewhere — the compile
+ * script, say — is not a CLI module, and its deletion is classified.
+ */
+function wasModule(path: string): boolean {
+  return path === ENTRY_POINT ||
+    (path.startsWith("src/") && /\.(tsx?|jsx?|mjs)$/.test(path));
+}
 
 /**
  * The commands a set of changed files can affect.
@@ -291,7 +298,9 @@ const MODULE_FILE = /\.(tsx?|jsx?|mjs)$/;
  * from the tree after it. A deleted module is skipped: whatever imported it
  * had to change too, and is selected in its own right. Any other deleted file
  * is classified like a changed one — removing `deno.lock` or an embedded
- * asset reaches commands without an import to show for it.
+ * asset reaches commands without an import to show for it. The cost of
+ * telling the two apart by path is that deleting a `src/` file nothing
+ * imported, such as a separate entry point, is skipped as well.
  */
 export function computeAffectedCommands(input: {
   graph: ImportGraph;
@@ -329,7 +338,7 @@ export function computeAffectedCommands(input: {
   }
 
   for (const file of [...new Set(deletedFiles)].sort()) {
-    if (MODULE_FILE.test(file)) continue;
+    if (wasModule(file)) continue;
     const outside = classifyOutsideGraph(file);
     if (outside.effect === "all") forcedAll.push({ file, rule: outside.rule });
   }

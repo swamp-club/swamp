@@ -388,8 +388,9 @@ How to read it:
   `extensions/` and `packages/` select none.** Skills are a deliberate
   exception to the embedded rule: the bundled ones ship in the binary, and a
   skill-only change still selects nothing.
-- **A deleted module is ignored** — what imported it changed too — and any
-  other deleted file is classified like a changed one.
+- **A deleted source file under `src/` is ignored** — what imported it changed
+  too — and any other deleted file is classified like a changed one. A rename
+  counts as a deletion plus an addition.
 - **`startupPath` is a separate flag.** It lists changed files that every
   command runs at startup (reachable from `main.ts` without going through a
   command file). It does not widen the list; treat it as "any command could be

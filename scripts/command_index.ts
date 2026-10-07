@@ -36,12 +36,17 @@
  *     --allow-ffi scripts/command_index.ts <command-file>...
  *
  * Each argument is a repo-relative command file. Only the files named are
- * imported, and the caller names the ones already in the CLI's module graph,
- * so nothing is evaluated here that building the command tree did not already
- * evaluate. That matters: `worker_exec_dispatch_entry.ts` sits in the same
+ * imported, and the caller names the ones in the CLI's module graph, so
+ * nothing is evaluated here that running the CLI does not evaluate. That
+ * matters: `worker_exec_dispatch_entry.ts` sits in the same
  * directory, is a separate entry point, and reads stdin as soon as it loads.
  *
  * The index goes to stdout as JSON and nothing else does.
+ *
+ * The permission list is not a sandbox. `--allow-ffi` lets the CLI's modules
+ * load native code, which can do anything the user can. What this runs is the
+ * repository's own code at the commit being attested, the same code
+ * verify-build has already run.
  */
 
 import { dirname, fromFileUrl, join, toFileUrl } from "@std/path";
@@ -137,8 +142,8 @@ export async function loadCommandIndex(
     }
   }
 
-  // The tree first, then the files: every file named is already loaded by
-  // then, so each import below is a cache hit that evaluates nothing new.
+  // The tree first, then the files: a command file the tree registers is
+  // already loaded by then, so importing it again evaluates nothing new.
   const { buildCommandTree } = await import("../src/cli/mod.ts");
   const roots = rootCommands(buildCommandTree());
 

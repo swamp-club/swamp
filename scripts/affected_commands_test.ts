@@ -252,12 +252,12 @@ Deno.test("computeAffectedCommands: a deleted module selects nothing by itself",
     graph: GRAPH,
     index: INDEX,
     changedFiles: ["src/lib/vault_lib.ts"],
-    deletedFiles: ["src/lib/gone.ts", "src/ui/gone.tsx"],
+    deletedFiles: ["src/lib/gone.ts", "src/ui/gone.tsx", "main.ts"],
     diffBase: "base-sha",
   });
   assertEquals(result.commands, ["vault"]);
   assertEquals(result.forcedAll.count, 0);
-  assertEquals(result.derivation.changedFiles, 3);
+  assertEquals(result.derivation.changedFiles, 4);
 });
 
 Deno.test("computeAffectedCommands: a deleted file that is not a module is classified like a changed one", () => {
@@ -270,6 +270,8 @@ Deno.test("computeAffectedCommands: a deleted file that is not a module is class
       diffBase: "base-sha",
     });
   assertEquals(deleted([".tool-versions"]).scope, "all");
+  assertEquals(deleted(["scripts/compile.ts"]).scope, "all");
+  assertEquals(deleted(["scripts/unbarrel.ts"]).scope, "none");
   assertEquals(deleted(["src/domain/assets/template.yaml"]).forcedAll.files, [
     { file: "src/domain/assets/template.yaml", rule: "unclassified" },
   ]);

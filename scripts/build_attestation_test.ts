@@ -30,6 +30,7 @@ import {
   checkCommitBinding,
   checkWorkflowProvenance,
   describeSkip,
+  diffNamesArgs,
   evaluatedWorkflowPath,
   matchRunsToWorkflows,
   modelNames,
@@ -738,7 +739,25 @@ Deno.test("parseCommandIndex: reads a name-to-file object", () => {
 });
 
 Deno.test("parseCommandIndex: refuses anything that is not a non-empty index", () => {
-  for (const stdout of ["", "not json", "[]", "{}", "null", '{"vault":1}']) {
+  for (
+    const stdout of [
+      "",
+      "not json",
+      "[]",
+      "{}",
+      "null",
+      '{"vault":1}',
+      '{"vault":"scripts/compile.ts"}',
+    ]
+  ) {
     assertEquals(parseCommandIndex(stdout), null, stdout);
   }
+});
+
+Deno.test("diffNamesArgs: lists names with rename detection off", () => {
+  const args = diffNamesArgs("D", "base", "head");
+  assert(args.includes("--no-renames"));
+  assert(args.includes("--diff-filter=D"));
+  assert(args.includes("-z"));
+  assertEquals(args.slice(-2), ["base", "head"]);
 });
