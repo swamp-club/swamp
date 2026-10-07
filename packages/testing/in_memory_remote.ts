@@ -66,17 +66,19 @@
  *   4012-4040).
  * - Internal cache files are never pushed or pulled (S3SYNC:116-128). `.log`
  *   files are synced.
+ * - A service takes its namespace from the first `pullChanged`, `pushChanged`
+ *   or `preparePush` it runs, before it reaches the remote, so one that fails
+ *   still binds it. A later one of those with a different namespace rejects
+ *   (S3SYNC:668-686). A service is therefore one repository's, for its whole
+ *   life. Unlike the extensions, which tell an empty namespace from an unset
+ *   one, the fake treats both as no namespace, as the `fetchContent` contract
+ *   does.
  *
  * Three behaviours that later phases are expected to change can be switched
  * through {@link InMemoryRemoteSemantics}.
  *
  * Experimental: the defaults track today's extension behaviour and will
  * change during the datastore rework.
- *
- * - A service takes its namespace from the first `pullChanged`, `pushChanged`
- *   or `preparePush` it runs, and a later one of those with a different
- *   namespace rejects (S3SYNC:668-686). A service is therefore one
- *   repository's, for its whole life.
  *
  * `fetchContent` returns the committed bytes of one key and touches neither
  * the cache nor the sidecar. It takes the key as given, so a cache-relative
@@ -532,8 +534,12 @@ export function createInMemoryRemote(
 
     let namespace: string | undefined;
     let namespaceBound = false;
-    /** Binds the namespace on first use and refuses a different one after. */
-    const bindNamespace = (ns: string | undefined): void => {
+    /**
+     * Binds the namespace on first use and refuses a different one after.
+     * An empty namespace is no namespace.
+     */
+    const bindNamespace = (given: string | undefined): void => {
+      const ns = given || undefined;
       if (!namespaceBound) {
         namespace = ns;
         namespaceBound = true;

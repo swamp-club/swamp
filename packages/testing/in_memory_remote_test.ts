@@ -880,3 +880,58 @@ Deno.test("createInMemoryRemote: pins that a service keeps the namespace of its 
     assertEquals(await team.fetchContent!("x", { namespace: "other" }), null);
   });
 });
+
+Deno.test("createInMemoryRemote: an empty namespace and an unset one are the same binding", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const empty = remote.connect(join(dir, "empty"));
+    await empty.pullChanged({ namespace: "" });
+    assertEquals(await empty.pushChanged(), 0);
+
+    const unset = remote.connect(join(dir, "unset"));
+    await unset.pullChanged();
+    assertEquals(await unset.pushChanged({ namespace: "" }), 0);
+    await assertRejects(
+      () => unset.pullChanged({ namespace: "team" }),
+      Error,
+      'Namespace mismatch: bound to undefined but called with "team"',
+    );
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails still binds its namespace (S3SYNC:2381-2383, 2896-2898, 3415-3417)", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    remote.offline(true);
+    const pulled = remote.connect(join(dir, "pulled"));
+    await assertRejects(
+      () => pulled.pullChanged({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    const pushed = remote.connect(join(dir, "pushed"));
+    await write(join(dir, "pushed"), "x", "1");
+    await assertRejects(
+      () => pushed.pushChanged({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    const prepared = remote.connect(join(dir, "prepared"));
+    await write(join(dir, "prepared"), "x", "1");
+    await assertRejects(
+      () => prepared.preparePush({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    remote.offline(false);
+
+    for (const service of [pulled, pushed, prepared]) {
+      await assertRejects(
+        () => service.pullChanged(),
+        Error,
+        'Namespace mismatch: bound to "team" but called with undefined',
+      );
+      await service.pullChanged({ namespace: "team" });
+    }
+  });
+});
