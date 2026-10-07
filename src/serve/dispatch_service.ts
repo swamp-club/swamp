@@ -498,9 +498,26 @@ export class DispatchService {
     try {
       await handOff?.end();
     } catch (error) {
-      // A cancelled step writes nothing to the model, so it stays cancelled
-      // rather than failing on a structural command it could not wait out.
-      if (!request.signal?.aborted) throw error;
+      // The locks could not be taken back, so the step must not write. An
+      // attempt that succeeded fails here even when the step was cancelled
+      // meanwhile: its result would otherwise be returned and written.
+      if (outcome.ok || !request.signal?.aborted) {
+        if (!outcome.ok) {
+          logger.warn(
+            "Dispatch attempt of step {step} ended with {attemptError}, and its locks could not be taken back",
+            {
+              step: request.stepName ?? request.methodName,
+              attemptError: outcome.error instanceof Error
+                ? outcome.error.message
+                : String(outcome.error),
+            },
+          );
+        }
+        throw error;
+      }
+      // A cancelled attempt that failed writes nothing to the model, so the
+      // step stays cancelled rather than failing on a structural command it
+      // could not wait out.
       logger.warn(
         "Could not take back the locks of cancelled step {step}: {error}",
         {

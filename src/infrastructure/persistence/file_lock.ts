@@ -219,6 +219,10 @@ export class FileLock implements DistributedLock {
     // extend() sees it and skips writing — prevents orphaned lock files.
     this.releasing = true;
     this.stopHeartbeat();
+    // Let a rewrite already under way finish first. One that replaced the
+    // file after this removed it could otherwise overwrite, and then
+    // remove, a lock another process had taken in between.
+    await this.rewrites;
 
     if (!this.held) return;
     this.held = false;
@@ -330,9 +334,9 @@ export class FileLock implements DistributedLock {
   }
 
   /**
-   * Replaces the lock file through a temp file and a rename. Windows can
-   * refuse a rename onto a file another process has open; the file is then
-   * rewritten in place, as the heartbeat rewrites it.
+   * Replaces the lock file through a temp file and a rename, so a reader
+   * never sees it partly written. Windows can refuse a rename onto a file
+   * another process has open; the file is then rewritten in place.
    */
   private async replaceLockFile(info: LockInfo): Promise<void> {
     const content = JSON.stringify(info, null, 2);
@@ -454,9 +458,11 @@ export class FileLock implements DistributedLock {
       // beyond TTL), the nonce will differ and we must self-revoke.
       if (!await this.stillOwned()) return;
 
-      const info = buildLockInfo(this.ttlMs, this.nonce!, this.skipping);
-      const content = JSON.stringify(info, null, 2);
-      await Deno.writeTextFile(this.lockPath, content);
+      // Replaced whole, like every rewrite of a held lock: a reader that
+      // caught the file mid-write would take the lock for absent.
+      await this.replaceLockFile(
+        buildLockInfo(this.ttlMs, this.nonce!, this.skipping),
+      );
 
       // If release() was called while the write was in flight,
       // clean up the lock we just wrote so we don't orphan it.

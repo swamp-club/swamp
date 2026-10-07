@@ -951,3 +951,47 @@ Deno.test("lockSkipping: reads a well-formed list and treats anything else as em
     0,
   );
 });
+
+Deno.test("FileLock: a heartbeat replaces the lock file whole and leaves no temp file", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 90 });
+    await lock.acquire();
+    const lockPath = join(dir, ".datastore.lock");
+    const acquired = (await lock.inspect())!;
+    const inode = (await Deno.stat(lockPath)).ino;
+
+    await waitFor(async () => {
+      const info = await lock.inspect();
+      return info !== null && info.acquiredAt > acquired.acquiredAt;
+    }, "a heartbeat");
+
+    // A rename, not a truncate and rewrite, puts a new file at the path.
+    if (inode !== null) {
+      assertNotEquals((await Deno.stat(lockPath)).ino, inode);
+    }
+    await lock.release();
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(dir)) names.push(entry.name);
+    assertEquals(names, []);
+  });
+});
+
+Deno.test("FileLock.release: waits for a re-key under way, so it cannot land on a lock taken afterwards", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    await lock.acquire();
+    // The re-key is past its ownership check when the release starts.
+    const rekeying = lock.rekey();
+    await Promise.resolve();
+    await Promise.resolve();
+    await lock.release();
+    assertEquals(await lock.inspect(), null);
+
+    // Another holder takes the lock; the finished re-key leaves it alone.
+    const next = new FileLock(dir, { ttlMs: 60_000 });
+    assertEquals(await next.tryAcquire(), true);
+    await rekeying;
+    assertEquals((await next.inspect())?.nonce, next.heldNonce);
+    await next.release();
+  });
+});

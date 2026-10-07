@@ -157,23 +157,24 @@ export interface MethodExecutionService {
 
 /**
  * The lock hand-offs of a dispatch built now, one per attempt, bound to the
- * lock scope this is called from. An attempt whose run holds more locks
- * than a worker accepts is lent none: the step then runs without them, and
- * a structural swamp it starts waits on the locks held for the run.
+ * lock scope this is called from. A run that holds more locks than a worker
+ * accepts lends none: the step then runs without them, and a structural
+ * swamp it starts waits on the locks held for the run.
  */
 function lockHandOffFor(
   context: Pick<MethodContext, "logger">,
 ): () => Promise<LockHandOff<RemoteLockHolder | undefined>> {
   const source = processLockHolderMarker.remoteHandOff();
-  return () => {
-    const holder = source.holder();
-    if (holder !== undefined && holder.lockIds.length > MAX_REMOTE_LOCK_IDS) {
-      context.logger
-        .warn`Not handing ${holder.lockIds.length} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
-      return Promise.resolve({ lent: undefined, end: () => Promise.resolve() });
-    }
-    return source.begin();
-  };
+  // A re-key replaces nonces one for one, so the count holds for every
+  // attempt and the warning is logged once per step.
+  const held = source.holder()?.lockIds.length ?? 0;
+  if (held > MAX_REMOTE_LOCK_IDS) {
+    context.logger
+      .warn`Not handing ${held} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
+    return () =>
+      Promise.resolve({ lent: undefined, end: () => Promise.resolve() });
+  }
+  return () => source.begin();
 }
 
 /**

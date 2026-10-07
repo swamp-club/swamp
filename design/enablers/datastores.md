@@ -2232,10 +2232,13 @@ its parent, adopted from a `--server` client, sent on with a dispatch) are
 never re-keyed by it: it does not hold those locks. Their holder re-keys them
 when its own hop ends, and until then it is not writing.
 
-Lock files are replaced through a temp file and a rename for both writes,
-never rewritten in place: a reader that catches a lock file mid-write takes
-the lock for absent. The heartbeat still rewrites in place
-(swamp-club#3148).
+Every rewrite of a held lock file, the heartbeat included, replaces it
+through a temp file and a rename. A reader that catches a lock file partly
+written takes the lock for absent, and the holder's one read of the global
+lock must not land in such a window. `release()` waits for a rewrite already
+under way, so a replace can never land on a lock another process took in
+between. Readers still treat an unreadable lock file as absent, which matters
+for locks written by an older swamp (swamp-club#3148).
 
 Known limits of the run-level match:
 

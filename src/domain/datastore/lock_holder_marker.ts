@@ -44,10 +44,11 @@ export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
  * The per-model locks held for the run that started a child: comma-separated
  * `<pid>:<nonce>+<nonce>` entries, the nonces being those the lock files
  * carried when the child was started. A holder re-keys a lock when the hop
- * it lent it to ends, so a child that outlives its hop stops matching. A listed nonce is the proof: the child skips the lock file
- * carrying it whichever process on whichever host holds it, so the list
- * also names locks handed over a worker dispatch or a `--server` request,
- * whose holder is not above the child. The pid matters only for a swamp
+ * it lent it to ends, so a child that outlives its hop stops matching. A
+ * listed nonce is the proof: the child skips the lock file carrying it
+ * whichever process on whichever host holds it, so the list also names
+ * locks handed over a worker dispatch or a `--server` request, whose holder
+ * is not above the child. The pid matters only for a swamp
  * above the child on its host: one with an entry (an empty one when the run
  * holds none) is held to it, so the child still waits on the locks that
  * swamp holds for other runs, such as parallel steps or other `swamp serve`

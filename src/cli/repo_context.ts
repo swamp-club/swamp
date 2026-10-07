@@ -1835,20 +1835,24 @@ export async function waitForPerModelLocks(
     waitStart,
   );
   let last = first;
+  let rescans = 0;
   try {
     await drainWait.check(first);
     while (true) {
-      // A scan that only changed the published list is confirmed at once.
-      if (last.held > 0) {
+      // The first list published is confirmed at once; after that every
+      // scan is a poll apart, so a skipped set that keeps changing cannot
+      // spin the drain.
+      if (last.held > 0 || rescans > 0) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
+      rescans++;
       const remaining = await findModelLocks();
       const confirmed = await confirm(remaining);
       last = remaining;
       if (remaining.held === 0 && confirmed) break;
       announce(remaining);
       const elapsed = Date.now() - waitStart;
-      if (remaining.held > 0 && elapsed >= maxWaitMs) {
+      if (elapsed >= maxWaitMs) {
         throw new LockTimeoutError(
           "per-model locks",
           null,
@@ -2028,6 +2032,9 @@ export interface ModelLockResult {
    * them, so a swamp it starts skips these locks and no others
    * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). Empty
    * for custom datastore locks, which the drain never scans.
+   *
+   * A snapshot taken when the locks were acquired: a re-key changes the
+   * nonces, so never hand this list to a child. Use {@link lentLocks}.
    */
   heldLockIds: readonly string[];
   /**

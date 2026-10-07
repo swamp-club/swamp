@@ -5358,3 +5358,25 @@ Deno.test("reclaimModelLocks: throws LockTimeoutError when the structural comman
     await lock.release();
   });
 });
+
+Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lock timeout, not in a spin", async () => {
+  let scans = 0;
+  await assertRejects(
+    () =>
+      withMockedEnv(
+        { SWAMP_LOCK_TIMEOUT_MS: "30" },
+        () =>
+          waitForPerModelLocks("/unused", undefined, {
+            progressWriter: () => {},
+            pollIntervalMs: 5,
+            // Nothing is ever held, but the skipped set flips on every scan.
+            findModelLocks: () =>
+              Promise.resolve(skippingScan(scans++ % 2 === 0 ? ["a"] : [])),
+            publishSkipping: () => Promise.resolve(),
+          }),
+      ),
+    LockTimeoutError,
+  );
+  // Paced by the poll interval after the first confirming scan.
+  assert(scans < 30, `expected a paced drain, got ${scans} scans`);
+});
