@@ -270,7 +270,7 @@ async function warnIfCarriedElsewhere(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.09.29.1",
+  version: "2026.10.07.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -477,6 +477,15 @@ export const model = {
         "the PR on the swamp-club issue itself. No globalArguments changes; " +
         "both new resources are optional, so existing instances need no " +
         "migration.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.10.07.1",
+      description:
+        "AttestationSchema accepts an optional affectedCommands object, the " +
+        "CLI commands a change can affect. post_attestation validates it " +
+        "when present and posts it with the rest of the document. No " +
+        "globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
