@@ -83,8 +83,10 @@ import {
   registryCheckNotRun,
   type RegistryCheckResult,
   type RegistryChecksMode,
+  signedInCheck,
 } from "../../domain/extensions/extension_publish_checks.ts";
 import { UserError } from "../../domain/errors.ts";
+import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -376,11 +378,21 @@ export type ExtensionPushEvent =
  * The caller's collectives and what each entitles them to, from one whoami
  * call. `collectives` is undefined when the registry sent no organizations;
  * `entitlements` when it sent no entitlement (an older server), which the
- * private-entitlement check reports as undecided.
+ * private-entitlement check reports as undecided. `identity` is who the
+ * same answer says the key belongs to; it names the credential in the
+ * authentication verdict and never decides membership.
  */
 export interface CollectiveLookup {
   collectives: string[] | undefined;
   entitlements: CollectiveEntitlement[] | undefined;
+  identity?: CollectiveLookupIdentity;
+}
+
+/** Who a whoami answer says the key belongs to. */
+export interface CollectiveLookupIdentity {
+  username?: string;
+  collectiveToken?: boolean;
+  collectiveSlug?: string;
 }
 
 /** Dependencies for the extension push prepare phase. */
@@ -611,6 +623,13 @@ export function createExtensionPushPrepareDeps(
       return {
         collectives: getCollectives(whoami),
         entitlements: entitlementsOf(whoami),
+        identity: {
+          ...(whoami.username ? { username: whoami.username } : {}),
+          ...(whoami.collectiveToken ? { collectiveToken: true } : {}),
+          ...(whoami.collectiveSlug
+            ? { collectiveSlug: whoami.collectiveSlug }
+            : {}),
+        },
       };
     },
     extractContentMetadata,
@@ -820,6 +839,7 @@ export async function extensionPushPrepare(
       // 2. Validate collective matches user's collectives
       let collectives: string[] | undefined;
       let entitlements: CollectiveEntitlement[] | undefined;
+      let identity: CollectiveLookupIdentity | undefined;
       let signedOut = false;
       let lookupFailure: string | undefined;
       try {
@@ -829,6 +849,7 @@ export async function extensionPushPrepare(
         );
         collectives = lookup.collectives;
         entitlements = lookup.entitlements;
+        identity = lookup.identity;
       } catch (error) {
         if (isNotAuthenticatedError(error)) {
           signedOut = true;
@@ -874,6 +895,11 @@ export async function extensionPushPrepare(
         }
       } else {
         credentials = creds;
+        // The registry's answer names the account; the cached identity
+        // stands in when it did not answer. A token has no username.
+        const username = identity?.collectiveToken
+          ? ""
+          : identity?.username || creds.username;
         collectiveEntitlement = entitlements?.find((e) =>
           e.slug === collectiveOf(input.manifest.name)
         );
@@ -884,22 +910,32 @@ export async function extensionPushPrepare(
               "registry-unavailable",
               `registry did not answer: ${lookupFailure}`,
             )
-            : {
-              name: "authentication",
-              status: "passed",
-              message: `Signed in as ${creds.username}.`,
-            },
+            : signedInCheck({
+              username,
+              collectiveToken: identity?.collectiveToken,
+              collectiveSlug: identity?.collectiveSlug,
+              fingerprint: await keyFingerprint(creds.apiKey),
+            }),
         );
         const { reserved, membership } = evaluateCollectiveMembership({
           extensionName: input.manifest.name,
           collectives,
-          username: creds.username,
+          username,
         });
         // For reserved collectives, membership MUST be verified by the server.
         for (const check of [reserved, membership]) {
           if (check.status === "failed" && mode === "enforce") {
             throw validationFailed(check.message);
           }
+        }
+        // Membership nobody could settle refuses the push, as it always has.
+        if (
+          mode === "enforce" && membership.status === "not-run" &&
+          membership.cause === "registry-unavailable"
+        ) {
+          throw validationFailed(
+            `${membership.message} Try again when ${creds.serverUrl} is reachable.`,
+          );
         }
         registryChecks.push(reserved, membership);
         // 2b. Private entitlement, from the same whoami answer. Only a
