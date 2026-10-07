@@ -453,7 +453,11 @@ export const extensionPushCommand = new Command()
     const prepareDeps = createExtensionPushPrepareDeps(identity, {
       recorder: apiCalls,
     });
-    const renderer = createExtensionPushRenderer(cliCtx.outputMode);
+    // Printed paths open from where the author ran the command.
+    const renderer = createExtensionPushRenderer(cliCtx.outputMode, {
+      cwd: Deno.cwd(),
+      repoDir,
+    });
     const registryChecks = options.dryRun ? "collect" : "enforce";
     const cache = new ExtensionPackageCache(
       defaultPackageCacheRoot(repoDir),

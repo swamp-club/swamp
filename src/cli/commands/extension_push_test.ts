@@ -120,7 +120,12 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
           file: "manifest.yaml",
           message: "No adversarial review recorded",
           remediation: "run the review",
-          skeleton: '{"dimensions":[]}',
+          skeleton: {
+            extension: "@test/ext",
+            version: "1",
+            reviewedAt: "<ISO-8601 timestamp>",
+            dimensions: [],
+          },
         },
         {
           ruleId: "bare-specifiers",

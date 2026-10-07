@@ -97,11 +97,11 @@ export interface ReviewFinding {
    */
   files?: string[];
   /**
-   * Optional fill-in report skeleton (JSON). Set only on the missing-report
-   * finding so JSON consumers get it as a discrete field rather than parsing
-   * it out of `message`.
+   * Optional fill-in report skeleton. Set only on the missing-report finding
+   * so JSON consumers get it as a discrete object rather than parsing it out
+   * of `message`.
    */
-  skeleton?: string;
+  skeleton?: ReviewReportSkeleton;
 }
 
 /** A detection a rule reports: its message, and the line when it has one. */
@@ -607,26 +607,33 @@ export function reviewReportPath(
   );
 }
 
+/**
+ * A fill-in-the-blanks review report: the shape the reviewer writes to the
+ * report path, with every dimension still pending.
+ */
+export interface ReviewReportSkeleton {
+  extension: string;
+  version: string;
+  reviewedAt: string;
+  dimensions: { id: string; verdict: "pending"; note: string }[];
+}
+
 /** Builds a fill-in-the-blanks report skeleton for the given dimensions. */
 export function buildReviewReportSkeleton(
   extensionName: string,
   extensionVersion: string,
   dimensions: ReviewDimension[],
-): string {
-  return JSON.stringify(
-    {
-      extension: extensionName,
-      version: extensionVersion,
-      reviewedAt: "<ISO-8601 timestamp>",
-      dimensions: dimensions.map((d) => ({
-        id: d.id,
-        verdict: "pending",
-        note: "",
-      })),
-    },
-    null,
-    2,
-  );
+): ReviewReportSkeleton {
+  return {
+    extension: extensionName,
+    version: extensionVersion,
+    reviewedAt: "<ISO-8601 timestamp>",
+    dimensions: dimensions.map((d) => ({
+      id: d.id,
+      verdict: "pending",
+      note: "",
+    })),
+  };
 }
 
 /** Context for evaluating the adversarial-review report at push time. */
@@ -644,7 +651,7 @@ export interface ReviewReportContext {
   /** Dimensions that must each carry a non-pending verdict. */
   applicableDimensions: ReviewDimension[];
   /** Skeleton to show the reviewer when the report is missing. */
-  skeleton: string;
+  skeleton: ReviewReportSkeleton;
 }
 
 const REVIEW_REPORT_RULE = "adversarial-review-report";

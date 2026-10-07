@@ -164,7 +164,18 @@ The dry-run summary lists every HTTP call the run made (the registry for
 whoami, the versions list and the drift lookup; OSV and npm for the
 dependency-trust audit) and says "No API calls were made." only when the list
 is empty. In JSON these are the `registryChecks` and `apiCalls` fields of the
-`dry_run` document, beside `contentHash`. `extension quality` packages
+`dry_run` document, beside `contentHash`.
+
+`--json` writes one document per run on stdout (swamp-club#3017). The
+renderer records each part as the run produces it and writes the document
+when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
+`cancelled`), `resolved` (file paths absolute), `warnings` grouped by family
+(`safety`, `review`, `dependencyTrust`, `versionDrift`,
+`versionBumpUpgrade`), and the run summary at the top level. A blocked
+prepare carries `errors` keyed by the gate that blocked it instead. The
+review-report skeleton is a nested object on its finding. Errors still go to
+stderr as `{"error": ...}`. Log mode prints paths relative to the current
+directory, or absolute when the file shares only the filesystem root with it. `extension quality` packages
 through the same prepare phase, on a cache hit too, but skips the registry
 checks and makes no registry call. It runs the local gates in `collect`
 mode (`localGates`): each failed gate (content collectives, the
