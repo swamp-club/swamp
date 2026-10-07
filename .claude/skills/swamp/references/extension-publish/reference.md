@@ -150,12 +150,15 @@ collective, collective membership, version exists) with the wording the real
 push uses; a `failed` check exits non-zero and a `not-run` check names the
 missing prerequisite (no credentials). `apiCalls` lists every HTTP call the run
 made, and `contentHash` is the hash the adversarial-review report is keyed by.
-`forNextTime` lists each remaining warning with its `remediation` and, for rules
-that can be accepted, the exact `acceptance` text to paste where the finding is
-(an inline `swamp-quality-ignore` comment, or a `quality.yaml` entry beside the
-manifest); `declaredAcceptances` lists what the extension already accepts. Offer
-the user the fix first and the acceptance only when the finding is not right for
-this extension; never paste the `<reason>` placeholder as is.
+`unresolvedWarnings` lists each remaining warning with its `remediation` and,
+for rules that can be accepted, an `acceptance` object describing the edit: a
+comment (`file`, `line`, `position`, `text`) or one `entry` for the `accept`
+list of `quality.yaml` beside the manifest; `declaredAcceptances` lists what the
+extension already accepts. Offer the user the fix first and apply the acceptance
+only when they decide the finding is not right for this extension; add sidecar
+entries to the existing `accept` list rather than writing a new file. The reason
+is optional; ask for one only when it helps a reviewer. See
+[applying an acceptance](references/publishing.md#applying-an-acceptance).
 
 A dry run prints the same `contentHash` CI's publish computes whenever the
 extensions root is the extension directory, including from a sibling swamp repo
@@ -200,8 +203,8 @@ swamp extension push manifest.yaml --yes --json
 
 `--yes` also waives safety and review warnings; the completed summary records
 them under `acceptedWarnings` so the user can see what was waived, and its
-`For next time:` block (`forNextTime` in JSON) says how to fix or declare each
-one so the next push carries no waiver.
+`Unresolved warnings:` block (`unresolvedWarnings` in JSON) says how to fix or
+accept each one so the next push carries no waiver.
 
 For explicit-private publication, verify the successful output reports
 `visibility: "private"`. A dry run proves intent, not applied registry

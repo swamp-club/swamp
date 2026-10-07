@@ -471,7 +471,10 @@ Deno.test("extensionPushRenderer: log dry run says no API calls were made only w
   assertEquals(output.includes("Content hash:"), false);
 });
 
-// ── Findings report: declared acceptances and For next time ───────────
+// ── Findings report: accepted and unresolved warnings ─────────────────
+
+const MODEL_B = join(PATHS.manifestDir, "models", "b.ts");
+const REVIEW_JSON = join(ROOT, "tmp", "review.json");
 
 const report: FindingsReport = {
   declaredAcceptances: {
@@ -482,27 +485,48 @@ const report: FindingsReport = {
       reason: "reference to a Secret, not a secret",
       source: "inline",
       message: "looks like a secret",
+    }, {
+      ruleId: "deno-command",
+      file: "models/c.ts",
+      line: 5,
+      source: "inline",
+      message: "uses Deno.Command",
     }],
     generated: { by: "codegen", source: "spec.yaml", commit: "abc" },
   },
-  forNextTime: [{
+  unresolvedWarnings: [{
     ruleId: "deno-command",
-    file: "models/b.ts",
+    file: MODEL_B,
     line: 9,
     message: "Line 9 uses Deno.Command() to spawn subprocesses.",
     remediation: "Prefer swamp's own primitives.",
-    acceptance: "// swamp-quality-ignore deno-command: <reason>",
-    placement: "on line 9 of models/b.ts, or the line above",
+    acceptance: {
+      form: "comment",
+      file: MODEL_B,
+      line: 9,
+      position: "line-above",
+      text: "// swamp-quality-ignore deno-command",
+    },
+  }, {
+    ruleId: "ipv4-address-literals",
+    file: join(PATHS.manifestDir, "docs", "hosts.txt"),
+    line: 3,
+    message: "IPv4 literal 10.0.0.1",
+    acceptance: {
+      form: "sidecar",
+      file: join(PATHS.manifestDir, "quality.yaml"),
+      entry: { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
+    },
   }, {
     ruleId: "adversarial-review-report",
-    file: "/tmp/review.json",
+    file: REVIEW_JSON,
     message: "No adversarial review recorded",
     remediation: "Run the adversarial review.",
   }],
 };
 
-Deno.test("extensionPushRenderer: JSON dry run and completed documents carry declaredAcceptances and forNextTime beside acceptedWarnings", async () => {
-  const renderer = createExtensionPushRenderer("json");
+Deno.test("extensionPushRenderer: JSON dry run and completed documents carry declaredAcceptances and unresolvedWarnings beside acceptedWarnings", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
   const logs = await capture(async () => {
     renderer.renderDryRun({
       ...dryRunBase,
@@ -515,68 +539,80 @@ Deno.test("extensionPushRenderer: JSON dry run and completed documents carry dec
   assertEquals(dryRun.status, "dry_run");
   assertEquals(dryRun.acceptedWarnings, accepted);
   assertEquals(dryRun.declaredAcceptances, report.declaredAcceptances);
-  assertEquals(dryRun.forNextTime, report.forNextTime);
-  assertEquals(dryRun.forNextTime[1].acceptance, undefined);
+  assertEquals(dryRun.unresolvedWarnings, report.unresolvedWarnings);
+  assertEquals(dryRun.unresolvedWarnings[2].acceptance, undefined);
+  assertEquals("forNextTime" in dryRun, false);
   const completed = JSON.parse(logs[1]);
   assertEquals("acceptedWarnings" in completed, false);
   assertEquals(completed.declaredAcceptances, report.declaredAcceptances);
-  assertEquals(completed.forNextTime, report.forNextTime);
+  assertEquals(completed.unresolvedWarnings, report.unresolvedWarnings);
 });
 
-Deno.test("extensionPushRenderer: JSON documents omit declaredAcceptances and forNextTime when the report is empty", async () => {
-  const renderer = createExtensionPushRenderer("json");
+Deno.test("extensionPushRenderer: JSON documents omit declaredAcceptances and unresolvedWarnings when the report is empty", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
   const logs = await capture(async () => {
     renderer.renderDryRun({ ...dryRunBase, report: {} });
     await renderer.handlers({ report: {} }).completed(completedEvent);
   });
   for (const doc of logs.map((l) => JSON.parse(l))) {
     assertEquals("declaredAcceptances" in doc, false);
-    assertEquals("forNextTime" in doc, false);
+    assertEquals("unresolvedWarnings" in doc, false);
   }
 });
 
-Deno.test("extensionPushRenderer: log dry run and completed summaries print the accepted and For next time blocks after the summary", async () => {
-  const renderer = createExtensionPushRenderer("log");
+Deno.test("extensionPushRenderer: log dry run and completed summaries print the accepted and unresolved blocks after the summary", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
   const logs = await capture(async () => {
     renderer.renderDryRun({ ...dryRunBase, report });
     await renderer.handlers({ report }).completed(completedEvent);
   });
   const output = logs.join("\n");
-  const accepted = output.indexOf("Accepted, with reasons:");
-  const next = output.indexOf("For next time:");
-  assertEquals(accepted > output.indexOf("No API calls were made."), true);
-  assertEquals(next > accepted, true);
+  const acceptedAt = output.indexOf("Accepted warnings:");
+  const unresolvedAt = output.indexOf("Unresolved warnings:");
+  assertEquals(acceptedAt > output.indexOf("No API calls were made."), true);
+  assertEquals(unresolvedAt > acceptedAt, true);
+  assertEquals(output.includes("For next time:"), false);
   assertStringIncludes(output, "generated by codegen from spec.yaml at abc");
+  // Paths print openable from where the author ran push.
+  const ext = ["..", "repo", "extensions"].join(SEPARATOR);
   assertStringIncludes(
     output,
-    "credentials-sensitive-field — models/a.ts:2: reference to a Secret, not a secret",
+    `credentials-sensitive-field — ${
+      join(ext, "models", "a.ts")
+    }:2: reference to a Secret, not a secret`,
   );
-  assertStringIncludes(output, "deno-command — models/b.ts:9:");
-  assertStringIncludes(output, "fix: Prefer swamp's own primitives.");
+  // An acceptance with no reason prints no reason.
   assertStringIncludes(
     output,
-    "or accept it, on line 9 of models/b.ts, or the line above:",
+    `deno-command — ${join(ext, "models", "c.ts")}:5\n`,
   );
   assertStringIncludes(
     output,
-    "// swamp-quality-ignore deno-command: <reason>",
+    `deno-command — ${join(ext, "models", "b.ts")}:9: Line 9 uses`,
+  );
+  assertStringIncludes(output, "    fix: Prefer swamp's own primitives.");
+  assertStringIncludes(
+    output,
+    "    or accept on the line above: // swamp-quality-ignore deno-command",
+  );
+  assertStringIncludes(
+    output,
+    "    or accept in quality.yaml: { rule: ipv4-address-literals, file: docs/hosts.txt }",
   );
   // The unacceptable finding has advice but no acceptance line.
-  const reviewAt = output.indexOf(
-    "adversarial-review-report — /tmp/review.json",
-  );
+  const reviewAt = output.indexOf(`adversarial-review-report — ${REVIEW_JSON}`);
   assertEquals(reviewAt > 0, true);
-  const secondBlock = output.indexOf("For next time:", reviewAt);
+  const secondBlock = output.indexOf("Unresolved warnings:", reviewAt);
   assertEquals(
-    output.slice(reviewAt, secondBlock).includes("or accept it"),
+    output.slice(reviewAt, secondBlock).includes("or accept"),
     false,
   );
   // Printed twice: once for the dry run, once for the completed push.
-  assertEquals(output.split("For next time:").length, 3);
+  assertEquals(output.split("Unresolved warnings:").length, 3);
 });
 
 Deno.test("extensionPushRenderer: log report prints braces in messages, remediation and reasons verbatim", async () => {
-  const renderer = createExtensionPushRenderer("log");
+  const renderer = createExtensionPushRenderer("log", PATHS);
   const braces: FindingsReport = {
     declaredAcceptances: {
       accepted: [{
@@ -588,16 +624,20 @@ Deno.test("extensionPushRenderer: log report prints braces in messages, remediat
         message: "Uses `z.object({}).passthrough()`",
       }],
     },
-    forNextTime: [{
+    unresolvedWarnings: [{
       ruleId: "credentials-sensitive-field",
-      file: "models/b.ts",
+      file: MODEL_B,
       line: 4,
       message:
         'Field on line "z.object({ apiKey: z.string() })" looks like a secret',
       remediation: remediationFor("credentials-sensitive-field"),
-      acceptance:
-        "// swamp-quality-ignore credentials-sensitive-field: <reason>",
-      placement: "on line 4 of models/b.ts, or the line above",
+      acceptance: {
+        form: "comment",
+        file: MODEL_B,
+        line: 4,
+        position: "line-above",
+        text: "// swamp-quality-ignore credentials-sensitive-field",
+      },
     }],
   };
   const logs = await capture(() =>

@@ -70,6 +70,31 @@ Deno.test("acceptance property: a rendered trailing directive parses back to the
   );
 });
 
+Deno.test("acceptance property: a directive with no reason parses back to the same rule and line, with no reason", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...siteRuleIds),
+      fc.constantFrom("", ":", " :", ":  "),
+      fc.integer({ min: 1, max: 40 }),
+      (ruleId, suffix, lineNumber) => {
+        const lines: string[] = [];
+        for (let i = 1; i < lineNumber; i++) lines.push(`const v${i} = ${i};`);
+        lines.push(`doThing(); // ${ACCEPTANCE_DIRECTIVE} ${ruleId}${suffix}`);
+        const parsed = parseAcceptanceDirectives(lines.join("\n"), FILE);
+        assertEquals(parsed.invalid, []);
+        assertEquals(parsed.directives.length, 1);
+        assertEquals(parsed.directives[0].ruleId, ruleId);
+        assertEquals("reason" in parsed.directives[0], false);
+        assertEquals(parsed.directives[0].target, {
+          kind: "line",
+          file: FILE,
+          line: lineNumber,
+        });
+      },
+    ),
+  );
+});
+
 Deno.test("acceptance property: a standalone directive always targets the next line", () => {
   fc.assert(
     fc.property(

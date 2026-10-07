@@ -47,6 +47,7 @@ import type { CollectiveMismatch } from "../../domain/extensions/extension_colle
 import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import {
   type FindingsReport,
+  type FindingsReportPaths,
   renderFindingsReport,
 } from "./extension_findings_report.ts";
 
@@ -104,7 +105,7 @@ export interface ExtensionPushDryRunData {
   apiCalls: ApiCallRecord[];
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
-  /** The declared acceptances and the For next time advice. */
+  /** The declared acceptances and the unresolved warnings. */
   report?: FindingsReport;
 }
 
@@ -112,7 +113,7 @@ export interface ExtensionPushDryRunData {
 export interface ExtensionPushHandlerOptions {
   /** Present only when a flag waived at least one warning. */
   accepted?: WarningsAcceptance;
-  /** The declared acceptances and the For next time advice. */
+  /** The declared acceptances and the unresolved warnings. */
   report?: FindingsReport;
 }
 
@@ -200,6 +201,14 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       this.paths.repoDir,
       this.paths.manifestDir,
     ]);
+  }
+
+  /** How the findings report prints its paths. */
+  private reportPaths(): FindingsReportPaths {
+    return {
+      manifestDir: this.paths.manifestDir,
+      display: (path) => this.display(path),
+    };
   }
 
   /** A resolved file name (repo-relative) as the author can open it. */
@@ -519,7 +528,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       this.renderAcceptedWarnings(data.accepted);
     }
     if (data.report) {
-      renderFindingsReport(this.logger, data.report);
+      renderFindingsReport(this.logger, data.report, this.reportPaths());
     }
   }
 
@@ -563,7 +572,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
           this.renderAcceptedWarnings(options.accepted);
         }
         if (options?.report) {
-          renderFindingsReport(this.logger, options.report);
+          renderFindingsReport(this.logger, options.report, this.reportPaths());
         }
       },
       error: (e) => {

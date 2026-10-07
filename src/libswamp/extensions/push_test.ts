@@ -1991,6 +1991,51 @@ Deno.test("extensionPushPrepare: an inline acceptance takes its finding out of t
   });
 });
 
+Deno.test("extensionPushPrepare: an acceptance with no reason accepts its line, and neither record carries a reason", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": [
+      'new Deno.Command("vendor"); // swamp-quality-ignore deno-command',
+      "",
+    ].join("\n"),
+  }, async (dir, paths) => {
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [{
+            ruleId: "deno-command",
+            file: paths["models/a.ts"],
+            line: 1,
+            message: "Line 1 uses Deno.Command() to spawn subprocesses.",
+          }],
+        }),
+    });
+    const result = await extensionPushPrepare(
+      ctx,
+      deps,
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(result.safetyWarnings, []);
+    assertEquals(result.reviewRulesResult.errors, []);
+    assertEquals(result.acceptances.accepted, [{
+      ruleId: "deno-command",
+      file: "models/a.ts",
+      archivePath: "models/a.ts",
+      line: 1,
+      source: "inline",
+      message: "Line 1 uses Deno.Command() to spawn subprocesses.",
+    }]);
+    assertEquals(result.contentMetadata?.acceptances, {
+      accepted: [{
+        rule: "deno-command",
+        file: "models/a.ts",
+        line: 1,
+        source: "inline",
+      }],
+    });
+  });
+});
+
 Deno.test("extensionPushPrepare: an inline acceptance covers a safety warning on its line", async () => {
   await withAcceptanceFixture({
     "models/a.ts": [
@@ -2103,7 +2148,10 @@ Deno.test("extensionPushPrepare: a generated declaration accepts every testing-c
     assertEquals(result.reviewRulesResult.warnings, []);
     assertEquals(result.acceptances.accepted.length, 2);
     assertEquals(result.acceptances.accepted[0].source, "generated");
-    assertStringIncludes(result.acceptances.accepted[0].reason, "codegen");
+    assertStringIncludes(
+      result.acceptances.accepted[0].reason ?? "",
+      "codegen",
+    );
     assertEquals(result.acceptances.generated, {
       by: "codegen",
       source: "spec.yaml",

@@ -164,8 +164,8 @@ export interface ExtensionAcceptance {
   file?: string;
   /** The 1-based line for a site-scoped finding. */
   line?: number;
-  /** The author's reason. */
-  reason: string;
+  /** The author's reason; absent when they gave none. */
+  reason?: string;
   /** Where the acceptance was declared. */
   source: "inline" | "sidecar" | "generated";
 }
