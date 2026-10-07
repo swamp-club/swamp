@@ -184,7 +184,10 @@ function logRemoteOutput(logger: Logger, event: unknown): void {
   if (typeof event !== "object" || event === null) return;
   const { type, line, stream, level } = event as Record<string, unknown>;
   if (type !== "output" || typeof line !== "string") return;
-  for (const part of line.split(/\r?\n/)) {
+  const parts = line.split(/\r?\n/);
+  // A trailing newline is the end of the last line, not an empty one after it.
+  if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  for (const part of parts) {
     const message = escapeLogTemplate(part);
     if (level === "error") {
       logger.error(message);

@@ -560,7 +560,9 @@ export class DispatchService {
       });
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
-      // log whether the dispatch succeeded or failed (swamp-club#3080).
+      // log whether the dispatch succeeded or failed (swamp-club#3080). The
+      // capture does not record which console method wrote a line, so every
+      // line is reported as stdout.
       for (const line of result.logs) {
         request.onEvent?.({
           kind: "method_event",

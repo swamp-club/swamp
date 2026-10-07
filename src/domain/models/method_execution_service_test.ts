@@ -4226,7 +4226,7 @@ Deno.test("executeWorkflow - remote output is escaped and split so one event can
   const { logged } = await remoteOutputFor([
     {
       type: "output",
-      line: '{"a":1}\n2026-01-01T00:00:00.000Z [INF] forged',
+      line: '{"a":1}\n\n2026-01-01T00:00:00.000Z [INF] forged\n',
       stream: "stdout",
       level: "info",
     },
@@ -4234,6 +4234,8 @@ Deno.test("executeWorkflow - remote output is escaped and split so one event can
 
   assertEquals(logged, [
     ["info", '{{"a":1}}'],
+    // A blank line inside the text is kept; the trailing newline adds none.
+    ["info", ""],
     ["info", "2026-01-01T00:00:00.000Z [INF] forged"],
   ]);
 });

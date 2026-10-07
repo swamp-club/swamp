@@ -104,9 +104,9 @@ Deno.test("remote step output: streamed lines land in the dispatching run's log 
             kind: "method_event",
             event: { type: "output", line, stream, level },
           });
-        output("hello from the worker", "stdout", "info");
-        output("worker failed a check", "stderr", "error");
-        output("line from an older worker", "stderr");
+        output("remote-3080 hello", "stdout", "info");
+        output("remote-3080 failed a check", "stderr", "error");
+        output("remote-3080 from an older worker", "stderr");
         return Promise.resolve({
           outputs: [],
           logs: [],
@@ -117,7 +117,11 @@ Deno.test("remote step output: streamed lines land in the dispatching run's log 
       releaseAffinity: () => {},
     });
     try {
-      await initializeLogging({ _reset: true });
+      await initializeLogging({
+        _reset: true,
+        // Keep the OTel config out of Deno.env, which parallel tests share.
+        _logsConfig: { exporterKind: "none" },
+      });
 
       const definition = Definition.create({
         name: "remote-run-log",
@@ -154,14 +158,14 @@ Deno.test("remote step output: streamed lines land in the dispatching run's log 
       );
 
       const lines = (await Deno.readTextFile(logPath)).trimEnd().split("\n")
-        .filter((line) => line.includes("worker"));
+        .filter((line) => line.includes("remote-3080"));
       assertEquals(lines.length, 3);
       assertStringIncludes(lines[0], "[INF]");
-      assertStringIncludes(lines[0], "hello from the worker");
+      assertStringIncludes(lines[0], "remote-3080 hello");
       assertStringIncludes(lines[1], "[ERR]");
-      assertStringIncludes(lines[1], "worker failed a check");
+      assertStringIncludes(lines[1], "remote-3080 failed a check");
       assertStringIncludes(lines[2], "[WRN]");
-      assertStringIncludes(lines[2], "line from an older worker");
+      assertStringIncludes(lines[2], "remote-3080 from an older worker");
 
       assertEquals(await Deno.readTextFile(otherLogPath), "");
     } finally {
