@@ -2229,19 +2229,19 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    writing.
 
 A hop the cancel stopped does not wait in the reclaim (swamp-club#3157). The
-shell model, when its command was killed by the cancel, and the dispatcher,
-when its attempt failed, end the hand-off with the run's abort signal. The
-locks are re-keyed as always, and if a structural command is still working
-once the signal has aborted, the reclaim rejects with an `AbortError` instead
-of polling on to the timeout. The step then writes nothing to the model and
-stays cancelled: the shell model throws before its writes, and a cancelled
-dispatch logs the failed reclaim and keeps its cancellation. A hop that
-finished before the cancel has a result to write, so its hand-off ends with
-no signal and waits in full. A cancelled run with no structural command at
-work reclaims as usual, and a global lock file caught mid-write is read again
-rather than taken for a command at work. The signal reaches only the reclaim of the
-scope the hand-off was begun in. A scope around it is another run's, which
-may not be cancelled and may still write, so its reclaim waits in full.
+shell model, when its command was killed by the cancel, and the dispatcher, when
+its attempt failed, end the hand-off with the run's abort signal. The locks are
+re-keyed as always, and if a structural command is still working once the signal
+has aborted, the reclaim rejects with an `AbortError` instead of polling on to
+the timeout. The step then writes nothing to the model and stays cancelled: the
+shell model throws before its writes, and a cancelled dispatch logs the failed
+reclaim and keeps its cancellation. A hop that finished before the cancel has a
+result to write, so its hand-off ends with no signal and waits in full. A
+cancelled run with no structural command at work reclaims as usual, and a global
+lock file caught mid-write is read again rather than taken for a command at
+work. The signal reaches only the reclaim of the scope the hand-off was begun
+in. A scope around it is another run's, which may not be cancelled and may still
+write, so its reclaim waits in full.
 
 Two orderings make this sound. The drain publishes its list and then scans
 again, ending only on a scan that matches what is already published; the
