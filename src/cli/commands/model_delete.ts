@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createModelDeleteDeps,
   modelDelete,
   type ModelDeleteData,
   modelDeletePreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/delete.ts";
 import {
   createModelDeleteRenderer,
   renderModelDeleteCancelled,

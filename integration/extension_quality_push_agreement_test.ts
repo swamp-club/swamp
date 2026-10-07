@@ -48,17 +48,21 @@ import type { RubricScoreDeps } from "../src/domain/extensions/extension_rubric_
 import { extractTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 import type { ReviewFinding } from "../src/domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../src/domain/extensions/extension_safety_analyzer.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   extensionFmt,
   type ExtensionFmtEvent,
+} from "../src/libswamp/extensions/fmt.ts";
+import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
+} from "../src/libswamp/extensions/push.ts";
+import {
   extensionQuality,
   type ExtensionQualityData,
-  type SwampError,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/extensions/quality.ts";
+import type { SwampError } from "../src/libswamp/errors.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { buildPrepareInput } from "../src/libswamp/extensions/push_test_helpers.ts";
 

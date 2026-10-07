@@ -28,7 +28,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type {
   ScheduledExecutionEvent,
   ScheduledRunAuthorizer,
-} from "../libswamp/mod.ts";
+} from "../libswamp/workflows/scheduled_execution.ts";
 import {
   SCHEDULER_PRINCIPAL,
   WEBHOOK_PRINCIPAL,

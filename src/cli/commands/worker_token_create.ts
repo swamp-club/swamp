@@ -34,16 +34,15 @@ import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkerTokenCreateDeps,
   type MaxEnrollments,
-  parseDuration,
-  withDefaults,
   workerTokenCreate,
   type WorkerTokenCreateData,
   type WorkerTokenCreateEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/token_create.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
 import { renderWorkerTokenCreate } from "../../presentation/output/worker_output.ts";
 import {
   requestServerResponse,

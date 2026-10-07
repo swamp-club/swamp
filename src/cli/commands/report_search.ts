@@ -28,16 +28,17 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { reportGet, type ReportGetDeps } from "../../libswamp/reports/get.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
-  reportGet,
-  type ReportGetDeps,
   reportSearch,
   type ReportSearchDeps,
-  type StoredReportDetail,
-  type StoredReportSummary,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/reports/search.ts";
+import type {
+  StoredReportDetail,
+  StoredReportSummary,
+} from "../../libswamp/reports/report_views.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createReportSearchRenderer } from "../../presentation/renderers/report_search.tsx";
 import {

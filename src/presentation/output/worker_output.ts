@@ -27,13 +27,15 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   PrunableWorker,
-  WorkerListData,
   WorkerPruneResult,
-  WorkerQueueListData,
-  WorkerTokenCreateData,
+} from "../../libswamp/worker/prune.ts";
+import type {
+  WorkerListData,
   WorkerTokenListData,
-  WorkerTokenRevokeData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/list.ts";
+import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
+import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
+import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";

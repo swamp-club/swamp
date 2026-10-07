@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { ModelOutputGetEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { ModelOutputGetEvent } from "../../libswamp/models/output_get.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createModelOutputGetRenderer } from "./model_output_get.ts";
 

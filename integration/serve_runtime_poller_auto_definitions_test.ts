@@ -20,16 +20,17 @@
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { copy, exists } from "@std/fs";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
   createServerTokenCreateDeps,
-  createVaultCreateDeps,
-  repoInit,
   serverTokenCreate,
+} from "../src/libswamp/access/token_create.ts";
+import {
+  createVaultCreateDeps,
   vaultCreate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/create.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,

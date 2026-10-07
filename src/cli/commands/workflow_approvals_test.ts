@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { PendingApproval } from "../../libswamp/mod.ts";
+import type { PendingApproval } from "../../libswamp/workflows/approvals.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderApprovals } from "./workflow_approvals.ts";
 

@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { TelemetryStatsEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { TelemetryStatsEvent } from "../../libswamp/telemetry/stats.ts";
 import { createTelemetryStatsRenderer } from "./telemetry_stats.ts";
 import { UserError } from "../../domain/errors.ts";
 

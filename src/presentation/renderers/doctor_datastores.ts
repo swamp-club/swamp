@@ -20,12 +20,12 @@
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorDatastoresEvent,
-  EventHandlers,
   RepairCatalogDuplicateLatestEvent,
   RepairCatalogIndexEvent,
   RepairDatastoresEvent,
   RepairUnmigratedDataEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/doctor_datastores.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";

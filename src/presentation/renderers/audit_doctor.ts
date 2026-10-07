@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+import type { AuditDoctorEvent } from "../../domain/audit/doctor/doctor_service.ts";
 import type {
-  AuditDoctorEvent,
   CheckResult,
-  EventHandlers,
   OverallStatus,
-} from "../../libswamp/mod.ts";
+} from "../../domain/audit/doctor/check.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";

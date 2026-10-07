@@ -19,11 +19,9 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { setColorEnabled } from "@std/fmt/colors";
-import {
-  consumeStream,
-  type WorkflowRunEvent,
-  type WorkflowRunView,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import { createWorkflowRunRenderer } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 

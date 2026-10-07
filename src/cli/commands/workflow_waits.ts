@@ -17,15 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkflowWaitsDeps,
-  userErrorFromSwampError,
   workflowWaits,
   type WorkflowWaitsData,
   type WorkflowWaitsEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/waits.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
   type CommandContext,
   createContext,

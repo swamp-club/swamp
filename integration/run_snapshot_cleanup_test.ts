@@ -37,14 +37,16 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createRunGcDeps,
-  createWorkflowDeleteDeps,
   runGc,
   type RunGcData,
+} from "../src/libswamp/data/run_gc.ts";
+import {
+  createWorkflowDeleteDeps,
   workflowDelete,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/delete.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 

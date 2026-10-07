@@ -31,18 +31,20 @@ import {
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionRmDeps,
-  createLibSwampContext,
   extensionRm,
   type ExtensionRmData,
   extensionRmPreview,
+} from "../../libswamp/extensions/rm.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import {
   parseExtensionRef,
   validateExtensionName,
-  warnLegacyExtensionLayout,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/pull.ts";
+import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
+import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import {
   createExtensionRmRenderer,
   renderExtensionRmCancelled,

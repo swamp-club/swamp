@@ -30,7 +30,7 @@ import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createWorkflowCancelSuspendedDeps,
   workflowCancelSuspended,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/cancel_suspended.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import {

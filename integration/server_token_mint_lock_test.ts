@@ -22,14 +22,13 @@
 // beside another mint's secret (swamp-club#2482).
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
   createServerTokenRevealDeps,
-  repoInit,
   serverTokenReveal,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/access/token_reveal.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,

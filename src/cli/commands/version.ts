@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createVersionDeps,
   version,
   type VersionData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/version.ts";
 import { createVersionRenderer } from "../../presentation/renderers/version.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {

@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDataRenameDeps,
   dataRename,
   type DataRenameData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/rename.ts";
 import { createDataRenameRenderer } from "../../presentation/renderers/data_rename.ts";
 import {
   createContext,

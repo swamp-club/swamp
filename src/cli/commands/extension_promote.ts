@@ -27,15 +27,17 @@ import {
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { UserError } from "../../domain/errors.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionPromoteDeps,
-  createLibSwampContext,
   extensionPromote,
   extensionPromoteValidate,
+} from "../../libswamp/extensions/promote.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import {
   isScopedExtensionName,
   validateExtensionName,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/pull.ts";
 import { createExtensionPromoteRenderer } from "../../presentation/renderers/extension_promote.ts";
 
 // deno-lint-ignore no-explicit-any

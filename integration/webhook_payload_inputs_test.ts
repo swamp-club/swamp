@@ -30,7 +30,7 @@
 
 import { join } from "@std/path";
 import { assertEquals, assertRejects } from "@std/assert";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import type { WebhookPayload } from "../src/domain/expressions/model_resolver.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";

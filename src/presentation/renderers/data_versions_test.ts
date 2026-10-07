@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { DataVersionsEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { DataVersionsEvent } from "../../libswamp/data/versions.ts";
 import { createDataVersionsRenderer } from "./data_versions.ts";
 import { UserError } from "../../domain/errors.ts";
 

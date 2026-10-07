@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 
 function extractOutputs(
   runView: WorkflowRunView,

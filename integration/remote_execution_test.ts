@@ -31,17 +31,15 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 
+import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
-  createRepoInitDeps,
   createVaultCreateDeps,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-  repoInit,
   vaultCreate,
-  withDefaults,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/create.ts";
+import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";

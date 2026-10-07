@@ -28,7 +28,7 @@ import {
 import {
   type AssertSeverity,
   AssertSeveritySchema,
-} from "../../libswamp/mod.ts";
+} from "../../domain/workflows/step_task.ts";
 import {
   acquireModelLocks,
   createLockProgressWriter,
@@ -47,7 +47,7 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
+import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
@@ -83,15 +83,15 @@ import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
-import { parseTags } from "../../libswamp/mod.ts";
+import { parseTags } from "../../libswamp/data/search.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   workflowRun,
   type WorkflowRunDeps,
   type WorkflowRunEvent,
   type WorkflowTelemetrySink,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/run.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";

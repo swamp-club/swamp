@@ -27,7 +27,7 @@ import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_uni
 import {
   createLibSwampContext,
   type LibSwampContext,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/context.ts";
 import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
@@ -60,10 +60,8 @@ import type {
   AccessResource,
 } from "../../domain/access/access_decision_service.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import type {
-  ScheduledExecutionService,
-  SwampError,
-} from "../../libswamp/mod.ts";
+import type { ScheduledExecutionService } from "../../libswamp/workflows/scheduled_execution.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";

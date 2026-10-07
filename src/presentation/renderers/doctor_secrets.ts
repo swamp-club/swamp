@@ -21,8 +21,8 @@ import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorSecretsData,
   DoctorSecretsEvent,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/doctor_secrets.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";

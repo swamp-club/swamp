@@ -27,15 +27,15 @@
  * `workflowSignal`, the one acceptance use case.
  */
 
+import { consumeStream } from "../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkflowSignalDeps,
   signalRefusalKind,
   type SignalWaitSubject,
   workflowSignal,
   type WorkflowSignalData,
   type WorkflowSignalEvent,
-} from "../libswamp/mod.ts";
+} from "../libswamp/workflows/signal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { principalToString } from "../domain/access/principal.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";

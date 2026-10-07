@@ -45,7 +45,7 @@ import {
   runInRootUnitOfWork,
   useUnitOfWorkFactoryForTesting,
 } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { handleMessage } from "../src/serve/connection.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";

@@ -30,17 +30,18 @@ import {
   repoUnitOfWorkFactory,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import type { ModelMethodRunDeps } from "../libswamp/models/run.ts";
 import type {
-  ModelMethodRunDeps,
   WorkflowRunDeps,
   WorkflowRunEvent,
   WorkflowRunInput,
   WorkflowTelemetrySink,
-} from "../libswamp/mod.ts";
+} from "../libswamp/workflows/run.ts";
 import { errorPaths, markErrorPaths } from "../domain/errors.ts";
 import type { WorkflowTriggerSource } from "../domain/telemetry/mod.ts";
 import { createRunTelemetry, type RunTelemetry } from "./telemetry.ts";
-import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
+import { createLibSwampContext } from "../libswamp/context.ts";
+import { workflowRun } from "../libswamp/workflows/run.ts";
 import {
   type DirectTypeResolver,
   type StepLockHook,
@@ -57,7 +58,7 @@ import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver
 import { buildEnvContext } from "../domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../infrastructure/cel/cel_evaluator.ts";
 import { ModelType } from "../domain/models/model_type.ts";
-import { resolveOrCreateDefinition } from "../libswamp/mod.ts";
+import { resolveOrCreateDefinition } from "../libswamp/models/direct_execution.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { DefinitionId } from "../domain/definitions/definition.ts";
 import {

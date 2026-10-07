@@ -36,16 +36,18 @@ import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
   createDataGetDeps,
-  createLibSwampContext,
   dataGet,
   type DataGetData,
   type DataGetEvent,
   type DataGetInput,
+} from "../src/libswamp/data/get.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
   dataQuery,
   type DataQueryDeps,
   type DataQueryEvent,
-  type DataRecord,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/data/query.ts";
+import type { DataRecord } from "../src/domain/data/data_record.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { UserError } from "../src/domain/errors.ts";

@@ -28,11 +28,11 @@
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   datastoreNamespaceMigrate,
   type NamespaceMigrateEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/datastores/namespace_migrate.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../src/domain/datastore/datastore_config.ts";
 import {

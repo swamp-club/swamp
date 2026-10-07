@@ -26,7 +26,7 @@ import {
   findMissingRequiredFields,
   isSecretLikeFieldName,
   type VaultConfigField,
-} from "../libswamp/mod.ts";
+} from "../domain/vaults/vault_config_fields.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import { readSecretFromTty } from "../infrastructure/io/stdin_reader.ts";
 import { promptLine } from "./prompt_helpers.ts";

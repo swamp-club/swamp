@@ -30,13 +30,13 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
+import { consumeStream } from "../src/libswamp/stream.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   modelCreate,
   type ModelCreateDeps,
   type ModelCreateEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/create.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { defineModel } from "../src/domain/models/model.ts";

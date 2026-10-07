@@ -40,7 +40,8 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { GIT_SHA } from "./version.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import { consumeStream, modelMethodRun } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { modelMethodRun } from "../../libswamp/models/run.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
   type Group,
@@ -57,7 +58,7 @@ import {
   LOCAL_PRINCIPAL,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
-import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
+import type { ModelMethodRunEvent } from "../../libswamp/models/run.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   CA_CERT_DESCRIPTION,

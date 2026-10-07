@@ -19,11 +19,9 @@
 
 import type { Principal } from "../../domain/access/principal.ts";
 import type { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
-import {
-  nestedWaitGateOf,
-  type SwampError,
-  type WorkflowRunView,
-} from "../../libswamp/mod.ts";
+import { nestedWaitGateOf } from "../../libswamp/workflows/nested_runs.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import { canonicalResources } from "./resource_resolution.ts";
 import { type ConnectionContext, resourceDecider } from "./shared.ts";

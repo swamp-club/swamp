@@ -29,13 +29,13 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { consumeStream } from "../src/libswamp/stream.ts";
 import {
-  consumeStream,
   modelGet,
   type ModelGetData,
   type ModelGetDeps,
   type ModelGetEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/get.ts";
 import { createModelGetRenderer } from "../src/presentation/renderers/model_get.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";

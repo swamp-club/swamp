@@ -39,21 +39,25 @@ import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
   computePackageCacheHash,
-  consumeStream,
-  createApiCallRecorder,
-  createExtensionPromoteDeps,
-  createExtensionPushExecuteDeps,
-  createExtensionPushPrepareDeps,
-  createLibSwampContext,
   defaultPackageCacheRoot,
   ExtensionPackageCache,
+} from "../../domain/extensions/extension_package_cache.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
+import {
+  createExtensionPromoteDeps,
   extensionPromote,
+} from "../../libswamp/extensions/promote.ts";
+import {
+  createExtensionPushExecuteDeps,
+  createExtensionPushPrepareDeps,
   extensionPush,
   extensionPushPrepare,
-  registryChecksVerdict,
-  resolvePublishVisibility,
-  RUBRIC_VERSION,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/push.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { registryChecksVerdict } from "../../domain/extensions/extension_publish_checks.ts";
+import { resolvePublishVisibility } from "../../domain/extensions/extension_manifest.ts";
+import { RUBRIC_VERSION } from "../../domain/extensions/extension_rubric_scorer.ts";
 import {
   type AcceptedWarnings,
   createExtensionPushRenderer,
@@ -79,7 +83,8 @@ import type { ReviewFinding } from "../../domain/extensions/extension_review_rul
 import type {
   CollectiveMismatch,
 } from "../../domain/extensions/extension_collective_validator.ts";
-import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
+import type { CompilationError } from "../../libswamp/extensions/push.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { promptConfirmation, promptNumberedChoice } from "../prompt_helpers.ts";

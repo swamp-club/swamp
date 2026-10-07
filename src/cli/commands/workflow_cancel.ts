@@ -85,11 +85,13 @@ import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
 import {
   type BrokenWorkflow,
-  type DetachedNestedRunData,
-  detachedNestedRunsOf,
   listBrokenWorkflows,
   workflowsDirFor,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/broken_workflow.ts";
+import {
+  type DetachedNestedRunData,
+  detachedNestedRunsOf,
+} from "../../libswamp/workflows/nested_runs.ts";
 import type { WorkflowRunSummary } from "../../domain/workflows/workflow_run_summary.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { basename } from "@std/path";

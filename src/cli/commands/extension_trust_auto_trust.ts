@@ -23,12 +23,12 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createTrustAutoTrustDeps,
   trustAutoTrust,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/trust_auto_trust.ts";
 import { createTrustAutoTrustRenderer } from "../../presentation/renderers/trust_auto_trust.ts";
 import { UserError } from "../../domain/errors.ts";
 

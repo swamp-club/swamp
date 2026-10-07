@@ -18,16 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createRunGcDeps,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
-  parseDuration,
   runGc,
   type RunGcData,
   runGcInputFromPolicy,
   runGcPreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/run_gc.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
 import {
   createRunGcRenderer,
   renderRunGcCancelled,

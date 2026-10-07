@@ -45,24 +45,30 @@ import {
 } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { relative } from "@std/path";
+import { buildAggregateState } from "../../libswamp/extensions/doctor_aggregate.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  buildAggregateState,
-  consumeStream,
   createExtensionPullDeps,
+  resolveServerUrl,
+} from "../../libswamp/extensions/pull.ts";
+import {
   doctorExtensions,
   type DoctorExtensionsReport,
   type DoctorRegistryDeps,
   type DoctorRescanSkipped,
   extensionMemberDoctorDeps,
+  toDoctorWarnings,
+} from "../../libswamp/extensions/doctor.ts";
+import {
   ManagedLockfileUnpublishedError,
+  refreshManagedLockfile,
+  withManagedLockfileTransaction,
+} from "../../libswamp/extensions/managed_lockfile_transaction.ts";
+import {
   ReconcileFromDiskService,
   type ReconcileTransition,
-  refreshManagedLockfile,
-  repairExtensions,
-  resolveServerUrl,
-  toDoctorWarnings,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/reconcile_from_disk_service.ts";
+import { repairExtensions } from "../../libswamp/extensions/doctor_repair.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { pullExtension } from "./extension_pull.ts";
 import { loadIdentity } from "../load_identity.ts";

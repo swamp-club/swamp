@@ -17,13 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
-  EventHandlers,
   ExtensionInstallData,
   ExtensionInstallEvent,
+} from "../../libswamp/extensions/install.ts";
+import type {
   RepoInitEvent,
   RepoUpgradeEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/repo/init.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

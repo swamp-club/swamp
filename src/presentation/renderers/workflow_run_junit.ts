@@ -17,12 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  type AssertSeverity,
-  type EventHandlers,
-  severityAtOrAbove,
-  type WorkflowRunEvent,
-} from "../../libswamp/mod.ts";
+import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import { severityAtOrAbove } from "../../domain/workflows/assert_severity.ts";
+import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import type { WorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
 

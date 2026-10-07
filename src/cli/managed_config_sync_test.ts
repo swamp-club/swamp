@@ -44,8 +44,8 @@ import {
   readLockfilePublishPending,
 } from "../infrastructure/persistence/pending_lockfile_publish.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
-import { ManagedLockfileUnpublishedError } from "../libswamp/mod.ts";
-import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
+import { ManagedLockfileUnpublishedError } from "../libswamp/extensions/managed_lockfile_transaction.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
 import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import type {
   CustomDatastoreConfig,

@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { createReportGetRenderer } from "./report_get.ts";
-import type { ReportGetEvent } from "../../libswamp/mod.ts";
+import type { ReportGetEvent } from "../../libswamp/reports/report_views.ts";
 
 Deno.test("report get log renderer - renders report content", () => {
   const output: string[] = [];

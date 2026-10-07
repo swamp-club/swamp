@@ -30,15 +30,15 @@ import {
 } from "../repo_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
-  createLibSwampContext,
   datastoreLockRelease,
   datastoreLockStatus,
   parseModelSpec,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/lock.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createDatastoreLockReleaseRenderer,
   createDatastoreLockStatusRenderer,

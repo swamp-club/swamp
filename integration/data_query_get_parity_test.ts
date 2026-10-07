@@ -67,13 +67,13 @@ import {
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import {
-  collect,
   createDataGetDeps,
-  createLibSwampContext,
   dataGet,
   type DataGetEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/data/get.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 
 await initializeLogging({});
 

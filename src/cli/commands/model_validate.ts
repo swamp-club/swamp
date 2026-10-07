@@ -28,14 +28,14 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createModelValidateDeps,
   modelValidate,
   type ModelValidateAllData,
   type ModelValidateData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/validate.ts";
 import { createModelValidateRenderer } from "../../presentation/renderers/model_validate.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {

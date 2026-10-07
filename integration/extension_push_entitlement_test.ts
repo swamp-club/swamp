@@ -32,16 +32,16 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { parseExtensionManifest } from "../src/domain/extensions/extension_manifest.ts";
 import { ExtensionApiClient } from "../src/infrastructure/http/extension_api_client.ts";
+import { createApiCallRecorder } from "../src/infrastructure/http/recording_fetcher.ts";
 import {
-  createApiCallRecorder,
   createExtensionPushPrepareDeps,
-  createLibSwampContext,
   extensionPush,
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
-  type SwampError,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/extensions/push.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import type { SwampError } from "../src/libswamp/errors.ts";
 
 const REFUSAL =
   "Private publication requires a paid plan or an eligible collective trial";

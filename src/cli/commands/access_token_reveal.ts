@@ -26,15 +26,14 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createServerTokenRevealDeps,
   serverTokenReveal,
   type ServerTokenRevealData,
   type ServerTokenRevealEvent,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_reveal.ts";
 import { renderServerTokenReveal } from "../../presentation/output/access_token_output.ts";
 import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";

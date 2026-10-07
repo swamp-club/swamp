@@ -19,12 +19,14 @@
 
 import {
   type ApiCallRecord,
-  type EventHandlers,
-  type ExtensionPushEvent,
-  type ExtensionPushResolvedData,
   REGISTRY_CHECK_LABELS,
   type RegistryCheckResult,
-} from "../../libswamp/mod.ts";
+} from "../../domain/extensions/extension_publish_checks.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type {
+  ExtensionPushEvent,
+  ExtensionPushResolvedData,
+} from "../../libswamp/extensions/push.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -40,7 +42,7 @@ import {
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
-import type { CompilationError } from "../../libswamp/mod.ts";
+import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import {
   type FindingsReport,
   renderFindingsReport,

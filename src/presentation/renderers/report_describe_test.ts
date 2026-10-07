@@ -20,7 +20,7 @@
 import { assertStringIncludes } from "@std/assert";
 import { assertThrows } from "@std/assert";
 import { createReportDescribeRenderer } from "./report_describe.ts";
-import type { ReportDescribeEvent } from "../../libswamp/mod.ts";
+import type { ReportDescribeEvent } from "../../libswamp/reports/report_views.ts";
 
 Deno.test("report describe log renderer - renders definition metadata", () => {
   const output: string[] = [];

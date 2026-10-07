@@ -19,7 +19,7 @@
 
 import { join } from "@std/path";
 import { isStagingEntryName } from "../../domain/extensions/install_journal.ts";
-import type { MergeDirResult } from "../../libswamp/mod.ts";
+import type { MergeDirResult } from "../../libswamp/datastores/namespace_migrate.ts";
 
 export async function findFileCollisions(
   source: string,

@@ -21,44 +21,52 @@
  * Data-domain request handlers (data.* and summarise verbs).
  */
 
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDataDeleteDeps,
-  createDataGcDeps,
-  createDataGetDeps,
-  createDataListDeps,
-  createDataPruneDeps,
-  createDataRenameDeps,
-  createDataVersionsDeps,
-  createRunGcDeps,
-  createSummariseDeps,
   dataDelete,
-  dataGc,
+} from "../../libswamp/data/delete.ts";
+import { createDataGcDeps, dataGc } from "../../libswamp/data/gc.ts";
+import {
+  createDataGetDeps,
   dataGet,
   type DataGetDeps,
-  dataList,
   type DataOwnerInfo,
-  dataPrune,
-  dataQuery,
-  type DataQueryDeps,
-  type DataRecord,
+  resolveWorkflowData,
+  type WorkflowDataPin,
+} from "../../libswamp/data/get.ts";
+import { createDataListDeps, dataList } from "../../libswamp/data/list.ts";
+import { createDataPruneDeps, dataPrune } from "../../libswamp/data/prune.ts";
+import {
+  createDataRenameDeps,
   dataRename,
-  dataSearch,
-  type DataSearchDeps,
+} from "../../libswamp/data/rename.ts";
+import {
+  createDataVersionsDeps,
   dataVersions,
+} from "../../libswamp/data/versions.ts";
+import {
+  createRunGcDeps,
   DEFAULT_OUTPUT_RETENTION_DAYS,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
-  parseDuration,
-  resolveWorkflowData,
   runGc,
   type RunGcGarbageCollectionPolicy,
   type RunGcInput,
   runGcRetentionFromPolicy,
+} from "../../libswamp/data/run_gc.ts";
+import {
+  createSummariseDeps,
   summarise,
-  validationFailed,
-  type WorkflowDataPin,
-  workflowsDirFor,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/summary/summarise.ts";
+import { dataQuery, type DataQueryDeps } from "../../libswamp/data/query.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
+import {
+  dataSearch,
+  type DataSearchDeps,
+  parseDuration,
+} from "../../libswamp/data/search.ts";
+import { validationFailed } from "../../libswamp/errors.ts";
+import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import type {
   DataDeletePayload,
   DataGcPayload,

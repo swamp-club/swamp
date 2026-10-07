@@ -24,12 +24,9 @@
  */
 
 import { assertEquals } from "@std/assert";
-import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
-  repoInit,
-} from "../src/libswamp/mod.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import type { AccessResource } from "../src/domain/access/mod.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import type { WorkflowRepository } from "../src/domain/workflows/repositories.ts";

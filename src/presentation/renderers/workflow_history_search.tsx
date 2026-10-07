@@ -20,13 +20,13 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
 import { Box, Text } from "ink";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
-  EventHandlers,
   WorkflowHistorySearchData,
   WorkflowHistorySearchEvent,
   WorkflowHistorySearchItem,
-  WorkflowRunView,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/history_search.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

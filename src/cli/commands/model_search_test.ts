@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { ModelSearchItem } from "../../libswamp/mod.ts";
+import type { ModelSearchItem } from "../../libswamp/models/search.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

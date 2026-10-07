@@ -18,17 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createTypeDescribeDeps,
   typeDescribe,
   type TypeDescribeData,
+} from "../../libswamp/types/describe.ts";
+import {
   typeSearch,
   type TypeSearchData,
   type TypeSearchDeps,
   type TypeSearchItem,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/types/search.ts";
 import { createTypeSearchRenderer } from "../../presentation/renderers/type_search.tsx";
 import { createTypeDescribeRenderer } from "../../presentation/renderers/type_describe.ts";
 import {

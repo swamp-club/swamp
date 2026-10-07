@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import {
-  consumeStream,
-  type ExtensionContentMetadata,
-  type ExtensionInfoData,
-  type ExtensionInfoEvent,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import type {
+  ExtensionInfoData,
+  ExtensionInfoEvent,
+} from "../../libswamp/extensions/info.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInfoRenderer } from "./extension_info.ts";
 

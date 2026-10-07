@@ -68,8 +68,8 @@ import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
 import {
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
-  type WorkflowRunInput,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/scheduled_execution.ts";
+import type { WorkflowRunInput } from "../src/libswamp/workflows/run.ts";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";

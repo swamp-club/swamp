@@ -46,14 +46,16 @@ import {
   createModelMethodRunDeps,
   createWorkflowRunDeps,
 } from "../src/serve/deps.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createModelEvaluateDeps,
-  createWorkflowEvaluateDeps,
   modelEvaluate,
-  modelMethodRun,
+} from "../src/libswamp/models/evaluate.ts";
+import {
+  createWorkflowEvaluateDeps,
   workflowEvaluate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/evaluate.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";

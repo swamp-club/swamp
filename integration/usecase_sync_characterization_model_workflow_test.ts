@@ -25,7 +25,7 @@
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { parse, stringify } from "@std/yaml";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";

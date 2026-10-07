@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { parseDuration } from "../libswamp/mod.ts";
+import { parseDuration } from "../libswamp/data/search.ts";
 import { UserError } from "../domain/errors.ts";
 
 /**

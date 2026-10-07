@@ -21,8 +21,8 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import type {
   DoctorWorkflowsEvent,
   DoctorWorkflowsReport,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/doctor.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

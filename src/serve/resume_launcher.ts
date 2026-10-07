@@ -24,7 +24,7 @@
  * its client, and by auto-resume on approval, which has no client at all.
  */
 
-import { mapWorkflowExecutionEvent } from "../libswamp/mod.ts";
+import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";

@@ -24,13 +24,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
   type WorkflowHistoryLogsCompletedData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/history_logs.ts";
 import { createWorkflowHistoryLogsRenderer } from "../../presentation/renderers/workflow_history_logs.ts";
 import {
   requestServerResponse,

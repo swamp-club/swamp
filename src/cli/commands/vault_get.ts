@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createVaultGetDeps,
   vaultGet,
   type VaultGetData,
   type VaultGetEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/vaults/get.ts";
 import { createVaultGetRenderer } from "../../presentation/renderers/vault_get.ts";
 import {
   createContext,

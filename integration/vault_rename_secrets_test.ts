@@ -23,12 +23,12 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createVaultEditDeps,
   vaultEdit,
   type VaultEditEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/edit.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";

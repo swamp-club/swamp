@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { WorkflowSchemaEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { WorkflowSchemaEvent } from "../../libswamp/workflows/schema.ts";
 import { createWorkflowSchemaRenderer } from "./workflow_schema.ts";
 import { UserError } from "../../domain/errors.ts";
 

@@ -19,13 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionInfoDeps,
-  createLibSwampContext,
   extensionInfo,
   type ExtensionInfoData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/info.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createExtensionInfoRenderer } from "../../presentation/renderers/extension_info.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {

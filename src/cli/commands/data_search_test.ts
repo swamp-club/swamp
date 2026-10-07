@@ -19,7 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { parseDuration, parseTags } from "../../libswamp/mod.ts";
+import { parseDuration, parseTags } from "../../libswamp/data/search.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

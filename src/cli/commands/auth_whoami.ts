@@ -19,12 +19,9 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  consumeStream,
-  createAuthDeps,
-  createLibSwampContext,
-  whoami,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createAuthDeps, whoami } from "../../libswamp/auth/whoami.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createAuthWhoamiRenderer } from "../../presentation/renderers/auth_whoami.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { resolveServeUrl } from "../remote_run.ts";

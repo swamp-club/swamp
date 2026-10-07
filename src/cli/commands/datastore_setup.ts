@@ -25,14 +25,14 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDatastoreSetupDeps,
-  createLibSwampContext,
   type DatastoreSetupData,
   datastoreSetupExtension,
   datastoreSetupFilesystem,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/setup.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createDatastoreSetupRenderer } from "../../presentation/renderers/datastore_setup.ts";
 import {
   type DatastoreConfig,

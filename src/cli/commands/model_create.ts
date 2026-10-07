@@ -19,13 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createModelCreateDeps,
   modelCreate,
   type ModelCreateData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/create.ts";
 import { createModelCreateRenderer } from "../../presentation/renderers/model_create.ts";
 import {
   createContext,

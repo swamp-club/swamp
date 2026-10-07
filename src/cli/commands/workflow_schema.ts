@@ -19,12 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   workflowSchema,
   type WorkflowSchemaData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/schema.ts";
 import { createWorkflowSchemaRenderer } from "../../presentation/renderers/workflow_schema.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {

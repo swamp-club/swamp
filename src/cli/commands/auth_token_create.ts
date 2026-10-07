@@ -25,11 +25,10 @@ import {
   authTokenCreate,
   type AuthTokenCreateData,
   type AuthTokenCreateEvent,
-  consumeStream,
   createAuthTokenCreateDeps,
-  createLibSwampContext,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/auth/token_create.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderAuthTokenCreate } from "../../presentation/output/auth_token_output.ts";

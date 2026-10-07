@@ -35,12 +35,9 @@ import { getLogger } from "@logtape/logtape";
 import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
 import { requireInitializedRepoReadOnly } from "../src/cli/repo_context.ts";
 import { UserError } from "../src/domain/errors.ts";
-import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
-  repoInit,
-} from "../src/libswamp/mod.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 
 const logger = getLogger(["test"]);
 

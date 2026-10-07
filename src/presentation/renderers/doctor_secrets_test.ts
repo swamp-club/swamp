@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { DoctorSecretsData } from "../../libswamp/mod.ts";
+import type { DoctorSecretsData } from "../../libswamp/models/doctor_secrets.ts";
 import { createDoctorSecretsRenderer } from "./doctor_secrets.ts";
 
 await initializeLogging({});

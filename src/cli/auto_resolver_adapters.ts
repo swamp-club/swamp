@@ -41,13 +41,15 @@ import type {
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
   ConflictError,
-  enumeratePulledDatastoreExtensionsOnDisk,
-  enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
-  InstallExtensionService,
-  LockfileRepository,
-} from "../libswamp/mod.ts";
+} from "../libswamp/extensions/pull.ts";
+import {
+  enumeratePulledDatastoreExtensionsOnDisk,
+  enumeratePulledExtensionDirs,
+} from "../libswamp/extensions/enumerate_pulled.ts";
+import { InstallExtensionService } from "../libswamp/extensions/install_extension_service.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";

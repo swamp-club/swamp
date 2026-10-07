@@ -18,17 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
+import { collect } from "../src/libswamp/testing.ts";
+import { createDoctorVaultsDeps } from "../src/libswamp/models/doctor_vaults.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  collect,
-  createDoctorVaultsDeps,
-  createLibSwampContext,
-  createRepoInitDeps,
   createVaultCreateDeps,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-  repoInit,
   vaultCreate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/create.ts";
+import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,

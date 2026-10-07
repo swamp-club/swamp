@@ -27,7 +27,7 @@ import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { ScheduledExecutionService } from "../src/libswamp/mod.ts";
+import { ScheduledExecutionService } from "../src/libswamp/workflows/scheduled_execution.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   createServeCtx,

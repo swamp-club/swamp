@@ -32,11 +32,11 @@ import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   createModelDeleteDeps,
   modelDelete,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/delete.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";

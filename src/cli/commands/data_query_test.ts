@@ -21,7 +21,8 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { DataQueryData, DataRecord } from "../../libswamp/mod.ts";
+import type { DataQueryData } from "../../libswamp/data/query.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

@@ -26,19 +26,24 @@ import {
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
+import { collect } from "../src/libswamp/testing.ts";
 import {
-  collect,
   createLibSwampContext,
-  createRepoInitDeps,
-  createServerTokenCreateDeps,
-  createServerTokenRevokeDeps,
-  createVaultCreateDeps,
   type LibSwampContext,
-  repoInit,
+} from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
+import {
+  createServerTokenCreateDeps,
   serverTokenCreate,
+} from "../src/libswamp/access/token_create.ts";
+import {
+  createServerTokenRevokeDeps,
   serverTokenRevoke,
+} from "../src/libswamp/access/token_revoke.ts";
+import {
+  createVaultCreateDeps,
   vaultCreate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/vaults/create.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,

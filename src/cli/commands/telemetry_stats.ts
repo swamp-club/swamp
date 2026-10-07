@@ -20,12 +20,12 @@
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createTelemetryStatsDeps,
   telemetryStats,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/telemetry/stats.ts";
 import { createTelemetryStatsRenderer } from "../../presentation/renderers/telemetry_stats.ts";
 import { VERSION } from "./version.ts";
 

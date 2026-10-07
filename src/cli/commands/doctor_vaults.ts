@@ -19,13 +19,13 @@
 
 import { join } from "@std/path";
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDoctorVaultsDeps,
-  createLibSwampContext,
   doctorVaults,
   type DoctorVaultsData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/doctor_vaults.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createDoctorVaultsRenderer } from "../../presentation/renderers/doctor_vaults.ts";
 import {
   createContext,

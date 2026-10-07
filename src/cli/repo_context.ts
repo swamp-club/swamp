@@ -49,13 +49,15 @@ import type { Logger } from "@logtape/logtape";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createLibSwampContext,
-  enumeratePulledExtensionDirs,
   type LibSwampContext,
+} from "../libswamp/context.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
+import {
   modelLockKey,
   parseModelLockKey,
   stripNamespacePrefix,
   workflowRunLockKey,
-} from "../libswamp/mod.ts";
+} from "../libswamp/datastores/lock.ts";
 import type { WorkflowRunClaims } from "../domain/workflows/run_claim.ts";
 import { isUuid } from "../domain/models/model_lookup.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";

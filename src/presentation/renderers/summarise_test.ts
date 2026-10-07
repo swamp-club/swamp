@@ -19,8 +19,8 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { SummariseEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { SummariseEvent } from "../../libswamp/summary/summarise.ts";
 import type { ActivitySummary } from "../../domain/summary/summary_types.ts";
 import { createSummariseRenderer } from "./summarise.ts";
 import { UserError } from "../../domain/errors.ts";

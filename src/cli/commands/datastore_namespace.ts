@@ -20,14 +20,14 @@
 import { Command } from "@cliffy/command";
 import { ensureDir, walk } from "@std/fs";
 import { join } from "@std/path";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   datastoreNamespaceMigrate,
-  datastoreNamespaceSet,
-  datastoreNamespaceUnset,
   INFRASTRUCTURE_FILES,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/namespace_migrate.ts";
+import { datastoreNamespaceSet } from "../../libswamp/datastores/namespace_set.ts";
+import { datastoreNamespaceUnset } from "../../libswamp/datastores/namespace_unset.ts";
 import {
   createNamespaceMigrateRenderer,
 } from "../../presentation/renderers/datastore_namespace_migrate.ts";

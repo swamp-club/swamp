@@ -42,20 +42,20 @@ import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   ConflictError,
-  consumeStream,
   createExtensionPullDeps,
-  createLibSwampContext,
   extensionPull,
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
   type InstallResult,
-  type LockfileRepository,
   parseExtensionRef,
   resolveServerUrl,
   validateExtensionName,
-  warnLegacyExtensionLayout,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/pull.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
+import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import {
   createExtensionPullRenderer,
   renderExtensionPullCancelled,
@@ -80,10 +80,10 @@ export {
   type InstallContext,
   installExtension,
   type InstallResult,
-  LockfileRepository,
   parseExtensionRef,
   validateExtensionName,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/pull.ts";
+export { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 import { promptConfirmation } from "../prompt_helpers.ts";
 

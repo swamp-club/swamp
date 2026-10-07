@@ -17,15 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  type DataQueryData,
-  type DataQueryEvent,
-  type DataRecord,
-  type EventHandlers,
-  type ProjectedData,
-  type SpecNameHint,
-  userErrorFromSwampError,
-} from "../../libswamp/mod.ts";
+import type {
+  DataQueryData,
+  DataQueryEvent,
+  ProjectedData,
+  SpecNameHint,
+} from "../../libswamp/data/query.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import type { OutputMode } from "../output/output.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

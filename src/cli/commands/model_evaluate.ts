@@ -30,14 +30,14 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createModelEvaluateDeps,
   modelEvaluate,
   type ModelEvaluateAllData,
   type ModelEvaluateItemData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/evaluate.ts";
 import { createModelEvaluateRenderer } from "../../presentation/renderers/model_evaluate.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
