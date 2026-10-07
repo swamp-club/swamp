@@ -193,6 +193,27 @@ export interface ContinuationClaimStore {
   removeForRun(runId: string): Promise<void>;
 }
 
+/**
+ * Removes the claims of each run in `runIds`, with the runs. One run whose
+ * claims cannot be removed does not keep the others: every run is tried,
+ * and the first failure is thrown after the last.
+ */
+export async function removeClaimsOfRuns(
+  store: Pick<ContinuationClaimStore, "removeForRun"> | undefined,
+  runIds: Iterable<string>,
+): Promise<void> {
+  if (!store) return;
+  const failures: unknown[] = [];
+  for (const runId of runIds) {
+    try {
+      await store.removeForRun(runId);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw failures[0];
+}
+
 /** What is known of the process a claim names. */
 export type HolderLiveness = "alive" | "dead" | "unknown";
 

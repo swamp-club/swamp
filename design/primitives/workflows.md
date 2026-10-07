@@ -234,7 +234,9 @@ for a signal has an outcome of any kind. `continueSettledRun`
   record that is here may hold a change not pushed yet.
 - The continuation sweep (`src/serve/continuation_sweep_service.ts`) offers
   it every suspended run this instance has, at boot and then every
-  `--continuation-sweep-interval` (default 30 s; `0` disables). The sweep is
+  `--continuation-sweep-interval` (default 30 s; `0` disables). The boot pass
+  runs in the background: it reads every suspended run, and serve does not
+  hold its readiness on that. The sweep is
   what retries a launch lost to a full registry, a shutdown or a crash, and
   what continues a run signalled or approved by a local command. On its first
   boot after an upgrade it therefore launches every run that was already
@@ -297,12 +299,19 @@ the shared run record already give a single resume; the continuation claim is
 what gives it on a synced one.
 
 Limits on a synced datastore: the sweep does not start when the boot
-hydration failed; a run whose latest suspension only a dead instance had, or
+hydration failed, or when the datastore has no shared control-plane store,
+where serve takes no claims either, since a claim on one host's disk tells
+its peers nothing; a run whose latest suspension only a dead instance had, or
 whose claim a dead instance holds, waits until some instance restarts; and
 taking over a dead holder's claim resumes from the stored record, so steps
 that holder ran and never pushed run again, as they do when a person resumes
 a run after a crash. A datastore whose control-plane store cannot create a
 record atomically has no claims, and a resume there takes none.
+
+Every resume serve starts by itself takes its claim as an automatic one, the
+auto-resume after an approval and the resume of a parent included: none of
+them replaces the claim of a holder it cannot prove dead. A serve holder is
+dead once its heartbeat is older than `--stale-ttl`.
 
 Serve registers the resume before it saves the run as `running`, so a search
 right after an approval can still list the run as suspended and awaiting

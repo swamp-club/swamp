@@ -245,8 +245,9 @@ export async function handleSignalHttpRequest(
   });
 
   // The run is for the server alone; the caller is told it only in `data`.
-  const { status, ...rest } = result;
-  if ("run" in rest) delete (rest as { run?: unknown }).run;
+  const { status, run: _run, ...rest } = result as typeof result & {
+    run?: unknown;
+  };
   return Response.json({ status, ...rest }, { status: STATUS[status] });
 }
 

@@ -90,9 +90,9 @@ const DEFAULT_BUFFER_CAPACITY = 10_000;
 export const CONTINUATION_HELD_CODE = "continuation_held";
 
 /**
- * Terminal code of a resume serve launched by itself and lost: the run was
- * no longer suspended by the time the resume looked. A resume a client asked
- * for keeps `workflow_resume_failed` for the same refusal.
+ * Terminal code of a continuation that lost: the run was no longer suspended
+ * by the time the resume looked. Every other resume keeps
+ * `workflow_resume_failed` for the same refusal.
  */
 export const RUN_NOT_SUSPENDED_CODE = "run_not_suspended";
 
@@ -133,6 +133,13 @@ export interface DetachedResumeRequest {
    */
   parentGrant?: Action;
   /**
+   * Answer a run that is no longer suspended with
+   * {@link RUN_NOT_SUSPENDED_CODE}. Set by the continuation of a settled
+   * run, which may find a peer got there first; a resume that follows an
+   * approval keeps `workflow_resume_failed`.
+   */
+  lostRaceIsOrdinary?: boolean;
+  /**
    * Who asks for the suspension's continuation claim. Unset for a resume a
    * person asked for.
    */
@@ -158,7 +165,7 @@ export type DetachedResumeResult =
 
 /** Whether `error` is a resume serve launched by itself losing a race. */
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
-  return request.continuation?.kind === "automatic" &&
+  return request.lostRaceIsOrdinary === true &&
     error instanceof RunNotSuspendedError;
 }
 
@@ -530,8 +537,11 @@ export async function autoResumeAfterApproval(
     suspendedOnly: true,
     principalId,
     subject: decisionSubject,
+    // Serve's own resume, not a person's: it never replaces a claim.
+    continuation: { kind: "automatic", takeover: false },
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;
+      if (terminal.code === CONTINUATION_HELD_CODE) return;
       logger.warn(
         "Auto-resume of run {runId} failed ({code}): {message}; the resume did not complete",
         {
@@ -681,8 +691,10 @@ export async function autoResumeParentAfterChild(
       : null,
     subject,
     parentGrant: grant,
+    continuation: { kind: "automatic", takeover: false },
     onTerminal: (terminal) => {
       if (terminal.kind !== "error") return;
+      if (terminal.code === CONTINUATION_HELD_CODE) return;
       emitSystemAuditEvent(
         ctx,
         "workflow.auto_resume_failed",
@@ -751,10 +763,15 @@ function skipMemo(key: object): Map<string, string> {
 /** How old a local command's claim is before serve reports it as left behind. */
 const LOCAL_CLAIM_GRACE_MS = 60_000;
 
-/** Refusals that mean another holder resumed the run: nothing to report. */
+/**
+ * Refusals that mean the run is already being resumed, by another holder or
+ * by this instance: nothing to report.
+ */
 const BENIGN_REFUSALS: ReadonlySet<string> = new Set([
   CONTINUATION_HELD_CODE,
   RUN_NOT_SUSPENDED_CODE,
+  "already_registered",
+  "reserved",
 ]);
 
 /**
@@ -779,7 +796,7 @@ export async function noteParkedParent(
   if (!(await link.isAwaitedByParent(finished))) return false;
   const parent = child.parentRun.ref;
   logger.info(
-    "Run {runId} ended, and its parent run {parentRunId} stays suspended: a run continued by the sweep has no signaller to resume its parent for. Resume it with: swamp workflow resume {parentWorkflow} --run {parentRunId}",
+    "Run {runId} ended, and its parent run {parentRunId} stays suspended: the sweep has no caller to authorize the parent's resume. Resume it with: swamp workflow resume {parentWorkflow} --run {parentRunId}",
     {
       runId: child.id,
       parentRunId: parent.runId,
@@ -876,6 +893,10 @@ export async function continueSettledRun(
           Date.now() - new Date(held.claimedAt).getTime() >
             LOCAL_CLAIM_GRACE_MS
         ) {
+          logger.info(
+            "Run {runId} is claimed by a local command that never started it. Resume it with: swamp workflow resume {workflow} --run {runId}",
+            { runId: run.id, workflow: run.workflowName },
+          );
           return skip("skipped", "held_by_local_command");
         }
         const liveness = await claims.liveness(held.holder);
@@ -900,8 +921,10 @@ export async function continueSettledRun(
     subject: cause.subject,
     parentGrant: "signal",
     continuation: { kind: "automatic", takeover: cause.takeover },
+    lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {
       if (terminal.kind !== "error") {
+        memo.delete(run.id);
         if (cause.subject === undefined) await noteParkedParent(ctx, run);
         return;
       }
@@ -915,7 +938,9 @@ export async function continueSettledRun(
       : skip("failed", launched.code);
   }
 
-  memo.delete(run.id);
+  // The memo is kept until the resume ends well: one that fails and leaves
+  // the run suspended is launched again by the next pass, and its failure
+  // is reported once.
   emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
   return true;
 }

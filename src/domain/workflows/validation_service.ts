@@ -506,7 +506,7 @@ export class DefaultWorkflowValidationService
     return [
       WorkflowValidationResult.fail(
         "Auto-resume for signal waits",
-        `the workflow waits for a signal and declares inputs, so it must set ` +
+        `The workflow waits for a signal and declares inputs, so it must set ` +
           `autoResume. Set autoResume: true for swamp serve to continue a run ` +
           `once its waits are settled, with the inputs the run started with; ` +
           `set autoResume: false to continue it with swamp workflow resume, ` +

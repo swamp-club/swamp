@@ -123,15 +123,18 @@ export class ContinuationSweepService {
     this.#deps = deps;
   }
 
-  /** Runs the boot pass, then schedules the rest. */
-  async start(): Promise<void> {
+  /**
+   * Starts the boot pass and schedules the rest after it. The pass is not
+   * awaited: it reads every suspended run, and serve must not hold its
+   * readiness on that. `dispose` and `runOnce` wait for it.
+   */
+  start(): void {
     if (this.#disposed) return;
     logger.info(
-      "Starting continuation sweep (interval: {interval}ms)",
-      { interval: this.#deps.intervalMs },
+      "Starting continuation sweep (interval: {interval}s)",
+      { interval: this.#deps.intervalMs / 1000 },
     );
-    await this.runOnce();
-    this.#scheduleNext();
+    this.runOnce().finally(() => this.#scheduleNext());
   }
 
   /** Stops the schedule and waits for a pass in flight. */

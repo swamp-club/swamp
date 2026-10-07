@@ -25,7 +25,10 @@ import {
   removeWaitRecordsOfRuns,
   sweepWaitRecords,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
-import type { ContinuationClaimStore } from "../../domain/workflows/continuation_claim.ts";
+import {
+  type ContinuationClaimStore,
+  removeClaimsOfRuns,
+} from "../../domain/workflows/continuation_claim.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   createWorkflowId,
@@ -136,10 +139,6 @@ function waitRecordCollector(
   continuationClaims?: Pick<ContinuationClaimStore, "removeForRun">,
 ): (deletedRunIds: readonly string[]) => Promise<void> {
   return async (deletedRunIds) => {
-    // The continuation claims of a run go with it (swamp-club#3108).
-    for (const runId of deletedRunIds) {
-      await continuationClaims?.removeForRun(runId);
-    }
     await removeWaitRecordsOfRuns(store, new Set(deletedRunIds));
     await sweepWaitRecords(
       store,
@@ -151,6 +150,9 @@ function waitRecordCollector(
       new Date(),
       { localRunAbsenceIsAuthoritative },
     );
+    // The continuation claims of a run go with it (swamp-club#3108), last:
+    // a claim that cannot be removed must not keep the wait records.
+    await removeClaimsOfRuns(continuationClaims, deletedRunIds);
   };
 }
 

@@ -4011,9 +4011,14 @@ export const serveCommand = new Command()
     // A resume through this server takes its continuation claims as this
     // instance, in the store its heartbeat is written to, so a peer can
     // tell a claim of a live instance from one a dead instance left.
+    // A synced datastore with no shared control-plane store gets none: the
+    // fallback store is this host's own disk, where no peer would look.
     repoContext.continuationClaims =
-      isAtomicControlPlaneStore(controlPlaneStore)
-        ? continuationClaimsOver(controlPlaneStore, serveHolder(instanceId))
+      isAtomicControlPlaneStore(controlPlaneStore) &&
+        (hasRemoteControlPlane || !isCustomDatastoreConfig(datastoreConfig))
+        ? continuationClaimsOver(controlPlaneStore, serveHolder(instanceId), {
+          staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+        })
         : undefined;
     if (
       authConfig.mode === "oauth" &&
@@ -7169,6 +7174,12 @@ export const serveCommand = new Command()
       logger.info(
         "Continuation sweep disabled (continuation sweep interval is 0)",
       );
+    } else if (
+      isCustomDatastoreConfig(datastoreConfig) && !hasRemoteControlPlane
+    ) {
+      logger.info(
+        "Continuation sweep not started: this datastore has no shared control-plane store, so instances could not tell which of them resumed a run",
+      );
     } else if (!runRecordsCurrentAtBoot) {
       logger.warn(
         "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
@@ -7185,7 +7196,7 @@ export const serveCommand = new Command()
             isStopping,
           }),
       });
-      await continuationSweepService.start();
+      continuationSweepService.start();
     }
 
     isReady = true;

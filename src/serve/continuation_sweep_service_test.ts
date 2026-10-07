@@ -174,7 +174,9 @@ Deno.test("ContinuationSweepService: the first pass is the boot pass, and later 
     },
   });
   try {
-    await service.start();
+    service.start();
+    // Waits for the boot pass in flight, then runs one of its own.
+    await service.runOnce();
     await service.runOnce();
     assertEquals(passes, [true, false]);
   } finally {
@@ -194,7 +196,8 @@ Deno.test("ContinuationSweepService: a pass that fails is survived, and the next
     },
   });
   try {
-    await service.start();
+    service.start();
+    await service.runOnce();
     await service.runOnce();
     assertEquals(calls, 2);
   } finally {
@@ -224,5 +227,28 @@ Deno.test("ContinuationSweepService: dispose waits for the pass in flight and te
   assertEquals(sawStopping, true);
 
   // Nothing starts after dispose.
-  await service.start();
+  service.start();
+});
+
+Deno.test("ContinuationSweepService: start does not wait for the boot pass, and dispose does", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let finished = false;
+  const service = new ContinuationSweepService({
+    intervalMs: 3_600_000,
+    sweep: async () => {
+      await held;
+      finished = true;
+      return { examined: 0, launched: 0 };
+    },
+  });
+
+  service.start();
+  assertEquals(finished, false);
+  const disposed = service.dispose();
+  release();
+  await disposed;
+  assertEquals(finished, true);
 });

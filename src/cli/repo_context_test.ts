@@ -53,6 +53,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  resolveContinuationClaims,
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
@@ -5738,4 +5739,116 @@ Deno.test("reclaimModelLocks: reads a global lock caught mid-write again instead
     assertEquals(global.inspects(), 3);
     await lock.release();
   });
+});
+
+const SUSPENSION = {
+  runId: "0b8a6a52-3a51-4b53-9a4e-0d5a1c8a7f10",
+  suspensionKey: "a".repeat(64),
+};
+
+Deno.test("resolveContinuationClaims: a filesystem datastore keeps claims in the repository's control-plane directory, one holder per process", async () => {
+  await withTempDir(async (repoDir) => {
+    const config: DatastoreConfig = { type: "filesystem", path: repoDir };
+    const one = resolveContinuationClaims(config, repoDir)!;
+    const two = resolveContinuationClaims(config, repoDir)!;
+    assert(one.holder.startsWith("local:"));
+    assert(one.holder !== two.holder);
+    assertEquals(one.usable, undefined);
+
+    const claim = {
+      ...SUSPENSION,
+      generation: 1,
+      holder: one.holder,
+      claimedAt: new Date().toISOString(),
+    };
+    assertEquals(await one.store.create(claim), true);
+
+    // Another process on the repository reads the same record.
+    assertEquals(
+      await two.store.find(claim.runId, claim.suspensionKey),
+      claim,
+    );
+    assertEquals(await two.store.create(claim), false);
+    // A local command writes no heartbeat, so nothing is known of it.
+    assertEquals(await two.liveness(one.holder), "unknown");
+  });
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore without a shared control-plane store has no claims", () => {
+  const { service: plain } = createRecordingSyncService();
+  assertEquals(resolveContinuationClaims(customConfig(), "/repo"), undefined);
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", plain),
+    undefined,
+  );
+  // Advertised without a store to hand out.
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", {
+      ...plain,
+      capabilities: () => ({ controlPlane: true }),
+    }),
+    undefined,
+  );
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore's claims go to its control-plane store, opened on first use after the namespace is bound", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const calls: string[] = [];
+  const remote = recordingControlPlane(calls);
+  const claims = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: (options?: { namespace?: string }) => {
+      calls.push(`pull:${options?.namespace}`);
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: () => remote,
+  })!;
+  assert(claims.holder.startsWith("local:"));
+  // Building a repository context opens nothing.
+  assertEquals(calls, []);
+
+  assertEquals(await claims.usable!(), true);
+  assertEquals(calls, ["pull:team-a"]);
+  const claim = {
+    ...SUSPENSION,
+    generation: 1,
+    holder: claims.holder,
+    claimedAt: new Date().toISOString(),
+  };
+  assertEquals(await claims.store.create(claim), true);
+  assertEquals(calls, [
+    "pull:team-a",
+    `putIfAbsent:continuations/${claim.runId}/${claim.suspensionKey}/1`,
+  ]);
+  // A serve instance with no heartbeat in that store is dead.
+  assertEquals(await claims.liveness("serve:gone"), "dead");
+});
+
+Deno.test("resolveContinuationClaims: a store that cannot create a record atomically is not usable, and any other failure to open it is not hidden", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
+  const notAtomic = resolveContinuationClaims(customConfig(), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => withoutCreate,
+  })!;
+  assertEquals(await notAtomic.usable!(), false);
+
+  let pulls = 0;
+  const flaky = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: () => {
+      pulls++;
+      return pulls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(0);
+    },
+    controlPlaneStore: () => recordingControlPlane([]),
+  })!;
+  await assertRejects(() => flaky.usable!(), Error, "network down");
+  // The failed open is not kept: the next call tries again.
+  assertEquals(await flaky.usable!(), true);
+  assertEquals(pulls, 2);
 });

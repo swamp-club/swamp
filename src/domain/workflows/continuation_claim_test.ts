@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -34,6 +34,7 @@ import {
   encodeContinuationClaim,
   generationFromKey,
   localHolder,
+  removeClaimsOfRuns,
   serveHolder,
   serveInstanceOf,
   suspensionKeyOf,
@@ -255,4 +256,23 @@ Deno.test("ContinuationHeldError: names a serve instance, and no other holder", 
   const local = new ContinuationHeldError(RUN, localHolder(), "unknown");
   assert(local.message.includes("another swamp command"));
   assert(!local.message.includes("local:"));
+});
+
+Deno.test("removeClaimsOfRuns: one run whose claims cannot be removed does not keep the others", async () => {
+  const removed: string[] = [];
+  const store = {
+    removeForRun: (runId: string) => {
+      if (runId === "bad") return Promise.reject(new Error("not a run id"));
+      removed.push(runId);
+      return Promise.resolve();
+    },
+  };
+  await assertRejects(
+    () => removeClaimsOfRuns(store, ["a", "bad", "b"]),
+    Error,
+    "not a run id",
+  );
+  assertEquals(removed, ["a", "b"]);
+  // No store, nothing to do.
+  await removeClaimsOfRuns(undefined, ["a"]);
 });

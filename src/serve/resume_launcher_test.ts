@@ -1222,7 +1222,7 @@ Deno.test("autoResumeParentAfterChild: after a signal the subject must hold sign
   assertStringIncludes(audit[0].detail ?? "", "reason=not_authorized");
 });
 
-Deno.test("startDetachedResume: a run no longer suspended is a lost race only for a resume serve launched by itself", async () => {
+Deno.test("startDetachedResume: a run no longer suspended is a lost race only for the continuation of a settled run", async () => {
   const workflow = makeWorkflow({ autoResume: true });
   const run = makeApprovedRun(workflow);
   run.endAsCancelled();
@@ -1241,6 +1241,7 @@ Deno.test("startDetachedResume: a run no longer suspended is a lost race only fo
   const automatic = await startDetachedResume(ctx, registry, {
     ...request,
     continuation: { kind: "automatic", takeover: false },
+    lostRaceIsOrdinary: true,
   });
   assertEquals(automatic.ok ? "" : automatic.code, RUN_NOT_SUSPENDED_CODE);
   assertEquals(registry.registered.length, 0);
