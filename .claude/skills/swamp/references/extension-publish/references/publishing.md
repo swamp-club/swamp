@@ -119,6 +119,11 @@ Push rejects:
   manifest before re-running push.
 - **Symlinks**. Entries pointing at symlinks are rejected to prevent archive
   bloat and path escapes. Copy the target file into the extension tree instead.
+- **Directories and other non-regular files**. Each entry names one file;
+  `additionalFiles: [docs]` fails with "Additional file is a directory: docs".
+  List the files under `docs/` individually. `binaries` and `include` entries
+  are checked the same way, and `extension quality` and `extension fmt` report
+  the same error as push.
 
 At runtime, models and reports receive `ctx.extensionFile(relPath)` which
 returns the absolute path to a bundled asset. The helper works identically

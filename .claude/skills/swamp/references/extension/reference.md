@@ -340,6 +340,8 @@ binaries:
 Paths resolve the same way as `additionalFiles` (relative to the manifest
 directory, or following `paths.base`). Use `binaries` for executables and
 `additionalFiles` for non-code text files (README, LICENSE, config templates).
+Each entry in either field names one file: a directory is rejected, so list its
+files individually.
 
 ## CalVer Versioning
 
