@@ -22,6 +22,7 @@ import {
   CONTROL_PLANE_MODEL_TYPES,
   CONTROL_PLANE_STORED_TYPES,
   isControlPlaneModelType,
+  normalizeModelTypeName,
 } from "./control_plane_types.ts";
 import { modelRegistry } from "./models.ts";
 
@@ -47,6 +48,9 @@ Deno.test("isControlPlaneModelType: matches every normalized form of a control-p
       "swamp::server-token",
       "swamp.worker",
       " swamp/group ",
+      " @swamp/grant",
+      "@@swamp/grant",
+      "@/@swamp/group",
     ]
   ) {
     assertEquals(isControlPlaneModelType(type), true, type);
@@ -86,5 +90,32 @@ Deno.test("CONTROL_PLANE_STORED_TYPES: names each type bare and @-prefixed", () 
   for (const type of CONTROL_PLANE_MODEL_TYPES) {
     assertEquals(CONTROL_PLANE_STORED_TYPES.includes(type), true, type);
     assertEquals(CONTROL_PLANE_STORED_TYPES.includes(`@${type}`), true, type);
+  }
+});
+
+Deno.test("normalizeModelTypeName: gives one key for every spelling of a type", () => {
+  for (
+    const type of [
+      "exp/probe",
+      "@exp/probe",
+      "@Exp::Probe",
+      "EXP.PROBE",
+      " @exp/probe",
+      "@exp/probe ",
+      "@@exp/probe",
+      "@ exp/probe",
+      "@/exp/probe",
+      "@/@exp/probe",
+      "/@exp/probe",
+      "@ @exp/probe",
+    ]
+  ) {
+    assertEquals(normalizeModelTypeName(type), "exp/probe", type);
+  }
+});
+
+Deno.test("normalizeModelTypeName: returns null for a string that names no type", () => {
+  for (const type of ["", "   ", "@", "@@", "::", "/", "@/", "@ /@"]) {
+    assertEquals(normalizeModelTypeName(type), null, JSON.stringify(type));
   }
 });

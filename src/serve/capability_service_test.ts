@@ -655,3 +655,330 @@ Deno.test("deleteData: the delete stages into a root unit over the repository co
   assertEquals(reports, []);
   assertEquals(marks, ["result"]);
 });
+
+// ── control-plane records hidden from workers (swamp-club#3129) ─────────
+
+interface RecordingContext {
+  context: RepositoryContext;
+  queryOptions: unknown[];
+  definitionReads: string[];
+  outputReads: string[];
+}
+
+function recordingRepoContext(opts: {
+  queryResult?: unknown[];
+  byNameGlobal?: { definition: unknown; type: ModelType } | null;
+  allDefinitions?: { definition: unknown; type: ModelType }[];
+} = {}): RecordingContext {
+  const recorded: RecordingContext = {
+    context: undefined as unknown as RepositoryContext,
+    queryOptions: [],
+    definitionReads: [],
+    outputReads: [],
+  };
+  recorded.context = {
+    dataQueryService: {
+      query: (_predicate: string, options: unknown) => {
+        recorded.queryOptions.push(options);
+        return Promise.resolve(opts.queryResult ?? []);
+      },
+    },
+    unifiedDataRepo: {
+      listVersions: () => Promise.resolve([1, 2]),
+    },
+    definitionRepo: {
+      findByName: (type: ModelType) => {
+        recorded.definitionReads.push(type.normalized);
+        return Promise.resolve({ id: "def-1" });
+      },
+      findByNameGlobal: () => Promise.resolve(opts.byNameGlobal ?? null),
+      findAllGlobal: () => Promise.resolve(opts.allDefinitions ?? []),
+      findAllIncludingAutoGlobal: () =>
+        Promise.resolve(opts.allDefinitions ?? []),
+    },
+    outputRepo: {
+      findById: (type: ModelType) => {
+        recorded.outputReads.push(type.normalized);
+        return Promise.resolve({ id: "out-1" });
+      },
+      findLatestByDefinition: (type: ModelType) => {
+        recorded.outputReads.push(type.normalized);
+        return Promise.resolve({ id: "out-1" });
+      },
+      findByDefinition: (type: ModelType) => {
+        recorded.outputReads.push(type.normalized);
+        return Promise.resolve([{ id: "out-1" }]);
+      },
+      findAll: (type: ModelType) => {
+        recorded.outputReads.push(type.normalized);
+        return Promise.resolve([{ id: "out-1" }]);
+      },
+    },
+  } as unknown as RepositoryContext;
+  return recorded;
+}
+
+function recordingService(
+  recorded: RecordingContext,
+  dispatches?: DispatchRegistry,
+): CapabilityService {
+  return new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: recorded.context,
+    dispatches,
+    createVaultService: () => Promise.reject(new Error("no vault")),
+  });
+}
+
+function withTypedDispatch(
+  dispatches: DispatchRegistry,
+  modelType: string,
+  dispatchId = "d-1",
+  workerName = "worker-1",
+) {
+  dispatches.register({
+    workerName,
+    dispatchId,
+    leaseId: `l-${dispatchId}`,
+    modelDef: {} as never,
+    modelType: ModelType.create(modelType),
+    modelId: "m-1",
+    methodName: "run",
+    definitionName: "probe",
+    definitionTags: {},
+  });
+}
+
+function excludedTypes(recorded: RecordingContext): string[] {
+  const options = recorded.queryOptions[0] as {
+    excludeModelTypes?: string[];
+  };
+  return options.excludeModelTypes ?? [];
+}
+
+Deno.test("queryData: excludes both stored forms of every control-plane type from the query", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  await recordingService(recorded, dispatches).queryData("worker-1", {
+    predicate: "isLatest == true",
+  });
+  const excluded = excludedTypes(recorded);
+  for (
+    const type of [
+      "swamp/grant",
+      "@swamp/grant",
+      "@swamp/group",
+      "swamp/pending-dispatch",
+      "@swamp/fleet-probe",
+      "swamp/fleet-probe",
+    ]
+  ) {
+    assertEquals(excluded.includes(type), true, type);
+  }
+});
+
+Deno.test("queryData: a worker cannot replace the control-plane exclusion", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  await recordingService(recorded, dispatches).queryData("worker-1", {
+    predicate: "true",
+    options: { limit: 5, excludeModelTypes: [] } as never,
+  });
+  const options = recorded.queryOptions[0] as {
+    limit?: number;
+    excludeModelTypes: string[];
+  };
+  assertEquals(options.limit, 5);
+  assertEquals(options.excludeModelTypes.includes("@swamp/grant"), true);
+});
+
+Deno.test("queryData: rejects a hidden record that got past the exclusion, in any spelling", async () => {
+  for (const modelType of ["@swamp/grant", "@@swamp/group", "@Swamp::Worker"]) {
+    const dispatches = new DispatchRegistry();
+    withDispatch(dispatches);
+    const recorded = recordingRepoContext({
+      queryResult: [{ id: "1", modelType }],
+    });
+    await assertRejects(
+      () =>
+        recordingService(recorded, dispatches).queryData("worker-1", {
+          predicate: "true",
+        }),
+      Error,
+      "not permitted from workers",
+    );
+  }
+});
+
+Deno.test("queryData: a fleet-probe dispatch still queries its own records", async () => {
+  const dispatches = new DispatchRegistry();
+  withTypedDispatch(dispatches, "swamp/fleet-probe");
+  const recorded = recordingRepoContext({
+    queryResult: [
+      { id: "1", modelType: "swamp/fleet-probe" },
+      { id: "2", modelType: "@swamp/fleet-probe" },
+    ],
+  });
+  const result = await recordingService(recorded, dispatches).queryData(
+    "worker-1",
+    { predicate: 'modelType == "swamp/fleet-probe"' },
+  );
+  assertEquals(result.length, 2);
+  const excluded = excludedTypes(recorded);
+  assertEquals(excluded.includes("swamp/fleet-probe"), false);
+  assertEquals(excluded.includes("@swamp/fleet-probe"), false);
+  assertEquals(excluded.includes("@swamp/grant"), true);
+});
+
+Deno.test("queryData: without a dispatch registry every control-plane type is excluded", async () => {
+  const recorded = recordingRepoContext();
+  await recordingService(recorded).queryData("worker-1", { predicate: "true" });
+  assertEquals(excludedTypes(recorded).includes("swamp/fleet-probe"), true);
+});
+
+Deno.test("readDefinition: a control-plane type reads as not found without touching the repository", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  const service = recordingService(recorded, dispatches);
+  for (
+    const definitionType of ["@swamp/grant", "swamp/group", "@@swamp/worker"]
+  ) {
+    assertEquals(
+      await service.readDefinition("worker-1", {
+        definitionType,
+        idOrName: "anything",
+      }),
+      { found: false, definition: null },
+    );
+  }
+  assertEquals(recorded.definitionReads, []);
+  const visible = await service.readDefinition("worker-1", {
+    definitionType: "@acme/invoices",
+    idOrName: "my-invoice",
+  }) as { found: boolean };
+  assertEquals(visible.found, true);
+  assertEquals(recorded.definitionReads, ["@acme/invoices"]);
+});
+
+Deno.test("readOutput: a control-plane type reads as empty in each branch's shape", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  const service = recordingService(recorded, dispatches);
+  const definitionId = crypto.randomUUID();
+  assertEquals(
+    await service.readOutput("worker-1", {
+      modelType: "@swamp/grant",
+      methodName: "create",
+      outputId: crypto.randomUUID(),
+    }),
+    { result: null },
+  );
+  assertEquals(
+    await service.readOutput("worker-1", {
+      modelType: "@swamp/grant",
+      definitionId,
+      latestOnly: true,
+    }),
+    { result: null },
+  );
+  assertEquals(
+    await service.readOutput("worker-1", {
+      modelType: "@swamp/grant",
+      definitionId,
+    }),
+    { result: [] },
+  );
+  assertEquals(
+    await service.readOutput("worker-1", { modelType: "swamp/group" }),
+    { result: [] },
+  );
+  assertEquals(recorded.outputReads, []);
+});
+
+Deno.test("listVersions: a control-plane type lists no versions", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = recordingService(recordingRepoContext(), dispatches);
+  assertEquals(
+    await service.listVersions("worker-1", {
+      modelType: "@swamp/grant",
+      modelId: "m-1",
+      dataName: "grant",
+    }),
+    [],
+  );
+  assertEquals(
+    await service.listVersions("worker-1", {
+      modelType: "@acme/invoices",
+      modelId: "m-1",
+      dataName: "result",
+    }),
+    [1, 2],
+  );
+});
+
+Deno.test("resolveModel: a control-plane record named like a user model does not shadow it", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const grant = {
+    definition: { id: "g-1", name: "shared" },
+    type: ModelType.create("@swamp/grant"),
+  };
+  const userModel = {
+    definition: { id: "u-1", name: "shared" },
+    type: ModelType.create("@acme/invoices"),
+  };
+  const recorded = recordingRepoContext({
+    byNameGlobal: grant,
+    allDefinitions: [grant, userModel],
+  });
+  const result = await recordingService(recorded, dispatches).resolveModel(
+    "worker-1",
+    { modelIdOrName: "shared" },
+  ) as { found: boolean; modelType?: string };
+  assertEquals(result.found, true);
+  assertEquals(result.modelType, "@acme/invoices");
+});
+
+Deno.test("resolveModel: a control-plane record alone resolves as not found", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const grant = {
+    definition: { id: "g-1", name: "admins" },
+    type: ModelType.create("@swamp/grant"),
+  };
+  const recorded = recordingRepoContext({
+    byNameGlobal: grant,
+    allDefinitions: [grant],
+  });
+  assertEquals(
+    await recordingService(recorded, dispatches).resolveModel("worker-1", {
+      modelIdOrName: "admins",
+    }),
+    { found: false },
+  );
+});
+
+Deno.test("readDefinition: an ambiguous dispatch hides control-plane types instead of failing", async () => {
+  const dispatches = new DispatchRegistry();
+  withTypedDispatch(dispatches, "swamp/fleet-probe", "d-1");
+  withTypedDispatch(dispatches, "swamp/fleet-probe", "d-2");
+  const service = recordingService(recordingRepoContext(), dispatches);
+  assertEquals(
+    await service.readDefinition("worker-1", {
+      definitionType: "swamp/fleet-probe",
+      idOrName: "probe",
+    }),
+    { found: false, definition: null },
+  );
+  const scoped = await service.readDefinition("worker-1", {
+    definitionType: "swamp/fleet-probe",
+    idOrName: "probe",
+    dispatchId: "d-2",
+  }) as { found: boolean };
+  assertEquals(scoped.found, true);
+});

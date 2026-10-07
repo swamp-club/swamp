@@ -73,7 +73,7 @@ it the default file is optional.
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
-| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth` |
+| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A model type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
@@ -227,7 +227,11 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   `--admins` and at least one of `--allowed-collectives` / `--allowed-users`
   (otherwise "any swamp-club user can connect"). At startup a username the
   provider does not know is skipped with an ERROR log rather than stopping
-  serve. `swamp serve check-config` finds such names before a deploy. See
+  serve. `swamp serve check-config` finds such names before a deploy, and
+  reports `restricted-commands` entries that are not server commands and
+  `restricted-model-types` entries that name no type; it does not load the
+  model registry, so a misspelled bare type is reported only by serve at
+  startup. See
   "Username resolution" in
   [remote execution](../enablers/remote-execution.md).
 

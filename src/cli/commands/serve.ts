@@ -40,9 +40,13 @@ import {
 } from "../duration_parser.ts";
 import {
   buildServeAuthConfig,
+  findIneffectiveRestrictions,
   type ServeAuthConfig,
 } from "../../domain/access/serve_auth_config.ts";
-import { handleConnection } from "../../serve/connection.ts";
+import {
+  handleConnection,
+  serverRequestPayloadFields,
+} from "../../serve/connection.ts";
 import {
   cancelSuspendedRunAndPush,
   RUN_CANCEL_GRACE_MS,
@@ -1584,11 +1588,11 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
-    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install); names match exactly. Requires --auth-mode token or oauth",
   )
   .option(
     "--approve-requires-explicit-grant",
@@ -2016,6 +2020,42 @@ const checkConfigCommand = new Command()
       options,
       parseExplicitFlags(Deno.args),
     );
+
+    // Restriction entries that cannot match, judged without loading the
+    // model registry so this command stays read-only and offline: whether a
+    // bare type is registered is reported by serve at startup instead
+    // (swamp-club#3132). An entry that names no type stops serve starting,
+    // and would stop buildServeAuthConfig below, so it is reported first.
+    const restrictionFindings = findIneffectiveRestrictions({
+      restrictedModelTypes: merged.restrictedModelTypes,
+      restrictedCommands: merged.restrictedCommands,
+      requestTypes: new Set(serverRequestPayloadFields().keys()),
+    });
+    const restrictionWarnings = restrictionFindings.filter((finding) =>
+      finding.reason !== "no-type"
+    );
+    const unnamedType = restrictionFindings.find((finding) =>
+      finding.reason === "no-type"
+    );
+    const checkedMode = merged.authMode ?? "none";
+    if (
+      unnamedType !== undefined &&
+      (checkedMode === "none" || checkedMode === "token" ||
+        checkedMode === "oauth")
+    ) {
+      renderServeCheckConfig({
+        passed: false,
+        authMode: checkedMode,
+        entries: [],
+        allowedCollectives: [],
+        wouldStart: false,
+        refusal: unnamedType.message,
+        restrictionWarnings,
+      }, ctx.outputMode);
+      Deno.exitCode = 1;
+      return;
+    }
+
     const authConfig = buildServeAuthConfig({
       authMode: merged.authMode,
       admins: merged.admins,
@@ -2048,6 +2088,7 @@ const checkConfigCommand = new Command()
         entries: [],
         allowedCollectives: [],
         wouldStart: keyUsable,
+        restrictionWarnings,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
       if (!keyUsable) Deno.exitCode = 1;
@@ -2095,6 +2136,7 @@ const checkConfigCommand = new Command()
       allowedCollectives: authConfig.allowedCollectives,
       wouldStart: check.wouldStart && keyUsable,
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
+      restrictionWarnings,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
@@ -2232,11 +2274,11 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
-    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install); names match exactly. Requires --auth-mode token or oauth",
   )
   .option(
     "--approve-requires-explicit-grant",
@@ -2768,6 +2810,20 @@ export const serveCommand = new Command()
     // On an extension-backed datastore the catalog repair ran in that load,
     // after the baseline record: add what it catalogued.
     await recordPulledTypes();
+
+    // Restriction entries that cannot match restrict nothing; say so now
+    // that the model registry is indexed (swamp-club#3129).
+    if (authConfig.mode !== "none") {
+      const findings = findIneffectiveRestrictions({
+        restrictedModelTypes: merged.restrictedModelTypes,
+        restrictedCommands: merged.restrictedCommands,
+        requestTypes: new Set(serverRequestPayloadFields().keys()),
+        isKnownModelType: (type) => modelRegistry.has(type),
+      });
+      for (const finding of findings) {
+        logger.warn("{warning}", { warning: finding.message });
+      }
+    }
 
     // Probe deployment stack and resolve durability mode.
     const datastoreClass: DatastoreClassification =

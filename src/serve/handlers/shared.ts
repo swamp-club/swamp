@@ -42,7 +42,6 @@ import type { SerializedEvent, ServerMessage } from "../protocol.ts";
 import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 import {
   parsePrincipal,
@@ -51,7 +50,10 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
-import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  normalizeModelTypeName,
+} from "../../domain/models/control_plane_types.ts";
 import type {
   AccessDecision,
   AccessPrincipal,
@@ -358,29 +360,34 @@ export interface ConnectionContext {
   auditHmacConfig?: { vaultName: string; keyName: string };
 }
 
-// SECURITY: Authorization must operate on canonical (normalized) model types,
-// never raw client input. ModelType.normalize() applies lowercasing, separator
-// canonicalization (:: . whitespace → /), and deduplication. Any raw typeArg
-// that normalizes to a control-plane model type — access control (grant,
-// group, server-token) or the worker fleet (enrollment-token, worker,
-// step-lease, pending-dispatch, fleet-probe) — must require admin authority
-// (swamp-club#2756).
+// SECURITY: Authorization must operate on canonical model types, never raw
+// client input. normalizeModelTypeName applies ModelType's normalization
+// (trimming, lowercasing, separator canonicalization :: . whitespace → /,
+// deduplication) and then drops every leading @ and /, so each spelling that
+// executes a type maps to one key. Any raw typeArg that normalizes to a
+// control-plane model type — access control (grant, group, server-token) or
+// the worker fleet (enrollment-token, worker, step-lease, pending-dispatch,
+// fleet-probe) — must require admin authority (swamp-club#2756).
 export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
-  if (typeArg) {
-    // ModelType.create throws for a blank or separator-only type, failing the
-    // request rather than letting it past this gate.
-    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    if (isControlPlaneModelType(ModelType.create(stripped).normalized)) {
-      return true;
-    }
+  if (typeArg && isControlPlaneModelType(requestedTypeKey(typeArg))) {
+    return true;
   }
   if (resolvedType && isControlPlaneModelType(resolvedType)) return true;
   return false;
 }
 
+/**
+ * Whether a model type needs admin authority: a control-plane type, or one
+ * named in `restricted-model-types`. The requested type, the resolved type
+ * and every list entry are compared by their normalizeModelTypeName key, so
+ * listing a type in any spelling — `@exp/probe`, `exp/probe`, `@Exp::Probe` —
+ * restricts it on every path that names it in any spelling (swamp-club#3129).
+ * List entries are canonicalized here as well as when the config is parsed,
+ * so a ServeAuthConfig built without the parser is judged the same way.
+ */
 export function isAdminOnlyModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
@@ -388,15 +395,29 @@ export function isAdminOnlyModelType(
 ): boolean {
   if (isAccessModelType(typeArg, resolvedType)) return true;
   if (restrictedModelTypes.length === 0) return false;
-  if (typeArg) {
-    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    const normalized = ModelType.create(stripped).normalized;
-    if (restrictedModelTypes.includes(normalized)) return true;
-  }
+  const restricted = new Set(
+    restrictedModelTypes.map((entry) => normalizeModelTypeName(entry)),
+  );
+  if (typeArg && restricted.has(requestedTypeKey(typeArg))) return true;
   if (resolvedType) {
-    if (restrictedModelTypes.includes(resolvedType)) return true;
+    const resolvedKey = normalizeModelTypeName(resolvedType);
+    // A stored type that names no type cannot be judged; require admin.
+    if (resolvedKey === null || restricted.has(resolvedKey)) return true;
   }
   return false;
+}
+
+/**
+ * The canonical key of a requested type. A blank or separator-only type
+ * (`"::"`, `"@"`) names no type and fails the request rather than passing
+ * the gate unjudged.
+ */
+function requestedTypeKey(typeArg: string): string {
+  const key = normalizeModelTypeName(typeArg);
+  if (key === null) {
+    throw new Error(`Invalid model type: ${JSON.stringify(typeArg)}`);
+  }
+  return key;
 }
 
 export function isRestrictedCommand(

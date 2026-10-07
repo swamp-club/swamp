@@ -427,7 +427,7 @@ type that names a resource, and
 | `write`   | Create or update models, definitions, data             |
 | `approve` | Approve or reject a workflow manual-approval gate      |
 | `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else |
-| `admin`   | Manage grants, groups, tokens, restricted models, and any operation on a control-plane record |
+| `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored), and any operation on a control-plane record |
 
 **`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
 checks, so existing `run` grants can still approve. To allow approval without
