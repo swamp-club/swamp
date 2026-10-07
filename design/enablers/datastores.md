@@ -2498,6 +2498,11 @@ startup uses):
   The differing paths are listed in a `remote_config_tier_kept` warning, which
   appears in `warnings` in JSON output. An extension that ignores `subdirs`
   pulls everything at this point. That is still correct, only slower.
+
+  The comparison is against the cache, so a retry after a push that failed
+  can find every config file already there and copy nothing. Setup still
+  pushes and cleans up in that case. Two more cases count as differing: a
+  local directory where the cache has a file, and a file that cannot be read.
 - **Instance-local** (the tier is elsewhere, or the current datastore cannot be
   resolved): `.swamp/config` holds only this instance's pulled extension
   sources and the transitional auto-resolve lockfile. Setup leaves it out of

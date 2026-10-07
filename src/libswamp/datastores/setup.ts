@@ -304,7 +304,7 @@ export async function* datastoreSetupFilesystem(
         // no failures cleanup would delete the datastore (swamp-club#3162).
         if (await isSamePath(sourceDir, input.datastorePath)) {
           ctx.logger
-            .debug`Datastore path ${input.datastorePath} is the migration source; nothing to migrate`;
+            .info`Datastore path ${input.datastorePath} is the current datastore; nothing to migrate`;
         } else {
           ctx.logger.debug`Migrating data to ${input.datastorePath}...`;
           const config = {
@@ -569,6 +569,10 @@ export async function* datastoreSetupExtension(
       let migrationSkips: readonly string[] = [];
       let cleanupKeeps: readonly string[] = [];
       let keptConfigPaths: string[] = [];
+      // Config files left out of the copy because the cache already holds
+      // them. A cache left by an earlier failed setup can hold every one,
+      // so a copy of nothing still needs its push and cleanup.
+      let skippedConfigFiles = 0;
       const sourceDir = `${input.repoDir}/.swamp`;
 
       if (!input.skipMigration && syncService) {
@@ -629,6 +633,7 @@ export async function* datastoreSetupExtension(
             migrationSkips = [...migrationSkips, ...merge.copySkips];
             cleanupKeeps = [...cleanupKeeps, ...merge.cleanupKeeps];
             keptConfigPaths = merge.keptPaths;
+            skippedConfigFiles = merge.copySkips.length;
           }
         }
 
@@ -647,7 +652,7 @@ export async function* datastoreSetupExtension(
 
           // Push cache to remote via sync service. Always pass namespace
           // so the extension scopes the push to {namespace}/ on the remote.
-          if (result.filesCopied > 0) {
+          if (result.filesCopied > 0 || skippedConfigFiles > 0) {
             ctx.logger.debug`Pushing data to remote datastore...`;
             try {
               await runBoundedSync(
@@ -727,7 +732,7 @@ export async function* datastoreSetupExtension(
       if (
         migrationResult &&
         errors.length === 0 &&
-        migrationResult.filesCopied > 0 &&
+        (migrationResult.filesCopied > 0 || skippedConfigFiles > 0) &&
         migrationResult.directoriesMigrated.length > 0
       ) {
         await deps.cleanupSourceDirs(
@@ -1135,16 +1140,23 @@ async function collectConfigTierConflicts(
   for (const entry of entries) {
     const rel = relDir === "" ? entry.name : join(relDir, entry.name);
     if (rel === PULLED_EXTENSIONS_SUBDIR) continue;
-    if (entry.isDirectory) {
-      await collectConfigTierConflicts(localRoot, destRoot, rel, out);
-      continue;
-    }
-    let dest: Deno.FileInfo;
+    let dest: Deno.FileInfo | undefined;
     try {
       dest = await Deno.lstat(join(destRoot, rel));
     } catch {
+      dest = undefined;
+    }
+    if (entry.isDirectory) {
+      // A local directory where the destination has a file cannot be
+      // copied; it conflicts as a whole.
+      if (dest && !dest.isDirectory) {
+        out.push({ path: rel, differs: true });
+      } else {
+        await collectConfigTierConflicts(localRoot, destRoot, rel, out);
+      }
       continue;
     }
+    if (!dest) continue;
     out.push({
       path: rel,
       differs: await configFileDiffers(
@@ -1163,17 +1175,23 @@ async function configFileDiffers(
   destPath: string,
   dest: Deno.FileInfo,
 ): Promise<boolean> {
-  if (localIsSymlink || dest.isSymlink) {
-    return !(localIsSymlink && dest.isSymlink &&
-      await Deno.readLink(localPath) === await Deno.readLink(destPath));
+  // A file that cannot be read counts as differing, so its local copy is
+  // kept and reported rather than failing setup.
+  try {
+    if (localIsSymlink || dest.isSymlink) {
+      return !(localIsSymlink && dest.isSymlink &&
+        await Deno.readLink(localPath) === await Deno.readLink(destPath));
+    }
+    if (!dest.isFile) return true;
+    const [local, remote] = await Promise.all([
+      Deno.readFile(localPath),
+      Deno.readFile(destPath),
+    ]);
+    if (local.length !== remote.length) return true;
+    return local.some((byte, i) => byte !== remote[i]);
+  } catch {
+    return true;
   }
-  if (!dest.isFile) return true;
-  const [local, remote] = await Promise.all([
-    Deno.readFile(localPath),
-    Deno.readFile(destPath),
-  ]);
-  if (local.length !== remote.length) return true;
-  return local.some((byte, i) => byte !== remote[i]);
 }
 
 /**

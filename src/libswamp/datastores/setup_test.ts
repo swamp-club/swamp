@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertStringIncludes,
@@ -2623,7 +2624,7 @@ Deno.test("datastoreSetupExtension: an in-repo tier joining a remote tier keeps 
     );
     const kept = keptWarningsOf(events);
     assertEquals(kept.length, 1);
-    if (kept[0].data.code !== "remote_config_tier_kept") return;
+    assert(kept[0].data.code === "remote_config_tier_kept");
     assertEquals(kept[0].data.keptPaths, [join("models", "m.yaml")]);
     assertPathEquals(kept[0].data.localConfigPath, localConfig);
   });
@@ -2817,7 +2818,7 @@ Deno.test("datastoreSetupExtension: the config tier pre-pull is namespaced and l
     );
     const kept = keptWarningsOf(events);
     assertEquals(kept.length, 1);
-    if (kept[0].data.code !== "remote_config_tier_kept") return;
+    assert(kept[0].data.code === "remote_config_tier_kept");
     assertEquals(kept[0].data.keptPaths, [join("models", "m.yaml")]);
   });
 });
@@ -2840,12 +2841,15 @@ Deno.test("createDatastoreSetupDeps.listConfigTierConflicts: lists shared files,
     await writeTestFile(join(dest, "models", "same.yaml"), "s");
     await writeTestFile(join(dest, "pulled-extensions", "e.ts"), "y");
     await writeTestFile(join(dest, "linked", "inner.yaml"), "x");
+    await writeTestFile(join(realLocal, "dir-vs-file", "child.yaml"), "x");
+    await writeTestFile(join(dest, "dir-vs-file"), "x");
 
     const deps = createDatastoreSetupDeps(tmp, noTier);
     const conflicts = await deps.listConfigTierConflicts(local, dest);
     conflicts.sort((a, b) => a.path.localeCompare(b.path));
 
     assertEquals(conflicts, [
+      { path: "dir-vs-file", differs: true },
       { path: "linked", differs: true },
       { path: join("models", "a.yaml"), differs: true },
       { path: join("models", "same.yaml"), differs: false },
@@ -2943,5 +2947,72 @@ Deno.test("datastoreSetupFilesystem: a destination other than .swamp still migra
     assertEquals(events.at(-1)?.kind, "completed");
     assertEquals(await pathExists(join(datastorePath, "data", "a.json")), true);
     assertEquals(await pathExists(join(repoDir, ".swamp", "data")), false);
+  });
+});
+
+Deno.test({
+  name:
+    "createDatastoreSetupDeps.listConfigTierConflicts: an unreadable file counts as differing",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withSetupTempDir(async (tmp) => {
+      const local = join(tmp, "local");
+      const dest = join(tmp, "dest");
+      await writeTestFile(join(local, "m.yaml"), "same");
+      await writeTestFile(join(dest, "m.yaml"), "same");
+      await Deno.chmod(join(local, "m.yaml"), 0o000);
+      try {
+        const deps = createDatastoreSetupDeps(tmp, noTier);
+        assertEquals(await deps.listConfigTierConflicts(local, dest), [
+          { path: "m.yaml", differs: true },
+        ]);
+      } finally {
+        await Deno.chmod(join(local, "m.yaml"), 0o644);
+      }
+    });
+  },
+});
+
+Deno.test("datastoreSetupExtension: a retry over a cache already holding every config file still pushes and cleans up", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(remoteDir, cacheDir, calls);
+    await writeInRepoTierRepo(repoDir);
+    // An earlier setup copied the tier into the cache, then its push failed.
+    const localModel = join(repoDir, ".swamp", "config", "models", "m.yaml");
+    await writeTestFile(localModel, "local");
+    await writeTestFile(join(cacheDir, "config", "models", "m.yaml"), "local");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        inRepoTierDeps(repoDir),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2844",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    assertEquals(completed.data.filesCopied, 0);
+    assertEquals(calls.map((c) => c.op), ["pull", "push", "pull"]);
+    assertEquals(
+      await Deno.readTextFile(join(remoteDir, "config", "models", "m.yaml")),
+      "local",
+    );
+    assertEquals(await pathExists(localModel), false);
+    assertEquals(keptWarningsOf(events), []);
   });
 });
