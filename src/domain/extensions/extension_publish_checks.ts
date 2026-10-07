@@ -29,9 +29,10 @@
  * a dry run reports the same outcome the push would.
  *
  * Entitlement is the registry's to decide. The private-entitlement rule only
- * repeats what the registry reported at sign-in and fails on the one standing
- * the registry always refuses (a free plan whose trial has ended); every other
- * standing is reported as the registry's data, never as a prediction.
+ * repeats what the registry reported at sign-in and fails on the standings the
+ * registry always refuses (a free plan with no trial, or whose trial has
+ * ended: the registry never starts a trial at publish); every other standing
+ * is reported as the registry's data, never as a prediction.
  */
 
 import { ModelType } from "../models/model_type.ts";
@@ -56,7 +57,7 @@ export type RegistryCheckStatus = "passed" | "failed" | "not-run";
  * Why a check could not run. `no-credentials` leaves a dry run green: the
  * registry was never asked. `entitlement-undecided` does too: the registry
  * answered, but what it reported does not settle private entitlement (it sent
- * none, or a free plan with no trial, where its own gate may start one), so
+ * none for the collective, or a trial state this client does not know), so
  * the registry decides at publish. The others mean the registry was asked and
  * did not confirm, which a real push would have failed on.
  */
@@ -377,11 +378,11 @@ function endedTrial(trial: CollectiveTrial): string {
  * Decides the private-entitlement check from what the registry reported.
  *
  * A paid plan passes, as does a free plan with an active trial, each named.
- * A free plan whose trial has ended fails with the message a real push
- * throws, naming the collective, its plan and the upgrade page. A free plan
- * with no trial is undecided: the registry may start the collective's trial
- * at publish, so the check says the registry decides. No entitlement for the
- * collective is undecided too, and says the registry did not report it.
+ * A free plan with no trial, or whose trial has ended, fails with the message
+ * a real push throws, naming the collective, its plan and the upgrade page:
+ * a trial starts only when its collective is created, never at publish. No
+ * entitlement for the collective is undecided and says the registry did not
+ * report it; so is a trial state this client does not know.
  */
 export function evaluatePrivateEntitlement(
   input: PrivateEntitlementInput,
@@ -415,21 +416,30 @@ export function evaluatePrivateEntitlement(
       }, which allows private extensions.`,
     };
   }
+  const upgrade = `${PAID_PLAN_REQUIRED}; upgrade at ${
+    collectiveBillingUrl(input.serverUrl, collective)
+  }.`;
   if (trial?.state === "expired") {
     return {
       name,
       status: "failed",
       message: `Collective "@${collective}" is on the ${plan} plan and ${
         endedTrial(trial)
-      }. ${PAID_PLAN_REQUIRED}; upgrade at ${
-        collectiveBillingUrl(input.serverUrl, collective)
-      }.`,
+      }. ${upgrade}`,
+    };
+  }
+  if (trial === undefined || trial.state === "none") {
+    return {
+      name,
+      status: "failed",
+      message:
+        `Collective "@${collective}" is on the ${plan} plan and has no trial. ${upgrade}`,
     };
   }
   return registryCheckNotRun(
     name,
     "entitlement-undecided",
-    `Collective "@${collective}" is on the ${plan} plan with no trial reported; the registry decides private publication at publish.`,
+    `the registry reported a trial state for "@${collective}" that this client does not know; private publication is decided at publish`,
   );
 }
 

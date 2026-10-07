@@ -423,12 +423,12 @@ missing prerequisite in `message` and `cause`: `no-credentials` leaves the run
 green, since the registry was never asked; `registry-unavailable` exits
 non-zero, since the registry never confirmed what the push needs;
 `entitlement-undecided` leaves the run green, since the registry answered but
-what it reported does not settle private entitlement (no entitlement reported,
-or a free plan with no trial, which the registry may start at publish). The dry
-run never prompts and never writes to the registry.
+what it reported does not settle private entitlement (no entitlement reported
+for the collective). The dry run never prompts and never writes to the registry.
 
-`private-entitlement` fails only for a free plan whose trial has ended, with the
-message the push throws:
+`private-entitlement` fails for a free plan with no trial or whose trial has
+ended — the registry never starts a trial at publish — with the message the push
+throws (`… is on the Free plan and has no trial. …` when there is none):
 `Collective "@acme" is on the Free plan and its trial
 ended on 2026-08-19. Private publication requires a paid plan; upgrade at
 https://swamp-club.com/o/acme/billing.`
