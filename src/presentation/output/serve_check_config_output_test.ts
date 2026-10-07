@@ -213,8 +213,14 @@ Deno.test("renderServeCheckConfig: log mode outside oauth shows why serve would 
 });
 
 Deno.test("renderServeCheckConfig: restriction warnings are shown in every mode and do not fail the check", () => {
-  const warning =
+  const message =
     'restricted-commands entry "vault.putt" is not a server command and restricts nothing — command names match exactly';
+  const warning = {
+    option: "restricted-commands",
+    entry: "vault.putt",
+    reason: "unknown-command",
+    message,
+  } as const;
   for (const data of [tokenMode, { ...partial, passed: true }]) {
     const output = stripAnsiCode(
       captureLogs(() =>
@@ -225,7 +231,7 @@ Deno.test("renderServeCheckConfig: restriction warnings are shown in every mode 
       ),
     );
     assertStringIncludes(output, "Restriction warnings:");
-    assertStringIncludes(output, `! ${warning}`);
+    assertStringIncludes(output, `! ${message}`);
     assertStringIncludes(output, "Result: PASSED");
   }
   const json = JSON.parse(

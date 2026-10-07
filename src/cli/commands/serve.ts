@@ -2031,9 +2031,9 @@ const checkConfigCommand = new Command()
       restrictedCommands: merged.restrictedCommands,
       requestTypes: new Set(serverRequestPayloadFields().keys()),
     });
-    const restrictionWarnings = restrictionFindings
-      .filter((finding) => finding.reason !== "no-type")
-      .map((finding) => finding.message);
+    const restrictionWarnings = restrictionFindings.filter((finding) =>
+      finding.reason !== "no-type"
+    );
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );

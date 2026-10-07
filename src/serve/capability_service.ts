@@ -221,7 +221,9 @@ export class CapabilityService {
    * The usual lookup returns the first match across types, so a
    * control-plane record named like a user model would shadow it; when the
    * first match is hidden, look again among the visible ones, primary
-   * definitions before auto-definitions, then by id.
+   * definitions before auto-definitions, then by id. That fallback reads
+   * every definition, but runs only when a control-plane record shares the
+   * name or id asked for.
    */
   async #findVisibleDefinition(
     idOrName: string,

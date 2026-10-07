@@ -21,6 +21,7 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AccessListCheckEntry } from "../../serve/oauth_access_list_resolution.ts";
 import type { OutputMode } from "./output.ts";
+import type { IneffectiveRestriction } from "../../domain/access/serve_auth_config.ts";
 
 export interface ServeCheckConfigData {
   /** True when every name resolved and serve would start. */
@@ -44,7 +45,7 @@ export interface ServeCheckConfigData {
    * a `restricted-commands` name that is not a server command. They do not
    * fail the check.
    */
-  readonly restrictionWarnings?: readonly string[];
+  readonly restrictionWarnings?: readonly IneffectiveRestriction[];
 }
 
 /** Whether the external token secrets key resolves. Never holds the key. */
@@ -122,7 +123,7 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(cyan("Restriction warnings:"));
     for (const warning of warnings) {
-      lines.push(`  ${yellow("!")} ${warning}`);
+      lines.push(`  ${yellow("!")} ${warning.message}`);
     }
   }
 
