@@ -235,6 +235,10 @@ Verification Checklist (commit <short-sha>)
 
 Gate: 10/10 passed, 3 skipped (guard)
 Total: 2m 15s
+
+Affected Commands (root, static imports vs a1b2c3d4)
+  some — 3 of 29: data extension serve
+  ⚠ touches the startup path: src/cli/mod.ts
 ```
 
 To construct this checklist:
@@ -286,6 +290,11 @@ To construct this checklist:
    `SWAMP_WORKFLOWS_DIR` resolves against `--repo-dir`, so from a worktree set
    it to the worktree's absolute `verification/` path. It validates its own
    output against `AttestationSchema` before it prints.
+
+   Run it from a checkout that is at the verified commit with no tracked file
+   modified, and with `origin/main` fetched. It refuses otherwise: the
+   affected-commands list (below) is read from the files on disk, not from
+   git.
 
    This replaces roughly seventy lines of instructions that used to live here,
    telling you how to read the records, hash the files, work out which reviews
@@ -353,6 +362,48 @@ To construct this checklist:
 
    **If the POST succeeds**, the log output confirms the attestation ID and
    who posted it. A lifecycle entry is also recorded on the swamp-club issue.
+
+## Affected Commands
+
+The attestation carries `affectedCommands`: the CLI commands the change can
+affect, which the generator computes and CI displays without recomputing. Copy
+it into the checklist from the generated attestation — scope, the count, the
+names, what forced every command if anything did, and the startup-path warning
+when `startupPath.count` is above zero.
+
+How to read it:
+
+- **Names are root commands.** `vault` stands for `vault` and every subcommand
+  under it. A root is listed when the module closure of the file that defines
+  it contains a changed file, following both `import` and `import type`.
+- **The change is the three-dot diff** against the merge base with
+  `origin/main`, the same one the review guards filter on.
+- **A file the CLI imports is looked up in the graph first**, wherever it
+  lives. The rules below are only for files outside it.
+- **`deno.json`, `deno.lock`, `.tool-versions`, `Dockerfile`,
+  `scripts/compile.ts` and `packages/dashboard/` select every command**: they
+  configure or are embedded in the binary. So does a changed file no rule
+  recognises. `forcedAll` names the files and the rule.
+- **Docs, skills, tests, CI, verification, and the rest of `scripts/`,
+  `extensions/` and `packages/` select none.** Skills are a deliberate
+  exception to the embedded rule: the bundled ones ship in the binary, and a
+  skill-only change still selects nothing.
+- **A deleted source file under `src/` is ignored** — what imported it changed
+  too — and any other deleted file is classified like a changed one. A rename
+  counts as a deletion plus an addition.
+- **`startupPath` is a separate flag.** It lists changed files that every
+  command runs at startup (reachable from `main.ts` without going through a
+  command file). It does not widen the list; treat it as "any command could be
+  affected".
+- **It is derived from static imports.** Extension loading, registries,
+  bundled assets and computed import paths are invisible to it, so an empty
+  list is not proof that nothing is affected.
+- **`extension` is listed for almost every source change**, because its
+  closure reaches the whole CLI through `src/cli/mod.ts`.
+
+The rule table is `classifyOutsideGraph` in `scripts/affected_commands.ts`. A
+new top-level directory needs a rule there;
+`integration/affected_commands_rules_test.ts` fails until it has one.
 
 ## Verifying TTY-Only Behaviour
 

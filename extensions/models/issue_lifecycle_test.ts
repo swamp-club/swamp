@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.09.29.1", () => {
-  assertEquals(model.version, "2026.09.29.1");
+Deno.test("model: version is 2026.10.07.1", () => {
+  assertEquals(model.version, "2026.10.07.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -446,6 +446,42 @@ Deno.test("post_attestation: rejects a gate verdict that is not a boolean", asyn
     );
 
     assertStringIncludes(error.message, "gate.allPassed");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("post_attestation: rejects affected commands that are not a list of names", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    const malformed = validAttestation({
+      affectedCommands: {
+        granularity: "root",
+        scope: "some",
+        commands: "vault",
+        totalCommands: 29,
+        startupPath: { count: 0, files: [] },
+        forcedAll: { count: 0, files: [] },
+        derivation: {
+          method: "static-imports",
+          diffBase: "b".repeat(40),
+          edges: ["code", "type"],
+          changedFiles: 1,
+        },
+      },
+    });
+
+    const error = await assertRejects(
+      () =>
+        model.methods.post_attestation.execute(
+          { attestation: JSON.stringify(malformed) },
+          context,
+        ),
+      Error,
+    );
+
+    assertStringIncludes(error.message, "AttestationSchema");
+    assertStringIncludes(error.message, "affectedCommands.commands");
   } finally {
     await restore();
   }

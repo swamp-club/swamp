@@ -26,12 +26,15 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttestation,
+  checkCheckout,
   checkCommitBinding,
   checkWorkflowProvenance,
   describeSkip,
+  diffNamesArgs,
   evaluatedWorkflowPath,
   matchRunsToWorkflows,
   modelNames,
+  parseCommandIndex,
   reviewModels,
   type RunRecord,
   type RunSource,
@@ -673,4 +676,88 @@ Deno.test("reviewModels: the model comes out of the step's own shell", () => {
 
 Deno.test("reviewModels: a step that names no model yields none", () => {
   assertEquals(reviewModels(BUILD_DEF).size, 0);
+});
+
+// -- affected commands --------------------------------------------------------
+
+const AFFECTED = {
+  granularity: "root" as const,
+  scope: "some" as const,
+  commands: ["serve", "vault"],
+  totalCommands: 29,
+  startupPath: { count: 1, files: ["src/cli/mod.ts"] },
+  forcedAll: { count: 0, files: [] },
+  derivation: {
+    method: "static-imports" as const,
+    diffBase: "b".repeat(40),
+    edges: ["code" as const, "type" as const],
+    changedFiles: 3,
+  },
+};
+
+Deno.test("buildAttestation: carries the affected commands it is handed, unchanged", () => {
+  const doc = buildAttestation(sources(), env({ affectedCommands: AFFECTED }));
+  assertEquals(doc.affectedCommands, AFFECTED);
+  assert(AttestationSchema.safeParse(doc).success);
+});
+
+Deno.test("buildAttestation: a document without affected commands still validates", () => {
+  const doc = JSON.parse(JSON.stringify(buildAttestation(sources(), env())));
+  assertEquals("affectedCommands" in doc, false);
+  assert(AttestationSchema.safeParse(doc).success);
+});
+
+Deno.test("checkCheckout: a clean checkout at the commit passes", () => {
+  assertEquals(checkCheckout(COMMIT, "", COMMIT), []);
+});
+
+Deno.test("checkCheckout: a checkout at another commit is refused, naming both", () => {
+  const other = "c".repeat(40);
+  const errors = checkCheckout(other, "", COMMIT);
+  assertEquals(errors.length, 1);
+  assertStringIncludes(errors[0], other);
+  assertStringIncludes(errors[0], COMMIT);
+});
+
+Deno.test("checkCheckout: a modified tracked file is refused and listed", () => {
+  const errors = checkCheckout(COMMIT, " M src/cli/mod.ts\n", COMMIT);
+  assertEquals(errors.length, 1);
+  assertStringIncludes(errors[0], "1 modified tracked file(s)");
+  assertStringIncludes(errors[0], "src/cli/mod.ts");
+});
+
+Deno.test("checkCheckout: git not answering is refused rather than assumed clean", () => {
+  assertEquals(checkCheckout(null, "", COMMIT).length, 1);
+  assertEquals(checkCheckout(COMMIT, null, COMMIT).length, 1);
+});
+
+Deno.test("parseCommandIndex: reads a name-to-file object", () => {
+  assertEquals(
+    parseCommandIndex('{"vault":"src/cli/commands/vault.ts"}'),
+    { vault: "src/cli/commands/vault.ts" },
+  );
+});
+
+Deno.test("parseCommandIndex: refuses anything that is not a non-empty index", () => {
+  for (
+    const stdout of [
+      "",
+      "not json",
+      "[]",
+      "{}",
+      "null",
+      '{"vault":1}',
+      '{"vault":"scripts/compile.ts"}',
+    ]
+  ) {
+    assertEquals(parseCommandIndex(stdout), null, stdout);
+  }
+});
+
+Deno.test("diffNamesArgs: lists names with rename detection off", () => {
+  const args = diffNamesArgs("D", "base", "head");
+  assert(args.includes("--no-renames"));
+  assert(args.includes("--diff-filter=D"));
+  assert(args.includes("-z"));
+  assertEquals(args.slice(-2), ["base", "head"]);
 });

@@ -314,3 +314,40 @@ Deno.test("attestation: every hashed script is also agent-reviewed", async () =>
       "review-integrity check ever running.",
   );
 });
+
+Deno.test("attestation: every hashed script re-triggers review integrity", async () => {
+  const ci = await Deno.readTextFile(CI_WORKFLOW);
+
+  // The review-integrity job skips itself when a push after its last approval
+  // touched no trust file, and it decides that with its own pattern rather
+  // than the trust_root filter above. A hashed script missing from it could
+  // be edited after the approval without the check running again — which is
+  // how scripts/build_attestation.ts sat outside it.
+  const skipPattern = ci.match(
+    /trust_changes=\$\([\s\S]*?select\(test\("([^"]+)"\)\)/,
+  );
+  if (!skipPattern) {
+    throw new Error(
+      "No trust_changes pattern in .github/workflows/ci.yml — it was " +
+        "renamed, which would make this rule a vacuous pass.",
+    );
+  }
+  // The pattern is a jq string inside YAML: each backslash is doubled.
+  const pattern = new RegExp(skipPattern[1].replaceAll("\\\\", "\\"));
+
+  const hashedScripts = CONFIG_FILES
+    .map((f) => f.path)
+    .filter((path) => path.startsWith("scripts/"));
+  assertEquals(
+    hashedScripts.length > 0,
+    true,
+    "No scripts/ paths in CONFIG_FILES.",
+  );
+
+  assertEquals(
+    hashedScripts.filter((path) => !pattern.test(path)).sort(),
+    [],
+    "These scripts are hash-pinned in the attestation but a change to them " +
+      "after a review-integrity approval would not re-run the check.",
+  );
+});
