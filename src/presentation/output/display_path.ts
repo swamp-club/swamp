@@ -25,15 +25,29 @@ function topSegment(path: string, root: string): string {
   return SEPARATOR === "\\" ? segment.toLowerCase() : segment;
 }
 
+/** Whether `path` is `dir` or below it. */
+function isWithin(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) && !isAbsolute(rel));
+}
+
 /**
- * The form of `path` an author can open from `cwd`: relative to `cwd` when
- * the two share an ancestor below the filesystem root (so a sibling
- * directory reads `../other/manifest.yaml`), and absolute otherwise (a file
- * under `/home` seen from `/tmp`, or another Windows drive). A path that is
- * not absolute is returned unchanged; callers resolve repo-relative names
- * first.
+ * The form of `path` an author can open from `cwd`. A file under `cwd`
+ * prints relative to it. A file under one of `roots` (the extension and the
+ * repo being pushed) also prints relative to `cwd` when the two share an
+ * ancestor below the filesystem root, so a sibling extension reads
+ * `../other/manifest.yaml`. Anything else prints absolute: a file outside
+ * the pushed content (the review report under the temp dir), one that
+ * shares only the root with `cwd`, or one on another Windows drive. A path
+ * that is not absolute is returned unchanged; callers resolve repo-relative
+ * names first.
  */
-export function displayPath(path: string, cwd: string): string {
+export function displayPath(
+  path: string,
+  cwd: string,
+  roots: readonly string[] = [],
+): string {
   if (!isAbsolute(path)) return path;
   const target = normalize(path);
   const base = normalize(cwd);
@@ -43,9 +57,11 @@ export function displayPath(path: string, cwd: string): string {
     ? targetRoot.toLowerCase() === baseRoot.toLowerCase()
     : targetRoot === baseRoot;
   if (!sameRoot) return target;
-  const baseTop = topSegment(base, baseRoot);
-  if (baseTop !== "" && topSegment(target, targetRoot) !== baseTop) {
-    return target;
-  }
-  return relative(base, target) || ".";
+  if (isWithin(target, base)) return relative(base, target) || ".";
+  const sharesBelowRoot =
+    topSegment(target, targetRoot) === topSegment(base, baseRoot);
+  const inPushedContent = roots.some((root) =>
+    isWithin(target, normalize(root))
+  );
+  return sharesBelowRoot && inPushedContent ? relative(base, target) : target;
 }

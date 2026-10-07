@@ -174,18 +174,24 @@ when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
 `versionBumpUpgrade`), and the run summary at the top level. A blocked
 prepare carries `errors` keyed by the gate that blocked it instead. The
 review-report skeleton is a nested object on its finding. Errors still go to
-stderr as `{"error": ...}`. Log mode prints paths relative to the current
-directory, or absolute when the file shares only the filesystem root with it. `extension quality` packages
-through the same prepare phase, on a cache hit too, but skips the registry
-checks and makes no registry call. It runs the local gates in `collect`
-mode (`localGates`): each failed gate (content collectives, the
-additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
-upgrade chain, review errors, archive size) is recorded instead of thrown,
-files a check rejected (hidden, symlink, disallowed type, oversized,
-unreadable, disallowed additionalFiles) are left out of the archive (never
-copied into it), and the rubric is scored and printed beside the failures.
-Such an archive is never cached or uploaded. A push enforces: the first
-failure throws.
+stderr as `{"error": ...}`. Log mode prints a path relative to the current
+directory when the file is under it, or is pushed content (under the repo
+or the manifest's directory) sharing an ancestor below the filesystem root
+with it; anything else, such as the review report under the temp dir,
+prints absolute. When a `--json` run throws after recording its resolved
+data, the command writes the document with status `failed` before the
+error propagates.
+
+`extension quality` packages through the same prepare phase, on a cache hit
+too, but skips the registry checks and makes no registry call. It runs the
+local gates in `collect` mode (`localGates`): each failed gate (content
+collectives, the additionalFiles allowlist, safety, dependency trust,
+skills, fmt/lint, upgrade chain, review errors, archive size) is recorded
+instead of thrown, files a check rejected (hidden, symlink, disallowed type,
+oversized, unreadable, disallowed additionalFiles) are left out of the
+archive (never copied into it), and the rubric is scored and printed beside
+the failures. Such an archive is never cached or uploaded. A push enforces:
+the first failure throws.
 
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a

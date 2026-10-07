@@ -133,6 +133,12 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderVersionBumpUpgradeWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: ExtensionPushDryRunData): void;
+  /**
+   * Called when the run throws. In `--json` mode it writes the run's
+   * document with status `failed` unless a render already wrote one, so
+   * stdout always carries exactly one document; log mode has nothing to add.
+   */
+  renderUnfinished(): void;
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent>;
@@ -140,11 +146,15 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
 
 /**
  * Where the renderer prints paths from: the directory the author ran the
- * command in, and the repo directory the resolved file names are relative to.
+ * command in, the repo directory the resolved file names are relative to,
+ * and the directory holding the manifest. Files under the repo or the
+ * manifest's directory are the pushed content, which prints relative to
+ * `cwd` (see {@link displayPath}).
  */
 export interface ExtensionPushRenderPaths {
   cwd: string;
   repoDir: string;
+  manifestDir: string;
 }
 
 type LogLevelName = "info" | "warn" | "error";
@@ -182,14 +192,22 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 
   constructor(private readonly paths: ExtensionPushRenderPaths) {}
 
+  /** An absolute path as the author can open it from where they ran push. */
+  private display(path: string): string {
+    return displayPath(path, this.paths.cwd, [
+      this.paths.repoDir,
+      this.paths.manifestDir,
+    ]);
+  }
+
   /** A resolved file name (repo-relative) as the author can open it. */
   private resolvedFile(fileName: string): string {
-    return displayPath(resolve(this.paths.repoDir, fileName), this.paths.cwd);
+    return this.display(resolve(this.paths.repoDir, fileName));
   }
 
   /** A finding's `file:line`, its file as the author can open it. */
   private where(finding: { file: string; line?: number }): string {
-    const file = displayPath(finding.file, this.paths.cwd);
+    const file = this.display(finding.file);
     return finding.line !== undefined ? `${file}:${finding.line}` : file;
   }
 
@@ -438,7 +456,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   renderCompilationErrors(errors: CompilationError[]): void {
     this.logger.error`Bundle compilation failed:`;
     for (const r of errors) {
-      const file = displayPath(r.file, this.paths.cwd);
+      const file = this.display(r.file);
       if (r.error.includes("\n")) {
         this.logger.error`  ${file}:`;
         this.textBlock("error", r.error, "    ");
@@ -502,6 +520,8 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       renderFindingsReport(this.logger, data.report);
     }
   }
+
+  renderUnfinished(): void {}
 
   handlers(
     options?: ExtensionPushHandlerOptions,
@@ -568,6 +588,7 @@ export type ExtensionPushJsonStatus =
 class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   private resolved: ExtensionPushResolvedData | undefined;
   private warnings: Record<string, unknown[]> = {};
+  private emitted = false;
 
   constructor(private readonly paths: ExtensionPushRenderPaths) {}
 
@@ -575,6 +596,7 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     status: ExtensionPushJsonStatus,
     fields: Record<string, unknown>,
   ): void {
+    this.emitted = true;
     const hasWarnings = Object.keys(this.warnings).length > 0;
     console.log(
       JSON.stringify(
@@ -688,6 +710,10 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     });
   }
 
+  renderUnfinished(): void {
+    if (!this.emitted) this.emit("failed", {});
+  }
+
   handlers(
     options?: ExtensionPushHandlerOptions,
   ): EventHandlers<ExtensionPushEvent> {
@@ -714,7 +740,11 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
 export function createExtensionPushRenderer(
   mode: OutputMode,
-  paths: ExtensionPushRenderPaths = { cwd: Deno.cwd(), repoDir: Deno.cwd() },
+  paths: ExtensionPushRenderPaths = {
+    cwd: Deno.cwd(),
+    repoDir: Deno.cwd(),
+    manifestDir: Deno.cwd(),
+  },
 ): ExtensionPushRenderer {
   switch (mode) {
     case "json":

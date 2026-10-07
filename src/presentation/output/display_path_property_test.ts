@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Properties of displayPath (swamp-club#3017): the printed path always opens
-// the same file from cwd, and it climbs out of cwd only when the two share an
-// ancestor below the filesystem root.
+// the same file from cwd, and it is relative exactly when the file is under
+// cwd, or under a pushed-content root and sharing an ancestor below the
+// filesystem root with cwd.
 
 import { assert, assertEquals } from "@std/assert";
 import { isAbsolute, join, resolve, SEPARATOR } from "@std/path";
@@ -35,22 +36,39 @@ const arbPath = arbSegments.map((segments) => join(ROOT, ...segments));
 
 Deno.test("displayPath: resolving the printed path from cwd yields the file", () => {
   fc.assert(
-    fc.property(arbPath, arbPath, (file, cwd) => {
-      assertEquals(resolve(cwd, displayPath(file, cwd)), resolve(file));
+    fc.property(arbPath, arbPath, arbPath, (file, cwd, root) => {
+      assertEquals(
+        resolve(cwd, displayPath(file, cwd, [root])),
+        resolve(file),
+      );
     }),
   );
 });
 
-Deno.test("displayPath: the printed path is absolute exactly when only the root is shared", () => {
+/** Whether `segs` starts with every segment of `prefix`. */
+function startsWith(segs: string[], prefix: string[]): boolean {
+  return prefix.every((s, i) => segs[i] === s);
+}
+
+Deno.test("displayPath: the printed path is relative exactly when under cwd, or under a root and sharing more than the filesystem root", () => {
   fc.assert(
-    fc.property(arbSegments, arbSegments, (fileSegs, cwdSegs) => {
-      const printed = displayPath(
-        join(ROOT, ...fileSegs),
-        join(ROOT, ...cwdSegs),
-      );
-      const onlyRootShared = cwdSegs.length > 0 &&
-        (fileSegs.length === 0 || fileSegs[0] !== cwdSegs[0]);
-      assert(isAbsolute(printed) === onlyRootShared, printed);
-    }),
+    fc.property(
+      arbSegments,
+      arbSegments,
+      arbSegments,
+      (fileSegs, cwdSegs, rootSegs) => {
+        const printed = displayPath(
+          join(ROOT, ...fileSegs),
+          join(ROOT, ...cwdSegs),
+          [join(ROOT, ...rootSegs)],
+        );
+        const underCwd = startsWith(fileSegs, cwdSegs);
+        const sharesTop = fileSegs.length > 0 && cwdSegs.length > 0 &&
+          fileSegs[0] === cwdSegs[0];
+        const underRoot = startsWith(fileSegs, rootSegs);
+        const relativeExpected = underCwd || (underRoot && sharesTop);
+        assert(isAbsolute(printed) !== relativeExpected, printed);
+      },
+    ),
   );
 });

@@ -67,6 +67,7 @@ const ROOT = SEPARATOR === "\\" ? "C:\\" : "/";
 const PATHS = {
   cwd: join(ROOT, "home", "author", "work"),
   repoDir: join(ROOT, "home", "author", "repo"),
+  manifestDir: join(ROOT, "home", "author", "repo", "extensions"),
 };
 
 const dryRunBase = {
@@ -913,4 +914,41 @@ Deno.test("extensionPushRenderer: JSON blocked prepare is one document naming th
     assertEquals(doc.status, "blocked");
     assertEquals(Object.keys(doc.errors), [family]);
   }
+});
+
+Deno.test("extensionPushRenderer: log prints a file outside the pushed content absolute even when it shares more than the root with cwd", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const report = join(ROOT, "home", "author", "tmp", "review.json");
+  const logs = await capture(() =>
+    renderer.renderReviewRuleWarnings([{ ...reviewWarning, file: report }])
+  );
+  assertStringIncludes(logs.join("\n"), JSON.stringify(report));
+});
+
+Deno.test("extensionPushRenderer: JSON renderUnfinished writes a failed document only when the run wrote none", async () => {
+  const unfinished = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() => {
+    unfinished.renderResolved(resolved("default"));
+    unfinished.renderSafetyWarnings([safetyWarning]);
+    unfinished.renderUnfinished();
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "failed");
+  assertEquals(doc.resolved.name, "@test/ext");
+  assertEquals(doc.warnings.safety, [safetyWarning]);
+
+  const finished = createExtensionPushRenderer("json", PATHS);
+  const after = await capture(() => {
+    finished.renderDryRun(dryRunBase);
+    finished.renderUnfinished();
+  });
+  assertEquals(after.length, 1);
+  assertEquals(JSON.parse(after[0]).status, "dry_run");
+});
+
+Deno.test("extensionPushRenderer: log renderUnfinished prints nothing", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => renderer.renderUnfinished());
+  assertEquals(logs, []);
 });

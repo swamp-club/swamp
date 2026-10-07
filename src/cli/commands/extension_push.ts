@@ -457,6 +457,7 @@ export const extensionPushCommand = new Command()
     const renderer = createExtensionPushRenderer(cliCtx.outputMode, {
       cwd: Deno.cwd(),
       repoDir,
+      manifestDir,
     });
     const registryChecks = options.dryRun ? "collect" : "enforce";
     const cache = new ExtensionPackageCache(
@@ -700,181 +701,188 @@ export const extensionPushCommand = new Command()
       }
     }
 
-    // 5. Render resolved data
-    renderer.renderResolved(prepared.resolvedData);
-
-    // 6. Handle dependency trust warnings
-    if (prepared.dependencyTrustResult.warnings.length > 0) {
-      renderer.renderDependencyTrustWarnings(
-        prepared.dependencyTrustResult.warnings,
-      );
-    }
-
-    // 6a. Handle review-rule warnings
-    if (prepared.reviewRulesResult.warnings.length > 0) {
-      renderer.renderReviewRuleWarnings(
-        withAcceptance(
-          prepared.reviewRulesResult.warnings,
-          manifestDir,
-          repoDir,
-        ),
-      );
-    }
-
-    // 6b. Handle safety warnings
-    if (prepared.safetyWarnings.length > 0) {
-      renderer.renderSafetyWarnings(
-        withAcceptance(prepared.safetyWarnings, manifestDir, repoDir),
-      );
-    }
-
-    // 6c. One gate covers safety and review-rule warnings, so the user is
-    // never prompted twice. --yes and --force waive them along with the push
-    // confirmation, and the summary records what was waived. A dry run has
-    // nothing to confirm and a --json run never prompts, so neither stops
-    // here; the warnings were rendered above either way.
-    const gatedWarnings = buildAcceptedWarnings(prepared);
-    const gate = resolveWarningsGate({
-      warningCount: gatedWarnings.safety.length + gatedWarnings.review.length,
-      waiver: resolveWarningsWaiver(options),
-      dryRun: prepared.isDryRun,
-      outputMode: cliCtx.outputMode,
-    });
-    if (gate.kind === "prompt") {
-      const confirmed = await promptConfirmation(
-        "Continue with push despite warnings?",
-      );
-      if (!confirmed) {
-        renderExtensionPushCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
-    const accepted = gate.kind === "proceed" && gate.waivedBy
-      ? { warnings: gatedWarnings, waivedBy: gate.waivedBy }
-      : undefined;
-    // The closing report is built from the gated warnings themselves, not
-    // the waiver record, so a dry run, a --json run and an interactive "y"
-    // all get the same advice.
-    const report = buildFindingsReport(
-      {
-        safetyWarnings: prepared.safetyWarnings,
-        reviewWarnings: prepared.reviewRulesResult.warnings,
-        acceptances: prepared.acceptances,
-      },
-      manifestDir,
-      repoDir,
-    );
-
-    // 6d. Version-drift check (advisory warning only)
-    // Fetch the last-published version from the registry to compare
-    // model versions. Best-effort — if credentials are unavailable or
-    // the extension has never been published, we tell the user.
-    let published: PublishedExtensionState | undefined;
+    // From here a --json run has recorded its resolved data, so a throw
+    // must still leave exactly one document on stdout.
     try {
-      const creds = await prepareDeps.loadCredentials();
-      if (creds) {
-        const latestDetail = await prepareDeps.getLatestVersionDetail(
-          creds.serverUrl,
-          manifest.name,
-          creds.apiKey,
+      // 5. Render resolved data
+      renderer.renderResolved(prepared.resolvedData);
+
+      // 6. Handle dependency trust warnings
+      if (prepared.dependencyTrustResult.warnings.length > 0) {
+        renderer.renderDependencyTrustWarnings(
+          prepared.dependencyTrustResult.warnings,
         );
-        if (latestDetail) {
-          published = {
-            manifestVersion: latestDetail.version,
-            models: (latestDetail.contentMetadata?.models ?? []).map((m) => ({
-              fileName: m.fileName,
-              version: m.version,
-            })),
-          };
+      }
+
+      // 6a. Handle review-rule warnings
+      if (prepared.reviewRulesResult.warnings.length > 0) {
+        renderer.renderReviewRuleWarnings(
+          withAcceptance(
+            prepared.reviewRulesResult.warnings,
+            manifestDir,
+            repoDir,
+          ),
+        );
+      }
+
+      // 6b. Handle safety warnings
+      if (prepared.safetyWarnings.length > 0) {
+        renderer.renderSafetyWarnings(
+          withAcceptance(prepared.safetyWarnings, manifestDir, repoDir),
+        );
+      }
+
+      // 6c. One gate covers safety and review-rule warnings, so the user is
+      // never prompted twice. --yes and --force waive them along with the push
+      // confirmation, and the summary records what was waived. A dry run has
+      // nothing to confirm and a --json run never prompts, so neither stops
+      // here; the warnings were rendered above either way.
+      const gatedWarnings = buildAcceptedWarnings(prepared);
+      const gate = resolveWarningsGate({
+        warningCount: gatedWarnings.safety.length + gatedWarnings.review.length,
+        waiver: resolveWarningsWaiver(options),
+        dryRun: prepared.isDryRun,
+        outputMode: cliCtx.outputMode,
+      });
+      if (gate.kind === "prompt") {
+        const confirmed = await promptConfirmation(
+          "Continue with push despite warnings?",
+        );
+        if (!confirmed) {
+          renderExtensionPushCancelled(cliCtx.outputMode);
+          return;
         }
       }
-    } catch {
-      cliCtx.logger
-        .debug`Failed to fetch published version for drift check (continuing)`;
-    }
+      const accepted = gate.kind === "proceed" && gate.waivedBy
+        ? { warnings: gatedWarnings, waivedBy: gate.waivedBy }
+        : undefined;
+      // The closing report is built from the gated warnings themselves, not
+      // the waiver record, so a dry run, a --json run and an interactive "y"
+      // all get the same advice.
+      const report = buildFindingsReport(
+        {
+          safetyWarnings: prepared.safetyWarnings,
+          reviewWarnings: prepared.reviewRulesResult.warnings,
+          acceptances: prepared.acceptances,
+        },
+        manifestDir,
+        repoDir,
+      );
 
-    const versionIssues = await checkVersionConsistency(
-      prepared.manifest.version,
-      allModelFiles,
-      published,
-    );
-    if (versionIssues.length > 0) {
-      renderer.renderVersionDriftWarnings(versionIssues);
-    }
+      // 6d. Version-drift check (advisory warning only)
+      // Fetch the last-published version from the registry to compare
+      // model versions. Best-effort — if credentials are unavailable or
+      // the extension has never been published, we tell the user.
+      let published: PublishedExtensionState | undefined;
+      try {
+        const creds = await prepareDeps.loadCredentials();
+        if (creds) {
+          const latestDetail = await prepareDeps.getLatestVersionDetail(
+            creds.serverUrl,
+            manifest.name,
+            creds.apiKey,
+          );
+          if (latestDetail) {
+            published = {
+              manifestVersion: latestDetail.version,
+              models: (latestDetail.contentMetadata?.models ?? []).map((m) => ({
+                fileName: m.fileName,
+                version: m.version,
+              })),
+            };
+          }
+        }
+      } catch {
+        cliCtx.logger
+          .debug`Failed to fetch published version for drift check (continuing)`;
+      }
 
-    // 6e. Version-bump-without-upgrade check — warn when the extension
-    // version changed from the published baseline but model files lack
-    // an upgrades array. Skipped when --skip-upgrade-check is passed,
-    // when there is no published version, or when the version has not
-    // changed.
-    if (
-      !options.skipUpgradeCheck &&
-      published &&
-      published.manifestVersion !== prepared.manifest.version
-    ) {
-      const upgradeWarnings = await checkVersionBumpWithoutUpgrade(
+      const versionIssues = await checkVersionConsistency(
+        prepared.manifest.version,
         allModelFiles,
+        published,
       );
-      if (upgradeWarnings.length > 0) {
-        renderer.renderVersionBumpUpgradeWarnings(upgradeWarnings);
+      if (versionIssues.length > 0) {
+        renderer.renderVersionDriftWarnings(versionIssues);
       }
-    }
 
-    // 7. Dry run — report and stop. A failed registry check, or one the
-    // registry did not answer, exits non-zero with the message the real push
-    // would have failed with; no bump prompt, since a dry run never prompts.
-    if (prepared.isDryRun) {
-      renderer.renderDryRun({
-        name: prepared.manifest.name,
-        version: prepared.manifest.version,
-        archiveSize: prepared.archiveBytes.length,
-        visibility: prepared.resolvedData.visibility,
-        contentHash: prepared.contentHash,
-        registryChecks: prepared.registryChecks,
-        apiCalls: apiCalls.calls,
-        accepted,
-        report,
-      });
-      const verdict = registryChecksVerdict(prepared.registryChecks);
-      if (!verdict.ok) {
-        throw new UserError(verdict.message);
+      // 6e. Version-bump-without-upgrade check — warn when the extension
+      // version changed from the published baseline but model files lack
+      // an upgrades array. Skipped when --skip-upgrade-check is passed,
+      // when there is no published version, or when the version has not
+      // changed.
+      if (
+        !options.skipUpgradeCheck &&
+        published &&
+        published.manifestVersion !== prepared.manifest.version
+      ) {
+        const upgradeWarnings = await checkVersionBumpWithoutUpgrade(
+          allModelFiles,
+        );
+        if (upgradeWarnings.length > 0) {
+          renderer.renderVersionBumpUpgradeWarnings(upgradeWarnings);
+        }
       }
-      return;
-    }
 
-    // 8. Confirmation prompt
-    if (!options.yes && !options.force && cliCtx.outputMode === "log") {
-      const prompt = finalPushPrompt({
-        name: prepared.manifest.name,
-        version: prepared.manifest.version,
-        channel: options.channel ?? "stable",
-      });
-      const confirmed = await promptConfirmation(
-        prompt.question,
-        prompt.details,
-      );
-      if (!confirmed) {
-        renderExtensionPushCancelled(cliCtx.outputMode);
+      // 7. Dry run — report and stop. A failed registry check, or one the
+      // registry did not answer, exits non-zero with the message the real push
+      // would have failed with; no bump prompt, since a dry run never prompts.
+      if (prepared.isDryRun) {
+        renderer.renderDryRun({
+          name: prepared.manifest.name,
+          version: prepared.manifest.version,
+          archiveSize: prepared.archiveBytes.length,
+          visibility: prepared.resolvedData.visibility,
+          contentHash: prepared.contentHash,
+          registryChecks: prepared.registryChecks,
+          apiCalls: apiCalls.calls,
+          accepted,
+          report,
+        });
+        const verdict = registryChecksVerdict(prepared.registryChecks);
+        if (!verdict.ok) {
+          throw new UserError(verdict.message);
+        }
         return;
       }
+
+      // 8. Confirmation prompt
+      if (!options.yes && !options.force && cliCtx.outputMode === "log") {
+        const prompt = finalPushPrompt({
+          name: prepared.manifest.name,
+          version: prepared.manifest.version,
+          channel: options.channel ?? "stable",
+        });
+        const confirmed = await promptConfirmation(
+          prompt.question,
+          prompt.details,
+        );
+        if (!confirmed) {
+          renderExtensionPushCancelled(cliCtx.outputMode);
+          return;
+        }
+      }
+
+      // 9. Execute push
+      const executeDeps = createExtensionPushExecuteDeps(identity);
+      await consumeStream(
+        extensionPush(ctx, executeDeps, {
+          manifest: prepared.manifest,
+          archiveBytes: prepared.archiveBytes,
+          contentMetadata: prepared.contentMetadata,
+          counts: prepared.counts,
+          releaseNotes: options.releaseNotes,
+          channel: options.channel,
+          collectiveEntitlement: prepared.collectiveEntitlement,
+        }),
+        renderer.handlers({ accepted, report }),
+      );
+
+      cliCtx.logger.debug("Extension push command completed");
+    } catch (error) {
+      renderer.renderUnfinished();
+      throw error;
     }
-
-    // 9. Execute push
-    const executeDeps = createExtensionPushExecuteDeps(identity);
-    await consumeStream(
-      extensionPush(ctx, executeDeps, {
-        manifest: prepared.manifest,
-        archiveBytes: prepared.archiveBytes,
-        contentMetadata: prepared.contentMetadata,
-        counts: prepared.counts,
-        releaseNotes: options.releaseNotes,
-        channel: options.channel,
-        collectiveEntitlement: prepared.collectiveEntitlement,
-      }),
-      renderer.handlers({ accepted, report }),
-    );
-
-    cliCtx.logger.debug("Extension push command completed");
   });
 
 function isSwampError(

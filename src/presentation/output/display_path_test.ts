@@ -23,6 +23,7 @@ import { displayPath } from "./display_path.ts";
 
 const ROOT = SEPARATOR === "\\" ? "C:\\" : "/";
 const CWD = join(ROOT, "home", "author", "work");
+const OTHER = join(ROOT, "home", "author", "other");
 
 Deno.test("displayPath: a file under cwd prints relative to it", () => {
   assertEquals(
@@ -31,10 +32,23 @@ Deno.test("displayPath: a file under cwd prints relative to it", () => {
   );
 });
 
-Deno.test("displayPath: a sibling directory prints with a leading ..", () => {
+Deno.test("displayPath: pushed content in a sibling directory prints with a leading ..", () => {
   assertEquals(
-    displayPath(join(ROOT, "home", "author", "other", "manifest.yaml"), CWD),
+    displayPath(join(OTHER, "manifest.yaml"), CWD, [OTHER]),
     join("..", "other", "manifest.yaml"),
+  );
+});
+
+Deno.test("displayPath: a file outside cwd and the pushed content prints absolute", () => {
+  const report = join(ROOT, "home", "author", "tmp", "review.json");
+  assertEquals(displayPath(report, CWD, [OTHER]), report);
+});
+
+Deno.test("displayPath: pushed content sharing only the root with cwd prints absolute", () => {
+  const ext = join(ROOT, "srv", "ext");
+  assertEquals(
+    displayPath(join(ext, "manifest.yaml"), CWD, [ext]),
+    join(ext, "manifest.yaml"),
   );
 });
 
@@ -68,6 +82,6 @@ Deno.test({
 });
 
 Deno.test("displayPath: the printed path resolves back to the file from cwd", () => {
-  const file = join(ROOT, "home", "author", "other", "x.ts");
-  assertEquals(resolve(CWD, displayPath(file, CWD)), file);
+  const file = join(OTHER, "x.ts");
+  assertEquals(resolve(CWD, displayPath(file, CWD, [OTHER])), file);
 });
