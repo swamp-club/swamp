@@ -3777,43 +3777,45 @@ export class WorkflowExecutionService {
         options?.continuation ?? { kind: "manual" },
       );
 
-    // Taken before any mutation. If anything throws after the save below and
-    // before execution starts, the run is restored to exactly this state
-    // rather than left running with nothing driving it. Taken from the run as
-    // stored, so a restore writes references back, never restored values.
-    const snapshot = loadedRun.toData();
-
-    // Work the run's abort left unfinished runs now, as it would have had the
-    // abort left it pending. Reopened per record before a failed run's reset
-    // set, which resets by name in every job.
-    existingRun.reopenAbortedWork();
-    // This process now drives the run. Recorded before the save below, so
-    // cancel sees the live process from the start.
-    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
-    if (reset) {
-      // A reset clears the wait a step held. Closed first, so a signal for
-      // the old attempt is answered closed and its wait is not listed.
-      if (this.signalWaits.supported) {
-        await closeRunWaits(this.signalWaits.store, existingRun, new Date());
-      }
-      existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed(owner);
-    } else {
-      existingRun.resumeFromSuspended(owner);
-    }
-
-    // Record the key names of any resume-time inputs for audit (never the
-    // values — they may be secrets such as a freshly minted auth key). Done
-    // before the save below so the audit trail persists immediately.
-    if (Object.keys(resumeInputs).length > 0) {
-      existingRun.recordResumeInputs(Object.keys(resumeInputs));
-    }
-    // The running status saved here also stops a second resume of this run
-    // from starting while this one prepares.
+    // Everything from the claim to the save: a throw anywhere in it leaves
+    // the stored run suspended and nothing consumed, so the claim goes back.
+    let snapshot: WorkflowRunData;
     try {
+      // Taken before any mutation. If anything throws after the save below and
+      // before execution starts, the run is restored to exactly this state
+      // rather than left running with nothing driving it. Taken from the run as
+      // stored, so a restore writes references back, never restored values.
+      snapshot = loadedRun.toData();
+
+      // Work the run's abort left unfinished runs now, as it would have had the
+      // abort left it pending. Reopened per record before a failed run's reset
+      // set, which resets by name in every job.
+      existingRun.reopenAbortedWork();
+      // This process now drives the run. Recorded before the save below, so
+      // cancel sees the live process from the start.
+      const owner = { pid: Deno.pid, instanceId: options?.instanceId };
+      if (reset) {
+        // A reset clears the wait a step held. Closed first, so a signal for
+        // the old attempt is answered closed and its wait is not listed.
+        if (this.signalWaits.supported) {
+          await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+        }
+        existingRun.resetForResumeFrom(reset.steps, reset.tracked);
+        existingRun.resumeFromFailed(owner);
+      } else {
+        existingRun.resumeFromSuspended(owner);
+      }
+
+      // Record the key names of any resume-time inputs for audit (never the
+      // values — they may be secrets such as a freshly minted auth key). Done
+      // before the save below so the audit trail persists immediately.
+      if (Object.keys(resumeInputs).length > 0) {
+        existingRun.recordResumeInputs(Object.keys(resumeInputs));
+      }
+      // The running status saved here also stops a second resume of this run
+      // from starting while this one prepares.
       await this.saveRun(workflow.id, existingRun);
     } catch (error) {
-      // Nothing was consumed: the stored run is still suspended.
       await this.releaseSuspension(claim);
       throw error;
     }

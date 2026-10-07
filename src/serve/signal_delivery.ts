@@ -384,8 +384,9 @@ function emitDelivered(
  * Tries to continue the run a delivered signal belongs to, now that one
  * more of its waits is settled (swamp-club#3108). The WebSocket handler
  * calls it after sending its reply; the HTTP route before building its own,
- * which waits only for the launch, not for the run. Never throws: the signal is stored, and the continuation
- * sweep retries whatever is not launched here.
+ * which waits only for the launch, not for the run. Never throws: the
+ * signal is stored, and the continuation sweep retries whatever is not
+ * launched here.
  */
 export async function continueAfterSignal(
   ctx: ConnectionContext,

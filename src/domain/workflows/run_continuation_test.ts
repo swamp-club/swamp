@@ -89,8 +89,8 @@ Deno.test("decideContinuation: a run that is not suspended is blocked", async ()
   );
 });
 
-Deno.test("decideContinuation: a wait with no outcome blocks, and any outcome releases it", async () => {
-  for (const kind of ["accepted", "timed_out", "cancelled"] as const) {
+Deno.test("decideContinuation: a wait with no outcome blocks, and a signal or a timeout releases it", async () => {
+  for (const kind of ["accepted", "timed_out"] as const) {
     const run = runOf({ a: "wait" });
     const wait = openWait(run, "a");
     run.suspend();
@@ -186,5 +186,21 @@ Deno.test("decideContinuation: a suspended run with every gate decided and no wa
   assertEquals(
     await decideContinuation(run, new InMemorySignalWaitStore()),
     { kind: "resumable" },
+  );
+});
+
+Deno.test("decideContinuation: a cancelled wait blocks, since only a run that ended cancels its waits", async () => {
+  const run = runOf({ a: "wait", b: "wait" });
+  const a = openWait(run, "a");
+  const b = openWait(run, "b");
+  run.suspend();
+  const store = new InMemorySignalWaitStore();
+  await store.settle(
+    acceptedOutcomeFor(a, { verdict: "ship" }, { runId: run.id }),
+  );
+  await store.settle(unsignalledOutcomeFor(b, "cancelled", { runId: run.id }));
+  assertEquals(
+    await decideContinuation(run, store),
+    { kind: "blocked", reason: "run_ended" },
   );
 });

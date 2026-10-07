@@ -508,7 +508,6 @@ runs signalled by a local command. Things to know:
   `--server`, or resume manually.
 - A run with both gates and signal waits is resumed by the sweep, not at once,
   when an approval is what settles it.
-
 - A `signal` or `approve` grant releases the rest of the run. Nothing else is
   authorized at the resume, and no inputs can be supplied.
 - A run with a wait still open, or past its deadline and not yet settled, is not

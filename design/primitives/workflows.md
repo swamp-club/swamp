@@ -269,6 +269,13 @@ held by another, lost a race to a peer or a person and is not reported.
 Neither is a run whose auto-resume policy is off: left suspended is what its
 owner asked for.
 
+A suspended run with a cancelled wait is never continued. Only a run being
+saved as ended cancels its waits, so a record that still says `suspended`
+beside a cancelled wait is a copy from before a peer cancelled the run. No
+claim marks a cancel, so the wait's outcome is what tells such a copy from a
+run to resume: resuming it would fail the wait, run the steps that follow a
+failure, and push over the cancelled record.
+
 A resume that was launched and then failed, leaving the run suspended, is a
 different case from a launch that was refused: the run is still settled, and
 whatever failed is likely to fail again. Serve tries that suspension again
@@ -326,6 +333,11 @@ taking over a dead holder's claim resumes from the stored record, so steps
 that holder ran and never pushed run again, as they do when a person resumes
 a run after a crash. A datastore whose control-plane store cannot create a
 record atomically has no claims, and a resume there takes none.
+
+On a synced datastore every copy of a run a peer resumed stays `suspended`
+on this instance until it restarts, and their number only grows. Serve
+remembers a suspension it found held by another and looks at it again every
+ten minutes, not on every pass, since each look reads the datastore.
 
 Every resume serve starts by itself takes its claim as an automatic one, the
 auto-resume after an approval and the resume of a parent included: none of

@@ -44,7 +44,13 @@ export type ContinuationBlock =
   /** A wait for a signal has no outcome. */
   | "wait_unsettled"
   /** A wait, or its outcome, cannot be read. */
-  | "wait_unreadable";
+  | "wait_unreadable"
+  /**
+   * A wait was cancelled. Only a run being saved as ended cancels its
+   * waits, so a suspended record with one is a copy from before the run
+   * ended, or a run whose ending save failed: neither is continued.
+   */
+  | "run_ended";
 
 export type ContinuationVerdict =
   | { readonly kind: "resumable" }
@@ -58,10 +64,10 @@ function blocked(reason: ContinuationBlock): ContinuationVerdict {
 
 /**
  * Decides whether `run` can be resumed as it stands: suspended, with no step
- * still running, no gate undecided, no step waiting on a nested run, and an
- * outcome of any kind (a signal, a timeout or a cancel) for every wait for a
- * signal. Read from the run record as given; the caller answers for how
- * current that record is.
+ * still running, no gate undecided, no step waiting on a nested run, and a
+ * signal or a timeout as the outcome of every wait for a signal. Read from
+ * the run record as given; the caller answers for how current that record
+ * is, except that a cancelled wait is itself proof the record is behind.
  */
 export async function decideContinuation(
   run: WorkflowRun,
@@ -80,6 +86,7 @@ export async function decideContinuation(
     const outcome = await outcomes.findOutcome(ref.wait.id);
     if (outcome.kind === "absent") return blocked("wait_unsettled");
     if (outcome.kind === "unreadable") return blocked("wait_unreadable");
+    if (outcome.record.kind === "cancelled") return blocked("run_ended");
   }
   return RESUMABLE;
 }

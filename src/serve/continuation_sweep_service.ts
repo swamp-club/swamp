@@ -111,7 +111,6 @@ export interface ContinuationSweepDeps {
   ): Promise<ContinuationSweepResult>;
 }
 
-/** Runs the continuation sweep at boot and then on an interval. */
 /** Whether serve starts the sweep, and why not when it does not. */
 export type ContinuationSweepStart =
   | "start"
@@ -141,6 +140,7 @@ export function decideContinuationSweepStart(options: {
   return "start";
 }
 
+/** Runs the continuation sweep at boot and then on an interval. */
 export class ContinuationSweepService {
   readonly #deps: ContinuationSweepDeps;
   #timer: ReturnType<typeof setTimeout> | null = null;

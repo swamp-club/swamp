@@ -800,6 +800,22 @@ export function continuationRetryAt(
   return failedContinuations.get(registry)?.get(runId)?.retryAt;
 }
 
+/**
+ * Suspensions this instance found claimed by another holder while it could
+ * not take a claim over, per serve process. On a synced datastore that is
+ * the lasting state of every copy of a run a peer resumed, and the set of
+ * them only grows until a restart, so each is looked at again only after
+ * {@link HELD_ELSEWHERE_RECHECK_MS}, not on every pass: looking costs a read
+ * of the datastore per wait and per claim.
+ */
+const heldElsewhere = new WeakMap<
+  object,
+  Map<string, { suspensionKey: string; recheckAt: number }>
+>();
+
+/** How long a suspension found held by another is left unread. */
+export const HELD_ELSEWHERE_RECHECK_MS = 600_000;
+
 /** How old a local command's claim is before serve reports it as left behind. */
 const LOCAL_CLAIM_GRACE_MS = 60_000;
 
@@ -906,10 +922,31 @@ export async function continueSettledRun(
     return false;
   }
 
+  const suspensionKey = await suspensionKeyOf(run);
+  let held = heldElsewhere.get(registry);
+  if (!held) {
+    held = new Map();
+    heldElsewhere.set(registry, held);
+  }
+  const heldBefore = held.get(run.id);
+  if (heldBefore && heldBefore.suspensionKey !== suspensionKey) {
+    held.delete(run.id);
+  } else if (heldBefore && !cause.takeover && now() < heldBefore.recheckAt) {
+    return false;
+  }
+  const rememberHeld = (): false => {
+    if (cause.takeover) return false;
+    if (held.size >= AUDITED_SKIPS_MAX) held.clear();
+    held.set(run.id, {
+      suspensionKey,
+      recheckAt: now() + HELD_ELSEWHERE_RECHECK_MS,
+    });
+    return false;
+  };
+
   const verdict = await decideContinuation(run, outcomesOf(ctx));
   if (verdict.kind !== "resumable") return false;
 
-  const suspensionKey = await suspensionKeyOf(run);
   const detail =
     `workflow=${run.workflowName} run=${run.id} cause=${cause.kind}`;
   const memo = skipMemo(registry);
@@ -948,24 +985,24 @@ export async function continueSettledRun(
   const claims = ctx.repoContext.continuationClaims;
   try {
     if (claims && (!claims.usable || await claims.usable())) {
-      const held = await claims.store.find(run.id, suspensionKey);
-      if (held && held.holder !== claims.holder) {
+      const claimed = await claims.store.find(run.id, suspensionKey);
+      if (claimed && claimed.holder !== claims.holder) {
         // A local command's claim on a run this instance knows is still
         // suspended, long after the command would have saved it: the
         // command died first, and only a manual resume replaces its claim.
         if (
-          cause.takeover && serveInstanceOf(held.holder) === undefined &&
-          now() - new Date(held.claimedAt).getTime() >
+          cause.takeover && serveInstanceOf(claimed.holder) === undefined &&
+          now() - new Date(claimed.claimedAt).getTime() >
             LOCAL_CLAIM_GRACE_MS
         ) {
           logger.info(
-            "Run {runId} is claimed by a local command that never started it. Resume it with: swamp workflow resume {workflow} --run {runId}",
+            "Run {runId} is claimed by a local command and still reads as suspended here. If that command is no longer running, resume it with: swamp workflow resume {workflow} --run {runId}",
             { runId: run.id, workflow: run.workflowName },
           );
           return skip("skipped", "held_by_local_command");
         }
-        const liveness = await claims.liveness(held.holder);
-        if (liveness !== "dead" || !cause.takeover) return false;
+        if (!cause.takeover) return rememberHeld();
+        if (await claims.liveness(claimed.holder) !== "dead") return false;
       }
     }
   } catch (error) {
@@ -994,6 +1031,7 @@ export async function continueSettledRun(
         if (cause.subject === undefined) await noteParkedParent(ctx, run);
         return;
       }
+      if (terminal.code === CONTINUATION_HELD_CODE) rememberHeld();
       if (BENIGN_REFUSALS.has(terminal.code)) return;
       if (failed.size >= AUDITED_SKIPS_MAX) failed.clear();
       failed.set(run.id, {

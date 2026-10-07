@@ -60,6 +60,7 @@ import {
   suspensionKeyOf,
 } from "../src/domain/workflows/continuation_claim.ts";
 import { acceptedOutcomeFor } from "../src/domain/workflows/signal_wait_store_test_helpers.ts";
+import { closeRunWaits } from "../src/domain/workflows/signal_wait_cleanup.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -349,6 +350,46 @@ Deno.test({
 
       assertEquals(f.executions(), 1);
       assertEquals(b.audit, []);
+      assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: an instance holding a suspended copy of a run a peer cancelled does not resume it",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting();
+      const { run } = await suspend(f, workflow);
+      const path = f.repo.repoContext.workflowRunRepo.getPath(
+        workflow.id,
+        run.id,
+      );
+      const staleCopy = await Deno.readFile(path);
+
+      // A peer cancels the run: it is saved as cancelled, and its wait is
+      // closed in the store every instance reads.
+      const support = f.repo.repoContext.signalWaits;
+      assert(support?.supported, "the datastore holds wait records");
+      await closeRunWaits(support.store, run, new Date());
+      run.endAsCancelled("cancelled on another instance");
+      await f.repo.repoContext.workflowRunRepo.save(
+        createWorkflowId(workflow.id),
+        run,
+      );
+
+      // This instance's cache still holds the run as it was.
+      await Deno.writeFile(path, staleCopy);
+      const a = instance(f, "a");
+      for (const takeover of [false, true]) {
+        await sweepContinuations(a.ctx, { takeover });
+        await idle(a);
+      }
+
+      assertEquals(f.executions(), 0);
+      assertEquals(a.audit, []);
       assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
     });
   },

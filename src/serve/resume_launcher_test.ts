@@ -26,6 +26,7 @@ import {
   CONTINUATION_BACKOFF_MAX_MS,
   continuationRetryAt,
   continueSettledRun,
+  HELD_ELSEWHERE_RECHECK_MS,
   noteParkedParent,
   RUN_NOT_SUSPENDED_CODE,
   startDetachedResume,
@@ -44,6 +45,7 @@ import {
   acceptedOutcomeFor,
   inMemorySignalWaits,
   type InMemorySignalWaitStore,
+  unsignalledOutcomeFor,
 } from "../domain/workflows/signal_wait_store_test_helpers.ts";
 import { type ActiveRun, ActiveRunRegistry } from "./active_run_registry.ts";
 import {
@@ -1434,4 +1436,82 @@ Deno.test("continueSettledRun: a resume that fails and leaves the run suspended 
     "workflow.auto_resume",
     "workflow.auto_resume_failed",
   ]);
+});
+
+Deno.test("continueSettledRun: a suspended copy of a run whose wait was cancelled is never continued", async () => {
+  // What an instance holds after a peer cancelled the run: its own copy
+  // still says suspended, and the wait's outcome says the run ended.
+  const workflow = waitingWorkflow();
+  const { run, wait } = makeWaitingRun(workflow);
+  const { ctx, registry, audit, waits } = continuationHarness([workflow], [
+    run,
+  ]);
+  await waits.settle(
+    unsignalledOutcomeFor(wait, "cancelled", { runId: run.id }),
+  );
+
+  for (const takeover of [false, true]) {
+    assertEquals(
+      await continueSettledRun(
+        ctx,
+        { workflowId: workflow.id, runId: run.id },
+        { ...SWEEP, takeover },
+      ),
+      false,
+    );
+  }
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+});
+
+Deno.test("continueSettledRun: a suspension found held by another is not read again on every pass", async () => {
+  const workflow = waitingWorkflow();
+  const { run, wait } = makeWaitingRun(workflow);
+  const other = serveHolder("other");
+  const { ctx, registry, audit, waits, claims } = continuationHarness(
+    [workflow],
+    [run],
+    serveHolder("a"),
+    { [other]: "alive" },
+  );
+  await waits.settle(
+    acceptedOutcomeFor(wait, { verdict: "ship" }, { runId: run.id }),
+  );
+  await claims.create({
+    runId: run.id,
+    suspensionKey: await suspensionKeyOf(run),
+    generation: 1,
+    holder: other,
+    claimedAt: new Date().toISOString(),
+  });
+  let reads = 0;
+  const findOutcome = waits.findOutcome.bind(waits);
+  waits.findOutcome = (waitId) => {
+    reads++;
+    return findOutcome(waitId);
+  };
+  const find = claims.find.bind(claims);
+  claims.find = (runId, suspensionKey) => {
+    reads++;
+    return find(runId, suspensionKey);
+  };
+  const target = { workflowId: workflow.id, runId: run.id };
+  let clock = 0;
+  const pass = (takeover: boolean) =>
+    continueSettledRun(ctx, target, { ...SWEEP, takeover }, () => clock);
+
+  assertEquals(await pass(false), false);
+  assertEquals(reads, 2);
+  // Later passes leave the datastore alone until the recheck is due.
+  clock = HELD_ELSEWHERE_RECHECK_MS - 1;
+  assertEquals(await pass(false), false);
+  assertEquals(reads, 2);
+  clock = HELD_ELSEWHERE_RECHECK_MS;
+  assertEquals(await pass(false), false);
+  assertEquals(reads, 4);
+  // A pass that may take a claim over always looks.
+  assertEquals(await pass(true), false);
+  assertEquals(reads, 6);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
 });
