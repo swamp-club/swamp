@@ -199,6 +199,21 @@ Deno.test("analyzeExpression: text that does not parse fails closed", () => {
   assertEquals(analyzeExpression("data.latest(").dataWide, true);
 });
 
+Deno.test("analyzeExpression: a keyword model name fails closed by dot and is a target by bracket", () => {
+  // CEL does not parse these words as a member name after `model.`.
+  for (const name of ["in", "true", "false", "null"]) {
+    const dot = analyzeExpression(`model.${name}.resource.spec.x`);
+    assertEquals(dot.unanalyzable, true);
+    assertEquals(dot.dataWide, true);
+    assertEquals(dot.dataTargets.size, 0);
+    assertEquals(targets(`model["${name}"].resource.spec.x`), {
+      data: [name],
+      model: [],
+      dataWide: false,
+    });
+  }
+});
+
 Deno.test("analyzeExpression: a constant reads nothing", () => {
   const r = analyzeExpression('literal("{{ model.x.resource }}")');
   assertEquals(r.dataWide, false);
