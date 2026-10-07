@@ -405,13 +405,13 @@ With credentials present, the dry run runs the registry checks a real push runs,
 read-only, and reports each one in the `dry_run` document's `registryChecks`
 array with the wording the push would fail with:
 
-| Check                   | Passed when                                                                                                                      |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `authentication`        | the stored key is accepted by the registry                                                                                       |
-| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry                                                                         |
-| `collective-membership` | the manifest's collective is one of yours                                                                                        |
-| `private-entitlement`   | (private intent only) the collective's reported plan allows private extensions: a paid plan, or a free plan with an active trial |
-| `version-exists`        | the manifest version is not published on any channel                                                                             |
+| Check                   | Passed when                                                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `authentication`        | the stored key is accepted by the registry; the message and the row's `credential` name it (username, or API token collective and fingerprint) |
+| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry                                                                                       |
+| `collective-membership` | the manifest's collective is one of yours                                                                                                      |
+| `private-entitlement`   | (private intent only) the collective's reported plan allows private extensions: a paid plan, or a free plan with an active trial               |
+| `version-exists`        | the manifest version is not published on any channel                                                                                           |
 
 A `failed` check exits non-zero after the summary. A `not-run` check names the
 missing prerequisite in `message` and `cause`: `no-credentials` leaves the run

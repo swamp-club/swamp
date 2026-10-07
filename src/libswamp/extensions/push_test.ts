@@ -44,6 +44,7 @@ import type { ExtensionManifest } from "../../domain/extensions/extension_manife
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 import { listTarGzEntries } from "../../infrastructure/archive/tar_archive.ts";
+import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
 function makeManifest(
   overrides?: Partial<ExtensionManifest>,
@@ -610,6 +611,143 @@ Deno.test("extensionPushPrepare: dry run collects every registry check as passed
     ],
   );
   assertEquals(result.registryChecks[0].message, "Signed in as testuser.");
+  assertEquals(result.registryChecks[0].credential, {
+    username: "testuser",
+    fingerprint: await keyFingerprint("swamp_test"),
+  });
+});
+
+Deno.test("extensionPushPrepare: dry run with an API token names its collective and fingerprint", async () => {
+  const deps = makePrepareDeps({
+    loadCredentials: () =>
+      Promise.resolve({
+        serverUrl: "https://test.swamp-club.com",
+        apiKey: "swamp_org_test",
+        username: "",
+      }),
+    fetchCollectives: () =>
+      Promise.resolve({
+        ...lookup(["testuser"]),
+        identity: { collectiveToken: true, collectiveSlug: "testuser" },
+      }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const fingerprint = await keyFingerprint("swamp_org_test");
+  assertEquals(result.registryChecks[0], {
+    name: "authentication",
+    status: "passed",
+    message:
+      `Signed in with an API token for @testuser (fingerprint ${fingerprint}).`,
+    credential: {
+      collectiveToken: true,
+      collectiveSlug: "testuser",
+      fingerprint,
+    },
+  });
+  assertEquals(
+    result.registryChecks.find((c) => c.name === "collective-membership")
+      ?.status,
+    "passed",
+  );
+});
+
+Deno.test("extensionPushPrepare: dry run names a personal key from whoami when nothing is cached", async () => {
+  const deps = makePrepareDeps({
+    loadCredentials: () =>
+      Promise.resolve({
+        serverUrl: "https://test.swamp-club.com",
+        apiKey: "swamp_test",
+        username: "",
+      }),
+    fetchCollectives: () =>
+      Promise.resolve({
+        ...lookup(["testuser"]),
+        identity: { username: "testuser" },
+      }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(result.registryChecks[0].message, "Signed in as testuser.");
+});
+
+Deno.test("extensionPushPrepare: an unanswered whoami with no username leaves membership unchecked", async () => {
+  const deps = makePrepareDeps({
+    loadCredentials: () =>
+      Promise.resolve({
+        serverUrl: "https://test.swamp-club.com",
+        apiKey: "swamp_org_test",
+        username: "",
+      }),
+    fetchCollectives: () => Promise.reject(new Error("fetch failed")),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const membership = result.registryChecks.find((c) =>
+    c.name === "collective-membership"
+  );
+  assertEquals(membership?.status, "not-run");
+  assertEquals(membership?.cause, "registry-unavailable");
+  assertEquals(
+    membership?.message,
+    "Could not check that @testuser is one of your collectives: the registry " +
+      "did not report your collectives, and this credential has no username " +
+      "to check against.",
+  );
+  assertEquals(
+    result.registryChecks.some((c) => c.message.includes("(@)")),
+    false,
+  );
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, makePrepareInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertEquals(
+    error.message,
+    `${membership?.message} Try again when https://test.swamp-club.com is reachable.`,
+  );
+});
+
+Deno.test("extensionPushPrepare: an API token on a server that lists no collectives leaves membership unchecked", async () => {
+  const deps = makePrepareDeps({
+    loadCredentials: () =>
+      Promise.resolve({
+        serverUrl: "https://test.swamp-club.com",
+        apiKey: "swamp_org_test",
+        username: "",
+      }),
+    fetchCollectives: () =>
+      Promise.resolve({
+        collectives: undefined,
+        entitlements: undefined,
+        identity: { collectiveToken: true, collectiveSlug: "testuser" },
+      }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(result.registryChecks[0].status, "passed");
+  const membership = result.registryChecks.find((c) =>
+    c.name === "collective-membership"
+  );
+  assertEquals(membership?.status, "not-run");
+  assertEquals(membership?.cause, "registry-unavailable");
 });
 
 Deno.test("extensionPushPrepare: dry run without credentials lists every check as not run and calls nothing", async () => {
@@ -1380,6 +1518,28 @@ Deno.test("createExtensionPushPrepareDeps: fetchCollectives reads membership and
   assertEquals(await older.fetchCollectives(REGISTRY, "swamp_key"), {
     collectives: ["seth"],
     entitlements: undefined,
+    identity: { username: "seth" },
+  });
+});
+
+Deno.test("createExtensionPushPrepareDeps: fetchCollectives reads an API token's collective from whoami", async () => {
+  const deps = createExtensionPushPrepareDeps(undefined, {
+    fetch: () =>
+      Promise.resolve(jsonResponse({
+        authenticated: true,
+        collectiveToken: true,
+        collectiveId: "c1",
+        collectiveSlug: "acme",
+        organizations: [
+          { slug: "acme", name: "Acme", role: "member", personal: false },
+        ],
+      })),
+  });
+  const lookup = await deps.fetchCollectives(REGISTRY, "swamp_org_key");
+  assertEquals(lookup.collectives, ["acme"]);
+  assertEquals(lookup.identity, {
+    collectiveToken: true,
+    collectiveSlug: "acme",
   });
 });
 

@@ -31,6 +31,7 @@ import {
   registryCheckNotRun,
   type RegistryCheckResult,
   registryChecksVerdict,
+  signedInCheck,
 } from "./extension_publish_checks.ts";
 
 Deno.test("collectiveOf: returns the namespace between @ and /", () => {
@@ -82,6 +83,26 @@ Deno.test("evaluateCollectiveMembership: unknown collectives fall back to the us
     'Extension collective "@acme" is not one of your collectives (@seth). ' +
       "Use one of: @seth",
   );
+});
+
+Deno.test("evaluateCollectiveMembership: no collectives and no username leaves membership unchecked", () => {
+  const result = evaluateCollectiveMembership({
+    extensionName: "@acme/tool",
+    collectives: undefined,
+    username: "",
+  });
+  assertEquals(result.reserved.status, "passed");
+  assertEquals(result.membership, {
+    name: "collective-membership",
+    status: "not-run",
+    message:
+      "Could not check that @acme is one of your collectives: the registry " +
+      "did not report your collectives, and this credential has no username " +
+      "to check against.",
+    cause: "registry-unavailable",
+  });
+  // A dry run stays red: the push would refuse.
+  assertEquals(registryChecksVerdict([result.membership]).ok, false);
 });
 
 Deno.test("evaluateCollectiveMembership: reserved collective needs the registry's membership list", () => {
@@ -530,5 +551,69 @@ Deno.test("explainPrivatePublishRefusal: no entitlement reported adds the note a
       }),
       `${REFUSAL}. At sign-in the registry did not report entitlement for "@acme".`,
     );
+  }
+});
+
+Deno.test("signedInCheck: a personal key names the username", () => {
+  assertEquals(
+    signedInCheck({ username: "seth", fingerprint: "9c1e4b7a2f60d835" }),
+    {
+      name: "authentication",
+      status: "passed",
+      message: "Signed in as seth.",
+      credential: { username: "seth", fingerprint: "9c1e4b7a2f60d835" },
+    },
+  );
+});
+
+Deno.test("signedInCheck: an API token names its collective and fingerprint", () => {
+  assertEquals(
+    signedInCheck({
+      username: "",
+      collectiveToken: true,
+      collectiveSlug: "swamp-uat",
+      fingerprint: "9c1e4b7a2f60d835",
+    }),
+    {
+      name: "authentication",
+      status: "passed",
+      message:
+        "Signed in with an API token for @swamp-uat (fingerprint 9c1e4b7a2f60d835).",
+      credential: {
+        collectiveToken: true,
+        collectiveSlug: "swamp-uat",
+        fingerprint: "9c1e4b7a2f60d835",
+      },
+    },
+  );
+});
+
+Deno.test("signedInCheck: an API token is named as one even with a cached username", () => {
+  const check = signedInCheck({
+    username: "seth",
+    collectiveToken: true,
+    collectiveSlug: "acme",
+    fingerprint: "9c1e4b7a2f60d835",
+  });
+  assertEquals(
+    check.message,
+    "Signed in with an API token for @acme (fingerprint 9c1e4b7a2f60d835).",
+  );
+});
+
+Deno.test("signedInCheck: without a username or collective, the fingerprint alone names the key", () => {
+  for (
+    const identity of [
+      { username: "", collectiveToken: true, fingerprint: "9c1e4b7a2f60d835" },
+      { username: "", fingerprint: "9c1e4b7a2f60d835" },
+    ]
+  ) {
+    const check = signedInCheck(identity);
+    assertEquals(
+      check.message,
+      "Signed in with an API token (fingerprint 9c1e4b7a2f60d835).",
+    );
+    assertEquals(check.credential?.fingerprint, "9c1e4b7a2f60d835");
+    assertEquals(check.credential?.username, undefined);
   }
 });
