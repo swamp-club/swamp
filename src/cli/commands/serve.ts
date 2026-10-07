@@ -455,6 +455,7 @@ import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
 import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
 import {
   ContinuationSweepService,
+  decideContinuationSweepStart,
   DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
   sweepContinuations,
 } from "../../serve/continuation_sweep_service.ts";
@@ -7171,17 +7172,22 @@ export const serveCommand = new Command()
     // decision (swamp-club#3108). It starts last, once the heartbeat is
     // written and boot reconciliation has settled the runs a dead instance
     // left running.
-    if (continuationSweepIntervalMs === 0) {
+    const sweepStart = decideContinuationSweepStart({
+      intervalMs: continuationSweepIntervalMs,
+      syncedDatastore: isCustomDatastoreConfig(datastoreConfig),
+      sharedClaims: hasRemoteControlPlane &&
+        repoContext.continuationClaims !== undefined,
+      runRecordsCurrentAtBoot,
+    });
+    if (sweepStart === "disabled") {
       logger.info(
         "Continuation sweep disabled (continuation sweep interval is 0)",
       );
-    } else if (
-      isCustomDatastoreConfig(datastoreConfig) && !hasRemoteControlPlane
-    ) {
+    } else if (sweepStart === "no_shared_claims") {
       logger.info(
-        "Continuation sweep not started: this datastore has no shared control-plane store, so instances could not tell which of them resumed a run",
+        "Continuation sweep not started: this datastore has no shared control-plane store that can create a record atomically, so instances could not tell which of them resumed a run",
       );
-    } else if (!runRecordsCurrentAtBoot) {
+    } else if (sweepStart === "records_not_current") {
       logger.warn(
         "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
       );

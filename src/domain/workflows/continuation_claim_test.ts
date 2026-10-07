@@ -258,21 +258,22 @@ Deno.test("ContinuationHeldError: names a serve instance, and no other holder", 
   assert(!local.message.includes("local:"));
 });
 
-Deno.test("removeClaimsOfRuns: one run whose claims cannot be removed does not keep the others", async () => {
+Deno.test("removeClaimsOfRuns: one run whose claims cannot be removed does not keep the others, and an id that is no run id is passed over", async () => {
+  const [a, bad, b] = [0, 1, 2].map(() => crypto.randomUUID());
   const removed: string[] = [];
   const store = {
     removeForRun: (runId: string) => {
-      if (runId === "bad") return Promise.reject(new Error("not a run id"));
+      if (runId === bad) return Promise.reject(new Error("store down"));
       removed.push(runId);
       return Promise.resolve();
     },
   };
   await assertRejects(
-    () => removeClaimsOfRuns(store, ["a", "bad", "b"]),
+    () => removeClaimsOfRuns(store, [a, "legacy-run", bad, b]),
     Error,
-    "not a run id",
+    "store down",
   );
-  assertEquals(removed, ["a", "b"]);
+  assertEquals(removed, [a, b]);
   // No store, nothing to do.
-  await removeClaimsOfRuns(undefined, ["a"]);
+  await removeClaimsOfRuns(undefined, [a]);
 });

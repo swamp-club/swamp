@@ -112,6 +112,35 @@ export interface ContinuationSweepDeps {
 }
 
 /** Runs the continuation sweep at boot and then on an interval. */
+/** Whether serve starts the sweep, and why not when it does not. */
+export type ContinuationSweepStart =
+  | "start"
+  /** The interval is 0. */
+  | "disabled"
+  /**
+   * A synced datastore with no continuation claims every instance reads: no
+   * shared control-plane store, or one that cannot create a record
+   * atomically. The claim is all that keeps two instances there from
+   * resuming one run from their own copies of it.
+   */
+  | "no_shared_claims"
+  /** The boot hydration did not complete, so the run records may be old. */
+  | "records_not_current";
+
+export function decideContinuationSweepStart(options: {
+  intervalMs: number;
+  syncedDatastore: boolean;
+  sharedClaims: boolean;
+  runRecordsCurrentAtBoot: boolean;
+}): ContinuationSweepStart {
+  if (options.intervalMs === 0) return "disabled";
+  if (options.syncedDatastore && !options.sharedClaims) {
+    return "no_shared_claims";
+  }
+  if (!options.runRecordsCurrentAtBoot) return "records_not_current";
+  return "start";
+}
+
 export class ContinuationSweepService {
   readonly #deps: ContinuationSweepDeps;
   #timer: ReturnType<typeof setTimeout> | null = null;

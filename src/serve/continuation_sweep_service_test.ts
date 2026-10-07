@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   ContinuationSweepService,
+  decideContinuationSweepStart,
   sweepContinuations,
 } from "./continuation_sweep_service.ts";
 import { ActiveRunRegistry } from "./active_run_registry.ts";
@@ -251,4 +252,30 @@ Deno.test("ContinuationSweepService: start does not wait for the boot pass, and 
   release();
   await disposed;
   assertEquals(finished, true);
+});
+
+Deno.test("decideContinuationSweepStart: a synced datastore needs claims every instance reads, and current run records", () => {
+  const filesystem = {
+    intervalMs: 30_000,
+    syncedDatastore: false,
+    sharedClaims: false,
+    runRecordsCurrentAtBoot: true,
+  };
+  const synced = { ...filesystem, syncedDatastore: true, sharedClaims: true };
+
+  assertEquals(decideContinuationSweepStart(filesystem), "start");
+  assertEquals(decideContinuationSweepStart(synced), "start");
+  assertEquals(
+    decideContinuationSweepStart({ ...synced, intervalMs: 0 }),
+    "disabled",
+  );
+  // No shared store, or one that cannot create a record atomically.
+  assertEquals(
+    decideContinuationSweepStart({ ...synced, sharedClaims: false }),
+    "no_shared_claims",
+  );
+  assertEquals(
+    decideContinuationSweepStart({ ...synced, runRecordsCurrentAtBoot: false }),
+    "records_not_current",
+  );
 });

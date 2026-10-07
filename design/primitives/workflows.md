@@ -317,9 +317,10 @@ the shared run record already give a single resume; the continuation claim is
 what gives it on a synced one.
 
 Limits on a synced datastore: the sweep does not start when the boot
-hydration failed, or when the datastore has no shared control-plane store,
-where serve takes no claims either, since a claim on one host's disk tells
-its peers nothing; a run whose latest suspension only a dead instance had, or
+hydration failed, or when the datastore has no shared control-plane store
+that can create a record atomically, where serve takes no claims, since a
+claim on one host's disk tells its peers nothing and no claim at all leaves
+two instances free to resume one run from their own copies; a run whose latest suspension only a dead instance had, or
 whose claim a dead instance holds, waits until some instance restarts; and
 taking over a dead holder's claim resumes from the stored record, so steps
 that holder ran and never pushed run again, as they do when a person resumes

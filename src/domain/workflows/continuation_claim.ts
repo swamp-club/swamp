@@ -196,7 +196,8 @@ export interface ContinuationClaimStore {
 /**
  * Removes the claims of each run in `runIds`, with the runs. One run whose
  * claims cannot be removed does not keep the others: every run is tried,
- * and the first failure is thrown after the last.
+ * and the first failure is thrown after the last. An id that is not a run
+ * id has no claims and is passed over.
  */
 export async function removeClaimsOfRuns(
   store: Pick<ContinuationClaimStore, "removeForRun"> | undefined,
@@ -205,6 +206,7 @@ export async function removeClaimsOfRuns(
   if (!store) return;
   const failures: unknown[] = [];
   for (const runId of runIds) {
+    if (!UUID.test(runId)) continue;
     try {
       await store.removeForRun(runId);
     } catch (error) {

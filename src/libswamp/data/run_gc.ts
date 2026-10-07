@@ -193,6 +193,9 @@ export function createRunGcDeps(
         signalWaits.localRunAbsenceIsAuthoritative,
         continuationClaims,
       )
+      // Claims are kept wherever a resume takes one, waits or no waits.
+      : continuationClaims
+      ? (deletedRunIds) => removeClaimsOfRuns(continuationClaims, deletedRunIds)
       : undefined,
   );
   return {

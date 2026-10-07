@@ -265,7 +265,7 @@ export async function* workflowDelete(
             await deps.deleteWaitRecords(runIds);
           } catch (error) {
             ctx.logger
-              .warn`Could not remove the signal wait records of the deleted runs: ${
+              .warn`Could not remove the signal wait records and continuation claims of the deleted runs: ${
               error instanceof Error ? error.message : String(error)
             }`;
           }

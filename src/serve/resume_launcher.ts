@@ -812,6 +812,8 @@ const BENIGN_REFUSALS: ReadonlySet<string> = new Set([
   RUN_NOT_SUSPENDED_CODE,
   "already_registered",
   "reserved",
+  // A pass in flight when shutdown began.
+  "draining",
 ]);
 
 /**
@@ -881,7 +883,29 @@ export async function continueSettledRun(
     createWorkflowId(target.workflowId),
     createWorkflowRunId(target.runId),
   );
-  if (!run) return false;
+  if (!run || run.status !== "suspended") return false;
+
+  // The policy first: it is read from this host, where the verdict below
+  // reads one wait outcome per wait from the datastore, and most runs
+  // belong to workflows serve never resumes. Not reported: with
+  // auto-resume off, a settled run left suspended is what its owner asked
+  // for, as it is after an approval.
+  const resolution = await resolveRecordedWorkflow(
+    workflowRepo,
+    run.workflowId,
+    run.workflowName,
+  );
+  const workflow = resolution.status === "found"
+    ? await workflowRepo.findById(createWorkflowId(resolution.id))
+    : null;
+  const known = resolution.status === "found" && workflow !== null &&
+    workflow.name === resolution.name;
+  if (
+    known && !workflow.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)
+  ) {
+    return false;
+  }
+
   const verdict = await decideContinuation(run, outcomesOf(ctx));
   if (verdict.kind !== "resumable") return false;
 
@@ -906,22 +930,8 @@ export async function continueSettledRun(
     return false;
   };
 
-  const resolution = await resolveRecordedWorkflow(
-    workflowRepo,
-    run.workflowId,
-    run.workflowName,
-  );
-  if (resolution.status !== "found") {
+  if (!known || resolution.status !== "found") {
     return skip("skipped", "workflow_not_found");
-  }
-  const workflow = await workflowRepo.findById(createWorkflowId(resolution.id));
-  if (!workflow || workflow.name !== resolution.name) {
-    return skip("skipped", "workflow_not_found");
-  }
-  // Not reported: with auto-resume off, a settled run left suspended is
-  // what its owner asked for, as it is after an approval.
-  if (!workflow.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)) {
-    return false;
   }
 
   // A resume of this suspension failed here before: wait out its backoff.
@@ -945,7 +955,7 @@ export async function continueSettledRun(
         // command died first, and only a manual resume replaces its claim.
         if (
           cause.takeover && serveInstanceOf(held.holder) === undefined &&
-          Date.now() - new Date(held.claimedAt).getTime() >
+          now() - new Date(held.claimedAt).getTime() >
             LOCAL_CLAIM_GRACE_MS
         ) {
           logger.info(
