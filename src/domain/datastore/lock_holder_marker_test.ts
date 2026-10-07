@@ -877,6 +877,31 @@ Deno.test("LockHolderMarker.beginChildHandOff: a nested scope's hop counts again
   });
 });
 
+Deno.test("LockHolderMarker.beginChildHandOff: the signal an end is given reaches its own scope's reclaim, not a scope around it (swamp-club#3157)", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  const signals: Record<string, AbortSignal | undefined> = {};
+  const recording = (name: string): LentLocks => ({
+    lockIds: () => [name],
+    reclaim: (signal) => {
+      signals[name] = signal;
+      return Promise.resolve();
+    },
+  });
+  const signal = new AbortController().signal;
+
+  await marker.runHolding(recording("outer"), async () => {
+    await marker.runHolding(recording("inner"), async () => {
+      const hop = await marker.beginChildHandOff();
+      // The last hop of both scopes: one end reclaims both.
+      await hop.end(signal);
+    });
+  });
+
+  assertEquals(Object.keys(signals).sort(), ["inner", "outer"]);
+  assertEquals(signals.inner, signal);
+  assertEquals(signals.outer, undefined);
+});
+
 Deno.test("LockHolderMarker.beginChildHandOff: adopted, listed and inherited nonces are lent but never reclaimed", async () => {
   const env = fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a" });
   const marker = new LockHolderMarker(env.store, 500);

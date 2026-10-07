@@ -5558,6 +5558,77 @@ Deno.test("reclaimModelLocks: throws LockTimeoutError when the structural comman
   });
 });
 
+Deno.test("reclaimModelLocks: a cancelled run re-keys and does not wait on a structural command (swamp-club#3157)", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const retired = lock.heldNonce!;
+    const global = globalLockReturning([globalInfo([retired])]);
+    const lines: string[] = [];
+
+    const error = await assertRejects(
+      () =>
+        reclaimModelLocks([lock], global, {
+          signal: AbortSignal.abort(),
+          progressWriter: (line) => lines.push(line),
+        }),
+      DOMException,
+    );
+    assertEquals(error.name, "AbortError");
+    // One read of the global lock, and no notice of a wait that never began.
+    assertEquals(global.inspects(), 1);
+    assertEquals(lines, []);
+    // The lock is still re-keyed: nothing new can skip it.
+    assertNotEquals(lock.heldNonce, retired);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: a cancel during the wait ends it", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const controller = new AbortController();
+    const working = globalInfo([lock.heldNonce!]);
+    let inspects = 0;
+    const global = {
+      inspect: () => {
+        // Cancelled while the second poll is being read.
+        if (++inspects === 2) controller.abort();
+        return Promise.resolve(working);
+      },
+    };
+
+    const error = await assertRejects(
+      () =>
+        reclaimModelLocks([lock], global, {
+          pollMs: 1,
+          signal: controller.signal,
+          progressWriter: () => {},
+        }),
+      DOMException,
+    );
+    assertEquals(error.name, "AbortError");
+    assertEquals(inspects, 2);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: a cancelled run with no structural command at work takes its locks back", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const retired = lock.heldNonce!;
+
+    await reclaimModelLocks([lock], globalLockReturning([null]), {
+      signal: AbortSignal.abort(),
+      progressWriter: () => {},
+    });
+    assertNotEquals(lock.heldNonce, retired);
+    await lock.release();
+  });
+});
+
 Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lock timeout, not in a spin", async () => {
   let scans = 0;
   await assertRejects(

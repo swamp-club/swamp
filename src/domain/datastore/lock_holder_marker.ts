@@ -133,9 +133,10 @@ export interface LentLocks {
    * Takes the locks back once no hop is using them: re-keys each, so a
    * swamp left over from a hop that has ended no longer matches, and waits
    * for a structural command still working under a retired nonce. Rejects
-   * when that wait times out; the run must then write nothing.
+   * when that wait times out, or when `signal` (the run's own) aborts
+   * during it; the run must then write nothing.
    */
-  reclaim(): Promise<void>;
+  reclaim(signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -144,10 +145,14 @@ export interface LentLocks {
  * {@link end} when the hop returns, however it returns, and before the run
  * writes anything: the run stops waiting on the hop there, so whatever the
  * hop left running must stop skipping the run's locks.
+ *
+ * Pass {@link end} the signal of the run that began the hand-off. A
+ * cancelled run writes nothing, so it re-keys its locks and rejects rather
+ * than wait for a structural command still working under them.
  */
 export interface LockHandOff<T> {
   readonly lent: T;
-  end(): Promise<void>;
+  end(signal?: AbortSignal): Promise<void>;
 }
 
 /** A dispatch's hand-offs, bound to the scope the dispatch is made from. */
@@ -332,8 +337,14 @@ export class LockHolderMarker {
    * its own run took, never those of a scope whose hops are still live, so
    * no lock is re-keyed under a hop that still skips it. Ending twice does
    * nothing the second time.
+   *
+   * The signal an end is given reaches only the reclaim of `scope`, whose
+   * run it belongs to. A scope around it is another run's, which may not be
+   * cancelled and may still write, so its reclaim waits in full.
    */
-  async #begin(scope: HeldScope | undefined): Promise<() => Promise<void>> {
+  async #begin(
+    scope: HeldScope | undefined,
+  ): Promise<(signal?: AbortSignal) => Promise<void>> {
     const scopes = scopeChain(scope);
     while (true) {
       const reclaims = scopes.flatMap((at) =>
@@ -344,14 +355,16 @@ export class LockHolderMarker {
     }
     for (const at of scopes) at.live++;
     let ended = false;
-    return async () => {
+    return async (signal) => {
       if (ended) return;
       ended = true;
       const reclaims: Promise<void>[] = [];
       for (const at of scopes) {
         at.live--;
         if (at.live > 0 || at.lent === undefined) continue;
-        const reclaim = at.lent.reclaim().finally(() => {
+        const reclaim = at.lent.reclaim(
+          at === scope ? signal : undefined,
+        ).finally(() => {
           if (at.reclaiming === reclaim) at.reclaiming = undefined;
         });
         at.reclaiming = reclaim;

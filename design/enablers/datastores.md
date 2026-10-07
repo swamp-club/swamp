@@ -2226,8 +2226,18 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    shell step's timeout kills its command's whole process tree, and the
    lock file a nested structural command leaves behind lasts until its ttl.
    At the timeout it throws `LockTimeoutError` and the run fails without
-   writing. A cancelled dispatch is the exception: it logs the timeout and
-   stays cancelled, because a cancelled step writes nothing to the model.
+   writing.
+
+A cancelled run does not wait (swamp-club#3157). Both hand-off sites end the
+hand-off with the run's abort signal. The locks are re-keyed as always, and
+if a structural command is still working once the signal has aborted, the
+reclaim rejects with an `AbortError` instead of polling on to the timeout.
+The step then writes nothing to the model and stays cancelled: the shell
+model throws before its writes, and a cancelled dispatch logs the failed
+reclaim and keeps its cancellation. A cancelled run with no structural
+command at work reclaims as usual. The signal reaches only the reclaim of the
+scope the hand-off was begun in. A scope around it is another run's, which
+may not be cancelled and may still write, so its reclaim waits in full.
 
 Two orderings make this sound. The drain publishes its list and then scans
 again, ending only on a scan that matches what is already published; the

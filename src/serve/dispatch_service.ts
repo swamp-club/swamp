@@ -494,7 +494,7 @@ export class DispatchService {
       outcome = { ok: false, error };
     }
     try {
-      await handOff?.end();
+      await handOff?.end(request.signal);
     } catch (error) {
       // The locks could not be taken back, so the step must not write. An
       // attempt that succeeded fails here even when the step was cancelled
@@ -515,7 +515,7 @@ export class DispatchService {
       }
       // A cancelled attempt that failed writes nothing to the model, so the
       // step stays cancelled rather than failing on a structural command it
-      // could not wait out.
+      // did not wait out.
       logger.warn(
         "Could not take back the locks of cancelled step {step}: {error}",
         {

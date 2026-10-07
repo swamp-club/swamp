@@ -2072,6 +2072,24 @@ export interface ReclaimModelLocksOptions {
   displayKey?: string;
   /** Test seam: whether a process on this host has exited. */
   isProcessDead?: (pid: number) => boolean;
+  /**
+   * The signal of the run whose locks these are. Once it aborts, a
+   * structural command still at work is no longer waited on.
+   */
+  signal?: AbortSignal;
+}
+
+/** Waits `ms`, or until `signal` aborts. */
+function pollDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -2086,8 +2104,14 @@ export interface ReclaimModelLocksOptions {
  * nonce it finds re-keyed before it waits on that lock, so the two never
  * wait on each other.
  *
+ * A cancelled run writes nothing to the model, so it does not wait: the
+ * locks are re-keyed as always, and the wait ends as soon as
+ * `options.signal` aborts.
+ *
  * @throws {LockTimeoutError} when the structural command is still working
  * under a retired nonce at the timeout. The caller must then write nothing.
+ * @throws {DOMException} `AbortError` when it is still working and the
+ * signal has aborted. The caller must then write nothing.
  */
 export async function reclaimModelLocks(
   locks: readonly FileLock[],
@@ -2119,6 +2143,12 @@ export async function reclaimModelLocks(
     const unreadable = info.nonce === undefined && info.pid === 0;
     const skipping = lockSkipping(info);
     if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
+    if (options.signal?.aborted) {
+      throw new DOMException(
+        `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
+        "AbortError",
+      );
+    }
     if (!announced && !unreadable) {
       announced = true;
       write(
@@ -2135,7 +2165,7 @@ export async function reclaimModelLocks(
         elapsed,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 500));
+    await pollDelay(options.pollMs ?? 500, options.signal);
   }
   if (announced) {
     write(dim("Structural command finished, proceeding"));
@@ -2530,8 +2560,9 @@ export async function acquireModelLocks(
   const globalLockOptions = datastoreGlobalLockOptions(config);
   const lentLocks: LentLocks = {
     lockIds,
-    reclaim: () =>
+    reclaim: (signal) =>
       reclaimModelLocks(fileLocks, globalLock, {
+        signal,
         progressWriter,
         displayKey: globalLockOptions?.namespace
           ? `${globalLockOptions.namespace}/.datastore.lock`

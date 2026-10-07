@@ -178,8 +178,10 @@ async function executeCommand(
 
   // The command has returned, so this run no longer waits on anything it
   // left running. Take the locks back before writing under them; a failure
-  // here fails the method with nothing written.
-  await lockHandOff.end();
+  // here fails the method with nothing written. A cancelled step does not
+  // wait for a structural command still working under them: the end rejects
+  // and the step stays cancelled.
+  await lockHandOff.end(context.signal);
 
   // Persisted before the exit code is judged, not after. The output is the
   // only account of what the command did, and a command that failed is the one
