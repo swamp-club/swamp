@@ -367,13 +367,13 @@ default user vault and copies the access token of each active record that
 names `_token-secrets` but lacks it there, under the token's name lock.
 `_token-secrets` is listed too, so a key there that fails to read is not
 overwritten. Token names come from the records, not from the vault's keys.
-When the listing
-succeeds and every key moves, serve records `oauth-access-tokens-recovered` in
-`_token-secrets` and never lists the vault for this again; otherwise the next
-start retries. A start with no such record records the marker without listing.
-The recovery trusts the user vault's value as the migration does, searches
-only the default user vault, and does not repair a token an older binary
-sharing the datastore half-migrates after the marker exists.
+When the listing succeeds and every key moves, serve records
+`oauth-access-tokens-recovered` in `_token-secrets` and never lists the vault
+for this again; otherwise the next start retries. A start with no such record
+records the marker without listing. The recovery trusts the user vault's value
+as the migration does, searches only the default user vault (else the first
+user vault), and does not repair a token an older binary sharing the datastore
+half-migrates after the marker exists.
 
 **OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
 `oauth-client-secret`, `oauth-bootstrap-access-token` and

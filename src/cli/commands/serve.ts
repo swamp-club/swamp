@@ -4018,9 +4018,7 @@ export const serveCommand = new Command()
         vaultService: migrationVaultService,
         dataQueryService: repoContext.dataQueryService,
         userVaultName: migrationVaultService.getDefaultVaultName() ??
-          migrationVaultService.getVaultNames().find((n) =>
-            n !== TOKEN_SECRETS_VAULT_NAME
-          ),
+          migrationVaultService.getUserVaultNames()[0],
         ...migrationLockDeps,
       });
 
