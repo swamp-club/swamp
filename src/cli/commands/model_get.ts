@@ -84,13 +84,13 @@ export const modelGetCommand = withRemoteOptions(
 
     cliCtx.logger.debug`Getting model: ${modelIdOrName}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createModelGetDeps(repoDir);
+    const deps = await createModelGetDeps(repoContext.definitionRepo);
 
     const renderer = createModelGetRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -32,6 +32,7 @@ import {
   type ModelSearchItem,
 } from "../../libswamp/models/search.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
 import {
   createContext,
@@ -54,13 +55,13 @@ type AnyOptions = any;
 /**
  * Creates a fetchPreview closure that fetches full model detail data.
  * This bridges the presentation layer to the libswamp modelGet application
- * service, capturing the repoDir dependency.
+ * service, capturing the definition repository dependency.
  */
 async function createModelFetchPreview(
-  repoDir: string,
+  definitionRepo: YamlDefinitionRepository,
 ): Promise<(item: ModelSearchItem) => Promise<ModelGetData>> {
   const libCtx = createLibSwampContext();
-  const getDeps = await createModelGetDeps(repoDir);
+  const getDeps = await createModelGetDeps(definitionRepo);
 
   return async (item: ModelSearchItem): Promise<ModelGetData> => {
     let result: ModelGetData | undefined;
@@ -120,8 +121,9 @@ export async function modelSearchAction(
     isInternalType: (type: string) => modelRegistry.isInternal(type),
   };
 
-  const repoDir = resolveRepoDir(options.repoDir);
-  const fetchPreview = await createModelFetchPreview(repoDir);
+  const fetchPreview = await createModelFetchPreview(
+    repoContext.definitionRepo,
+  );
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
     modelSearch(libCtx, deps, { query, includeInternal }),

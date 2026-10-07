@@ -183,7 +183,7 @@ async function getAutoCreated(
   for await (
     const event of modelGet(
       createLibSwampContext(),
-      await createModelGetDeps(repoDir),
+      await createModelGetDeps(new YamlDefinitionRepository(repoDir)),
       modelIdOrName,
     )
   ) {
