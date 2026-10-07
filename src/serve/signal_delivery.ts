@@ -140,7 +140,8 @@ async function ownersOf(
       wait.workflowName,
     );
   }
-  // Only the wait's outcome is left, and it names the workflow by id.
+  // Only the wait's outcome is left and the run record is gone too, so the
+  // workflow is known by id alone.
   const resolution = await resolveWorkflowTargetById(
     ctx.repoContext.workflowRepo,
     wait.workflowId,

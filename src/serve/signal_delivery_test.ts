@@ -51,8 +51,9 @@ const SCHEMA = {
 const UNKNOWN_WAIT = "00000000-0000-4000-8000-000000000000";
 const CALLER_ID = "caller";
 
-function waitingWorkflow(name: string): Workflow {
+function waitingWorkflow(name: string, id?: string): Workflow {
   return Workflow.create({
+    ...(id ? { id } : {}),
     name,
     jobs: [
       Job.create({
@@ -329,6 +330,31 @@ Deno.test("deliverSignalForCaller: a wait with only its outcome left is authoriz
     await deliver(f.ctxWith([grantOf(["signal", "read"])]), f.waitId),
     NOT_FOUND,
   );
+});
+
+Deno.test("deliverSignalForCaller: a renamed workflow's settled wait stays closed to a caller denied the recorded name, after its registration is removed", async () => {
+  const f = await fixture("restricted");
+  assertEquals(
+    (await deliver(f.ctxWith([grantOf(["signal"])]), f.waitId)).status,
+    "delivered",
+  );
+  // The workflow is renamed after the run recorded its name.
+  f.workflows.clear();
+  f.workflows.set("open", waitingWorkflow("open", f.workflow.id));
+  const denied = f.ctxWith([
+    grantOf(["signal", "read"], "open"),
+    grantOf(["signal", "read"], "restricted", "deny"),
+  ]);
+  const both = f.ctxWith([grantOf(["signal", "read"])]);
+
+  assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
+
+  // The run ended and its registration was removed; the run record is kept.
+  await f.waits.removeRegistration(f.waitId);
+
+  assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
+  const seen = await deliver(both, f.waitId);
+  assert(seen.status === "already_settled" && seen.receipt !== undefined);
 });
 
 Deno.test("deliverSignalForCaller: a wait this host cannot place is not found, without scanning runs", async () => {

@@ -1061,7 +1061,37 @@ Deno.test("workflowSignal: authorize is asked before an unregistered wait is reg
   assertEquals((await fixture.waits.findRegistration(waitId)).kind, "found");
 });
 
-Deno.test("workflowSignal: with only an outcome left, authorize is asked by workflow id", async () => {
+Deno.test("workflowSignal: with only an outcome left, authorize is asked with the workflow the run recorded", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  fixture.deps.scanRunRecords = false;
+  await send(fixture, waitId, { verdict: "ship" });
+  // The run ended and its registration was removed; the run record is kept.
+  await fixture.waits.removeRegistration(waitId);
+
+  const refused = await sendAuthorized(
+    fixture,
+    waitId,
+    { verdict: "fix" },
+    false,
+  );
+  assertEquals(kindOf(refused.event), "unknown");
+  assertEquals(refused.asked, [{
+    waitId,
+    workflowId: run.workflowId,
+    workflowName: run.workflowName,
+    runId: run.id,
+    runWorkflow: {
+      workflowId: run.workflowId,
+      workflowName: run.workflowName,
+    },
+  }]);
+  assertEquals(fixture.calls.includes("findAllGlobal"), false);
+  assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
+});
+
+Deno.test("workflowSignal: with only an outcome left and no run record, authorize is asked by workflow id", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
   const fixture = await fixtureOf([run]);

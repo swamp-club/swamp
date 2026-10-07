@@ -101,7 +101,10 @@ export interface WorkflowSignalInput {
 export interface SignalWaitSubject {
   waitId: string;
   workflowId: string;
-  /** Absent when only the wait's outcome is left, which does not name it. */
+  /**
+   * Absent when only the wait's outcome is left, which does not name it, and
+   * this host has no record of the run to take the name from.
+   */
   workflowName?: string;
   runId: string;
   /**
@@ -333,7 +336,7 @@ function refusalFor(
 /** The run a wait belongs to, as this host has it. */
 async function runOf(
   deps: WorkflowSignalDeps,
-  place: WaitPlace,
+  place: Pick<WaitPlace, "workflowId" | "runId">,
 ): Promise<WorkflowRun | null> {
   return await deps.runRepo.findById(
     createWorkflowId(place.workflowId),
@@ -421,14 +424,27 @@ async function resolveRegistration(
     : await locateInRunRecords(deps, waitId);
   const outcome = await store.findOutcome(waitId);
   if (!held) {
-    // A settled wait of a run this host does not have: answered from the
-    // outcome alone, which names the run but not the step.
+    // A settled wait whose registration is gone: answered from the outcome
+    // alone, which names the run but not the step.
     if (outcome.kind === "found") {
+      // The outcome does not name the workflow, so the run it references is
+      // asked: a workflow renamed since is still authorized under the name
+      // the run recorded. Without the run record only the id is left.
+      const run = authorize ? await runOf(deps, outcome.record) : null;
       if (
         authorize && !(await authorize({
           waitId,
           workflowId: outcome.record.workflowId,
           runId: outcome.record.runId,
+          ...(run
+            ? {
+              workflowName: run.workflowName,
+              runWorkflow: {
+                workflowId: run.workflowId,
+                workflowName: run.workflowName,
+              },
+            }
+            : {}),
         }))
       ) return { error: unknownWait(typedId) };
       if (outcome.record.kind === "accepted") {
