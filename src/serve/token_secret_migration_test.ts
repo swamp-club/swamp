@@ -653,6 +653,7 @@ Deno.test("recoverOAuthAccessTokens: a listing or copy failure leaves the marker
       { list: "user-vault" },
       { get: "user-vault/oauth-access-token-legacy" },
       { put: `${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-legacy` },
+      { list: TOKEN_SECRETS_VAULT_NAME },
     ]
   ) {
     const { secrets, vaultService, faults } = createMockVault();
@@ -667,7 +668,11 @@ Deno.test("recoverOAuthAccessTokens: a listing or copy failure leaves the marker
 
     const result = await recoverOAuthAccessTokens(deps);
 
-    assertEquals(result, { recovered: 0, failed: fault.list ? 0 : 1 });
+    // A user vault that cannot be listed stops before any token is tried.
+    assertEquals(result, {
+      recovered: 0,
+      failed: fault.list === "user-vault" ? 0 : 1,
+    });
     assertEquals(
       secrets.get(TOKEN_SECRETS_VAULT_NAME)?.has(
         OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
@@ -690,7 +695,10 @@ Deno.test("recoverOAuthAccessTokens: a listing or copy failure leaves the marker
 });
 
 Deno.test("recoverOAuthAccessTokens: leaves keys alone unless the record still lacks them under the lock", async () => {
-  const { secrets, vaultService } = createMockVault();
+  const { secrets, vaultService, faults } = createMockVault();
+  // A key that is there but cannot be read is still there: it is not
+  // overwritten with the user vault's copy.
+  faults.get.add(`${TOKEN_SECRETS_VAULT_NAME}/oauth-access-token-present`);
   secrets.set(
     "user-vault",
     new Map([

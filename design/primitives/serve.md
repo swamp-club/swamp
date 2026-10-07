@@ -351,22 +351,23 @@ Both fail closed: the token has to be minted again.
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
 vault (the default, else the first) and named that vault on the token record.
 On an OAuth-mode start, and from `access token mint` and `rotate`, each such
-token is migrated
-under its name lock (`src/serve/token_secret_migration.ts`): its secret is read,
-its vault is listed, and an access token the listing holds is read too. Both
-are written to `_token-secrets`, the record is repointed, and the user-vault
-copies are deleted when the vault supports deletes. A secret that cannot be
-read skips the token. A listing that fails, or a listed access token that fails
-to copy, fails the token before the record is repointed, and the next start
-retries. Only a key the listing lacks counts as absent: repointing a token
-whose access token stayed behind would hide it from the collective refresh,
-which reads only `_token-secrets` for such a record, so the token would never
-be refreshed or revoked on a userinfo 401 (swamp-club#3136).
+token is migrated under its name lock (`src/serve/token_secret_migration.ts`):
+its secret is read, its vault is listed, and an access token the listing holds
+is read too. Both are written to `_token-secrets`, the record is repointed, and
+the user-vault copies are deleted when the vault supports deletes. A secret
+that cannot be read skips the token. A listing that fails, or a listed access
+token that fails to copy, fails the token before the record is repointed, and
+the next run retries. Only a key the listing lacks counts as absent: repointing
+a token whose access token stayed behind would hide it from the collective
+refresh, which reads only `_token-secrets` for such a record, so the token
+would never be refreshed or revoked on a userinfo 401 (swamp-club#3136).
 
 Earlier builds repointed in that case. So once per repo, serve lists the
 default user vault and copies the access token of each active record that
-names `_token-secrets` but lacks it there, under the token's name lock. Token
-names come from the records, not from the vault's keys. When the listing
+names `_token-secrets` but lacks it there, under the token's name lock.
+`_token-secrets` is listed too, so a key there that fails to read is not
+overwritten. Token names come from the records, not from the vault's keys.
+When the listing
 succeeds and every key moves, serve records `oauth-access-tokens-recovered` in
 `_token-secrets` and never lists the vault for this again; otherwise the next
 start retries. A start with no such record records the marker without listing.

@@ -175,7 +175,8 @@ export async function migrateTokenSecrets(
       }
     } catch (err) {
       failed++;
-      logger.warn`Failed to migrate token ${queried.name}: ${
+      logger
+        .warn`Failed to migrate token ${queried.name}, retrying on the next run: ${
         err instanceof Error ? err.message : String(err)
       }`;
     }
@@ -361,9 +362,10 @@ export async function recoverOAuthAccessTokens(
             ) {
               return "skipped";
             }
-            if (await hasSecret(vaultService, tokenSecretsVaultName, key)) {
-              return "skipped";
-            }
+            // Listed rather than read, so a failed read is not taken for
+            // absence and cannot copy over a key that is there.
+            const present = await vaultService.list(tokenSecretsVaultName);
+            if (present.includes(key)) return "skipped";
             const value = await vaultService.get(
               userVaultName,
               key,
