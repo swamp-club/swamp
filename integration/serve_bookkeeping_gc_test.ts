@@ -50,12 +50,10 @@ import {
 } from "../src/infrastructure/persistence/repository_factory.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import type { CatalogRow } from "../src/infrastructure/persistence/catalog_store.ts";
-import {
-  createLibSwampContext,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-  workerQueueList,
-} from "../src/libswamp/mod.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
+import { workerQueueList } from "../src/libswamp/worker/queue_list.ts";
 import {
   createBookkeepingRecordQuery,
   reapEndedBookkeepingRecords,

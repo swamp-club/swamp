@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { EventHandlers, StreamEvent } from "../libswamp/mod.ts";
+import type { EventHandlers, StreamEvent } from "../libswamp/stream.ts";
 
 /**
  * A mode-specific object that translates libswamp event streams into

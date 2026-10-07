@@ -17,15 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkflowWaitsDeps,
-  userErrorFromSwampError,
   workflowWaits,
   type WorkflowWaitsData,
   type WorkflowWaitsEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/waits.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
   type CommandContext,
   createContext,
@@ -36,7 +36,14 @@ import {
   requireInitializedRepoUnlocked,
   signalWaitsOf,
 } from "../repo_context.ts";
-import { formatCommandTarget } from "../remote_run.ts";
+import {
+  formatCommandTarget,
+  requestNewerServerResponse,
+  resolveServerTokenFromOptions,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowWaitsResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -105,19 +112,45 @@ export function renderWaits(
   }
 }
 
-export const workflowWaitsCommand = new Command()
-  .name("waits")
-  .description("List all workflow steps waiting for a signal")
-  .example("List open waits", "swamp workflow waits")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
+export const workflowWaitsCommand = withRemoteOptions(
+  new Command()
+    .name("waits")
+    .description("List all workflow steps waiting for a signal")
+    .example("List open waits", "swamp workflow waits")
+    .example(
+      "List the open waits a server holds",
+      "swamp workflow waits --server wss://swamp.example.com",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+)
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
       "waits",
     ]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerTokenFromOptions(server, options);
+      const response = await requestNewerServerResponse<WorkflowWaitsResponse>(
+        "listing signal waits",
+        { server, token },
+        { type: "workflow.waits" },
+      );
+      const listed = response.data as Partial<WorkflowWaitsData>;
+      renderWaits(
+        cliCtx,
+        {
+          waits: listed.waits ?? [],
+          unreadableWaits: listed.unreadableWaits ?? [],
+        },
+        formatCommandTarget({ server: options.server as string | undefined }),
+      );
+      return;
+    }
 
     const { repoContext } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),

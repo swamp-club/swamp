@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ActionSchema } from "../../domain/access/action.ts";
+import { ACTION_LIST, ActionSchema } from "../../domain/access/action.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
@@ -34,7 +34,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import type { ModelMethodRunDeps } from "../../libswamp/mod.ts";
+import type { ModelMethodRunDeps } from "../../libswamp/models/run.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   parseResourceSelector,
@@ -123,7 +123,7 @@ export function parseActionsFlag(value: string): string[] {
   for (const action of actions) {
     if (!validActions.includes(action as typeof validActions[number])) {
       throw new UserError(
-        `Invalid action "${action}": must be one of ${validActions.join(", ")}`,
+        `Invalid action "${action}": must be one of ${ACTION_LIST}`,
       );
     }
   }

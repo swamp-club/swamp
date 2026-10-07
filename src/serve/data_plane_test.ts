@@ -320,6 +320,75 @@ Deno.test("DataPlane: reading a missing artifact is a 404", async () => {
   });
 });
 
+Deno.test("DataPlane: control-plane record bytes read as missing, in any spelling (swamp-club#3129)", async () => {
+  await withHarness(async (h) => {
+    h.stored.set("@swamp/grant/m-g/grant", {
+      content: new TextEncoder().encode("grant-bytes"),
+      data: { id: "data-g", name: "grant" },
+      version: 1,
+    });
+    h.dispatches.register(activeDispatch());
+    for (const type of ["@swamp/grant", "swamp/grant", "@@swamp/grant"]) {
+      const response = await h.plane.handle(
+        request(`/data/${encodeURIComponent(type)}/m-g/grant/1`),
+      );
+      assertEquals(response?.status, 404, type);
+      assertStringIncludes(await response!.text(), "No data 'grant' version 1");
+      // No ETag: the response is the same as for a record that is absent.
+      assertEquals(response?.headers.get("etag"), null);
+    }
+  });
+});
+
+Deno.test("DataPlane: a fleet-probe dispatch reads its own records, but no other control-plane type", async () => {
+  await withHarness(async (h) => {
+    h.stored.set("swamp/fleet-probe/m-p/probe-result", {
+      content: new TextEncoder().encode("probe-bytes"),
+      data: { id: "data-p", name: "probe-result" },
+      version: 1,
+    });
+    h.stored.set("@swamp/grant/m-g/grant", {
+      content: new TextEncoder().encode("grant-bytes"),
+      data: { id: "data-g", name: "grant" },
+      version: 1,
+    });
+    h.dispatches.register({
+      ...activeDispatch(),
+      modelType: ModelType.create("swamp/fleet-probe"),
+      modelId: "m-p",
+    });
+    const probe = await h.plane.handle(
+      request(
+        `/data/${encodeURIComponent("swamp/fleet-probe")}/m-p/probe-result/1`,
+      ),
+    );
+    assertEquals(probe?.status, 200);
+    assertEquals(await probe?.text(), "probe-bytes");
+    const grant = await h.plane.handle(
+      request(`/data/${encodeURIComponent("@swamp/grant")}/m-g/grant/1`),
+    );
+    assertEquals(grant?.status, 404);
+    await grant?.body?.cancel();
+  });
+});
+
+Deno.test("DataPlane: without a dispatch, fleet-probe records read as missing", async () => {
+  await withHarness(async (h) => {
+    h.stored.set("swamp/fleet-probe/m-p/probe-result", {
+      content: new TextEncoder().encode("probe-bytes"),
+      data: { id: "data-p", name: "probe-result" },
+      version: 1,
+    });
+    const response = await h.plane.handle(
+      request(
+        `/data/${encodeURIComponent("swamp/fleet-probe")}/m-p/probe-result/1`,
+      ),
+    );
+    assertEquals(response?.status, 404);
+    await response?.body?.cancel();
+  });
+});
+
 Deno.test("DataPlane: writes without an active dispatch are refused", async () => {
   await withHarness(async (h) => {
     const response = await h.plane.handle(

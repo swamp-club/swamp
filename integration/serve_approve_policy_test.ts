@@ -27,7 +27,7 @@
 
 import { join } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -195,6 +195,7 @@ async function suspendAtGate(
     restrictedModelTypes: [],
     restrictedCommands: [],
     approveRequiresExplicitGrant,
+    signalRequiresExplicitGrant: false,
   };
   const ctx = {
     repoDir: resolved,

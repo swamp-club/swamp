@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { VaultListKeysEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { VaultListKeysEvent } from "../../libswamp/vaults/list_keys.ts";
 import { createVaultListKeysRenderer } from "./vault_list_keys.ts";
 import { UserError } from "../../domain/errors.ts";
 

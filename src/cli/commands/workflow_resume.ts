@@ -58,19 +58,17 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
+import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { renderAwaitingParent } from "./nested_run_hints.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import {
-  awaitingParentOf,
-  consumeStream,
-  mapWorkflowExecutionEvent,
-} from "../../libswamp/mod.ts";
-import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
+import { awaitingParentOf } from "../../libswamp/workflows/nested_runs.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { mapWorkflowExecutionEvent } from "../../libswamp/workflows/run.ts";
+import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
 import { GIT_SHA } from "./version.ts";

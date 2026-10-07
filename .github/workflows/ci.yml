@@ -54,6 +54,10 @@ jobs:
               # describes, and a worse one: this script is what every other
               # hash in the document is reported by.
               - 'scripts/build_attestation.ts'
+              # What the generator imports and runs to compute
+              # affectedCommands.
+              - 'scripts/affected_commands.ts'
+              - 'scripts/command_index.ts'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -339,7 +343,7 @@ jobs:
             --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -682,6 +686,8 @@ jobs:
           # produced by an edited generator stops matching at the commit it
           # names.
           check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
+          check_hash "affected-commands script" '.configIntegrity.scripts."affected-commands"' "scripts/affected_commands.ts"
+          check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
 
           # -- 6. Steps summary table --
           {
@@ -703,6 +709,31 @@ jobs:
               echo "|--------|-------|--------|"
             } >> "$GITHUB_STEP_SUMMARY"
             jq -r '.reviewConfig | to_entries[] | "| \(.key) | \(.value.model) | \(if .value.ran then "✅ ran" else "⏭️ \(.value.reason // "skipped")" end) |"' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+          # -- 8. Affected commands --
+          # Displayed, not checked: the list is the generator's reading of the
+          # static import graph at the attested commit, and nothing here
+          # recomputes it. Every value is rendered by jq from the document and
+          # none reaches the shell; names are restricted to the characters a
+          # command or path can contain so the document cannot write markdown
+          # into the summary.
+          if jq -e '.affectedCommands | type == "object"' attestation.json > /dev/null 2>&1; then
+            {
+              echo ""
+              echo "### Affected Commands"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '
+              def safe: tostring | gsub("[^A-Za-z0-9 ._/:-]"; "?") | .[0:200];
+              .affectedCommands as $a
+              | ($a.commands // [] | if type == "array" then . else [] end) as $names
+              | "`\($a.scope // "unknown" | safe)` — \($names | length) of `\($a.totalCommands // "?" | safe)` `\($a.granularity // "?" | safe)` commands, from `\($a.derivation.method? // "unknown" | safe)` against `\($a.derivation.diffBase? // "?" | safe | .[0:8])`",
+                "",
+                (if ($names | length) > 0 then ($names[0:100] | map("`\(safe)`") | join(" ")) else "_No command selected._" end),
+                (if ($a.forcedAll.count? // 0 | tonumber? // 0) > 0 then "", "Every command selected by: " + ([$a.forcedAll.files[]? | "`\(.file? // "?" | safe)` (`\(.rule? // "?" | safe)`)"] | .[0:10] | join(", ")) else empty end),
+                (if ($a.startupPath.count? // 0 | tonumber? // 0) > 0 then "", "⚠️ Touches the startup path every command runs (`\($a.startupPath.count | safe)` file(s)): " + ([$a.startupPath.files[]? | "`\(safe)`"] | .[0:10] | join(", ")) else empty end)
+            ' attestation.json >> "$GITHUB_STEP_SUMMARY" || true
           fi
 
           # -- Result --

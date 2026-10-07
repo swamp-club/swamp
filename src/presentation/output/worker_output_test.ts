@@ -21,11 +21,11 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type {
   WorkerListData,
-  WorkerQueueListData,
-  WorkerTokenCreateData,
   WorkerTokenListData,
-  WorkerTokenRevokeData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/list.ts";
+import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
+import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
+import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
 import {
   renderWorkerList,
   renderWorkerQueue,

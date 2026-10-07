@@ -65,25 +65,35 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRunGcDeps } from "../src/libswamp/data/run_gc.ts";
 import {
-  createRunGcDeps,
   createWorkflowApproveDeps,
-  createWorkflowCancelSuspendedDeps,
-  createWorkflowDeleteDeps,
-  createWorkflowRejectDeps,
-  createWorkflowSignalDeps,
-  createWorkflowWaitsDeps,
-  supersedeSuspendedRuns,
   workflowApprove,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  createWorkflowCancelSuspendedDeps,
   workflowCancelSuspended,
+} from "../src/libswamp/workflows/cancel_suspended.ts";
+import {
+  createWorkflowDeleteDeps,
   workflowDelete,
+} from "../src/libswamp/workflows/delete.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
+} from "../src/libswamp/workflows/reject.ts";
+import {
+  createWorkflowSignalDeps,
   workflowSignal,
   type WorkflowSignalData,
   type WorkflowSignalEvent,
+} from "../src/libswamp/workflows/signal.ts";
+import {
+  createWorkflowWaitsDeps,
   workflowWaits,
   type WorkflowWaitsData,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/waits.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import type { InputsSchema } from "../src/domain/definitions/definition.ts";
 
 import "../src/domain/models/models.ts";

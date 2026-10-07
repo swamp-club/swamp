@@ -29,11 +29,11 @@ import {
   createDataDeleteRenderer,
   renderDataDeleteCancelled,
 } from "./data_delete.ts";
-import {
-  type DataBatchDeleteEvent,
-  type DataDeleteEvent,
-  validationFailed,
-} from "../../libswamp/mod.ts";
+import type {
+  DataBatchDeleteEvent,
+  DataDeleteEvent,
+} from "../../libswamp/data/delete.ts";
+import { validationFailed } from "../../libswamp/errors.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // noColor: true selects LogTape's text formatter, which produces a single

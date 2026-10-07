@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dim } from "@std/fmt/colors";
-import type {
-  DataGetData,
-  DataGetEvent,
-  EventHandlers,
-} from "../../libswamp/mod.ts";
+import type { DataGetData, DataGetEvent } from "../../libswamp/data/get.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

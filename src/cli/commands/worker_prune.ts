@@ -32,22 +32,25 @@ import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createModelDeleteDeps,
-  createWorkerListDeps,
-  createWorkerModelRunDeps,
   modelDelete,
-  modelMethodRun,
-  parseDuration,
-  withDefaults,
+} from "../../libswamp/models/delete.ts";
+import {
+  createWorkerListDeps,
+  workerTokenList,
+  type WorkerTokenListEvent,
+} from "../../libswamp/worker/list.ts";
+import { createWorkerModelRunDeps } from "../../libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../../libswamp/models/run.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
+import {
   workerPrune,
   type WorkerPruneDeps,
   type WorkerPruneEvent,
   type WorkerPruneResult,
-  workerTokenList,
-  type WorkerTokenListEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/prune.ts";
 import {
   WORKER_MODEL_TYPE,
   WorkerStateSchema,
@@ -124,7 +127,8 @@ export const workerPruneCommand = withRemoteOptions(
     const data = response.data as Record<string, unknown>;
     if (dryRun && Array.isArray(data.prunable)) {
       renderWorkerPrunePreview(
-        data.prunable as import("../../libswamp/mod.ts").PrunableWorker[],
+        data
+          .prunable as import("../../libswamp/worker/prune.ts").PrunableWorker[],
         true,
         cliCtx.outputMode,
       );
@@ -225,7 +229,8 @@ export const workerPruneCommand = withRemoteOptions(
 
   const force = !!options.force;
   let prunableCount = 0;
-  let prunableWorkers: import("../../libswamp/mod.ts").PrunableWorker[] = [];
+  let prunableWorkers:
+    import("../../libswamp/worker/prune.ts").PrunableWorker[] = [];
   let result: WorkerPruneResult | undefined;
 
   await consumeStream(

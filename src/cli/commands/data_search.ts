@@ -18,15 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import type { DataGetData } from "../../libswamp/data/get.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
-  type DataGetData,
   dataSearch,
   type DataSearchDeps,
   type DataSearchItem,
   parseTags,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/search.ts";
 import {
   createDataSearchRenderer,
   type DataPreviewDetail,
@@ -264,7 +264,7 @@ export const dataSearchCommand = withRemoteOptions(
         yield {
           kind: "completed" as const,
           data: response
-            .data as unknown as import("../../libswamp/mod.ts").DataSearchData,
+            .data as unknown as import("../../libswamp/data/search.ts").DataSearchData,
         };
       })(),
       renderer.handlers(),

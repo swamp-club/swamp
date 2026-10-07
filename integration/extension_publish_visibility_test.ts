@@ -30,14 +30,14 @@ import {
 } from "../src/domain/extensions/extension_package_cache.ts";
 import { extractTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 import { ExtensionApiClient } from "../src/infrastructure/http/extension_api_client.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   extensionPush,
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
-  RUBRIC_VERSION,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/extensions/push.ts";
+import { RUBRIC_VERSION } from "../src/domain/extensions/extension_rubric_scorer.ts";
 
 const selections: Array<{
   name: string;

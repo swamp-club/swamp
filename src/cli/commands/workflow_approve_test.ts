@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { WorkflowApproveData } from "../../libswamp/mod.ts";
+import type { WorkflowApproveData } from "../../libswamp/workflows/approve.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderApproveResult, serveIsResuming } from "./workflow_approve.ts";
 

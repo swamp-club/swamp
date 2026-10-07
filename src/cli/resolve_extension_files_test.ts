@@ -564,6 +564,87 @@ Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () 
   });
 });
 
+/** Write a one-model manifest with `extra` merged in, under `dir`. */
+async function writeDirEntryManifest(
+  dir: string,
+  extra: Record<string, unknown>,
+): Promise<string> {
+  await Deno.writeTextFile(
+    join(dir, "extensions", "models", "m.ts"),
+    'export const name = "m";',
+  );
+  const manifestPath = join(dir, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: "@test/myext",
+      version: "2026.03.03.1",
+      models: ["m.ts"],
+      ...extra,
+    }),
+  );
+  return manifestPath;
+}
+
+for (
+  const { field, label, base } of [
+    { field: "additionalFiles", label: "Additional file", base: [] },
+    { field: "binaries", label: "Binary file", base: [] },
+    { field: "include", label: "Include file", base: ["extensions", "models"] },
+  ]
+) {
+  Deno.test(`resolveExtensionFiles: rejects a directory in ${field}`, async () => {
+    await withTempRepo(async (dir) => {
+      const docsDir = join(dir, ...base, "docs");
+      await Deno.mkdir(docsDir, { recursive: true });
+      await Deno.writeTextFile(join(docsDir, "notes.md"), "# notes");
+      const manifestPath = await writeDirEntryManifest(dir, {
+        [field]: ["docs"],
+      });
+
+      const error = await assertRejects(
+        () =>
+          resolveExtensionFiles({
+            repoDir: dir,
+            manifestPath,
+            repoContext: stubRepoContext,
+            logger,
+          }),
+        UserError,
+      );
+      assertStringIncludes(error.message, `${label} is a directory: docs`);
+      assertStringIncludes(error.message, "list each file under docs/");
+    });
+  });
+}
+
+Deno.test("resolveExtensionFiles: accepts nested files in additionalFiles and include", async () => {
+  await withTempRepo(async (dir) => {
+    await Deno.mkdir(join(dir, "docs"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "docs", "notes.md"), "# notes");
+    const helpersDir = join(dir, "extensions", "models", "helpers");
+    await Deno.mkdir(helpersDir, { recursive: true });
+    await Deno.writeTextFile(join(helpersDir, "a.ts"), "export const a = 1;");
+    const manifestPath = await writeDirEntryManifest(dir, {
+      additionalFiles: ["docs/notes.md"],
+      include: ["helpers/a.ts"],
+    });
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+    assertPathEquals(
+      result.additionalFilePaths[0],
+      join(dir, "docs", "notes.md"),
+    );
+    assertPathEquals(result.includeFilePaths[0], join(helpersDir, "a.ts"));
+  });
+});
+
 Deno.test("resolveExtensionFiles accepts zero-byte additionalFiles", async () => {
   await withTempRepo(async (dir) => {
     const modelsDir = join(dir, "extensions", "models");

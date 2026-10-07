@@ -18,12 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { auditDoctor } from "../../domain/audit/doctor/doctor_service.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  auditDoctor,
-  consumeStream,
   NoToolConfiguredError,
   type SpawnFn,
-} from "../../libswamp/mod.ts";
+} from "../../domain/audit/doctor/check.ts";
 
 import {
   SWAMP_SUBDIRS,

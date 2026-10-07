@@ -23,6 +23,7 @@ import {
   collectiveBillingUrl,
   type CollectiveEntitlement,
   collectiveOf,
+  type CollectiveTrial,
   evaluateCollectiveMembership,
   evaluatePrivateEntitlement,
   evaluateVersionExists,
@@ -31,6 +32,7 @@ import {
   registryCheckNotRun,
   type RegistryCheckResult,
   registryChecksVerdict,
+  signedInCheck,
 } from "./extension_publish_checks.ts";
 
 Deno.test("collectiveOf: returns the namespace between @ and /", () => {
@@ -82,6 +84,26 @@ Deno.test("evaluateCollectiveMembership: unknown collectives fall back to the us
     'Extension collective "@acme" is not one of your collectives (@seth). ' +
       "Use one of: @seth",
   );
+});
+
+Deno.test("evaluateCollectiveMembership: no collectives and no username leaves membership unchecked", () => {
+  const result = evaluateCollectiveMembership({
+    extensionName: "@acme/tool",
+    collectives: undefined,
+    username: "",
+  });
+  assertEquals(result.reserved.status, "passed");
+  assertEquals(result.membership, {
+    name: "collective-membership",
+    status: "not-run",
+    message:
+      "Could not check that @acme is one of your collectives: the registry " +
+      "did not report your collectives, and this credential has no username " +
+      "to check against.",
+    cause: "registry-unavailable",
+  });
+  // A dry run stays red: the push would refuse.
+  assertEquals(registryChecksVerdict([result.membership]).ok, false);
 });
 
 Deno.test("evaluateCollectiveMembership: reserved collective needs the registry's membership list", () => {
@@ -392,8 +414,14 @@ Deno.test("evaluatePrivateEntitlement: an ended trial without a date is still a 
   );
 });
 
-Deno.test("evaluatePrivateEntitlement: a free plan with no trial is undecided, since the registry may start one", () => {
-  for (const trial of [undefined, null] as const) {
+Deno.test("evaluatePrivateEntitlement: a free plan with no trial fails with the push's exact message, since no trial starts at publish", () => {
+  for (
+    const trial of [
+      undefined,
+      null,
+      { state: "none", endsAt: null, daysRemaining: 0 },
+    ] as const
+  ) {
     const result = evaluatePrivateEntitlement({
       extensionName: "@acme/tool",
       entitlements: [acme({ trial })],
@@ -401,12 +429,32 @@ Deno.test("evaluatePrivateEntitlement: a free plan with no trial is undecided, s
     });
     assertEquals(result, {
       name: "private-entitlement",
-      status: "not-run",
-      cause: "entitlement-undecided",
-      message:
-        'Collective "@acme" is on the Free plan with no trial reported; the registry decides private publication at publish.',
+      status: "failed",
+      message: 'Collective "@acme" is on the Free plan and has no trial. ' +
+        "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/acme/billing.",
     });
   }
+});
+
+Deno.test("evaluatePrivateEntitlement: a trial state this client does not know is undecided, never refused", () => {
+  const result = evaluatePrivateEntitlement({
+    extensionName: "@acme/tool",
+    entitlements: [acme({
+      trial: {
+        state: "returned",
+        endsAt: null,
+        daysRemaining: 0,
+      } as unknown as CollectiveTrial,
+    })],
+    serverUrl: SERVER,
+  });
+  assertEquals(result, {
+    name: "private-entitlement",
+    status: "not-run",
+    cause: "entitlement-undecided",
+    message:
+      'the registry reported a trial state for "@acme" that this client does not know; private publication is decided at publish',
+  });
 });
 
 Deno.test("evaluatePrivateEntitlement: no entitlement reported is undecided and says so, never naming a plan", () => {
@@ -530,5 +578,69 @@ Deno.test("explainPrivatePublishRefusal: no entitlement reported adds the note a
       }),
       `${REFUSAL}. At sign-in the registry did not report entitlement for "@acme".`,
     );
+  }
+});
+
+Deno.test("signedInCheck: a personal key names the username", () => {
+  assertEquals(
+    signedInCheck({ username: "seth", fingerprint: "9c1e4b7a2f60d835" }),
+    {
+      name: "authentication",
+      status: "passed",
+      message: "Signed in as seth.",
+      credential: { username: "seth", fingerprint: "9c1e4b7a2f60d835" },
+    },
+  );
+});
+
+Deno.test("signedInCheck: an API token names its collective and fingerprint", () => {
+  assertEquals(
+    signedInCheck({
+      username: "",
+      collectiveToken: true,
+      collectiveSlug: "swamp-uat",
+      fingerprint: "9c1e4b7a2f60d835",
+    }),
+    {
+      name: "authentication",
+      status: "passed",
+      message:
+        "Signed in with an API token for @swamp-uat (fingerprint 9c1e4b7a2f60d835).",
+      credential: {
+        collectiveToken: true,
+        collectiveSlug: "swamp-uat",
+        fingerprint: "9c1e4b7a2f60d835",
+      },
+    },
+  );
+});
+
+Deno.test("signedInCheck: an API token is named as one even with a cached username", () => {
+  const check = signedInCheck({
+    username: "seth",
+    collectiveToken: true,
+    collectiveSlug: "acme",
+    fingerprint: "9c1e4b7a2f60d835",
+  });
+  assertEquals(
+    check.message,
+    "Signed in with an API token for @acme (fingerprint 9c1e4b7a2f60d835).",
+  );
+});
+
+Deno.test("signedInCheck: without a username or collective, the fingerprint alone names the key", () => {
+  for (
+    const identity of [
+      { username: "", collectiveToken: true, fingerprint: "9c1e4b7a2f60d835" },
+      { username: "", fingerprint: "9c1e4b7a2f60d835" },
+    ]
+  ) {
+    const check = signedInCheck(identity);
+    assertEquals(
+      check.message,
+      "Signed in with an API token (fingerprint 9c1e4b7a2f60d835).",
+    );
+    assertEquals(check.credential?.fingerprint, "9c1e4b7a2f60d835");
+    assertEquals(check.credential?.username, undefined);
   }
 });

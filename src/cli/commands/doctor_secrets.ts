@@ -25,13 +25,13 @@
 // exits non-zero when a leak is found so CI can gate on it.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDoctorSecretsDeps,
-  createLibSwampContext,
   doctorSecrets,
   type DoctorSecretsData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/doctor_secrets.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createDoctorSecretsRenderer } from "../../presentation/renderers/doctor_secrets.ts";
 import {
   createContext,

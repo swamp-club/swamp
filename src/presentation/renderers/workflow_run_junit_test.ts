@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { escapeXml, JUnitWorkflowRunRenderer } from "./workflow_run_junit.ts";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 
 Deno.test("escapeXml: escapes ampersand", () => {
   assertEquals(escapeXml("a & b"), "a &amp; b");

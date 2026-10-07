@@ -189,3 +189,58 @@ Deno.test("renderServeCheckConfig: json mode includes the token secrets key chec
   const output = captureLogs(() => renderServeCheckConfig(data, "json"));
   assertEquals(JSON.parse(output), data);
 });
+
+Deno.test("renderServeCheckConfig: log mode outside oauth shows why serve would refuse to start", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({
+        passed: false,
+        authMode: "token",
+        entries: [],
+        allowedCollectives: [],
+        wouldStart: false,
+        refusal:
+          'Invalid restricted-model-types entry "@": it names no model type',
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "swamp serve would refuse to start:");
+  assertStringIncludes(output, 'Invalid restricted-model-types entry "@"');
+  assertStringIncludes(
+    output,
+    "Result: FAILED (swamp serve would refuse to start)",
+  );
+});
+
+Deno.test("renderServeCheckConfig: restriction warnings are shown in every mode and do not fail the check", () => {
+  const message =
+    'restricted-commands entry "vault.putt" is not a server command and restricts nothing — command names match exactly';
+  const warning = {
+    option: "restricted-commands",
+    entry: "vault.putt",
+    reason: "unknown-command",
+    message,
+  } as const;
+  for (const data of [tokenMode, { ...partial, passed: true }]) {
+    const output = stripAnsiCode(
+      captureLogs(() =>
+        renderServeCheckConfig(
+          { ...data, restrictionWarnings: [warning] },
+          "log",
+        )
+      ),
+    );
+    assertStringIncludes(output, "Restriction warnings:");
+    assertStringIncludes(output, `! ${message}`);
+    assertStringIncludes(output, "Result: PASSED");
+  }
+  const json = JSON.parse(
+    captureLogs(() =>
+      renderServeCheckConfig(
+        { ...tokenMode, restrictionWarnings: [warning] },
+        "json",
+      )
+    ),
+  );
+  assertEquals(json.restrictionWarnings, [warning]);
+});

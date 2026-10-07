@@ -40,9 +40,13 @@ import {
 } from "../duration_parser.ts";
 import {
   buildServeAuthConfig,
+  findIneffectiveRestrictions,
   type ServeAuthConfig,
 } from "../../domain/access/serve_auth_config.ts";
-import { handleConnection } from "../../serve/connection.ts";
+import {
+  handleConnection,
+  serverRequestPayloadFields,
+} from "../../serve/connection.ts";
 import {
   cancelSuspendedRunAndPush,
   RUN_CANCEL_GRACE_MS,
@@ -129,6 +133,10 @@ import {
   rateLimitKey,
 } from "../../serve/rate_limiter.ts";
 import {
+  handleSignalHttpRequest,
+  matchSignalRoute,
+} from "../../serve/signal_http.ts";
+import {
   parsePrincipal,
   type Principal,
 } from "../../domain/access/principal.ts";
@@ -202,23 +210,28 @@ import {
 } from "../../infrastructure/persistence/api_key_source.ts";
 import { selectCheckConfigToken } from "../serve_check_config_token.ts";
 import { groupCommandAction } from "../group_action.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createModelDeleteDeps,
-  createWorkerListDeps,
-  createWorkerModelRunDeps,
-  type DetachedNestedRunData,
   modelDelete,
-  modelMethodRun,
+} from "../../libswamp/models/delete.ts";
+import {
+  createWorkerListDeps,
+  workerTokenList,
+} from "../../libswamp/worker/list.ts";
+import { createWorkerModelRunDeps } from "../../libswamp/worker/run_deps.ts";
+import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
+import { modelMethodRun } from "../../libswamp/models/run.ts";
+import {
   normalizeFireTime,
   ScheduledExecutionService,
   type TriggerOverride,
-  withDefaults,
+} from "../../libswamp/workflows/scheduled_execution.ts";
+import {
   workerPrune,
   type WorkerPruneDeps,
   type WorkerPruneResult,
-  workerTokenList,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/prune.ts";
 import { WorkerStateSchema } from "../../domain/models/worker/worker_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
@@ -1073,6 +1086,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.approveRequiresExplicitGrant) {
     args.push("--approve-requires-explicit-grant");
   }
+  if (options.signalRequiresExplicitGrant) {
+    args.push("--signal-requires-explicit-grant");
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -1450,6 +1466,7 @@ export function resolveServeStartupSettings(
     restrictedModelTypes: merged.restrictedModelTypes,
     restrictedCommands: merged.restrictedCommands,
     approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+    signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
   });
 
   assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);
@@ -1576,11 +1593,11 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
-    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install); names match exactly. Requires --auth-mode token or oauth",
   )
   .option(
     "--approve-requires-explicit-grant",
@@ -1588,6 +1605,13 @@ const daemonEnableCommand = new Command()
       "a run grant alone no longer implies approve. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--signal-requires-explicit-grant",
+    "Require a grant that names signal to deliver a signal to a workflow's wait; " +
+      "a run grant alone no longer implies signal. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2001,6 +2025,42 @@ const checkConfigCommand = new Command()
       options,
       parseExplicitFlags(Deno.args),
     );
+
+    // Restriction entries that cannot match, judged without loading the
+    // model registry so this command stays read-only and offline: whether a
+    // bare type is registered is reported by serve at startup instead
+    // (swamp-club#3132). An entry that names no type stops serve starting,
+    // and would stop buildServeAuthConfig below, so it is reported first.
+    const restrictionFindings = findIneffectiveRestrictions({
+      restrictedModelTypes: merged.restrictedModelTypes,
+      restrictedCommands: merged.restrictedCommands,
+      requestTypes: new Set(serverRequestPayloadFields().keys()),
+    });
+    const restrictionWarnings = restrictionFindings.filter((finding) =>
+      finding.reason !== "no-type"
+    );
+    const unnamedType = restrictionFindings.find((finding) =>
+      finding.reason === "no-type"
+    );
+    const checkedMode = merged.authMode ?? "none";
+    if (
+      unnamedType !== undefined &&
+      (checkedMode === "none" || checkedMode === "token" ||
+        checkedMode === "oauth")
+    ) {
+      renderServeCheckConfig({
+        passed: false,
+        authMode: checkedMode,
+        entries: [],
+        allowedCollectives: [],
+        wouldStart: false,
+        refusal: unnamedType.message,
+        restrictionWarnings,
+      }, ctx.outputMode);
+      Deno.exitCode = 1;
+      return;
+    }
+
     const authConfig = buildServeAuthConfig({
       authMode: merged.authMode,
       admins: merged.admins,
@@ -2012,6 +2072,7 @@ const checkConfigCommand = new Command()
       restrictedModelTypes: merged.restrictedModelTypes,
       restrictedCommands: merged.restrictedCommands,
       approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
+      signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
     });
 
     const tokenSecretsKey = await checkTokenSecretsKey(
@@ -2032,6 +2093,7 @@ const checkConfigCommand = new Command()
         entries: [],
         allowedCollectives: [],
         wouldStart: keyUsable,
+        restrictionWarnings,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
       if (!keyUsable) Deno.exitCode = 1;
@@ -2079,6 +2141,7 @@ const checkConfigCommand = new Command()
       allowedCollectives: authConfig.allowedCollectives,
       wouldStart: check.wouldStart && keyUsable,
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
+      restrictionWarnings,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
@@ -2216,11 +2279,11 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell). Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
-    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install). Requires --auth-mode token or oauth",
+    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install); names match exactly. Requires --auth-mode token or oauth",
   )
   .option(
     "--approve-requires-explicit-grant",
@@ -2228,6 +2291,13 @@ export const serveCommand = new Command()
       "a run grant alone no longer implies approve. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--signal-requires-explicit-grant",
+    "Require a grant that names signal to deliver a signal to a workflow's wait; " +
+      "a run grant alone no longer implies signal. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2505,6 +2575,15 @@ export const serveCommand = new Command()
       );
     }
 
+    if (
+      authConfig.mode === "none" && authConfig.signalRequiresExplicitGrant
+    ) {
+      logger.warn(
+        "--signal-requires-explicit-grant is set but --auth-mode is {mode} — signal policy will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
     if (authConfig.mode === "oauth" || authConfig.mode === "token") {
       requireAuthenticated("swamp serve is a team feature", "serve:*");
       requireScope("serve:*");
@@ -2736,6 +2815,20 @@ export const serveCommand = new Command()
     // On an extension-backed datastore the catalog repair ran in that load,
     // after the baseline record: add what it catalogued.
     await recordPulledTypes();
+
+    // Restriction entries that cannot match restrict nothing; say so now
+    // that the model registry is indexed (swamp-club#3129).
+    if (authConfig.mode !== "none") {
+      const findings = findIneffectiveRestrictions({
+        restrictedModelTypes: merged.restrictedModelTypes,
+        restrictedCommands: merged.restrictedCommands,
+        requestTypes: new Set(serverRequestPayloadFields().keys()),
+        isKnownModelType: (type) => modelRegistry.has(type),
+      });
+      for (const finding of findings) {
+        logger.warn("{warning}", { warning: finding.message });
+      }
+    }
 
     // Probe deployment stack and resolve durability mode.
     const datastoreClass: DatastoreClassification =
@@ -3170,36 +3263,18 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const userVaultName = oauthVaultService.getDefaultVaultName() ??
-        oauthVaultService.getVaultNames().find((n) =>
-          n !== TOKEN_SECRETS_VAULT_NAME
-        );
+      const { createOAuthSecretReader } = await import(
+        "../../serve/oauth_secret_migration.ts"
+      );
+      const readOAuthSecret = createOAuthSecretReader(
+        oauthVaultService,
+        TOKEN_SECRETS_VAULT_NAME,
+      );
       let credentials;
       try {
         credentials = await resolveOAuthClientCredentials(
           {
-            getVaultSecret: async (_v, k) => {
-              try {
-                return await oauthVaultService.get(
-                  TOKEN_SECRETS_VAULT_NAME,
-                  k,
-                  "serve:oauth-resolve",
-                );
-              } catch {
-                if (userVaultName) {
-                  try {
-                    return await oauthVaultService.get(
-                      userVaultName,
-                      k,
-                      "serve:oauth-resolve",
-                    );
-                  } catch {
-                    return null;
-                  }
-                }
-                return null;
-              }
-            },
+            getVaultSecret: (_v, k) => readOAuthSecret(k),
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
             registerClient: async (providerUrl, signal) => {
@@ -3773,7 +3848,10 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
       grantReloadMode as PolicyReloadMode,
-      { runImpliesApprove: !authConfig.approveRequiresExplicitGrant },
+      {
+        runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
+        runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
+      },
     );
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
@@ -3783,6 +3861,11 @@ export const serveCommand = new Command()
       authConfig.approveRequiresExplicitGrant
         ? "Approval policy: deciding an approval gate requires a grant that names approve"
         : "Approval policy: a run grant also permits deciding approval gates",
+    );
+    logger.info(
+      authConfig.signalRequiresExplicitGrant
+        ? "Signal policy: delivering a signal requires a grant that names signal"
+        : "Signal policy: a run grant also permits delivering signals",
     );
 
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
@@ -4838,10 +4921,6 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      const userVaultName = vaultService.getDefaultVaultName() ??
-        vaultService.getVaultNames().find((n) =>
-          n !== TOKEN_SECRETS_VAULT_NAME
-        );
 
       const {
         CollectiveRefreshService,
@@ -4849,8 +4928,8 @@ export const serveCommand = new Command()
       const {
         getUserInfo,
       } = await import("../../serve/oauth_client.ts");
-      const { oauthAccessTokenKey } = await import(
-        "../../serve/device_auth_handler.ts"
+      const { lookupOAuthAccessToken } = await import(
+        "../../serve/oauth_access_token_lookup.ts"
       );
 
       collectiveRefreshService = new CollectiveRefreshService({
@@ -4873,34 +4952,14 @@ export const serveCommand = new Command()
             tokens.push({
               name: parsed.data.name,
               principalId: parsed.data.principalId,
+              vaultName: parsed.data.vaultName,
               collectives: parsed.data.collectives,
               groups: parsed.data.groups,
             });
           }
           return tokens;
         },
-        getAccessToken: async (tokenName) => {
-          try {
-            return await vaultService.get(
-              TOKEN_SECRETS_VAULT_NAME,
-              oauthAccessTokenKey(tokenName),
-              "serve:group-refresh",
-            );
-          } catch {
-            if (userVaultName) {
-              try {
-                return await vaultService.get(
-                  userVaultName,
-                  oauthAccessTokenKey(tokenName),
-                  "serve:group-refresh",
-                );
-              } catch {
-                return null;
-              }
-            }
-            return null;
-          }
-        },
+        getAccessToken: (token) => lookupOAuthAccessToken(vaultService, token),
         updateTokenCollectives: async (tokenName, collectives, groups) => {
           const { createResourceWriter } = await import(
             "../../domain/models/data_writer.ts"
@@ -5642,6 +5701,30 @@ export const serveCommand = new Command()
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
+          // Signal endpoint (authenticated; authorized on the wait's workflow)
+          const signalWaitId = matchSignalRoute(url.pathname);
+          if (signalWaitId !== undefined) {
+            return await handleSignalHttpRequest(
+              req,
+              signalWaitId,
+              cancelRemoteAddr,
+              {
+                ctx: connectionCtx,
+                authenticate: (token, sourceIp) =>
+                  authenticateServerToken(
+                    token,
+                    resolvedRepoDir,
+                    repoContext,
+                    {
+                      emitter: connectionCtx.auditEmitter,
+                      instanceId: connectionCtx.instanceId,
+                      sourceIp,
+                      ingress: "http-signal",
+                    },
+                  ),
+              },
+            );
+          }
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
               const cancelIpBurst = checkIpBurst(cancelRemoteAddr);

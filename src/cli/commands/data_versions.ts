@@ -31,13 +31,13 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DataVersionsResponse } from "../../serve/protocol.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createDataVersionsDeps,
-  createLibSwampContext,
   dataVersions,
   type DataVersionsData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/versions.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createDataVersionsRenderer } from "../../presentation/renderers/data_versions.ts";
 import { UserError } from "../../domain/errors.ts";
 

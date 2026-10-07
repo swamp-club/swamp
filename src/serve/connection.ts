@@ -37,6 +37,7 @@ import {
   runAdoptingForwardedLocks,
 } from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
 import {
@@ -100,10 +101,12 @@ import {
   handleWorkflowRunSearch,
   handleWorkflowSchema,
   handleWorkflowSearch,
+  handleWorkflowSignal,
   handleWorkflowTriggerGet,
   handleWorkflowTriggerRemove,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
+  handleWorkflowWaits,
 } from "./handlers/workflow_handlers.ts";
 import {
   authorizeResolved,
@@ -817,6 +820,27 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
+// The wait ID is the only address of a signal. Only a UUID is accepted, so
+// no other client text reaches a store key or the audit log through it. It
+// is judged by normalizeWaitId, as the HTTP route and the CLI judge it, so
+// all three accept the same IDs.
+const WorkflowSignalRequestSchema = z.object({
+  type: z.literal("workflow.signal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    waitId: z.string().max(64).refine(
+      (value) => normalizeWaitId(value) !== undefined,
+      "must be a UUID",
+    ),
+    payload: z.unknown(),
+  }),
+});
+
+const WorkflowWaitsRequestSchema = z.object({
+  type: z.literal("workflow.waits"),
+  id: z.string().min(1).max(256),
+});
+
 const WorkflowCancelRequestSchema = z.object({
   type: z.literal("workflow.cancel"),
   id: z.string().min(1).max(256),
@@ -1395,6 +1419,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
   WorkflowRejectRequestSchema,
+  WorkflowSignalRequestSchema,
+  WorkflowWaitsRequestSchema,
   WorkflowCancelRequestSchema,
   WorkflowResumeRequestSchema,
   VaultDescribeRequestSchema,
@@ -2994,6 +3020,37 @@ export function handleMessage(
             principal,
           )),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
+      );
+      break;
+    case "workflow.signal":
+      // Not gated: a signal writes one control-plane record and pushes
+      // nothing. Audited under the wait ID until the handler has authorized
+      // the caller on the wait's workflow.
+      task = audited(
+        handleWorkflowSignal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts(
+          "execution",
+          "workflow",
+          normalizeWaitId(request.payload.waitId) ?? "invalid",
+        ),
+      );
+      break;
+    case "workflow.waits":
+      task = audited(
+        handleWorkflowWaits(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.cancel":

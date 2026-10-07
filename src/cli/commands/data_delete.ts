@@ -20,13 +20,13 @@
 import { Command } from "@cliffy/command";
 import {
   type BatchDeleteFilter,
-  consumeStream,
   createDataDeleteDeps,
   dataBatchDelete,
   dataBatchDeletePreview,
   dataDelete,
   dataDeletePreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/delete.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createDataBatchDeleteRenderer,
   createDataDeleteRenderer,
@@ -200,7 +200,7 @@ export const dataDeleteCommand = withRemoteOptions(
           yield {
             kind: "completed" as const,
             data: response
-              .data as unknown as import("../../libswamp/mod.ts").DataDeleteData,
+              .data as unknown as import("../../libswamp/data/delete.ts").DataDeleteData,
           };
         })(),
         renderer.handlers(),

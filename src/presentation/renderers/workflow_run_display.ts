@@ -23,7 +23,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   StepSkipReasonView,
   WorkflowRunView,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/workflow_run_view.ts";
 
 export function renderWorkflowRunDisplay(
   data: WorkflowRunView,

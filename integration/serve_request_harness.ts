@@ -75,6 +75,15 @@ export interface ServeRepo {
   modelType: ModelType;
 }
 
+/** Options for {@link withServeRepo}. */
+export interface ServeRepoOptions {
+  /**
+   * Register the per-run model type in an extension collective
+   * (`@test/serve-…`) rather than as a bare type (`test/serve-…`).
+   */
+  scopedType?: boolean;
+}
+
 /** The principal every conformance request is sent as. */
 export const CALLER: Principal = { kind: "user", id: "caller" };
 
@@ -84,10 +93,13 @@ export const CALLER: Principal = { kind: "user", id: "caller" };
  */
 export async function withServeRepo(
   fn: (repo: ServeRepo) => Promise<void>,
+  options: ServeRepoOptions = {},
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-serve-requests-" });
   const modelType = ModelType.create(
-    `test/serve-${crypto.randomUUID().slice(0, 8)}`,
+    `${options.scopedType ? "@" : ""}test/serve-${
+      crypto.randomUUID().slice(0, 8)
+    }`,
   );
   modelRegistry.register({
     type: modelType,
@@ -164,6 +176,8 @@ export interface ServeCtxOptions {
    * registered itself. Takes precedence over `detached`.
    */
   activeRunRegistry?: ConnectionContext["activeRunRegistry"];
+  /** Entries of `restricted-model-types`, as serve's config holds them. */
+  restrictedModelTypes?: string[];
 }
 
 /**
@@ -182,9 +196,10 @@ export function createServeCtx(
     allowedUsers: [],
     oauthProvider: "",
     groupsField: "",
-    restrictedModelTypes: [],
+    restrictedModelTypes: options.restrictedModelTypes ?? [],
     restrictedCommands: [],
     approveRequiresExplicitGrant: false,
+    signalRequiresExplicitGrant: false,
   };
   return {
     repoDir: repo.repoDir,

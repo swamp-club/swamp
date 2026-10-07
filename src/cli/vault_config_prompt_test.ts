@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { VaultConfigField } from "../libswamp/mod.ts";
+import type { VaultConfigField } from "../domain/vaults/vault_config_fields.ts";
 import {
   canPromptForConfig,
   type ConfigPromptIO,

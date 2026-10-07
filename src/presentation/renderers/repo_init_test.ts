@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import type { ExtensionInstallEvent } from "../../libswamp/extensions/install.ts";
 import type {
-  ExtensionInstallEvent,
   RepoInitEvent,
   RepoUpgradeEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/repo/init.ts";
 import {
   createRepoInitRenderer,
   createRepoUpgradeRenderer,

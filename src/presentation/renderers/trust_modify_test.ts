@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream, type TrustModifyEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { TrustModifyEvent } from "../../libswamp/extensions/trust.ts";
 import { createTrustModifyRenderer } from "./trust_modify.ts";
 import { UserError } from "../../domain/errors.ts";
 

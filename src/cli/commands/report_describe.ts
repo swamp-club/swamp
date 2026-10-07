@@ -20,13 +20,13 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import type { ReportDefinitionDetail } from "../../libswamp/reports/report_views.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
-  type ReportDefinitionDetail,
   reportDescribe,
   type ReportDescribeDeps,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/reports/describe.ts";
 import { createReportDescribeRenderer } from "../../presentation/renderers/report_describe.ts";
 import {
   requestServerResponse,

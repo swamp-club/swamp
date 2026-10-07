@@ -139,8 +139,50 @@ export async function migrateOAuthSecrets(
   }
 }
 
+/**
+ * Builds the read credential resolution uses for an OAuth bootstrap secret.
+ * `_token-secrets` is read first. The user vault is a fallback only until the
+ * migration has been recorded: after that it holds none of these keys, so a
+ * key `_token-secrets` lacks is absent and reading the user vault for it can
+ * only fail (swamp-club#3127). The marker is looked up once per reader.
+ */
+export function createOAuthSecretReader(
+  vaultService: Pick<
+    VaultService,
+    "get" | "getDefaultVaultName" | "getVaultNames"
+  >,
+  tokenSecretsVaultName: string,
+): (key: string) => Promise<string | null> {
+  let migrated: Promise<boolean> | undefined;
+  return async (key) => {
+    try {
+      return await vaultService.get(
+        tokenSecretsVaultName,
+        key,
+        "serve:oauth-resolve",
+      );
+    } catch {
+      // Fall through to the user vault.
+    }
+    const userVaultName = vaultService.getDefaultVaultName() ??
+      vaultService.getVaultNames().find((n) => n !== tokenSecretsVaultName);
+    if (!userVaultName) return null;
+    migrated ??= hasSecret(
+      vaultService,
+      tokenSecretsVaultName,
+      OAUTH_SECRETS_MIGRATED_KEY,
+    );
+    if (await migrated) return null;
+    try {
+      return await vaultService.get(userVaultName, key, "serve:oauth-resolve");
+    } catch {
+      return null;
+    }
+  };
+}
+
 async function hasSecret(
-  vaultService: OAuthSecretMigrationVaults,
+  vaultService: Pick<VaultService, "get">,
   vaultName: string,
   key: string,
 ): Promise<boolean> {

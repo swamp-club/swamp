@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { consumeStream, type IssueCreateEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { IssueCreateEvent } from "../../libswamp/issues/create.ts";
 import {
   createIssueCreateRenderer,
   renderExtensionRepositoryHandoff,

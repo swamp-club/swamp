@@ -33,75 +33,118 @@ import {
 } from "../../domain/models/active_run.ts";
 import {
   auditTimeline,
-  buildAggregateState,
-  consumeStream,
   createAuditTimelineDeps,
+} from "../../libswamp/audit/timeline.ts";
+import { buildAggregateState } from "../../libswamp/extensions/doctor_aggregate.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import {
   createDatastoreLockfileSync,
-  createDatastoreSetupDeps,
-  createDatastoreStatusDeps,
-  createDoctorSecretsDeps,
-  createDoctorVaultsDeps,
-  createExtensionInfoDeps,
-  createExtensionListDeps,
-  createExtensionPullDeps,
-  createExtensionRmDeps,
-  createExtensionUpdateDeps,
-  createInstallContext,
-  createModelDeleteDeps,
   createRepoPendingLockfileStore,
-  createVaultMigrateDeps,
-  createWorkerListDeps,
-  createWorkerModelRunDeps,
-  createWorkerQueueListDeps,
-  createWorkerTokenCreateDeps,
-  createWorkerTokenRevokeDeps,
-  datastoreNamespaceList,
+  type LockfileTransaction,
+  ManagedLockfileTransaction,
+  withManagedLockfileTransaction,
+} from "../../libswamp/extensions/managed_lockfile_transaction.ts";
+import {
+  createDatastoreSetupDeps,
   datastoreSetupExtension,
+} from "../../libswamp/datastores/setup.ts";
+import {
+  createDatastoreStatusDeps,
   datastoreStatus,
+} from "../../libswamp/datastores/status.ts";
+import {
+  createDoctorSecretsDeps,
+  doctorSecrets,
+} from "../../libswamp/models/doctor_secrets.ts";
+import {
+  createDoctorVaultsDeps,
+  doctorVaults,
+} from "../../libswamp/models/doctor_vaults.ts";
+import {
+  createExtensionInfoDeps,
+  extensionInfo,
+} from "../../libswamp/extensions/info.ts";
+import {
+  createExtensionListDeps,
+  extensionList,
+} from "../../libswamp/extensions/list.ts";
+import {
+  createExtensionPullDeps,
+  createInstallContext,
+  extensionPull,
+  parseExtensionRef,
+  resolveServerUrl,
+  validateExtensionName,
+} from "../../libswamp/extensions/pull.ts";
+import {
+  createExtensionRmDeps,
+  extensionRm,
+} from "../../libswamp/extensions/rm.ts";
+import {
+  createExtensionUpdateDeps,
+  extensionUpdate,
+} from "../../libswamp/extensions/update.ts";
+import {
+  createModelDeleteDeps,
+  modelDelete,
+} from "../../libswamp/models/delete.ts";
+import {
+  createVaultMigrateDeps,
+  vaultMigrate,
+  vaultMigratePreview,
+} from "../../libswamp/vaults/migrate.ts";
+import {
+  createWorkerListDeps,
+  workerList,
+  workerTokenList,
+} from "../../libswamp/worker/list.ts";
+import { createWorkerModelRunDeps } from "../../libswamp/worker/run_deps.ts";
+import {
+  createWorkerQueueListDeps,
+  workerQueueList,
+} from "../../libswamp/worker/queue_list.ts";
+import {
+  createWorkerTokenCreateDeps,
+  workerTokenCreate,
+} from "../../libswamp/worker/token_create.ts";
+import {
+  createWorkerTokenRevokeDeps,
+  workerTokenRevoke,
+} from "../../libswamp/worker/token_revoke.ts";
+import { datastoreNamespaceList } from "../../libswamp/datastores/namespace_list.ts";
+import {
   doctorDatastores,
   type DoctorDatastoresDeps,
+} from "../../libswamp/datastores/doctor_datastores.ts";
+import {
   doctorExtensions,
   type DoctorExtensionsDeps,
   type DoctorRegistryDeps,
-  doctorSecrets,
-  doctorVaults,
+  extensionMemberDoctorDeps,
+  toDoctorWarnings,
+} from "../../libswamp/extensions/doctor.ts";
+import {
   doctorWorkflowDirs,
   doctorWorkflows,
   type DoctorWorkflowsDeps,
-  extensionInfo,
-  extensionInstall,
-  extensionList,
-  extensionMemberDoctorDeps,
-  extensionPull,
-  extensionRm,
+} from "../../libswamp/workflows/doctor.ts";
+import { extensionInstall } from "../../libswamp/extensions/install.ts";
+import {
   extensionSearch,
   type ExtensionSearchDeps,
-  extensionUpdate,
-  LockfileRepository,
-  type LockfileTransaction,
-  ManagedLockfileTransaction,
-  modelDelete,
-  modelMethodRun,
-  parseExtensionRef,
+} from "../../libswamp/extensions/search.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { modelMethodRun } from "../../libswamp/models/run.ts";
+import {
   ReconcileFromDiskService,
   type ReconcileTransition,
-  resolveServerUrl,
-  toDoctorWarnings,
-  type TriggerOverride,
-  UpgradeExtensionService,
-  validateExtensionName,
-  vaultMigrate,
-  vaultMigratePreview,
-  withDefaults,
-  withManagedLockfileTransaction,
-  workerList,
+} from "../../libswamp/extensions/reconcile_from_disk_service.ts";
+import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
+import { UpgradeExtensionService } from "../../libswamp/extensions/upgrade_extension_service.ts";
+import {
   workerPrune,
   type WorkerPruneDeps,
-  workerQueueList,
-  workerTokenCreate,
-  workerTokenList,
-  workerTokenRevoke,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/prune.ts";
 import {
   WORKER_MODEL_TYPE,
   WorkerStateSchema,

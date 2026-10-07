@@ -141,23 +141,25 @@ Validate the extension can be pushed without actually uploading.
 swamp extension push manifest.yaml --dry-run --json
 ```
 
-**Verify:** Exit code 0. Confirm any warnings with the user. The `dry_run`
-document lists `registryChecks` (authentication, reserved collective, collective
-membership, version exists) with the wording the real push uses; a `failed`
-check exits non-zero and a `not-run` check names the missing prerequisite (no
-credentials). `apiCalls` lists every HTTP call the run made, and `contentHash`
-is the hash the adversarial-review report is keyed by. `forNextTime` lists each
-remaining warning with its `remediation` and, for rules that can be accepted,
-the exact `acceptance` text to paste where the finding is (an inline
-`swamp-quality-ignore` comment, or a `quality.yaml` entry beside the manifest);
-`declaredAcceptances` lists what the extension already accepts. Offer the user
-the fix first and the acceptance only when the finding is not right for this
-extension; never paste the `<reason>` placeholder as is.
+**Verify:** Exit code 0. Confirm any warnings with the user. The output is one
+JSON document: `status` (`dry_run`), `resolved` (the extension's contents, file
+paths absolute), `warnings` grouped by family (`safety`, `review`,
+`dependencyTrust`, `versionDrift`, `versionBumpUpgrade`; omitted when empty),
+then the run summary. It lists `registryChecks` (authentication, reserved
+collective, collective membership, version exists) with the wording the real
+push uses; a `failed` check exits non-zero and a `not-run` check names the
+missing prerequisite (no credentials). `apiCalls` lists every HTTP call the run
+made, and `contentHash` is the hash the adversarial-review report is keyed by.
+`forNextTime` lists each remaining warning with its `remediation` and, for rules
+that can be accepted, the exact `acceptance` text to paste where the finding is
+(an inline `swamp-quality-ignore` comment, or a `quality.yaml` entry beside the
+manifest); `declaredAcceptances` lists what the extension already accepts. Offer
+the user the fix first and the acceptance only when the finding is not right for
+this extension; never paste the `<reason>` placeholder as is.
 
-To get the same `contentHash` CI's publish computes, run the dry run in CI's
-layout: `cd` into the extension directory, `swamp repo init --quiet --tool none`
-if there is no `.swamp.yaml` there, then
-`swamp extension push manifest.yaml --dry-run --json`. See
+A dry run prints the same `contentHash` CI's publish computes whenever the
+extensions root is the extension directory, including from a sibling swamp repo
+(`swamp extension push path/to/extension --dry-run --json`). See
 [reproducing the CI layout](references/publishing.md#reproducing-the-ci-layout).
 
 If private publication is requested, retain `visibility: private` in the

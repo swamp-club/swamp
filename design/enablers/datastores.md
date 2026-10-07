@@ -1810,6 +1810,18 @@ check-and-create. In solo mode the lockfile is `{datastorePath}/.datastore.lock`
 A background heartbeat rewrites it with a fresh timestamp. Stale locks (where
 `acquiredAt + ttlMs < now`) are removed and the acquire retried.
 
+A new lockfile exists before its content is written, and a heartbeat that
+rewrites the lockfile in place (an older swamp's, or the Windows fallback when
+a rename is refused; otherwise the file is replaced whole, see "Hand-offs and
+re-keying") leaves it briefly empty, so a reader can find a held lock's file
+empty or partial. A lockfile that exists but cannot be read therefore counts as held
+until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
+is the one definition of that rule: the acquire path backs off, `inspect()`
+returns a placeholder `LockInfo` with an unknown holder and no nonce, and the
+structural drain (`waitForPerModelLocks`) counts the lock as held. Reading
+such a file as no lock would let a writer and a structural command run at the
+same time (swamp-club#3148).
+
 With a `namespace` set, `datastoreGlobalLockOptions` returns
 `{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
 providers (S3, GCS) put the key under `{namespace}/`, at
@@ -2240,8 +2252,10 @@ through a temp file and a rename. A reader that catches a lock file partly
 written takes the lock for absent, and the holder's one read of the global
 lock must not land in such a window. `release()` waits for a rewrite already
 under way, so a replace can never land on a lock another process took in
-between. Readers still treat an unreadable lock file as absent, which matters
-for locks written by an older swamp (swamp-club#3148).
+between. A reader that does catch a lock file mid-write, from an older swamp
+or after the Windows fallback to an in-place rewrite, counts it as held
+(swamp-club#3148); the holder's reclaim then reads the global lock again
+rather than proceed.
 
 Known limits of the run-level match:
 

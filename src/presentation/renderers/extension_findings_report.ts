@@ -25,7 +25,7 @@ import {
 } from "../../domain/extensions/extension_acceptances.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
-import type { DeclaredAcceptances } from "../../libswamp/mod.ts";
+import type { DeclaredAcceptances } from "../../libswamp/extensions/push.ts";
 
 /**
  * The findings report that closes a push summary, a dry run and a quality

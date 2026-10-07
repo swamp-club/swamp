@@ -31,11 +31,9 @@
  */
 
 import { join } from "@std/path";
-import {
-  createLibSwampContext,
-  createWorkerModelRunDeps,
-  modelMethodRun,
-} from "../libswamp/mod.ts";
+import { createLibSwampContext } from "../libswamp/context.ts";
+import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
+import { modelMethodRun } from "../libswamp/models/run.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -619,6 +617,30 @@ export class DispatchService {
         signal: request.signal,
         onEvent: request.onEvent,
       });
+      // What the method wrote to the console on the worker travels in the
+      // result, not the stream. Forward it as output so it reaches the run
+      // log whether the dispatch succeeded or failed (swamp-club#3080). The
+      // capture does not record which console method wrote a line, so every
+      // line is reported as stdout.
+      // A listener that throws must not turn a finished dispatch into a
+      // failed one.
+      for (const line of result.logs) {
+        try {
+          request.onEvent?.({
+            kind: "method_event",
+            event: { type: "output", line, stream: "stdout", level: "info" },
+          });
+        } catch (error) {
+          logger.warn(
+            "Forwarding console output of {dispatchId} failed: {error}",
+            {
+              dispatchId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          break;
+        }
+      }
       if (result.status === "error") {
         leaseSettled = true;
         await this.#leaseTransition("fail", {

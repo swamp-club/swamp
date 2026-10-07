@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold } from "@std/fmt/colors";
-import type { EventHandlers, NamespaceUnsetEvent } from "../../libswamp/mod.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { NamespaceUnsetEvent } from "../../libswamp/datastores/namespace_unset.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

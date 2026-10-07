@@ -34,7 +34,7 @@ import { DispatchResultSchema } from "../src/domain/remote/protocol.ts";
 import { TelemetryService } from "../src/domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../src/infrastructure/persistence/json_telemetry_repository.ts";
 import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
-import { userErrorFromSwampError } from "../src/libswamp/mod.ts";
+import { userErrorFromSwampError } from "../src/libswamp/errors.ts";
 import {
   buildChildInvocation,
   WorkflowTelemetryBridge,

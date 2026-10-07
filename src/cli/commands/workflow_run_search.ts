@@ -18,17 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { parseTags } from "../../libswamp/data/search.ts";
+import { toRunData } from "../../libswamp/workflows/run.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
-  parseTags,
-  toRunData,
   workflowRunSearch,
   type WorkflowRunSearchData,
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchItem,
-  type WorkflowRunView,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/run_search.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import { renderWorkflowRunDisplay } from "../../presentation/renderers/workflow_run_display.ts";
 import { createWorkflowRunSearchRenderer } from "../../presentation/renderers/workflow_run_search.tsx";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";

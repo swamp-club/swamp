@@ -21,7 +21,7 @@ import type {
   SignalWaitInfo,
   UnreadableWaitInfo,
   WorkflowWaitsData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/waits.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderWaits } from "./workflow_waits.ts";
 

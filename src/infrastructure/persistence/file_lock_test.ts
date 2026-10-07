@@ -270,6 +270,46 @@ Deno.test("FileLock - inspect returns null when no lock exists", async () => {
   });
 });
 
+for (
+  const [label, content] of [
+    ["empty", ""],
+    ["partial", '{"holder":"writer@host","hos'],
+    ["not a lock record", "null"],
+  ]
+) {
+  Deno.test(`FileLock.inspect: a fresh ${label} lock file reads as held by an unknown holder`, async () => {
+    // A live holder's file looks like this between create and write and
+    // during each heartbeat rewrite (swamp-club#3148).
+    await withTempDir(async (dir) => {
+      const lockPath = join(dir, ".datastore.lock");
+      await Deno.writeTextFile(lockPath, content);
+
+      const info = await new FileLock(dir, { ttlMs: 60_000 }).inspect();
+
+      assert(info !== null, "a fresh unreadable lock file must read as held");
+      assertStringIncludes(info.holder, "unknown");
+      assertEquals(info.ttlMs, 60_000);
+      assertEquals(info.nonce, undefined);
+      assertEquals(
+        new Date(info.acquiredAt).getTime(),
+        (await Deno.stat(lockPath)).mtime?.getTime(),
+      );
+      assertEquals(await Deno.readTextFile(lockPath), content);
+    });
+  });
+}
+
+Deno.test("FileLock.inspect: an unreadable lock file untouched for a full TTL reads as no lock and is left in place", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    await Deno.writeTextFile(lockPath, "");
+    await backdate(lockPath, 10_000);
+
+    assertEquals(await new FileLock(dir, { ttlMs: 5_000 }).inspect(), null);
+    assertEquals(await Deno.readTextFile(lockPath), "");
+  });
+});
+
 Deno.test("FileLock - forceRelease deletes lock when nonce matches", async () => {
   await withTempDir(async (dir) => {
     const lock = new FileLock(dir, { ttlMs: 5000 });

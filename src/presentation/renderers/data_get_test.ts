@@ -19,8 +19,8 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { DataGetEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { DataGetEvent } from "../../libswamp/data/get.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createDataGetRenderer, withCommandTarget } from "./data_get.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";

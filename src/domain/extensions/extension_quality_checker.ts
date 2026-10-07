@@ -22,6 +22,7 @@ import {
   extractLastUpgradeToVersion,
   extractModelVersion,
 } from "./extension_content_extractor.ts";
+import type { RegistryCheckNotRunCause } from "./extension_publish_checks.ts";
 
 /** A quality issue found during checking. */
 export interface QualityIssue {
@@ -33,6 +34,11 @@ export interface QualityIssue {
     | "upgrade-chain"
     | "version-bump-upgrade";
   output: string;
+  /**
+   * version-drift only: why the check could not compare against the
+   * registry. Absent on a drift finding and on every other check.
+   */
+  cause?: VersionDriftNotComparedCause;
 }
 
 export function qualityCheckLabel(check: QualityIssue["check"]): string {
@@ -502,29 +508,94 @@ export interface PublishedExtensionState {
 }
 
 /**
+ * Why the version-drift check had nothing to compare against. The causes
+ * other than never-published are the ones the dry-run registry checks use.
+ */
+export type VersionDriftNotComparedCause =
+  | "never-published"
+  | Extract<
+    RegistryCheckNotRunCause,
+    "no-credentials" | "authentication-failed" | "registry-unavailable"
+  >;
+
+/**
+ * The outcome of looking up an extension's last-published version: the
+ * published state, or why there is none to compare against.
+ */
+export type PublishedLookup =
+  | { kind: "found"; state: PublishedExtensionState }
+  /** The registry has no version of the extension. */
+  | { kind: "never-published" }
+  | { kind: "no-credentials" }
+  /** The registry rejected the stored credentials. */
+  | { kind: "authentication-failed"; reason: string }
+  /** The lookup itself failed — no network, a server error. */
+  | { kind: "registry-unavailable"; reason: string };
+
+const UPGRADE_CHECK_SKIPPED =
+  "; the version-bump upgrade check was skipped too";
+
+/** Drops a sentence's closing period so a clause can follow it. */
+function withoutFinalPeriod(text: string): string {
+  return text.endsWith(".") ? text.slice(0, -1) : text;
+}
+
+/**
  * Advisory check — warns on version drift but never blocks.
  *
  * Compares current model versions against the registry's last-published
  * version. Warns when a model version moved but the manifest version
  * did not.
  *
- * When no published state is available (first publish), tells the user
- * rather than silently skipping.
+ * When there is no published state to compare against, says why rather
+ * than silently skipping, and records the cause: a first publish is
+ * expected, but missing or rejected credentials and a failed lookup are
+ * named so they do not read as one.
  */
 export async function checkVersionConsistency(
   manifestVersion: string,
   modelFiles: string[],
-  published?: PublishedExtensionState,
+  lookup: PublishedLookup,
 ): Promise<QualityIssue[]> {
   if (modelFiles.length === 0) return [];
 
-  if (!published) {
-    return [{
-      check: "version-drift",
-      output: "unable to check for version drift — no previously published " +
-        "version found in the registry (this is expected on first publish)",
-    }];
+  const notCompared = (
+    cause: VersionDriftNotComparedCause,
+    reason: string,
+  ): QualityIssue[] => [{
+    check: "version-drift",
+    output: `unable to check for version drift — ${reason}`,
+    cause,
+  }];
+  switch (lookup.kind) {
+    case "never-published":
+      return notCompared(
+        "never-published",
+        "no previously published version found in the registry " +
+          "(this is expected on first publish)",
+      );
+    case "no-credentials":
+      return notCompared(
+        "no-credentials",
+        "no credentials; run 'swamp auth login' to sign in" +
+          UPGRADE_CHECK_SKIPPED,
+      );
+    case "authentication-failed":
+      return notCompared(
+        "authentication-failed",
+        `authentication failed: ${
+          withoutFinalPeriod(lookup.reason)
+        }${UPGRADE_CHECK_SKIPPED}`,
+      );
+    case "registry-unavailable":
+      return notCompared(
+        "registry-unavailable",
+        `registry lookup failed: ${
+          withoutFinalPeriod(lookup.reason)
+        }${UPGRADE_CHECK_SKIPPED}`,
+      );
   }
+  const published = lookup.state;
 
   const publishedByFile = new Map<string, string>();
   for (const m of published.models) {

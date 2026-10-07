@@ -44,7 +44,12 @@ const review: ReviewFinding = {
   file: "/tmp/review.json",
   message: "No adversarial review recorded",
   remediation: "run the review",
-  skeleton: "{}",
+  skeleton: {
+    extension: "@a/b",
+    version: "1",
+    reviewedAt: "<ISO-8601 timestamp>",
+    dimensions: [],
+  },
 };
 
 Deno.test("buildFindingsReport: an unaccepted finding becomes advice with a relative path, the first message line, remediation and the paste text", () => {
@@ -144,5 +149,5 @@ Deno.test("withAcceptance: attaches the paste text to acceptable findings only, 
   );
   assertEquals(field.remediation, "mark it sensitive");
   assertEquals("acceptance" in adversarial, false);
-  assertEquals(adversarial.skeleton, "{}");
+  assertEquals(adversarial.skeleton, review.skeleton);
 });

@@ -48,15 +48,17 @@ import {
   findAllActiveRuns,
   resolveLocalCancelTarget,
 } from "../src/cli/commands/workflow_cancel.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  collect,
-  createLibSwampContext,
   createWorkflowApproveDeps,
-  createWorkflowRejectDeps,
-  supersedeSuspendedRuns,
   workflowApprove,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/workflows/reject.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
 import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";

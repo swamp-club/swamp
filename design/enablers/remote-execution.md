@@ -699,19 +699,45 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | Operation          | Backed by                                                                                                                | Transport | Notes                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------ |
 | `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`                                       | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes    |
-| `queryData`        | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading                                    | ws        | CEL predicate over the catalog; always live. `select` projection rejected (bypasses denylist)    |
-| `listVersions`     | `repo.listVersions`                                                                                                      | ws        | Version history for one item. The only verb without a dispatch-scope assertion                  |
+| `queryData`        | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading                                    | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
+| `listVersions`     | `repo.listVersions`                                                                                                      | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing     |
 | `deleteData`       | `repo.delete`, `repo.removeLatestMarker`                                                                                 | ws        | Used by lifecycle/GC-aware methods                                                               |
 | `resolveSecret`    | `vaultService.get` / `getAnnotation`                                                                                     | ws        | Authorized per step: denylist + allowlist (below)                                                |
 | `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                                                                | ws        | Denylist only (below)                                                                            |
-| `readDefinition`   | `definitionRepository.findByName`                                                                                        | ws        | Lazy-load; no cache                                                                              |
-| `readOutput`       | `outputRepository` execution-history reads                                                                               | ws        | Optional context member                                                                          |
-| `resolveModel`     | `findDefinitionByIdOrName` over the definition repository                                                                | ws        | Workflow step model resolution                                                                   |
+| `readDefinition`   | `definitionRepository.findByName`                                                                                        | ws        | Lazy-load; no cache. A control-plane type reads as not found                                     |
+| `readOutput`       | `outputRepository` execution-history reads                                                                               | ws        | Optional context member. A control-plane type reads as empty                                     |
+| `resolveModel`     | `findDefinitionByIdOrName` over the definition repository                                                                | ws        | Workflow step model resolution. Skips control-plane definitions, so one cannot shadow a model    |
 | resource write     | `POST /data/resource` → `writeResource`                                                                                  | h2        | Durable immediately                                                                              |
 | resource delete    | `DELETE /data/resource`                                                                                                  | h2        |                                                                                                  |
 | file write         | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize`                                    | h2        | `writeLine` is durable per request (live logs)                                                   |
 | extension assets   | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`                                                  | h2        | Cacheable by fingerprint                                                                         |
-| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client                                                             |
+| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client and the run log (below)                                     |
+
+The orchestrator writes a step's output to its run log, wherever the step ran.
+A worker's method logger has no run log to write to, so each line travels as an
+`output` method event and `MethodExecutionService` writes it through the run
+logger at the level the event carries, before passing it on to the client.
+Lines the method wrote to the console on the worker come back in the dispatch
+result's `logs`; `DispatchService` turns them into `output` events too, for a
+failed dispatch as well as a successful one. They arrive only once the dispatch
+returns, so a step's console lines follow all of its streamed lines in the log
+rather than interleaving with them. The worker scrubs both with its own
+`SecretRedactor` before they leave, because it alone knows the secrets a method
+learns while it runs. The event is worker-supplied, so
+the orchestrator checks its shape and splits a multi-line `line` into one
+record per line.
+
+Control-plane records (grants, groups, tokens, workers, leases, pending
+dispatches, fleet probes; `src/domain/models/control_plane_types.ts`) never
+reach a worker. Every read above (`queryData`, `listVersions`,
+`readDefinition`, `readOutput`, `resolveModel` and the data-plane `GET`)
+answers as if they do not exist, in any spelling of the type
+(`src/serve/worker_control_plane_visibility.ts`). `queryData` leaves them out
+of the query itself, so a broad predicate returns the remaining records rather
+than failing; a hidden record that still turns up fails the query. The one
+exception is a fleet-probe dispatch reading its own `swamp/fleet-probe`
+records. When the server cannot tell which dispatch a read belongs to, every
+control-plane type is hidden (swamp-club#3129).
 
 `resolveSecret` checks the infrastructure denylist and an expression-based
 allowlist taken from the dispatched step's args. The allowlist is disabled when

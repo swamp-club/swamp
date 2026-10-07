@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { consumeStream, type DatastoreSyncEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { DatastoreSyncEvent } from "../../libswamp/datastores/sync.ts";
 import { createDatastoreSyncRenderer } from "./datastore_sync.ts";
 import { UserError } from "../../domain/errors.ts";
 

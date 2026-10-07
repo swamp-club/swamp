@@ -34,7 +34,7 @@ import { RepoService } from "../domain/repo/repo_service.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
+import type { WorkflowTelemetrySink } from "../libswamp/workflows/run.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_unit_of_work.ts";
 import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/repo_unit_of_work.ts";

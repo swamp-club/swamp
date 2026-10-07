@@ -35,11 +35,11 @@ import { join } from "@std/path";
 import { parseExtensionManifest } from "../src/domain/extensions/extension_manifest.ts";
 import { computePackageCacheHash } from "../src/domain/extensions/extension_package_cache.ts";
 import { extractTarGz } from "../src/infrastructure/archive/tar_archive.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  createLibSwampContext,
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/extensions/push.ts";
 import { buildPrepareInput } from "../src/libswamp/extensions/push_test_helpers.ts";
 
 const MANIFEST = [

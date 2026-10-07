@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { renderMermaidAscii } from "@vercel/beautiful-mermaid";
-import type { WorkflowGetData } from "../../libswamp/mod.ts";
+import type { WorkflowGetData } from "../../libswamp/workflows/get.ts";
 
 const ASCII_OPTIONS = { paddingX: 2, paddingY: 1, boxBorderPadding: 0 };
 

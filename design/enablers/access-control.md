@@ -422,11 +422,12 @@ type that names a resource, and
 
 | Action    | Typical operations                                     |
 | --------- | ------------------------------------------------------ |
-| `run`     | Execute a workflow or model method (implies `approve`) |
+| `run`     | Execute a workflow or model method (implies `approve` and `signal`) |
 | `read`    | Query data, view definitions, list resources           |
 | `write`   | Create or update models, definitions, data             |
 | `approve` | Approve or reject a workflow manual-approval gate      |
-| `admin`   | Manage grants, groups, tokens, restricted models, and any operation on a control-plane record |
+| `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else |
+| `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored), and any operation on a control-plane record |
 
 **`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
 checks, so existing `run` grants can still approve. To allow approval without
@@ -442,15 +443,45 @@ default. A deny on `run` always denies
 `auth.*` settings it is per process; every replica behind a load balancer must
 share it.
 
-An `AccessDecision` whose grant passed `approve` only through `run` carries
-`impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it as
-`[implied by run]`, and `can-i` without an action lists an implied `approve` row
-per such grant. The server's `access.check` and `access.can-i` responses report
-the policy as `approveRequiresExplicitGrant`.
+**`signal` is its own action, and `run` implies it** (swamp-club#3094). A grant
+with `actions: [signal]` lets its holder deliver a signal to a wait on the
+workflows it covers and do nothing else there: it cannot start, approve, resume,
+read or list. That suits a callback identity, or a person who answers a wait
+without being able to run the workflow. A grant with `actions: [run]` also
+passes `signal` checks, for the reason it passes `approve`: whoever may start
+the workflow gains little from answering its waits. `approve` does not imply
+`signal`, and `signal` implies nothing.
+
+**Requiring an explicit `signal` grant** (opt-in): `swamp serve
+--signal-requires-explicit-grant` (config key
+`auth.signal-requires-explicit-grant`, env var
+`SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT`) stops an allow grant on `run` from
+passing `signal`. It is independent of the `approve` setting, off by default and
+per process. A deny on `run` always denies `signal`, setting or not, so a
+principal under a deny on `run` cannot signal even with an explicit `signal`
+allow, and turning the setting on can only narrow access.
+
+**Do not store a grant that names `signal` while an older build shares the
+datastore.** A build from before this action cannot parse such a grant, and
+`PolicySnapshotLoader` skips a stored grant it cannot parse without a warning.
+The whole grant is lost to that build, not only its `signal`: an allow for
+`signal, read` no longer grants `read`, and a deny for `run, signal` no longer
+denies `run`, so the older build allows what the grant was written to stop.
+Rolling back to an older build has the same effect on grants made meanwhile. A
+declarative grant file fails closed instead: the older build refuses to start
+on it. Upgrade every host that reads the datastore before the first grant
+naming `signal` is created.
+
+An `AccessDecision` whose grant passed `approve` or `signal` only through `run`
+carries `impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it
+as `[implied by run]`, and `can-i` without an action lists an implied `approve`
+row and an implied `signal` row per such grant. The server's `access.check` and
+`access.can-i` responses report the policies as `approveRequiresExplicitGrant`
+and `signalRequiresExplicitGrant`.
 
 Implementation: `src/domain/access/action.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`
-(`runImpliesApprove` option, `actionsCoveredBy`).
+(`runImpliesApprove` and `runImpliesSignal` options, `actionsCoveredBy`).
 
 ## Grant evaluation model
 
@@ -461,8 +492,8 @@ action, resource) triple:
 2. **Collect candidates**: every grant whose subject is in the list.
 3. **Filter**: keep grants matching the resource selector, the action and the
    method name (when the grant has a `methods` list). Implied actions count:
-   `run` implies `approve`, except for allow grants when the server requires an
-   explicit `approve` grant.
+   `run` implies `approve` and `signal`, each except for allow grants when the
+   server requires an explicit grant for that action.
 4. **Partition**: split into deny and allow grants.
 5. **Evaluate denies first**: check each deny's condition, if any. The first
    matching deny wins and the request is rejected.
@@ -470,7 +501,8 @@ action, resource) triple:
    allow wins and the request proceeds.
 7. **Service trigger default**: a `service` principal asking to `run` a
    `workflow` is allowed (decision grant id `builtin:service-trigger-default`).
-   It covers no other action or resource kind, so it never implies `approve`.
+   It covers no other action or resource kind, so it never implies `approve`
+   or `signal`.
 8. **No match**: if an `admin` grant on `access:*` matches, the request proceeds
    (admin fallback). Otherwise it is denied by default.
 

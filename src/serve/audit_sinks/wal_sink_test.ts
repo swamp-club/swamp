@@ -535,8 +535,13 @@ Deno.test(
 
     downstream.release();
     await waitFor(() => downstream.written.length === 1, "late delivery");
+    // The flush may stop waiting before the checkpoint has deleted the
+    // segment, so poll for it.
     await sink.flush();
-    assertEquals(wal.segmentCount, 0);
+    await waitFor(
+      () => wal.segmentCount === 0,
+      "the checkpoint to remove the delivered segment",
+    );
   }),
 );
 
@@ -654,6 +659,14 @@ Deno.test(
     assertEquals(flushes, 1);
 
     downstream.release();
+    // The flush may stop waiting before the checkpoint has deleted the
+    // segments, and close deletes nothing once it gives up, so poll for the
+    // checkpoint before closing.
+    await sink.flush();
+    await waitFor(
+      () => wal.segmentCount === 0,
+      "the checkpoint to remove the delivered segments",
+    );
     await sink.close();
     assertEquals(
       downstream.written.map((batch) => batch[0].action),

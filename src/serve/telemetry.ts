@@ -26,7 +26,7 @@
  * invisible. This is the serve-side counterpart of that binding.
  */
 
-import type { WorkflowTelemetrySink } from "../libswamp/mod.ts";
+import type { WorkflowTelemetrySink } from "../libswamp/workflows/run.ts";
 import type {
   CommandInvocationData,
   WorkflowTriggerSource,

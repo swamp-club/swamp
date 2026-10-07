@@ -137,15 +137,14 @@ naming the plan; a free plan with an active trial passes, naming the trial. A
 free plan whose trial has ended fails with the message the push throws:
 `Collective "@acme" is on the Free plan and its trial ended on 2026-08-19.
 Private publication requires a paid plan; upgrade at <registry>/o/acme/billing.`
-Everything else is `not-run` with cause `entitlement-undecided` and leaves the
-push to the registry's decision: a free plan with no trial, because the
-registry's own gate may start the collective's trial at publish, and a registry
-that reports no entitlement at all (an older server). Collective tokens have no
-trial door on the registry, so a token's private push into a free collective
-with no trial reads undecided here and is refused at publish, where the refusal
-explains itself. The check is omitted for a collective that is not the caller's
-(membership is the message that matters) and never runs for public or default
-intent.
+A free plan with no trial fails the same way (`… is on the Free plan and has no
+trial. …`): a trial starts only when its collective is created, never at
+publish (swamp-club#3104). Everything else is `not-run` with cause
+`entitlement-undecided` and leaves the push to the registry's decision: a
+registry that reports no entitlement for the collective (an older server), or
+a trial state this client does not know. The check is omitted for a collective
+that is not the caller's (membership is the message that matters) and never
+runs for public or default intent.
 
 ### Dry run
 
@@ -164,28 +163,48 @@ The dry-run summary lists every HTTP call the run made (the registry for
 whoami, the versions list and the drift lookup; OSV and npm for the
 dependency-trust audit) and says "No API calls were made." only when the list
 is empty. In JSON these are the `registryChecks` and `apiCalls` fields of the
-`dry_run` document, beside `contentHash`. `extension quality` packages
-through the same prepare phase, on a cache hit too, but skips the registry
-checks and makes no registry call. It runs the local gates in `collect`
-mode (`localGates`): each failed gate (content collectives, the
-additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
-upgrade chain, review errors, archive size) is recorded instead of thrown,
-files a check rejected (hidden, symlink, disallowed type, oversized,
-unreadable, disallowed additionalFiles) are left out of the archive (never
-copied into it), and the rubric is scored and printed beside the failures.
-Such an archive is never cached or uploaded. A push enforces: the first
-failure throws.
+`dry_run` document, beside `contentHash`.
+
+`--json` writes one document per run on stdout (swamp-club#3017). The
+renderer records each part as the run produces it and writes the document
+when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
+`cancelled`), `resolved` (file paths absolute), `warnings` grouped by family
+(`safety`, `review`, `dependencyTrust`, `versionDrift`,
+`versionBumpUpgrade`), and the run summary at the top level. A blocked
+prepare carries `errors` keyed by the gate that blocked it instead. The
+review-report skeleton is a nested object on its finding. Errors still go to
+stderr as `{"error": ...}`. Log mode prints a path relative to the current
+directory when the file is under it, or is pushed content (under the repo
+or the manifest's directory) sharing an ancestor below the filesystem root
+with it; anything else, such as the review report under the temp dir,
+prints absolute. When a `--json` run throws without a render having
+written its document (a version that already exists, a manifest error, an
+unexpected failure), the command writes it with status `failed`, carrying
+`resolved` and `warnings` when they were recorded, before the error
+propagates. Every `--json` run that reaches the push command (past flag
+parsing and the account gate) leaves exactly one document on stdout.
+
+`extension quality` packages through the same prepare phase, on a cache hit
+too, but skips the registry checks and makes no registry call. It runs the
+local gates in `collect` mode (`localGates`): each failed gate (content
+collectives, the additionalFiles allowlist, safety, dependency trust,
+skills, fmt/lint, upgrade chain, review errors, archive size) is recorded
+instead of thrown, files a check rejected (hidden, symlink, disallowed type,
+oversized, unreadable, disallowed additionalFiles) are left out of the
+archive (never copied into it), and the rubric is scored and printed beside
+the failures. Such an archive is never cached or uploaded. A push enforces:
+the first failure throws.
 
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
 reused archive skips the fmt/lint gate. The version is not part of the hash,
 which also keys the adversarial-review report.
 
-The content hash is layout-bound: files are labelled by their path relative
-to the swamp repo dir, so the same extension hashes differently from a
-sibling repo. CI publishes from a swamp repo initialised inside the extension
-directory; a dry run reproduces that hash only in that layout (see the
-`swamp` skill's publish reference for the recipe).
+The content hash labels files by their path from the extensions root, not
+the swamp repo dir, so it does not depend on where the swamp repo sits. CI
+publishes from a swamp repo initialised inside the extension directory; a dry
+run from a sibling repo, with the root inferred from the manifest or named by
+`--extensions-dir`, hashes the same (see the `swamp` skill's publish reference).
 
 ### Pull
 

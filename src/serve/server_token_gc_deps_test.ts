@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import {
-  createLibSwampContext,
-  type ModelDeleteDeps,
-} from "../libswamp/mod.ts";
+import { createLibSwampContext } from "../libswamp/context.ts";
+import type { ModelDeleteDeps } from "../libswamp/models/delete.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import type { DataRecord } from "../domain/data/data_record.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";

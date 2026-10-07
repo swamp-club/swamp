@@ -18,17 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createModelOutputGetDeps,
   modelOutputGet,
   type ModelOutputGetData,
+} from "../../libswamp/models/output_get.ts";
+import {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
   type ModelOutputSearchItem,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/output_search.ts";
 import { createModelOutputSearchRenderer } from "../../presentation/renderers/model_output_search.tsx";
 import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
 import {

@@ -29,9 +29,10 @@
  * a dry run reports the same outcome the push would.
  *
  * Entitlement is the registry's to decide. The private-entitlement rule only
- * repeats what the registry reported at sign-in and fails on the one standing
- * the registry always refuses (a free plan whose trial has ended); every other
- * standing is reported as the registry's data, never as a prediction.
+ * repeats what the registry reported at sign-in and fails on the standings the
+ * registry always refuses (a free plan with no trial, or whose trial has
+ * ended: the registry never starts a trial at publish); every other standing
+ * is reported as the registry's data, never as a prediction.
  */
 
 import { ModelType } from "../models/model_type.ts";
@@ -56,7 +57,7 @@ export type RegistryCheckStatus = "passed" | "failed" | "not-run";
  * Why a check could not run. `no-credentials` leaves a dry run green: the
  * registry was never asked. `entitlement-undecided` does too: the registry
  * answered, but what it reported does not settle private entitlement (it sent
- * none, or a free plan with no trial, where its own gate may start one), so
+ * none for the collective, or a trial state this client does not know), so
  * the registry decides at publish. The others mean the registry was asked and
  * did not confirm, which a real push would have failed on.
  */
@@ -78,6 +79,61 @@ export interface RegistryCheckResult {
   existingChannel?: string;
   /** version-exists only: the channel the push asked for. */
   requestedChannel?: string;
+  /** A passed authentication only: the credential the registry accepted. */
+  credential?: SignedInCredential;
+}
+
+/**
+ * The credential a passed authentication check names, in the field names
+ * `swamp auth whoami --json` uses. The fingerprint is the one swamp-club
+ * lists beside each key, never the key itself.
+ */
+export interface SignedInCredential {
+  username?: string;
+  collectiveToken?: true;
+  collectiveSlug?: string;
+  fingerprint: string;
+}
+
+/** Who the registry says a key belongs to, from its whoami answer. */
+export interface SignedInIdentity {
+  /** The personal account's username; empty or absent for an API token. */
+  username: string;
+  /** True when the key is an API token for a collective. */
+  collectiveToken?: boolean;
+  /** The collective an API token is for. */
+  collectiveSlug?: string;
+  fingerprint: string;
+}
+
+/**
+ * The passed authentication check, naming the credential it used: the
+ * username for a personal key, or the collective and fingerprint for an API
+ * token. Never interpolates an empty name.
+ */
+export function signedInCheck(identity: SignedInIdentity): RegistryCheckResult {
+  const { fingerprint } = identity;
+  if (identity.collectiveToken || !identity.username) {
+    const slug = identity.collectiveToken ? identity.collectiveSlug : undefined;
+    return {
+      name: "authentication",
+      status: "passed",
+      message: slug
+        ? `Signed in with an API token for @${slug} (fingerprint ${fingerprint}).`
+        : `Signed in with an API token (fingerprint ${fingerprint}).`,
+      credential: {
+        ...(identity.collectiveToken ? { collectiveToken: true as const } : {}),
+        ...(slug ? { collectiveSlug: slug } : {}),
+        fingerprint,
+      },
+    };
+  }
+  return {
+    name: "authentication",
+    status: "passed",
+    message: `Signed in as ${identity.username}.`,
+    credential: { username: identity.username, fingerprint },
+  };
 }
 
 /**
@@ -163,8 +219,9 @@ export interface CollectiveMembershipInput {
  * A reserved collective (`@swamp`, `@si`) needs the registry's own word on
  * membership, so an unknown collectives list fails that check. For any
  * other collective the membership list decides, and when it is unknown the
- * caller's username stands in for it. Failure messages are the ones a real
- * push throws.
+ * caller's username stands in for it; with no username either (an API
+ * token), the check does not run. Failure messages are the ones a real push
+ * throws.
  */
 export function evaluateCollectiveMembership(
   input: CollectiveMembershipInput,
@@ -199,6 +256,24 @@ export function evaluateCollectiveMembership(
       status: "passed",
       message: `Collective "@${collective}" is not reserved.`,
     };
+
+  // Neither a membership list nor a username to stand in for it: nothing
+  // says whether the caller belongs, so the check could not run. The cause
+  // keeps a dry run red, as the push would refuse.
+  if (!input.collectives && !input.username) {
+    return {
+      reserved,
+      membership: {
+        name: "collective-membership",
+        status: "not-run",
+        message:
+          `Could not check that @${collective} is one of your collectives: ` +
+          `the registry did not report your collectives, and this credential ` +
+          `has no username to check against.`,
+        cause: "registry-unavailable",
+      },
+    };
+  }
 
   const isAllowed = input.collectives
     ? input.collectives.includes(collective)
@@ -303,11 +378,11 @@ function endedTrial(trial: CollectiveTrial): string {
  * Decides the private-entitlement check from what the registry reported.
  *
  * A paid plan passes, as does a free plan with an active trial, each named.
- * A free plan whose trial has ended fails with the message a real push
- * throws, naming the collective, its plan and the upgrade page. A free plan
- * with no trial is undecided: the registry may start the collective's trial
- * at publish, so the check says the registry decides. No entitlement for the
- * collective is undecided too, and says the registry did not report it.
+ * A free plan with no trial, or whose trial has ended, fails with the message
+ * a real push throws, naming the collective, its plan and the upgrade page:
+ * a trial starts only when its collective is created, never at publish. No
+ * entitlement for the collective is undecided and says the registry did not
+ * report it; so is a trial state this client does not know.
  */
 export function evaluatePrivateEntitlement(
   input: PrivateEntitlementInput,
@@ -341,21 +416,30 @@ export function evaluatePrivateEntitlement(
       }, which allows private extensions.`,
     };
   }
+  const upgrade = `${PAID_PLAN_REQUIRED}; upgrade at ${
+    collectiveBillingUrl(input.serverUrl, collective)
+  }.`;
   if (trial?.state === "expired") {
     return {
       name,
       status: "failed",
       message: `Collective "@${collective}" is on the ${plan} plan and ${
         endedTrial(trial)
-      }. ${PAID_PLAN_REQUIRED}; upgrade at ${
-        collectiveBillingUrl(input.serverUrl, collective)
-      }.`,
+      }. ${upgrade}`,
+    };
+  }
+  if (trial === undefined || trial.state === "none") {
+    return {
+      name,
+      status: "failed",
+      message:
+        `Collective "@${collective}" is on the ${plan} plan and has no trial. ${upgrade}`,
     };
   }
   return registryCheckNotRun(
     name,
     "entitlement-undecided",
-    `Collective "@${collective}" is on the ${plan} plan with no trial reported; the registry decides private publication at publish.`,
+    `the registry reported a trial state for "@${collective}" that this client does not know; private publication is decided at publish`,
   );
 }
 

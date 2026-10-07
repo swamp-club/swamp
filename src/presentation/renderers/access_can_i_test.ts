@@ -330,3 +330,51 @@ Deno.test("accessCanIRenderer json: includes impliedBy and the approval policy",
   assertEquals(parsed.approveRequiresExplicitGrant, true);
   assertEquals(parsed.decisions[0].impliedBy, "run");
 });
+
+Deno.test("accessCanIRenderer log: enumeration explains implied signal rows with the signal setting", () => {
+  const output = captureRender("log", {
+    principal: "user:swamp-resumer",
+    approveRequiresExplicitGrant: false,
+    signalRequiresExplicitGrant: false,
+    decisions: [
+      makeDecision({ action: "run", via: "group:swamp-lanes" }),
+      makeDecision({
+        action: "approve",
+        via: "group:swamp-lanes",
+        impliedBy: "run",
+      }),
+      makeDecision({
+        action: "signal",
+        via: "group:swamp-lanes",
+        impliedBy: "run",
+      }),
+    ],
+  });
+  const signalRow = output.find((l) => l.includes(" signal "));
+  assertStringIncludes(signalRow!, "[implied by run]");
+  const notes = output.filter((l) => l.startsWith("Note:"));
+  assertEquals(notes.length, 2);
+  assertStringIncludes(notes[0], "auth.approve-requires-explicit-grant");
+  assertStringIncludes(notes[1], "auth.signal-requires-explicit-grant");
+});
+
+Deno.test("accessCanIRenderer log: an implied approve row alone gets no signal note", () => {
+  const output = captureRender("log", {
+    principal: "user:swamp-resumer",
+    decisions: [
+      makeDecision({ action: "approve", impliedBy: "run" }),
+    ],
+  });
+  const notes = output.filter((l) => l.startsWith("Note:"));
+  assertEquals(notes.length, 1);
+  assertStringIncludes(notes[0], "approve rows");
+});
+
+Deno.test("accessCanIRenderer json: includes the signal policy when the server reports it", () => {
+  const output = captureRender("json", {
+    principal: "user:adam",
+    signalRequiresExplicitGrant: true,
+    decisions: [makeDecision({ action: "signal" })],
+  });
+  assertEquals(JSON.parse(output.join("")).signalRequiresExplicitGrant, true);
+});

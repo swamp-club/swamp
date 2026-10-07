@@ -1770,6 +1770,69 @@ Deno.test("loadServeConfig: non-boolean auth.approve-requires-explicit-grant pro
   });
 });
 
+// ── auth.signal-requires-explicit-grant ─────────────────────────────
+
+Deno.test("mergeServeOptions: signal-requires-explicit-grant defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.signalRequiresExplicitGrant, false);
+});
+
+Deno.test("mergeServeOptions: signal-requires-explicit-grant CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "signal-requires-explicit-grant": false } },
+    { signalRequiresExplicitGrant: true },
+    new Set(["signal-requires-explicit-grant"]),
+    (name: string) =>
+      name === "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT" ? "false" : undefined,
+  );
+  assertEquals(merged.signalRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: signal-requires-explicit-grant env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { auth: { "signal-requires-explicit-grant": false } },
+    {},
+    new Set<string>(),
+    (name: string) =>
+      name === "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT" ? "true" : undefined,
+  );
+  assertEquals(merged.signalRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: signal-requires-explicit-grant from auth config when no CLI or env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "signal-requires-explicit-grant": true } },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.signalRequiresExplicitGrant, true);
+});
+
+Deno.test("loadServeConfig: reads auth.signal-requires-explicit-grant", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "signal-requires-explicit-grant": true } });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.auth?.["signal-requires-explicit-grant"], true);
+  });
+});
+
+Deno.test("loadServeConfig: non-boolean auth.signal-requires-explicit-grant produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "signal-requires-explicit-grant": "false" } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auth.signal-requires-explicit-grant",
+    );
+  });
+});
+
 // ── dashboard ──────────────────────────────────────────────────────────
 
 Deno.test("mergeServeOptions: dashboard defaults to false", () => {

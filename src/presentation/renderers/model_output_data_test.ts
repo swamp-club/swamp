@@ -19,11 +19,11 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import {
-  consumeStream,
-  type ModelOutputDataData,
-  type ModelOutputDataEvent,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type {
+  ModelOutputDataData,
+  ModelOutputDataEvent,
+} from "../../libswamp/models/output_data.ts";
 import { createModelOutputDataRenderer } from "./model_output_data.ts";
 import { UserError } from "../../domain/errors.ts";
 

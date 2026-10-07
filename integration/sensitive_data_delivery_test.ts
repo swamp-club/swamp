@@ -49,7 +49,7 @@ import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";

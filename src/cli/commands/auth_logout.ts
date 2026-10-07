@@ -20,10 +20,10 @@
 import { Command } from "@cliffy/command";
 import {
   authLogout,
-  consumeStream,
   createAuthLogoutDeps,
-  createLibSwampContext,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/auth/logout.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createAuthLogoutRenderer } from "../../presentation/renderers/auth_logout.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";

@@ -31,7 +31,8 @@ Workflow:
 1. Review the code against every applicable dimension below.
 2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
    the push prints the exact report path (a content-hash-bound JSON file under
-   the system temp directory) and a fill-in skeleton listing every applicable
+   the system temp directory). With `--json`, that finding in `warnings.review`
+   also carries `skeleton`, a fill-in report object listing every applicable
    dimension with `"verdict": "pending"`. Set `SWAMP_EXTENSION_REVIEW_DIR` to
    override the base directory (useful for CI — store reports in the repo so
    they survive across runners).
@@ -41,7 +42,7 @@ Workflow:
      under the distinct ruleId `adversarial-review-dimension-issue` — separate
      from the `adversarial-review-report` ruleId used when a review is
      missing/stale/incomplete — so a CI gate keying on
-     `reviewRuleWarnings[].ruleId == "adversarial-review-report"` passes a
+     `warnings.review[].ruleId == "adversarial-review-report"` passes a
      completed review regardless of verdict while still surfacing the note. Does
      not block.)
    - `na` — the dimension does not apply (e.g. `api-contracts` for an extension

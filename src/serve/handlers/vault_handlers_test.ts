@@ -171,6 +171,7 @@ function createAnnotateCtx(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
 }

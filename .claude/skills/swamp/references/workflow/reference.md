@@ -923,8 +923,10 @@ swamp workflow resume release --run <run-id>
   and the next `resume` fails the step with `wait_timeout`, so a `failed`
   dependent runs. `workflow waits` flags such a wait as expired.
 - Resume is always manual, also under `swamp serve`: serve never auto-resumes a
-  run with a step waiting for a signal, and there is no `--server` form of
-  `workflow signal`.
+  run with a step waiting for a signal. `workflow signal` and `workflow waits`
+  take `--server`, and a server also accepts a signal over HTTP; see "Signals
+  Through Serve" in [the serve guide](../serve/guide.md) for the `signal` grant
+  and the route.
 - A new `workflow run` does not supersede a run that waits for a signal,
   signalled or not; it reports it as kept.
 - A signal is stored beside the run, not in it, and takes effect at the next

@@ -21,8 +21,6 @@ import { Command } from "@cliffy/command";
 import {
   type CatalogCompletenessSummary,
   type CatalogShortfall,
-  consumeStream,
-  createLibSwampContext,
   doctorDatastores,
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
@@ -34,7 +32,9 @@ import {
   type RepairDatastoresDeps,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/datastores/doctor_datastores.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createCatalogDuplicateLatestRepairRenderer,
   createCatalogIndexRepairRenderer,

@@ -29,10 +29,12 @@ import { ExtensionRepository } from "../infrastructure/persistence/extension_rep
 import {
   enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
-  LockfileRepository,
+} from "../libswamp/extensions/enumerate_pulled.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import {
   ReconcileFromDiskService,
   type UncataloguedPulledResult,
-} from "../libswamp/mod.ts";
+} from "../libswamp/extensions/reconcile_from_disk_service.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import {
   detachExtensionSources,
@@ -58,7 +60,7 @@ import {
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
-import { resolveTrustedCollectives } from "../libswamp/mod.ts";
+import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
 import {
   managedConfigLockfilePath,
   resolvePulledExtensionsRoot,
@@ -69,7 +71,7 @@ import {
   readServeConfigFile,
   type WebhookConfigEntry,
 } from "./serve_config.ts";
-import type { TriggerOverride } from "../libswamp/mod.ts";
+import type { TriggerOverride } from "../libswamp/workflows/scheduled_execution.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";

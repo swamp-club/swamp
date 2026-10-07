@@ -21,18 +21,21 @@
  * Report-domain request handlers (report.* verbs).
  */
 
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   reportDescribe,
   type ReportDescribeDeps,
-  reportGet,
-  type ReportGetDeps,
+} from "../../libswamp/reports/describe.ts";
+import { reportGet, type ReportGetDeps } from "../../libswamp/reports/get.ts";
+import {
   reportSearch,
   type ReportSearchDeps,
+} from "../../libswamp/reports/search.ts";
+import {
   reportTypeSearch,
   type ReportTypeSearchDeps,
-  workflowsDirFor,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/reports/type_search.ts";
+import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import type {
   ReportDescribePayload,
   ReportGetPayload,

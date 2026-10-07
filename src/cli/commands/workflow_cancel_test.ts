@@ -63,7 +63,7 @@ import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reape
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { GATE_WAIT_TIMEOUT_MS } from "../../serve/sync_gate.ts";
-import type { BrokenWorkflow } from "../../libswamp/mod.ts";
+import type { BrokenWorkflow } from "../../libswamp/workflows/broken_workflow.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";

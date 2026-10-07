@@ -46,7 +46,7 @@ import {
 } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { waitFor } from "@swamp-club/swamp-testing";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import {
   type StepExecutionContext,
   type StepExecutor,
@@ -80,7 +80,7 @@ import { buildErrorJson } from "../src/presentation/output/error_output.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts";
 import { isServeOwnedRun } from "../src/cli/commands/workflow_cancel.ts";
-import { supersedeSuspendedRuns } from "../src/libswamp/mod.ts";
+import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import { reapOrphanedWorkflowRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import { isProcessDead } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -631,6 +631,7 @@ const modeNone: ServeAuthConfig = {
   restrictedModelTypes: [],
   restrictedCommands: [],
   approveRequiresExplicitGrant: false,
+  signalRequiresExplicitGrant: false,
 };
 
 /** A step that passes, then a shell step that exits with `inputs.code`. */

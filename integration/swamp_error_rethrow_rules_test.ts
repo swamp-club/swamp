@@ -74,7 +74,7 @@ Deno.test("swamp error rethrow: CLI and renderers rethrow stream errors as UserE
     await plainRethrows(),
     PINNED,
     "Stream errors rethrown as a plain Error",
-    "Throw userErrorFromSwampError(e.error) from src/libswamp/mod.ts instead, " +
+    "Throw userErrorFromSwampError(e.error) from src/libswamp/errors.ts instead, " +
       "so the user sees a one-line error without a stack trace " +
       "(swamp-club#2899).",
   );

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
-import { ModelType } from "../models/model_type.ts";
+import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import { parseSubject } from "./subject.ts";
 
 export type AuthMode = "none" | "token" | "oauth";
@@ -31,6 +31,11 @@ export interface ServeAuthConfig {
   oauthProvider: string;
   oauthClientId?: string;
   groupsField: string;
+  /**
+   * Model types that need admin authority to create or run, each held as its
+   * normalizeModelTypeName key (no leading `@`), so `@exp/probe` and
+   * `exp/probe` name the same entry (swamp-club#3129).
+   */
   restrictedModelTypes: string[];
   restrictedCommands: string[];
   /**
@@ -38,6 +43,11 @@ export interface ServeAuthConfig {
    * `approve`; a `run` grant alone no longer implies it. Off by default.
    */
   approveRequiresExplicitGrant: boolean;
+  /**
+   * When true, delivering a signal to a workflow's wait needs a grant that
+   * names `signal`; a `run` grant alone no longer implies it. Off by default.
+   */
+  signalRequiresExplicitGrant: boolean;
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -59,9 +69,15 @@ export interface ServeAuthConfigInput {
   restrictedModelTypes?: string;
   restrictedCommands?: string;
   approveRequiresExplicitGrant?: boolean;
+  signalRequiresExplicitGrant?: boolean;
 }
 
-function parseCommaSeparated(value: string | undefined): string[] {
+/**
+ * Splits a comma-separated option value into trimmed, non-empty entries. The
+ * serve config file's lists reach here joined with commas, so serve and
+ * `serve check-config` split entries the same way.
+ */
+export function parseCommaSeparated(value: string | undefined): string[] {
   if (!value) return [];
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
@@ -110,7 +126,15 @@ export function buildServeAuthConfig(
   const groupsField = input.groupsField ?? DEFAULT_GROUPS_FIELD;
   const restrictedModelTypes = parseCommaSeparated(
     input.restrictedModelTypes,
-  ).map((t) => ModelType.create(t).normalized);
+  ).map((entry) => {
+    const key = normalizeModelTypeName(entry);
+    if (key === null) {
+      throw new UserError(
+        `Invalid restricted-model-types entry "${entry}": it names no model type`,
+      );
+    }
+    return key;
+  });
   const restrictedCommands = parseCommaSeparated(input.restrictedCommands);
 
   if (admins.length > 0) {
@@ -167,5 +191,83 @@ export function buildServeAuthConfig(
     restrictedModelTypes,
     restrictedCommands,
     approveRequiresExplicitGrant: input.approveRequiresExplicitGrant ?? false,
+    signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
   };
+}
+
+/** A restriction entry that cannot restrict anything as written. */
+export interface IneffectiveRestriction {
+  readonly option: "restricted-model-types" | "restricted-commands";
+  readonly entry: string;
+  /**
+   * `no-type`: the entry names no model type at all (`@`, `::`); serve
+   * refuses to start. `unknown-type`: a bare entry naming no registered
+   * type, likely misspelled or missing its `@`. `unknown-command`: not a
+   * server request type; commands match exactly.
+   */
+  readonly reason: "no-type" | "unknown-type" | "unknown-command";
+  readonly message: string;
+}
+
+export interface IneffectiveRestrictionInput {
+  /** The comma-separated values as merged from flags and serve.yaml. */
+  readonly restrictedModelTypes?: string;
+  readonly restrictedCommands?: string;
+  /** The server request type names `restricted-commands` is matched against. */
+  readonly requestTypes: ReadonlySet<string>;
+  /**
+   * Whether a model type is registered. Omitted where the registry is not
+   * loaded (`serve check-config`), which skips the `unknown-type` check.
+   */
+  readonly isKnownModelType?: (type: string) => boolean;
+}
+
+/**
+ * Finds restriction entries that can never match, so serve and
+ * `serve check-config` can say so instead of silently restricting nothing.
+ * An entry with a leading `@` is not checked against the registry: an
+ * extension type can be installed or auto-resolved after startup.
+ */
+export function findIneffectiveRestrictions(
+  input: IneffectiveRestrictionInput,
+): IneffectiveRestriction[] {
+  const found: IneffectiveRestriction[] = [];
+  for (const entry of parseCommaSeparated(input.restrictedModelTypes)) {
+    const key = normalizeModelTypeName(entry);
+    if (key === null) {
+      found.push({
+        option: "restricted-model-types",
+        entry,
+        reason: "no-type",
+        message:
+          `Invalid restricted-model-types entry "${entry}": it names no model type`,
+      });
+      continue;
+    }
+    const isKnown = input.isKnownModelType;
+    if (
+      isKnown !== undefined && !entry.startsWith("@") &&
+      !isKnown(key) && !isKnown(`@${key}`)
+    ) {
+      found.push({
+        option: "restricted-model-types",
+        entry,
+        reason: "unknown-type",
+        message:
+          `restricted-model-types entry "${entry}" names no registered model type — check the spelling, or write an extension type as @${key}`,
+      });
+    }
+  }
+  for (const entry of parseCommaSeparated(input.restrictedCommands)) {
+    if (!input.requestTypes.has(entry)) {
+      found.push({
+        option: "restricted-commands",
+        entry,
+        reason: "unknown-command",
+        message:
+          `restricted-commands entry "${entry}" is not a server command and restricts nothing — command names match exactly`,
+      });
+    }
+  }
+  return found;
 }

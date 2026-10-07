@@ -19,15 +19,17 @@
 
 import { Command } from "@cliffy/command";
 import { dirname } from "@std/path";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createExtensionPushPrepareDeps } from "../../libswamp/extensions/push.ts";
 import {
-  consumeStream,
-  createExtensionPushPrepareDeps,
   createExtensionQualityDeps,
-  createLibSwampContext,
+  extensionQuality,
+} from "../../libswamp/extensions/quality.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import {
   defaultPackageCacheRoot,
   ExtensionPackageCache,
-  extensionQuality,
-} from "../../libswamp/mod.ts";
+} from "../../domain/extensions/extension_package_cache.ts";
 import { createExtensionQualityRenderer } from "../../presentation/renderers/extension_quality.ts";
 import {
   createContext,
@@ -157,7 +159,7 @@ export const extensionQualityCommand = new Command()
           },
           hashInput: {
             manifest: resolved.manifest,
-            rootDir: repoDir,
+            rootDir: resolved.extensionsRoot,
             manifestDir,
             modelFilePaths: resolved.allModelFiles,
             vaultFilePaths: resolved.allVaultFiles,

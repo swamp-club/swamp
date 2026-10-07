@@ -18,15 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   dataQuery,
   type DataQueryData,
   type DataQueryDeps,
   requireSingleResult,
-  userErrorFromSwampError,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/data/query.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
 import {

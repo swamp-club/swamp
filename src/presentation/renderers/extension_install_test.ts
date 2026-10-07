@@ -20,7 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { createExtensionInstallRenderer } from "./extension_install.ts";
-import type { ExtensionInstallData } from "../../libswamp/mod.ts";
+import type { ExtensionInstallData } from "../../libswamp/extensions/install.ts";
 
 await initializeLogging({});
 

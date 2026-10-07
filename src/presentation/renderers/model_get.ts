@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, yellow } from "@std/fmt/colors";
-import type {
-  EventHandlers,
-  MethodDescribeData,
-  ModelGetData,
-  ModelGetEvent,
-} from "../../libswamp/mod.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { MethodDescribeData } from "../../libswamp/types/schema_helpers.ts";
+import type { ModelGetData, ModelGetEvent } from "../../libswamp/models/get.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

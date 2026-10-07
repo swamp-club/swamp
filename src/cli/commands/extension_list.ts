@@ -28,13 +28,13 @@ import { transitionalLocalLockfilePath } from "../../infrastructure/persistence/
 import { join, relative, resolve } from "@std/path";
 import {
   createExtensionListDeps,
-  createLibSwampContext,
   extensionList,
   type ExtensionListData,
   type ExtensionListEntry,
-  result,
-  warnLegacyExtensionLayout,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/list.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { result } from "../../libswamp/stream.ts";
+import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
 import {
   ensureManagedConfigBase,
   resolveManagedConfigPaths,

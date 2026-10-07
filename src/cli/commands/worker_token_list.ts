@@ -25,15 +25,14 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createWorkerListDeps,
-  withDefaults,
   workerTokenList,
   type WorkerTokenListData,
   type WorkerTokenListEvent,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/worker/list.ts";
 import { renderWorkerTokenList } from "../../presentation/output/worker_output.ts";
 import {
   requestServerResponse,

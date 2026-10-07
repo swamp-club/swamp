@@ -53,10 +53,10 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   auditTimeline,
   type AuditTimelineData,
-  consumeStream,
   createAuditTimelineDeps,
-  createLibSwampContext,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/audit/timeline.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createAuditTimelineRenderer } from "../../presentation/renderers/audit_timeline.ts";
 import { auditAlertsCommand } from "./audit_alerts.ts";
 import { auditExportCommand } from "./audit_export.ts";

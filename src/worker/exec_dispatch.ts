@@ -152,6 +152,9 @@ export async function runDispatchRunner(
   const start = performance.now();
   const logs: string[] = [];
   let getHandles: () => DataHandle[] = () => [];
+  // Console lines travel to the orchestrator's run log in the result, so
+  // they are scrubbed like streamed output (swamp-club#3080).
+  let redact = (text: string) => text;
 
   let result: DispatchResult;
 
@@ -203,6 +206,7 @@ export async function runDispatchRunner(
       },
     });
     getHandles = remote.getHandles;
+    redact = remote.redact;
 
     const executor = new DefaultMethodExecutionService();
     const methodResult = await withConsoleGuard(
@@ -219,7 +223,7 @@ export async function runDispatchRunner(
     result = {
       status: "success",
       outputs: toOutputs(handles),
-      logs,
+      logs: logs.map(redact),
       durationMs,
     };
   } catch (error) {
@@ -232,7 +236,7 @@ export async function runDispatchRunner(
       error: message,
       errorPaths: dispatchErrorPaths(error),
       outputs: toOutputs(getHandles()),
-      logs,
+      logs: logs.map(redact),
       durationMs,
     };
   } finally {

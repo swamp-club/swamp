@@ -27,13 +27,13 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   extensionInstall,
   type ExtensionInstallData,
-  withManagedLockfileTransaction,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/install.ts";
+import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "../../presentation/renderers/extension_install.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";

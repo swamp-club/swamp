@@ -26,13 +26,10 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
-import {
-  consumeStream,
-  createLibSwampContext,
-  reportGet,
-  type ReportGetDeps,
-  type StoredReportDetail,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { reportGet, type ReportGetDeps } from "../../libswamp/reports/get.ts";
+import type { StoredReportDetail } from "../../libswamp/reports/report_views.ts";
 import { createReportGetRenderer } from "../../presentation/renderers/report_get.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { WidthOptions } from "../../presentation/markdown_renderer.ts";

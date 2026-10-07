@@ -32,7 +32,7 @@ import {
   setConsoleGuardStderrWriter,
   withConsoleGuard,
 } from "../src/domain/models/console_guard.ts";
-import type { WorkflowRunView } from "../src/libswamp/mod.ts";
+import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
 import { createWorkflowRunRenderer } from "../src/presentation/renderers/workflow_run.ts";
 
 function cancelledRun(): WorkflowRunView {

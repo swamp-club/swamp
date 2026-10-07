@@ -21,13 +21,18 @@ import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { join } from "@std/path";
 import {
+  collectFiles,
+  findModuleReferences,
+  parseBarrel,
+} from "../scripts/unbarrel.ts";
+import {
   assertPinnedSet,
   collectImportEdges,
-  extractImports,
   importsLayer,
   isUnder,
   repoRelative,
   resolveImport,
+  ROOT,
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
@@ -269,23 +274,73 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// libswamp encapsulation
+// libswamp public surface
 // ---------------------------------------------------------------------------
 
+// `src/libswamp/mod.ts` declares libswamp's public surface: the names
+// delivery code may use, and the file each one comes from. It is a list, not
+// an import path. Importing through it would make every importer depend on
+// all of libswamp, so `deno info` could no longer tell which commands a
+// change reaches — which is what test selection is built on.
+//
+// Two rules keep both properties:
+//
+//   1. Surface: src/cli/, src/presentation/ and src/serve/ may take a name
+//      from a libswamp file only if mod.ts exports that name from that file.
+//   2. Honest graph: nothing imports mod.ts.
+//
+// Both cover test files too: a test that reaches past the surface pins that
+// internal just as hard as production code does.
+
+const LIBSWAMP_BARREL = "src/libswamp/mod.ts";
+
+/** `<name> from <repo-relative file>` for every name the barrel exports. */
+async function libswampSurface(): Promise<Set<string>> {
+  const barrelPath = join(ROOT, LIBSWAMP_BARREL);
+  const barrel = parseBarrel(barrelPath, await Deno.readTextFile(barrelPath));
+  const surface = new Set<string>();
+  for (const origin of barrel.values()) {
+    if (origin.bare) continue;
+    surface.add(`${origin.name} from ${repoRelative(origin.module)}`);
+  }
+  return surface;
+}
+
 /**
- * libswamp's public surface is `src/libswamp/mod.ts`. CLI commands and
- * presentation renderers — including their tests — must import through the
- * barrel so libswamp internals stay free to move. See CLAUDE.md.
- *
- * This rule covers test files too: a test that reaches into an internal path
- * pins that path just as hard as production code does.
+ * The ways `source` reaches into libswamp past the declared surface: a name
+ * the barrel does not export from that file, or a reference that takes a
+ * whole libswamp module (namespace, default, side-effect, dynamic) and so
+ * cannot be checked name by name.
  */
+function surfaceViolations(
+  filePath: string,
+  source: string,
+  surface: ReadonlySet<string>,
+): string[] {
+  const violations: string[] = [];
+  for (const reference of findModuleReferences(filePath, source)) {
+    const resolved = resolveImport(filePath, reference.specifier);
+    if (resolved === undefined || !isUnder(resolved, "src/libswamp")) continue;
+    const where = `${repoRelative(filePath)}:${reference.line}`;
+    if (reference.names.length === 0) {
+      violations.push(`${where} -> ${resolved} (${reference.kind})`);
+      continue;
+    }
+    for (const name of reference.names) {
+      if (surface.has(`${name} from ${resolved}`)) continue;
+      violations.push(`${where} -> ${name} from ${resolved}`);
+    }
+  }
+  return violations;
+}
+
 Deno.test(
-  "libswamp encapsulation: cli and presentation import libswamp only via mod.ts",
+  "libswamp surface: cli, presentation and serve import only what mod.ts exports",
   async () => {
+    const surface = await libswampSurface();
     const violations: string[] = [];
 
-    for (const layer of ["cli", "presentation"]) {
+    for (const layer of ["cli", "presentation", "serve"]) {
       for await (
         const entry of walk(join(SRC_DIR, layer), {
           exts: [".ts", ".tsx"],
@@ -293,25 +348,87 @@ Deno.test(
         })
       ) {
         const source = await Deno.readTextFile(entry.path);
-        for (const importPath of extractImports(source)) {
-          const resolved = resolveImport(entry.path, importPath);
-          if (resolved === undefined) continue;
-          if (!isUnder(resolved, "src/libswamp")) continue;
-          if (resolved === "src/libswamp/mod.ts") continue;
-          violations.push(`${repoRelative(entry.path)} -> ${resolved}`);
-        }
+        if (!source.includes("libswamp/")) continue;
+        violations.push(...surfaceViolations(entry.path, source, surface));
       }
     }
 
     assertEquals(
       violations.length,
       0,
-      `CLI/presentation code must import libswamp only via src/libswamp/mod.ts:\n` +
+      `CLI, presentation and serve code may import from a libswamp file only\n` +
+        `the names ${LIBSWAMP_BARREL} exports from that file:\n` +
         `${violations.sort().join("\n")}\n\n` +
-        `Deep imports into libswamp internals defeat the barrel: they pin\n` +
-        `internal file layout and let callers bypass the curated public API.\n` +
-        `Import the symbol from "src/libswamp/mod.ts" instead — and if it is\n` +
-        `not re-exported there, export it from mod.ts first.`,
+        `${LIBSWAMP_BARREL} is the list of what libswamp makes public. A name\n` +
+        `missing from it is an internal that is free to move or change.\n` +
+        `If the name should be public, add it to mod.ts — exported from the\n` +
+        `file that defines it — and keep importing it from that file. Import\n` +
+        `names individually: a namespace, default, side-effect or dynamic\n` +
+        `import takes the whole module and cannot be checked against the list.`,
+    );
+  },
+);
+
+Deno.test("libswamp surface: surfaceViolations flags what the barrel does not export", () => {
+  const surface = new Set(["run from src/libswamp/ops/run.ts"]);
+  const file = join(SRC_DIR, "cli", "commands", "thing.ts");
+
+  assertEquals(
+    surfaceViolations(
+      file,
+      `import { run } from "../../libswamp/ops/run.ts";\n` +
+        `import { run as alias } from "../../libswamp/ops/run.ts";\n` +
+        `import { helper } from "../../libswamp/ops/run.ts";\n` +
+        `import { run as moved } from "../../libswamp/ops/other.ts";\n` +
+        `import * as ops from "../../libswamp/ops/run.ts";\n` +
+        `const lazy = await import("../../libswamp/ops/run.ts");\n` +
+        `let t: import("../../libswamp/ops/run.ts").Internal;\n` +
+        `import { Shape } from "../../domain/shape.ts";\n`,
+      surface,
+    ),
+    [
+      "src/cli/commands/thing.ts:3 -> helper from src/libswamp/ops/run.ts",
+      "src/cli/commands/thing.ts:4 -> run from src/libswamp/ops/other.ts",
+      "src/cli/commands/thing.ts:5 -> src/libswamp/ops/run.ts (namespace)",
+      "src/cli/commands/thing.ts:6 -> src/libswamp/ops/run.ts (dynamic)",
+      "src/cli/commands/thing.ts:7 -> Internal from src/libswamp/ops/run.ts",
+    ],
+  );
+});
+
+// The one importer of the barrel. Nothing else imports mod.ts, so without
+// this test no type check or test run would notice a re-export that no
+// longer resolves. A test file is in no command's import graph.
+const PINNED_BARREL_IMPORTERS: readonly string[] = [
+  "src/libswamp/mod_test.ts",
+];
+
+Deno.test(
+  "libswamp surface: nothing imports mod.ts",
+  async () => {
+    const barrelPath = join(ROOT, LIBSWAMP_BARREL);
+    const importers = new Set<string>();
+
+    for (const filePath of await collectFiles(ROOT)) {
+      if (filePath === barrelPath) continue;
+      const source = await Deno.readTextFile(filePath);
+      if (!source.includes("mod.ts")) continue;
+      for (const reference of findModuleReferences(filePath, source)) {
+        if (resolveImport(filePath, reference.specifier) === LIBSWAMP_BARREL) {
+          importers.add(repoRelative(filePath));
+        }
+      }
+    }
+
+    assertPinnedSet(
+      [...importers].sort(),
+      PINNED_BARREL_IMPORTERS,
+      `Importers of ${LIBSWAMP_BARREL}`,
+      `Import each name from the libswamp file that defines it — the file\n` +
+        `${LIBSWAMP_BARREL} re-exports it from. An import of the barrel makes\n` +
+        `the importer depend on every libswamp module, which hides what it\n` +
+        `really uses from \`deno info\`. \`deno run unbarrel\` rewrites these\n` +
+        `imports for you. This list is not debt to add to.`,
     );
   },
 );

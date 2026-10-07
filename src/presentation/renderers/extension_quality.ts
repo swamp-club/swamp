@@ -17,14 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
-  EventHandlers,
   ExtensionQualityData,
   ExtensionQualityEvent,
-  FactorStatus,
-  LocalGateFailure,
-  SwampError,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/quality.ts";
+import type { FactorStatus } from "../../domain/extensions/extension_rubric_scorer.ts";
+import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { Renderer } from "../renderer.ts";

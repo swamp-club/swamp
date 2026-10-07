@@ -119,6 +119,11 @@ Push rejects:
   manifest before re-running push.
 - **Symlinks**. Entries pointing at symlinks are rejected to prevent archive
   bloat and path escapes. Copy the target file into the extension tree instead.
+- **Directories and other non-regular files**. Each entry names one file;
+  `additionalFiles: [docs]` fails with "Additional file is a directory: docs".
+  List the files under `docs/` individually. `binaries` and `include` entries
+  are checked the same way, and `extension quality` and `extension fmt` report
+  the same error as push.
 
 At runtime, models and reports receive `ctx.extensionFile(relPath)` which
 returns the absolute path to a bundled asset. The helper works identically
@@ -405,25 +410,25 @@ With credentials present, the dry run runs the registry checks a real push runs,
 read-only, and reports each one in the `dry_run` document's `registryChecks`
 array with the wording the push would fail with:
 
-| Check                   | Passed when                                                                                                                      |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `authentication`        | the stored key is accepted by the registry                                                                                       |
-| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry                                                                         |
-| `collective-membership` | the manifest's collective is one of yours                                                                                        |
-| `private-entitlement`   | (private intent only) the collective's reported plan allows private extensions: a paid plan, or a free plan with an active trial |
-| `version-exists`        | the manifest version is not published on any channel                                                                             |
+| Check                   | Passed when                                                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `authentication`        | the stored key is accepted by the registry; the message and the row's `credential` name it (username, or API token collective and fingerprint) |
+| `reserved-collective`   | `@swamp` / `@si` membership was verified by the registry                                                                                       |
+| `collective-membership` | the manifest's collective is one of yours                                                                                                      |
+| `private-entitlement`   | (private intent only) the collective's reported plan allows private extensions: a paid plan, or a free plan with an active trial               |
+| `version-exists`        | the manifest version is not published on any channel                                                                                           |
 
 A `failed` check exits non-zero after the summary. A `not-run` check names the
 missing prerequisite in `message` and `cause`: `no-credentials` leaves the run
 green, since the registry was never asked; `registry-unavailable` exits
 non-zero, since the registry never confirmed what the push needs;
 `entitlement-undecided` leaves the run green, since the registry answered but
-what it reported does not settle private entitlement (no entitlement reported,
-or a free plan with no trial, which the registry may start at publish). The dry
-run never prompts and never writes to the registry.
+what it reported does not settle private entitlement (no entitlement reported
+for the collective). The dry run never prompts and never writes to the registry.
 
-`private-entitlement` fails only for a free plan whose trial has ended, with the
-message the push throws:
+`private-entitlement` fails for a free plan with no trial or whose trial has
+ended — the registry never starts a trial at publish — with the message the push
+throws (`… is on the Free plan and has no trial. …` when there is none):
 `Collective "@acme" is on the Free plan and its trial
 ended on 2026-08-19. Private publication requires a paid plan; upgrade at
 https://swamp-club.com/o/acme/billing.`
@@ -440,19 +445,24 @@ warning (see [Declaring acceptances](#declaring-acceptances)).
 
 ### Reproducing the CI layout
 
-The content hash labels files by their path relative to the swamp repo dir, so
-the same extension hashes differently from a sibling repo. CI publishes from a
-swamp repo initialised inside the extension directory. To compute the same hash
-locally, run the dry run in that layout:
+The content hash labels files by their path from the extensions root, not from
+the swamp repo dir. CI publishes from a swamp repo initialised inside the
+extension directory, so a dry run reproduces CI's hash whenever the extensions
+root is the extension directory: from inside it, or from a sibling or monorepo
+swamp repo that infers the root from the manifest or names it with
+`--extensions-dir`:
 
 ```bash
-cd path/to/extension          # the directory holding manifest.yaml
-[ -f .swamp.yaml ] || swamp repo init --quiet --tool none
-swamp extension push manifest.yaml --dry-run --json
+swamp extension push path/to/extension --dry-run --json
 ```
 
 Compare `contentHash` in the output with the hash CI reports. Any byte change in
-a packaged file, or a version bump, moves the hash.
+a packaged file, or a version bump, moves the hash. If the hashes differ only by
+layout, the extensions root resolved elsewhere (an extension whose typed entries
+resolve under the swamp repo dir keeps the repo dir as its root): pass
+`--extensions-dir path/to/extension`, or run the dry run inside the extension
+directory (`swamp repo init --quiet --tool none` there first if it has no
+`.swamp.yaml`).
 
 ### Opportunistic package cache
 
@@ -481,9 +491,19 @@ version in the registry to catch a common mistake:
 The check fetches the last-published version's metadata from the registry. This
 works on any machine with registry credentials — no local state is required.
 
-When the extension has never been published (first publish), the check reports
-that it cannot verify version drift rather than silently skipping. This is
-informational, not an error.
+When there is nothing to compare against, the check says why rather than
+silently skipping. Each such warning carries a `cause` in `--json`:
+
+| `cause`                 | When                                     | Message says                                                            |
+| ----------------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| `never-published`       | the registry has no version (first push) | "no previously published version found ... (expected on first publish)" |
+| `no-credentials`        | not signed in                            | "no credentials; run 'swamp auth login' to sign in"                     |
+| `authentication-failed` | the registry rejected the key (401/403)  | "authentication failed: <reason>"                                       |
+| `registry-unavailable`  | no network, a 5xx, any other failure     | "registry lookup failed: <reason>" (names the HTTP status)              |
+
+Only `never-published` means a first publish; the others are transient or
+credential problems, and note that the version-bump upgrade check was skipped
+too. A real drift finding has no `cause`. None of these block the push.
 
 The version-drift check is **not** run during `swamp extension fmt` — it
 requires registry access that the fmt command does not use.
@@ -556,9 +576,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    is present, the import map governs dependency resolution.
 10. **Version-drift check** — advisory check comparing current model versions
     against the last-published version in the registry. Warns when a model
-    version was bumped but the manifest `version` was not. If the extension has
-    never been published, reports that the check could not run rather than
-    silently skipping. See "Version-Drift Check" below.
+    version was bumped but the manifest `version` was not. When it cannot
+    compare — never published, no credentials, or a failed registry lookup — it
+    reports which, rather than silently skipping. See "Version-Drift Check"
+    below.
 11. **Version check** — verifies version doesn't already exist (offers to bump)
 12. **Build archive** — creates tar.gz with all content types and their bundles
 13. **Upload** — three-phase push: initiate, upload archive, confirm
@@ -730,8 +751,8 @@ exact comment or sidecar entry to paste and where it goes). In `--json` they are
 `declaredAcceptances` (`{ accepted: [...], generated? }`) and `forNextTime`
 (`[{ ruleId, file, line?, message, remediation?, acceptance?, placement? }]`),
 beside `acceptedWarnings` and omitted when empty; every finding in
-`reviewRuleWarnings` and `warnings` carries `acceptance` and `remediation`. The
-acceptances also travel to the registry in `contentMetadata.acceptances`.
+`warnings.review` and `warnings.safety` carries `acceptance` and `remediation`.
+The acceptances also travel to the registry in `contentMetadata.acceptances`.
 
 ## CalVer Versioning
 

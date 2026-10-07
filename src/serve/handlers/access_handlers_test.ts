@@ -140,6 +140,7 @@ function createCtx(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
   };
 }
@@ -296,6 +297,7 @@ function createReloadCtx(
       restrictedModelTypes: [],
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
     },
   };
 }
@@ -382,10 +384,12 @@ function makeGrant(overrides: Partial<Grant> = {}): Grant {
 function createPolicyCtx(
   grants: Grant[],
   runImpliesApprove: boolean,
+  runImpliesSignal = true,
 ): ConnectionContext {
   const snapshot = new PolicySnapshot(grants, []);
   const decisionService = new GrantBasedAccessDecisionService(snapshot, {
     runImpliesApprove,
+    runImpliesSignal,
   });
   const ctx = createCtx(decisionService);
   return {
@@ -397,6 +401,7 @@ function createPolicyCtx(
     authConfig: {
       ...ctx.authConfig!,
       approveRequiresExplicitGrant: !runImpliesApprove,
+      signalRequiresExplicitGrant: !runImpliesSignal,
     },
   };
 }
@@ -416,8 +421,46 @@ Deno.test("handleAccessCanI: listing shows approve implied by a run grant", asyn
       d.action,
       d.impliedBy,
     ]),
-    [["run", undefined], ["read", undefined], ["approve", "run"]],
+    [
+      ["run", undefined],
+      ["read", undefined],
+      ["approve", "run"],
+      ["signal", "run"],
+    ],
   );
+  assertEquals(payload.signalRequiresExplicitGrant, false);
+});
+
+Deno.test("handleAccessCanI: listing omits implied signal when signal requires an explicit grant", async () => {
+  const socket = createMockSocket();
+  const ctx = createPolicyCtx([makeGrant()], true, false);
+
+  await handleAccessCanI(socket, ctx, "req-1", {}, RESUMER);
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.signalRequiresExplicitGrant, true);
+  assertEquals(
+    payload.decisions.map((d: { action: string }) => d.action),
+    ["run", "read", "approve"],
+  );
+});
+
+Deno.test("handleAccessCanI: specific signal check carries impliedBy", async () => {
+  const socket = createMockSocket();
+  const ctx = createPolicyCtx([makeGrant()], true);
+
+  await handleAccessCanI(
+    socket,
+    ctx,
+    "req-1",
+    { action: "signal", resource: "workflow:@acme/deploy" },
+    RESUMER,
+  );
+
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.decisions.length, 1);
+  assertEquals(payload.decisions[0].effect, "allow");
+  assertEquals(payload.decisions[0].impliedBy, "run");
 });
 
 Deno.test("handleAccessCanI: listing omits implied approve when approve requires an explicit grant", async () => {
@@ -430,7 +473,7 @@ Deno.test("handleAccessCanI: listing omits implied approve when approve requires
   assertEquals(payload.approveRequiresExplicitGrant, true);
   assertEquals(
     payload.decisions.map((d: { action: string }) => d.action),
-    ["run", "read"],
+    ["run", "read", "signal"],
   );
 });
 
@@ -449,7 +492,11 @@ Deno.test("handleAccessCanI: listing keeps approve implied by a deny on run in b
       payload.decisions.map((
         d: { action: string; effect: string; impliedBy?: string },
       ) => [d.action, d.effect, d.impliedBy]),
-      [["run", "deny", undefined], ["approve", "deny", "run"]],
+      [
+        ["run", "deny", undefined],
+        ["approve", "deny", "run"],
+        ["signal", "deny", "run"],
+      ],
     );
   }
 });

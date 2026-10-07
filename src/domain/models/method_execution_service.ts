@@ -67,6 +67,8 @@ import {
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
+import type { Logger } from "@logtape/logtape";
+import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
@@ -175,6 +177,35 @@ function lockHandOffFor(
       Promise.resolve({ lent: undefined, end: () => Promise.resolve() });
   }
   return () => source.begin();
+}
+
+/**
+ * Writes an output line a worker streamed back through the run logger, so a
+ * remote step's run log holds what a local step's does (swamp-club#3080).
+ * A worker supplies the event, so it is checked here rather than trusted: a
+ * line is split on every line separator so it cannot pass for several
+ * records, and an
+ * unrecognised level falls back to the stream.
+ */
+function logRemoteOutput(logger: Logger, event: unknown): void {
+  if (typeof event !== "object" || event === null) return;
+  const { type, line, stream, level } = event as Record<string, unknown>;
+  if (type !== "output" || typeof line !== "string") return;
+  const parts = line.split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/);
+  // A trailing newline is the end of the last line, not an empty one after it.
+  if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  for (const part of parts) {
+    const message = escapeLogTemplate(part);
+    if (level === "error") {
+      logger.error(message);
+    } else if (
+      level === "warning" || (level !== "info" && stream === "stderr")
+    ) {
+      logger.warn(message);
+    } else {
+      logger.info(message);
+    }
+  }
 }
 
 /**
@@ -489,33 +520,32 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         ...secretDelivery,
         beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
-        onEvent: context.onEvent
-          ? (event: RpcStreamEvent) => {
-            if (event.kind === "method_event" && "event" in event) {
-              context.onEvent!(
-                event.event as Parameters<
-                  NonNullable<
-                    MethodContext["onEvent"]
-                  >
-                >[0],
-              );
-            } else if (
-              event.kind === "queued" && "requirement" in event
-            ) {
-              context.onEvent!({
-                type: "step_queued",
-                requirement: event.requirement as string,
-              });
-            } else if (
-              event.kind === "target_disconnected" && "target" in event
-            ) {
-              context.onEvent!({
-                type: "step_target_disconnected",
-                target: event.target as string,
-              });
-            }
+        onEvent: (event: RpcStreamEvent) => {
+          if (event.kind === "method_event" && "event" in event) {
+            logRemoteOutput(context.logger, event.event);
+            context.onEvent?.(
+              event.event as Parameters<
+                NonNullable<
+                  MethodContext["onEvent"]
+                >
+              >[0],
+            );
+          } else if (
+            event.kind === "queued" && "requirement" in event
+          ) {
+            context.onEvent?.({
+              type: "step_queued",
+              requirement: event.requirement as string,
+            });
+          } else if (
+            event.kind === "target_disconnected" && "target" in event
+          ) {
+            context.onEvent?.({
+              type: "step_target_disconnected",
+              target: event.target as string,
+            });
           }
-          : undefined,
+        },
       }));
   }
 

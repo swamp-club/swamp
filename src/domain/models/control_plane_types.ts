@@ -51,16 +51,25 @@ export const CONTROL_PLANE_STORED_TYPES: readonly string[] =
 
 /**
  * The normalized form of a model type string, as ModelType normalizes it,
- * with a leading `@` dropped; null for a string that normalizes to nothing.
+ * with every leading `@` and `/` then dropped; null for a string that
+ * normalizes to nothing.
+ *
+ * ModelType normalizes first, so the `@` is found after the whitespace and
+ * separators that execution trims: `" @x/y"`, `"@@x/y"` and `"@/@x/y"` all
+ * give `x/y`, the same key as `@x/y` and `x/y`. The result is a fixed point —
+ * normalizing it again returns it unchanged — so authorization can compare
+ * any two spellings by this key (swamp-club#3129).
  */
 export function normalizeModelTypeName(type: string): string | null {
-  const stripped = type.startsWith("@") ? type.slice(1) : type;
+  let normalized: string;
   try {
-    return ModelType.create(stripped).normalized;
+    normalized = ModelType.create(type).normalized;
   } catch {
     // Blank, or only separators ("/", "::", "."): not a model type.
     return null;
   }
+  const stripped = normalized.replace(/^[@/]+/, "");
+  return stripped.length > 0 ? stripped : null;
 }
 
 /**

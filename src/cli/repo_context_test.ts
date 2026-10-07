@@ -1807,6 +1807,64 @@ async function writeModelLock(
   );
 }
 
+/** Writes an empty per-model lock file for `model`, as a holder mid-write leaves it. */
+async function writeEmptyModelLock(
+  dir: string,
+  model: string,
+): Promise<string> {
+  const lockDir = join(dir, "data", "command-shell", model);
+  await ensureDir(lockDir);
+  const lockPath = join(lockDir, ".lock");
+  await Deno.writeTextFile(lockPath, "");
+  return lockPath;
+}
+
+Deno.test(
+  "waitForPerModelLocks - waits on a fresh unreadable lock file until it is gone",
+  async () => {
+    await withTempDir(async (dir) => {
+      // A holder caught mid-write: the file exists but is empty
+      // (swamp-club#3148). The holder releases once the drain is waiting.
+      const lockPath = await writeEmptyModelLock(dir, "writer-model");
+
+      const messages: string[] = [];
+      await waitForPerModelLocks(dir, undefined, {
+        pollIntervalMs: 10,
+        progressWriter: (msg) => {
+          messages.push(msg);
+          if (msg.includes("Waiting for")) Deno.removeSync(lockPath);
+        },
+      });
+
+      assertEquals(
+        messages.some((m) => m.includes("Waiting for 1 per-model lock(s)")),
+        true,
+        `expected the unreadable lock to be counted, got ${
+          JSON.stringify(messages)
+        }`,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - ignores an unreadable lock file untouched for a full TTL",
+  async () => {
+    await withTempDir(async (dir) => {
+      const lockPath = await writeEmptyModelLock(dir, "crashed-model");
+      const past = new Date(Date.now() - 120_000);
+      await Deno.utime(lockPath, past, past);
+
+      const messages: string[] = [];
+      await waitForPerModelLocks(dir, undefined, {
+        progressWriter: (msg) => messages.push(msg),
+      });
+
+      assertEquals(messages, []);
+    });
+  },
+);
+
 Deno.test(
   "waitForPerModelLocks - skips the lock a parent holds for this run and waits on its other runs' locks",
   async () => {
@@ -3438,6 +3496,147 @@ Deno.test("acquireModelLocks: a failed global lock re-check releases the lock ju
   assertEquals(error.message, "injected inspect failure");
   assertEquals(acquired.length, 1);
   assertEquals(released, acquired);
+});
+
+Deno.test("acquireModelLocks: waits on a fresh unreadable global lock file until it is gone", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    assert(!isCustomDatastoreConfig(datastoreConfig));
+
+    // A structural command caught mid-write: its global lock file exists
+    // but is empty (swamp-club#3148). It releases once the writer waits.
+    const globalLockPath = join(datastoreConfig.path, ".datastore.lock");
+    await ensureDir(datastoreConfig.path);
+    await Deno.writeTextFile(globalLockPath, "");
+
+    const messages: string[] = [];
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [{ modelType: "aws-ec2", modelId: "server-1" }],
+      dir,
+      undefined,
+      undefined,
+      (msg) => {
+        messages.push(msg);
+        if (msg.includes("Global lock held by")) {
+          Deno.removeSync(globalLockPath);
+        }
+      },
+    );
+    await lockResult.flush();
+
+    assertEquals(
+      messages.some((m) => m.includes("Global lock held by unknown")),
+      true,
+      `expected a wait on the unreadable global lock, got ${
+        JSON.stringify(messages)
+      }`,
+    );
+  });
+});
+
+Deno.test("acquireModelLocks: the re-check after a per-model lock sees a fresh unreadable global lock file as held", async () => {
+  const typeName = `test-recheck-${crypto.randomUUID().slice(0, 8)}`;
+  const acquired: string[] = [];
+  const released: string[] = [];
+  let globalLockDir = "";
+
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test global lock re-check",
+    description: "A real FileLock global lock behind recording model locks",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: (_path: string, options?: { lockKey?: string }) => {
+        // Without a namespace the global lock carries no lockKey;
+        // per-model locks always do.
+        const lockKey = options?.lockKey;
+        if (lockKey === undefined) return new FileLock(globalLockDir);
+        return {
+          acquire: async () => {
+            // A structural command starts creating the global lock just
+            // after this writer's first inspect, the first time only.
+            if (acquired.length === 0) {
+              await Deno.writeTextFile(
+                join(globalLockDir, ".datastore.lock"),
+                "",
+              );
+            }
+            acquired.push(lockKey);
+          },
+          release: () => {
+            released.push(lockKey);
+            return Promise.resolve();
+          },
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        };
+      },
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+    }),
+  });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      globalLockDir = join(dir, "global-lock");
+      await ensureDir(globalLockDir);
+
+      const markerPath = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(markerPath);
+      await Deno.writeTextFile(
+        markerPath,
+        existing.trimEnd() + "\n" + [
+          "datastore:",
+          `  type: '${typeName}'`,
+          "  config:",
+          "    bucket: test-bucket",
+        ].join("\n") + "\n",
+      );
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const messages: string[] = [];
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [{ modelType: "aws-ec2", modelId: "a" }],
+        dir,
+        undefined,
+        undefined,
+        (msg) => {
+          messages.push(msg);
+          if (msg.includes("during per-model lock acquisition")) {
+            Deno.removeSync(join(globalLockDir, ".datastore.lock"));
+          }
+        },
+      );
+      await lockResult.flush();
+
+      assertEquals(
+        messages.some((m) => m.includes("Global lock acquired by unknown")),
+        true,
+        `expected the re-check to see the global lock, got ${
+          JSON.stringify(messages)
+        }`,
+      );
+      // Taken, given up for the structural command, then taken again.
+      assertEquals(acquired.length, 2);
+      assertEquals(released.length, 2);
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
 });
 
 Deno.test("acquireModelLocks: a lock release failing during the unwind does not replace the pull error", async () => {
@@ -5410,6 +5609,37 @@ Deno.test("reclaimModelLocks: does not wait on a structural command on this host
       isProcessDead: () => true,
     });
     assertEquals(elsewhere.inspects(), 2);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: reads a global lock caught mid-write again instead of proceeding", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    // What FileLock.inspect reports for a fresh unreadable lock file.
+    const midWrite: LockInfo = {
+      holder: "unknown (lock file is being written)",
+      hostname: "unknown",
+      pid: 0,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: 30_000,
+    };
+    const retired = lock.heldNonce!;
+    const global = globalLockReturning([
+      midWrite,
+      globalInfo([retired]),
+      null,
+    ]);
+
+    await reclaimModelLocks([lock], global, {
+      pollMs: 1,
+      progressWriter: () => {},
+    });
+
+    // Not taken for a command that skipped nothing: read again, found
+    // working under the retired nonce, and waited out.
+    assertEquals(global.inspects(), 3);
     await lock.release();
   });
 });

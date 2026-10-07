@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { consumeStream } from "../../libswamp/mod.ts";
-import type { TypeDescribeEvent } from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { TypeDescribeEvent } from "../../libswamp/types/describe.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createTypeDescribeRenderer } from "./type_describe.ts";
 

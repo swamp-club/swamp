@@ -24,8 +24,8 @@ import type {
   DoctorExtensionsReport,
   DoctorRegistryName,
   DoctorRegistryResult,
-  ReconcileTransition,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/doctor.ts";
+import type { ReconcileTransition } from "../../libswamp/extensions/reconcile_from_disk_service.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { createDoctorExtensionsRenderer } from "./doctor_extensions.ts";
 

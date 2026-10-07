@@ -29,13 +29,9 @@
  */
 
 import { assertEquals } from "@std/assert";
-import {
-  consumeStream,
-  createLibSwampContext,
-  createRepoInitDeps,
-  repoInit,
-  withDefaults,
-} from "../src/libswamp/mod.ts";
+import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";

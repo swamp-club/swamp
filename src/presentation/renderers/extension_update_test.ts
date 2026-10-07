@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
-import type { ExtensionUpdateResult } from "../../libswamp/mod.ts";
+import type { ExtensionUpdateResult } from "../../domain/extensions/extension_update_service.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { createExtensionUpdateRenderer } from "./extension_update.ts";
 

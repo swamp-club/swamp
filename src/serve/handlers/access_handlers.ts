@@ -71,7 +71,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { ActionSchema } from "../../domain/access/action.ts";
+import { ACTION_LIST, ActionSchema } from "../../domain/access/action.ts";
 import {
   parseResourceSelector,
   type ResourceKind,
@@ -110,18 +110,23 @@ import {
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createServerTokenCreateDeps,
-  createServerTokenListDeps,
-  createServerTokenRevokeDeps,
-  createServerTokenRotateDeps,
   serverTokenCreate,
+} from "../../libswamp/access/token_create.ts";
+import {
+  createServerTokenListDeps,
   serverTokenList,
+} from "../../libswamp/access/token_list.ts";
+import {
+  createServerTokenRevokeDeps,
   serverTokenRevoke,
+} from "../../libswamp/access/token_revoke.ts";
+import {
+  createServerTokenRotateDeps,
   serverTokenRotate,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_rotate.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
@@ -425,7 +430,7 @@ export async function handleAccessCheck(
         socket,
         requestId,
         "invalid_action",
-        `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+        `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
       );
       return;
     }
@@ -454,6 +459,7 @@ export async function handleAccessCheck(
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
         approveRequiresExplicitGrant: !service.runImpliesApprove,
+        signalRequiresExplicitGrant: !service.runImpliesSignal,
       },
     });
     return;
@@ -505,7 +511,7 @@ export async function handleAccessCanI(
           socket,
           requestId,
           "invalid_action",
-          `Invalid action "${payload.action}": must be one of run, read, write, approve, admin`,
+          `Invalid action "${payload.action}": must be one of ${ACTION_LIST}`,
         );
         return;
       }
@@ -538,6 +544,7 @@ export async function handleAccessCanI(
             ...(d.impliedBy ? { impliedBy: d.impliedBy } : {}),
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
         },
       });
     } else {
@@ -558,6 +565,7 @@ export async function handleAccessCanI(
         payload: {
           principal: principalStr,
           approveRequiresExplicitGrant: !service.runImpliesApprove,
+          signalRequiresExplicitGrant: !service.runImpliesSignal,
           decisions: grants.flatMap((g) =>
             service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
               action: a,

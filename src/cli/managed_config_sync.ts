@@ -41,7 +41,7 @@ import {
   type LockfileTransaction,
   type ManagedLockfileLock,
   ManagedLockfileTransaction,
-} from "../libswamp/mod.ts";
+} from "../libswamp/extensions/managed_lockfile_transaction.ts";
 import { createDatastoreLock } from "../infrastructure/persistence/datastore_global_lock.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {

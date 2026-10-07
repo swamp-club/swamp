@@ -24,13 +24,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createModelOutputDataDeps,
   modelOutputData,
   type ModelOutputDataData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/models/output_data.ts";
 import { createModelOutputDataRenderer } from "../../presentation/renderers/model_output_data.ts";
 import {
   requestServerResponse,

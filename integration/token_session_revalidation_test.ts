@@ -26,18 +26,21 @@
 
 import { assert, assertEquals, assertExists } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
 import {
-  collect,
-  createLibSwampContext,
-  createRepoInitDeps,
   createServerTokenCreateDeps,
-  createServerTokenRevokeDeps,
-  createServerTokenRotateDeps,
-  repoInit,
   serverTokenCreate,
+} from "../src/libswamp/access/token_create.ts";
+import {
+  createServerTokenRevokeDeps,
   serverTokenRevoke,
+} from "../src/libswamp/access/token_revoke.ts";
+import {
+  createServerTokenRotateDeps,
   serverTokenRotate,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/access/token_rotate.ts";
 import {
   createRepositoryContext,
   type RepositoryContext,
@@ -222,6 +225,7 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
             restrictedModelTypes: [],
             restrictedCommands: [],
             approveRequiresExplicitGrant: false,
+            signalRequiresExplicitGrant: false,
           },
           auditEmitter: emitter,
           instanceId: "instance-1",

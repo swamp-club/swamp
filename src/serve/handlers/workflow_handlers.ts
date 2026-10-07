@@ -21,47 +21,81 @@
  * Workflow-domain request handlers (workflow.* verbs).
  */
 
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createWorkflowApprovalsDeps,
-  createWorkflowApproveDeps,
-  createWorkflowCreateDeps,
-  createWorkflowDeleteDeps,
-  createWorkflowEditDeps,
-  createWorkflowEvaluateDeps,
-  createWorkflowGetDeps,
-  createWorkflowHistoryGetDeps,
-  createWorkflowHistoryLogsDeps,
-  createWorkflowRejectDeps,
-  createWorkflowValidateDeps,
-  type DetachedNestedRunData,
-  mapWorkflowExecutionEvent,
-  resolveRunReference,
   workflowApprovals,
   type WorkflowApprovalsEvent,
+} from "../../libswamp/workflows/approvals.ts";
+import {
+  createWorkflowApproveDeps,
   workflowApprove,
   type WorkflowApproveData,
+} from "../../libswamp/workflows/approve.ts";
+import {
+  createWorkflowCreateDeps,
   workflowCreate,
+} from "../../libswamp/workflows/create.ts";
+import {
+  createWorkflowDeleteDeps,
   workflowDelete,
+} from "../../libswamp/workflows/delete.ts";
+import {
+  createWorkflowEditDeps,
   workflowEdit,
   type WorkflowEditTarget,
+} from "../../libswamp/workflows/edit.ts";
+import {
+  createWorkflowEvaluateDeps,
   workflowEvaluate,
+} from "../../libswamp/workflows/evaluate.ts";
+import {
+  createWorkflowGetDeps,
   workflowGet,
+} from "../../libswamp/workflows/get.ts";
+import {
+  createWorkflowHistoryGetDeps,
   workflowHistoryGet,
+} from "../../libswamp/workflows/history_get.ts";
+import {
+  createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
-  workflowHistorySearch,
-  type WorkflowHistorySearchDeps,
+} from "../../libswamp/workflows/history_logs.ts";
+import {
+  createWorkflowRejectDeps,
   workflowReject,
   type WorkflowRejectData,
+} from "../../libswamp/workflows/reject.ts";
+import {
+  createWorkflowValidateDeps,
+  workflowValidate,
+} from "../../libswamp/workflows/validate.ts";
+import {
+  createWorkflowWaitsDeps,
+  workflowWaits,
+  type WorkflowWaitsData,
+  type WorkflowWaitsEvent,
+} from "../../libswamp/workflows/waits.ts";
+import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
+import {
+  mapWorkflowExecutionEvent,
   type WorkflowRunEvent,
+} from "../../libswamp/workflows/run.ts";
+import { resolveRunReference } from "../../libswamp/workflows/run_reference.ts";
+import {
+  workflowHistorySearch,
+  type WorkflowHistorySearchDeps,
+} from "../../libswamp/workflows/history_search.ts";
+import {
   workflowRunSearch,
   type WorkflowRunSearchDeps,
-  workflowSchema,
-  workflowsDirFor,
+} from "../../libswamp/workflows/run_search.ts";
+import { workflowSchema } from "../../libswamp/workflows/schema.ts";
+import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
+import {
   workflowSearch,
   type WorkflowSearchDeps,
-  workflowValidate,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/search.ts";
 import {
   createStepLockHook,
   createWorkflowRunDeps,
@@ -86,6 +120,7 @@ import type {
   WorkflowRunSearchPayload,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
+  WorkflowSignalPayload,
   WorkflowTriggerGetPayload,
   WorkflowTriggerRemovePayload,
   WorkflowTriggerSetPayload,
@@ -144,6 +179,7 @@ import {
   writeActiveRun,
 } from "../active_run_tracker.ts";
 import {
+  accessCallerOf,
   authorizeAnyOrReject,
   authorizeOrReject,
   cancelActor,
@@ -159,6 +195,7 @@ import {
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
+  recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
   sanitizeErrorForClient,
@@ -179,8 +216,8 @@ import {
   validateTriggerOverrideEntry,
   writeServeConfigFile,
 } from "../serve_config.ts";
-import type { TriggerOverride } from "../../libswamp/mod.ts";
-import type { WorkflowRunView } from "../../libswamp/mod.ts";
+import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
+import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
@@ -210,6 +247,8 @@ import {
   workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
+import { deliverSignalForCaller } from "../signal_delivery.ts";
+import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
 import { authorizeStepTargets } from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -1459,6 +1498,147 @@ export async function handleWorkflowApprove(
     id: requestId,
     payload: { data: { ...result, autoResumed } },
   });
+}
+
+/**
+ * Delivers a signal to the wait it names. The caller is authorized on the
+ * wait's workflow inside {@link deliverSignalForCaller}, which the HTTP
+ * signal route shares: a wait the caller may not signal is answered as one
+ * that does not exist. Nothing here reserves or saves a run.
+ */
+export async function handleWorkflowSignal(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowSignalPayload,
+  principal: Principal | null,
+): Promise<void> {
+  const result = await deliverSignalForCaller(
+    ctx,
+    accessCallerOf(socket, principal),
+    { requestId, waitId: payload.waitId, payload: payload.payload },
+  );
+  switch (result.status) {
+    case "delivered":
+      if (result.data.workflowName !== undefined) {
+        recordAuditedResource(
+          socket,
+          requestId,
+          "workflow",
+          result.data.workflowName,
+          ctx,
+        );
+      }
+      send(socket, {
+        type: "workflow.signal",
+        id: requestId,
+        payload: { data: result.data },
+      });
+      return;
+    case "not_found":
+      sendError(socket, requestId, "not_found", result.message);
+      return;
+    case "failed":
+      sendError(socket, requestId, "workflow_signal_failed", result.message);
+      return;
+    case "invalid_payload":
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+        errors: result.errors,
+      });
+      return;
+    default:
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+        ...(result.receipt ? { receipt: result.receipt } : {}),
+      });
+  }
+}
+
+/**
+ * Lists the waits for a signal nothing has answered, to a caller who may
+ * read their workflows. A caller with no `read` grant on any workflow, such
+ * as one granted `signal` alone, is refused.
+ *
+ * The listing is not read-only, here as for the local command: it registers
+ * the waits of runs suspended before waits were registered, settles a wait
+ * past its deadline as timed out, and sweeps wait records, for every
+ * workflow. Each of those writes depends only on stored state, never on the
+ * request.
+ */
+export async function handleWorkflowWaits(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
+  ) return;
+
+  try {
+    const deps = createWorkflowWaitsDeps(
+      ctx.repoContext.workflowRunRepo,
+      ctx.repoContext.signalWaits ?? SIGNAL_WAITS_NOT_CONFIGURED,
+    );
+    let listed: WorkflowWaitsData | undefined;
+    await consumeStream<WorkflowWaitsEvent>(
+      workflowWaits(handlerLibSwampContext(ctx), deps),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          listed = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    const data: WorkflowWaitsData = listed ??
+      { waits: [], unreadableWaits: [] };
+    const canonical = canonicalResources(ctx);
+    const ownersOf = (item: { workflowId: string; workflowName: string }) =>
+      canonical.workflowOwners(item.workflowId, item.workflowName);
+    const waits = await filterByResources(
+      data.waits,
+      ownersOf,
+      socket,
+      principal,
+      "read",
+      ctx,
+    );
+    const unreadableWaits = await filterByResources(
+      data.unreadableWaits,
+      ownersOf,
+      socket,
+      principal,
+      "read",
+      ctx,
+    );
+
+    send(socket, {
+      type: "workflow.waits",
+      id: requestId,
+      payload: { data: { waits, unreadableWaits } },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_waits_failed", message);
+  }
 }
 
 export async function handleWorkflowReject(

@@ -27,7 +27,7 @@ import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_uni
 import {
   createLibSwampContext,
   type LibSwampContext,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/context.ts";
 import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
@@ -42,7 +42,6 @@ import type { SerializedEvent, ServerMessage } from "../protocol.ts";
 import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 import {
   parsePrincipal,
@@ -51,17 +50,18 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
-import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  normalizeModelTypeName,
+} from "../../domain/models/control_plane_types.ts";
 import type {
   AccessDecision,
   AccessPrincipal,
   AccessResource,
 } from "../../domain/access/access_decision_service.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import type {
-  ScheduledExecutionService,
-  SwampError,
-} from "../../libswamp/mod.ts";
+import type { ScheduledExecutionService } from "../../libswamp/workflows/scheduled_execution.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
@@ -358,29 +358,34 @@ export interface ConnectionContext {
   auditHmacConfig?: { vaultName: string; keyName: string };
 }
 
-// SECURITY: Authorization must operate on canonical (normalized) model types,
-// never raw client input. ModelType.normalize() applies lowercasing, separator
-// canonicalization (:: . whitespace → /), and deduplication. Any raw typeArg
-// that normalizes to a control-plane model type — access control (grant,
-// group, server-token) or the worker fleet (enrollment-token, worker,
-// step-lease, pending-dispatch, fleet-probe) — must require admin authority
-// (swamp-club#2756).
+// SECURITY: Authorization must operate on canonical model types, never raw
+// client input. normalizeModelTypeName applies ModelType's normalization
+// (trimming, lowercasing, separator canonicalization :: . whitespace → /,
+// deduplication) and then drops every leading @ and /, so each spelling that
+// executes a type maps to one key. Any raw typeArg that normalizes to a
+// control-plane model type — access control (grant, group, server-token) or
+// the worker fleet (enrollment-token, worker, step-lease, pending-dispatch,
+// fleet-probe) — must require admin authority (swamp-club#2756).
 export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
-  if (typeArg) {
-    // ModelType.create throws for a blank or separator-only type, failing the
-    // request rather than letting it past this gate.
-    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    if (isControlPlaneModelType(ModelType.create(stripped).normalized)) {
-      return true;
-    }
+  if (typeArg && isControlPlaneModelType(requestedTypeKey(typeArg))) {
+    return true;
   }
   if (resolvedType && isControlPlaneModelType(resolvedType)) return true;
   return false;
 }
 
+/**
+ * Whether a model type needs admin authority: a control-plane type, or one
+ * named in `restricted-model-types`. The requested type, the resolved type
+ * and every list entry are compared by their normalizeModelTypeName key, so
+ * listing a type in any spelling — `@exp/probe`, `exp/probe`, `@Exp::Probe` —
+ * restricts it on every path that names it in any spelling (swamp-club#3129).
+ * List entries are canonicalized here as well as when the config is parsed,
+ * so a ServeAuthConfig built without the parser is judged the same way.
+ */
 export function isAdminOnlyModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
@@ -388,15 +393,29 @@ export function isAdminOnlyModelType(
 ): boolean {
   if (isAccessModelType(typeArg, resolvedType)) return true;
   if (restrictedModelTypes.length === 0) return false;
-  if (typeArg) {
-    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    const normalized = ModelType.create(stripped).normalized;
-    if (restrictedModelTypes.includes(normalized)) return true;
-  }
+  const restricted = new Set(
+    restrictedModelTypes.map((entry) => normalizeModelTypeName(entry)),
+  );
+  if (typeArg && restricted.has(requestedTypeKey(typeArg))) return true;
   if (resolvedType) {
-    if (restrictedModelTypes.includes(resolvedType)) return true;
+    const resolvedKey = normalizeModelTypeName(resolvedType);
+    // A stored type that names no type cannot be judged; require admin.
+    if (resolvedKey === null || restricted.has(resolvedKey)) return true;
   }
   return false;
+}
+
+/**
+ * The canonical key of a requested type. A blank or separator-only type
+ * (`"::"`, `"@"`) names no type and fails the request rather than passing
+ * the gate unjudged.
+ */
+function requestedTypeKey(typeArg: string): string {
+  const key = normalizeModelTypeName(typeArg);
+  if (key === null) {
+    throw new Error(`Invalid model type: ${JSON.stringify(typeArg)}`);
+  }
+  return key;
 }
 
 export function isRestrictedCommand(
@@ -920,6 +939,37 @@ type AccessOutcome =
   };
 
 /**
+ * Who a request is decided for. A WebSocket request's caller is read from
+ * its connection; a request with no connection, such as an HTTP route,
+ * builds one from the token it authenticated with.
+ */
+export interface AccessCaller {
+  readonly principal: Principal | null;
+  readonly collectives: readonly string[];
+  readonly groups: readonly string[];
+  readonly sourceIp: string;
+  /** Who the OAuth provider said the caller is, when their token says. */
+  readonly loginIdentity?: ActorIdentity;
+}
+
+/** Where a refused request came from, for its denial audit event. */
+type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
+
+/** The caller behind a request on this socket. */
+export function accessCallerOf(
+  socket: WebSocket,
+  principal: Principal | null,
+): AccessCaller {
+  return {
+    principal,
+    collectives: connectionCollectives.get(socket) ?? [],
+    groups: connectionGroups.get(socket) ?? [],
+    sourceIp: getConnectionSourceIp(socket),
+    loginIdentity: connectionLoginIdentity.get(socket),
+  };
+}
+
+/**
  * The single access decision behind {@link authorizeOrReject} and
  * {@link isAuthorized}: an explicit grant allows, an explicit deny refuses,
  * and with neither the admin permission decides.
@@ -932,14 +982,31 @@ function decideAccess(
   ctx: ConnectionContext,
   every = false,
 ): AccessOutcome {
+  return decideForCaller(
+    accessCallerOf(socket, principal),
+    action,
+    resource,
+    ctx,
+    every,
+  );
+}
+
+function decideForCaller(
+  caller: AccessCaller,
+  action: Action,
+  resource: AccessResource,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+  every = false,
+): AccessOutcome {
   if (ctx.authConfig.mode === "none") {
     return { kind: "allowed", decision: null };
   }
   if (!ctx.policySnapshotLoader) return { kind: "not_configured" };
+  const { principal } = caller;
   if (!principal) return { kind: "no_principal" };
 
-  const collectives = connectionCollectives.get(socket) ?? [];
-  const groups = connectionGroups.get(socket) ?? [];
+  const collectives = [...caller.collectives];
+  const groups = [...caller.groups];
   const service = ctx.policySnapshotLoader.decisionService;
   const decision = every
     ? service.decideAll(
@@ -1253,9 +1320,51 @@ export function isAuthorizedForAll(
   );
 }
 
+/**
+ * {@link isAuthorized} for a caller with no socket: the same decision, a
+ * refusal audited the same way, and nothing sent.
+ */
+export function isCallerAuthorized(
+  caller: AccessCaller,
+  requestId: string,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  return auditCallerRefusal(
+    caller,
+    requestId,
+    caller.principal,
+    action,
+    resource,
+    ctx,
+    decideForCaller(caller, action, resource, ctx),
+  );
+}
+
 /** Whether `outcome` allows; a refusal is audited, nothing is sent. */
 function auditRefusal(
   socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+  outcome: AccessOutcome,
+): boolean {
+  return auditCallerRefusal(
+    accessCallerOf(socket, principal),
+    requestId,
+    principal,
+    action,
+    resource,
+    ctx,
+    outcome,
+  );
+}
+
+function auditCallerRefusal(
+  origin: DenialOrigin,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1267,8 +1376,8 @@ function auditRefusal(
     case "allowed":
       return true;
     case "not_configured":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         principal,
@@ -1280,8 +1389,8 @@ function auditRefusal(
       );
       return false;
     case "no_principal":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         null,
@@ -1293,8 +1402,8 @@ function auditRefusal(
       );
       return false;
     case "refused":
-      emitDenial(
-        socket,
+      emitDenialFrom(
+        origin,
         ctx,
         requestId,
         outcome.principal,
@@ -1335,6 +1444,30 @@ function emitDenial(
   accessDecision: AccessDecision | null,
   groups: readonly string[],
 ): void {
+  emitDenialFrom(
+    accessCallerOf(socket, principal),
+    ctx,
+    requestId,
+    principal,
+    action,
+    resource,
+    detail,
+    accessDecision,
+    groups,
+  );
+}
+
+function emitDenialFrom(
+  origin: DenialOrigin,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  detail: string,
+  accessDecision: AccessDecision | null,
+  groups: readonly string[],
+): void {
   if (!ctx.auditEmitter) return;
   ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
@@ -1347,8 +1480,12 @@ function emitDenial(
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
-    actor: connectionActorIdentity(socket, principal, ctx),
-    sourceIp: getConnectionSourceIp(socket),
+    actor: resolveActorIdentity(
+      principal,
+      ctx.resolvedUserNames,
+      origin.loginIdentity,
+    ),
+    sourceIp: origin.sourceIp,
     requestId,
     detail,
     decision: buildAuditDecision(action, resource, accessDecision, groups),
@@ -1408,14 +1545,26 @@ export function resourceDecider(
   action: Action,
   ctx: ConnectionContext,
 ): (resource: AccessResource) => boolean {
+  return callerResourceDecider(accessCallerOf(socket, principal), action, ctx);
+}
+
+/** {@link resourceDecider} for a caller with no socket. */
+export function callerResourceDecider(
+  caller: AccessCaller,
+  action: Action,
+  ctx: Pick<ConnectionContext, "authConfig" | "policySnapshotLoader">,
+): (resource: AccessResource) => boolean {
   if (ctx.authConfig.mode === "none") return () => true;
   const loader = ctx.policySnapshotLoader;
+  const { principal } = caller;
   if (!loader || !principal) return () => false;
 
-  const collectives = connectionCollectives.get(socket) ?? [];
-  const groups = connectionGroups.get(socket) ?? [];
   const service = loader.decisionService;
-  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives: [...caller.collectives],
+    groups: [...caller.groups],
+  };
   const adminDecision = service.decide(
     accessPrincipal,
     "admin",

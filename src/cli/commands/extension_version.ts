@@ -21,12 +21,12 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionVersionDeps,
-  createLibSwampContext,
   extensionVersion,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/version.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createExtensionVersionRenderer } from "../../presentation/renderers/extension_version.ts";
 import { loadIdentity } from "../load_identity.ts";
 

@@ -254,3 +254,64 @@ Deno.test("accessCheckRenderer json: omits the approval policy for a local check
   const parsed = JSON.parse(output.join(""));
   assertEquals("approveRequiresExplicitGrant" in parsed, false);
 });
+
+// --- signal policy ---
+
+const impliedSignal = makeResult({
+  action: "signal",
+  decisions: [{
+    effect: "allow",
+    grantId: "test-uuid-1234-5678-abcd-ef0123456789",
+    subject: { kind: "group", name: "swamp-lanes" },
+    impliedBy: "run",
+  }],
+});
+
+Deno.test("accessCheckRenderer log: marks signal implied by run and names the signal setting", () => {
+  const output = captureLog({
+    ...impliedSignal,
+    signalRequiresExplicitGrant: false,
+  });
+  assertStringIncludes(output[0], "[implied by run]");
+  const note = output[output.length - 1];
+  assertStringIncludes(note, "signal is allowed only through a run grant");
+  assertStringIncludes(note, "auth.signal-requires-explicit-grant");
+  assertEquals(note.includes("approve"), false);
+});
+
+Deno.test("accessCheckRenderer log: states the policy when the server requires an explicit signal grant", () => {
+  const output = captureLog({
+    ...impliedSignal,
+    decisions: [],
+    signalRequiresExplicitGrant: true,
+    // The approve setting says nothing about a signal check.
+    approveRequiresExplicitGrant: false,
+  });
+  assertStringIncludes(output[0], "DENY (implicit)");
+  assertStringIncludes(output[1], "Signal policy");
+  assertStringIncludes(output[1], "run grants do not count");
+});
+
+Deno.test("accessCheckRenderer log: an approve check gets no signal note", () => {
+  const output = captureLog({
+    ...impliedApprove,
+    decisions: [],
+    signalRequiresExplicitGrant: true,
+  });
+  assertEquals(output.length, 1);
+});
+
+Deno.test("accessCheckRenderer json: includes the signal policy when the server reports it", () => {
+  const renderer = createAccessCheckRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render({ ...impliedSignal, signalRequiresExplicitGrant: true });
+    renderer.render(impliedSignal);
+  } finally {
+    console.log = origLog;
+  }
+  assertEquals(JSON.parse(output[0]).signalRequiresExplicitGrant, true);
+  assertEquals("signalRequiresExplicitGrant" in JSON.parse(output[1]), false);
+});

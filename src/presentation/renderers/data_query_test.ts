@@ -19,7 +19,8 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import type { DataQueryData, DataRecord } from "../../libswamp/mod.ts";
+import type { DataQueryData } from "../../libswamp/data/query.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createDataQueryRenderer,

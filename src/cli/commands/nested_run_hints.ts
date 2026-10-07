@@ -20,7 +20,7 @@
 import type {
   AwaitingParentData,
   DetachedNestedRunData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/nested_runs.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";

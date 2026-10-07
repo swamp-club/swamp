@@ -19,11 +19,9 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import type {
-  ServerTokenCreateData,
-  ServerTokenRevealData,
-  ServerTokenRotateData,
-} from "../../libswamp/mod.ts";
+import type { ServerTokenCreateData } from "../../libswamp/access/token_create.ts";
+import type { ServerTokenRevealData } from "../../libswamp/access/token_reveal.ts";
+import type { ServerTokenRotateData } from "../../libswamp/access/token_rotate.ts";
 import {
   renderServerTokenCreate,
   renderServerTokenReveal,

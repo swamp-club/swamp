@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createExtensionUnyankDeps,
-  createLibSwampContext,
   extensionUnyank,
   extensionUnyankPreview,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/extensions/unyank.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createExtensionUnyankRenderer,
   renderExtensionUnyankCancelled,

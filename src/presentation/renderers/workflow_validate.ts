@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, green, red, yellow } from "@std/fmt/colors";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import {
-  type EventHandlers,
   isWorkflowValidateAllData,
+  type ValidationItemData as WorkflowValidationItemData,
   type WorkflowValidateAllData,
   type WorkflowValidateData,
   type WorkflowValidateEvent,
-  type WorkflowValidationItemData,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/workflows/validate.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";

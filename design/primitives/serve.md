@@ -73,8 +73,9 @@ it the default file is optional.
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
-| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth` |
+| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A model type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
+| `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
@@ -102,6 +103,9 @@ Table notes:
 - `--approve-requires-explicit-grant`: deciding an approval gate needs a grant
   naming `approve` (see "Actions" in access-control.md). Every replica must
   share the value.
+- `--signal-requires-explicit-grant`: delivering a signal to a wait needs a
+  grant naming `signal`; a `run` grant alone no longer passes. Every replica
+  must share the value.
 - The worker timeouts are covered in remote-execution. Related built-in
   defaults: 60 s reconnection grace (`DEFAULT_GRACE_WINDOW_MS`,
   `src/serve/worker_gateway.ts`) and 600 s queue ceiling
@@ -161,10 +165,11 @@ Everything below shares the one listener, dispatched in table order
 
 | Transport | Route(s) | Auth | Purpose |
 | --- | --- | --- | --- |
-| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 117 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
+| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 120 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
+| HTTP POST | `/api/v1/signal/{waitId}` | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
 | HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and models they may `read`, decided on each resource's resolved name, tags and model type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid bearer token or dashboard session; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
@@ -222,7 +227,11 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   `--admins` and at least one of `--allowed-collectives` / `--allowed-users`
   (otherwise "any swamp-club user can connect"). At startup a username the
   provider does not know is skipped with an ERROR log rather than stopping
-  serve. `swamp serve check-config` finds such names before a deploy. See
+  serve. `swamp serve check-config` finds such names before a deploy, and
+  reports `restricted-commands` entries that are not server commands and
+  `restricted-model-types` entries that name no type; it does not load the
+  model registry, so a misspelled bare type is reported only by serve at
+  startup. See
   "Username resolution" in
   [remote execution](../enablers/remote-execution.md).
 
@@ -347,9 +356,11 @@ every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
 the migration never touches the user vault again. A key that is legitimately
 absent, such as the bootstrap access token after an API-key registration,
 therefore costs the migration nothing after the first start. Credential
-resolution, which runs before the migration, still falls back to the user vault
-for a key `_token-secrets` lacks; it asks for the bootstrap access token only
-while `oauth-resolved-admins` is unset. A user vault that
+resolution, which runs before the migration, falls back to the user vault for a
+key `_token-secrets` lacks only while the marker is unset; once it exists, such
+a key is absent and the user vault is not read (swamp-club#3127). Resolution
+asks for the bootstrap access token only while `oauth-resolved-admins` is unset.
+A user vault that
 cannot be listed, or a key that fails to move, leaves the marker unset and the
 next start retries. Once the marker exists, an `oauth-*` item added to the user
 vault is neither moved nor deleted (swamp-club#2471).
@@ -431,7 +442,11 @@ reloads the snapshot on any change
 (`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
-(`src/serve/collective_refresh_service.ts`). See
+(`src/serve/collective_refresh_service.ts`). A token is refreshed only when an
+OAuth login stored an access token for it. The lookup reads `_token-secrets`,
+and reads a user vault only for a token whose record still names one, so a
+manually minted or worker server token costs no user-vault read
+(`src/serve/oauth_access_token_lookup.ts`). See
 [enablers/access-control.md](../enablers/access-control.md) for principals,
 grants, subjects and the `can-i` request.
 
@@ -464,6 +479,106 @@ For a non-local run, serve checks `active-runs/*` in the control-plane store:
 All of this is in `handleRunAttach`
 (`src/serve/connection.ts`). The registry also enforces `--max-concurrent-runs`
 (default 100), `--max-runs-per-principal` and `--max-run-duration`.
+
+**Signal.** A signal for a `wait_for_signal` step arrives as the WebSocket
+request `workflow.signal { waitId, payload }` or as
+`POST /api/v1/signal/{waitId}` with the JSON body `{ "payload": { ... } }`
+(swamp-club#3094). Both call `deliverSignalForCaller`
+(`src/serve/signal_delivery.ts`), which runs the one acceptance use case,
+`workflowSignal`; `integration/signal_wait_records_rules_test.ts` holds both
+transports to that. What it does, in order:
+
+- The wait ID must be a UUID (the request schema and the route pattern accept
+  nothing else), and a payload over 16 KiB is refused, before any record is
+  read.
+- The wait's registration says which workflow and run it belongs to. The caller
+  needs `signal` on that workflow, resolved as a run's workflow is
+  (`CanonicalResources.workflowOwners`). The registration is trusted for this:
+  it is a plaintext record in a store other writers can reach, and a writer who
+  can alter it can also create the wait's outcome directly, so authorizing on
+  it gives away nothing more. One inconsistency is caught along the way. When
+  this instance finds the run record, the workflow name recorded on the run
+  must equal the registration's, and a signal for a registration whose name was
+  changed is refused and logged. A registration whose workflow ID was changed
+  is not caught: runs are stored per workflow, so the run is looked for under
+  the altered ID, is not found, and there is nothing to compare.
+- **An unknown wait ID and a wait the caller may not signal get the same
+  answer**: `not_found` over WebSocket, 404 over HTTP, with one fixed message.
+  The denial is audited with the workflow's name; the reply never carries it.
+  Nothing is stored for a refused caller.
+- Serve never scans run records for a wait with no readable registration, as
+  the local command does: one request would otherwise read every run. Such a
+  wait (a run suspended by the swamp-club#3068 build, or a damaged
+  registration) is answered `not_found` until a waits listing registers it.
+- The receipt's `submittedBy` is the authenticated principal, never a request
+  field. With auth mode `none` there is no principal and the serve process's
+  user is recorded, as for a local signal. The submitter is an audit actor; it
+  is never the identity a later step runs as.
+- The reply carries the wait ID and the receipt. The workflow, run, job and
+  step, `awaitingResume`, `runRecordAvailable` and the resume command are added
+  only for a caller who may also `read` the workflow. The same split applies to
+  refusals: a reader gets the use case's message and, for an already settled
+  wait, the earlier receipt; a caller with `signal` alone gets a fixed sentence
+  per refusal. So a signal-only caller that retries after a lost reply learns
+  the wait is settled but not by which signal; retries are not idempotent.
+- A delivery emits the audit event `workflow.signal.delivered` with the wait
+  ID, the receipt ID and the run ID. The payload is never logged or audited.
+
+| Outcome | WebSocket error | HTTP status |
+| --- | --- | --- |
+| delivered | — (`workflow.signal` reply) | 200 |
+| unknown wait, or not allowed | `not_found` | 404 |
+| payload refused (errors listed) | `workflow_signal_refused`, `refusal: invalid_payload` | 422 |
+| already settled | `workflow_signal_refused`, `refusal: already_settled` | 409 |
+| expired, or closed before a signal | `workflow_signal_refused`, `refusal: expired` / `closed` | 410 |
+| datastore cannot hold wait records | `workflow_signal_refused`, `refusal: unsupported` | 501 |
+| stored record unreadable, or an internal failure | `workflow_signal_refused` / `workflow_signal_failed` | 500 |
+
+The HTTP route passes the two gates every WebSocket request passes before
+dispatch: with audit in fail-secure mode and the log unable to record durably
+it answers 503, and when `workflow.signal` is named in `--restricted-commands`
+it answers 403 to a caller who is not an admin. Both are decided before the
+wait is looked up, so they say nothing about a wait. The HTTP route also
+answers 401 (no token, or one that does not authenticate),
+429 (rate limited), 400 (the body is not a JSON object with a `payload` field)
+and 413 (the body is over `MAX_SIGNAL_BODY_BYTES`, six times the payload limit
+plus 1 KiB). That cap only bounds the read: a client may escape non-ASCII
+characters or indent its JSON, so a body is allowed to be several times its
+payload, and a payload over 16 KiB is refused 422 whatever the body's size. The
+token is checked before the body is read. With auth mode `none` the route takes a signal from
+anyone who can reach the listener, as the cancel routes take a cancel; that mode
+is only permitted on loopback.
+
+A signal writes one control-plane record and nothing else: no run is saved, no
+run claim or registry reservation is taken, nothing is pushed, and the request
+is not sync-gated. The run continues only when someone resumes it; serve does
+not resume a signalled run by itself (swamp-club#3108).
+
+**A delivered signal is not a promise that the run will use it.** "Delivered"
+means the wait's outcome is the caller's signal. If the run is cancelled at
+about the same moment, the signal can win the wait's outcome and the cancel
+still ends the run: the caller holds a receipt, the outcome record says
+accepted, and no resume will apply it. A caller that must know what the run
+did has to read the run, which needs `read`.
+
+**Rate limits.** The route shares serve's two limits with WebSocket logins and
+the cancel routes (`src/serve/rate_limiter.ts`): 50 requests per source address
+per minute, counting successful deliveries, and 5 attempts per token name per
+minute, counted before the token is checked and cleared when it authenticates.
+A caller that sends many signals at once on one token, such as one answering
+every wait of a `forEach`, can therefore be answered 429 while earlier requests
+are still authenticating, and should retry. Behind a proxy without
+`--trust-proxy` every caller shares one source address.
+
+`workflow.waits` lists open waits to a caller with `read`, filtered to the
+workflows they may read. A caller with no `read` grant on any workflow, such as
+one granted `signal` alone, is refused as unauthorized. It is the
+same use case as `swamp workflow waits` and, like it, not read-only: see
+"Listing" under Wait for Signal in [workflows](workflows.md).
+
+`swamp workflow signal` and `swamp workflow waits` take `--server`. Against a
+server that predates these requests they report that the server needs an
+upgrade (`requestNewerServerResponse`, `src/cli/remote_run.ts`).
 
 **Cancel.** There are two paths:
 

@@ -20,12 +20,12 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
 import { Box, Text } from "ink";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
-  EventHandlers,
   VaultTypeSearchData,
   VaultTypeSearchEvent,
   VaultTypeSearchItem,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/vaults/type_search.ts";
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

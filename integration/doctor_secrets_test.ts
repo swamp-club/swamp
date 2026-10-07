@@ -34,13 +34,13 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import {
-  collect,
   createDoctorSecretsDeps,
-  createLibSwampContext,
   doctorSecrets,
   type DoctorSecretsEvent,
-} from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/doctor_secrets.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 
 const CLEARTEXT = "PLAINTEXT_SECRET_VALUE";
 const VAULT_EXPR = "${{ vault.get('v', 'k') }}";

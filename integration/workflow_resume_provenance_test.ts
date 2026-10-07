@@ -34,13 +34,13 @@
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
-  collect,
-  createLibSwampContext,
   createModelEvaluateDeps,
   modelEvaluate,
-} from "../src/libswamp/mod.ts";
-import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
+} from "../src/libswamp/models/evaluate.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";

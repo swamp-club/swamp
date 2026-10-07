@@ -72,6 +72,104 @@ Deno.test("renderAutoResolveInstalling: log mode shows Installing", () => {
   assertStringIncludes(output, "@acme/widget@1.2.0");
 });
 
+Deno.test("renderAutoResolveInstalling: log mode keeps a short description unchanged", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling("@acme/widget", "1.2.0", "A widget", "log");
+  });
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "@acme/widget@1.2.0 (A widget)");
+});
+
+Deno.test("renderAutoResolveInstalling: log mode shows only the first line of a multi-line description", () => {
+  const description = [
+    "Manage widgets.",
+    "Supports frobnication.",
+    "",
+    "## Usage",
+    "",
+    "```bash",
+    "swamp model create @acme/widget w",
+    "```",
+  ].join("\n");
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling("@acme/widget", "1.2.0", description, "log");
+  });
+  assertEquals(lines.length, 1);
+  assertEquals(lines[0].includes("\n"), false);
+  assertStringIncludes(lines[0], "@acme/widget@1.2.0 (Manage widgets.)");
+  assertEquals(lines[0].includes("Supports frobnication"), false);
+  assertEquals(lines[0].includes("## Usage"), false);
+});
+
+Deno.test("renderAutoResolveInstalling: log mode skips leading blank lines and handles CRLF", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling(
+      "@acme/widget",
+      "1.2.0",
+      "\r\n   \r\n  Manage widgets.  \r\nMore detail.\r\n",
+      "log",
+    );
+  });
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "@acme/widget@1.2.0 (Manage widgets.)");
+  assertEquals(lines[0].includes("\r"), false);
+});
+
+Deno.test("renderAutoResolveInstalling: log mode caps a long description with an ellipsis", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling(
+      "@acme/widget",
+      "1.2.0",
+      "x".repeat(200),
+      "log",
+    );
+  });
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], `(${"x".repeat(79)}…)`);
+  assertEquals(lines[0].includes("x".repeat(80)), false);
+});
+
+Deno.test("renderAutoResolveInstalling: log mode caps on code points without splitting a surrogate pair", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling(
+      "@acme/widget",
+      "1.2.0",
+      "😀".repeat(100),
+      "log",
+    );
+  });
+  assertStringIncludes(lines[0], `(${"😀".repeat(79)}…)`);
+});
+
+Deno.test("renderAutoResolveInstalling: log mode omits the parentheses without a usable description", () => {
+  for (const description of [undefined, "", "  \n\t\r\n  "]) {
+    const lines = captureOutput(() => {
+      renderAutoResolveInstalling("@acme/widget", "1.2.0", description, "log");
+    });
+    assertEquals(lines.length, 1);
+    assertStringIncludes(lines[0], "@acme/widget@1.2.0");
+    assertEquals(lines[0].includes("("), false);
+  }
+});
+
+Deno.test("renderAutoResolveInstalling: json mode omits the description", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstalling(
+      "@acme/widget",
+      "1.2.0",
+      "Manage widgets.\nMore detail.",
+      "json",
+    );
+  });
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), {
+    event: "auto_resolve",
+    status: "installing",
+    extension: "@acme/widget",
+    version: "1.2.0",
+  });
+});
+
 Deno.test("renderAutoResolveInstalled: log mode shows Installed", () => {
   const lines = captureOutput(() => {
     renderAutoResolveInstalled("@acme/widget", "1.2.0", 3, "log");

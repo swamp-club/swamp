@@ -20,12 +20,12 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "./version.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
-  consumeStream,
-  createLibSwampContext,
   createSourceFetchDeps,
   sourceFetch,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/source/fetch.ts";
 import { createSourceFetchRenderer } from "../../presentation/renderers/source_fetch.ts";
 
 // deno-lint-ignore no-explicit-any

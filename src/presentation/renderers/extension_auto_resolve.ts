@@ -25,6 +25,24 @@ import {
   writeContentLine,
 } from "../output/console_writer.ts";
 
+const MAX_DESCRIPTION_WIDTH = 80;
+
+/**
+ * Reduces a registry description — often multi-line README-style markdown —
+ * to its first non-blank line, capped so the Installing line stays a single
+ * status line (swamp-club#3013).
+ */
+function summarizeDescription(description: string | undefined): string {
+  const firstLine = (description ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) ?? "";
+  // Cut on code points so a surrogate pair is never split.
+  const chars = [...firstLine];
+  if (chars.length <= MAX_DESCRIPTION_WIDTH) return firstLine;
+  return chars.slice(0, MAX_DESCRIPTION_WIDTH - 1).join("").trimEnd() + "…";
+}
+
 export function renderAutoResolveSearching(
   type: string,
   mode: OutputMode,
@@ -60,11 +78,12 @@ export function renderAutoResolveInstalling(
       }),
     );
   } else {
+    const summary = summarizeDescription(description);
     writeOutput(
       gutterLine(
         "Installing",
         STATUS_COLORS.info,
-        `${extension}@${version}${description ? ` (${description})` : ""}`,
+        `${extension}@${version}${summary ? ` (${summary})` : ""}`,
       ),
     );
   }

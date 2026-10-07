@@ -36,15 +36,14 @@ import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { parseCredentialPrincipal } from "../../domain/access/service_principal.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  consumeStream,
   createServerTokenCreateDeps,
-  parseDuration,
   serverTokenCreate,
   type ServerTokenCreateData,
   type ServerTokenCreateEvent,
-  withDefaults,
-} from "../../libswamp/mod.ts";
+} from "../../libswamp/access/token_create.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
 import { renderServerTokenCreate } from "../../presentation/output/access_token_output.ts";
 import {
   requestServerResponse,

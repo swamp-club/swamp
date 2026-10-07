@@ -23,10 +23,10 @@ import {
   createWorkflowCancelSuspendedDeps,
   locateSuspendedRunToCancel,
   type RunOwnerVerdict,
-  type SwampError,
   workflowCancelSuspended,
   type WorkflowCancelSuspendedDeps,
-} from "../libswamp/mod.ts";
+} from "../libswamp/workflows/cancel_suspended.ts";
+import type { SwampError } from "../libswamp/errors.ts";
 import {
   type ConnectionContext,
   handlerLibSwampContext,
@@ -34,7 +34,7 @@ import {
 } from "./handlers/shared.ts";
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
 import { withSyncGate } from "./sync_gate.ts";
-import type { DetachedNestedRunData } from "../libswamp/mod.ts";
+import type { DetachedNestedRunData } from "../libswamp/workflows/nested_runs.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";

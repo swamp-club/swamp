@@ -19,11 +19,9 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { setColorEnabled } from "@std/fmt/colors";
-import {
-  consumeStream,
-  type ModelMethodRunEvent,
-  type ModelMethodRunView,
-} from "../../libswamp/mod.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import type { ModelMethodRunEvent } from "../../libswamp/models/run.ts";
+import type { ModelMethodRunView } from "../../libswamp/models/model_method_run_view.ts";
 import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
