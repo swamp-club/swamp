@@ -42,8 +42,9 @@ export const SWAMP_LOCK_ANCESTOR_PIDS = "SWAMP_LOCK_ANCESTOR_PIDS";
 
 /**
  * The per-model locks held for the run that started a child: comma-separated
- * `<pid>:<nonce>+<nonce>` entries, the nonces being those written to the
- * lock files. A listed nonce is the proof: the child skips the lock file
+ * `<pid>:<nonce>+<nonce>` entries, the nonces being those the lock files
+ * carried when the child was started. A holder re-keys a lock when the hop
+ * it lent it to ends, so a child that outlives its hop stops matching. A listed nonce is the proof: the child skips the lock file
  * carrying it whichever process on whichever host holds it, so the list
  * also names locks handed over a worker dispatch or a `--server` request,
  * whose holder is not above the child. The pid matters only for a swamp
@@ -119,6 +120,74 @@ export interface LockOwner {
  */
 export type LockRelation = "ancestor" | "ancestor-other-run" | "other";
 
+/**
+ * The per-model locks one run took, as its scope lends them to the hops it
+ * starts (see {@link LockHolderMarker.runHolding}). The domain reaches the
+ * lock files only through this.
+ */
+export interface LentLocks {
+  /** The nonces the locks carry now; a re-key changes them. */
+  lockIds(): readonly string[];
+  /**
+   * Takes the locks back once no hop is using them: re-keys each, so a
+   * swamp left over from a hop that has ended no longer matches, and waits
+   * for a structural command still working under a retired nonce. Rejects
+   * when that wait times out; the run must then write nothing.
+   */
+  reclaim(): Promise<void>;
+}
+
+/**
+ * One hand-off: the period a run lends its locks to one hop, a shell
+ * command or a dispatch attempt. `lent` is what the hop is given. Await
+ * {@link end} when the hop returns, however it returns, and before the run
+ * writes anything: the run stops waiting on the hop there, so whatever the
+ * hop left running must stop skipping the run's locks.
+ */
+export interface LockHandOff<T> {
+  readonly lent: T;
+  end(): Promise<void>;
+}
+
+/** A dispatch's hand-offs, bound to the scope the dispatch is made from. */
+export interface RemoteHandOffSource {
+  /** What a hand-off begun now would lend; lends nothing. */
+  holder(): RemoteLockHolder | undefined;
+  /** Begins a hand-off for one dispatch attempt. */
+  begin(): Promise<LockHandOff<RemoteLockHolder | undefined>>;
+}
+
+/**
+ * One {@link LockHolderMarker.runHolding} or `runAdopting` scope. `lent`
+ * are the locks its run took; `fixed` are nonces it only names (adopted
+ * from a client, or passed as a plain list), which it never reclaims.
+ * `live` counts the hand-offs begun in it or in a scope nested under it.
+ */
+interface HeldScope {
+  readonly parent: HeldScope | undefined;
+  readonly lent: LentLocks | undefined;
+  readonly fixed: readonly string[];
+  live: number;
+  reclaiming: Promise<void> | undefined;
+}
+
+/** `scope` and every scope around it, innermost first. */
+function scopeChain(scope: HeldScope | undefined): HeldScope[] {
+  const chain: HeldScope[] = [];
+  for (let at = scope; at !== undefined; at = at.parent) chain.push(at);
+  return chain;
+}
+
+/** The nonces held by `scope` and the scopes around it, outermost first. */
+function heldIn(scope: HeldScope | undefined): string[] {
+  const ids = new Set<string>();
+  for (const at of scopeChain(scope).reverse()) {
+    for (const id of at.fixed) ids.add(id);
+    for (const id of at.lent?.lockIds() ?? []) ids.add(id);
+  }
+  return [...ids];
+}
+
 interface Inherited {
   readonly holder: string | undefined;
   readonly ancestors: string | undefined;
@@ -138,7 +207,8 @@ interface Inherited {
  * concurrent lock holders in one process (parallel workflow steps,
  * `swamp serve` runs) cannot clear it under each other. Which locks belong
  * to which run is per execution instead: {@link runHolding} scopes it, and
- * {@link childLockEnv} hands it to one spawned swamp. A run requested from
+ * {@link beginChildHandOff} lends it to one spawned swamp, taking the locks
+ * back when that swamp's hop ends. A run requested from
  * a server crosses no process boundary to inherit through, so the client
  * sends {@link forwardedLockTokens} and the server runs it under
  * {@link runAdopting}.
@@ -146,7 +216,7 @@ interface Inherited {
 export class LockHolderMarker {
   #inherited: Inherited | undefined;
   #holding = false;
-  readonly #held = new AsyncLocalStorage<readonly string[]>();
+  readonly #held = new AsyncLocalStorage<HeldScope>();
 
   constructor(
     private readonly env: LockHolderEnvStore = Deno.env,
@@ -209,10 +279,87 @@ export class LockHolderMarker {
    * holding the outer scopes' locks, which stay held until it finishes.
    * Pass an empty list for work that holds no lock, so its children still
    * wait on every lock this process holds.
+   *
+   * Pass {@link LentLocks} for locks the run took itself: each hand-off
+   * begun in the scope (see {@link beginChildHandOff}) then ends by taking
+   * them back. A plain list names locks and is never reclaimed.
    */
-  runHolding<T>(lockIds: readonly string[], fn: () => Promise<T>): Promise<T> {
-    const outer = this.#held.getStore() ?? [];
-    return this.#held.run([...new Set([...outer, ...lockIds])], fn);
+  runHolding<T>(
+    locks: readonly string[] | LentLocks,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const lent = "reclaim" in locks ? locks : undefined;
+    return this.#held.run({
+      parent: this.#held.getStore(),
+      lent,
+      fixed: lent ? [] : [...(locks as readonly string[])],
+      live: 0,
+      reclaiming: undefined,
+    }, fn);
+  }
+
+  /**
+   * Begins a hand-off to one swamp this process is about to start, lending
+   * it {@link childLockEnv}. First waits for a reclaim in progress on the
+   * scope it is called from or one around it, so the child is never given a
+   * nonce that is about to be retired; rejects if that reclaim failed.
+   */
+  async beginChildHandOff(): Promise<LockHandOff<Record<string, string>>> {
+    const scope = this.#held.getStore();
+    const end = await this.#begin(scope);
+    return { lent: this.#childLockEnv(scope), end };
+  }
+
+  /**
+   * The hand-offs of a dispatch built now, bound to the scope this is
+   * called from: each attempt begins its own, wherever it runs later.
+   */
+  remoteHandOff(): RemoteHandOffSource {
+    const scope = this.#held.getStore();
+    return {
+      holder: () => this.#remoteLockHolder(scope),
+      begin: async () => {
+        const end = await this.#begin(scope);
+        return { lent: this.#remoteLockHolder(scope), end };
+      },
+    };
+  }
+
+  /**
+   * Counts one hand-off against `scope` and every scope around it, and
+   * returns its end. A scope whose count returns to zero reclaims the locks
+   * its own run took, never those of a scope whose hops are still live, so
+   * no lock is re-keyed under a hop that still skips it. Ending twice does
+   * nothing the second time.
+   */
+  async #begin(scope: HeldScope | undefined): Promise<() => Promise<void>> {
+    const scopes = scopeChain(scope);
+    while (true) {
+      const reclaims = scopes.flatMap((at) =>
+        at.reclaiming ? [at.reclaiming] : []
+      );
+      if (reclaims.length === 0) break;
+      await Promise.all(reclaims);
+    }
+    for (const at of scopes) at.live++;
+    let ended = false;
+    return async () => {
+      if (ended) return;
+      ended = true;
+      const reclaims: Promise<void>[] = [];
+      for (const at of scopes) {
+        at.live--;
+        if (at.live > 0 || at.lent === undefined) continue;
+        const reclaim = at.lent.reclaim().finally(() => {
+          if (at.reclaiming === reclaim) at.reclaiming = undefined;
+        });
+        at.reclaiming = reclaim;
+        reclaims.push(reclaim);
+      }
+      const failed = (await Promise.allSettled(reclaims))
+        .find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+    };
   }
 
   /**
@@ -245,11 +392,11 @@ export class LockHolderMarker {
    * "Parent-Process Lock Awareness", says what that trusts. With no nonce
    * `fn` runs as called, in no new scope.
    *
-   * A run that outlives the request keeps the nonces after the calling step
-   * releases its lock. That is harmless: every acquisition writes a new
-   * nonce, so a stale one matches no lock file. Until the step releases it,
-   * though, a run the client no longer waits on still skips that lock
-   * (design/enablers/datastores.md, Known limits).
+   * A run that outlives the request keeps the nonces. That is harmless once
+   * the calling step's command has returned: the step re-keys its lock
+   * there, and a release and a new acquisition write a new nonce too, so a
+   * stale one matches no lock file. Adopted nonces are never re-keyed here;
+   * this process does not hold those locks.
    */
   runAdopting<T>(
     forwarded: string | undefined,
@@ -265,8 +412,13 @@ export class LockHolderMarker {
     if (adopted.length === 0) {
       return fn();
     }
-    const outer = this.#held.getStore() ?? [];
-    return this.#held.run([...new Set([...outer, ...adopted])], fn);
+    return this.#held.run({
+      parent: this.#held.getStore(),
+      lent: undefined,
+      fixed: adopted,
+      live: 0,
+      reclaiming: undefined,
+    }, fn);
   }
 
   /**
@@ -283,10 +435,16 @@ export class LockHolderMarker {
    * on another host that has the same pid, not a lock of this process.
    */
   childLockEnv(): Record<string, string> {
+    return this.#childLockEnv(this.#held.getStore());
+  }
+
+  #childLockEnv(scope: HeldScope | undefined): Record<string, string> {
     const entries = parseTokens(this.#inheritedOrLive().tokens);
-    const held = this.#held.getStore();
-    if (held !== undefined) {
-      const own = new Set([...(entries.get(this.pid) ?? []), ...held]);
+    if (scope !== undefined) {
+      const own = new Set([
+        ...(entries.get(this.pid) ?? []),
+        ...heldIn(scope),
+      ]);
       // Re-inserted so this process's entry is the newest.
       entries.delete(this.pid);
       entries.set(this.pid, own);
@@ -309,11 +467,14 @@ export class LockHolderMarker {
    * does.
    */
   remoteLockHolder(): RemoteLockHolder | undefined {
+    return this.#remoteLockHolder(this.#held.getStore());
+  }
+
+  #remoteLockHolder(
+    scope: HeldScope | undefined,
+  ): RemoteLockHolder | undefined {
     const lockIds = [
-      ...new Set([
-        ...this.inheritedLockIds(),
-        ...(this.#held.getStore() ?? []),
-      ]),
+      ...new Set([...this.inheritedLockIds(), ...heldIn(scope)]),
     ];
     if (lockIds.length === 0) {
       return undefined;

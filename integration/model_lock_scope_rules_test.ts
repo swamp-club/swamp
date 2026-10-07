@@ -145,3 +145,54 @@ Deno.test("only serve's request dispatch adopts a client's forwarded lock list",
       "adopters stay pinned.",
   );
 });
+
+/**
+ * Where a run's locks are lent to a hop. A hop is given them only through a
+ * hand-off, and whoever begins one must end it when the hop returns and
+ * before the run writes: the end is what re-keys the locks, so a swamp the
+ * hop left running stops skipping them (swamp-club#3111). Reading the lock
+ * list with `childLockEnv` or `remoteLockHolder` and handing it to a
+ * process skips that, and nothing fails when a site does, so this pins the
+ * sites.
+ */
+const HAND_OFF_SITES: Record<string, string[]> = {
+  beginChildHandOff: [
+    "src/domain/datastore/lock_holder_marker.ts",
+    "src/domain/models/command/shell/shell_model.ts",
+  ],
+  remoteHandOff: [
+    "src/domain/datastore/lock_holder_marker.ts",
+    "src/domain/models/method_execution_service.ts",
+  ],
+  beginLockHandOff: ["src/serve/dispatch_service.ts"],
+  // Read-only views: the marker's own use, never a hand-down.
+  childLockEnv: ["src/domain/datastore/lock_holder_marker.ts"],
+  remoteLockHolder: ["src/domain/datastore/lock_holder_marker.ts"],
+};
+
+Deno.test("a run's locks reach a hop only through a hand-off that is ended", async () => {
+  const callers: Record<string, string[]> = {};
+  for (const name of Object.keys(HAND_OFF_SITES)) callers[name] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const lines = (await Deno.readTextFile(filePath)).split("\n")
+      .filter((line) => !isCommentLine(line));
+    for (const name of Object.keys(HAND_OFF_SITES)) {
+      // Also an optional call: `request.beginLockHandOff?.()`.
+      const call = new RegExp(`\\b${name}\\s*(\\?\\.)?\\(`);
+      if (lines.some((line) => call.test(line))) {
+        callers[name].push(repoRelative(filePath));
+      }
+    }
+  }
+
+  for (const [name, pinned] of Object.entries(HAND_OFF_SITES)) {
+    assertPinnedSet(
+      callers[name].sort(),
+      pinned,
+      `files that call ${name}`,
+      "Lend a run's locks through beginChildHandOff or a dispatch's " +
+        "beginLockHandOff, await the hand-off's end when the hop returns " +
+        "and before writing, then add the file to HAND_OFF_SITES.",
+    );
+  }
+});

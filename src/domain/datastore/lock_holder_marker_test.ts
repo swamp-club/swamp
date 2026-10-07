@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  type LentLocks,
   type LockHolderEnvStore,
   LockHolderMarker,
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
@@ -801,4 +802,179 @@ Deno.test("LockHolderMarker.runAdopting: a dispatch from an adopting run carries
   );
 
   assertEquals(holder, { pid: 300, hostname: "host-a", lockIds: ["a", "b"] });
+});
+
+/**
+ * Locks a run took, as a scope lends them: `reclaim` re-keys by bumping a
+ * generation, and records each call in `log`.
+ */
+function lentLocks(name: string, log: string[]): LentLocks {
+  let generation = 1;
+  return {
+    lockIds: () => [`${name}-${generation}`],
+    reclaim: () => {
+      log.push(`reclaim ${name}-${generation}`);
+      generation++;
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("LockHolderMarker.beginChildHandOff: lends the scope's locks and reclaims them when the hop ends (swamp-club#3111)", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  const log: string[] = [];
+
+  await marker.runHolding(lentLocks("a", log), async () => {
+    const first = await marker.beginChildHandOff();
+    assertEquals(first.lent, { [SWAMP_LOCK_HOLDER_TOKENS]: "500:a-1" });
+    assertEquals(log, []);
+    await first.end();
+    assertEquals(log, ["reclaim a-1"]);
+
+    // The next hop is lent the re-keyed lock.
+    const second = await marker.beginChildHandOff();
+    assertEquals(second.lent, { [SWAMP_LOCK_HOLDER_TOKENS]: "500:a-2" });
+    assertEquals(marker.childLockEnv(), second.lent);
+    await second.end();
+    // Ending twice reclaims once.
+    await second.end();
+  });
+
+  assertEquals(log, ["reclaim a-1", "reclaim a-2"]);
+});
+
+Deno.test("LockHolderMarker.beginChildHandOff: a lock is not reclaimed under a sibling hop that still skips it", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  const log: string[] = [];
+
+  await marker.runHolding(lentLocks("a", log), async () => {
+    const one = await marker.beginChildHandOff();
+    const two = await marker.beginChildHandOff();
+    await one.end();
+    assertEquals(log, []);
+    await two.end();
+    assertEquals(log, ["reclaim a-1"]);
+  });
+});
+
+Deno.test("LockHolderMarker.beginChildHandOff: a nested scope's hop counts against the scopes around it, and each reclaims its own lock", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  const log: string[] = [];
+
+  await marker.runHolding(lentLocks("outer", log), async () => {
+    const outerHop = await marker.beginChildHandOff();
+    await marker.runHolding(lentLocks("inner", log), async () => {
+      const innerHop = await marker.beginChildHandOff();
+      assertEquals(innerHop.lent, {
+        [SWAMP_LOCK_HOLDER_TOKENS]: "500:outer-1+inner-1",
+      });
+      await innerHop.end();
+      // The outer scope still has a live hop, so only the inner reclaims.
+      assertEquals(log, ["reclaim inner-1"]);
+    });
+    await outerHop.end();
+    assertEquals(log, ["reclaim inner-1", "reclaim outer-1"]);
+  });
+});
+
+Deno.test("LockHolderMarker.beginChildHandOff: adopted, listed and inherited nonces are lent but never reclaimed", async () => {
+  const env = fakeEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a" });
+  const marker = new LockHolderMarker(env.store, 500);
+  marker.publish();
+
+  await marker.runAdopting(
+    "200:adopted-a",
+    () =>
+      marker.runHolding(["listed-a"], async () => {
+        const hop = await marker.beginChildHandOff();
+        assertEquals(hop.lent, {
+          [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a,500:adopted-a+listed-a",
+        });
+        await hop.end();
+      }),
+  );
+
+  // Outside any scope there is nothing to count or reclaim.
+  const hop = await marker.beginChildHandOff();
+  assertEquals(hop.lent, { [SWAMP_LOCK_HOLDER_TOKENS]: "100:up-a" });
+  await hop.end();
+});
+
+Deno.test("LockHolderMarker.beginChildHandOff: a hop begun during a reclaim waits for it and is lent the new nonce", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  let generation = 1;
+  const reclaimed = Promise.withResolvers<void>();
+  const locks: LentLocks = {
+    lockIds: () => [`a-${generation}`],
+    reclaim: async () => {
+      await reclaimed.promise;
+      generation++;
+    },
+  };
+
+  await marker.runHolding(locks, async () => {
+    const first = await marker.beginChildHandOff();
+    const ending = first.end();
+    let begun = false;
+    const next = marker.beginChildHandOff().then((hop) => {
+      begun = true;
+      return hop;
+    });
+    // Let the pending begin run as far as it can.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assertEquals(begun, false);
+
+    reclaimed.resolve();
+    await ending;
+    const hop = await next;
+    assertEquals(hop.lent, { [SWAMP_LOCK_HOLDER_TOKENS]: "500:a-2" });
+    await hop.end();
+  });
+});
+
+Deno.test("LockHolderMarker.beginChildHandOff: a failed reclaim fails the hop's end and any hop waiting to begin", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500);
+  const failure = new Error("structural command still working");
+  const reclaiming = Promise.withResolvers<void>();
+  const locks: LentLocks = {
+    lockIds: () => ["a-1"],
+    reclaim: () => reclaiming.promise,
+  };
+
+  await marker.runHolding(locks, async () => {
+    const first = await marker.beginChildHandOff();
+    const ending = first.end();
+    const next = marker.beginChildHandOff();
+    reclaiming.reject(failure);
+
+    assertEquals(await ending.catch((error) => error), failure);
+    assertEquals(await next.catch((error) => error), failure);
+  });
+});
+
+Deno.test("LockHolderMarker.remoteHandOff: is bound to the scope it was built in, wherever an attempt begins", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 500, () => "host-a");
+  const log: string[] = [];
+
+  const source = await marker.runHolding(
+    lentLocks("a", log),
+    () => Promise.resolve(marker.remoteHandOff()),
+  );
+
+  // Begun outside the scope, as a dispatcher resuming from its queue does.
+  assertEquals(source.holder()?.lockIds, ["a-1"]);
+  const first = await source.begin();
+  assertEquals(first.lent, { pid: 500, hostname: "host-a", lockIds: ["a-1"] });
+  await first.end();
+  assertEquals(log, ["reclaim a-1"]);
+
+  // A retry is its own hand-off and carries the re-keyed lock.
+  const retry = await source.begin();
+  assertEquals(retry.lent?.lockIds, ["a-2"]);
+  await retry.end();
+
+  // A dispatch made outside any scope lends nothing.
+  const none = await marker.remoteHandOff().begin();
+  assertEquals(none.lent, undefined);
+  await none.end();
 });

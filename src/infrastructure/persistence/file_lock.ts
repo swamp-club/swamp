@@ -34,7 +34,11 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 import { markErrorPaths } from "../../domain/errors.ts";
-import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  LockTimeoutError,
+  MAX_LOCK_SKIPPING,
+} from "../../domain/datastore/distributed_lock.ts";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessDead } from "../runtime/process.ts";
 
@@ -78,7 +82,11 @@ export function nextBackoffSleep(
 }
 
 /** Build a LockInfo for the current process. */
-function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
+function buildLockInfo(
+  ttlMs: number,
+  nonce: string,
+  skipping?: readonly string[],
+): LockInfo {
   const host = hostname();
   const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return {
@@ -88,6 +96,7 @@ function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
     acquiredAt: new Date().toISOString(),
     ttlMs,
     nonce,
+    ...(skipping && skipping.length > 0 ? { skipping: [...skipping] } : {}),
   };
 }
 
@@ -112,6 +121,9 @@ export class FileLock implements DistributedLock {
   private held = false;
   private releasing = false;
   private nonce: string | undefined;
+  private skipping: readonly string[] | undefined;
+  /** Serializes the rewrites of a held lock file; see {@link rewriting}. */
+  private rewrites: Promise<unknown> = Promise.resolve();
 
   constructor(basePath: string, options?: FileLockOptions) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
@@ -211,6 +223,7 @@ export class FileLock implements DistributedLock {
     if (!this.held) return;
     this.held = false;
     this.nonce = undefined;
+    this.skipping = undefined;
 
     try {
       await Deno.remove(this.lockPath);
@@ -242,11 +255,107 @@ export class FileLock implements DistributedLock {
   /**
    * The nonce written to the lock file while this instance holds it, or
    * undefined when it does not (never acquired, released, or self-revoked
-   * after another process took the lock). It is fixed for the whole hold:
-   * the heartbeat rewrites the file with the same nonce.
+   * after another process took the lock). The heartbeat rewrites the file
+   * with the same nonce; only {@link rekey} changes it during a hold.
    */
   get heldNonce(): string | undefined {
     return this.held ? this.nonce : undefined;
+  }
+
+  /**
+   * Gives the held lock a fresh nonce and returns the one it retires, or
+   * undefined when this instance does not hold the lock. A swamp that was
+   * handed the retired nonce no longer matches the lock file and waits on
+   * the lock like any other (design/enablers/datastores.md, "Parent-Process
+   * Lock Awareness"). The file is replaced whole, never rewritten in place:
+   * a reader that catches a lock file mid-write takes the lock for absent.
+   */
+  rekey(): Promise<string | undefined> {
+    return this.rewriting(async () => {
+      if (!await this.stillOwned()) return undefined;
+      const retired = this.nonce!;
+      const nonce = crypto.randomUUID();
+      await this.replaceLockFile(
+        buildLockInfo(this.ttlMs, nonce, this.skipping),
+      );
+      if (!await this.keptAfterWrite()) return undefined;
+      this.nonce = nonce;
+      return retired;
+    });
+  }
+
+  /**
+   * Records in the held lock file the per-model lock nonces its holder, a
+   * structural command, skipped; the heartbeat keeps the list. At most
+   * {@link MAX_LOCK_SKIPPING} are written. Does nothing when this instance
+   * does not hold the lock. The file is replaced whole, as {@link rekey}
+   * does.
+   */
+  async publishSkipping(nonces: readonly string[]): Promise<void> {
+    await this.rewriting(async () => {
+      if (!await this.stillOwned()) return;
+      this.skipping = nonces.slice(0, MAX_LOCK_SKIPPING);
+      await this.replaceLockFile(
+        buildLockInfo(this.ttlMs, this.nonce!, this.skipping),
+      );
+      await this.keptAfterWrite();
+    });
+  }
+
+  /**
+   * Runs one rewrite of the held lock file after any already under way, so
+   * the heartbeat never compares the file against a nonce that
+   * {@link rekey} is changing and revokes a lock this instance still holds.
+   */
+  private rewriting<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.rewrites.then(fn, fn);
+    this.rewrites = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * True while the lock file still carries this instance's nonce. When
+   * another process has taken the lock (this one was paused past its ttl)
+   * the instance revokes itself, as the heartbeat does.
+   */
+  private async stillOwned(): Promise<boolean> {
+    if (!this.held || !this.nonce || this.releasing) return false;
+    const current = await this.readLockFile();
+    if (!current || current.nonce !== this.nonce) {
+      this.held = false;
+      this.stopHeartbeat();
+      return false;
+    }
+    return !this.releasing;
+  }
+
+  /**
+   * Replaces the lock file through a temp file and a rename. Windows can
+   * refuse a rename onto a file another process has open; the file is then
+   * rewritten in place, as the heartbeat rewrites it.
+   */
+  private async replaceLockFile(info: LockInfo): Promise<void> {
+    const content = JSON.stringify(info, null, 2);
+    try {
+      await atomicWriteTextFile(this.lockPath, content);
+    } catch (error) {
+      if (Deno.build.os !== "windows") throw error;
+      await Deno.writeTextFile(this.lockPath, content);
+    }
+  }
+
+  /**
+   * False when release() ran while a write was in flight: the lock file
+   * that write put back is removed so it is not orphaned.
+   */
+  private async keptAfterWrite(): Promise<boolean> {
+    if (this.held) return true;
+    try {
+      await Deno.remove(this.lockPath);
+    } catch {
+      // Best-effort cleanup
+    }
+    return false;
   }
 
   async inspect(): Promise<LockInfo | null> {
@@ -338,36 +447,21 @@ export class FileLock implements DistributedLock {
     return "unreadable";
   }
 
-  private async extend(): Promise<void> {
-    if (!this.held || !this.nonce || this.releasing) return;
+  private extend(): Promise<void> {
+    return this.rewriting(async () => {
+      // Verify we still own the lock before extending (fencing).
+      // If another process acquired the lock (e.g., after we were paused
+      // beyond TTL), the nonce will differ and we must self-revoke.
+      if (!await this.stillOwned()) return;
 
-    // Verify we still own the lock before extending (fencing).
-    // If another process acquired the lock (e.g., after we were paused
-    // beyond TTL), the nonce will differ and we must self-revoke.
-    const current = await this.readLockFile();
-    if (!current || current.nonce !== this.nonce) {
-      this.held = false;
-      this.stopHeartbeat();
-      return;
-    }
+      const info = buildLockInfo(this.ttlMs, this.nonce!, this.skipping);
+      const content = JSON.stringify(info, null, 2);
+      await Deno.writeTextFile(this.lockPath, content);
 
-    // Re-check releasing flag after the async read — release() may have
-    // been called while we were reading the lock file.
-    if (this.releasing) return;
-
-    const info = buildLockInfo(this.ttlMs, this.nonce);
-    const content = JSON.stringify(info, null, 2);
-    await Deno.writeTextFile(this.lockPath, content);
-
-    // If release() was called while the write was in flight,
-    // clean up the lock we just wrote so we don't orphan it.
-    if (!this.held) {
-      try {
-        await Deno.remove(this.lockPath);
-      } catch {
-        // Best-effort cleanup
-      }
-    }
+      // If release() was called while the write was in flight,
+      // clean up the lock we just wrote so we don't orphan it.
+      await this.keptAfterWrite();
+    });
   }
 
   private startHeartbeat(): void {

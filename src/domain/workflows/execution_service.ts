@@ -116,7 +116,10 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
-import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
+import {
+  type LentLocks,
+  processLockHolderMarker,
+} from "../datastore/lock_holder_marker.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
@@ -1055,6 +1058,12 @@ export interface StepLockResult {
    * own lock.
    */
   heldLockIds?: readonly string[];
+  /**
+   * The same locks as the step's scope lends them, with the reclaim that
+   * ends a hand-off. Used in place of {@link heldLockIds} when present, so
+   * a swamp left over from a hop that has ended stops skipping them.
+   */
+  lentLocks?: LentLocks;
 }
 
 export type StepLockHook = (
@@ -1833,14 +1842,14 @@ export class DefaultStepExecutor implements StepExecutor {
     // before any record is left at running.
     let flushLock: (() => Promise<void>) | null = null;
     // Undefined when a hook took locks without naming them.
-    let heldLockIds: readonly string[] | undefined = [];
+    let heldLockIds: readonly string[] | LentLocks | undefined = [];
     if (this.stepLockHook) {
       const lockResult = await this.stepLockHook(
         modelType.normalized,
         originalDefinition.id,
       );
       flushLock = lockResult.flush;
-      heldLockIds = lockResult.heldLockIds;
+      heldLockIds = lockResult.lentLocks ?? lockResult.heldLockIds;
     }
     try {
       // Save evaluated definition (with vault expressions still raw) for

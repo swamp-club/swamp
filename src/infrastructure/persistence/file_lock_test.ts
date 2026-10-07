@@ -20,6 +20,7 @@
 import {
   assert,
   assertEquals,
+  assertNotEquals,
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
@@ -28,7 +29,11 @@ import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { FileLock, nextBackoffSleep } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
-import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  lockSkipping,
+  LockTimeoutError,
+  MAX_LOCK_SKIPPING,
+} from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
 
 const capturedLogRecords: LogRecord[] = [];
@@ -799,4 +804,150 @@ Deno.test("FileLock.tryAcquire: a fresh unreadable lock file counts as held", as
     assertEquals(await lock.tryAcquire(), false);
     assertEquals(await Deno.readTextFile(lockPath), "");
   });
+});
+
+Deno.test("FileLock.rekey: writes a fresh nonce and returns the retired one", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    await lock.acquire();
+    const before = lock.heldNonce;
+
+    const retired = await lock.rekey();
+
+    assertEquals(retired, before);
+    const after = (await lock.inspect())?.nonce;
+    assertNotEquals(after, before);
+    assertEquals(lock.heldNonce, after);
+    // No temp file is left beside the lock.
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(dir)) names.push(entry.name);
+    assertEquals(names, [".datastore.lock"]);
+    await lock.release();
+    assertEquals(await lock.inspect(), null);
+  });
+});
+
+Deno.test("FileLock.rekey: does nothing when the lock is not held", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    assertEquals(await lock.rekey(), undefined);
+    assertEquals(await lock.inspect(), null);
+
+    await lock.acquire();
+    await lock.release();
+    assertEquals(await lock.rekey(), undefined);
+    assertEquals(await lock.inspect(), null);
+  });
+});
+
+Deno.test("FileLock.rekey: the heartbeat keeps the new nonce and the lock stays held", async () => {
+  await withTempDir(async (dir) => {
+    // ttl 90ms: a heartbeat every 30ms, so several run across the re-keys.
+    const lock = new FileLock(dir, { ttlMs: 90 });
+    await lock.acquire();
+    const first = (await lock.inspect())!;
+    let nonce: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      await lock.rekey();
+      nonce = lock.heldNonce;
+    }
+    // A heartbeat has run since the last re-key once acquiredAt moves on.
+    const rekeyedAt = (await lock.inspect())!.acquiredAt;
+    await waitFor(async () => {
+      const info = await lock.inspect();
+      return info !== null && info.acquiredAt > rekeyedAt;
+    }, "a heartbeat after the last re-key");
+    assertNotEquals(nonce, first.nonce);
+    assertEquals((await lock.inspect())?.nonce, nonce);
+    assertEquals(lock.heldNonce, nonce);
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock.rekey: a release during the re-key leaves no lock file", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    await lock.acquire();
+    const rekeying = lock.rekey();
+    await lock.release();
+    await rekeying;
+    assertEquals(await lock.inspect(), null);
+    assertEquals(lock.heldNonce, undefined);
+  });
+});
+
+Deno.test("FileLock.rekey: revokes itself when another process has taken the lock", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    await lock.acquire();
+    const usurper = { ...(await lock.inspect())!, nonce: "someone-else" };
+    await Deno.writeTextFile(
+      join(dir, ".datastore.lock"),
+      JSON.stringify(usurper),
+    );
+
+    assertEquals(await lock.rekey(), undefined);
+    assertEquals(lock.heldNonce, undefined);
+    assertEquals((await lock.inspect())?.nonce, "someone-else");
+  });
+});
+
+Deno.test("FileLock.publishSkipping: records the list, and the heartbeat and a re-key keep it", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 90 });
+    await lock.acquire();
+    assertEquals((await lock.inspect())?.skipping, undefined);
+
+    await lock.publishSkipping(["nonce-a", "nonce-b"]);
+    const published = (await lock.inspect())!;
+    assertEquals(published.skipping, ["nonce-a", "nonce-b"]);
+    assertEquals(published.nonce, lock.heldNonce);
+
+    await waitFor(async () => {
+      const info = await lock.inspect();
+      return info !== null && info.acquiredAt > published.acquiredAt;
+    }, "a heartbeat after the list was published");
+    assertEquals((await lock.inspect())?.skipping, ["nonce-a", "nonce-b"]);
+    await lock.rekey();
+    assertEquals((await lock.inspect())?.skipping, ["nonce-a", "nonce-b"]);
+
+    // An empty list withdraws the field.
+    await lock.publishSkipping([]);
+    assertEquals((await lock.inspect())?.skipping, undefined);
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock.publishSkipping: does nothing when the lock is not held", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 60_000 });
+    await lock.publishSkipping(["nonce-a"]);
+    assertEquals(await lock.inspect(), null);
+  });
+});
+
+Deno.test("lockSkipping: reads a well-formed list and treats anything else as empty", () => {
+  const info = (skipping: unknown): LockInfo =>
+    ({
+      holder: "u@h",
+      hostname: "h",
+      pid: 1,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: 1000,
+      skipping,
+    }) as LockInfo;
+
+  assertEquals([...lockSkipping(info(["a-1", "b-2"]))], ["a-1", "b-2"]);
+  assertEquals(lockSkipping(null).size, 0);
+  assertEquals(lockSkipping(info(undefined)).size, 0);
+  assertEquals(lockSkipping(info("a-1")).size, 0);
+  assertEquals(lockSkipping(info(["a-1", 7])).size, 0);
+  assertEquals(lockSkipping(info(["a-1", "not a nonce"])).size, 0);
+  assertEquals(
+    lockSkipping(info(Array.from(
+      { length: MAX_LOCK_SKIPPING + 1 },
+      (_, i) => `n-${i}`,
+    ))).size,
+    0,
+  );
 });

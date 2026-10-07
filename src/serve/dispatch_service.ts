@@ -74,6 +74,7 @@ import type { WorkerSnapshot } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
 import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 
@@ -470,9 +471,52 @@ export class DispatchService {
     }
   }
 
+  /**
+   * One dispatch attempt, as one hand-off of the locks held for the step
+   * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). The
+   * hand-off ends when the attempt does, however it ends, before the
+   * caller retries or the step writes: the locks are re-keyed, so a retry
+   * after a lost worker carries new nonces and a swamp the first runner
+   * left behind stops skipping them.
+   */
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
+  ): Promise<RemoteStepResult & { dispatchId: string }> {
+    const handOff = await request.beginLockHandOff?.();
+    let outcome:
+      | { ok: true; result: RemoteStepResult & { dispatchId: string } }
+      | { ok: false; error: unknown };
+    try {
+      outcome = {
+        ok: true,
+        result: await this.#dispatchLent(workerName, request, handOff?.lent),
+      };
+    } catch (error) {
+      outcome = { ok: false, error };
+    }
+    try {
+      await handOff?.end();
+    } catch (error) {
+      // A cancelled step writes nothing to the model, so it stays cancelled
+      // rather than failing on a structural command it could not wait out.
+      if (!request.signal?.aborted) throw error;
+      logger.warn(
+        "Could not take back the locks of cancelled step {step}: {error}",
+        {
+          step: request.stepName ?? request.methodName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    if (!outcome.ok) throw outcome.error;
+    return outcome.result;
+  }
+
+  async #dispatchLent(
+    workerName: string,
+    request: RemoteStepRequest,
+    lockHolder: RemoteLockHolder | undefined,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
@@ -548,8 +592,8 @@ export class DispatchService {
       unresolvedMethodArgs: request.unresolvedMethodArgs,
       secretBag: request.secretBag,
       // Copied only to drop `readonly` for the schema's inferred type.
-      lockHolder: request.lockHolder
-        ? { ...request.lockHolder, lockIds: [...request.lockHolder.lockIds] }
+      lockHolder: lockHolder
+        ? { ...lockHolder, lockIds: [...lockHolder.lockIds] }
         : undefined,
     };
 

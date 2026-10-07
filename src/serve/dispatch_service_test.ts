@@ -620,15 +620,119 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
   assertEquals(result.workerName, "w1");
 });
 
-Deno.test("DispatchService: forwards the step's lock holder, and omits it when the step holds no lock", async () => {
-  const h = createHarness();
-  const lockHolder = { pid: 4242, hostname: "host-a", lockIds: ["nonce-a"] };
+/**
+ * A step's lock hand-offs as `MethodExecutionService` would bind them: each
+ * begun attempt is lent the current nonce, and ending one re-keys it.
+ */
+function lockHandOffs(options: { failEnd?: Error } = {}) {
+  let generation = 1;
+  const log: string[] = [];
+  const beginLockHandOff: NonNullable<RemoteStepRequest["beginLockHandOff"]> =
+    () => {
+      const nonce = `nonce-${generation}`;
+      log.push(`begin ${nonce}`);
+      return Promise.resolve({
+        lent: { pid: 4242, hostname: "host-a", lockIds: [nonce] },
+        end: () => {
+          log.push(`end ${nonce}`);
+          generation++;
+          return options.failEnd
+            ? Promise.reject(options.failEnd)
+            : Promise.resolve();
+        },
+      });
+    };
+  return { beginLockHandOff, log };
+}
 
-  await h.service.executeRemote(stepRequest({ lockHolder }));
+Deno.test("DispatchService: lends the step's locks to the attempt, and nothing when the step holds no lock", async () => {
+  const h = createHarness();
+  const { beginLockHandOff, log } = lockHandOffs();
+
+  await h.service.executeRemote(stepRequest({ beginLockHandOff }));
   await h.service.executeRemote(stepRequest());
 
-  assertEquals(h.dispatchCalls[0].params.lockHolder, lockHolder);
+  assertEquals(h.dispatchCalls[0].params.lockHolder, {
+    pid: 4242,
+    hostname: "host-a",
+    lockIds: ["nonce-1"],
+  });
   assertEquals(h.dispatchCalls[1].params.lockHolder, undefined);
+  assertEquals(log, ["begin nonce-1", "end nonce-1"]);
+});
+
+Deno.test("DispatchService: a re-dispatch after a lost worker is a new hand-off with re-keyed locks (swamp-club#3111)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+  });
+  const { beginLockHandOff, log } = lockHandOffs();
+  let attempts = 0;
+  h.setBehavior((name) => {
+    attempts++;
+    if (attempts === 1) {
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return Promise.reject(new ChannelClosedError("control socket closed"));
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  await h.service.executeRemote(stepRequest({ beginLockHandOff }));
+
+  // The first attempt's hand-off ended before the second began, so the
+  // nonce the lost runner holds matches no lock the retry runs under.
+  assertEquals(log, [
+    "begin nonce-1",
+    "end nonce-1",
+    "begin nonce-2",
+    "end nonce-2",
+  ]);
+  assertEquals(
+    h.dispatchCalls.map((call) => call.params.lockHolder?.lockIds),
+    [["nonce-1"], ["nonce-2"]],
+  );
+});
+
+Deno.test("DispatchService: a cancelled dispatch ends its hand-off and stays cancelled when the locks cannot be taken back", async () => {
+  const h = createHarness();
+  const { beginLockHandOff, log } = lockHandOffs({
+    failEnd: new Error("structural command still working"),
+  });
+  const controller = new AbortController();
+  h.setBehavior(() => {
+    controller.abort();
+    return Promise.reject(
+      new RpcError({ code: "cancelled", message: "aborted on worker" }),
+    );
+  });
+
+  const error = await assertRejects(
+    () =>
+      h.service.executeRemote(
+        stepRequest({ beginLockHandOff, signal: controller.signal }),
+      ),
+    DOMException,
+  );
+  assertEquals(error.name, "AbortError");
+  assertEquals(log, ["begin nonce-1", "end nonce-1"]);
+});
+
+Deno.test("DispatchService: an attempt whose locks cannot be taken back fails the step instead of returning", async () => {
+  const h = createHarness();
+  const { beginLockHandOff } = lockHandOffs({
+    failEnd: new Error("structural command still working"),
+  });
+
+  await assertRejects(
+    () => h.service.executeRemote(stepRequest({ beginLockHandOff })),
+    Error,
+    "structural command still working",
+  );
 });
 
 Deno.test("DispatchService: records the dispatch's trace headers for the data plane", async () => {

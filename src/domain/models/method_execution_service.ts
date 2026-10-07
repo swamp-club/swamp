@@ -29,6 +29,7 @@ import {
   modelRegistry,
 } from "./model.ts";
 import {
+  type LockHandOff,
   MAX_REMOTE_LOCK_IDS,
   processLockHolderMarker,
   type RemoteLockHolder,
@@ -155,20 +156,24 @@ export interface MethodExecutionService {
 }
 
 /**
- * The lock holder to send with a dispatch, or none when it names more locks
- * than a worker accepts. The step then runs without it, and a structural
- * swamp it starts waits on the locks held for the run.
+ * The lock hand-offs of a dispatch built now, one per attempt, bound to the
+ * lock scope this is called from. An attempt whose run holds more locks
+ * than a worker accepts is lent none: the step then runs without them, and
+ * a structural swamp it starts waits on the locks held for the run.
  */
-function remoteLockHolderFor(
+function lockHandOffFor(
   context: Pick<MethodContext, "logger">,
-): RemoteLockHolder | undefined {
-  const holder = processLockHolderMarker.remoteLockHolder();
-  if (holder !== undefined && holder.lockIds.length > MAX_REMOTE_LOCK_IDS) {
-    context.logger
-      .warn`Not handing ${holder.lockIds.length} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
-    return undefined;
-  }
-  return holder;
+): () => Promise<LockHandOff<RemoteLockHolder | undefined>> {
+  const source = processLockHolderMarker.remoteHandOff();
+  return () => {
+    const holder = source.holder();
+    if (holder !== undefined && holder.lockIds.length > MAX_REMOTE_LOCK_IDS) {
+      context.logger
+        .warn`Not handing ${holder.lockIds.length} held per-model locks to the worker: a dispatch carries at most ${MAX_REMOTE_LOCK_IDS}. A structural swamp command started by this step (for example swamp data gc) will wait on them until the lock timeout.`;
+      return Promise.resolve({ lent: undefined, end: () => Promise.resolve() });
+    }
+    return source.begin();
+  };
 }
 
 /**
@@ -481,7 +486,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
         ...secretDelivery,
-        lockHolder: remoteLockHolderFor(context),
+        beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {

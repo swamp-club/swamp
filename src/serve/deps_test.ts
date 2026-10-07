@@ -360,6 +360,9 @@ Deno.test("createStepLockHook: names the lock it took by the nonce in its lock f
       assertEquals(nonces.length, 1);
       assertMatch(nonces[0], /^[A-Za-z0-9-]+$/);
       assertEquals(lock.heldLockIds, nonces);
+      // The step's scope is given the locks themselves, so a hop's end can
+      // re-key them (swamp-club#3111).
+      assertEquals(lock.lentLocks?.lockIds(), nonces);
     } finally {
       await lock.flush();
     }

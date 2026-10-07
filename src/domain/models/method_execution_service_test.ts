@@ -20,6 +20,7 @@
 import {
   MAX_REMOTE_LOCK_IDS,
   processLockHolderMarker,
+  type RemoteLockHolder,
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../datastore/lock_holder_marker.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -3014,23 +3015,25 @@ Deno.test("executeWorkflow - remote placement skips pre-flight checks (swamp-clu
 async function dispatchedLockHolders(
   inheritedTokens: string | undefined,
   fn: (run: () => Promise<unknown>) => Promise<void>,
-): Promise<Array<RemoteStepRequest["lockHolder"]>> {
+): Promise<Array<RemoteLockHolder | undefined>> {
   const service = new DefaultMethodExecutionService();
   const model = createCheckModel({});
   const definition = Definition.create({
     name: "remote-def",
     globalArguments: {},
   });
-  const lockHolders: Array<RemoteStepRequest["lockHolder"]> = [];
+  const lockHolders: Array<RemoteLockHolder | undefined> = [];
   setRemoteStepDispatcher({
-    executeRemote: (request) => {
-      lockHolders.push(request.lockHolder);
-      return Promise.resolve({
+    executeRemote: async (request) => {
+      const handOff = await request.beginLockHandOff?.();
+      lockHolders.push(handOff?.lent);
+      await handOff?.end();
+      return {
         outputs: [],
         logs: [],
         durationMs: 1,
         workerName: "w1",
-      });
+      };
     },
     releaseAffinity: () => {},
   });
