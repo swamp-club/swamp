@@ -203,21 +203,39 @@ async function filesUnder(root: string): Promise<string[]> {
   return names.sort();
 }
 
-Deno.test("extension push entitlement: a free collective whose trial ended is refused in the dry run and the push alike, from one whoami call", async () => {
-  await withScenario([{
-    slug: "acme",
-    plan: "free",
-    planName: "Free",
-    subscriptionStatus: null,
+// The registry never starts a trial at publish: a free collective whose
+// trial ended and one with no trial are refused alike.
+const REFUSED_STANDINGS = [
+  {
     trial: {
       state: "expired",
       startedAt: "2026-07-20T00:00:00.000Z",
       endsAt: "2026-08-19T00:00:00.000Z",
       daysRemaining: 0,
     },
+    standing: "and its trial ended on 2026-08-19",
+  },
+  { trial: null, standing: "and has no trial" },
+] as const;
+
+Deno.test("extension push entitlement: a free collective with no trial or an ended one is refused in the dry run and the push alike, from one whoami call", async () => {
+  for (const { trial, standing } of REFUSED_STANDINGS) {
+    await assertRefusedAlike(trial, standing);
+  }
+});
+
+async function assertRefusedAlike(
+  trial: (typeof REFUSED_STANDINGS)[number]["trial"],
+  standing: string,
+): Promise<void> {
+  await withScenario([{
+    slug: "acme",
+    plan: "free",
+    planName: "Free",
+    subscriptionStatus: null,
+    trial,
   }], async ({ registry, deps, input, root }) => {
-    const expected =
-      'Collective "@acme" is on the Free plan and its trial ended on 2026-08-19. ' +
+    const expected = `Collective "@acme" is on the Free plan ${standing}. ` +
       `Private publication requires a paid plan; upgrade at ${registry.serverUrl}/o/acme/billing.`;
 
     const dryRun = await extensionPushPrepare(ctx, deps, input("collect"));
@@ -242,7 +260,7 @@ Deno.test("extension push entitlement: a free collective whose trial ended is re
     // Entitlement lives in the prepared result only; nothing reached disk.
     assertEquals(await filesUnder(root), ["model.ts"]);
   });
-});
+}
 
 Deno.test("extension push entitlement: a paid collective passes the check and the push proceeds to the registry", async () => {
   await withScenario([{

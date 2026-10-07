@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import fc from "fast-check";
-import { nextBackoffSleep } from "./file_lock.ts";
+import { FileLock, nextBackoffSleep } from "./file_lock.ts";
 
 Deno.test("nextBackoffSleep: sleep and next backoff never exceed the cap or the budget", () => {
   fc.assert(
@@ -41,4 +42,38 @@ Deno.test("nextBackoffSleep: sleep and next backoff never exceed the cap or the 
       },
     ),
   );
+});
+
+/** True when `content` parses to something a lock file could hold. */
+function isLockRecord(content: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("FileLock.inspect: any content that is not a lock record reads as held while fresh and as no lock once stale", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lock-property-" });
+  try {
+    const lockPath = join(dir, ".datastore.lock");
+    const lock = new FileLock(dir, { ttlMs: 5_000 });
+    await fc.assert(
+      fc.asyncProperty(
+        fc.string().filter((content) => !isLockRecord(content)),
+        async (content) => {
+          await Deno.writeTextFile(lockPath, content);
+          assert(await lock.inspect() !== null, "fresh must read as held");
+
+          const past = new Date(Date.now() - 10_000);
+          await Deno.utime(lockPath, past, past);
+          assertEquals(await lock.inspect(), null);
+        },
+      ),
+      { numRuns: 50 },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

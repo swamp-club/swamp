@@ -946,9 +946,8 @@ export async function extensionPushPrepare(
         // collective the caller belongs to has an entitlement to report, so
         // the check is omitted when membership did not pass. A whoami that
         // did not answer leaves it unasked, like authentication; an answer
-        // that does not settle it (no entitlement reported, or a free plan
-        // the registry may start a trial for) is undecided, and the push
-        // lets the registry decide.
+        // that does not settle it (no entitlement reported for the
+        // collective) is undecided, and the push lets the registry decide.
         if (privateIntent) {
           if (lookupFailure !== undefined) {
             registryChecks.push(
