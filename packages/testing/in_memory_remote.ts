@@ -1224,7 +1224,8 @@ export function createInMemoryRemote(
       return {
         get(key, readOptions) {
           try {
-            if (!namespaceBound) bindNamespace(undefined);
+            // An unbound service reads datastore-wide, so the key is the
+            // same before and after reach() binds it.
             reads.push({ instance, key: controlKey(namespace, key) });
             readOptions?.signal?.throwIfAborted();
             reach();

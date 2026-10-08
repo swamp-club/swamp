@@ -245,7 +245,11 @@ export interface DatastoreControlPlaneStoreConformanceOptions {
    * with a cache of its own each call.
    */
   openSyncService: () => DatastoreSyncService | Promise<DatastoreSyncService>;
-  /** The namespace a service is bound to. Default: a fresh one per run. */
+  /**
+   * The namespace a service is bound to, by pulling with it. Default: a
+   * fresh one per run. A backend that only pulls registered namespaces
+   * needs one registered before the suite runs; pass its name here.
+   */
   namespace?: string;
 }
 
@@ -267,7 +271,7 @@ export interface DatastoreControlPlaneStoreConformanceOptions {
  * Deno.test("datastore-wide control-plane store conformance", async () => {
  *   await assertDatastoreControlPlaneStoreConformance({
  *     openDatastoreStore: () => provider.datastoreControlPlaneStore!(),
- *     openSyncService: () =>
+ *     openSyncService: async () =>
  *       provider.createSyncService!(repoDir, await Deno.makeTempDir()),
  *   });
  * });

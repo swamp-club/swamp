@@ -1420,6 +1420,23 @@ Deno.test("createInMemoryRemote: counts connections and lists every control-plan
   assertEquals(remote.ops().filter((op) => op.op === "controlPlane"), []);
 });
 
+Deno.test("createInMemoryRemote: an aborted control-plane read binds no namespace", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const service = remote.connect(join(dir, "a"));
+    await assertRejects(
+      () =>
+        service.controlPlaneStore!().get("k", {
+          signal: AbortSignal.abort(new Error("gone")),
+        }),
+      Error,
+      "gone",
+    );
+    // Still unbound, so the first pull may take a namespace.
+    assertEquals(await service.pullChanged({ namespace: "team" }), 0);
+  });
+});
+
 Deno.test("createInMemoryRemote: seedControlPlane needs the controlPlane option", () => {
   assertThrows(
     () => createInMemoryRemote().seedControlPlane("k", bytes("x")),

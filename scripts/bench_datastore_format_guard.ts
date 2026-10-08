@@ -86,6 +86,9 @@ import { parseArgs } from "@std/cli/parse-args";
 
 const MARKER_PATH_FRAGMENT = "_control/datastore-format";
 
+/** Gives up on an emulator request that has not answered in this long. */
+const UPSTREAM_TIMEOUT_MS = 60_000;
+
 type Mode = "healthy" | "stall-marker";
 
 interface Target {
@@ -199,6 +202,7 @@ function startProxy(target: Target, shape: NetworkShape): Proxy {
           headers: req.headers,
           body: req.body,
           redirect: "manual",
+          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
         },
       );
       if (isMarker) proxy.counters.markerMs.push(performance.now() - started);
