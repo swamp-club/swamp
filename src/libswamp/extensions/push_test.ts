@@ -2701,3 +2701,56 @@ Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cach
     },
   );
 });
+
+Deno.test("extensionPush: carries the registry's warnings on the completed event", async () => {
+  const warnings = {
+    messages: ["contentMetadata was rejected (too many methods)"],
+    omitted: 2,
+  };
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({
+      confirmPush: () =>
+        Promise.resolve({
+          name: "@testuser/test-ext",
+          version: "2026.03.22.1",
+          extensionId: "ext-123",
+          warnings,
+        }),
+    }),
+    makeExecuteInput(),
+  ));
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.registryWarnings, warnings);
+  }
+});
+
+for (const warnings of [undefined, { messages: [], omitted: 0 }]) {
+  Deno.test(
+    `extensionPush: completed event has no registryWarnings when the registry returns ${
+      warnings ? "none" : "no field"
+    }`,
+    async () => {
+      const events = await collect(extensionPush(
+        ctx,
+        makeExecuteDeps({
+          confirmPush: () =>
+            Promise.resolve({
+              name: "@testuser/test-ext",
+              version: "2026.03.22.1",
+              extensionId: "ext-123",
+              ...(warnings ? { warnings } : {}),
+            }),
+        }),
+        makeExecuteInput(),
+      ));
+      const last = events.at(-1);
+      assertEquals(last?.kind, "completed");
+      if (last?.kind === "completed") {
+        assertEquals("registryWarnings" in last.data, false);
+      }
+    },
+  );
+}
