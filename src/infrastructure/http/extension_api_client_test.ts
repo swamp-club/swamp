@@ -140,6 +140,13 @@ Deno.test("ExtensionApiClient.confirmPush: replaces control and bidi characters 
   assertEquals(result.warnings, ["red [31m  line two  reversed"]);
 });
 
+Deno.test("ExtensionApiClient.confirmPush: replaces invisible format characters and line separators in a warning with spaces", async () => {
+  const result = await confirmWithWarnings([
+    "a\u2028b\u2029c\u200ed\u200fe\u061cf\u200bg\u200dh\ufeffi",
+  ]);
+  assertEquals(result.warnings, ["a b c d e f g h i"]);
+});
+
 Deno.test("ExtensionApiClient.confirmPush: truncates a long warning by code point", async () => {
   const result = await confirmWithWarnings([
     "😀".repeat(MAX_REGISTRY_WARNING_LENGTH + 5),

@@ -96,9 +96,10 @@ export const MAX_REGISTRY_WARNINGS = 20;
 /** The longest a registry warning prints, in code points. */
 export const MAX_REGISTRY_WARNING_LENGTH = 1000;
 
-// Control characters, plus the bidirectional overrides and isolates that
-// reorder terminal text.
-const UNPRINTABLE = /[\p{Cc}\u202a-\u202e\u2066-\u2069]/gu;
+// Control characters, format characters (bidirectional overrides, isolates
+// and marks, zero-width characters, the BOM) that reorder or hide terminal
+// text, and the line and paragraph separators.
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /**
  * Reduces the confirm response's `warnings` to text that is safe to print:
