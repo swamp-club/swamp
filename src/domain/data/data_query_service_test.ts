@@ -5059,3 +5059,26 @@ Deno.test("getLatestRecord: a populated catalog's row downloads a body that is n
     cleanup();
   }
 });
+
+Deno.test("getLatestRecord: a failed download still returns the record", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-hydrate-throw-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    () => Promise.reject(new Error("remote unreachable")),
+  );
+  catalog.upsert(makeRow({ data_name: "a", spec_name: "result" }));
+  try {
+    const record = await new DataQueryService(catalog, dataRepo)
+      .getLatestRecord("ingest", "a");
+    assertEquals(record?.name, "a");
+    assertEquals(record?.attributes, {});
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});

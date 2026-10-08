@@ -508,7 +508,10 @@ export async function prepareExpressionsIn(
   content: unknown,
   context: Record<string, unknown>,
 ): Promise<void> {
+  const seen = new Set<string>();
   for (const expr of extractExpressions(content)) {
+    if (seen.has(expr.celExpression)) continue;
+    seen.add(expr.celExpression);
     await prepareExpressionContext(expr.celExpression, context);
   }
 }

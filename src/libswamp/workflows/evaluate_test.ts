@@ -1182,7 +1182,7 @@ Deno.test("workflowEvaluate: prepares each expression before evaluating it synch
   assertEquals(log, [`prepare:${cel}`, `eval:${cel}`]);
 });
 
-Deno.test("forEach: prepares the step's expressions once before resolving each item", async () => {
+Deno.test("forEach: prepares each of the step's expressions once before resolving the items", async () => {
   const workflow = makeForEachWorkflow({
     modelIdOrName: "${{ self.env }}",
     methodName: "run",
@@ -1200,10 +1200,9 @@ Deno.test("forEach: prepares the step's expressions once before resolving each i
       return contextAwareEvaluateCel(expr, ctx);
     },
   });
-  // Once for the step's name and once for its target, before either item
-  // is resolved — not once per item.
+  // Once for the expression the step's name and target share, before
+  // either item is resolved — not once per item or per occurrence.
   assertEquals(log, [
-    "prepare:self.env",
     "prepare:self.env",
     "eval:self.env",
     "eval:self.env",

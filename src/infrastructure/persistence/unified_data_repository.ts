@@ -1142,6 +1142,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const hydrate = this.hydrateFile;
     if (!hydrate) return "current";
     const contentPath = this.getContentPath(type, modelId, dataName, version);
+    // The recorded size is read before the file is: a local append writes
+    // raw before metadata.yaml, so a size read first can never exceed the
+    // file's. Read after, it could be the size of an append that landed in
+    // between, and the current file would look stale and be replaced.
+    const recordedSize = knownSize ??
+      await this.readRecordedSize(type, modelId, dataName, version);
     let localSize = await fileSize(contentPath);
     let refreshed = false;
     if (localSize === null) {
@@ -1150,8 +1156,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (localSize === null) return "missing";
       refreshed = true;
     }
-    const recordedSize = knownSize ??
-      await this.readRecordedSize(type, modelId, dataName, version);
     if (recordedSize === undefined || localSize >= recordedSize) {
       return "current";
     }

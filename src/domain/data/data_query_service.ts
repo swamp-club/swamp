@@ -583,7 +583,16 @@ export class DataQueryService {
     includeContentPath: boolean,
   ): Promise<DataRecord | null> {
     if (!row) return null;
-    await this.ensureRowContent(row);
+    // As the full context's data.latest() does, a failed download never
+    // fails a lookup that would otherwise succeed.
+    try {
+      await this.ensureRowContent(row);
+    } catch (error) {
+      logger
+        .debug`Could not hydrate ${row.model_name}/${row.data_name}@v${row.version}: ${
+        String(error)
+      }`;
+    }
     return fromRow(row, this.dataRepo, true, true, includeContentPath);
   }
 
