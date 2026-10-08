@@ -21,6 +21,8 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   ExtensionApiClient,
+  MAX_REGISTRY_WARNING_LENGTH,
+  MAX_REGISTRY_WARNINGS,
   REGISTRY_FORBIDDEN_CODE,
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "./extension_api_client.ts";
@@ -72,6 +74,102 @@ for (
     }
   });
 }
+
+/** Confirms a push against a registry whose response carries `warnings`. */
+async function confirmWithWarnings(warnings: unknown) {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
+    const body = await req.json();
+    return Response.json({
+      name: body.name,
+      version: body.version,
+      extensionId: "ext-123",
+      ...(warnings !== undefined ? { warnings } : {}),
+    }, { status: 201 });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    return await client.confirmPush({
+      name: "@test/ext",
+      version: "2026.09.16.1",
+      description: "",
+      dependencies: [],
+      platforms: [],
+      labels: [],
+    }, "test-key");
+  } finally {
+    await server.shutdown();
+  }
+}
+
+Deno.test("ExtensionApiClient.confirmPush: returns the registry's warnings", async () => {
+  const warning =
+    "contentMetadata was rejected (too many methods); the registry listing was extracted from the archive instead";
+  const result = await confirmWithWarnings([warning]);
+  assertEquals(result.warnings, [warning]);
+  assertEquals(result.extensionId, "ext-123");
+});
+
+for (
+  const [name, warnings] of [
+    ["absent", undefined],
+    ["empty", []],
+    ["a string", "rejected"],
+    ["an object", { message: "rejected" }],
+    ["null", null],
+    ["only non-strings and blanks", [1, null, { a: 1 }, "", "  \n "]],
+  ] as const
+) {
+  Deno.test(`ExtensionApiClient.confirmPush: omits warnings when the field is ${name}`, async () => {
+    const result = await confirmWithWarnings(warnings);
+    assertEquals("warnings" in result, false);
+    assertEquals(result.extensionId, "ext-123");
+  });
+}
+
+Deno.test("ExtensionApiClient.confirmPush: keeps only the string warnings", async () => {
+  const result = await confirmWithWarnings(["first", 2, null, "second"]);
+  assertEquals(result.warnings, ["first", "second"]);
+});
+
+Deno.test("ExtensionApiClient.confirmPush: replaces control and bidi characters in a warning with spaces", async () => {
+  const result = await confirmWithWarnings([
+    "red\x1b[31m\r\nline two\u202e reversed\u2066\x9b",
+  ]);
+  assertEquals(result.warnings, ["red [31m  line two  reversed"]);
+});
+
+Deno.test("ExtensionApiClient.confirmPush: truncates a long warning by code point", async () => {
+  const result = await confirmWithWarnings([
+    "😀".repeat(MAX_REGISTRY_WARNING_LENGTH + 5),
+    "x".repeat(MAX_REGISTRY_WARNING_LENGTH),
+  ]);
+  assertEquals(result.warnings, [
+    `${"😀".repeat(MAX_REGISTRY_WARNING_LENGTH)}…`,
+    "x".repeat(MAX_REGISTRY_WARNING_LENGTH),
+  ]);
+});
+
+Deno.test("ExtensionApiClient.confirmPush: caps the warnings and counts the omitted ones", async () => {
+  const many = Array.from(
+    { length: MAX_REGISTRY_WARNINGS + 3 },
+    (_, i) => `warning ${i}`,
+  );
+  const result = await confirmWithWarnings(many);
+  assertEquals(result.warnings, [
+    ...many.slice(0, MAX_REGISTRY_WARNINGS),
+    "3 more registry warnings omitted",
+  ]);
+  const oneOver = await confirmWithWarnings(
+    many.slice(0, MAX_REGISTRY_WARNINGS + 1),
+  );
+  assertEquals(oneOver.warnings?.at(-1), "1 more registry warning omitted");
+  const atLimit = await confirmWithWarnings(
+    many.slice(0, MAX_REGISTRY_WARNINGS),
+  );
+  assertEquals(atLimit.warnings, many.slice(0, MAX_REGISTRY_WARNINGS));
+});
 
 Deno.test("ExtensionApiClient constructor stores server URL", () => {
   const client = new ExtensionApiClient("https://example.com");

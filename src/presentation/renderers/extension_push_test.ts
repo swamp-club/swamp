@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join, SEPARATOR } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { FindingsReport } from "./extension_findings_report.ts";
@@ -1006,4 +1006,55 @@ Deno.test("extensionPushRenderer: log prints CRLF output without trailing carria
   assertEquals(logs.some((line) => line.includes("\r")), false);
   assertEquals(logs.filter((line) => line.endsWith("  first")).length, 1);
   assertEquals(logs.filter((line) => line.endsWith("  second")).length, 1);
+});
+
+const registryWarning =
+  "contentMetadata was rejected (model {a} has too many methods); the registry listing was extracted from the archive instead";
+const completedWithRegistryWarnings = {
+  kind: "completed",
+  data: { ...completedEvent.data, registryWarnings: [registryWarning, "two"] },
+} as const satisfies ExtensionPushEvent;
+
+Deno.test("extensionPushRenderer: log completed summary prints registry warnings after the counts, braces verbatim", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.handlers().completed(completedWithRegistryWarnings)
+  );
+  const header = logs.findIndex((l) => l.includes("Registry warnings:"));
+  assert(header > logs.findIndex((l) => l.includes("Bundles: 1")));
+  assertStringIncludes(logs[header + 1], `  ${registryWarning}`);
+  assertStringIncludes(logs[header + 2], "  two");
+});
+
+Deno.test("extensionPushRenderer: log completed summary says nothing about the registry when it sent no warnings", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.handlers().completed(completedEvent)
+  );
+  assertEquals(logs.some((l) => l.includes("Registry warnings")), false);
+});
+
+Deno.test("extensionPushRenderer: JSON push carries registry warnings as the registry family, not at the top level", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(async () => {
+    renderer.renderSafetyWarnings([safetyWarning]);
+    await renderer.handlers().completed(completedWithRegistryWarnings);
+  });
+  assertEquals(logs.length, 1);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "pushed");
+  assertEquals(doc.warnings.registry, [registryWarning, "two"]);
+  assertEquals(doc.warnings.safety, [safetyWarning]);
+  assertEquals("registryWarnings" in doc, false);
+  assertEquals(doc.extensionId, "ext-123");
+});
+
+Deno.test("extensionPushRenderer: JSON push omits the registry family when the registry sent no warnings", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() =>
+    renderer.handlers().completed(completedEvent)
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals("warnings" in doc, false);
+  assertEquals("registryWarnings" in doc, false);
 });

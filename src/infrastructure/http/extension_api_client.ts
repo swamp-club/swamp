@@ -84,6 +84,49 @@ export interface ConfirmPushResult {
   name: string;
   version: string;
   visibility?: "public" | "private";
+  /**
+   * What the registry had to say about a push it accepted, such as client
+   * contentMetadata it discarded. Sanitised and bounded; absent when none.
+   */
+  warnings?: string[];
+}
+
+/** The most registry warnings a confirm response surfaces. */
+export const MAX_REGISTRY_WARNINGS = 20;
+/** The longest a registry warning prints, in code points. */
+export const MAX_REGISTRY_WARNING_LENGTH = 1000;
+
+// Control characters, plus the bidirectional overrides and isolates that
+// reorder terminal text.
+const UNPRINTABLE = /[\p{Cc}\u202a-\u202e\u2066-\u2069]/gu;
+
+/**
+ * Reduces the confirm response's `warnings` to text that is safe to print:
+ * strings only, each one printable line of bounded length, and a bounded
+ * number of them. Anything else the registry sent there is dropped.
+ */
+function registryWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const cleaned: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const text = entry.replace(UNPRINTABLE, " ").trim();
+    if (text === "") continue;
+    const points = Array.from(text);
+    cleaned.push(
+      points.length > MAX_REGISTRY_WARNING_LENGTH
+        ? `${points.slice(0, MAX_REGISTRY_WARNING_LENGTH).join("")}…`
+        : text,
+    );
+  }
+  if (cleaned.length <= MAX_REGISTRY_WARNINGS) return cleaned;
+  const omitted = cleaned.length - MAX_REGISTRY_WARNINGS;
+  return [
+    ...cleaned.slice(0, MAX_REGISTRY_WARNINGS),
+    `${omitted} more registry ${
+      omitted === 1 ? "warning" : "warnings"
+    } omitted`,
+  ];
 }
 
 /** Information about the latest published version. */
@@ -418,11 +461,13 @@ export class ExtensionApiClient {
         "Registry returned invalid publication visibility. Publication may have completed; check the registry before retrying.",
       );
     }
+    const warnings = registryWarnings(data.warnings);
     return {
       extensionId: data.extensionId,
       name: data.name,
       version: data.version,
       ...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 

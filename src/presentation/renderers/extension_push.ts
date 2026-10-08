@@ -568,6 +568,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;
+        if (e.data.registryWarnings) {
+          this.logger.warn`Registry warnings:`;
+          for (const w of e.data.registryWarnings) {
+            this.textBlock("warn", w, "  ");
+          }
+        }
         if (options?.accepted) {
           this.renderAcceptedWarnings(options.accepted);
         }
@@ -731,8 +737,11 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
+        // Registry warnings join the other families under `warnings`.
+        const { registryWarnings, ...data } = e.data;
+        this.warn("registry", registryWarnings ?? []);
         this.emit("pushed", {
-          ...e.data,
+          ...data,
           ...(options?.accepted
             ? { acceptedWarnings: options.accepted.warnings }
             : {}),

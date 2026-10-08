@@ -170,6 +170,11 @@ export interface ExtensionPushSuccessData {
   skillCount: number;
   channel: string;
   visibility: "public" | "private";
+  /**
+   * What the registry said about the push it accepted, such as client
+   * contentMetadata it discarded. Present only when it said something.
+   */
+  registryWarnings?: string[];
 }
 
 /** Data for compilation error output. */
@@ -506,6 +511,7 @@ export interface ExtensionPushExecuteDeps {
     version: string;
     extensionId: string;
     visibility?: "public" | "private";
+    warnings?: string[];
   }>;
   getExtensionVisibility: (
     serverUrl: string,
@@ -1901,6 +1907,7 @@ export async function* extensionPush(
         version: string;
         extensionId: string;
         visibility?: "public" | "private";
+        warnings?: string[];
       };
       try {
         confirmResult = await deps.confirmPush(
@@ -1962,6 +1969,9 @@ export async function* extensionPush(
           skillCount: input.counts.skills,
           channel: input.channel ?? "stable",
           visibility,
+          ...(confirmResult.warnings && confirmResult.warnings.length > 0
+            ? { registryWarnings: confirmResult.warnings }
+            : {}),
         },
       };
     })(),

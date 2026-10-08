@@ -170,7 +170,13 @@ renderer records each part as the run produces it and writes the document
 when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
 `cancelled`), `resolved` (file paths absolute), `warnings` grouped by family
 (`safety`, `review`, `dependencyTrust`, `versionDrift`,
-`versionBumpUpgrade`), and the run summary at the top level. A blocked
+`versionBumpUpgrade`, and on a completed push `registry`), and the run
+summary at the top level. The `registry` family is what the registry said
+about a push it accepted, such as client `contentMetadata` it discarded in
+favour of its own extraction (swamp-club#2900); log mode prints it as a
+`Registry warnings:` block after the summary. The API client reduces that
+text to a bounded number of printable single lines before anything prints
+it, and it never gates the push. A blocked
 prepare carries `errors` keyed by the gate that blocked it instead. The
 review-report skeleton is a nested object on its finding. Errors still go to
 stderr as `{"error": ...}`. Log mode prints a path relative to the current
