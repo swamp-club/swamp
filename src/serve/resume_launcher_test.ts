@@ -1233,6 +1233,50 @@ Deno.test("autoResumeParentAfterChild: a parent that waits for a signal of its o
   await registry.registered[0].completion;
 });
 
+Deno.test("autoResumeParentAfterChild: a parent whose own wait was cancelled is never resumed", async () => {
+  const child = nestedWorkflows(true).child;
+  const parent = Workflow.create({
+    name: "parent",
+    autoResume: true,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "call-child", task: StepTask.workflow("child") }),
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, WAIT_SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+  const { parentRun, childRun } = settledPair(parent, child);
+  const review = parentRun.getJob("main")!.getStep("review")!;
+  review.start();
+  const wait = SignalWait.open(WAIT_SCHEMA, 60, new Date());
+  review.waitForSignal(wait);
+  const { ctx, registry, waits } = continuationHarness([parent, child], [
+    parentRun,
+    childRun,
+  ]);
+  // What a peer's cancel of the parent leaves: this copy still suspended.
+  await waits.settle(
+    unsignalledOutcomeFor(wait, "cancelled", { runId: parentRun.id }),
+  );
+
+  assertEquals(
+    await autoResumeParentAfterChild(
+      ctx,
+      { workflowId: child.id, runId: childRun.id },
+      subject,
+      "signal",
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+});
+
 Deno.test("autoResumeParentAfterChild: after a signal the subject must hold signal on the parent", async () => {
   const { parent, child } = nestedWorkflows(true);
   const { parentRun, childRun } = settledPair(parent, child);

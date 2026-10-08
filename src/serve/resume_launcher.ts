@@ -669,12 +669,14 @@ export async function autoResumeParentAfterChild(
     return skip("parent_steps_running");
   }
   if (parent.findWaitingApprovalStep() !== undefined) return false;
-  // A wait for a signal with no outcome yet keeps the parent waiting.
+  // A wait for a signal with no outcome yet keeps the parent waiting. A
+  // cancelled one means this copy of the parent is from before it ended,
+  // as in `decideContinuation`.
   for (const ref of parent.findSignalWaits()) {
     if (!ref.wait) return false;
-    if ((await outcomesOf(ctx).findOutcome(ref.wait.id)).kind !== "found") {
-      return false;
-    }
+    const outcome = await outcomesOf(ctx).findOutcome(ref.wait.id);
+    if (outcome.kind !== "found") return false;
+    if (outcome.record.kind === "cancelled") return false;
   }
   if (!(await link.childrenSettled(parent))) return false;
 

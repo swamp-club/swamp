@@ -330,13 +330,15 @@ function buildHydrateFileHook(
 ): HydrateFileHook | undefined {
   if (!syncService.hydrateFile) return undefined;
   const repoSwampDir = swampPath(repoDir);
-  return (absPath: string) => {
+  return (absPath: string, options?: { signal?: AbortSignal }) => {
     let rel = relative(cacheRoot, absPath);
     if (escapesRoot(rel)) {
       rel = relative(repoSwampDir, absPath);
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
-    return syncService.hydrateFile!(relPath);
+    return options?.signal
+      ? syncService.hydrateFile!(relPath, { signal: options.signal })
+      : syncService.hydrateFile!(relPath);
   };
 }
 

@@ -69,6 +69,12 @@ import {
 
 const logger = getSwampLogger(["serve", "signal"]);
 
+/**
+ * How long the download of a missing run record may take. It is made under
+ * the sync gate, so it must not outlast a stalled connection.
+ */
+export const RUN_RECORD_HYDRATE_TIMEOUT_MS = 30_000;
+
 /** A signal as a caller sent it. Both fields are untrusted. */
 export interface SignalDeliveryRequest {
   /** Identifies the request in audit events. */
@@ -422,7 +428,8 @@ export async function continueAfterSignal(
  * whose run records are synced. Only a record that is missing is fetched:
  * one that is here may hold a change not pushed yet, which a download would
  * overwrite. Taken under the sync gate, so no handler's delete of the run
- * is between its removal and its push.
+ * is between its removal and its push, and bounded, so a stalled download
+ * does not hold the gate: the sweep continues a run this gives up on.
  */
 async function hydrateMissingRun(
   ctx: ConnectionContext,
@@ -435,6 +442,8 @@ async function hydrateMissingRun(
   const runId = createWorkflowRunId(run.runId);
   await withSyncGate(ctx.syncGate, async () => {
     if (await runRepo.findById(workflowId, runId)) return;
-    await hydrate(runRepo.getPath(workflowId, runId));
+    await hydrate(runRepo.getPath(workflowId, runId), {
+      signal: AbortSignal.timeout(RUN_RECORD_HYDRATE_TIMEOUT_MS),
+    });
   });
 }

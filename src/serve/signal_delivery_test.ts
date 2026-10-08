@@ -503,12 +503,17 @@ Deno.test("continueAfterSignal: fetches a run record this instance does not have
   const { ctx, registry } = launching(f.ctxWith([grantOf(["signal"])]));
   const hydrated: string[] = [];
   const repoContext = ctx.repoContext as unknown as {
-    hydrateFile: (path: string) => Promise<boolean>;
+    hydrateFile: (
+      path: string,
+      options?: { signal?: AbortSignal },
+    ) => Promise<boolean>;
     workflowRunRepo: { getPath: (w: string, r: string) => string };
   };
   repoContext.workflowRunRepo.getPath = (workflowId, runId) =>
     `${workflowId}/${runId}`;
-  repoContext.hydrateFile = (path) => {
+  repoContext.hydrateFile = (path, options) => {
+    // Made under the sync gate, so the download is always bounded.
+    assert(options?.signal instanceof AbortSignal);
     hydrated.push(path);
     f.runs.set(f.run.id, f.run);
     return Promise.resolve(true);
@@ -535,6 +540,32 @@ Deno.test("continueAfterSignal: fetches a run record this instance does not have
   const active = registry.get(f.run.id);
   assert(active !== undefined);
   await active.completion;
+});
+
+Deno.test("continueAfterSignal: a download that is aborted leaves the run for the sweep", async () => {
+  const f = await fixture();
+  const { ctx, registry } = launching(f.ctxWith([grantOf(["signal"])]));
+  const repoContext = ctx.repoContext as unknown as {
+    hydrateFile: (
+      path: string,
+      options?: { signal?: AbortSignal },
+    ) => Promise<boolean>;
+    workflowRunRepo: { getPath: (w: string, r: string) => string };
+  };
+  repoContext.workflowRunRepo.getPath = (workflowId, runId) =>
+    `${workflowId}/${runId}`;
+  let downloads = 0;
+  repoContext.hydrateFile = () => {
+    downloads++;
+    return Promise.reject(new DOMException("timed out", "TimeoutError"));
+  };
+  f.runs.delete(f.run.id);
+  const result = await deliver(ctx, f.waitId);
+  assert(result.status === "delivered");
+
+  await continueAfterSignal(ctx, result, SUBJECT);
+  assertEquals(downloads, 1);
+  assertEquals(registry.get(f.run.id), undefined);
 });
 
 Deno.test("continueAfterSignal: a failure to continue never reaches the caller", async () => {

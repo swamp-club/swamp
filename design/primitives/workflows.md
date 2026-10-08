@@ -238,7 +238,9 @@ for a signal has an outcome of any kind. `continueSettledRun`
   signaller. When that instance has no record of the run and its datastore is
   synced, it first fetches the record. Only a record that is missing is
   fetched: a pull overwrites a local file that differs from the remote, and a
-  record that is here may hold a change not pushed yet.
+  record that is here may hold a change not pushed yet. The download is made
+  under the sync gate and given 30 s (`RUN_RECORD_HYDRATE_TIMEOUT_MS`); a
+  run it gives up on is left to the sweep.
 - The continuation sweep (`src/serve/continuation_sweep_service.ts`) offers
   it every suspended run this instance has, at boot and then every
   `--continuation-sweep-interval` (default 30 s; `0` disables). The boot pass
@@ -274,7 +276,9 @@ saved as ended cancels its waits, so a record that still says `suspended`
 beside a cancelled wait is a copy from before a peer cancelled the run. No
 claim marks a cancel, so the wait's outcome is what tells such a copy from a
 run to resume: resuming it would fail the wait, run the steps that follow a
-failure, and push over the cancelled record.
+failure, and push over the cancelled record. The auto-resume of a parent
+(`autoResumeParentAfterChild`) refuses a cancelled wait of the parent's own
+for the same reason.
 
 A resume that was launched and then failed, leaving the run suspended, is a
 different case from a launch that was refused: the run is still settled, and
