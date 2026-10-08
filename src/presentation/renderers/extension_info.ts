@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Logger } from "@logtape/logtape";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
   ExtensionContentMetadata,
@@ -124,21 +125,19 @@ function renderContentMetadata(
 }
 
 /**
- * Prints what the author acknowledged for the latest version, in the push
- * report's line format. Read through the registry parser so data relayed by
- * a remote serve is checked here too; every author-supplied value has its
+ * Prints what the author acknowledged for the latest version, after a blank
+ * line, in the push report's line format; prints nothing when no usable
+ * acceptances are declared. Read through the registry parser so data relayed
+ * by a remote serve is checked here too; every author-supplied value has its
  * control characters escaped, and each line is escaped for LogTape (reasons
  * carry braces).
  */
-function renderAcceptances(
-  logger: ReturnType<typeof getSwampLogger>,
-  raw: unknown,
-): void {
+export function renderAcceptedWarnings(logger: Logger, raw: unknown): void {
   const acceptances = parseRegistryAcceptances(raw);
   if (!acceptances) return;
   const line = (text: string) => logger.info(escapeLogTemplate(text));
   const esc = escapeControlCharacters;
-  logger.info``;
+  line("");
   line(ACCEPTED_HEADER);
   if (acceptances.generated) {
     const { by, source, commit } = acceptances.generated;
@@ -266,7 +265,7 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
         if (d.contentMetadata) {
           renderContentMetadata(logger, d.contentMetadata, verbose);
         }
-        renderAcceptances(logger, d.contentMetadata?.acceptances);
+        renderAcceptedWarnings(logger, d.contentMetadata?.acceptances);
 
         logger.info``;
 
