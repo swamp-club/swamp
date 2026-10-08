@@ -54,8 +54,20 @@ Deno.test("vaultListKeys yields resolving then completed", async () => {
   assertEquals(completed.data.count, 2);
 });
 
-Deno.test("vaultListKeys: yields validation error for empty vaultName", async () => {
-  const deps = makeDeps();
+async function missingNameError(vaultNames: string[]): Promise<string> {
+  let lookups = 0;
+  const deps = makeDeps({
+    findVaultByName: () => {
+      lookups++;
+      return Promise.resolve(null);
+    },
+    findAllVaults: () =>
+      Promise.resolve(vaultNames.map((name) => ({ name, type: "env" }))),
+    listKeys: () => {
+      lookups++;
+      return Promise.resolve([]);
+    },
+  });
   const events = await collect<VaultListKeysEvent>(
     vaultListKeys(createLibSwampContext(), deps, { vaultName: "" }),
   );
@@ -65,6 +77,24 @@ Deno.test("vaultListKeys: yields validation error for empty vaultName", async ()
   assertEquals(events[1].kind, "error");
   const error = events[1] as Extract<VaultListKeysEvent, { kind: "error" }>;
   assertEquals(error.error.code, "validation_failed");
+  assertEquals(lookups, 0);
+  return error.error.message;
+}
+
+Deno.test("vaultListKeys: lists the available vaults for an empty vaultName", async () => {
+  assertEquals(
+    await missingNameError(["dev-secrets", "prod-secrets"]),
+    "Missing argument(s): vault_name. " +
+      "Available vaults: dev-secrets, prod-secrets",
+  );
+});
+
+Deno.test("vaultListKeys: says no vaults are configured for an empty vaultName", async () => {
+  assertEquals(
+    await missingNameError([]),
+    "Missing argument(s): vault_name. No vaults are configured. " +
+      "Create a vault using: swamp vault create <type> <name>",
+  );
 });
 
 Deno.test("vaultListKeys yields error when vault not found", async () => {
