@@ -312,7 +312,8 @@ Vault commands live in `src/cli/commands/vault_*.ts`. `create`, `put`,
 `delete`, `annotate`, `inspect`, `migrate`, `audit-trail` and `read-secret`
 have their own sections. The group also has:
 
-- `swamp vault list-keys <vault>`: secret keys only, never values
+- `swamp vault list-keys <vault>`: secret keys only, never values. Omitting the
+  vault name fails with the names of the available vaults.
 - `swamp vault get <vault>` / `swamp vault describe <vault>`: show a vault's
   configuration
 - `swamp vault edit [vault]`: open the vault YAML in `$EDITOR` (interactive
