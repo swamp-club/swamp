@@ -1695,6 +1695,72 @@ Deno.test("data.latest() passes when specName is unique", async () => {
   });
 });
 
+Deno.test("data.latest() returns the current type's record of a model retyped in place (swamp-club#2501)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const oldType = ModelType.create("test/alpha");
+    const currentType = ModelType.create("test/beta");
+
+    // The definition file stays under the old type's directory with its
+    // type field changed, as an in-place edit leaves it. save() stamps the
+    // type it is given, so save under the current type and move the file.
+    const model = Definition.create({ name: "m1", globalArguments: {} });
+    await new YamlDefinitionRepository(repoDir).save(currentType, model);
+    const modelsDir = join(repoDir, "models");
+    await Deno.mkdir(join(modelsDir, oldType.toDirectoryPath()), {
+      recursive: true,
+    });
+    await Deno.rename(
+      join(modelsDir, currentType.toDirectoryPath(), "m1.yaml"),
+      join(modelsDir, oldType.toDirectoryPath(), "m1.yaml"),
+    );
+
+    for (
+      const [type, value] of [[oldType, "alpha"], [
+        currentType,
+        "beta",
+      ]] as const
+    ) {
+      await dataRepo.save(
+        type,
+        model.id,
+        Data.create({
+          name: "foo",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", specName: "foo", modelName: "m1" },
+          ownerDefinition: owner,
+        }),
+        new TextEncoder().encode(JSON.stringify({ v: value })),
+      );
+    }
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+
+    assertExists(ctx.data);
+    const result = await ctx.data.latest("m1", "foo");
+    assertExists(result);
+    assertEquals(result.attributes.v, "beta");
+    catalog.close();
+  });
+});
+
 Deno.test("data.latest() with exact data name skips specName ambiguity check (swamp-club#1838)", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);

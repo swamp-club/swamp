@@ -1134,6 +1134,7 @@ export class ModelResolver {
                     ns.modelName,
                     targetNs,
                     CONTROL_PLANE_STORED_TYPES,
+                    { modelType, modelId },
                   );
                 }
                 const record = this.dataToRecord(

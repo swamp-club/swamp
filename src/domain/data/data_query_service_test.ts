@@ -2808,6 +2808,140 @@ Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", (
   catalog.close();
 });
 
+// A model retyped in place keeps its id; its rows under the old type are the
+// orphaned lineage data prune reclaims (swamp-club#2501).
+function upsertRetypedRows(
+  catalog: CatalogStore,
+  oldTypeDataName: string,
+  currentTypeDataNames: string[],
+): void {
+  catalog.upsert(makeRow({
+    model_name: "m1",
+    type_normalized: "user/alpha",
+    model_id: "model-retyped",
+    data_name: oldTypeDataName,
+    spec_name: "foo",
+    id: "data-alpha-001",
+  }));
+  currentTypeDataNames.forEach((dataName, i) =>
+    catalog.upsert(makeRow({
+      model_name: "m1",
+      type_normalized: "user/beta",
+      model_id: "model-retyped",
+      data_name: dataName,
+      spec_name: "foo",
+      id: `data-beta-00${i}`,
+    }))
+  );
+}
+
+const RETYPED_TO_BETA = {
+  modelType: ModelType.create("user/beta"),
+  modelId: "model-retyped",
+};
+
+Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model with the same data name is not a peer", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo", ["foo"]);
+
+  service.checkSpecNameAmbiguity(
+    "foo",
+    "m1",
+    undefined,
+    [],
+    RETYPED_TO_BETA,
+  );
+  catalog.close();
+});
+
+Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model under another data name is not a peer", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo-x", ["foo"]);
+
+  service.checkSpecNameAmbiguity(
+    "foo",
+    "m1",
+    undefined,
+    [],
+    RETYPED_TO_BETA,
+  );
+  catalog.close();
+});
+
+Deno.test("checkSpecNameAmbiguity: distinct data names under the resolved type still throw, naming only them", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo", ["foo", "foo-y"]);
+
+  assertThrows(
+    () =>
+      service.checkSpecNameAmbiguity(
+        "foo",
+        "m1",
+        undefined,
+        [],
+        RETYPED_TO_BETA,
+      ),
+    UserError,
+    "resolves to 2 data items (foo, foo-y)",
+  );
+  catalog.close();
+});
+
+Deno.test("checkSpecNameAmbiguity: a different spelling of the resolved type keeps its rows as peers", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo", ["foo", "foo-y"]);
+
+  assertThrows(
+    () =>
+      service.checkSpecNameAmbiguity("foo", "m1", undefined, [], {
+        modelType: ModelType.create("User::Beta"),
+        modelId: "model-retyped",
+      }),
+    UserError,
+    "resolves to 2 data items (foo, foo-y)",
+  );
+  catalog.close();
+});
+
+Deno.test("checkSpecNameAmbiguity: rows under another model id still count with a resolved identity", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo", ["foo"]);
+  catalog.upsert(makeRow({
+    model_name: "m1",
+    type_normalized: "user/alpha",
+    model_id: "model-earlier",
+    data_name: "foo",
+    spec_name: "foo",
+    id: "data-earlier-001",
+  }));
+
+  assertThrows(
+    () =>
+      service.checkSpecNameAmbiguity(
+        "foo",
+        "m1",
+        undefined,
+        [],
+        RETYPED_TO_BETA,
+      ),
+    UserError,
+    "resolves to 2 data items (foo, foo)",
+  );
+  catalog.close();
+});
+
+Deno.test("checkSpecNameAmbiguity: without a resolved identity the old-type row still counts", () => {
+  const { catalog, service } = setupTest();
+  upsertRetypedRows(catalog, "foo", ["foo"]);
+
+  assertThrows(
+    () => service.checkSpecNameAmbiguity("foo", "m1"),
+    UserError,
+    "resolves to 2 data items (foo, foo)",
+  );
+  catalog.close();
+});
+
 // The declared keys of T, without any string or number index signature.
 type DeclaredKeys<T> = keyof {
   [K in keyof T as string extends K ? never : number extends K ? never : K]:

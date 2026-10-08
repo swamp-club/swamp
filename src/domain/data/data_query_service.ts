@@ -503,11 +503,20 @@ export class DataQueryService {
     return content !== null;
   }
 
+  /**
+   * Throws when `specName` names several latest data items of a model.
+   *
+   * @param resolved - The type and id the caller found the record under.
+   *   Rows with the same id under another type are what a retyped model left
+   *   behind — data prune reclaims them as orphaned — so they are not peers
+   *   (swamp-club#2501).
+   */
   checkSpecNameAmbiguity(
     specName: string,
     modelName: string,
     namespace?: string,
     excludeModelTypes: readonly string[] = [],
+    resolved?: { modelType: ModelType; modelId: string },
   ): void {
     if (!specName) return;
     if (!this.catalogStore.isPopulated()) {
@@ -518,7 +527,12 @@ export class DataQueryService {
       modelName,
       specName,
       namespace,
-    ).filter((r) => !excludeModelTypes.includes(r.type_normalized));
+    ).filter((r) => !excludeModelTypes.includes(r.type_normalized))
+      .filter((r) =>
+        !resolved || r.model_id !== resolved.modelId ||
+        ModelType.create(r.type_normalized).normalized ===
+          resolved.modelType.normalized
+      );
     if (peers.length > 1) {
       const names = peers.map((r) => r.data_name).sort();
       throw new UserError(
