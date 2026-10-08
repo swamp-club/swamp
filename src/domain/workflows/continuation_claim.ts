@@ -149,10 +149,13 @@ export function decodeContinuationClaim(
 /**
  * Identifies the suspension `run` is in: a digest of every step's place,
  * status and times, the wait it holds and the decision on its gate. Every
- * host derives the same key from the same record, and a record from before
- * or after a resume derives a different one, since a resume changes at least
- * one step. Delivering a signal does not change the run record, so it does
- * not change the key.
+ * host derives the same key from the same record. A record from before or
+ * after a resume that took the claim derives a different one, since such a
+ * resume changes at least one step: a run with a wait still open or a gate
+ * still undecided is refused before its suspension is claimed, and every
+ * accepted signal is applied to its step by the resume that claims it.
+ * Delivering a signal does not change the run record, so it does not change
+ * the key.
  */
 export async function suspensionKeyOf(run: WorkflowRun): Promise<string> {
   const steps = run.jobs.flatMap((job) =>

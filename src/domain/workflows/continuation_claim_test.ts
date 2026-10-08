@@ -24,6 +24,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 import { SignalWait } from "./signal_wait.ts";
+import { acceptedOutcomeFor } from "./signal_wait_store_test_helpers.ts";
 import {
   acquireContinuation,
   type ContinuationClaim,
@@ -146,6 +147,18 @@ Deno.test("suspensionKeyOf: a run that moved on gives another key", async () => 
   const before = await suspensionKeyOf(run);
   run.getJob("main")!.getStep("review")!.succeed();
   assert(await suspensionKeyOf(run) !== before);
+  // As a resume moves it on: by applying the signal its wait accepted.
+  const signalled = waitingRun();
+  const waiting = await suspensionKeyOf(signalled);
+  const step = signalled.getJob("main")!.getStep("review")!;
+  assert(
+    step.applyWaitOutcome(
+      acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+        runId: signalled.id,
+      }),
+    ),
+  );
+  assert(await suspensionKeyOf(signalled) !== waiting);
   // Another run suspended on a wait of its own.
   assert(await suspensionKeyOf(waitingRun()) !== before);
 });

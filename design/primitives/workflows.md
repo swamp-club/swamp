@@ -305,7 +305,9 @@ creates a continuation claim inside the run's claim, in `takeOverRun`
   record's step statuses, times, wait IDs and gate decisions
   (`suspensionKeyOf`). Every host derives the same key from the same record,
   and a copy from before a resume derives the key that resume already
-  claimed.
+  claimed. A resume refused because a wait is still open or a gate undecided
+  changes no step, so it is refused before the claim: a claim kept on an
+  unchanged key would hold off every later resume.
 - It is created once (`putIfAbsent`) in the control-plane store serve writes
   its heartbeats to, and kept until the run is deleted. A resume that is
   restored before anything ran releases it.

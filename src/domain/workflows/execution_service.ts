@@ -3793,7 +3793,10 @@ export class WorkflowExecutionService {
 
     // The last refusal: this suspension is consumed once, by whoever holds
     // its claim. Taken after every other check, so a refused resume leaves
-    // no claim behind.
+    // no claim behind. The suspension key depends on this order: a resume
+    // refused on an open wait changes no step, so the key stays the same,
+    // and a claim kept on it would hold off every later resume
+    // (swamp-club#3183).
     const claim = suspensionKey === undefined
       ? undefined
       : await this.claimSuspension(
