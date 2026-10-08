@@ -27,6 +27,7 @@
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
+  type CheckpointOptions,
   type RootFlushOutcome,
   type RootUnitOfWork,
   runInRootUnitOfWork,
@@ -50,7 +51,7 @@ export interface CommandRootUnitOptions {
    * `root.checkpoint()` (swamp-club#3053). Its error rejects inside `fn`, as
    * the direct call did; it never reaches `onCleanupError`.
    */
-  checkpoint?: () => Promise<void>;
+  checkpoint?: (options: CheckpointOptions) => Promise<number | void>;
   /** Releases the command's model locks after the root has ended. */
   release?: () => Promise<void>;
   /**
