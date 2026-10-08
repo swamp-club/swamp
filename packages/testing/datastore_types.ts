@@ -212,7 +212,9 @@ export interface ControlPlaneReadOptions {
 export interface DatastoreControlPlaneStore {
   /**
    * The record at `_control/<key>`, or null only when no such record exists.
-   * Every other failure, access denied included, rejects.
+   * Every other failure, access denied included, rejects. Must reject when
+   * `options.signal` aborts; for a sync service's `ControlPlaneStore`
+   * honouring it is recommended, not required.
    */
   get(
     key: string,

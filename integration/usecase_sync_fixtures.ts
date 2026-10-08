@@ -192,7 +192,7 @@ export async function withRowRepos(
   const remote = createInMemoryRemote(options.remote);
   const releases: number[] = [];
   const datastoreControlPlane = options.datastoreControlPlane
-    ? { datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore() }
+    ? { datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!() }
     : {};
   const typeA = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "A" }),

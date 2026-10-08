@@ -105,7 +105,8 @@ export function registerTestDatastoreType(
         remote.connect(cachePath) as unknown as DatastoreSyncService,
       ...(remote.datastoreControlPlaneStore
         ? {
-          datastoreControlPlaneStore: remote.datastoreControlPlaneStore,
+          datastoreControlPlaneStore: () =>
+            remote.datastoreControlPlaneStore!(),
         }
         : {}),
     }),

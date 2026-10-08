@@ -1300,21 +1300,21 @@ Deno.test("createInMemoryRemote: the datastore-wide store passes the datastore-w
     const remote = createInMemoryRemote({ controlPlane: true });
     let caches = 0;
     await assertDatastoreControlPlaneStoreConformance({
-      openDatastoreStore: () => remote.datastoreControlPlaneStore(),
+      openDatastoreStore: () => remote.datastoreControlPlaneStore!(),
       openSyncService: () => remote.connect(join(dir, `cache-${caches++}`)),
     });
     assertEquals([...remote.controlPlaneRecords().keys()], []);
   });
 });
 
-Deno.test("createInMemoryRemote: the datastore-wide store reads the root whatever a service bound, and needs controlPlane", async () => {
+Deno.test("createInMemoryRemote: the datastore-wide store reads the root whatever a service bound, and is absent without controlPlane", async () => {
   await withTempDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });
     remote.seedControlPlane("k", bytes("root"));
     remote.seedControlPlane("k", bytes("team"), { namespace: "team" });
     const team = remote.connect(join(dir, "team"));
     await team.pullChanged({ namespace: "team" });
-    const store = remote.datastoreControlPlaneStore();
+    const store = remote.datastoreControlPlaneStore!();
     assertEquals(new TextDecoder().decode((await store.get("k"))!), "root");
     await assertRejects(
       () => store.get("k", { signal: AbortSignal.abort(new Error("gone")) }),
@@ -1325,11 +1325,7 @@ Deno.test("createInMemoryRemote: the datastore-wide store reads the root whateve
       { instance: "datastore", key: "_control/k" },
       { instance: "datastore", key: "_control/k" },
     ]);
-    assertThrows(
-      () => createInMemoryRemote().datastoreControlPlaneStore(),
-      Error,
-      "controlPlane option",
-    );
+    assertEquals(createInMemoryRemote().datastoreControlPlaneStore, undefined);
   });
 });
 

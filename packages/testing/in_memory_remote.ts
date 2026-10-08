@@ -344,9 +344,10 @@ export interface InMemoryRemote {
   /**
    * A provider's datastore-wide store: `get` reads `_control/<key>`
    * whatever namespace any service has bound, binds nothing, and is listed
-   * as instance `"datastore"` by `controlPlaneReads`. Needs `controlPlane`.
+   * as instance `"datastore"` by `controlPlaneReads`. Present only with
+   * `controlPlane`, as a service's `controlPlaneStore` is.
    */
-  datastoreControlPlaneStore(): DatastoreControlPlaneStore;
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   /** How many sync services `connect` has built. */
   connections(): number;
   /**
@@ -1303,6 +1304,24 @@ export function createInMemoryRemote(
     };
   }
 
+  /** A provider's datastore-wide store; see `InMemoryRemote`. */
+  function datastoreControlPlaneStore(): DatastoreControlPlaneStore {
+    return {
+      get(key, readOptions) {
+        try {
+          const fullKey = controlKey(undefined, key);
+          reads.push({ instance: "datastore", key: fullKey });
+          readOptions?.signal?.throwIfAborted();
+          checkReachable("controlPlane", "datastore");
+          const bytes = controlRecords.get(fullKey);
+          return Promise.resolve(bytes ? bytes.slice() : null);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    };
+  }
+
   return {
     connect,
     files: () => new Map(committed),
@@ -1325,27 +1344,7 @@ export function createInMemoryRemote(
     },
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
-    datastoreControlPlaneStore() {
-      if (!controlPlane) {
-        throw new Error(
-          "datastoreControlPlaneStore needs the controlPlane option",
-        );
-      }
-      return {
-        get(key, readOptions) {
-          try {
-            const fullKey = controlKey(undefined, key);
-            reads.push({ instance: "datastore", key: fullKey });
-            readOptions?.signal?.throwIfAborted();
-            checkReachable("controlPlane", "datastore");
-            const bytes = controlRecords.get(fullKey);
-            return Promise.resolve(bytes ? bytes.slice() : null);
-          } catch (error) {
-            return Promise.reject(error);
-          }
-        },
-      };
-    },
+    ...(controlPlane ? { datastoreControlPlaneStore } : {}),
     connections: () => instanceCount,
     controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>

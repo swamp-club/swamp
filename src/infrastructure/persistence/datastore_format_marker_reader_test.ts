@@ -228,7 +228,7 @@ Deno.test("readDatastoreFormatMarker: a provider's datastore-wide store is read 
         () => {
           throw new Error("the reader must not build a sync service");
         },
-        () => remote.datastoreControlPlaneStore(),
+        () => remote.datastoreControlPlaneStore!(),
       ),
     },
   );
@@ -250,7 +250,7 @@ Deno.test("readDatastoreFormatMarker: a failed datastore-wide read is unreadable
     resolveProvider: provider(
       (_repo, cache) =>
         remote.connect(cache) as unknown as DatastoreSyncService,
-      () => remote.datastoreControlPlaneStore(),
+      () => remote.datastoreControlPlaneStore!(),
     ),
   });
   assertEquals(read.kind, "unreadable");
