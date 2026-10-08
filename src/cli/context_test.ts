@@ -30,6 +30,8 @@ import {
   getRepoDirFromArgs,
   type GlobalOptions,
   hasExplicitRepoDir,
+  isQuietFromArgs,
+  postCommandNoticesAllowed,
   resolveColorEnabled,
   resolveExtensionsDir,
   resolveRepoDir,
@@ -902,4 +904,34 @@ Deno.test("hasExplicitRepoDir: true for --repo-dir in either form or SWAMP_REPO_
   withMockedEnv({ SWAMP_REPO_DIR: "" }, () => {
     assertEquals(hasExplicitRepoDir(["model", "run"]), false);
   });
+});
+
+Deno.test("isQuietFromArgs: reads -q the way Cliffy parses it", () => {
+  const cases: Array<[string[], boolean]> = [
+    [["version"], false],
+    [["version", "-q"], true],
+    [["version", "--quiet"], true],
+    [["-q", "model", "run"], true],
+    [["version", "-v"], false],
+    // Short clusters: Cliffy parses -qv and -vq as both flags.
+    [["version", "-qv"], true],
+    [["version", "-vq"], true],
+    [["issue", "bug", "-qt", "x"], true],
+    // -t takes a value, so Cliffy reads the q in -tq as that value.
+    [["issue", "bug", "-tq"], false],
+    // Everything after a bare -- is a literal argument, not an option.
+    [["run", "--", "-q"], false],
+    [["run", "--", "--quiet"], false],
+    [["--quiet=true"], false],
+  ];
+  for (const [args, expected] of cases) {
+    assertEquals(isQuietFromArgs(args), expected, args.join(" "));
+  }
+});
+
+Deno.test("postCommandNoticesAllowed: only log mode without -q shows notices", () => {
+  assertEquals(postCommandNoticesAllowed("log", false), true);
+  assertEquals(postCommandNoticesAllowed("log", true), false);
+  assertEquals(postCommandNoticesAllowed("json", false), false);
+  assertEquals(postCommandNoticesAllowed("json", true), false);
 });

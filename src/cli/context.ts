@@ -205,13 +205,43 @@ export function applyColorPolicy(
   return enabled;
 }
 
+/** Boolean global short flags — the only letters that may precede `q` in a cluster. */
+const BOOLEAN_SHORT_FLAGS = new Set(["q", "v", "h"]);
+
 /**
  * Pre-parses --quiet / -q from raw CLI arguments. Used by code paths that
  * fire before Cliffy's globalAction has parsed options (e.g. extension
  * load warnings emitted from lazy loaders inside ensureLoaded()).
+ *
+ * Follows Cliffy's reading of the arguments: a short cluster such as `-qv`
+ * or `-vq` is quiet, but in `-tq` the `q` is the value of `-t`, and nothing
+ * after a bare `--` is an option (swamp-club#2257).
  */
 export function isQuietFromArgs(args: string[]): boolean {
-  return args.includes("--quiet") || args.includes("-q");
+  for (const arg of args) {
+    if (arg === "--") return false;
+    if (arg === "--quiet" || arg === "-q") return true;
+    if (/^-[A-Za-z]{2,}$/.test(arg)) {
+      for (const flag of arg.slice(1)) {
+        if (flag === "q") return true;
+        if (!BOOLEAN_SHORT_FLAGS.has(flag)) break;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the notices printed after a command — update banners and
+ * autoupdate warnings — may be shown. They are human-readable commentary
+ * written straight to stderr, so neither JSON mode nor `-q` shows them
+ * (swamp-club#2257).
+ */
+export function postCommandNoticesAllowed(
+  outputMode: OutputMode,
+  quiet: boolean,
+): boolean {
+  return outputMode === "log" && !quiet;
 }
 
 const MAX_ANCESTOR_DEPTH = 10;
