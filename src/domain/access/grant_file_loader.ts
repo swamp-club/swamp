@@ -307,7 +307,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
       reason: "missing-source",
       file: grantsFile.path,
       message:
-        "Grants file not found here; swamp serve refuses to start if it is missing where serve runs",
+        "Grants file not found on this machine; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsFile?.status === "unreadable") {
     errors.push({
@@ -324,7 +324,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
       reason: "missing-source",
       file: grantsDir.path,
       message:
-        "Grants directory not found here; swamp serve refuses to start if it is missing where serve runs",
+        "Grants directory not found on this machine; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsDir?.status === "unreadable") {
     errors.push({

@@ -1992,10 +1992,10 @@ const checkConfigCommand = new Command()
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it. It also reads the grant files serve reads (grants/, grants-file " +
-      "and grants-dir) and fails if serve would refuse them; grant type spellings " +
+      "printing it. It also reads the grant files serve reads (grants/, --grants-file " +
+      "and --grants-dir) and fails if serve would refuse them; grant type spellings " +
       "that match no type as written are warnings, and stored grants are reported " +
-      "by serve at startup. Apart from a grants-file or grants-dir outside the " +
+      "by serve at startup. Apart from a --grants-file or --grants-dir outside the " +
       "repository, it reads only this repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
@@ -2038,6 +2038,14 @@ const checkConfigCommand = new Command()
   .option(
     "--oauth-provider <url:string>",
     "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
+  )
+  .option(
+    "--grants-file <path:string>",
+    "External grants YAML file to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_FILE)",
+  )
+  .option(
+    "--grants-dir <path:string>",
+    "Directory of grants YAML files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_DIR)",
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,

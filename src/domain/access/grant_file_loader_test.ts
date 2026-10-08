@@ -203,7 +203,9 @@ Deno.test({
       await Deno.chmod(grantsDir, 0o000);
       try {
         const files = await readServeGrantFiles(repoDir, OPTIONS);
-        // A process that ignores permissions (root) can still list it.
+        // A process that ignores permissions (root) can still list the
+        // directory, so this assertion is skipped there; it runs on any
+        // non-root CI user.
         if (files.repoUnreadable === undefined) return;
         assertEquals(files.repo.size, 0);
         const check = checkServeGrantFiles(files);

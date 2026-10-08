@@ -162,7 +162,13 @@ export function renderServeCheckConfig(
     );
   } else if (grantErrors.length > 0 || grantWarnings.length > 0) {
     lines.push("");
-    lines.push(cyan("Grant files:"));
+    lines.push(
+      data.grantFilesChecked === undefined
+        ? cyan("Grant files:")
+        : `${cyan("Grant files:")} ${
+          dim(`${data.grantFilesChecked} file(s) checked`)
+        }`,
+    );
     for (const issue of grantErrors) {
       lines.push(
         `  ${red(CROSS)} ${grantIssueLocation(issue)}: ${issue.message}`,
