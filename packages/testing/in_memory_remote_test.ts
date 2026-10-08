@@ -1360,6 +1360,25 @@ Deno.test("createInMemoryRemote: control-plane calls fail while offline and on a
   assertEquals(await store.get("k"), null);
 });
 
+Deno.test("createInMemoryRemote: counts connections and lists every control-plane read, failed ones too", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  assertEquals(remote.connections(), 0);
+  const solo = remote.connect("/cache/a", { instance: "a" })
+    .controlPlaneStore!();
+  const team = remote.connect("/cache/b", { instance: "b" });
+  await team.pullChanged({ namespace: "team" });
+  assertEquals(remote.connections(), 2);
+
+  await solo.get("datastore-format");
+  remote.failNext("controlPlane", new Error("boom"));
+  await assertRejects(() => team.controlPlaneStore!().get("k"), Error, "boom");
+  assertEquals(remote.controlPlaneReads(), [
+    { instance: "a", key: "_control/datastore-format" },
+    { instance: "b", key: "team/_control/k" },
+  ]);
+  assertEquals(remote.ops().filter((op) => op.op === "controlPlane"), []);
+});
+
 Deno.test("createInMemoryRemote: seedControlPlane needs the controlPlane option", () => {
   assertThrows(
     () => createInMemoryRemote().seedControlPlane("k", bytes("x")),

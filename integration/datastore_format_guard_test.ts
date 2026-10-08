@@ -332,6 +332,19 @@ Deno.test("datastore format guard: a marker only under one namespace is not data
   });
 });
 
+Deno.test("datastore format guard: one guarded open builds two sync services and makes one marker get", async () => {
+  await withRowRepos({ remote: { controlPlane: true } }, async (repos) => {
+    await appendToDatastoreBlock(repos.repoA, "  namespace: team");
+    const connections = repos.remote.connections();
+    const reads = repos.remote.controlPlaneReads().length;
+    await resolveDatastoreForRepo(repos.repoA);
+    assertEquals(repos.remote.connections() - connections, 2);
+    assertEquals(repos.remote.controlPlaneReads().slice(reads), [
+      { instance: "A", key: "_control/datastore-format" },
+    ]);
+  });
+});
+
 Deno.test("datastore format guard: a control-plane read failure proceeds", async () => {
   await withRowRepos({ remote: { controlPlane: true } }, async (repos) => {
     repos.remote.seedControlPlane(

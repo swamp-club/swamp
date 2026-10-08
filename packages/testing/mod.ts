@@ -188,6 +188,7 @@ export {
 export type {
   ConnectOptions,
   FailNextOptions,
+  InMemoryControlPlaneRead,
   InMemoryPushManifest,
   InMemoryRemote,
   InMemoryRemoteFailure,

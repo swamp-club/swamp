@@ -195,6 +195,19 @@ Deno.test("readDatastoreFormatMarker: reads the datastore-wide control-plane rec
   assertEquals(remote.ops(), []);
 });
 
+Deno.test("readDatastoreFormatMarker: one read builds two sync services and makes one control-plane get", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  await readDatastoreFormatMarker("/repo", customConfig(), {
+    resolveProvider: provider((_repo, cache) =>
+      remote.connect(cache) as unknown as DatastoreSyncService
+    ),
+  });
+  assertEquals(remote.connections(), 2);
+  assertEquals(remote.controlPlaneReads().map((read) => read.key), [
+    "_control/datastore-format",
+  ]);
+});
+
 Deno.test("readDatastoreFormatMarker: a missing control-plane record reads absent", async () => {
   const remote = createInMemoryRemote({ controlPlane: true });
   assertEquals(

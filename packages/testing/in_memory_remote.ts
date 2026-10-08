@@ -115,7 +115,7 @@
  * service has bound a namespace, and a service that has not pulled or pushed
  * binds no namespace on its first control-plane call, as the S3 and GCS
  * extensions do (swamp-club#3189). Its writes are recorded as `controlPlane`
- * ops; its reads are not.
+ * ops; its reads are not, and are listed by `controlPlaneReads` instead.
  *
  * Not modelled: namespace prefixes (a namespaced path is a plain key and a
  * push is never limited to one), lazy hydration (`hydrateFile`),
@@ -272,6 +272,14 @@ export interface InMemoryRemoteOpRecord {
   bulk?: boolean;
 }
 
+/** One control-plane read, listed by {@link InMemoryRemote.controlPlaneReads}. */
+export interface InMemoryControlPlaneRead {
+  /** The instance name given to `connect`. */
+  instance: string;
+  /** The full remote key read, `_control/<key>` or `<namespace>/_control/<key>`. */
+  key: string;
+}
+
 /** The manifest `preparePush` hands to `commitPush`. */
 export interface InMemoryPushManifest {
   readonly uploads: ReadonlyMap<string, Uint8Array>;
@@ -329,6 +337,13 @@ export interface InMemoryRemote {
   controlPlaneRecords(): ReadonlyMap<string, Uint8Array>;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
+  /** How many sync services `connect` has built. */
+  connections(): number;
+  /**
+   * Every control-plane `get`, in order, including one that failed. Reads
+   * change nothing, so they are not ops.
+   */
+  controlPlaneReads(): readonly InMemoryControlPlaneRead[];
   /** Drops a cache's persisted dirty state, like a lost sidecar file. */
   resetSidecar(cacheDir: string): void;
   /**
@@ -621,6 +636,7 @@ export function createInMemoryRemote(
   // when they write it and, unlike the sidecar, `resetSidecar` keeps.
   const syncedIndexes = new Map<string, Map<string, Uint8Array>>();
   const log: InMemoryRemoteOpRecord[] = [];
+  const reads: InMemoryControlPlaneRead[] = [];
   const failures: PendingFailure[] = [];
   let isOffline = false;
   let instanceCount = 0;
@@ -1198,6 +1214,8 @@ export function createInMemoryRemote(
       return {
         get(key) {
           try {
+            if (!namespaceBound) bindNamespace(undefined);
+            reads.push({ instance, key: controlKey(namespace, key) });
             reach();
             const bytes = controlRecords.get(controlKey(namespace, key));
             return Promise.resolve(bytes ? bytes.slice() : null);
@@ -1295,6 +1313,8 @@ export function createInMemoryRemote(
     },
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
+    connections: () => instanceCount,
+    controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>
       log.map((entry) => ({
         ...entry,
