@@ -18,29 +18,36 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Worker for extension_catalog_concurrent_migration_test.ts. It stands in
-// for a second swamp process: it takes the extension catalog's write lock,
-// reports that it holds it, commits a write a moment later, then reports
-// that it committed.
+// for a second swamp process: it takes the extension catalog's write lock
+// and reports that it holds it. When the test says it is opening the store,
+// it commits a write a moment later, then reports that it committed.
 
 import { DatabaseSync } from "node:sqlite";
 
-export type LockWorkerRequest = { dbPath: string; holdMs: number };
+export type LockWorkerRequest =
+  | { kind: "lock"; dbPath: string }
+  | { kind: "opening"; holdMs: number };
 export type LockWorkerMessage = "locked" | "committed";
 
 declare const self: Worker;
 
+let db: DatabaseSync | undefined;
+
 self.onmessage = (event: MessageEvent<LockWorkerRequest>) => {
-  const { dbPath, holdMs } = event.data;
-  const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA busy_timeout=5000");
-  db.exec("BEGIN IMMEDIATE");
-  db.prepare(
-    "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
-  ).run("test:other-process-write");
-  self.postMessage("locked" satisfies LockWorkerMessage);
+  const request = event.data;
+  if (request.kind === "lock") {
+    db = new DatabaseSync(request.dbPath);
+    db.exec("PRAGMA busy_timeout=5000");
+    db.exec("BEGIN IMMEDIATE");
+    db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+    ).run("test:other-process-write");
+    self.postMessage("locked" satisfies LockWorkerMessage);
+    return;
+  }
   setTimeout(() => {
-    db.exec("COMMIT");
-    db.close();
+    db?.exec("COMMIT");
+    db?.close();
     self.postMessage("committed" satisfies LockWorkerMessage);
-  }, holdMs);
+  }, request.holdMs);
 };
