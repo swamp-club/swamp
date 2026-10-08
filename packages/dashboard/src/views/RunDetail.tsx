@@ -29,6 +29,10 @@ import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
+import {
+  StepSignalWait,
+  type StepSignalWaitInfo,
+} from "../components/StepSignalWait";
 import { StatusDot } from "../components/StatusDot";
 import { RouteLink } from "../components/RouteLink";
 import type { ArtifactRef } from "./data_target.ts";
@@ -62,6 +66,8 @@ interface StepRun {
   methodName?: string;
   allowedFailure?: boolean;
   approval?: ApprovalInfo;
+  /** On a `wait_for_signal` step: its wait, with the receipt once signalled. */
+  wait?: StepSignalWaitInfo;
   outputs?: Record<string, unknown>;
   dataArtifacts?: ArtifactRef[];
 }
@@ -330,6 +336,7 @@ export function RunDetail(
                           {step.error}
                         </div>
                       )}
+                      <StepSignalWait status={step.status} wait={step.wait} />
                       {step.approval && (
                         <div
                           style={{

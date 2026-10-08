@@ -70,6 +70,11 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         writeOutput(
           `      -> waiting on nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName}`,
         );
+      } else if (step.wait?.receipt && step.status === "waiting") {
+        // Signalled since the run suspended: the next resume applies it.
+        writeOutput(
+          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id} from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}; a resume applies it`,
+        );
       } else if (step.wait && step.status === "waiting") {
         writeOutput(
           `      -> waiting for signal ${step.wait.id} until ${step.wait.deadline}`,

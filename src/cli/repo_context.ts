@@ -782,6 +782,11 @@ export async function requireRepoMarker(
  * latest. The cache reflects whatever was last synced by a write command.
  * For filesystem datastores, reads see writes immediately.
  *
+ * The context carries the datastore's wait records. Reading one from a
+ * custom datastore opens its control-plane store, which pulls the namespace:
+ * the one read here that reaches the remote, and only when a command asks
+ * about a wait.
+ *
  * @param options - The repo directory and output mode
  * @param factoryConfig - Optional factory configuration overrides
  * @returns The validated repo context
@@ -943,6 +948,17 @@ export async function requireInitializedRepoReadOnly(
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
     ...factoryConfig,
   });
+
+  // A read shows what a wait record says of a step, such as the receipt of
+  // a signal no resume has applied yet (swamp-club#3110). The store of a
+  // custom datastore is opened, with its namespace pull, only by a command
+  // that reads a wait.
+  attachSignalWaits(
+    repoContext,
+    resolveSignalWaitSupport(datastoreConfig, readOnlySyncService, {
+      runsInDatastore: runsLiveInDatastore(datastoreResolver),
+    }),
+  );
 
   if (readOnlySyncService?.fetchForeignContent) {
     const svc = readOnlySyncService;

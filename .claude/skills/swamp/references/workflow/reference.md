@@ -930,10 +930,11 @@ swamp workflow resume release --run <run-id>
 - A new `workflow run` does not supersede a run that waits for a signal,
   signalled or not; it reports it as kept.
 - A signal is stored beside the run, not in it, and takes effect at the next
-  `resume`. Until then `workflow get`/`history` still show the step `waiting`;
-  use the signal's own output (`awaitingResume`; unknown, with
+  `resume`. Until then the step still shows `waiting`; `workflow history get`
+  adds the signal's receipt to it (`wait.receipt` with `--json`). To tell what
+  is left, use the signal's own output (`awaitingResume`; unknown, with
   `runRecordAvailable: false`, on a host without the run) or `workflow waits`,
-  which lists only unanswered waits, to tell what is left.
+  which lists only unanswered waits.
 - A signal can be sent from any host or repository on the same datastore, and
   while sibling steps of the wait are still running. A `resume` sent while they
   run is refused with "has not finished suspending": wait for the first process

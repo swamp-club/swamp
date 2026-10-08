@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { WorkflowRunEvent } from "../libswamp/workflows/run.ts";
 import { assertEquals } from "@std/assert";
 import {
   deserializeEvent,
@@ -301,5 +302,70 @@ Deno.test("isWireEvent: the events an existing client handles are still sent", (
     ]
   ) {
     assertEquals(isWireEvent({ kind }), true, kind);
+  }
+});
+
+Deno.test("serializeEvent: a suspension's nestedSignalWaits round-trips, in a kind an older client already handles", () => {
+  const event = {
+    kind: "suspended",
+    run: { id: "run-1", jobs: [] },
+    jobId: "main",
+    stepId: "call-child",
+    prompt: "",
+    nested: { workflowName: "child", runId: "child-1" },
+    nestedSignalWaits: [{
+      workflowId: "wf-child",
+      workflowName: "child",
+      runId: "child-1",
+      jobId: "child-job",
+      stepId: "review",
+      waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+      deadline: "2026-10-09T00:00:00.000Z",
+    }],
+  };
+  assertEquals(isWireEvent(event), true);
+  const wire = JSON.parse(JSON.stringify(serializeEvent(event)));
+  assertEquals(deserializeEvent(wire), event);
+});
+
+// Every kind a workflow run publishes, checked against the union by the
+// compiler: `true` for a kind sent to clients, `false` for one kept local.
+// A released client dispatches by kind and crashes on one it does not know,
+// so a new kind starts as `false` here, and what it says is carried in a
+// field of a kind already sent (swamp-club#3110).
+const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
+  validating_inputs: true,
+  superseded_runs: true,
+  evaluating_workflow: true,
+  started: true,
+  job_started: true,
+  job_completed: true,
+  job_skipped: true,
+  step_started: true,
+  step_completed: true,
+  step_skipped: true,
+  approval_requested: true,
+  signal_wait_requested: false,
+  step_failed: true,
+  model_resolved: true,
+  env_var_warning: true,
+  method_executing: true,
+  method_output: true,
+  step_queued: true,
+  step_target_disconnected: true,
+  method_event: true,
+  assert_result: true,
+  report_started: true,
+  report_completed: true,
+  report_failed: true,
+  completed: true,
+  cancelled: true,
+  suspended: true,
+  error: true,
+};
+
+Deno.test("isWireEvent: sends exactly the workflow run event kinds a released client handles", () => {
+  for (const [kind, sent] of Object.entries(WORKFLOW_RUN_EVENT_KINDS)) {
+    assertEquals(isWireEvent({ kind }), sent, kind);
   }
 });

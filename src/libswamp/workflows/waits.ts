@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
+import type { SignalReceipt } from "../../domain/workflows/signal_wait.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -32,6 +33,7 @@ import type {
 } from "../../domain/workflows/signal_wait_store.ts";
 import {
   ensureRegistered,
+  isAwaitingResume,
   outcomeAt,
   sweepWaitRecords,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
@@ -78,9 +80,45 @@ export interface UnreadableWaitInfo {
   nextCommand: string;
 }
 
+/**
+ * A wait a signal has settled whose run is still suspended: the step shows
+ * as waiting until a resume applies the signal.
+ */
+export interface SignalledWaitInfo {
+  waitId: string;
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobName: string;
+  stepName: string;
+  /** When the step started waiting. */
+  waitingSince: string | undefined;
+  deadline: string;
+  /** The receipt of the signal that settled the wait. */
+  signal: SignalReceipt;
+  /**
+   * True when nothing else holds the run back, so a resume moves it on.
+   * False when this host has no copy of the run.
+   */
+  awaitingResume: boolean;
+  /** The resume that applies the signal. */
+  nextCommand: string;
+}
+
 export interface WorkflowWaitsData {
   waits: SignalWaitInfo[];
   unreadableWaits: UnreadableWaitInfo[];
+  /** Listed only when asked for with `includeSignalled`. */
+  signalled?: SignalledWaitInfo[];
+}
+
+/** Options for {@link workflowWaits}. */
+export interface WorkflowWaitsOptions {
+  /**
+   * Also list the waits a signal has settled whose run has not been resumed
+   * yet, under `signalled`.
+   */
+  includeSignalled?: boolean;
 }
 
 export type WorkflowWaitsEvent =
@@ -194,6 +232,7 @@ async function collectRegistrations(
 export async function* workflowWaits(
   ctx: LibSwampContext,
   deps: WorkflowWaitsDeps,
+  options: WorkflowWaitsOptions = {},
 ): AsyncIterable<WorkflowWaitsEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.waits",
@@ -231,6 +270,7 @@ export async function* workflowWaits(
       }
 
       const waits: SignalWaitInfo[] = [];
+      const signalled: SignalledWaitInfo[] = [];
       const unreadableWaits: UnreadableWaitInfo[] = [];
       const registrations = await collectRegistrations(
         deps,
@@ -249,6 +289,34 @@ export async function* workflowWaits(
           continue;
         }
         if (outcome.kind === "found" && outcome.record.kind !== "timed_out") {
+          if (
+            store && options.includeSignalled &&
+            outcome.record.kind === "accepted"
+          ) {
+            const run = await deps.runRepo.findById(
+              createWorkflowId(registration.workflowId),
+              createWorkflowRunId(registration.runId),
+            );
+            // A run that has moved on no longer waits; its records go with
+            // the next sweep.
+            if (run && run.status !== "suspended") continue;
+            signalled.push({
+              waitId: registration.waitId,
+              workflowId: registration.workflowId,
+              workflowName: registration.workflowName,
+              runId: registration.runId,
+              jobName: registration.jobName,
+              stepName: registration.stepName,
+              waitingSince: registration.registeredAt,
+              deadline: registration.deadline,
+              signal: { ...outcome.record.receipt },
+              awaitingResume: await isAwaitingResume(store, run),
+              nextCommand: resumeCommandFor(
+                registration.workflowName,
+                registration.runId,
+              ),
+            });
+          }
           continue;
         }
         const expired = outcome.kind === "found" ||
@@ -271,7 +339,18 @@ export async function* workflowWaits(
       }
       waits.sort((a, b) => a.deadline.localeCompare(b.deadline));
 
-      yield { kind: "completed", data: { waits, unreadableWaits } };
+      signalled.sort((a, b) =>
+        a.signal.receivedAt.localeCompare(b.signal.receivedAt)
+      );
+
+      yield {
+        kind: "completed",
+        data: {
+          waits,
+          unreadableWaits,
+          ...(options.includeSignalled ? { signalled } : {}),
+        },
+      };
     })(),
   );
 }

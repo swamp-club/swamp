@@ -31,6 +31,7 @@ import { Workflow } from "./workflow.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import { WorkflowRun, type WorkflowRunData } from "./workflow_run.ts";
 import { SignalWait } from "./signal_wait.ts";
+import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 
 class Runs {
   readonly byId = new Map<string, WorkflowRun>();
@@ -418,8 +419,10 @@ Deno.test("NestedRunLink.describeWait: a child with an open signal wait is signa
   assertEquals(pending.action, {
     kind: "signal",
     target: pending.action.target,
+    jobName: "child-job",
     stepName: "review",
     waitId: wait.id,
+    deadline: wait.deadline.toISOString(),
   });
   const hint = nestedWaitHint(pending.action);
   assert(hint.includes(`swamp workflow signal ${wait.id}`));
@@ -446,12 +449,52 @@ Deno.test("nestedWaitHint: the signal command quotes its payload placeholder so 
       runId: "r-1",
       serveOwned: false,
     },
+    jobName: "child-job",
     stepName: "review",
     waitId: "wait-1",
+    deadline: "2026-01-01T00:00:00.000Z",
   });
 
   assert(
     hint.includes("swamp workflow signal wait-1 --payload '<json>', then"),
     hint,
   );
+});
+
+Deno.test("nestedWaitHint: the signal command for a serve-owned run takes the server form", () => {
+  const hint = nestedWaitHint({
+    kind: "signal",
+    target: {
+      workflowId: "w",
+      workflowName: "child",
+      runId: "r-1",
+      serveOwned: true,
+    },
+    jobName: "child-job",
+    stepName: "review",
+    waitId: "wait-1",
+    deadline: "2026-01-01T00:00:00.000Z",
+  });
+
+  assert(
+    hint.includes(
+      "swamp workflow signal wait-1 --payload '<json>' --server <url>, then",
+    ),
+    hint,
+  );
+});
+
+Deno.test("NestedRunLink.describeWait: with a wait store, the signal action carries the job and deadline of the open wait", async () => {
+  const { parent, deps, wait } = signalWaitPair(new Date(), 3600);
+  const store = new InMemorySignalWaitStore();
+
+  const [pending] = await new NestedRunLink({
+    ...deps,
+    signalWaits: { supported: true, store },
+  }).pendingWaits(parent);
+
+  assertEquals(pending.action.kind, "signal");
+  if (pending.action.kind !== "signal") return;
+  assertEquals(pending.action.jobName, "child-job");
+  assertEquals(pending.action.deadline, wait.deadline.toISOString());
 });

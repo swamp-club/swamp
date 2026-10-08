@@ -29,6 +29,11 @@ interface ResumeActionProps {
    * refetch can still see it suspended for a moment, so no Resume is offered.
    */
   resuming?: boolean;
+  /**
+   * What made the run ready to resume, for the label: every gate approved
+   * (the default), or every wait signalled.
+   */
+  readyBecause?: "approved" | "signalled";
 }
 
 /**
@@ -37,8 +42,9 @@ interface ResumeActionProps {
  * that is not waiting for a resume.
  */
 export function ResumeAction(
-  { run, onResumed, resuming }: ResumeActionProps,
+  { run, onResumed, resuming, readyBecause = "approved" }: ResumeActionProps,
 ) {
+  const ready = readyBecause === "signalled" ? "Signalled" : "Approved";
   const { requestDetached } = useSwamp();
   const [busy, setBusy] = useState(false);
   const [started, setStarted] = useState(false);
@@ -49,7 +55,7 @@ export function ResumeAction(
   if (resuming) {
     return (
       <div className="resume-action">
-        <span className="resume-label">Approved — serve is resuming</span>
+        <span className="resume-label">{ready} — serve is resuming</span>
       </div>
     );
   }
@@ -75,7 +81,7 @@ export function ResumeAction(
   return (
     <div className="resume-action" onClick={(e) => e.stopPropagation()}>
       <div className="resume-head">
-        <span className="resume-label">Approved — awaiting resume</span>
+        <span className="resume-label">{ready} — awaiting resume</span>
         <button
           type="button"
           className="btn-sm btn-approve"

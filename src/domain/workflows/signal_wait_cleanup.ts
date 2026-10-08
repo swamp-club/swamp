@@ -136,7 +136,8 @@ export async function findRegistrationOfStep(
 export interface OpenWaitRef {
   jobName: string;
   stepName: string;
-  wait: { id: string };
+  /** The wait's id and when it stops accepting a signal, as an ISO timestamp. */
+  wait: { id: string; deadline: string };
 }
 
 /**
@@ -157,7 +158,7 @@ export async function findUnsettledWait(
         return {
           jobName: job.jobName,
           stepName: step.stepName,
-          wait: { id: ref.waitId },
+          wait: { id: ref.waitId, deadline: ref.deadline },
         };
       }
     }
@@ -191,7 +192,7 @@ export async function applyAcceptedSignals(
         open ??= {
           jobName: job.jobName,
           stepName: step.stepName,
-          wait: { id: ref.waitId },
+          wait: { id: ref.waitId, deadline: ref.deadline },
         };
       } else if (
         stored.kind === "found" && stored.record.kind === "accepted"
@@ -424,4 +425,25 @@ export async function sweepWaitRecords(
     swept.outcomes++;
   }
   return swept;
+}
+
+/**
+ * Whether the run can be resumed as far as its waits go: suspended,
+ * with no gate undecided, no nested run waited on, and an outcome for every
+ * other wait. Read from the run record as this host has it; false when the
+ * record is not here.
+ */
+export async function isAwaitingResume(
+  store: SignalWaitStore,
+  run: WorkflowRun | null,
+): Promise<boolean> {
+  if (!run || run.status !== "suspended") return false;
+  if (run.findWaitingApprovalStep() || run.findNestedWaits().length > 0) {
+    return false;
+  }
+  for (const ref of run.findSignalWaits()) {
+    if (!ref.wait) continue;
+    if ((await store.findOutcome(ref.wait.id)).kind === "absent") return false;
+  }
+  return true;
 }

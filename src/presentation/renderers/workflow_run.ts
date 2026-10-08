@@ -22,7 +22,10 @@ import {
   extractFirstStepError,
   type WorkflowRunView,
 } from "../../libswamp/workflows/workflow_run_view.ts";
-import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
+import type {
+  NestedSignalWaitData,
+  WorkflowRunEvent,
+} from "../../libswamp/workflows/run.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import {
@@ -62,13 +65,6 @@ export interface WorkflowRunRenderOpts {
    * the same server or repository (for example " --server ws://host:9000").
    */
   commandTarget?: string;
-  /**
-   * Appended to a follow-up command that only runs against a local
-   * repository, such as `workflow signal` (for example " --repo-dir /repo").
-   * Left unset for a run on a server, whose `--server` target such a command
-   * does not accept.
-   */
-  localCommandTarget?: string;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -92,11 +88,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private verbose: boolean;
   private failOnSeverity: AssertSeverity;
   private commandTarget: string;
-  private localCommandTarget: string;
-  // Runs, nested ones included, that asked for a signal in this stream.
+  // Runs, nested ones included, whose wait for a signal was shown.
   private readonly runsWaitingForSignal = new Set<string>();
+  // The waits shown, so a suspension does not print one a second time.
+  private readonly waitsShown = new Set<string>();
   // Whether any gate was shown in this stream. A remote stream carries
-  // gates but not signal waits.
+  // gates, and a nested run's signal wait only in the suspended event.
   private gateShown = false;
   private _failed = false;
   private pipe: PipeWriter | null = null;
@@ -124,7 +121,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.verbose = opts.verbose ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.commandTarget = opts.commandTarget ?? "";
-    this.localCommandTarget = opts.localCommandTarget ?? "";
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -483,6 +479,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       signal_wait_requested: (e) => {
         this.runsWaitingForSignal.add(e.runId);
+        this.waitsShown.add(e.waitId);
         if (!this.pipe) return;
         const name = this.getJobDisplayName(e.jobId);
         const waitWorkflow = e.workflowName ?? this.workflowName;
@@ -495,13 +492,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           ),
         );
         writeBlankLine();
-        // Only the local command delivers a signal, so no server target.
         writeOutput(
           this.pipe.line(
             name,
             `${
               yellow("To signal:")
-            }  swamp workflow signal ${e.waitId} --payload '<json>'${this.localCommandTarget}`,
+            }  swamp workflow signal ${e.waitId} --payload '<json>'${this.commandTarget}`,
           ),
         );
       },
@@ -798,18 +794,27 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             ),
           );
           writeBlankLine();
+          const deeperWait = this.writeNestedSignalWaits(
+            e.nestedSignalWaits,
+            e.nested.runId,
+          );
           writeOutput(
             this.pipe.line(
               "system",
               `${yellow("Nested run:")}  ${
                 this.runsWaitingForSignal.has(e.nested.runId)
-                  ? "signal its wait as shown above"
+                  ? "signal its wait as shown above, then"
+                  // The wait is further down: the run that holds it is
+                  // resumed first, as shown with its signal command.
+                  : deeperWait && !this.gateShown
+                  ? "once the run it waits on finishes,"
                   : this.gateShown
-                  ? "approve its gate as shown above"
-                  // Nothing was shown: a remote run's signal wait, or a
-                  // resume that found the nested run still suspended.
-                  : "approve its gate or signal its wait"
-              }, then  swamp workflow resume ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
+                  ? "approve its gate as shown above, then"
+                  // Nothing was shown: a server that predates
+                  // nestedSignalWaits, or a nested run that neither waits
+                  // for a signal nor has a gate requested in this stream.
+                  : "approve its gate or signal its wait, then"
+              }  swamp workflow resume ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
             ),
           );
           writeOutput(
@@ -818,6 +823,33 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               `${
                 dim("Once it finishes:")
               }  swamp workflow resume ${this.workflowName} --run ${e.run.id}${this.commandTarget}`,
+            ),
+          );
+          return;
+        }
+        if (waitsOnNestedRun(e)) {
+          // The step waits on a nested run this caller is not shown: there
+          // is no gate of this run to approve. A wait further down that the
+          // caller may read is still named (swamp-club#3110).
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Suspended",
+              STATUS_COLORS.warn,
+              `workflow ${escapeControlCharacters(this.workflowName)} — step ${
+                escapeControlCharacters(e.stepId)
+              } waits on a nested run`,
+              formatTimestamp(),
+            ),
+          );
+          writeBlankLine();
+          this.writeNestedSignalWaits(e.nestedSignalWaits, undefined);
+          writeOutput(
+            this.pipe.line(
+              "system",
+              `${dim("Once it finishes:")}  swamp workflow resume ${
+                quoteShellWord(this.workflowName)
+              } --run ${e.run.id}${this.commandTarget}`,
             ),
           );
           return;
@@ -838,7 +870,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "system",
               `${
                 yellow("To signal:")
-              }  swamp workflow signal ${e.wait.id} --payload '<json>'${this.localCommandTarget}`,
+              }  swamp workflow signal ${e.wait.id} --payload '<json>'${this.commandTarget}`,
             ),
           );
           writeOutput(
@@ -849,6 +881,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               } --run ${e.run.id}${this.commandTarget}`,
             ),
           );
+          this.writeNestedSignalWaits(e.nestedSignalWaits);
           return;
         }
         writeOutput(
@@ -881,6 +914,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             } --run ${e.run.id}${this.commandTarget}`,
           ),
         );
+        this.writeNestedSignalWaits(e.nestedSignalWaits);
       },
       error: (e) => {
         this.clearAllHeartbeats();
@@ -891,6 +925,63 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 
   workflowFailed(): boolean {
     return this._failed;
+  }
+
+  /**
+   * Shows the open waits of nested runs that a suspension names and this
+   * stream has not shown: every one of them for a run on a server, which is
+   * not sent a wait as it is requested, and for a resume that found a nested
+   * run still waiting (swamp-club#3110). A wait held further down than
+   * `directRunId`, the run the suspended step waits on, also gets the resume
+   * of the run that holds it, which has to come before any run above it.
+   * Returns whether such a wait was named.
+   */
+  private writeNestedSignalWaits(
+    waits: readonly NestedSignalWaitData[] | undefined,
+    directRunId?: string,
+  ): boolean {
+    if (!this.pipe) return false;
+    let deeper = false;
+    for (const wait of waits ?? []) {
+      this.runsWaitingForSignal.add(wait.runId);
+      const further = wait.runId !== directRunId;
+      deeper ||= further;
+      const shown = this.waitsShown.has(wait.waitId);
+      if (shown && !further) continue;
+      if (!shown) {
+        this.waitsShown.add(wait.waitId);
+        writeOutput(
+          this.pipe.waitingLine(
+            "system",
+            `signal required on step ${
+              escapeControlCharacters(wait.stepId)
+            } in nested workflow ${
+              escapeControlCharacters(wait.workflowName)
+            } until ${escapeControlCharacters(wait.deadline)}`,
+          ),
+        );
+        writeOutput(
+          this.pipe.line(
+            "system",
+            `${yellow("To signal:")}  swamp workflow signal ${
+              quoteShellWord(wait.waitId)
+            } --payload '<json>'${this.commandTarget}`,
+          ),
+        );
+      }
+      if (further) {
+        writeOutput(
+          this.pipe.line(
+            "system",
+            `${dim("After the signal:")}  swamp workflow resume ${
+              quoteShellWord(wait.workflowName)
+            } --run ${quoteShellWord(wait.runId)}${this.commandTarget}`,
+          ),
+        );
+      }
+      writeBlankLine();
+    }
+    return deeper;
   }
 
   /**
@@ -978,6 +1069,24 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       writeOutput(`  ${line}`);
     }
   }
+}
+
+/**
+ * Whether a suspension names a step that waits on a nested run and not a
+ * gate of the run's own, with no `nested` to say so: the nested run is not
+ * shown to this caller, or its link could not be read. A gate's prompt is
+ * never empty, and a step waiting for a signal on a wait that cannot be
+ * read shows as `waiting`, which a nested workflow step never does.
+ */
+function waitsOnNestedRun(
+  e: Extract<WorkflowRunEvent, { kind: "suspended" }>,
+): boolean {
+  if (e.nested !== undefined || e.wait !== undefined || e.prompt !== "") {
+    return false;
+  }
+  const step = e.run.jobs.find((job) => job.name === e.jobId)?.steps
+    .find((s) => s.name === e.stepId);
+  return step?.status !== "waiting";
 }
 
 /** A signal wait as the run's stream requested it. */
@@ -1109,15 +1218,26 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         const ownGate = nested
           ? this._gates.findLast((g) => g.runId === nested.runId)
           : undefined;
+        // A run on a server is not sent a nested wait as it is requested:
+        // the suspension names it instead (swamp-club#3110). A wait is named
+        // only for a nested run with no gate to decide first, so a named
+        // wait comes before a gate another run requested earlier.
+        const namedWaits = e.nestedSignalWaits ?? [];
+        // A step can wait on a nested run this caller is not shown, which
+        // leaves no `nested`: a wait further down is then all there is.
+        const hiddenNested = waitsOnNestedRun(e);
         const ownWait = nested && !ownGate
-          ? this._waits.findLast((w) => w.runId === nested.runId)
+          ? this._waits.findLast((w) => w.runId === nested.runId) ??
+            namedWaits.find((w) => w.runId === nested.runId) ?? namedWaits[0]
+          : hiddenNested
+          ? namedWaits[0]
           : undefined;
         const gate = nested && !ownWait
           ? ownGate ?? this._gates.findLast((g) => g.runId !== e.run.id)
           : undefined;
         // A run suspended on a signal wait, its own or a nested run's, names
         // the wait to signal in place of a gate to approve.
-        const requestedWait = nested && !gate
+        const requestedWait = (nested || hiddenNested) && !gate
           ? ownWait ?? this._waits.findLast((w) => w.runId !== e.run.id)
           : undefined;
         const signalRequired = e.wait
@@ -1153,7 +1273,10 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               : []
           )
         );
-        const waitsField = signalWaits.length > 0 ? { signalWaits } : {};
+        const waitsField = {
+          ...(signalWaits.length > 0 ? { signalWaits } : {}),
+          ...(namedWaits.length > 0 ? { nestedSignalWaits: namedWaits } : {}),
+        };
         if (signalRequired) {
           unguardedConsole.log(JSON.stringify(
             {

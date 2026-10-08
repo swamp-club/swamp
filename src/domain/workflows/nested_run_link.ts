@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
-import { findUnsettledWait } from "./signal_wait_cleanup.ts";
+import { findUnsettledWait, type OpenWaitRef } from "./signal_wait_cleanup.ts";
 import { UserError } from "../errors.ts";
 import { evaluateApprovalTimeout } from "./approval_timeout.ts";
 import { MAX_WORKFLOW_NESTING_DEPTH, sameRunId } from "./nested_run_ref.ts";
@@ -80,8 +80,11 @@ export type NestedWaitAction =
     /** A step of the run waits for a signal on a wait still open. */
     readonly kind: "signal";
     readonly target: NestedRunTarget;
+    readonly jobName: string;
     readonly stepName: string;
     readonly waitId: string;
+    /** When the wait stops accepting a signal, as an ISO timestamp. */
+    readonly deadline: string;
   }
   | { readonly kind: "resume"; readonly target: NestedRunTarget }
   | { readonly kind: "recover"; readonly target: NestedRunTarget }
@@ -300,13 +303,15 @@ export class NestedRunLink {
         child,
         new Date(),
       )
-      : child.findOpenSignalWait(new Date());
+      : openWaitOnRecord(child, new Date());
     if (openWait) {
       return {
         kind: "signal",
         target,
+        jobName: openWait.jobName,
         stepName: openWait.stepName,
         waitId: openWait.wait.id,
+        deadline: openWait.wait.deadline,
       };
     }
 
@@ -322,6 +327,20 @@ export class NestedRunLink {
     }
     return { kind: "resume", target };
   }
+}
+
+/** The run's first open wait as its own record shows it, with no store. */
+function openWaitOnRecord(
+  run: WorkflowRun,
+  now: Date,
+): OpenWaitRef | undefined {
+  const open = run.findOpenSignalWait(now);
+  if (!open) return undefined;
+  return {
+    jobName: open.jobName,
+    stepName: open.stepName,
+    wait: { id: open.wait.id, deadline: open.wait.deadline.toISOString() },
+  };
 }
 
 function server(target: NestedRunTarget): string {
@@ -344,9 +363,10 @@ export function nestedWaitHint(action: NestedWaitAction): string {
           server(t)
         }'.`;
     case "signal":
-      // Only the local command delivers a signal, so no --server form.
       return `Nested ${run} waits for a signal on step "${action.stepName}": ` +
-        `swamp workflow signal ${action.waitId} --payload '<json>', then 'swamp workflow resume ${t.workflowName} --run ${t.runId}${
+        `swamp workflow signal ${action.waitId} --payload '<json>'${
+          server(t)
+        }, then 'swamp workflow resume ${t.workflowName} --run ${t.runId}${
           server(t)
         }'.`;
     case "resume":

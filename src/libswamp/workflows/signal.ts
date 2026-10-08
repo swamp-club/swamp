@@ -37,6 +37,7 @@ import {
 } from "../../domain/workflows/signal_wait_store.ts";
 import {
   ensureRegistered,
+  isAwaitingResume,
   outcomeAt,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
 import {
@@ -371,27 +372,6 @@ function stepLeftWait(
   );
   if (!step || step.signalWait?.id !== registration.waitId) return undefined;
   return step.isSignalWait ? undefined : step;
-}
-
-/**
- * Whether the run can be resumed now that this wait is settled: suspended,
- * with no gate undecided, no nested run waited on, and an outcome for every
- * other wait. Read from the run record as this host has it; false when the
- * record is not here.
- */
-async function isAwaitingResume(
-  store: SignalWaitStore,
-  run: WorkflowRun | null,
-): Promise<boolean> {
-  if (!run || run.status !== "suspended") return false;
-  if (run.findWaitingApprovalStep() || run.findNestedWaits().length > 0) {
-    return false;
-  }
-  for (const ref of run.findSignalWaits()) {
-    if (!ref.wait) continue;
-    if ((await store.findOutcome(ref.wait.id)).kind === "absent") return false;
-  }
-  return true;
 }
 
 /**

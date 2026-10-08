@@ -2688,6 +2688,7 @@
       "npm:ink@^6.8.0",
       "npm:marked-terminal@^7.3.0",
       "npm:marked@^14.1.4",
+      "npm:react-dom@^19.2.5",
       "npm:react@^19.2.5",
       "npm:yaml@^2.9.0",
       "npm:zod@^4.4.3"

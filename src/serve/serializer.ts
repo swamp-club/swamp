@@ -28,8 +28,9 @@ import type { SerializedError, SerializedEvent } from "./protocol.ts";
  * Event kinds a workflow run produces that are never sent to a client. A
  * client dispatches each event to a handler by kind and has none for a kind
  * newer than itself, so a released client crashes on one. What these events
- * say reaches the client another way: `signal_wait_requested` is repeated in
- * the `suspended` event's `wait`, a field an older client ignores.
+ * say reaches the client another way, in fields an older client ignores:
+ * `signal_wait_requested` is repeated in the `suspended` event's `wait` for
+ * the run's own wait, and in its `nestedSignalWaits` for a nested run's.
  */
 const LOCAL_ONLY_EVENT_KINDS: ReadonlySet<string> = new Set([
   "signal_wait_requested",

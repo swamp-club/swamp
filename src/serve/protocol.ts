@@ -416,6 +416,14 @@ export interface WorkflowSignalPayload {
   payload: unknown;
 }
 
+export interface WorkflowWaitsPayload {
+  /**
+   * Also list the waits a signal has settled whose run has not been resumed
+   * yet, under `signalled`.
+   */
+  includeSignalled?: boolean;
+}
+
 export interface WorkflowRejectPayload {
   workflowIdOrName: string;
   stepName: string;
@@ -837,7 +845,7 @@ export type ServerRequest =
   | { type: "workflow.approve"; id: string; payload: WorkflowApprovePayload }
   | { type: "workflow.reject"; id: string; payload: WorkflowRejectPayload }
   | { type: "workflow.signal"; id: string; payload: WorkflowSignalPayload }
-  | { type: "workflow.waits"; id: string }
+  | { type: "workflow.waits"; id: string; payload?: WorkflowWaitsPayload }
   | { type: "workflow.resume"; id: string; payload: WorkflowResumePayload }
   | { type: "workflow.cancel"; id: string; payload: WorkflowCancelPayload }
   | { type: "vault.get"; id: string; payload: VaultGetPayload }

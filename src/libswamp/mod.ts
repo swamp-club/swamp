@@ -75,6 +75,7 @@ export {
   extractStepArtifacts,
   inputValidationFailed,
   mapWorkflowExecutionEvent,
+  type NestedSignalWaitData,
   toRunData,
   workflowExecutionFailed,
   workflowNotFound,
@@ -392,12 +393,14 @@ export {
 } from "./workflows/signal.ts";
 export {
   createWorkflowWaitsDeps,
+  type SignalledWaitInfo,
   type SignalWaitInfo,
   type UnreadableWaitInfo,
   workflowWaits,
   type WorkflowWaitsData,
   type WorkflowWaitsDeps,
   type WorkflowWaitsEvent,
+  type WorkflowWaitsOptions,
 } from "./workflows/waits.ts";
 
 // Vault operations

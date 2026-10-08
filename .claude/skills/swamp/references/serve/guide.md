@@ -82,6 +82,11 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
   -d '{"payload":{"verdict":"ship"}}'
 ```
 
+`swamp workflow run --server` prints the wait ID and the signal command with
+`--server` when the run suspends on a wait, its own or a nested run's. A nested
+run's wait is named only to a caller who may read that workflow. The dashboard's
+Approvals page lists open, signalled and expired waits.
+
 | HTTP status | Meaning                                                     |
 | ----------- | ----------------------------------------------------------- |
 | 200         | Delivered; the body carries the receipt                     |

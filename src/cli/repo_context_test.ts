@@ -372,6 +372,19 @@ Deno.test("requireInitializedRepoReadOnly - returns context for initialized repo
   });
 });
 
+Deno.test("requireInitializedRepoReadOnly - carries the datastore's wait records, so a read can show a signalled wait", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(signalWaitsOf(repoContext).supported, true);
+  });
+});
+
 Deno.test("requireInitializedRepoReadOnly - throws UserError for non-initialized repo", async () => {
   await withTempDir(async (dir) => {
     const error = await assertRejects(

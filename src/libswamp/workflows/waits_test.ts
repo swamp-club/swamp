@@ -406,3 +406,112 @@ Deno.test("workflowWaits: a sweep that fails does not hide the waits", async () 
 
   assertEquals((await list(deps)).map((w) => w.waitId), [wait.id]);
 });
+
+async function listAll(deps: WorkflowWaitsDeps, includeSignalled?: boolean) {
+  const events = await collect<WorkflowWaitsEvent>(
+    workflowWaits(createLibSwampContext(), deps, { includeSignalled }),
+  );
+  const last = events.at(-1)!;
+  if (last.kind !== "completed") throw new Error(`got ${last.kind}`);
+  return last.data;
+}
+
+/** A run suspended only on one wait for a signal, with no gate. */
+function runWaitingOnlyForSignal(name: string, at: Date): WorkflowRun {
+  const workflow = Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  job.getStep("review")!.start();
+  job.getStep("review")!.waitForSignal(SignalWait.open(SCHEMA, 60, at));
+  run.suspend();
+  return run;
+}
+
+Deno.test("workflowWaits: without includeSignalled the result carries no signalled list", async () => {
+  const run = runWaitingOnlyForSignal("release", T0);
+  const data = await listAll(depsOf([run], T1));
+  assertEquals("signalled" in data, false);
+  assertEquals(data.waits.length, 1);
+});
+
+Deno.test("workflowWaits: includeSignalled lists a signalled wait with its receipt and that the run can resume", async () => {
+  const run = runWaitingOnlyForSignal("release", T0);
+  const step = run.getJob("main")!.getStep("review")!;
+  const waits = new InMemorySignalWaitStore();
+  const outcome = acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+    runId: run.id,
+    at: T1,
+  });
+  await waits.settle(outcome);
+
+  const data = await listAll(depsOf([run], T1, waits), true);
+
+  assertEquals(data.waits, []);
+  assertEquals(data.signalled, [{
+    waitId: step.signalWait!.id,
+    workflowId: run.workflowId,
+    workflowName: "release",
+    runId: run.id,
+    jobName: "main",
+    stepName: "review",
+    waitingSince: data.signalled![0].waitingSince,
+    deadline: step.signalWait!.deadline.toISOString(),
+    signal: outcome.receipt,
+    awaitingResume: true,
+    nextCommand: `swamp workflow resume release --run ${run.id}`,
+  }]);
+  // The listing never writes the run.
+  assertEquals(step.status, "waiting_signal");
+});
+
+Deno.test("workflowWaits: a signalled wait of a run a gate still holds is not awaiting resume", async () => {
+  const run = waitingRun(workflowNamed("release"), { review: T0 });
+  const step = run.getJob("main")!.getStep("review")!;
+  const waits = new InMemorySignalWaitStore();
+  await waits.settle(
+    acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+      runId: run.id,
+    }),
+  );
+
+  const data = await listAll(depsOf([run], T1, waits), true);
+
+  assertEquals(data.signalled?.map((w) => w.awaitingResume), [false]);
+});
+
+Deno.test("workflowWaits: includeSignalled lists open and signalled waits apart, and an empty list when none is signalled", async () => {
+  const open = runWaitingOnlyForSignal("open", T0);
+  const done = runWaitingOnlyForSignal("done", T0);
+  const waits = new InMemorySignalWaitStore();
+  await waits.settle(
+    acceptedOutcomeFor(
+      done.getJob("main")!.getStep("review")!.signalWait!,
+      { verdict: "ship" },
+      { runId: done.id },
+    ),
+  );
+
+  const data = await listAll(depsOf([open, done], T1, waits), true);
+  assertEquals(data.waits.map((w) => w.workflowName), ["open"]);
+  assertEquals(data.signalled?.map((w) => w.workflowName), ["done"]);
+
+  assertEquals(
+    (await listAll(depsOf([open], T1), true)).signalled,
+    [],
+  );
+});

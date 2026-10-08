@@ -30,6 +30,8 @@ import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { StatusPill } from "../components/StatusPill";
 import { ResumeAction } from "../components/ResumeAction";
+import { SignalWaitsPanel } from "../components/SignalWaitsPanel";
+import { signalWaitRows } from "../client/signal_wait_state";
 
 interface ApprovalInfo {
   workflowName: string;
@@ -58,6 +60,14 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     "workflow.run.search",
     { status: "suspended", limit: 200 },
   );
+  // Refused to a caller who may read no workflow: nothing is listed then.
+  // Refetched only with the gates, never on a timer: the listing settles
+  // expired waits as it reads.
+  const { data: waitsData, refetch: refetchWaits } = useRequest(
+    "workflow.waits",
+    { includeSignalled: true },
+  );
+  const signalWaits = signalWaitRows(waitsData);
   const approvals = extractArray<ApprovalInfo>(data);
   const suspendedRuns = extractArray<ResumableRun>(suspendedData);
   const awaitingResume = suspendedRuns.filter(
@@ -68,7 +78,8 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const refetchGatesAndRuns = useCallback(() => {
     refetch();
     refetchSuspended();
-  }, [refetch, refetchSuspended]);
+    refetchWaits();
+  }, [refetch, refetchSuspended, refetchWaits]);
   useActiveRunsRefetch(health?.activeRuns, suspendedRuns, refetchGatesAndRuns);
   const [notice, setNotice] = useState<string | null>(null);
   const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
@@ -78,8 +89,9 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const refresh = useCallback(() => {
     refetch();
     refetchSuspended();
+    refetchWaits();
     onApprovalsChanged?.();
-  }, [refetch, refetchSuspended, onApprovalsChanged]);
+  }, [refetch, refetchSuspended, refetchWaits, onApprovalsChanged]);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -230,6 +242,23 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
             ))
           )}
       </div>
+
+      <SignalWaitsPanel
+        rows={signalWaits}
+        renderResume={(row) => (
+          <ResumeAction
+            run={{
+              runId: row.runId,
+              workflowName: row.workflowName,
+              status: "suspended",
+              awaitingResume: true,
+            }}
+            onResumed={refresh}
+            resuming={resumingRuns.has(row.runId) || servedRuns.has(row.runId)}
+            readyBecause="signalled"
+          />
+        )}
+      />
 
       {awaitingResume.length > 0 && (
         <div className="panel" style={{ marginTop: 14 }}>

@@ -41,6 +41,7 @@
     "ink-testing-library": "npm:ink-testing-library@4",
     "react": "npm:react@^19.2.5",
     "react/jsx-runtime": "npm:react@^19.2.5/jsx-runtime",
+    "react-dom/server": "npm:react-dom@^19.2.5/server",
     "@types/react": "npm:@types/react@^19.2.14",
     "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.1042.0",
     "cel-js": "npm:@marcbachmann/cel-js@7.6.1",
