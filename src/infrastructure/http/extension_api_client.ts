@@ -106,7 +106,8 @@ export const MAX_REGISTRY_WARNING_LENGTH = 1000;
 
 // Control characters, format characters (bidirectional overrides, isolates
 // and marks, zero-width characters, the BOM) that reorder or hide terminal
-// text, and the line and paragraph separators.
+// text, and the line and paragraph separators. The zero-width joiner goes
+// with them, so a joined emoji prints as its parts.
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /**

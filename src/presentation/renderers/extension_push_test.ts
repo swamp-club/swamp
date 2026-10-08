@@ -1016,7 +1016,7 @@ const completedWithRegistryWarnings = {
     ...completedEvent.data,
     registryWarnings: { messages: [registryWarning, "two"], omitted: 0 },
   },
-} as const satisfies ExtensionPushEvent;
+} satisfies ExtensionPushEvent;
 
 Deno.test("extensionPushRenderer: log completed summary prints registry warnings after the counts, braces verbatim", async () => {
   const renderer = createExtensionPushRenderer("log");
