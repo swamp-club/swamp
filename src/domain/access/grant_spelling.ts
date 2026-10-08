@@ -163,7 +163,7 @@ function conditionFindings(
       written: typeLiteral.literal,
       canonical,
       message:
-        `condition compares ${field} with ${typeLiteral.literal}, which no type is spelled as; types are spelled ${canonical}`,
+        `${field} is compared with ${typeLiteral.literal}, which matches no type as written; write ${canonical}`,
     });
   }
   return findings;

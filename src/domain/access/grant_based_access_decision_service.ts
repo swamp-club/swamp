@@ -68,7 +68,11 @@ function resolveSubjects(
   return subjects;
 }
 
-/** Each grant's selector in canonical type spelling, computed once. */
+/**
+ * Each grant's selector in canonical type spelling, computed once. Keyed by
+ * the grant object, which is sound because snapshots hold grants that are
+ * never changed in place: a reload builds new grant objects.
+ */
 const canonicalPatterns = new WeakMap<Grant, string | null>();
 
 function canonicalPatternOf(grant: Grant): string | null {

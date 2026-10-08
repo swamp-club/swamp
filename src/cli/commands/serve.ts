@@ -3702,6 +3702,9 @@ export const serveCommand = new Command()
     });
 
     const grantsDir = join(resolvedRepoDir, "grants");
+    // No literal reader: the policy snapshot loader reports each grant's
+    // type spellings once it is reconciled, so reading them here as well
+    // would warn twice (swamp-club#3130).
     const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
       grantsFile: merged.grantsFile,
       grantsDir: merged.grantsDir,

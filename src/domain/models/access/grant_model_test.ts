@@ -279,7 +279,7 @@ for (
           context,
         ),
       Error,
-      "types are spelled",
+      "matches no type as written",
     );
     assertEquals(store.has("grant-main"), false);
   });

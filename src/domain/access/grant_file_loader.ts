@@ -206,17 +206,18 @@ function resultIssues(
   result: GrantFileParseResult,
   errors: GrantFileCheckIssue[],
   warnings: GrantFileCheckIssue[],
+  locate: (filename: string) => string = (filename) => filename,
 ): void {
   for (const e of result.errors) {
     errors.push({
-      file: e.filename,
+      file: locate(e.filename),
       ...(e.entryIndex !== undefined ? { entry: e.entryIndex + 1 } : {}),
       message: e.message,
     });
   }
   for (const w of result.warnings) {
     warnings.push({
-      file: w.filename,
+      file: locate(w.filename),
       entry: w.entryIndex + 1,
       message: w.message,
     });
@@ -232,15 +233,17 @@ function resultIssues(
 export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   const errors: GrantFileCheckIssue[] = [];
   const warnings: GrantFileCheckIssue[] = [];
+  // Repository grant files are parsed under their bare names; name the
+  // directory too, since external sources are listed beside them.
   for (const result of files.repo.values()) {
-    resultIssues(result, errors, warnings);
+    resultIssues(result, errors, warnings, (name) => join("grants", name));
   }
   const grantsFile = files.grantsFile;
   if (grantsFile?.status === "missing") {
     warnings.push({
       file: grantsFile.path,
       message:
-        "grants file not found here; swamp serve refuses to start if it is missing where serve runs",
+        "Grants file not found here; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsFile?.status === "unreadable") {
     errors.push({
@@ -255,7 +258,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
     warnings.push({
       file: grantsDir.path,
       message:
-        "grants directory not found here; swamp serve refuses to start if it is missing where serve runs",
+        "Grants directory not found here; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsDir?.status === "unreadable") {
     errors.push({

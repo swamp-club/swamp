@@ -122,9 +122,9 @@ Deno.test("checkServeGrantFiles: an invalid entry is an error, a misspelled type
     const check = checkServeGrantFiles(
       await readServeGrantFiles(repoDir, OPTIONS),
     );
-    assertEquals(check.errors.map((e) => e.file), ["bad.yaml"]);
+    assertEquals(check.errors.map((e) => e.file), [join("grants", "bad.yaml")]);
     assertEquals(check.warnings.length, 1);
-    assertEquals(check.warnings[0].file, "spelled.yaml");
+    assertEquals(check.warnings[0].file, join("grants", "spelled.yaml"));
     assertEquals(check.warnings[0].entry, 1);
     assertStringIncludes(check.warnings[0].message, "model:aws/ec2/*");
   });
@@ -141,10 +141,10 @@ Deno.test("checkServeGrantFiles: an external source absent here is a warning, no
     );
     assertEquals(check.errors, []);
     assertEquals(check.warnings.length, 2);
-    assertStringIncludes(check.warnings[0].message, "grants file not found");
+    assertStringIncludes(check.warnings[0].message, "Grants file not found");
     assertStringIncludes(
       check.warnings[1].message,
-      "grants directory not found",
+      "Grants directory not found",
     );
   });
 });
