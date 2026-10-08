@@ -44,6 +44,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
+  checkGrantCreateInputs,
   type Grant,
   GRANT_MODEL_TYPE,
   GrantSchema,
@@ -167,6 +168,23 @@ const accessGrantCreateCommand = new Command()
       ? (options.methods as string).split(",").map((m: string) => m.trim())
         .filter(Boolean)
       : undefined;
+
+    // The grant model refuses these inputs only after the run has saved its
+    // definition, so check them first and leave nothing behind for a refused
+    // grant (swamp-club#3182).
+    try {
+      checkGrantCreateInputs({
+        subject: options.subject as string,
+        effect,
+        resourceKind: resource.kind,
+        resourcePattern: resource.pattern,
+        condition: options.when as string | undefined,
+      });
+    } catch (error) {
+      throw new UserError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     const instanceName = `grant-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -307,6 +325,7 @@ const accessGrantCreateCommand = new Command()
                   resourceKind: resource.kind,
                   resourcePattern: resource.pattern,
                   condition: options.when as string | undefined,
+                  methods,
                   source: "method",
                   createdBy: LOCAL_PRINCIPAL,
                 },

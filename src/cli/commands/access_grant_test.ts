@@ -17,9 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoService } from "../../domain/repo/repo_service.ts";
+import { VERSION } from "./version.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -34,12 +39,14 @@ await initializeLogging({});
  */
 function runEventServer(
   events: Record<string, unknown>[],
-): { url: string; shutdown: () => Promise<void> } {
+): { url: string; requests: () => number; shutdown: () => Promise<void> } {
+  let requests = 0;
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (message) => {
+        requests++;
         const request = JSON.parse(message.data as string) as { id: string };
         for (const event of events) {
           socket.send(
@@ -53,6 +60,7 @@ function runEventServer(
   );
   return {
     url: `ws://127.0.0.1:${server.addr.port}`,
+    requests: () => requests,
     shutdown: () => server.shutdown(),
   };
 }
@@ -236,4 +244,195 @@ Deno.test("accessGrantCommand: create has --methods option", async () => {
   const options = createCmd.getOptions();
   const methodsOpt = options.find((o) => o.name === "methods");
   assertEquals(methodsOpt !== undefined, true);
+});
+
+/** Each refusal the grant model raises inside `create`, with its message. */
+const REFUSED_CREATES: { label: string; args: string[]; message: string }[] = [
+  {
+    label: "a subject with no kind",
+    args: ["--subject", "adam", "--allow", "run", "--on", "model:@acme/deploy"],
+    message: 'Invalid subject "adam"',
+  },
+  {
+    label: "a CEL syntax error",
+    args: [
+      "--subject",
+      "user:adam",
+      "--allow",
+      "run",
+      "--on",
+      "model:@acme/deploy",
+      "--when",
+      "tags.env ==",
+    ],
+    message: "Invalid grant condition: CEL syntax error",
+  },
+  {
+    label: "a modelType literal not spelled as stored",
+    args: [
+      "--subject",
+      "user:adam",
+      "--allow",
+      "run",
+      "--on",
+      "model:@acme/deploy",
+      "--when",
+      'modelType == "ACME::Deploy"',
+    ],
+    message: "Invalid grant condition:\n  - modelType is compared with",
+  },
+];
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-access-grant-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function initRepo(dir: string): Promise<void> {
+  const homeDir = join(dir, "test-home");
+  await new RepoService(VERSION, {
+    homeDir,
+    configDir: join(homeDir, ".config", "swamp"),
+  }).init(RepoPath.create(dir), { tools: [] });
+}
+
+/** Runs `access grant <args>` with --json, returning what it printed. */
+async function runGrant(args: string[]): Promise<string> {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  const printed: string[] = [];
+  const originalLog = console.log;
+  const previousExitCode = Deno.exitCode;
+  console.log = (...data: unknown[]) => printed.push(data.join(" "));
+  try {
+    await new Command()
+      .globalOption("--json", "JSON output")
+      .command("grant", accessGrantCommand)
+      .parse(["grant", ...args, "--json"]);
+  } finally {
+    console.log = originalLog;
+    Deno.exitCode = previousExitCode;
+  }
+  return printed.join("\n");
+}
+
+/** Every file under `path`, or none when it does not exist. */
+async function filesUnder(path: string): Promise<string[]> {
+  const found: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(path)) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory) found.push(...await filesUnder(child));
+      else found.push(child);
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return found;
+}
+
+for (const refused of REFUSED_CREATES) {
+  Deno.test({
+    name:
+      `accessGrantCommand: create refuses ${refused.label} without sending it to --server (swamp-club#3182)`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      const server = runEventServer([]);
+      try {
+        await assertRejects(
+          () =>
+            runGrant([
+              "create",
+              ...refused.args,
+              "--server",
+              server.url,
+              "--token",
+              "test.token",
+            ]),
+          UserError,
+          refused.message,
+        );
+        assertEquals(server.requests(), 0);
+      } finally {
+        await server.shutdown();
+      }
+    },
+  });
+
+  Deno.test({
+    name:
+      `accessGrantCommand: a local create refusing ${refused.label} leaves no definition or run behind (swamp-club#3182)`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withTempDir(async (dir) => {
+        await initRepo(dir);
+        await assertRejects(
+          () => runGrant(["create", ...refused.args, "--repo-dir", dir]),
+          UserError,
+          refused.message,
+        );
+        assertEquals(
+          await filesUnder(
+            join(dir, ".swamp", "auto-definitions", "swamp", "grant"),
+          ),
+          [],
+        );
+        assertEquals(
+          await filesUnder(join(dir, ".swamp", "outputs", "swamp", "grant")),
+          [],
+        );
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "accessGrantCommand: a local create stores its grant and its --methods (swamp-club#3182, swamp-club#3187)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      await initRepo(dir);
+      await runGrant([
+        "create",
+        "--subject",
+        "user:adam",
+        "--allow",
+        "run",
+        "--on",
+        "model:@acme/deploy",
+        "--when",
+        'tags.env == "prod"',
+        "--methods",
+        "deploy, ,plan",
+        "--repo-dir",
+        dir,
+      ]);
+      assertEquals(
+        (await filesUnder(
+          join(dir, ".swamp", "auto-definitions", "swamp", "grant"),
+        )).length,
+        1,
+      );
+      const grants = JSON.parse(
+        await runGrant(["list", "--repo-dir", dir]),
+      ) as { subject: unknown; condition?: string; methods?: string[] }[];
+      assertEquals(grants.length, 1);
+      assertEquals(grants[0].subject, { kind: "user", name: "adam" });
+      assertEquals(grants[0].condition, 'tags.env == "prod"');
+      assertEquals(grants[0].methods, ["deploy", "plan"]);
+    });
+  },
 });
