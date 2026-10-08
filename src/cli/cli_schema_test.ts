@@ -67,6 +67,103 @@ Deno.test("buildCliSchema excludes hidden commands", () => {
 
   assertEquals(schema.root.subcommands.length, 1);
   assertEquals(schema.root.subcommands[0].name, "visible");
+  assertEquals(schema.root.subcommands[0].hidden, false);
+});
+
+Deno.test("buildCliSchema includeHidden lists hidden commands marked hidden", () => {
+  const hidden = new Command().description("secret").hidden();
+  const visible = new Command().description("visible");
+  const root = new Command()
+    .name("cli")
+    .description("root")
+    .command("visible", visible)
+    .command("hidden", hidden);
+
+  const schema = buildCliSchema(root, "1.0.0", { includeHidden: true });
+
+  assertEquals(
+    schema.root.subcommands.map((c) => [c.name, c.hidden]),
+    [["visible", false], ["hidden", true]],
+  );
+  assertEquals(schema.root.hidden, false);
+});
+
+Deno.test("buildCliSchema marks a hidden subtree root and its visible children", () => {
+  // reset() reselects the group: hidden() applies to the command a chain last
+  // selected, which after command("child", …) is the child.
+  const group = new Command()
+    .description("group")
+    .command("child", new Command().description("child"))
+    .reset()
+    .hidden();
+  const root = new Command().name("cli").description("root");
+  root.command("group", group);
+
+  const target = root.getCommand("group", true)!;
+  const schema = buildCliSchema(target, "1.0.0", { includeHidden: true });
+
+  assertEquals(schema.root.name, "group");
+  assertEquals(schema.root.hidden, true);
+  assertEquals(
+    schema.root.subcommands.map((c) => [c.name, c.hidden]),
+    [["child", false]],
+  );
+});
+
+Deno.test("buildCliSchema captures command aliases", () => {
+  const root = new Command()
+    .name("cli")
+    .description("root")
+    .command("none", new Command().description("no alias"))
+    .command("one", new Command().description("one alias").alias("o"))
+    .command(
+      "many",
+      new Command().description("two aliases").alias("m").alias("several"),
+    );
+
+  const schema = buildCliSchema(root, "1.0.0");
+  const aliases = Object.fromEntries(
+    schema.root.subcommands.map((c) => [c.name, c.aliases]),
+  );
+
+  assertEquals(aliases, { none: [], one: ["o"], many: ["m", "several"] });
+});
+
+Deno.test("buildCliSchema reports whether an option takes a value", () => {
+  const root = new Command()
+    .name("cli")
+    .description("root")
+    .option("--json", "Bare flag")
+    .option("--log-level <level:string>", "Required value")
+    .option("--tag [tag:string]", "Optional value");
+
+  const opts = buildCliSchema(root, "1.0.0").root.options;
+  const byFlag = (flag: string) => opts.find((o) => o.flags === flag)!;
+
+  assertEquals(byFlag("--json").takesValue, false);
+  assertEquals("value" in byFlag("--json"), false);
+  assertEquals(byFlag("--log-level").takesValue, true);
+  assertEquals(byFlag("--log-level").value, "<level:string>");
+  assertEquals(byFlag("--tag").takesValue, true);
+  assertEquals(byFlag("--tag").value, "[tag:string]");
+});
+
+Deno.test("buildCliSchema lists hidden options only with includeHidden", () => {
+  const root = new Command()
+    .name("cli")
+    .description("root")
+    .option("--shown", "Visible option")
+    .option("--secret", "Hidden option", { hidden: true });
+
+  const byDefault = buildCliSchema(root, "1.0.0").root.options;
+  assertEquals(byDefault.map((o) => [o.flags, o.hidden]), [["--shown", false]]);
+
+  const all = buildCliSchema(root, "1.0.0", { includeHidden: true }).root
+    .options;
+  assertEquals(
+    all.map((o) => [o.flags, o.hidden]),
+    [["--shown", false], ["--secret", true]],
+  );
 });
 
 Deno.test("buildCliSchema captures arguments with required and variadic", () => {
@@ -181,6 +278,8 @@ Deno.test("buildCliSchema stripGlobalOptions removes globals from options and po
   );
   assertEquals(globalJson !== undefined, true);
   assertEquals(globalJson!.description, "JSON output");
+  assertEquals(globalJson!.takesValue, false);
+  assertEquals(globalJson!.hidden, false);
 
   // Local option should NOT appear in globalOptions
   const globalLocal = schema.root.globalOptions!.find((o) =>
@@ -228,4 +327,30 @@ Deno.test("buildCliSchema filters builtin --help and --version flags", () => {
     o.flags.includes("--custom")
   );
   assertEquals(customOpt !== undefined, true);
+});
+
+Deno.test("buildCliSchema globalOptions carry value and hidden details", () => {
+  const sub = new Command().description("subcommand");
+  const _root = new Command()
+    .name("cli")
+    .description("root")
+    .globalOption("--log-level <level:string>", "Log level")
+    .globalOption("--internal", "Internal", { hidden: true })
+    .command("sub", sub);
+
+  const byDefault = buildCliSchema(sub, "1.0.0", { stripGlobalOptions: true })
+    .root.globalOptions!;
+  assertEquals(byDefault.length, 1);
+  assertEquals(byDefault[0].flags, "--log-level");
+  assertEquals(byDefault[0].takesValue, true);
+  assertEquals(byDefault[0].value, "<level:string>");
+
+  const all = buildCliSchema(sub, "1.0.0", {
+    stripGlobalOptions: true,
+    includeHidden: true,
+  }).root.globalOptions!;
+  assertEquals(
+    all.map((o) => [o.flags, o.hidden]),
+    [["--log-level", false], ["--internal", true]],
+  );
 });

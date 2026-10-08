@@ -19,7 +19,39 @@
 
 import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
+import type { CliSchema } from "../cli_schema.ts";
 import { createHelpCommand } from "./help.ts";
+
+/** A small tree with an aliased command and a hidden one, plus help itself. */
+function buildTree() {
+  const root = new Command().name("cli").description("root");
+  root.command(
+    "model",
+    new Command().description("models").command(
+      "list",
+      new Command().description("list models").alias("ls"),
+    ),
+  );
+  root.command("secret", new Command().description("secret").hidden());
+  const help = createHelpCommand(root);
+  root.command("help", help);
+  return help;
+}
+
+/** Runs the help command and returns the schema it printed. */
+async function runHelp(args: string[]): Promise<CliSchema> {
+  const help = buildTree();
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    await help.parse(args);
+  } finally {
+    console.log = originalLog;
+  }
+  assertEquals(logs.length, 1);
+  return JSON.parse(logs[0]) as CliSchema;
+}
 
 Deno.test("createHelpCommand has description", () => {
   const root = new Command().name("cli").description("root");
@@ -45,4 +77,29 @@ Deno.test("createHelpCommand accepts variadic command path", () => {
   assertEquals(args.length, 1);
   assertEquals(args[0].name, "command");
   assertEquals(args[0].variadic, true);
+});
+
+Deno.test("createHelpCommand resolves an alias path to the command it names", async () => {
+  const schema = await runHelp(["model", "ls"]);
+  assertEquals(schema.root.name, "list");
+  assertEquals(schema.root.aliases, ["ls"]);
+});
+
+Deno.test("createHelpCommand omits hidden commands by default", async () => {
+  const schema = await runHelp([]);
+  assertEquals(schema.root.subcommands.map((c) => c.name), ["model"]);
+});
+
+Deno.test("createHelpCommand --include-hidden lists hidden commands", async () => {
+  const schema = await runHelp(["--include-hidden"]);
+  assertEquals(
+    schema.root.subcommands.map((c) => [c.name, c.hidden]),
+    [["model", false], ["secret", true], ["help", true]],
+  );
+});
+
+Deno.test("createHelpCommand --include-hidden applies to a subtree", async () => {
+  const schema = await runHelp(["secret", "--include-hidden"]);
+  assertEquals(schema.root.name, "secret");
+  assertEquals(schema.root.hidden, true);
 });
